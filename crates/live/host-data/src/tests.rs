@@ -425,8 +425,8 @@ fn simultaneous_provisions_publish_one_complete_entry() {
         provision(&url, &sha, &cache).unwrap()
     };
     std::thread::scope(|scope| {
-        let first = scope.spawn(&request);
-        let second = scope.spawn(&request);
+        let first = scope.spawn(request);
+        let second = scope.spawn(request);
         assert_eq!(first.join().unwrap(), second.join().unwrap());
     });
     assert_eq!(fs::read_dir(&cache).unwrap().count(), 2);

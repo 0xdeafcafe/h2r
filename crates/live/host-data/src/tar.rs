@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn the_reader_rejects_non_regular_entries() {
-        for typeflag in [b'2', b'5', b'1', b'x'] {
+        for typeflag in *b"251x" {
             // '2' symlink, '5' directory, '1' hard link,
             // 'x' pax extended header.
             let e = raw_entry("maps/evil", typeflag, b"");

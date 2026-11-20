@@ -138,14 +138,13 @@ fn load_guest_ram(
 ) -> Result<PageStats, Error> {
     let layout = load_layout(snapshot)?;
     let ram = snapshot.require(RAM, RAM_VERSION..=RAM_VERSION)?;
-    if let Some(name) = expected_name {
-        if pages::base_name(&ram)?.as_deref() != Some(name) {
+    if let Some(name) = expected_name
+        && pages::base_name(&ram)?.as_deref() != Some(name) {
             return Err(Error::Corrupt(
                 "ram",
                 "anchor name disagrees with the film index".into(),
             ));
         }
-    }
     let mut stats = PageStats::default();
     guest
         .restore_with(&layout, |out| {

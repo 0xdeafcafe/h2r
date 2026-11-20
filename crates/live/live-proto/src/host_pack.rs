@@ -173,7 +173,7 @@ impl SlotPorts {
         let last = base + u32::from(UDP_WIDTH) - 1;
         let tunnel = u32::from(tunnel_port) + u32::from(slot);
         let agent = u32::from(agent_port) + u32::from(slot);
-        (last <= 65535 && tunnel <= 65535 && agent <= 65535).then(|| Self {
+        (last <= 65535 && tunnel <= 65535 && agent <= 65535).then_some(Self {
             base_port: base as u16,
             tunnel_port: tunnel as u16,
             agent_port: agent as u16,

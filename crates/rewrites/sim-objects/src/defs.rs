@@ -137,7 +137,7 @@ impl DefTable {
 mod tests {
     use super::*;
     use crate::synth::Pool;
-    use guest_layout::MemMut;
+    
 
     #[test]
     fn a_definition_decodes_once_per_epoch_from_guest_bytes() {

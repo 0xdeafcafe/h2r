@@ -534,7 +534,7 @@ fn an_arm_swap_plays_each_arm_in_every_seat() {
             "midship-s4-swapped"
         ]
     );
-    for pair in b.runs.chunks_exact(2) {
+    for pair in b.runs.as_chunks::<2>().0 {
         let (first, second) = (&pair[0].config, &pair[1].config);
         assert_eq!(first.arms_swapped, Some(false));
         assert_eq!(second.arms_swapped, Some(true));

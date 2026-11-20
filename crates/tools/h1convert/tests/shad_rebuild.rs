@@ -1370,7 +1370,7 @@ fn h1_texels(h1: &H1Map, id: h1map::TagId) -> Vec<[f32; 4]> {
     let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).unwrap()).unwrap();
     let img = b.decode(h1, 0, 0).unwrap();
     img.rgba
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|p| [0, 1, 2, 3].map(|k| f32::from(p[k]) / 255.0))
         .collect()
 }
@@ -1516,7 +1516,7 @@ fn teleporter_receiver_brightness_against_halo1() {
         let levels = decode_image(&img, &px).unwrap();
         let l0 = levels.iter().find(|l| l.face == 0 && l.level == 0).unwrap();
         l0.rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|t| f32::from(t[3]) / 255.0)
             .collect()
     };

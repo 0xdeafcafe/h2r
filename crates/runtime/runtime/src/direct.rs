@@ -642,14 +642,14 @@ mod tests {
         let live = table();
         live.check_code(7, vec![true, true, false], &Dispatch::default());
         assert_eq!(live.checked(), 7);
-        assert_eq!(live.get(1), a as usize);
+        assert_eq!(live.get(1), a as *const () as usize);
         assert_eq!(live.get(2), 0, "an interior entry is never live");
         assert_eq!(live.get(3), 0, "not lifted executable code");
         // The same identity again changes nothing; a new one re-reads.
         live.check_code(7, vec![false, false, true], &Dispatch::default());
-        assert_eq!((live.get(1), live.get(3)), (a as usize, 0));
+        assert_eq!((live.get(1), live.get(3)), (a as *const () as usize, 0));
         live.check_code(8, vec![false, false, true], &Dispatch::default());
-        assert_eq!((live.get(1), live.get(3)), (0, b as usize));
+        assert_eq!((live.get(1), live.get(3)), (0, b as *const () as usize));
     }
 
     #[test]
@@ -660,18 +660,18 @@ mod tests {
         live.check_code(1, vec![true, true, true], &d);
         d.register_override(0x2000, "o", |_, _, _| Ok(TransferAbi::stop(2)));
         live.sync_overrides(&d);
-        assert_eq!((live.get(1), live.get(3)), (a as usize, thunk));
+        assert_eq!((live.get(1), live.get(3)), (a as *const () as usize, thunk));
         d.set_enabled(0x2000, false);
         live.sync_overrides(&d);
-        assert_eq!(live.get(3), b as usize);
+        assert_eq!(live.get(3), b as *const () as usize);
         d.set_enabled(0x2000, true);
         live.sync_overrides(&d);
         // A re-check keeps an override's element on the thunk.
         live.check_code(2, vec![true, true, true], &d);
-        assert_eq!((live.get(1), live.get(3)), (a as usize, thunk));
+        assert_eq!((live.get(1), live.get(3)), (a as *const () as usize, thunk));
         // An override off the table touches nothing.
         d.register_override(0x1001, "elsewhere", |_, _, _| Ok(TransferAbi::stop(3)));
         live.sync_overrides(&d);
-        assert_eq!(live.get(1), a as usize);
+        assert_eq!(live.get(1), a as *const () as usize);
     }
 }

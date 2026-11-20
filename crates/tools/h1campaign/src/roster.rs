@@ -87,7 +87,7 @@ pub(crate) fn prepare(
         let field = h1map::Block::read(variant_bytes, 0x22c).expect("validated actv size");
         let colours: Vec<_> = h1
             .block(field, 0x20)?
-            .chunks_exact(0x20)
+            .as_chunks::<0x20>().0.iter()
             .map(|rgb| h1objects::h1::ChangeColour {
                 function: None,
                 permutations: vec![h1objects::h1::ColourPermutation {

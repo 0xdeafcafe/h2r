@@ -414,11 +414,10 @@ fn listing_clusters(s: &h1map::bsp::StructureBsp, surfaces: usize) -> Vec<Vec<us
         for sub in s.space.block_at(cluster, 0x34, 0x24).unwrap() {
             for ix in s.space.block_at(sub, 0x18, 4).unwrap() {
                 let i = u32::from_le_bytes(ix[..4].try_into().unwrap()) as usize;
-                if let Some(o) = out.get_mut(i) {
-                    if !o.contains(&c) {
+                if let Some(o) = out.get_mut(i)
+                    && !o.contains(&c) {
                         o.push(c);
                     }
-                }
             }
         }
     }

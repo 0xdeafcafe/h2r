@@ -28,11 +28,11 @@ pub fn encode_words(out: &mut String, words: impl IntoIterator<Item = u16>) {
 }
 
 pub fn decode_words(bytes: &[u8]) -> Option<Vec<u16>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|word| u16::from_str_radix(std::str::from_utf8(word).ok()?, 16).ok())
         .collect()
 }
@@ -81,7 +81,7 @@ impl PlatoonRule {
             let mut pairs = || {
                 Some(
                     take_block(&mut rest, 2)?
-                        .chunks_exact(2)
+                        .as_chunks::<2>().0.iter()
                         .map(|pair| (pair[0], pair[1]))
                         .collect(),
                 )

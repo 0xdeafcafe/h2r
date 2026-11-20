@@ -128,10 +128,10 @@ pub fn release_date_ok(d: &str) -> bool {
     let year = |y: &str| num(y, 4).is_some_and(|y| y >= 1990);
     let month = |m: &str| num(m, 2).is_some_and(|m| (1..=12).contains(&m));
     let day = |d: &str| num(d, 2).is_some_and(|d| (1..=31).contains(&d));
-    match d.split('-').collect::<Vec<_>>().as_slice() {
-        &[y] => year(y),
-        &[y, m] => year(y) && month(m),
-        &[y, m, dd] => year(y) && month(m) && day(dd),
+    match *d.split('-').collect::<Vec<_>>().as_slice() {
+        [y] => year(y),
+        [y, m] => year(y) && month(m),
+        [y, m, dd] => year(y) && month(m) && day(dd),
         _ => false,
     }
 }

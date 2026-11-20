@@ -129,7 +129,7 @@ pub mod record {
         let mut merged: BTreeMap<String, Vec<(u64, u64)>> = all.iter()
             .map(|(path, spans)| (path.clone(), spans.iter().map(|(&s, &e)| (s, e)).collect()))
             .collect();
-        match File::open(&file) {
+        match File::open(file) {
             Ok(existing) => match parse_reads(BufReader::new(existing)) {
                 Ok(previous) => {
                     for (path, spans) in previous {
@@ -151,7 +151,7 @@ pub mod record {
                 )
             }
         }
-        let write = File::create(&file).and_then(|f| {
+        let write = File::create(file).and_then(|f| {
             let mut out = BufWriter::new(f);
             writeln!(out, "{}", READS_FORMAT)?;
             for (path, spans) in &merged {

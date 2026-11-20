@@ -85,7 +85,7 @@ impl<'a, T: Bits> Coder<'a, T> {
     }
     #[inline]
     fn split(&mut self, p: u64, want: bool) -> bool {
-        let cut = self.lo + ((self.hi - self.lo + 1) * p >> 12);
+        let cut = self.lo + (((self.hi - self.lo + 1) * p) >> 12);
         let one = self.io.choose(cut, want);
         if one {
             self.lo = cut;
