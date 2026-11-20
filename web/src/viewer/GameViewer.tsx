@@ -14,6 +14,8 @@ import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import { geometryChanged } from "../state/maps";
+import { identity } from "../state/identity";
+import { addressPlayer, startCamera } from "./start";
 import type { GameState } from "../state/reducer";
 import type { ViewerDirector } from "./camera";
 import { afterChange, setFullscreen, type FullscreenDoc, type FullscreenState } from "./fullscreen";
@@ -61,6 +63,7 @@ export default function GameViewer(props: {
   keysLabel?: string;
   /** Optional page controls give 2D/3D and camera selection a shared owner. */
   director?: ViewerDirector;
+  focus?: () => number | null;
   viewControls?: JSX.Element;
   overlay?: JSX.Element;
   /** Under the view, full screen too: the replay's transport or the live clock. */
@@ -69,7 +72,7 @@ export default function GameViewer(props: {
   children?: JSX.Element;
 }) {
   let box!: HTMLElement;
-  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string }>();
+  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string; player?: string }>();
   const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
   const mode = () => viewerMode(
     props.director ? (props.director.selection().mode === "top-down" ? undefined : "3d") : params.view,
@@ -160,9 +163,14 @@ export default function GameViewer(props: {
     props.onKey?.(e);
   };
 
+  const players = () => Object.values(props.game.players);
+  const signedIn = () => identity.me()?.xuid;
   const view3d = () => ({
+    player: params.player,
+    start: (frame: MapFrame, player?: string) => startCamera(players(), frame.players, player, signedIn(), props.focus?.()),
+    priorityPlayers: () => [addressPlayer(players(), params.player), ...players().filter(p => p.xuid != null && p.xuid === signedIn()).map(p => p.index)],
     glb: () => geometry()?.glb ?? null,
-    mode: (params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
+    mode: (params.cam === "orbit" || params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
     ao: params.ao !== "0",
     // `?cut=<height>` opens with the height cut there; `?see=0` without the see-through.
     cut: params.cut !== undefined && Number.isFinite(Number(params.cut)) ? Number(params.cut) : null,

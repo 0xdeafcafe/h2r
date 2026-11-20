@@ -24,20 +24,43 @@ export interface CameraFit {
 
 const rad = (deg: number) => (deg * Math.PI) / 180;
 
-/** Where to put a perspective camera (vertical `fovDeg`, `aspect` =
- *  width / height) to see the whole box. */
+const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+export function fitBox(box: Box3, dir: Vec3, fovDeg: number, aspect: number, margin = 0.10): number {
+  const length = Math.hypot(...dir);
+  const d: Vec3 = [dir[0] / length, dir[1] / length, dir[2] / length];
+  const across = Math.hypot(d[0], d[1]);
+  const r: Vec3 = across ? [-d[1] / across, d[0] / across, 0] : [1, 0, 0];
+  const u: Vec3 = [-d[2] * r[1], d[2] * r[0], d[0] * r[1] - d[1] * r[0]];
+  const v = Math.tan(rad(fovDeg) / 2) * (1 - margin), h = v * aspect;
+  const half = box.max.map((n, i) => (n - box.min[i]!) / 2);
+  let distance = 0;
+  for (const x of [-half[0]!, half[0]!]) for (const y of [-half[1]!, half[1]!]) for (const z of [-half[2]!, half[2]!]) {
+    const c: Vec3 = [x, y, z];
+    distance = Math.max(distance, dot(c, d) + Math.max(Math.abs(dot(c, r)) / h, Math.abs(dot(c, u)) / v));
+  }
+  return distance;
+}
+
+export function framingPitch(size: Vec3): number {
+  return Math.min(44, Math.max(26, 35 + (0.25 - size[2] / Math.max(size[0], size[1], 1e-6)) * 40));
+}
+
+export function orbitDirection(pitch: number, clockwise = 0): Vec3 {
+  const azimuth = Math.atan2(-0.62, 0.53) - rad(clockwise);
+  const p = rad(pitch);
+  return [Math.cos(azimuth) * Math.cos(p), Math.sin(azimuth) * Math.cos(p), Math.sin(p)];
+}
+
+/** Fit the eight corners in the camera's frustum. */
 export function cameraFit(b: Box3, fovDeg: number, aspect: number): CameraFit {
   const size: Vec3 = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
   const centre: Vec3 = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
-  const radius = Math.max(1, Math.hypot(size[0], size[1], size[2]) / 2);
-  const v = rad(fovDeg) / 2, h = Math.atan(Math.tan(v) * Math.max(aspect, 0.05));
-  // Maps are wide and low, so a sphere fit leaves a lot of air: come in a bit.
-  const dist = (radius / Math.sin(Math.min(v, h))) * 0.68;
-  // From the south-east, 35° up: the sun is behind the camera's left shoulder.
-  const dir: Vec3 = [0.53, -0.62, 0.57];
-  const len = Math.hypot(dir[0], dir[1], dir[2]);
-  const topDistance = Math.max(size[1] / 2 / Math.tan(v), size[0] / 2 / Math.tan(h), 1) * 1.08 + size[2] / 2;
-  return { centre, radius, offset: [dir[0] / len * dist, dir[1] / len * dist, dir[2] / len * dist], topDistance };
+  const radius = Math.max(1, Math.hypot(...size) / 2);
+  const dir = orbitDirection(framingPitch(size));
+  const dist = fitBox(b, dir, fovDeg, aspect);
+  const topDistance = fitBox(b, [0, 0, 1], fovDeg, aspect);
+  return { centre, radius, offset: [dir[0] * dist, dir[1] * dist, dir[2] * dist], topDistance };
 }
 
 /** How far the follow camera comes in to its player, game units: about

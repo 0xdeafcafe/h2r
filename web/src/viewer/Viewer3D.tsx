@@ -13,6 +13,7 @@ import { zoneInPlay, type ZonePick } from "./zones";
 import { savePref, texturesPref } from "./textures3d";
 import { KIND_LABELS } from "./scenario3d";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
+import type { CameraStart } from "./start";
 import type { ViewerDirector } from "./camera";
 import { cameraFresh, type CameraRequest } from "./sync";
 import "./viewer.css";
@@ -28,6 +29,9 @@ export interface Viewer3DProps {
   /** Camera to open with, and a player to follow. */
   mode?: ViewMode;
   follow?: number | null;
+  player?: string;
+  start?: (frame: MapFrame, player?: string) => CameraStart;
+  priorityPlayers?: () => readonly (number | null)[];
   /** Camera requests from the replay (a killcam): each new one is taken. */
   camera?: () => CameraRequest | null;
   director?: ViewerDirector;
@@ -184,8 +188,11 @@ export default function Viewer3D(props: Viewer3DProps) {
   // A killcam (or another window's) asks for a camera: take each new one,
   // and one made just before this view opened (it opened for it).
   let opened = false;
+  let chosen = false;
+  let adopted: number | null = null;
+  let explicit = props.mode !== undefined;
   createEffect(on(() => props.camera?.() ?? null, (c) => {
-    if (c && (opened || cameraFresh(c))) pick(c.mode, c.follow);
+    if (c && (opened || cameraFresh(c))) { explicit = true; pick(c.mode, c.follow); }
     opened = true;
   }));
 
@@ -230,22 +237,31 @@ export default function Viewer3D(props: Viewer3DProps) {
     let visible = true;
     const io = new IntersectionObserver((es) => { visible = es.some((e) => e.isIntersecting); });
     io.observe(host);
-    let seen = 0, started = false;
+    let seen = 0;
     const stop = onAnimationFrame((now) => {
       if (!visible || document.hidden) return;
       const frame = props.frame(now);
       const sought = props.soughtAt?.() ?? 0;
+      if (!chosen && adopted === null && !props.glb() && (gameArt() || late())) adopted = now;
+      const choose = !chosen && adopted !== null && (frame.players.length > 0 || now - adopted >= 1500);
+      if (choose) {
+        chosen = true;
+        if (!explicit && !props.director && !s.flying) {
+          const start = props.start?.(frame, props.player) ?? { kind: "bounds" };
+          s.setStart(start);
+          setMode(start.kind === "player" ? "follow" : "orbit");
+          if (start.kind === "player") setFollow(start.index);
+        }
+      }
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
+      if (choose) {
+        if (props.director) applySelection();
+        else if (explicit) pick(mode(), follow());
+      }
       seen = sought;
       if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
       if (!!frame.cinematic !== cutscene()) setCutscene(!!frame.cinematic);
       if ((frame.bsp ?? null) !== (level()?.active ?? null)) setLevel(s.levelInfo());
-      // The opening camera, once there are players to follow.
-      if (!started && frame.players.length) {
-        started = true;
-        if (props.director) applySelection();
-        else if (mode() !== "orbit") pick(mode(), follow());
-      }
     });
     onCleanup(() => { stop(); ro.disconnect(); io.disconnect(); s.dispose(); scene = null; });
   });
@@ -264,6 +280,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     setMapState("loading");
     void scene.loadMap(url).then((ok) => {
       if (props.glb() !== url) return;
+      adopted = performance.now();
       setMapState(ok ? "map" : "grid");
       // The map's own heights are the cut's range now.
       if (scene) { setRange(scene.cutRange()); applyCut(); setZonePick("auto"); applyLevel(scene); applyObjects(scene); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }

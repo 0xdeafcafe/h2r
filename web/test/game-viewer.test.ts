@@ -84,6 +84,7 @@ const game = (over: Partial<GameState> = {}): GameState => ({
 });
 
 let render: (url: string, g: GameState, extra?: Record<string, unknown>) => string;
+let renderAsync: (url: string, game: GameState) => Promise<string>;
 let viewerMode: (view: string | undefined, ok: boolean) => string;
 let keyIsForControl: (t: EventTarget | null) => boolean;
 let renderControls: (session: ReplaySession) => string;
@@ -96,7 +97,12 @@ beforeAll(async () => {
     name: "solid-ssr-viewer",
     setup(build) {
       build.onLoad({ filter: /(\/src\/.*\.tsx|\/@solidjs\/router\/dist\/.*\.jsx)$/ }, async ({ path }) => {
-        const src = await Bun.file(path).text();
+        const original = await Bun.file(path).text();
+        // Expose the incoming lazy component prop in SSR without adding a
+        // production DOM attribute or mounting the WebGL scene.
+        const src = path.endsWith("/viewer/Viewer3D.tsx")
+          ? original.replace('<div class="v3" tabindex', '<div class="v3" data-test-player={props.player} tabindex')
+          : original;
         const out = await babel.transformAsync(src, {
           filename: path, babelrc: false, configFile: false,
           parserOpts: { plugins: ["jsx", "typescript"] },
@@ -106,7 +112,7 @@ beforeAll(async () => {
       });
     },
   });
-  const { renderToString } = await import("solid-js/web");
+  const { renderToString, renderToStringAsync } = await import("solid-js/web");
   const { createComponent } = await import("solid-js");
   const { Router, Route } = await import(ROUTER);
   const mod = await import("../src/viewer/GameViewer");
@@ -114,7 +120,7 @@ beforeAll(async () => {
   viewerMode = mod.viewerMode;
   keyIsForControl = mod.keyIsForControl;
   renderControls = (session) => renderToString(() => createComponent(Transport, { session, matchStartTick: 0 }));
-  render = (url, g, extra = {}) => renderToString(() => createComponent(Router, {
+  const page = (url: string, g: GameState, extra = {}) => createComponent(Router, {
     url,
     get children() {
       return createComponent(Route, {
@@ -127,7 +133,9 @@ beforeAll(async () => {
         } as unknown as Parameters<typeof mod.default>[0]),
       });
     },
-  }));
+  });
+  render = (url, g, extra) => renderToString(() => page(url, g, extra));
+  renderAsync = (url, g) => renderToStringAsync(() => page(url, g));
 });
 
 describe("the inline viewer", () => {
@@ -188,4 +196,9 @@ describe("the inline viewer", () => {
     expect(keyIsForControl(at(null))).toBe(false);
     expect(keyIsForControl(null)).toBe(false);
   });
+});
+
+test("the game address passes its decoded player to the 3D view", async () => {
+  const html = await renderAsync("/games/halo2/games/g1?view=3d&player=Sneaky%20Pete", game());
+  expect(html).toContain('data-test-player="Sneaky Pete"');
 });

@@ -54,8 +54,9 @@ import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
-import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
+import { cameraFit, eyeView, followDistance, markerScale, orbitDirection, type Box3 } from "./camera";
 import { cutHeight, cutRange, meshRole, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { easeOutExpo, playableBounds, type CameraStart } from "./start";
 import { CutawayMaterials } from "./cutaway3d";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
@@ -232,12 +233,15 @@ export class ViewerScene {
   private v3 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
   private bounds: Box3 | null = null;
+  private frameBox: Box3 | null = null;
+  private frameMap = false;
+  private opening: CameraStart | null = null;
   private hasMap = false;
   private drewMap = false;
   private scale = 1;
   private mode: ViewMode = "orbit";
   private followIndex: number | null = null;
-  private tween: { t0: number; ms: number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
+  private tween: { t0: number; ms: number; ease: (t: number) => number; p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Vector3; q1: THREE.Vector3 } | null = null;
   private lastNow = 0;
   private lowZ = Infinity;
   /** Dead players' bodies, left where they fell. */
@@ -457,6 +461,7 @@ export class ViewerScene {
       // glTF (x, y, z) is game (x, -z, y).
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
+      this.frameMap = true;
       this.frameCamera(true);
       this.streamPictures(pending, used, gen, plasma);
       return true;
@@ -703,7 +708,7 @@ export class ViewerScene {
   /** Sizes the lights, shadows, fog, ground and camera limits to a box
    *  (game coordinates). */
   private setBounds(b: Box3, real: boolean) {
-    this.bounds = b;
+    this.bounds = this.frameBox = b;
     const fit = cameraFit(b, this.camera.fov, this.camera.aspect);
     const r = fit.radius;
     this.scale = markerScale(b);
@@ -770,26 +775,61 @@ export class ViewerScene {
 
   // ---- camera ----
 
-  private frameCamera(now: boolean) {
-    if (!this.bounds) return;
-    const fit = cameraFit(this.bounds, this.camera.fov, this.camera.aspect);
+  private framePose() {
+    if (!this.frameBox) return null;
+    const fit = cameraFit(this.frameBox, this.camera.fov, this.camera.aspect);
+    const clamp = (d: number) => THREE.MathUtils.clamp(d, this.controls.minDistance * 4, this.controls.maxDistance);
     const target = new THREE.Vector3(...gameToGl(...fit.centre));
-    const pos = this.mode === "top"
-      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
-      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
-    this.moveCamera(pos, target, now);
+    const offset = this.mode === "top"
+      ? new THREE.Vector3(0, clamp(fit.topDistance), 0.0001)
+      : new THREE.Vector3(...gameToGl(...fit.offset)).setLength(clamp(Math.hypot(...fit.offset)));
+    return { target, offset };
   }
 
-  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, now: boolean) {
+  private frameCamera(now: boolean) {
+    const pose = this.framePose();
+    if (pose) this.moveCamera(pose.target.clone().add(pose.offset), pose.target, now);
+  }
+
+  private moveCamera(
+    pos: THREE.Vector3, target: THREE.Vector3, now: boolean,
+    ms = 650, ease = (t: number) => t * t * (3 - 2 * t),
+  ) {
     if (now || this.opts.reducedMotion) {
       this.tween = null;
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
       this.controls.update();
     } else {
-      this.tween = { t0: performance.now(), ms: 650, p0: this.camera.position.clone(), p1: pos, q0: this.controls.target.clone(), q1: target };
+      this.tween = { t0: performance.now(), ms, ease, p0: this.camera.position.clone(), p1: pos, q0: this.controls.target.clone(), q1: target };
     }
     this.dirty = true;
+  }
+
+  setStart(start: CameraStart) { this.opening = start; }
+
+  private beginOpening() {
+    const start = this.opening;
+    if (!start) return;
+    this.opening = null;
+    const pose = this.framePose();
+    if (!pose) return;
+    const { target, offset } = pose;
+    if (start.kind === "player") {
+      const player = this.shown.get(start.index);
+      if (!player) return;
+      const focus = new THREE.Vector3(...gameToGl(player.x, player.y, player.z + this.focusHeight(start.index)));
+      const distance = followDistance(offset.length(), this.scale, !!this.players.get(start.index)?.biped, this.controls.minDistance);
+      this.moveCamera(target.clone().add(offset), target, true);
+      this.setMode("follow", start.index);
+      this.moveCamera(focus.clone().add(offset.setLength(distance)), focus, false, 1800, easeOutExpo);
+    } else {
+      const pitch = THREE.MathUtils.radToDeg(Math.asin(offset.y / offset.length()));
+      const from = new THREE.Vector3(...gameToGl(...orbitDirection(pitch + 4, 14)));
+      from.setLength(Math.min(offset.length() * 1.35, this.controls.maxDistance));
+      this.moveCamera(target.clone().add(from), target, true);
+      this.moveCamera(target.clone().add(offset), target, false, 1400, easeOutExpo);
+    }
   }
 
   setMode(mode: ViewMode, follow: number | null = null) {
@@ -817,7 +857,7 @@ export class ViewerScene {
         const want = followDistance(dir.length(), this.scale, !!this.players.get(follow!)?.biped, this.controls.minDistance);
         this.moveCamera(target.clone().addScaledVector(dir.normalize(), want), target, false);
       }
-    } else if (top || was === "top" || (was === "eyes" && mode === "orbit")) {
+    } else if (top || was !== mode) {
       this.frameCamera(false);
     }
     this.dirty = true;
@@ -1336,16 +1376,13 @@ export class ViewerScene {
     const f = fi !== null ? this.shown.get(fi) : undefined;
     const focus = f && f.alive && !f.actor ? f : null;
     const bsp = this.zone.update(now, this.look.zoneBoxes(), { reported, focus, players }, { cinematic: this.look.cinematicOn(), snap: seeking });
-    if (!this.look.setActive(bsp) || bsp === null || !this.look.following() || this.mode === "follow") return;
+    const changed = this.look.setActive(bsp);
+    if (bsp === null || !this.look.following()) return;
     const box = this.look.zoneBox(bsp);
-    // A level with one zone was framed whole at load.
-    if (!box || this.look.zoneBoxes().length < 2) return;
-    const fit = cameraFit(box, this.camera.fov, this.camera.aspect);
-    const target = new THREE.Vector3(...gameToGl(...fit.centre));
-    const pos = this.mode === "top"
-      ? target.clone().add(new THREE.Vector3(0, fit.topDistance, 0.001))
-      : target.clone().add(new THREE.Vector3(...gameToGl(...fit.offset)));
-    this.moveCamera(pos, target, seeking);
+    if (!box || this.look.info().zoneCount < 2) return;
+    const reframed = this.frameBox !== box;
+    this.frameBox = box;
+    if ((changed || reframed) && !this.opening && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(seeking);
   }
 
   /** Leaves a player's body where they fell: a copy of their model, made
@@ -1545,6 +1582,13 @@ export class ViewerScene {
 
     for (const p of frame.players) if (p.alive && p.z < this.lowZ) this.lowZ = p.z;
     this.fitGrid(frame.seen);
+    if (this.frameMap && this.bounds) {
+      this.frameMap = false;
+      const features = this.features ? [...this.features.teleporters, ...this.features.lifts] : [];
+      this.frameBox = this.look.info().zoneCount > 1
+        ? this.bounds : playableBounds(this.bounds, this.spots().values(), frame.seen, features);
+      if (!this.opening && this.mode !== "follow" && this.mode !== "eyes" && !this.fly) this.frameCamera(true);
+    }
 
     const snap = seeking || this.opts.reducedMotion;
     smoothPlayers(this.shown, frame.actors?.length ? [...frame.players, ...frame.actors] : frame.players, dt, { snap });
@@ -1735,12 +1779,13 @@ export class ViewerScene {
       this.marks[i]!.group.visible = false;
     }
 
+    this.beginOpening();
     // Camera: flying, or a running tween, then following.
     if (this.fly) {
       this.flyStep(dt);
     } else if (this.tween) {
       const tw = this.tween;
-      const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = u * u * (3 - 2 * u);
+      const u = Math.min(1, (performance.now() - tw.t0) / tw.ms), e = tw.ease(u);
       this.camera.position.lerpVectors(tw.p0, tw.p1, e);
       this.controls.target.lerpVectors(tw.q0, tw.q1, e);
       if (u >= 1) this.tween = null;

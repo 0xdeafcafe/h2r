@@ -25,7 +25,7 @@ import { topView } from "../map/views";
 import { Panel, playerHref } from "./Layout";
 import Emblem from "../components/Emblem";
 import { randomStart, stepIndex } from "../lib/motd";
-import { STATS_ROOT } from "../routes";
+import { STATS_ROOT, gameHref } from "../routes";
 
 export interface PillDef { label: JSX.Element; href: string; end?: boolean }
 
@@ -227,7 +227,7 @@ export function leader(g: GameState): string {
 }
 
 /** The Recent Games box: one game at a time, stepped with the arrows. */
-export function RecentGames(props: { games: GameState[]; title?: string; empty?: string }) {
+export function RecentGames(props: { games: GameState[]; player?: string; title?: string; empty?: string }) {
   const [at, setAt] = createSignal(0);
   const n = () => props.games.length;
   const g = () => props.games[Math.min(at(), Math.max(0, n() - 1))];
@@ -242,7 +242,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
       <div class="s-box-body">
         <Show when={g()} keyed fallback={<p class="s-recent-empty">{props.empty ?? "No games on record yet."}</p>}>
           {(game) => (
-            <A href={`${STATS_ROOT}/games/${game.game_id}`} class="s-recent-item">
+            <A href={gameHref(game.game_id, { player: props.player })} class="s-recent-item">
               <MapThumb game={game} />
               <ul>
                 <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>

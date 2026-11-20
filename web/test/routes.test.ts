@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, movedTheaterPath, statsPath, theaterHref } from "../src/routes";
+import { GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, gameHref, movedStatsPath, movedTheaterPath, statsPath, theaterHref } from "../src/routes";
 
 const ROOT = resolve(import.meta.dir, "../..");
 
@@ -58,3 +58,8 @@ describe("whole-film links", () => {
 function join(p: string): string {
   return resolve(ROOT, p);
 }
+
+test("game links encode the game id and opening player", () => {
+  expect(gameHref("g/1")).toBe("/games/halo2/games/g%2F1");
+  expect(gameHref("g/1", { player: "Two & Co" })).toBe("/games/halo2/games/g%2F1?player=Two%20%26%20Co");
+});

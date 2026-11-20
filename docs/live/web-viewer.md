@@ -72,7 +72,9 @@ follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
-map has no geometry. The
+map has no geometry. The [opening camera](viewer-overlay.md#opening-camera)
+follows the player selected by `?player=`, the signed-in player or the
+embedding page when present, or frames the playable area. The
 **Full screen** button puts the viewer's box full screen with the Fullscreen
 API (Escape leaves), or lays it over the window where there is none (an
 iPhone; Escape leaves that too); the canvas and the 2D map refit either way

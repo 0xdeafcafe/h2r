@@ -27,7 +27,10 @@ export function movedStatsPath(path: string): string | null {
 export const GAME_VIEWER_ID = "game-viewer";
 const GAME_VIEWER_HASH = `#${GAME_VIEWER_ID}`;
 
-export const gameHref = (game: string): string => statsPath(`/games/${encodeURIComponent(game)}`);
+export function gameHref(game: string, options?: { player?: string }): string {
+  const path = statsPath(`/games/${encodeURIComponent(game)}`);
+  return options?.player ? `${path}?player=${encodeURIComponent(options.player)}` : path;
+}
 
 /** Whole films open in Game Details. Shared clips keep their distinct URL. */
 export function theaterHref(game: string, clip?: string): string {

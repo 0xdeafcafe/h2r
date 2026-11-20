@@ -293,7 +293,7 @@ function Side(props: { game: GameState; scores: GameState; kills: FeedKill[]; at
 }
 
 /** The shared live and recorded game viewer, also embedded in Uplink. */
-export function GameView(props: { game: GameState; embedded?: boolean; clip?: Clip; hostFilm?: HostFilm }) {
+export function GameView(props: { game: GameState; embedded?: boolean; focus?: () => number | null; clip?: Clip; hostFilm?: HostFilm }) {
   const [search] = useSearchParams<{ t?: string | string[]; view?: string; cam?: string }>();
   const at = useLocation();
   const navigate = useNavigate();
@@ -384,6 +384,7 @@ export function GameView(props: { game: GameState; embedded?: boolean; clip?: Cl
         title={viewerTitle(props.game)}
         status={<span class="s-viewer-status"><Show when={isLive()} fallback={props.clip ? "Clip" : "Recorded replay"}><i />Live coverage</Show></span>}
         frame={session.frame}
+        focus={props.focus}
         roster={roster}
         highlight={() => hover() ?? (useDirector() ? film.director.selection().follow : null)}
         director={useDirector() ? film.director : undefined}

@@ -1,6 +1,6 @@
 # The 3D view's opening camera, overlay and reveal
 
-Status: Design. Nothing on this page is built; [web-viewer.md](web-viewer.md) states what the viewer does until it is.
+Status: Partly built. The opening camera is available. The overlay, name tags and progressive reveal are designs.
 Code: `web/src/viewer/Viewer3D.tsx` (the 3D view), `web/src/viewer/scene.ts` (`ViewerScene`), `web/src/viewer/camera.ts`, `web/src/viewer/GameViewer.tsx`. Tests: `web/test/`.
 Switch: none. Address parameters `player`, `dmg` and `fx`, and three `localStorage` keys, are listed under [Interfaces](#interfaces).
 
@@ -538,17 +538,12 @@ tests are `bun test` files in `web/test/`.
 
 | # | Slice | Files | Tests that prove it |
 |---|---|---|---|
-| 1 | Opening camera | new `viewer/start.ts`; `viewer/camera.ts` (`fitBox`, pitch); `viewer/scene.ts` (camera section: `frameBox`, `tween.ease`); `Viewer3D.tsx`, `GameViewer.tsx` (`player`, `focus`); `routes.ts` (`gameHref`); `stats/Player.tsx` and the record pages' links | `viewer-start.test.ts`: the rule order, each fall-through, `?player=` by gamertag, xuid and case; `playableBounds` on a level box four times the spots' box, with too few points, and at the 85% rule; `fitBox` keeps all eight corners inside the margin at 16:9, 4:3 and 9:16; the pitch clamp; `easeOutExpo` ends at 1. `routes.test.ts`: `gameHref` encodes the player. `game-viewer.test.ts`: the rendered game page passes `?player=` through |
 | 2 | Overlay and states | new `viewer/overlay.ts`, `viewer/Overlay.tsx`, `viewer/overlay.css`; `Viewer3D.tsx` (the toolbar becomes the rail and the View menu; `R`, `T`, `M`, `H`); `GameViewer.tsx` (`Suspense` fallback, `title`, `backdrop`); `viewer/scene.ts` (`loadMap` progress and result, `setCurtain`); `viewer/viewer.css` (drop `.v3-tools`, `.v3-note`) | `viewer-overlay.test.ts`: `overlayState` for every row of the state table; `loadProgress` is monotonic, lights 22 at full length, chases without a length, and formats sizes; `renderToString(Overlay)` per state has the right role, text and buttons, and the progress bar's ARIA values; the menu lists a row only when its condition holds. `game-viewer.test.ts`: the fallback is the overlay |
 | 3 | Name tags | new `viewer/declutter.ts`; `viewer/scene.ts` (label section: inner `.v3-tag`, measuring, `data-lod`); `viewer/viewer.css` | `declutter.test.ts`: two overlapping tags give one `full` and one `lifted`; a third gives a `pip`; rank beats distance; a level holds for 250 ms; no two `full` or `lifted` rectangles intersect over 500 seeded layouts; 64 is the cap |
 | 4 | Progressive reveal | new `viewer/reveal.ts`; `viewer/scene.ts` (map section: `cutaway`, uniforms, entity gating, `SceneOptions.reveal`); `viewer/level3d.ts` (`setReveal`); `viewer/sky3d.ts` (fade) | `reveal.test.ts`: `revealAt` at 0, 200, mid and end; `T` at its clamps; `objectsRadius` trails by 180 ms; `done` sets the radius off; `patchReveal` fits `THREE.ShaderLib` standard, lambert, phong and basic, with and without the see-through patch, and returns null without its hooks (as `cutaway.test.ts` does for `patchSeeThrough`); a JS mirror of the shader's `revealK` agrees at the band's edges |
 | 5 on | Damage and combat effects | [viewer-effects.md](viewer-effects.md#build-order) | there |
 
-Slices 1 and 3 are independent. Slice 4 needs slice 2's veil. All of
-1 to 4 edit `viewer/scene.ts`, each in its own section (camera, labels,
-map and materials, update), so they merge without overlap when each
-stays inside it. Each slice edits [web-viewer.md](web-viewer.md) where it
-changes what that page says (the toolbar and the address parameters), and this page's status line.
+The progressive reveal uses the overlay veil.
 
 ## Interfaces
 
@@ -586,8 +581,7 @@ changes what that page says (the toolbar and the address parameters), and this p
 
 ## Evidence
 
-- **Code** `web/src/viewer/camera.ts` `cameraFit`: the fit is a sphere on
-  the whole box's diagonal, brought in by 0.68.
+- **Test** `web/test/viewer-start.test.ts` covers opening selection, playable bounds and the corner fit.
 - **Code** `web/src/viewer/scene.ts` `loadMap`: the box leaves out the
   backdrop, cutscene zones and placed objects (`aside`), and nothing else
   of the structure.
