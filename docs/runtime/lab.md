@@ -302,7 +302,7 @@ with `H2_AGENT` opens its socket early and answers `wait`, `capture`,
   `h2 agent`)
 - [level-boot.md](level-boot.md): `--level`, `H2_PERF_FROM=level`
 - [BOOT.md](BOOT.md): the environment variables
-- [gameplay-budget.md](../perf/gameplay-budget.md): reading frame stats
+- [gameplay-budget.md](../perf/notes/gameplay-budget.md): reading frame stats
 - [profiling.md](../perf/profiling.md): the profiler (`--features perf`)
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
 - [BUILD-CACHE.md](../lifter/BUILD-CACHE.md): `H2_OBJ_CACHE`

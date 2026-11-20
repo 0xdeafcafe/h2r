@@ -1,6 +1,6 @@
 //! `native-fog`: planar fog, the scene list's layer 16, drawn by the
 //! native renderer instead of the game's entries
-//! (docs/graphics/native-renderer.md, "Stage 4b"). On with the native
+//! (docs/graphics/native-water-fog.md, "Stage 4b"). On with the native
 //! renderer (`impl.render.native`, on by default).
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an

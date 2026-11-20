@@ -30,7 +30,7 @@ its commit and method. Re-measure before acting on one.
 | Where does an in-level frame's time go? | [notes/gameplay-budget.md](notes/gameplay-budget.md) |
 | Where does a main-menu frame's time go? | [notes/menu-budget.md](notes/menu-budget.md) |
 | What does the D3D device cost per draw? | [notes/device-cost.md](notes/device-cost.md) |
-| What structural changes would close the gameplay gap? | [architecture-review.md](architecture-review.md): ranked changes, each with its status |
+| What structural changes would close the gameplay gap? | [2026-11-16-frame-time.md](../reviews/2026-11-16-frame-time.md): ranked changes (a frozen review; the design pages hold what was done) |
 | What did we try and drop? | [notes/not-adopted.md](notes/not-adopted.md) |
 
 Read profiling.md first, then the budget for the scene you care about.

@@ -344,7 +344,7 @@ pub fn shader_bitmaps<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Result
 /// Whether a bitmap's tag name reads as a base (diffuse) map: not a
 /// default, detail, bump, reflection, change-colour, self-illumination,
 /// specular or mask map. A name rule, stage 1's stand-in until each
-/// template's own program draws its material (docs/graphics/native-renderer.md,
+/// template's own program draws its material (docs/graphics/native-world.md,
 /// "Match the look").
 pub fn is_base_map_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();

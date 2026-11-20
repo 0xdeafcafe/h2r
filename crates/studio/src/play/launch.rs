@@ -3,7 +3,7 @@
 //! override, and the level booted straight in.
 //!
 //! The command (docs/runtime/level-boot.md, docs/editor/scenario-editor.md
-//! §5, docs/runtime/agent-api.md "Phase 1"):
+//! §5, docs/runtime/agent-api.md "Connecting"):
 //!
 //! ```text
 //! H2_AGENT=<socket> H2_MAP_DIR=<dir with <map>.map> h2 play <disc> --data <data> --level <map>

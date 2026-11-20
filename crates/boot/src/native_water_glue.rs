@@ -1,4 +1,4 @@
-//! The native water's host (docs/graphics/native-renderer.md, "Stage 4b:
+//! The native water's host (docs/graphics/native-water-fog.md, "Stage 4b:
 //! water and the rest"): over the native world's loaded BSP, it compiles
 //! the transparent parts' layer-6 passes at the load ([`load`]), and at
 //! the layer-6 call asks the D3D device for one external pass per view

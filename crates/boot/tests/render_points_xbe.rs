@@ -3,7 +3,7 @@
 //! transparents' geometry handler (`points::TRANSPARENT_GEOMETRY`) is only
 //! reached through the entry's function pointer (stored by `mov [esi+0x20],
 //! imm32` at `0x000413ff`), so it rests on discovery following code
-//! immediates (docs/graphics/native-renderer.md, "Stage 3: transparents").
+//! immediates (docs/graphics/native-transparents.md, "Stage 3: transparents").
 //! Addresses only; no bytes are kept.
 //!
 //! `H2_XBE=/path/default.xbe cargo test -p boot --test render_points_xbe -- --ignored`

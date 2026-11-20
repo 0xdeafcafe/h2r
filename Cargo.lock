@@ -54,6 +54,7 @@ dependencies = [
  "debug-menu",
  "engine",
  "feature",
+ "guest-layout",
  "hot-render",
  "hot-tags",
  "input",
@@ -1905,14 +1906,20 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "guest-layout",
  "ir",
  "lift",
+ "map",
  "mopp",
  "paste",
  "runtime",
+ "sim-anim",
+ "sim-core",
  "simd",
+ "tags",
  "x87",
  "xbe",
+ "xiso",
 ]
 
 [[package]]
@@ -2442,6 +2449,10 @@ dependencies = [
  "thiserror 2.0.21",
  "windows",
 ]
+
+[[package]]
+name = "guest-layout"
+version = "0.1.0"
 
 [[package]]
 name = "h1ai"
@@ -3596,6 +3607,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "feature",
+ "guest-layout",
  "live-proto",
  "live-server",
  "map",
@@ -5909,6 +5921,20 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "sim-anim"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-core"
+version = "0.1.0"
+dependencies = [
+ "simd",
 ]
 
 [[package]]

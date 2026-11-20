@@ -25,6 +25,10 @@
 //! assert_eq!(Thing::COUNT, 0x0);
 //! ```
 //!
+//! An offset is a literal or the name of a constant: the structures
+//! `guest_layout` defines take their offsets from it, so the number is
+//! written once.
+//!
 //! It generates `Thing::at(addr)`, `SIZE`, an offset constant per field
 //! (`Thing::COUNT`), a getter and a setter per field (`count(m)`,
 //! `set_count(m, v)`) and a builder for [`FakeGuest`] (`Thing::build()`).
@@ -105,7 +109,7 @@ macro_rules! record {
     (
         $(#[$m:meta])*
         $vis:vis struct $name:ident : $size:literal {
-            $( $(#[$fm:meta])* $field:ident @ $off:literal : $t:ty ),* $(,)?
+            $( $(#[$fm:meta])* $field:ident @ $off:tt : $t:ty ),* $(,)?
         }
     ) => {
         $crate::view::paste::paste! {
@@ -311,29 +315,36 @@ impl Tags {
 pub mod players {
     use super::*;
 
+    use guest_layout::player::Player as L;
+    const SALT: u32 = L::SALT.offset;
+    const FLAGS: u32 = L::FLAGS.offset;
+    const LOCAL_USER: u32 = L::LOCAL_USER.offset;
+    const UNIT: u32 = L::UNIT.offset;
+    const TEAM: u32 = L::TEAM.offset;
+
     crate::record! {
-        /// One player datum (`0x21c` bytes). Field meanings as Live
-        /// telemetry reads them.
+        /// One player datum (`0x21c` bytes), with the offsets
+        /// `guest_layout::Player` defines.
         pub struct Player: 0x21c {
             /// Datum salt; zero when the slot is free.
-            salt @ 0x00: u16,
+            salt @ SALT: u16,
             /// Bit 1: the player is leaving and is not listed.
-            flags @ 0x02: u16,
+            flags @ FLAGS: u16,
             /// Local controller index, `-1` for a remote player.
-            local_user @ 0x28: i16,
+            local_user @ LOCAL_USER: i16,
             /// The unit object the player controls.
-            unit @ 0x2c: Option<DatumHandle>,
+            unit @ UNIT: Option<DatumHandle>,
             /// Team index (signed byte).
-            team @ 0xc0: i8,
+            team @ TEAM: i8,
         }
     }
 
     /// The player's machine id (6 bytes): the console's Ethernet address,
     /// or a phantom peer's made-up one (docs/game/bots.md §5.1).
-    pub const MACHINE: u32 = 0x14;
+    pub const MACHINE: u32 = L::MACHINE.offset;
     /// The name's offset and capacity: UTF-16, 32 code units with the NUL.
-    pub const NAME: u32 = 0x44;
-    pub const NAME_UNITS: usize = 32;
+    pub const NAME: u32 = L::NAME.offset;
+    pub const NAME_UNITS: usize = guest_layout::player::NAME_UNITS;
 
     impl Player {
         /// The name, up to its NUL (a full buffer is taken whole).
@@ -378,40 +389,55 @@ pub mod players {
 pub mod objects {
     use super::*;
 
+    use guest_layout::object::{Object as B, ObjectHeader as H, ObjectType};
+    const H_SALT: u32 = H::SALT.offset;
+    const H_KIND: u32 = H::KIND.offset;
+    const H_BODY: u32 = H::BODY.offset;
+    const DEFINITION: u32 = B::DEFINITION.offset;
+    const PARENT: u32 = B::PARENT.offset;
+    const POSITION: u32 = B::POSITION.offset;
+    const FORWARD: u32 = B::FORWARD.offset;
+    const UP: u32 = B::UP.offset;
+    const HEALTH: u32 = B::HEALTH.offset;
+    const SHIELD: u32 = B::SHIELD.offset;
+    const DAMAGE_FLAGS: u32 = B::DAMAGE_FLAGS.offset;
+
     crate::record! {
-        /// An object header (`0xc` bytes), the element of the objects array.
+        /// An object header (`0xc` bytes), the element of the objects array
+        /// (offsets from `guest_layout::ObjectHeader`).
         pub struct Header: 0xc {
-            salt @ 0x0: u16,
+            salt @ H_SALT: u16,
             /// The concrete type: 0 biped, 1 vehicle, 2 weapon, ...
-            kind @ 0x3: u8,
+            kind @ H_KIND: u8,
             /// The object's body (its full state).
-            body @ 0x8: u32,
+            body @ H_BODY: u32,
         }
     }
 
     crate::record! {
-        /// The start of an object's body, the part every type shares.
+        /// The start of an object's body, the part every type shares
+        /// (offsets from `guest_layout::Object`).
         pub struct Body: 0x10c {
             /// The definition tag.
-            definition @ 0x0: Option<DatumHandle>,
+            definition @ DEFINITION: Option<DatumHandle>,
             /// The object this one is attached to.
-            parent @ 0x14: Option<DatumHandle>,
-            position @ 0x64: Vec3,
-            forward @ 0x70: Vec3,
-            up @ 0x7c: Vec3,
+            parent @ PARENT: Option<DatumHandle>,
+            position @ POSITION: Vec3,
+            forward @ FORWARD: Vec3,
+            up @ UP: Vec3,
             /// Body vitality, 0 to 1 (docs/halo1/health.md: the HUD state
             /// copies it, regeneration and damage write it).
-            health @ 0xec: f32,
+            health @ HEALTH: f32,
             /// Shield vitality (docs/halo1/health.md, the HUD's shield).
-            shield @ 0xf0: f32,
+            shield @ SHIELD: f32,
             /// Bit 2: body depleted.
-            damage_flags @ 0x10a: u16,
+            damage_flags @ DAMAGE_FLAGS: u16,
         }
     }
 
-    pub const BIPED: u8 = 0;
-    pub const VEHICLE: u8 = 1;
-    pub const WEAPON: u8 = 2;
+    pub const BIPED: u8 = ObjectType::Biped as u8;
+    pub const VEHICLE: u8 = ObjectType::Vehicle as u8;
+    pub const WEAPON: u8 = ObjectType::Weapon as u8;
 
     /// The objects array (`*OBJECTS`).
     pub fn array(m: &dyn GuestMemory) -> R<Option<Datums<Header>>> {

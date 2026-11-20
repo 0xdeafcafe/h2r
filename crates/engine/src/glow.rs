@@ -1,5 +1,5 @@
 //! The glow `render_screen_effects` draws as its colour pass
-//! (`0x000214f0`; docs/graphics/native-renderer.md, stage 5): what it
+//! (`0x000214f0`; docs/graphics/native-post-hud.md, stage 5): what it
 //! draws, as pure functions, for the native renderer to draw it in the
 //! game's place. The numbers before it are `colour_pass`'s.
 //!

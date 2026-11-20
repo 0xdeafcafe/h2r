@@ -32,7 +32,7 @@ ROOT = subprocess.check_output(
 
 LINK = re.compile(r'!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
 ENV = re.compile(r"H2_[A-Z0-9_]+")
-SWITCH = re.compile(r"impl\.[a-z0-9_]+(?:\.[a-z0-9_]+)*")
+SWITCH = re.compile(r"impl\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*")
 CODE_PATH = re.compile(
     r"`((?:crates|platform|scripts|deploy|web)/[A-Za-z0-9_./\-]+)(?:[:#][^`]*)?`"
 )
@@ -148,8 +148,14 @@ def code_names():
     envs = set(git_lines("grep", "-ohE", "H2_[A-Z0-9_]+", *spec))
     # POSIX ERE for git grep: no (?:...) groups.
     switches = set(
-        git_lines("grep", "-ohE", r"impl\.[a-z0-9_]+(\.[a-z0-9_]+)*", "--", "crates")
+        git_lines("grep", "-ohE", r"impl\.[a-z0-9_-]+(\.[a-z0-9_-]+)*", "--", "crates")
     )
+    # Registered as `.implementation("sim.arena-hash", ..)`: the `impl.` is implied.
+    # Ports name theirs as a plain string (`port(.., "sim.native_pose_matrix", ..)`).
+    for quoted in git_lines(
+        "grep", "-ohE", r'"(sim|audio|render|net|input)\.[a-z0-9_.-]+"', "--", "crates"
+    ):
+        switches.add("impl." + quoted.strip('"'))
     return envs, {s.rstrip(".") for s in switches}
 
 
@@ -170,7 +176,9 @@ def check_names(files):
             for name in set(SWITCH.findall(line)):
                 name = name.rstrip(".")
                 if name in switches or any(
-                    s.startswith(name + ".") or s.startswith(name + "_")
+                    s.startswith(name + ".")
+                    or s.startswith(name + "_")
+                    or (name.endswith("_") and s.startswith(name))
                     for s in switches
                 ):
                     continue

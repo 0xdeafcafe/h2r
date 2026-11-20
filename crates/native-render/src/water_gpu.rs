@@ -1,4 +1,4 @@
-//! The water edge blend, layer 6 (docs/graphics/native-renderer.md,
+//! The water edge blend, layer 6 (docs/graphics/native-water-fog.md,
 //! "Stage 4b: water and the rest"): the water templates' own layer-6
 //! passes, drawn natively inside the window between the game's water
 //! setup `0x0003ba90` and its teardown `0x0003c3c0` (whose alpha-only

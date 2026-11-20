@@ -1,6 +1,6 @@
 //! Stage 3, the transparents: which sorted transparent entries are
 //! geometry the native renderer can draw, and the runs it draws them in
-//! (docs/graphics/native-renderer.md, "Stage 3: transparents").
+//! (docs/graphics/native-transparents.md, "Stage 3: transparents").
 //!
 //! Research points (Code, `h2 disasm`):
 //!

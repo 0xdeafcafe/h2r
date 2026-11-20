@@ -1,5 +1,5 @@
 //! The colour pass of `render_screen_effects` (`0x00013870`, its call of
-//! `0x000214f0`; docs/graphics/native-renderer.md, stage 5): the numbers
+//! `0x000214f0`; docs/graphics/native-post-hud.md, stage 5): the numbers
 //! it draws with, as pure functions of guest memory, for the native
 //! renderer to draw the pass in the game's place.
 //!

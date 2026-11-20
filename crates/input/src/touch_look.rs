@@ -1,4 +1,4 @@
-//! Direct touch look (docs/runtime/ios.md, "Look"): a drag on the right side
+//! Direct touch look (docs/runtime/ios.md, "Controls"): a drag on the right side
 //! of the screen turns the camera by an angle, not by a stick deflection.
 //!
 //! Halo 2 reads the right stick as a turn *rate*, through its own deadzone,

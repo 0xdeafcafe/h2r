@@ -3,7 +3,7 @@
 # 0x0002dba0, called for sky lights (0x0003f1e9), lights (0x000c34ac reads
 # ligh +0x94), object attachments (0x00041b23) and effect parts
 # (0x00179d23). Halo 1's lens holds the same first 0x30 bytes in the same
-# order (docs/formats/tag-definitions.md, "Lens flares").
+# order (docs/formats/effects.md, "lens (lens flare)").
 group lens 0x64 align 4
   0x0 f32 falloff_angle -- V radians; +0x8 holds its cosine on every retail lens; name D
   0x4 f32 cutoff_angle -- V radians; +0xc holds its cosine; name D

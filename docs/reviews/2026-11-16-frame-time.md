@@ -1,5 +1,7 @@
 # Architecture review: the frame-time gap in gameplay
 
+Review of 2026-11-16. Frozen: later work is in the design pages and the code.
+
 Written 2026-11-16 against master 183781e. Old Mombasa gameplay runs at
 about 18 fps (55 ms a frame); the budget is 33.3 ms, and "never below
 30" needs a few ms of margin under that. This review looks for

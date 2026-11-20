@@ -507,11 +507,10 @@ fn store_builds_once_and_flushes_on_epoch() {
     static EPOCH: Epoch = Epoch::new();
     let store = ClipStore::new(&EPOCH);
     let c = twelve();
-    let mut fetches = 0;
+    let mut lens = Vec::new();
     let mut get = |store: &ClipStore, shape| {
         store.get(0x1234, shape, |layout| {
-            fetches += 1;
-            assert_eq!(layout.len as usize, c.bytes().len());
+            lens.push(layout.len as usize);
             Some(c.bytes().into())
         })
     };
@@ -529,7 +528,11 @@ fn store_builds_once_and_flushes_on_epoch() {
         "blob length no longer matches"
     );
     drop(get);
-    assert_eq!(fetches, 3);
+    // Built twice from the clip's own layout, then asked for a longer one.
+    let n = c.bytes().len();
+    assert_eq!(lens.len(), 3);
+    assert_eq!(&lens[..2], &[n, n]);
+    assert!(lens[2] > n);
     assert_eq!(store.stats().hits, 1);
 }
 

@@ -1,5 +1,7 @@
 # Architecture review, November 2026
 
+Review of 2026-11-20. Frozen: later work is in the design pages and the code.
+
 Written 2026-11-20 against master `bc48d2053`. An independent read of the
 whole repository: the recompiler, the runtime, the hook engine, the
 renderers and the crate structure. Nothing was built or run for it. The
@@ -7,7 +9,7 @@ evidence is the code, the docs, the measurements already recorded in
 `docs/perf` and `docs/lifter`, and `git log`. Savings are estimates from
 reading code unless a measurement is cited.
 
-An earlier review, [perf/architecture-review.md](perf/architecture-review.md)
+An earlier review, [2026-11-16-frame-time.md](2026-11-16-frame-time.md)
 (2026-11-16), covered the gameplay frame-time gap. Most of its top five
 were acted on. This one is broader and reaches a different conclusion
 about where the remaining cost comes from; section 1.9 says where the two
@@ -37,7 +39,7 @@ Five findings carry most of the review.
    model, a block-based clock, and imprecise memory faults.
 2. **Fix the recompiler before rewriting the sim for speed.** Guest code
    is 70.8% of the sim thread and the runtime 23.8%
-   ([perf/sim-budget.md](perf/sim-budget.md)). The sim-rewrite plan's
+   ([perf/sim-budget.md](../perf/sim-budget.md)). The sim-rewrite plan's
    first three phases estimate 2.7-3.7 ms of a 14.12 ms tick. Codegen and
    runtime work applies to all guest code at once. Port the sim to own it
    and extend it, on a timetable that speed does not force.
@@ -122,7 +124,7 @@ flag or register write cannot be removed across a memory access, and the
 lazy-flag machinery exists to make those exits exact without paying on
 the hot path. That machinery is 43% of the generated C by bytes: 23% lazy
 flags computed in place, 11% settled in place, 6% `h2lz_` switches, 3%
-bookkeeping ([lifter/build-perf.md](lifter/build-perf.md), "What the C
+bookkeeping ([lifter/build-perf.md](../lifter/notes/build-perf.md), "What the C
 is"). `lazy-flags` alone grows the C from 417 MB to 539 MB
 (`crates/opt/README.md`, "Measurements").
 
@@ -131,7 +133,7 @@ a local count, charges it at exits, reads a budget on entry and polls at
 loop headers (RUNTIME-CONTRACT.md, lines 348-400). The clock is tied to
 how a backend performs accesses and calls, so the Cranelift tier cannot
 be in a lockstep session with the clang tier
-([lifter/cranelift-tier.md](lifter/cranelift-tier.md), section 5), and a
+([lifter/cranelift-tier.md](../lifter/cranelift-tier.md), section 5), and a
 native port that replaces guest code moves every later slice boundary.
 
 On top of these sits the transfer model. A direct call between two
@@ -210,7 +212,7 @@ lane so that happens once.
 The sim profile attributes 6.25% to `handler::execute`, 4.54% to the run
 loop, 1.36% to guest reads, 1.53% to exit and charge, 1.31% to resume
 and resolve, 0.73% to context creation and 0.52% to fast acquisition
-([perf/sim-budget.md](perf/sim-budget.md), "Runtime and other host
+([perf/sim-budget.md](../perf/sim-budget.md), "Runtime and other host
 work"). Static calls are nearly all direct already, so the runner's load
 comes from four sources: Rust handlers (HLE and hooks), returns that miss
 their inline continuation, direct calls refused at run time, and indirect
@@ -552,7 +554,7 @@ Four weaknesses, in order of consequence.
 The sim ports are written against `CpuAbi`: they assign `eax`, push and
 pop the guest stack, compute EFLAGS and re-enter at mid-function resume
 PCs. They are the lifter's output written by hand in Rust.
-[engine/sim-rewrite.md](engine/sim-rewrite.md) already demotes them to
+[engine/sim-rewrite.md](../engine/sim-rewrite.md) already demotes them to
 "reference and test oracles", but the lifted original running on the IR
 interpreter is a cheaper oracle and needs no maintenance. Stop writing
 them, and delete each when its subsystem lands.
