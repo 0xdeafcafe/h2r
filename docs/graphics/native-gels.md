@@ -1,6 +1,7 @@
 # Native shader gels
 
-`impl.render.native_gels` is off by default. With it on, supported shader
+The native gels are on by default and go off with the rest of the native
+renderer (`impl.render.native=off`). Supported shader
 gel quad packets are replaced through `DrawAdmission`. The handoff records
 both required target copies transactionally, then commits the commands
 before suppressing the original D3D packet. Any preparation, resource,
@@ -73,19 +74,16 @@ and suppresses a subset of the quad.
 Immutable resident programs, texture groups and pipelines are cached by
 map generation, exact resident view identity, shader/state/sampler key and
 target format. Resident identity includes D3D's palette/residency result.
-The compare path also caches bitmap uploads by `(generation, bitmap,
-image)`. Repeated frames do not re-upload those bitmaps or rebuild their
-pipelines. Per-recording buffers are never reused before submission.
+Repeated frames do not rebuild their pipelines. Per-recording buffers are never reused before submission.
 The resident program cache is bounded; eviction retains no live mutable
 GPU storage and recorded commands retain their resource references.
-The switch remains off pending integration evidence.
 
 ## Interface for the lights lane
 
 `boot::native_gels_glue::install(device) -> Arc<Outputs>` installs the
 host. Admission is registered once, lazily, only when the enabled feature
-first reaches replacement mode after its ordered boundary. Disabled and
-compare-only calls do not add a gels admission or cause extra draw
+first reaches replacement mode after its ordered boundary. Disabled
+calls do not add a gels admission or cause extra draw
 snapshots/palette reads. Retain that owner when installing the light graph
 (the current world installer discards only the extra returned Arc).
 `Binding` is re-exported from `native_gels_glue`.
@@ -114,23 +112,8 @@ snapshots/palette reads. Retain that owner when installing the light graph
 This binding means “target 13 as the producer leaves it,” including D3D
 fallback or later D3D gel packets. It does not claim a particular packet
 committed natively. `native_gels_suppressed` and the per-copy range counters
-in `H2_FRAME_STATS` establish actual replacement. Old private `Ticket`
-outputs remain solely for comparison; lights should use `binding_after`.
-
-## Comparison
-
-`H2_NATIVE_GELS_COMPARE=N` retains D3D for the first N scoped quad calls
-and records a private native comparison output after the guest quad.
-Subsequent calls use transactional replacement. Empty means 4; unset/0
-replaces immediately. The diagnostic still has the first slice's more
-conservative static-asset limits; a refusal is not a parity result.
-
-Readback logs identify invocation and copy size, differing bytes, maximum
-absolute byte difference and total difference. Alpha is included; row
-padding is excluded. Mapping is scheduled on submission, without waiting.
-Private output is published **before** optional comparison; a missing
-COPY_SRC capability or failed readback cannot withhold a valid output.
-The real target-13 binding is independent of comparison availability.
+in `H2_FRAME_STATS` establish actual replacement. Lights should use
+`binding_after`.
 
 ## End-of-integration checks
 
@@ -157,18 +140,14 @@ recording without committing either copy.
 
 Requested runtime proof, only after integration:
 
-- `H2_LEVEL=03a_oldmombasa`,
-  `H2_FEATURES=impl.render.native_gels=on,impl.render.native_lights=off`,
-  `H2_NATIVE_GELS_COMPARE=16`, `H2_RENDER_SCALE=1`,
-  `H2_FRAME_STATS=1`, `H2_BOOT_STOP_AT_PRESENT=4000`.
-  Require actual compare pairs and later positive gel suppression/range
-  counters. If 03a has no supported gel, report zero coverage and choose a
+- `H2_LEVEL=03a_oldmombasa`, `H2_RENDER_SCALE=1`,
+  `H2_FRAME_STATS=1`, `H2_BOOT_STOP_AT_PRESENT=4000`, against the same
+  run with `H2_FEATURES=impl.render.native=off`. Require positive gel
+  suppression/range counters. If 03a has no supported gel, report zero coverage and choose a
   level with one before judging parity.
 - Repeat at `H2_RENDER_SCALE=2`; require both copy counts, stable refusal
   counts and no partial recording invariants. Keep other switches equal.
-- Repeat with `H2_NATIVE_GELS_COMPARE=0`, then the light lane's binding
-  enabled, including mixed native/D3D lights. Turn diagnostics off for
-  later timing measurements.
+- Check mixed native/D3D lights with the light lane's binding.
 
 Agent-API decision: no running game/editor inspection was performed.
 Neither API was used or expanded. Static XBE reading used the existing
