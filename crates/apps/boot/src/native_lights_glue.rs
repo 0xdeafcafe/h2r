@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 
 use engine::memory::{GuestMemory, MemFault};
-use feature::native_lights::{Dispatch, Host};
+use hooks::native_lights::{Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, LightTarget, StaticLightTexture, TextureDim, light_gpu_key};
@@ -224,7 +224,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, binding)?;
         let c = &plan.constants;
-        let layers = mem.u32(feature::native_lights::LIGHT_LIST + 8).ok()
+        let layers = mem.u32(hooks::native_lights::LIGHT_LIST + 8).ok()
             .and_then(|mask| native_render::light_list::single_layer(mask, c.flags, c.definition_flags).ok());
         if layers != plan.draws.first().map(|p| p.layer as u32) {
             return Err(Keep::Unsupported("active light layers changed during setup"));
@@ -312,13 +312,13 @@ impl LightLayer {
 
 impl d3d::DrawAdmission for LightAdmission {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        if feature::native_map_work::Stage::Lights.standing_down() {
+        if hooks::native_map_work::Stage::Lights.standing_down() {
             return None;
         }
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let geometry = context.geometry?;
         let draw = snapshot.draw;
-        if context.layer.list != feature::native_lights::LIGHT_LIST
+        if context.layer.list != hooks::native_lights::LIGHT_LIST
             || !matches!(context.layer.number, 12 | 13)
             || draw.entry != "D3DDevice_DrawIndexedVertices"
             || context.index_count? as usize != draw.indices.as_ref()?.len()
@@ -562,7 +562,7 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
                 let levels = assets::bitmap::decode_bytes(desc, bytes).map_err(|e| format!("{id:?} does not decode: {e}"))?;
                 let shape = shape(&levels);
                 let image = layered(levels, dim).ok_or_else(|| format!("{id:?} is not a {dim:?} ({shape})"))?;
-                if feature::native_verbose() {
+                if hooks::native_verbose() {
                     eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)",
                         image.width, image.height, image.layers, 1 + image.mips.len());
                 }
@@ -582,15 +582,15 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
 
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State, gels: Arc<Outputs>) {
-    let switches = feature::Switches::from_env().unwrap_or_default();
-    if !feature::native_lights::on(&switches) {
+    let switches = hooks::Switches::from_env().unwrap_or_default();
+    if !hooks::native_lights::on(&switches) {
         return;
     }
     let admission = Arc::new(LightAdmission::default());
     if let Ok(mut device) = device.lock() {
         device.add_draw_admission(admission.clone());
     }
-    feature::native_lights::set_host(Arc::new(Glue {
+    hooks::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state, gels, checkpoint: Mutex::default(),
         tally: Mutex::new(Tally::default()),

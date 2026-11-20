@@ -189,7 +189,7 @@ pub(crate) fn init_with_cold(
     // CLAIMED guarantees these are unset.
     let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
     assert!(set, "fallback tables set outside init");
-    feature::shadow::SHADOW.set_source(Box::new(shadow_original));
+    hooks::shadow::SHADOW.set_source(Box::new(shadow_original));
     *STATS.lock().unwrap() = Some(Stats::default());
     Ok(())
 }

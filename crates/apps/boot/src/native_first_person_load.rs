@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use feature::native_objects::{NativeSet, SetPart};
+use hooks::native_objects::{NativeSet, SetPart};
 use map::TagId;
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
@@ -92,7 +92,7 @@ pub(crate) fn spawn_worker(
                         s.set = Arc::new(set);
                         drop(st);
                         loaded += 1;
-                        if feature::native_verbose() {
+                        if hooks::native_verbose() {
                             eprintln!(
                                 "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
                             );
@@ -100,7 +100,7 @@ pub(crate) fn spawn_worker(
                     }
                     Err(why) => {
                         refused += 1;
-                        if feature::native_verbose() {
+                        if hooks::native_verbose() {
                             eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
                         }
                     }

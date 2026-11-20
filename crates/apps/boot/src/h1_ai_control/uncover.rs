@@ -7,7 +7,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     view::objects,
 };
-use feature::{Builder, Flow, points};
+use hooks::{Builder, Flow, points};
 
 use super::{actors, playfight, preference, uncover_limits, uncover_targetless};
 

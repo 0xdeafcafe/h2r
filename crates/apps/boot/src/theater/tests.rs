@@ -156,11 +156,11 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
     use live_proto::film::TelemetryHooks;
 
     let plan = |session: &Arc<Session>, transport: TelemetryConfig| {
-        let mut features = feature::Registry::new(feature::Switches::defaults());
+        let mut features = hooks::Registry::new(hooks::Switches::defaults());
         crate::registration::register_telemetry(&mut features, &transport, Some(session))
             .unwrap()
             .expect("telemetry hook plan");
-        features.build(&feature::Base).unwrap().text()
+        features.build(&hooks::Base).unwrap().text()
     };
     let dir = std::env::temp_dir().join(format!("film-hooks-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();

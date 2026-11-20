@@ -10,7 +10,7 @@
 //!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
 //! - **The render front-end** is skipped in world frames on the light
-//!   host ([`feature::sim_frame`]). Full headless runs can opt into the
+//!   host ([`hooks::sim_frame`]). Full headless runs can opt into the
 //!   render worker and collect the same tick hashes. The kernel trace
 //!   file is off and nav meshes are never built in the background
 //!   (`bots_nav_auto`).
@@ -38,10 +38,10 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use bots::pad_source::{Frame, PadSource, Sampled};
-use feature::sim_frame::SimFrame;
+use hooks::sim_frame::SimFrame;
 
 use crate::telemetry;
-use feature::{Flow, points};
+use hooks::{Flow, points};
 use input::host::HostPadState;
 use sim::config::{BotParams, Match};
 use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally, TickSample};
@@ -176,7 +176,7 @@ pub struct Sim(Arc<Inner>);
 /// Whether sim uses the shared light profile. Off supplies a full headless
 /// control and supports the old machine-snapshot workflow.
 pub fn use_light_host() -> Result<bool> {
-    let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
+    let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     Ok(switches.feature("host-light", true))
 }
 
@@ -500,12 +500,12 @@ impl Sim {
     }
 
     /// Match-specific hooks. Boot installs the light profile separately.
-    pub fn install(&self, features: &mut feature::Registry) -> Result<()> {
+    pub fn install(&self, features: &mut hooks::Registry) -> Result<()> {
         self.install_with_film(features, None)
     }
 
     pub(crate) fn install_with_film(
-        &self, features: &mut feature::Registry, film_playback: Option<bool>,
+        &self, features: &mut hooks::Registry, film_playback: Option<bool>,
     ) -> Result<()> {
         features
             .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
@@ -828,17 +828,17 @@ struct SimMetrics {
     film_playback: Option<bool>,
 }
 
-impl feature::Feature for SimMetrics {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("sim-metrics", "Sim mode: the match's metrics and its end")
+impl hooks::Feature for SimMetrics {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("sim-metrics", "Sim mode: the match's metrics and its end")
             .doc("docs/runtime/sim.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> std::result::Result<(), hooks::BuildError> {
         let lobby = hosted::install(b, Arc::clone(&self.sim))?;
         let policy = match self.film_playback {
             Some(playback) => film_state::policy(&self.sim, lobby, playback),
-            None => feature::SnapshotPolicy::Stateless,
+            None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);
         let me = Arc::clone(&self.sim);

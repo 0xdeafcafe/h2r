@@ -5,7 +5,7 @@
 use engine::DatumHandle;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
-use feature::{BuildError, Builder, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
@@ -50,7 +50,7 @@ const SQUAD_GROUP: u32 = 0x26;
 
 pub struct AiControl;
 
-impl feature::Feature for AiControl {
+impl hooks::Feature for AiControl {
     fn manifest(&self) -> Manifest {
         Manifest::new("h1-ai-control", "Halo 1 campaign encounter controls")
             .doc("docs/halo1/ai-control.md")
@@ -171,12 +171,12 @@ impl feature::Feature for AiControl {
                 Ok(())
             },
         );
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
-fn is_converted_campaign(call: &feature::Call<'_>) -> bool {
+fn is_converted_campaign(call: &hooks::Call<'_>) -> bool {
     let mem = call.ctx.runtime().memory();
     crate::health::loaded_map_name(&*mem)
         .is_ok_and(|name| crate::health::HALO1_LEVELS.contains(&name.as_str()))
@@ -235,7 +235,7 @@ fn squads(m: &dyn GuestMemory, ai: u32) -> Result<Vec<u32>, MemFault> {
 
 /// Retail's fixed evaluator and return routines use these same arrays.
 /// Check the salted nodes before interpreting a spare head-atom word.
-fn call_operation(call: &mut feature::Call<'_>, opcode: u16) -> Option<Operation> {
+fn call_operation(call: &mut hooks::Call<'_>, opcode: u16) -> Option<Operation> {
     let head = call_head(call, opcode)?;
     match call.ctx.runtime().memory().u32(head + 16).ok()? {
         0 if opcode == MAGICALLY_SEE_PLAYERS => Some(Operation::SeePlayers),
@@ -243,7 +243,7 @@ fn call_operation(call: &mut feature::Call<'_>, opcode: u16) -> Option<Operation
     }
 }
 
-pub(super) fn call_head(call: &mut feature::Call<'_>, opcode: u16) -> Option<u32> {
+pub(super) fn call_head(call: &mut hooks::Call<'_>, opcode: u16) -> Option<u32> {
     use engine::{DatumHandle, datum::DatumArray};
 
     let thread = call.arg_u32("thread")?;

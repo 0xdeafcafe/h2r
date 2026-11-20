@@ -572,13 +572,13 @@ pub fn changed(profile: &str) {
 /// two and Famine's.
 pub struct SkullsMp(pub Arc<MpSkulls>);
 
-impl feature::Feature for SkullsMp {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Skulls in multiplayer games").doc("docs/game/skulls.md")
+impl hooks::Feature for SkullsMp {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Skulls in multiplayer games").doc("docs/game/skulls.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::Flow;
-        use feature::points::{
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::Flow;
+        use hooks::points::{
             FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT,
         };
         let s = Arc::clone(&self.0);
@@ -676,7 +676,7 @@ impl feature::Feature for SkullsMp {
             Arc::clone(&self.0),
             Arc::clone(&self.0),
         );
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || live.snapshot_live(),
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
@@ -690,7 +690,7 @@ impl feature::Feature for SkullsMp {
 /// (`H2_FEATURES=skulls-mp=off`). With Live, advertisements carry the
 /// host's set from now on.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     store: Option<Arc<Store>>,
     hle: Option<Arc<live_hle::Hle>>,
     telemetry: Option<Arc<live_telemetry::Telemetry>>,
@@ -716,15 +716,15 @@ pub fn install(
 }
 
 /// The install line, once `plan` is in.
-pub fn report(plan: &feature::Plan, installed: &feature::Installed) -> String {
-    use feature::points::{FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT};
+pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
+    use hooks::points::{FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT};
     if let Some(why) = installed.off_reason(FEATURE) {
         return format!("skulls-mp: NOT installed: {why}; multiplayer games run without skulls");
     }
     if !plan.is_on(FEATURE) {
         return "skulls-mp: NOT installed: not in the feature plan".into();
     }
-    let at = |p: &feature::points::Point, what: &str| {
+    let at = |p: &hooks::points::Point, what: &str| {
         let chain = plan
             .chains
             .values()

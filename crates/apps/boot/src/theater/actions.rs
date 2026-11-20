@@ -85,14 +85,14 @@ fn apply(m: &mut dyn GuestMemory, update: u32, inputs: &[SeatInput]) -> Result<(
     Ok(())
 }
 
-pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
+pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw().before(
         &engine::points::SIM_UPDATE_APPLY,
         "film simulation actions",
         move |c| {
             let mut state = session.lock();
             if state.complete || state.failure.is_some() {
-                return Ok(feature::Flow::Continue);
+                return Ok(hooks::Flow::Continue);
             }
             let update = c
                 .arg_u32("update")
@@ -109,7 +109,7 @@ pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
                             drop(memory);
                             drop(state);
                             session.record_actions(inputs);
-                            return Ok(feature::Flow::Continue);
+                            return Ok(hooks::Flow::Continue);
                         }
                         Err(e) => Err(e),
                     }
@@ -127,7 +127,7 @@ pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
                 let tick = state.tick + 1;
                 state.fail_at(tick, e.to_string());
             }
-            Ok(feature::Flow::Continue)
+            Ok(hooks::Flow::Continue)
         },
     );
 }

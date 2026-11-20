@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use agent::{Access, Agent, GameCtx};
 use agent_proto::host_lobby::OpenParams;
 use agent_proto::{RpcError, code, method};
-use feature::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 use live_proto::hopper::variant::VariantRecord;
 use serde_json::{Value, json};
 
@@ -340,7 +340,7 @@ impl Feature for Lobby {
 }
 
 pub(crate) fn install(
-    features: &mut feature::Registry,
+    features: &mut hooks::Registry,
     agent: &Agent,
     host_light: bool,
     opts: &crate::RunOpts,

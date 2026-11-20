@@ -19,7 +19,7 @@
 //! with the map and never copied, so rewriting the datum before the game
 //! starts changes what is drawn. No map variant is needed.
 //!
-//! **When.** Before [`GAME_ACTIVATE`](feature::points::GAME_ACTIVATE),
+//! **When.** Before [`GAME_ACTIVATE`](hooks::points::GAME_ACTIVATE),
 //! after the map's tags are loaded and before any HUD draws.
 //!
 //! **The motion sensor.** Halo 2's `nhdt` does not place the sensor's
@@ -308,14 +308,14 @@ fn locked(s: &std::sync::Mutex<Sensor>) -> std::sync::MutexGuard<'_, Sensor> {
     s.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-impl feature::Feature for HudSwap {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Halo 1's or Halo 2's HUD on converted Halo 1 maps")
+impl hooks::Feature for HudSwap {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Halo 1's or Halo 2's HUD on converted Halo 1 maps")
             .doc("docs/halo1/hud.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::Flow;
-        use feature::points::GAME_ACTIVATE;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::Flow;
+        use hooks::points::GAME_ACTIVATE;
         let table = Arc::clone(&self.table);
         let sensor = Arc::clone(&self.sensor);
         let halo2_levels = Arc::clone(&self.halo2_levels);
@@ -369,7 +369,7 @@ impl feature::Feature for HudSwap {
         // The table and the Halo 2 levels are read at install; the sensor
         // remembers Halo 2's table, which the guest's no longer shows.
         let (save, load) = (Arc::clone(&self.sensor), Arc::clone(&self.sensor));
-        b.snapshot(feature::SnapshotPolicy::section(
+        b.snapshot(hooks::SnapshotPolicy::section(
             move || locked(&save).save_state(),
             move |bytes, _| locked(&load).load_state(bytes),
         ));
@@ -380,7 +380,7 @@ impl feature::Feature for HudSwap {
 /// Adds the feature, with the swaps of the packages under `packages` and
 /// the campaign levels under `data_root`.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     packages: &Path,
     data_root: &Path,
 ) -> anyhow::Result<bool> {

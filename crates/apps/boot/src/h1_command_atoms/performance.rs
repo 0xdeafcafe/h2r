@@ -328,7 +328,7 @@ fn burst_pattern(
     Ok(Some(copy))
 }
 
-pub(super) fn install(b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+pub(super) fn install(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
     b.raw()
         .after(&points::AI_COMMAND_TARGETS, "resolve converted gaze", |c| {
             let mut memory = c.ctx.runtime().memory();

@@ -504,17 +504,17 @@ pub const CURSOR_FEATURE: &str = "live-menu-cursor";
 /// the row the player chose, as retail's is for its rows.
 pub struct LiveMenuCursor;
 
-impl feature::Feature for LiveMenuCursor {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for LiveMenuCursor {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             CURSOR_FEATURE,
             "The Xbox Live menu's cursor back on the browser or co-op row",
         )
         .doc("docs/game/bots.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::entry::EntryFuture;
-        use feature::Flow;
+        use hooks::Flow;
         b.raw().before(
             &engine::points::LIVE_MENU_CURSOR,
             "the cursor on our row",
@@ -532,13 +532,13 @@ impl feature::Feature for LiveMenuCursor {
             },
         );
         // It reads the stored row afresh at each build.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
 /// Adds [`LiveMenuCursor`].
-pub fn install_cursor(registry: &mut feature::Registry) -> anyhow::Result<()> {
+pub fn install_cursor(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     registry
         .add(&LiveMenuCursor)
         .map_err(|e| anyhow::anyhow!("live menu cursor: {e}"))?;

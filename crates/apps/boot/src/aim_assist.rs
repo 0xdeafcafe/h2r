@@ -355,13 +355,13 @@ impl AimAssist {
     }
 }
 
-impl feature::Feature for AimAssist {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Aim assist strength").doc("docs/game/aim-assist.md")
+impl hooks::Feature for AimAssist {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Aim assist strength").doc("docs/game/aim-assist.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::Flow;
-        use feature::points::GAME_ACTIVATE;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::Flow;
+        use hooks::points::GAME_ACTIVATE;
         let setting = self.setting.clone();
         let remembered = Arc::clone(&self.remembered);
         b.raw()
@@ -435,7 +435,7 @@ impl feature::Feature for AimAssist {
         );
         let pp = Arc::clone(&self.per_player);
         let (save, load) = (Arc::clone(&self.remembered), Arc::clone(&self.remembered));
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || snapshot_live(&pp),
             move || save.lock().unwrap_or_else(|e| e.into_inner()).save_state(),
             move |bytes, _| {
@@ -450,7 +450,7 @@ impl feature::Feature for AimAssist {
 
 /// Adds the aim assist to `registry`. Says why when left out.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     store: Option<Arc<Store>>,
 ) -> anyhow::Result<bool> {
     let Some(store) = store else {

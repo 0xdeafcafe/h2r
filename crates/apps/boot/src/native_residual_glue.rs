@@ -6,7 +6,7 @@
 /// Use the same resolved indexed input and two-copy reservation as the
 /// opaque layers. No sky model state, sort order or layer handler is moved.
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let enabled = feature::Switches::from_env().is_ok_and(|s| feature::switches::native_render_on(&s));
+    let enabled = hooks::Switches::from_env().is_ok_and(|s| hooks::switches::native_render_on(&s));
     if enabled && let Ok(mut device) = device.lock() {
         device.set_native_residual(true);
         device.add_draw_admission(std::sync::Arc::new(ResidualDraws::default()));

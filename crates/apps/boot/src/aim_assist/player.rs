@@ -37,7 +37,7 @@ use super::{
     MODE_MULTIPLAYER, PLAYER_CONTROL_STRIDE, SETTING_DEFAULT, SETTING_VERY_STRONG, SLOWDOWN, scale,
 };
 
-pub use feature::points::{AIM_ASSIST_PARAMS, PLAYER_CONTROL_UPDATE};
+pub use hooks::points::{AIM_ASSIST_PARAMS, PLAYER_CONTROL_UPDATE};
 
 /// The pointer to the loaded globals (`matg`) tag's definition; the
 /// player-control update reads `[[0x4e034c]+0xf4]` (docs/runtime/level-boot.md).

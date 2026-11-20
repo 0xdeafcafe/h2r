@@ -22,7 +22,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     view::{Record, objects},
 };
-use feature::{Builder, Flow, points};
+use hooks::{Builder, Flow, points};
 
 use super::{
     NONE, actors, contact, is_converted_campaign, state, uncover_limits,
@@ -221,7 +221,7 @@ mod tests {
     use engine::datum::layout;
     use engine::tags;
     use engine::testing::FakeGuest;
-    use feature::points;
+    use hooks::points;
 
     fn shot_guest() -> (FakeGuest, u32) {
         const ACTOR_ARRAY: u32 = 0x0083_0000;

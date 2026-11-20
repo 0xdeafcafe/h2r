@@ -6,7 +6,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     view::{Record, objects},
 };
-use feature::{Builder, Flow, points};
+use hooks::{Builder, Flow, points};
 
 use super::{NONE, actors, contact, is_converted_campaign, playfight, state};
 

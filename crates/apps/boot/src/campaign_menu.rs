@@ -24,7 +24,7 @@ use engine::points::{
     CAMPAIGN_LEVEL_LIST, CAMPAIGN_LEVEL_LOOKUP, CAMPAIGN_START, LAST_LEVEL_SET, LEVEL_SELECT_NEW, NEXT_LEVEL,
     PROGRESS_MAX, PROGRESS_RAISE, SCREEN_REQUEST,
 };
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::guest::Permissions;
 
 use crate::campaigns::{
@@ -358,7 +358,7 @@ fn set_stack(c: &Call, n: u32, v: u32) -> bool {
     Gm::set_u32(&mut *mem, c.cpu.esp + 4 + 4 * n, v)
 }
 
-impl feature::Feature for Campaigns {
+impl hooks::Feature for Campaigns {
     fn manifest(&self) -> Manifest {
         Manifest::new(campaigns::FEATURE, "More than one campaign in the menus")
             .doc("docs/halo1/campaign-picker.md")
@@ -528,7 +528,7 @@ impl feature::Feature for Campaigns {
         // Progress goes to the profile files on the host disk, like a save
         // game, outside the snapshot.
         let s = Arc::clone(st);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || s.selection.snapshot_live()));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || s.selection.snapshot_live()));
         Ok(())
     }
 }
@@ -537,7 +537,7 @@ impl feature::Feature for Campaigns {
 /// whether it was added.
 pub fn install(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     state: Option<Arc<State>>,
 ) -> anyhow::Result<bool> {
     let Some(state) = state else {
@@ -667,14 +667,14 @@ pub(crate) mod tests {
 
     #[test]
     fn the_hooks_are_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let picker: Arc<dyn Fn() -> u32 + Send + Sync> = Arc::new(|| 0);
         r.add(&Campaigns {
             state: Arc::new(state()),
             picker,
         })
         .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         for line in [
             "0x0019c6d0 CAMPAIGN_LEVEL_LIST: before [campaigns:the shown campaign's list] -> original",
             "0x0019c270 CAMPAIGN_LEVEL_LOOKUP: before [campaigns:the lists, the map's campaign] -> original",

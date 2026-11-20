@@ -325,7 +325,7 @@ fn two_peers_simulate_the_same_values() {
 
 #[test]
 fn the_points_read_as_the_engine_does() {
-    use feature::points::{Loc, Sig};
+    use hooks::points::{Loc, Sig};
     assert_eq!(PLAYER_CONTROL_UPDATE.base, 0x0018_5be0);
     assert_eq!(PLAYER_CONTROL_UPDATE.sig.arg("controller"), Some(Loc::Edx));
     assert_eq!(PLAYER_CONTROL_UPDATE.sig.arg("user"), Some(Loc::Stack(0)));

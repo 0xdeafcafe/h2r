@@ -1,7 +1,7 @@
 # Native renderer stage 3: transparents
 
 Status: Built. Sorted transparent geometry draws keep their guest handlers; the stage substitutes immutable GPU vertex bindings at the indexed draw. Pixel parity and the time saved are not verified.
-Code: `crates/hooking/feature/src/native_transparents.rs`, `crates/apps/boot/src/native_transparents_glue.rs`, `crates/rewrites/native-render/src/transparent.rs`, `transparent_streams.rs`, `world_layers_gpu.rs`. Tests: `crates/hooking/feature/tests/native_transparents.rs`.
+Code: `crates/hooking/hooks/src/native_transparents.rs`, `crates/apps/boot/src/native_transparents_glue.rs`, `crates/rewrites/native-render/src/transparent.rs`, `transparent_streams.rs`, `world_layers_gpu.rs`. Tests: `crates/hooking/hooks/tests/native_transparents.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRANSPARENTS` (`0x0001e370`). The call sorts its own list and invokes one handler per entry; the geometry handlers set up their layer-15 passes and depth-test against what the opaque layers left. The stage lets every handler run and changes only where an indexed draw takes its vertices from. Part of [native-renderer.md](native-renderer.md).

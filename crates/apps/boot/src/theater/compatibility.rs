@@ -40,7 +40,7 @@ fn signature(sig: Sig) -> Vec<u8> {
     bytes
 }
 
-fn hook_digest(plan: &feature::Plan, installed: &feature::Installed) -> String {
+fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     let placed = installed.placed.iter().copied().collect::<BTreeSet<_>>();
     let mut bytes = Vec::new();
     for global in [
@@ -71,7 +71,7 @@ fn hook_digest(plan: &feature::Plan, installed: &feature::Installed) -> String {
             bytes.push(b'\n');
             let (native, generated) = hook.continuation_sites();
             if chain.addr == chain.point.base
-                && hook.kind() == feature::Kind::Implement
+                && hook.kind() == hooks::Kind::Implement
                 && !(native.is_empty() && generated.is_empty())
             {
                 let row = (
@@ -110,8 +110,8 @@ fn hook_digest(plan: &feature::Plan, installed: &feature::Installed) -> String {
 impl Session {
     pub(crate) fn check_simulation_hooks(
         &self,
-        plan: &feature::Plan,
-        installed: &feature::Installed,
+        plan: &hooks::Plan,
+        installed: &hooks::Installed,
     ) -> Result<()> {
         let mut state = self.lock();
         if state.header.version < 3 {
@@ -136,12 +136,12 @@ mod tests {
 
     struct Observer(&'static str);
 
-    impl feature::Feature for Observer {
-        fn manifest(&self) -> feature::Manifest {
-            feature::Manifest::new("variant-test", "Simulation fixture")
+    impl hooks::Feature for Observer {
+        fn manifest(&self) -> hooks::Manifest {
+            hooks::Manifest::new("variant-test", "Simulation fixture")
         }
 
-        fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
             b.frame().on_tick(self.0, |_| {});
             Ok(())
         }
@@ -150,13 +150,13 @@ mod tests {
     #[test]
     fn hook_contract_tracks_placed_guest_dispatch_and_ignores_diagnostic_labels() {
         let plan = |label| {
-            let mut registry = feature::Registry::new(feature::Switches::defaults());
+            let mut registry = hooks::Registry::new(hooks::Switches::defaults());
             registry.add(&Observer(label)).unwrap();
-            registry.build(&feature::Base).unwrap()
+            registry.build(&hooks::Base).unwrap()
         };
         let original = plan("sample");
         let renamed = plan("renamed sample");
-        let mut installed = feature::Installed::default();
+        let mut installed = hooks::Installed::default();
         let omitted = hook_digest(&original, &installed);
         installed.placed.push(points::GAME_TICK.base);
         let active = hook_digest(&original, &installed);
@@ -170,10 +170,10 @@ mod tests {
     fn hook_contract_distinguishes_native_and_generated_resumes() {
         let point = engine::sim_physics::PORTS[0].point;
         let digest = |native: &'static [u32], generated: &'static [u32]| {
-            let mut registry = feature::Registry::new(feature::Switches::defaults());
-            let port = feature::FnFeature {
-                manifest: feature::Manifest::new("port-test", "Resume fixture"),
-                build: move |b: &mut feature::Builder| {
+            let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+            let port = hooks::FnFeature {
+                manifest: hooks::Manifest::new("port-test", "Resume fixture"),
+                build: move |b: &mut hooks::Builder| {
                     b.raw()
                         .implement(point, "port", |_, _, _| unreachable!())
                         .resumes(native)
@@ -182,8 +182,8 @@ mod tests {
                 },
             };
             registry.add(&port).unwrap();
-            let plan = registry.build(&feature::Base).unwrap();
-            let mut installed = feature::Installed::default();
+            let plan = registry.build(&hooks::Base).unwrap();
+            let mut installed = hooks::Installed::default();
             installed.placed.push(point.base);
             hook_digest(&plan, &installed)
         };

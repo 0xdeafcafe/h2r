@@ -2,10 +2,10 @@
 //! when another handler runs without calling the geometry observer.
 
 use engine::{memory::{FlatMemory, GuestMemory}, points};
-use feature::native_transparents::{self, NativeTransparents, Scope};
-use feature::native_world::ACTIVE_BSP;
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_transparents::{self, NativeTransparents, Scope};
+use hooks::native_world::ACTIVE_BSP;
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 use native_render::camera::GuestRead;
 use native_render::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 use native_render::transparent::{DATA_OFFSET, GEOMETRY_HANDLER, Source};

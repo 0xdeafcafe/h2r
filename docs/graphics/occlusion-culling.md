@@ -1,7 +1,7 @@
 # Occlusion culling of objects
 
 Status: Partly built. The test, the hooks and the device's depth grid are built and tested on synthetic data; the switch waits for a first in-game check ([Status](#status)).
-Code: `crates/rewrites/engine/src/render_loop/occlusion.rs`, `crates/hooking/feature/src/occlusion.rs`, `crates/platform/gfx` (depth grid), `crates/platform/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/hooking/feature/tests/occlusion.rs`, `crates/platform/d3d/tests/occlusion_grid.rs`, `crates/platform/gfx/tests/depth_grid.rs`.
+Code: `crates/rewrites/engine/src/render_loop/occlusion.rs`, `crates/hooking/hooks/src/occlusion.rs`, `crates/platform/gfx` (depth grid), `crates/platform/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/hooking/hooks/tests/occlusion.rs`, `crates/platform/d3d/tests/occlusion_grid.rs`, `crates/platform/gfx/tests/depth_grid.rs`.
 Switch: `impl.render.occlusion` (off), listed in [switches.md](../runtime/switches.md).
 
 The game's render front-end is CPU-bound guest code: each draw costs
@@ -346,7 +346,7 @@ Built and tested, all behind `impl.render.occlusion` (exactly that key;
   `DEPTH32FLOAT_STENCIL8`), and the viewport-to-texel rectangle
   (`cargo test -p d3d --lib grid_rect`);
 - the guest side (`occlusion::guest`) and the feature on the runtime
-  (`cargo test -p feature --test occlusion`): the records, setup and
+  (`cargo test -p hooks --test occlusion`): the records, setup and
   transparents hooks over the synthetic generated module, one capture per
   main view and frame, grids delivered as the device would, skipping from
   the second occluded frame and running the original otherwise.

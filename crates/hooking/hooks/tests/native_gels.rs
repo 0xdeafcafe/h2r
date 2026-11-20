@@ -1,6 +1,6 @@
 //! Synthetic admission/placement tests; no retail bytes or game process.
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::{
+use hooks::{
     Registry, Switches,
     native_gels::{self, Call, NativeGels},
     plan::Base,

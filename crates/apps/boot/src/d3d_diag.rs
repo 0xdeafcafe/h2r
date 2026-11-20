@@ -46,7 +46,7 @@ pub fn presents() -> u64 {
 }
 
 /// Counts a present sim mode skipped with the world render
-/// (`feature::sim_frame`), so what counts presents (`H2_BOOT_STOP_AT_PRESENT`,
+/// (`hooks::sim_frame`), so what counts presents (`H2_BOOT_STOP_AT_PRESENT`,
 /// the input script, the agent's stamps) moves on as in a rendered run. No
 /// frame time is kept for it.
 pub fn note_skipped_present() {

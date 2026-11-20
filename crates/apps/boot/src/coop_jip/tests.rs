@@ -199,24 +199,24 @@ fn the_feature_is_on_the_plan_with_the_co_op_hooks() {
         runtime::Guest::new(),
         runtime::dispatch::Dispatch::default(),
     );
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let arm = crate::coop_probe::install_live(&rt, &mut r, std::path::Path::new("/nonexistent"))
         .unwrap()
         .unwrap();
     assert!(!arm.active(), "off until a co-op session arms it");
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(text.contains(FEATURE), "{text}");
     for p in HOOKED {
         assert!(text.contains(p.name), "{} missing:\n{text}", p.name);
     }
     // H2_FEATURES=-coop-jip leaves the rest of co-op on.
-    let mut r = feature::Registry::new(feature::Switches::parse("-coop-jip").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("-coop-jip").unwrap());
     assert!(
         crate::coop_probe::install_live(&rt, &mut r, std::path::Path::new("/x"))
             .unwrap()
             .is_some()
     );
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(!text.contains("join in progress:"), "{text}");
     assert!(text.contains("coop-players"), "{text}");
 }
@@ -228,21 +228,21 @@ fn without_the_lift_or_the_lines_their_hooks_are_not_built() {
         runtime::dispatch::Dispatch::default(),
     );
     let _ = &rt;
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let off = Stages {
         lift: false,
         log: false,
     };
     r.add(&CoopJip::new(Arm::session(), off)).unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(!text.contains("join in progress:"), "{text}");
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let lift_only = Stages {
         lift: true,
         log: false,
     };
     r.add(&CoopJip::new(Arm::session(), lift_only)).unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(
         text.contains("the join check while the game runs"),
         "{text}"
@@ -260,9 +260,9 @@ fn join_in_progress_blocks_snapshots_only_while_armed() {
     };
     for stages in [ON, off] {
         let arm = Arm::session();
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&CoopJip::new(Arc::clone(&arm), stages)).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         assert_eq!(plan.snapshot_blockers(), Vec::new());
         arm.arm(None);
         assert_eq!(

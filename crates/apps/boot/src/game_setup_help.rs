@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::GuestMemory;
 use engine::points;
-use feature::{BuildError, Builder, Flow, Manifest};
+use hooks::{BuildError, Builder, Flow, Manifest};
 
 /// The feature (`features.game-setup-help` switches it).
 pub const FEATURE: &str = "game-setup-help";
@@ -159,7 +159,7 @@ async fn update(cx: Cx, screen: u32) -> Result<Ret, EntryError> {
 /// The hook on the Game Setup dialog's update (see the module docs).
 pub struct GameSetupHelp;
 
-impl feature::Feature for GameSetupHelp {
+impl hooks::Feature for GameSetupHelp {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
@@ -188,13 +188,13 @@ impl feature::Feature for GameSetupHelp {
             },
         );
         // What it shows is read afresh at each update.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
 /// Adds [`GameSetupHelp`].
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<()> {
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     registry
         .add(&GameSetupHelp)
         .map_err(|e| anyhow::anyhow!("game setup help: {e}"))?;
@@ -279,9 +279,9 @@ mod tests {
 
     #[test]
     fn the_hook_is_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&GameSetupHelp).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         assert!(
             text.contains("SQUAD_SETTINGS_UPDATE: before [game-setup-help:"),
             "{text}"

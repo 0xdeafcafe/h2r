@@ -43,7 +43,7 @@ pub(crate) mod film;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
-use feature::Flow;
+use hooks::Flow;
 use live_proto::session::Campaign;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
@@ -1568,15 +1568,15 @@ pub struct CoopScreens {
     lobby: Arc<Lobby>,
 }
 
-impl feature::Feature for CoopScreens {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CoopScreens {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Co-op over Live: texts, the lobby read, the join screen",
         )
         .doc("docs/live/live-coop.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let base = b.guest_alloc(TEXT_SLOTS * TEXT_SLOT_LEN, Permissions::RW)?;
         self.lobby.set_text_base(base);
         let lobby = Arc::clone(&self.lobby);
@@ -1666,7 +1666,7 @@ impl feature::Feature for CoopScreens {
         if lobby.film.is_some() {
             b.snapshot(film::policy(lobby));
         } else {
-            b.snapshot(feature::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
+            b.snapshot(hooks::SnapshotPolicy::forbid_while(move || screens_live(&lobby)));
         }
         Ok(())
     }
@@ -1770,7 +1770,7 @@ fn pinger(lobby: std::sync::Weak<Lobby>, stop: Arc<AtomicBool>) {
 /// Builds the lobby (the disc's levels), its three screens and the feature,
 /// and starts the guest watcher. Live off: nothing.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
     arm: Option<Arc<Arm>>,
     store: Option<Arc<settings::Store>>,

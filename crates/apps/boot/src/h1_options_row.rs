@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::GuestMemory;
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 
@@ -320,7 +320,7 @@ const fn list_class_slot() -> u32 {
     crate::ui_kit::lifecycle::SCREEN_SLOT
 }
 
-impl feature::Feature for SetupRow {
+impl hooks::Feature for SetupRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             ROW_FEATURE,
@@ -385,7 +385,7 @@ impl feature::Feature for SetupRow {
             move |c| row_chosen(c, request_at),
         );
         let live = Arc::clone(&b2_live);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             building_live(&live)
         }));
         Ok(())
@@ -474,12 +474,12 @@ mod tests {
 
     #[test]
     fn the_hooks_are_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&SetupRow {
             data_root: std::env::temp_dir(),
         })
         .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         assert!(text.contains("0x002bb4d2 SQUAD_SETTINGS_LIST_CTOR: before [h1-options-row:note the Game Setup list] -> original -> after [h1-options-row:add the Halo 1 Options row]"), "{text}");
         assert!(
             text.contains("SQUAD_SETTINGS_ROW_TEXT: before [h1-options-row:"),

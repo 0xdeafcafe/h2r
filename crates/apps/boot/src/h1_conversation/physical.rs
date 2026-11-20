@@ -301,7 +301,7 @@ fn trace(
 }
 
 pub(super) fn probe(
-    call: &mut feature::Call<'_>,
+    call: &mut hooks::Call<'_>,
     fall: Fall,
     queue: Queue,
 ) -> Result<Flow, GuestFault> {

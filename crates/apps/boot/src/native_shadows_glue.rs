@@ -9,7 +9,7 @@ use crate::{
     native_shadows_scope::{Call as Scope, Gate, State},
 };
 use engine::memory::GuestMemory;
-use feature::native_shadows::{self, Entry, Host, Layer};
+use hooks::native_shadows::{self, Entry, Host, Layer};
 use native_render::{
     shadow_gpu::MapKind,
     shadows::{self, Site},
@@ -54,7 +54,7 @@ struct Glue<B: d3d::backend::Backend> {
     sequence: AtomicU64,
 }
 fn enabled() -> bool {
-    feature::Switches::from_env().is_ok_and(|s| native_shadows::on(&s))
+    hooks::Switches::from_env().is_ok_and(|s| native_shadows::on(&s))
 }
 
 static SINGLE_GPU: Mutex<Option<SharedGpu>> = Mutex::new(None);

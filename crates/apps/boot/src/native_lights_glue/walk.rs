@@ -9,7 +9,7 @@ use d3d::backend::{
     ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams, IndexedTail,
 };
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
-use feature::native_lights::walk::{self, Batch};
+use hooks::native_lights::walk::{self, Batch};
 use native_render::world_layers::DRAW_INDEXED_VERTICES;
 use native_render::world_layers_gpu::{Cache, IndexedPass};
 use timeline::native::Stage;
@@ -19,7 +19,7 @@ pub(crate) fn install<B: d3d::Backend + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     shadows: Option<Arc<dyn DrawAdmission>>,
 ) {
-    if !walk::on(&feature::Switches::from_env().unwrap_or_default()) {
+    if !walk::on(&hooks::Switches::from_env().unwrap_or_default()) {
         return;
     }
     let device = Arc::clone(device);

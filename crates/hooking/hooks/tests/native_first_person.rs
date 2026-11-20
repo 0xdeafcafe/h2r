@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_first_person::{self, Host, NativeFirstPerson};
-use feature::native_objects::{NativeSet, SetPart};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_first_person::{self, Host, NativeFirstPerson};
+use hooks::native_objects::{NativeSet, SetPart};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 use native_render::object_nodes::{RECORD_IMPLEMENTATION, RECORD_KEY, RECORD_MATRIX};
 use native_render::objects::{
     BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, FIRST_PERSON_LAYER3_RETURN,

@@ -176,11 +176,11 @@ fn the_hash_shares_the_tick_with_another_listener() {
     let mut toy = Toy::new();
     let recorder = Recorder::new(synthetic::HOOK.game_time);
     let samples = std::sync::Arc::new(AtomicU32::new(0));
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&lockstep::TickObserver(std::sync::Arc::clone(&recorder)))
         .unwrap();
     let s = std::sync::Arc::clone(&samples);
-    r.add(&feature::from_fn("live-telemetry", move |b| {
+    r.add(&hooks::from_fn("live-telemetry", move |b| {
         let s = std::sync::Arc::clone(&s);
         b.frame().on_tick("sample", move |_| {
             s.fetch_add(1, Ordering::Relaxed);
@@ -188,7 +188,7 @@ fn the_hash_shares_the_tick_with_another_listener() {
         Ok(())
     }))
     .unwrap();
-    let addrs = feature::Remap::new(&[(&engine::points::GAME_TICK, synthetic::TICK)]);
+    let addrs = hooks::Remap::new(&[(&engine::points::GAME_TICK, synthetic::TICK)]);
     r.build(&addrs).unwrap().install(&toy.runtime).unwrap();
     let (mut tap, _) = InputRecorder::new();
     for f in 0..FRAMES {

@@ -847,9 +847,9 @@ pub const FEATURE: &str = "skulls";
 /// other feature's at the same points and a clash refuses the plan rather
 /// than dropping one silently.
 ///
-/// - [`SKULL_STOCK`](feature::points::SKULL_STOCK): `before` notes skull ESI
+/// - [`SKULL_STOCK`](hooks::points::SKULL_STOCK): `before` notes skull ESI
 ///   and its byte; `after` (the game's function has run) records it.
-/// - [`OPTIONS_QUEUE`](feature::points::OPTIONS_QUEUE): `before` writes the
+/// - [`OPTIONS_QUEUE`](hooks::points::OPTIONS_QUEUE): `before` writes the
 ///   selection for a campaign start.
 /// - the tick (`frame` bridge): records any skull that came on without the
 ///   pickup hook.
@@ -858,13 +858,13 @@ pub struct Skulls {
     pub tracker: Arc<Tracker>,
 }
 
-impl feature::Feature for Skulls {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile")
+impl hooks::Feature for Skulls {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Campaign skulls kept per profile")
             .doc("docs/game/skulls.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
         // The pickup in progress: (index, byte before). A stack, in case
         // the function is ever re-entered.
         let pending: Arc<Mutex<Vec<Pending>>> = Arc::default();
@@ -872,7 +872,7 @@ impl feature::Feature for Skulls {
         // the tracker's last look is the run's, and a load puts it back.
         let (live, tracker) = (Arc::clone(&pending), Arc::clone(&self.tracker));
         let load = Arc::clone(&self.tracker);
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || pickup_live(&live),
             move || tracker.save_state(),
             move |bytes, _| load.load_state(bytes),
@@ -895,7 +895,7 @@ impl feature::Feature for Skulls {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push((index, before));
-                Ok(feature::Flow::Continue)
+                Ok(hooks::Flow::Continue)
             });
         }
         {
@@ -949,7 +949,7 @@ impl feature::Feature for Skulls {
                         // Not a campaign: none of ours act in it.
                         crate::skulls_custom::set_campaign(&[]);
                     }
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 })
                 // Next to the queue: whatever else runs before it has run, so
                 // the array is what the level loads with.
@@ -978,7 +978,7 @@ impl feature::Feature for Skulls {
 /// Returns whether it was added; then call [`report`] after the plan is
 /// installed.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     store: Option<Arc<Store>>,
 ) -> anyhow::Result<bool> {
     let Some(store) = store else {
@@ -999,15 +999,15 @@ pub fn install(
 
 /// The install line, once `plan` is in: where the hooks went (the image's
 /// addresses) and where pickups are saved, or why they are not.
-pub fn report(plan: &feature::Plan, installed: &feature::Installed, store: &Store) -> String {
-    use feature::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+pub fn report(plan: &hooks::Plan, installed: &hooks::Installed, store: &Store) -> String {
+    use hooks::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
     if let Some(why) = installed.off_reason(FEATURE) {
         return format!("skulls: NOT installed: {why}; pickups are not kept");
     }
     if !plan.is_on(FEATURE) {
         return "skulls: NOT installed: not in the feature plan; pickups are not kept".into();
     }
-    let at = |p: &feature::points::Point, what: &str| {
+    let at = |p: &hooks::points::Point, what: &str| {
         let chain = plan
             .chains
             .values()
@@ -1503,7 +1503,7 @@ mod tests {
     /// ret` (`0x403005`) the tick.
     #[test]
     fn the_hooks_run_on_the_feature_plan_alongside_others() {
-        use feature::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+        use hooks::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
         use runtime::guest::Permissions;
         use runtime::{Dispatch, Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -1542,9 +1542,9 @@ mod tests {
         }
         let (s, dir) = tmp_store("plan");
         let store = Arc::new(s);
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         // The game's stock: sets byte ESI, then `eax = 41; ret`.
-        r.add(&feature::from_fn("stand-in", |b| {
+        r.add(&hooks::from_fn("stand-in", |b| {
             b.raw().implement(&SKULL_STOCK, "stock", |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
@@ -1559,18 +1559,18 @@ mod tests {
         .unwrap();
         let other = Arc::new(AtomicU32::new(0));
         let o = Arc::clone(&other);
-        r.add(&feature::from_fn("other", move |b| {
+        r.add(&hooks::from_fn("other", move |b| {
             let o = Arc::clone(&o);
             b.raw().before(&QUEUE, "count", move |_| {
                 o.fetch_add(1, Ordering::Relaxed);
-                Ok(feature::Flow::Continue)
+                Ok(hooks::Flow::Continue)
             });
             Ok(())
         }))
         .unwrap();
         assert!(install(&mut r, Some(Arc::clone(&store))).unwrap());
         let plan = r
-            .build(&feature::Remap::new(&[
+            .build(&hooks::Remap::new(&[
                 (&SKULL_STOCK, LEAF),
                 (&QUEUE, RET),
                 (&GAME_TICK, TICK),
@@ -1633,14 +1633,14 @@ mod tests {
 
     #[test]
     fn the_install_line_says_when_the_feature_is_off() {
-        let empty = feature::Registry::new(feature::Switches::defaults())
-            .build(&feature::Base)
+        let empty = hooks::Registry::new(hooks::Switches::defaults())
+            .build(&hooks::Base)
             .unwrap();
         assert_eq!(
-            report(&empty, &feature::Installed::default(), &store()),
+            report(&empty, &hooks::Installed::default(), &store()),
             "skulls: NOT installed: not in the feature plan; pickups are not kept"
         );
-        let mut installed = feature::Installed::default();
+        let mut installed = hooks::Installed::default();
         installed
             .off
             .push((FEATURE, "SKULL_STOCK has no generated original".into()));
@@ -1648,7 +1648,7 @@ mod tests {
             report(&empty, &installed, &store()),
             "skulls: NOT installed: SKULL_STOCK has no generated original; pickups are not kept"
         );
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         assert!(!install(&mut r, None).unwrap(), "no store");
     }
 

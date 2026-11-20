@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_proto::{RpcError, code, method};
 use engine::{GuestMemory, points};
-use feature::{Builder, Feature, Flow, Manifest, Registry};
+use hooks::{Builder, Feature, Flow, Manifest, Registry};
 use prediction::{Aim, Prediction};
 use serde::{Deserialize, Serialize};
 use settings::{Setting, Store};
@@ -240,7 +240,7 @@ impl Feature for Look {
         .doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
         let scratch =
             b.guest_alloc(view::STRIDE * USERS as u32, runtime::guest::Permissions::RW)?;
         let look = self.clone();
@@ -328,7 +328,7 @@ impl Feature for Look {
         let look = self.clone();
         if self.arm.film {
             let save = look.clone();
-            b.snapshot(feature::SnapshotPolicy::section(
+            b.snapshot(hooks::SnapshotPolicy::section(
                 move || serde_json::to_vec(&save.state().users).expect("finite co-op look samples"),
                 move |bytes, _| {
                     if !crate::theater::in_keyframe() || bytes.len() > 128 << 10 {
@@ -344,7 +344,7 @@ impl Feature for Look {
                 },
             ));
         } else {
-            b.snapshot(feature::SnapshotPolicy::section(Vec::new, move |_, _| {
+            b.snapshot(hooks::SnapshotPolicy::section(Vec::new, move |_, _| {
                 look.state().users = Default::default();
                 Ok(())
             }));

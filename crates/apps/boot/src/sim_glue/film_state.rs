@@ -57,12 +57,12 @@ pub(super) fn policy(
     sim: &Arc<Inner>,
     lobby: Arc<Mutex<hosted::LobbyState>>,
     playback: bool,
-) -> feature::SnapshotPolicy {
+) -> hooks::SnapshotPolicy {
     let check = sim.clone();
     let save = sim.clone();
     let load = sim.clone();
     let check_lobby = lobby.clone();
-    feature::SnapshotPolicy::section_forbid_while(
+    hooks::SnapshotPolicy::section_forbid_while(
         move || {
             if !crate::theater::in_keyframe() || playback {
                 return None;

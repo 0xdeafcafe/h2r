@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::GuestMemory;
 use engine::points;
-use feature::{BuildError, Builder, Manifest};
+use hooks::{BuildError, Builder, Manifest};
 
 /// The feature id.
 pub const ID: &str = "controls-text";
@@ -164,7 +164,7 @@ pub async fn row_text(cx: Cx) -> Result<Ret, EntryError> {
 /// (`layouts-value`) run around it as they ran around the original.
 pub struct ControlsText;
 
-impl feature::Feature for ControlsText {
+impl hooks::Feature for ControlsText {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "The Controls list's row text, ported").doc("docs/game/settings-menu.md")
     }
@@ -176,7 +176,7 @@ impl feature::Feature for ControlsText {
         );
         // The port's state is its future, parked in a continuation the
         // machine's quiescence check reports.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -341,7 +341,7 @@ mod tests {
         let model = Arc::new(
             video_screen::model(Arc::new(settings::Store::defaults(ALL)), Switches::ALL).unwrap(),
         );
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&ControlsText).unwrap();
         r.add(&crate::layout_glue::LayoutValueText).unwrap();
         r.add(&crate::retail_rows::Extension {
@@ -354,7 +354,7 @@ mod tests {
             model,
         })
         .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         let line = text
             .lines()
             .find(|l| l.starts_with("0x002c8548"))

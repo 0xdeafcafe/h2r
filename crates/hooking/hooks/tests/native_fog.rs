@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_fog::{self, Host, NativeFog};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_fog::{self, Host, NativeFog};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 use native_render::fog::{self, FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
 use native_render::skip::{Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS};
 use native_render::world::Owner;
@@ -32,7 +32,7 @@ impl Host for OnePart {
             return None;
         }
         let parts: HashMap<(Owner, u8), u16> = [((Owner::Cluster(37), 1), 0x10)].into_iter().collect();
-        fog::clear_fog(&mut feature::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
+        fog::clear_fog(&mut hooks::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
             parts.get(&(item.owner, item.part)) == Some(&(item.shader))
         })
         .map(|(_, cleared)| cleared)
@@ -86,8 +86,8 @@ fn draw(m: &mut FlatMemory) {
 fn the_plan_orders_it_inside_render_timing_and_the_world() {
     let switches = "impl.render.native=on,render-timing=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
-    assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
-    assert!(r.add(&feature::native_world::NativeWorld).unwrap());
+    assert!(r.add(&hooks::render_timing::RenderTiming::new()).unwrap());
+    assert!(r.add(&hooks::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeFog).unwrap());
     let plan = match r.build(&Base) {
         Ok(p) => p,

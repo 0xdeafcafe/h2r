@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use feature::{BuildError, Builder, Manifest};
+use hooks::{BuildError, Builder, Manifest};
 
 /// A HUD style.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +108,7 @@ pub fn load_state(bytes: &[u8]) -> Result<(), String> {
 /// The game-start observer that picks the style.
 pub struct Hud;
 
-impl feature::Feature for Hud {
+impl hooks::Feature for Hud {
     fn manifest(&self) -> Manifest {
         Manifest::new("hud", "Which HUD a game shows: Halo 1's or Halo 2's")
             .doc("docs/halo1/multiplayer.md")
@@ -126,7 +126,7 @@ impl feature::Feature for Hud {
                 }
             },
         );
-        b.snapshot(feature::SnapshotPolicy::section(save_state, |bytes, _| {
+        b.snapshot(hooks::SnapshotPolicy::section(save_state, |bytes, _| {
             load_state(bytes)
         }));
         Ok(())

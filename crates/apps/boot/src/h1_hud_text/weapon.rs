@@ -7,7 +7,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::tags::GroupTag;
 use engine::view::{Tags, objects};
-use feature::{BuildError, Builder, Flow};
+use hooks::{BuildError, Builder, Flow};
 use tags::weapon_hud as input;
 
 use super::flash;

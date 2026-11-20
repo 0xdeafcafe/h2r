@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use d3d::device::IndexedGeometry;
 use d3d::{CachedBytes, ResolvedDraw, StreamBytes, StreamData};
-use feature::native_transparents::{self, MapGeneration};
+use hooks::native_transparents::{self, MapGeneration};
 use gfx::renderer::VertexStream;
 use gfx::vertex::{PrimitiveType, VertexLayout};
 use native_render::camera::GuestRead;
@@ -56,7 +56,7 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
 
 
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let switches = feature::Switches::from_env().unwrap_or_default();
+    let switches = hooks::Switches::from_env().unwrap_or_default();
     if !native_transparents::on(&switches) {
         return;
     }

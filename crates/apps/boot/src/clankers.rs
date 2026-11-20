@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::GuestMemory;
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 use settings::{Apply, Choice, Def, Kind, Scope, Store, Tier, Unit, Value};
@@ -1486,7 +1486,7 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     })
 }
 
-impl feature::Feature for SetupRow {
+impl hooks::Feature for SetupRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             ROW_FEATURE,
@@ -1542,7 +1542,7 @@ impl feature::Feature for SetupRow {
             .after_feature(h1row::ROW_FEATURE);
         // The page's state is its kit screen's (`ui-kit-texts.*`), the
         // bots' the settings store's.
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             h1row::building_live(&live)
         }));
         Ok(())
@@ -1553,7 +1553,7 @@ impl feature::Feature for SetupRow {
 /// Live, the driver's phantoms are the server's bots. Telemetry marks every
 /// bot (docs/game/bots.md §6, stage 6c).
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     store: &Arc<Store>,
     live: Option<Arc<live_hle::Hle>>,
     telemetry: Option<&Arc<telemetry::Telemetry>>,

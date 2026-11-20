@@ -387,7 +387,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         progress: crate::campaigns::Progress::memory(),
         cards: Default::default(),
     });
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let none: Arc<dyn Fn() -> u32 + Send + Sync> = Arc::new(|| 0);
     r.add(&crate::campaign_menu::Campaigns {
         state: Arc::clone(&campaigns),
@@ -414,7 +414,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         data_root: std::env::temp_dir(),
     })
     .unwrap();
-    let text = match r.build(&feature::Base) {
+    let text = match r.build(&hooks::Base) {
         Ok(p) => p.text(),
         Err(c) => panic!(
             "refused: {}",
@@ -444,7 +444,7 @@ fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
 
     use crate::{coop_probe, skulls_custom};
 
-    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     registry.add(&calls::CallsFeature(calls::shared())).unwrap();
     let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
     let skulls = skulls_custom::Custom::new(store, None, None, false);
@@ -463,7 +463,7 @@ fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
     registry.add(&coop).unwrap();
 
     let plan = registry
-        .build(&feature::Base)
+        .build(&hooks::Base)
         .unwrap_or_else(|errors| panic!("{errors:?}"));
     let before = &plan.chains[&GAME_TICK.base].before;
     assert_eq!(

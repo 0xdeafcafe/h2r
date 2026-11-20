@@ -34,13 +34,13 @@ struct Glue {
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
-    if !feature::Switches::from_env().is_ok_and(|s| feature::native_decals::on(&s)) {
+    if !hooks::Switches::from_env().is_ok_and(|s| hooks::native_decals::on(&s)) {
         return;
     }
     let Ok(mut d) = device.lock() else { return };
     let admission = Arc::new(Glue::default());
     d.add_draw_admission(admission.clone());
-    feature::native_decals::set_walk_host(Arc::new(Walk {
+    hooks::native_decals::set_walk_host(Arc::new(Walk {
         device: device.clone(),
         admission,
     }));
@@ -51,7 +51,7 @@ struct Walk<B: d3d::Backend> {
     admission: Arc<Glue>,
 }
 
-impl<B: d3d::Backend + Send + 'static> feature::native_decals::WalkHost for Walk<B> {
+impl<B: d3d::Backend + Send + 'static> hooks::native_decals::WalkHost for Walk<B> {
     fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, start: u32, count: u32) -> bool {
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_array_draw(
@@ -211,19 +211,19 @@ impl DrawAdmission for Glue {
         &self,
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        let (mode, _) = feature::native_decals::current()?;
+        let (mode, _) = hooks::native_decals::current()?;
         if snapshot.draw.entry != "D3DDevice_DrawVertices" {
             return None;
         }
-        feature::native_decals::note_examined();
+        hooks::native_decals::note_examined();
         let prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
             Err(why) => {
-                feature::native_decals::note_refusal(why);
+                hooks::native_decals::note_refusal(why);
                 return None;
             }
         };
-        feature::native_decals::note_admitted();
+        hooks::native_decals::note_admitted();
         Some((
             ExternalPlan {
                 stage: Stage::Decals,
@@ -286,7 +286,7 @@ impl d3d::ExternalPass for DecalPass {
         request: d3d::ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
         let refuse = |why: &'static str| {
-            feature::native_decals::note_refusal(why);
+            hooks::native_decals::note_refusal(why);
             Some(Err(why))
         };
         let Some(clip) = self.clip else {
@@ -326,11 +326,11 @@ impl d3d::ExternalPass for DecalPass {
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         if let Err(why) = self.prepare(&t) {
-            feature::native_decals::note_refusal(why);
+            hooks::native_decals::note_refusal(why);
             return 0;
         }
         let Some(clip) = self.clip else {
-            feature::native_decals::note_refusal("issue snapshot");
+            hooks::native_decals::note_refusal("issue snapshot");
             return 0;
         };
         let clip = DecalClip {

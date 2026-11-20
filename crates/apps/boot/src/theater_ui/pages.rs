@@ -736,13 +736,13 @@ fn classes(theater: &Theater, texts: &Arc<GuestTexts>) -> [ListClass; 2] {
 
 struct TextFeature(Arc<GuestTexts>);
 
-impl feature::Feature for TextFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("theater-texts", "The Theater row and film library texts")
+impl hooks::Feature for TextFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("theater-texts", "The Theater row and film library texts")
             .doc("docs/game/theater.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let at = b.guest_alloc(TEXTS.len * CAPACITY, Permissions::RW)?;
         self.0.at.store(at, Ordering::Relaxed);
         b.locale().source("theater texts", move |id| {
@@ -753,12 +753,12 @@ impl feature::Feature for TextFeature {
             let mut g = o.guest();
             let _ = texts.write(&mut *g);
         });
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
-pub(super) fn install(registry: &mut feature::Registry, theater: Theater) -> anyhow::Result<()> {
+pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyhow::Result<()> {
     let texts = Arc::new(GuestTexts::default());
     texts.set(FILMS_TITLE, "THEATER");
     texts.set(DETAIL_TITLE, "Film");

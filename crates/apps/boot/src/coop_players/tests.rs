@@ -301,24 +301,24 @@ fn the_feature_is_on_the_plan_with_the_co_op_hooks() {
         runtime::Guest::new(),
         runtime::dispatch::Dispatch::default(),
     );
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let arm = crate::coop_probe::install_live(&rt, &mut r, std::path::Path::new("/nonexistent"))
         .unwrap()
         .unwrap();
     assert!(!arm.active(), "off until a co-op session arms it");
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(text.contains(FEATURE), "{text}");
     for p in HOOKED {
         assert!(text.contains(p.name), "{} missing:\n{text}", p.name);
     }
     // H2_FEATURES=-coop-players leaves the rest of co-op on.
-    let mut r = feature::Registry::new(feature::Switches::parse("-coop-players").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("-coop-players").unwrap());
     assert!(
         crate::coop_probe::install_live(&rt, &mut r, std::path::Path::new("/x"))
             .unwrap()
             .is_some()
     );
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(!text.contains("players 3+: follow player 0"), "{text}");
 }
 

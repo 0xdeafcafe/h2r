@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn late_render_updates_change_the_tick_digest() {
-        use feature::pipeline_render::{RANDOM_A, RANDOM_C};
+        use hooks::pipeline_render::{RANDOM_A, RANDOM_C};
         use runtime::{Guest, guest::Permissions};
 
         const SEED: u32 = 0x1000;
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn replaying_a_render_rng_step_after_the_tick_cannot_repair_its_digest() {
-        use feature::pipeline_render::{RANDOM_A, RANDOM_C};
+        use hooks::pipeline_render::{RANDOM_A, RANDOM_C};
 
         let step = |seed: u32| seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
         let initial = 7;

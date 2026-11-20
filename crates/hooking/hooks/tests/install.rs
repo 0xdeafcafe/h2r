@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::points::{self, Point};
-use feature::{Flow, InstallError, Registry, Remap, Switches, from_fn};
+use hooks::{Flow, InstallError, Registry, Remap, Switches, from_fn};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, TransferAbi};
@@ -208,7 +208,7 @@ fn an_override_the_plan_did_not_place_is_refused() {
     );
     rt.edit_dispatch(|d| assert_eq!(d.override_name(LEAF), Some("someone else")));
     assert!(
-        rt.memory().u8(feature::arena::ARENA_START).is_err(),
+        rt.memory().u8(hooks::arena::ARENA_START).is_err(),
         "nothing mapped"
     );
 }
@@ -281,7 +281,7 @@ fn the_locale_bridge_serves_sources() {
 /// caller with its result, its `ret 4`, and the caller's saved registers.
 #[test]
 fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
-    use feature::{EntryFuture, GuestCall, Ret};
+    use hooks::{EntryFuture, GuestCall, Ret};
     const VECTOR: u128 = (0x8123_u128 << 96) | 0x4000_0000;
     let rt = runtime();
     let mut r = Registry::new(Switches::defaults());
@@ -307,9 +307,9 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
         }))
         .unwrap();
     }
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let at = placed.load(Ordering::SeqCst);
-    assert_eq!(at, feature::arena::ARENA_START);
+    assert_eq!(at, hooks::arena::ARENA_START);
     assert!(
         plan.text()
             .contains(&format!("{at:#010x} entry ours:twice")),
@@ -345,7 +345,7 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
 /// The same body as a point's implementation.
 #[test]
 fn an_async_implementation_is_a_chains_body() {
-    use feature::{EntryFuture, Ret};
+    use hooks::{EntryFuture, Ret};
     let rt = runtime();
     let mut r = Registry::new(Switches::defaults());
     r.add(&from_fn("async", |b| {
@@ -368,7 +368,7 @@ fn an_async_implementation_is_a_chains_body() {
 /// `render_scene_passes`; the other stages are missing and dropped.
 #[test]
 fn render_timing_times_each_stage_exclusively() {
-    use feature::render_timing::{Now, RenderTiming, Stage};
+    use hooks::render_timing::{Now, RenderTiming, Stage};
     const MAIN: u32 = 0x40_1000;
     let rt = runtime();
     let ticks = Arc::new(AtomicU32::new(0));
@@ -409,7 +409,7 @@ fn render_timing_times_each_stage_exclusively() {
 /// render time.
 #[test]
 fn render_timing_feeds_the_frame_stats() {
-    use feature::render_timing::{RenderTiming, Stage};
+    use hooks::render_timing::{RenderTiming, Stage};
     use timeline::phase::{self, Phase};
     const MAIN: u32 = 0x40_1000;
     let spin = |ms: u64| {
@@ -537,7 +537,7 @@ fn only_context_only_chains_run_on_a_second_executor() {
 
 #[test]
 fn render_setter_uses_the_runner_only_at_a_refused_device_boundary() {
-    use feature::{EntryFuture, GuestCall, Ret};
+    use hooks::{EntryFuture, GuestCall, Ret};
 
     const SETTER: u32 = 0x40_2400;
     const REGISTER: u32 = 0x60_0040;
@@ -555,7 +555,7 @@ fn render_setter_uses_the_runner_only_at_a_refused_device_boundary() {
     let mut registry = Registry::new(Switches::defaults());
     registry.add(&from_fn("register-writer", |b| {
         b.raw().before(&points::GAME_TICK, "write", |c| {
-            let setter = feature::entry::RegisterSetter {
+            let setter = hooks::entry::RegisterSetter {
                 address: SETTER,
                 name: "test register setter",
                 cache_pages: &[REGISTER],

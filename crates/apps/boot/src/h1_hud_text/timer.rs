@@ -4,7 +4,7 @@
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{HUD_TEXT_DRAW, HUD_TEXT_SETUP, HUD_TEXT_TAIL};
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 
 use super::{HUD, flash, mission_hud};
 

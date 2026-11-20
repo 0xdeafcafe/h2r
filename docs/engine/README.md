@@ -100,5 +100,5 @@ through `Dispatch::register_override`; each handler takes one
 `ctx.memory()` guard for the whole call and returns `TransferAbi::ret`.
 Nothing calls `register_all`. The game installs the same adapters
 through the `feature` crate's `engine-leaves` feature
-(`crates/hooking/feature/src/leaves.rs`): only the locale group is on by default
+(`crates/hooking/hooks/src/leaves.rs`): only the locale group is on by default
 ([feature-engine.md](feature-engine.md)).

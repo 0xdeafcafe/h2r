@@ -13,7 +13,7 @@ struct State {
 pub(super) fn install(b: &mut Builder, frame: &Arc<AtomicU64>, session: &Arc<Session>) {
     let (save, load) = (frame.clone(), frame.clone());
     let (rec, play) = (session.clone(), session.clone());
-    b.snapshot(feature::SnapshotPolicy::section(
+    b.snapshot(hooks::SnapshotPolicy::section(
         move || {
             if !crate::theater::in_keyframe() {
                 return Vec::new();

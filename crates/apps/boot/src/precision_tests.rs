@@ -162,22 +162,22 @@ fn the_table_holds_the_h2_sandbox_swaps_by_map() {
 /// it: the plan must order them, or every boot refuses its features.
 #[test]
 fn precision_and_aim_assist_plan_together() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let store = settings::Store::defaults(crate::setting_defs::ALL);
     r.add(&crate::aim_assist::AimAssist::new(&store)).unwrap();
     assert!(install(&mut r, std::path::Path::new("/nonexistent")).unwrap());
-    let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
+    let plan = r.build(&hooks::Base).unwrap_or_else(|e| panic!("{e:?}"));
     assert!(plan.text().contains(FEATURE), "{}", plan.text());
 }
 
 #[test]
 fn the_swap_and_aim_assist_plan_after_the_live_options() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let store = settings::Store::defaults(crate::setting_defs::ALL);
     r.add(&crate::variant_ext::Transport { hle: None }).unwrap();
     r.add(&crate::aim_assist::AimAssist::new(&store)).unwrap();
     r.add(&Precision { table: Arc::default() }).unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     let line = text.lines().find(|l| l.contains("GAME_ACTIVATE")).unwrap();
     let ext = line.find(crate::variant_ext::FEATURE).unwrap();
     assert!(ext < line.find(crate::aim_assist::FEATURE).unwrap(), "{line}");

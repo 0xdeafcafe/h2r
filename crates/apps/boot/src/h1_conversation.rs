@@ -5,7 +5,7 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::tags::{self, GroupTag};
-use feature::{BuildError, Builder, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_conversation::{AI, BUILTINS, LONG, NONE, OBJECT, Op, REAL, SHORT, SOUND};
 use runtime::guest::Permissions;
 
@@ -40,7 +40,7 @@ const HEAD_MARKER: u32 = 0x0400_0095;
 
 pub struct Conversations;
 
-impl feature::Feature for Conversations {
+impl hooks::Feature for Conversations {
     fn manifest(&self) -> Manifest {
         Manifest::new("h1-conversations", "Converted campaign conversations")
             .doc("docs/halo1/ai.md")
@@ -77,7 +77,7 @@ impl feature::Feature for Conversations {
                 call.answer_async(move |cx| Box::pin(evaluate(cx, data, opcode)))
             },
         ).first();
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

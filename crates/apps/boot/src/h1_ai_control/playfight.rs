@@ -5,7 +5,7 @@ use engine::{
     entry::Cx,
     memory::{GuestMemory, MemFault},
 };
-use feature::{Builder, points};
+use hooks::{Builder, points};
 use hs::h1_ai_slots::Registry;
 
 use super::{actors, squad_control, state};

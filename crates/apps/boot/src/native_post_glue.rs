@@ -17,7 +17,7 @@ use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
 use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
-use feature::native_post::{self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect};
+use hooks::native_post::{self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect};
 use gfx::vertex::PrimitiveType;
 use map::TagId;
 use native_render::camera::GuestRead;
@@ -1235,7 +1235,7 @@ fn load_effects(name: &str) -> Result<ScreenEffects, native_render::load::Error>
 /// itself ([`EffectsSlot`]).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     crate::h1_cinematics::install_device(device);
-    feature::native_post::set_host(Arc::new(Glue {
+    hooks::native_post::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),

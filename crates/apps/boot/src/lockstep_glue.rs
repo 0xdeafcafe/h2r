@@ -66,7 +66,7 @@ impl Lockstep {
     /// on `xapi`. When the plan turns the observer off, say so with
     /// [`set_tick_note`](Self::set_tick_note).
     pub fn install<S: xapi::Storage>(
-        registry: &mut feature::Registry,
+        registry: &mut hooks::Registry,
         config: Config,
         hook: lockstep::TickHook,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
@@ -195,11 +195,11 @@ mod tests {
                 ticks: true,
                 ..Default::default()
             };
-            let mut features = feature::Registry::new(feature::Switches::defaults());
+            let mut features = hooks::Registry::new(hooks::Switches::defaults());
             let h =
                 Lockstep::install::<xapi::VfsStorage>(&mut features, config, synthetic::HOOK, None)
                     .unwrap();
-            let addrs = feature::Remap::new(&[(&feature::points::GAME_TICK, synthetic::TICK)]);
+            let addrs = hooks::Remap::new(&[(&hooks::points::GAME_TICK, synthetic::TICK)]);
             features
                 .build(&addrs)
                 .unwrap()
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn input_needs_xapi_and_record_excludes_replay() {
-        let mut features = feature::Registry::new(feature::Switches::defaults());
+        let mut features = hooks::Registry::new(hooks::Switches::defaults());
         let both = Config {
             record: Some("a".into()),
             replay: Some("b".into()),

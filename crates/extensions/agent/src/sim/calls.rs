@@ -481,19 +481,19 @@ pub const FEATURE: &str = "agent-calls";
 /// The `before` on `game_tick` that makes the queued calls (module doc).
 pub struct CallsFeature(pub Shared);
 
-impl feature::Feature for CallsFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CallsFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Agent API: the game's own functions for sim.give, sim.spawn and teleports",
         )
         .doc("docs/runtime/agent-api.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::GAME_TICK;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::GAME_TICK;
         let q = Arc::clone(&self.0);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             lock(&q).live()
         }));
         let scratch = b.guest_alloc(SCRATCH_SIZE, runtime::guest::Permissions::RW)?;
@@ -502,11 +502,11 @@ impl feature::Feature for CallsFeature {
         b.raw()
             .before(&GAME_TICK, "the agent's guest calls", move |c| {
                 if reentry.load(Ordering::SeqCst) {
-                    return Ok(feature::Flow::Continue);
+                    return Ok(hooks::Flow::Continue);
                 }
                 let work = lock(&q).drain();
                 if work.is_empty() {
-                    return Ok(feature::Flow::Continue);
+                    return Ok(hooks::Flow::Continue);
                 }
                 let (q, reentry) = (Arc::clone(&q), Arc::clone(&reentry));
                 c.answer_async(move |cx| -> EntryFuture {

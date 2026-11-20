@@ -349,7 +349,7 @@ crates/rewrites/engine/tests/sim_havok_differential.rs
 docs/engine/havok-step.md       the contract page (engine README format)
 ```
 
-Edited: `crates/rewrites/engine/src/points.rs`, `crates/hooking/feature/src/sim_native.rs`,
+Edited: `crates/rewrites/engine/src/points.rs`, `crates/hooking/hooks/src/sim_native.rs`,
 the workspace and engine `Cargo.toml`, `crates/extensions/agent/src/havok.rs`,
 `docs/runtime/agent-api.md`. Nothing owned by Live, bots, theater or film.
 

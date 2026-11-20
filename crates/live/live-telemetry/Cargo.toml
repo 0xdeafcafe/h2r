@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 timeline = { path = "../../runtime/timeline" }
 runtime.workspace = true
-feature = { path = "../../hooking/feature", default-features = false }
+hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 # Guest structure offsets and global addresses (src/layout.rs aliases them).
 guest-layout = { path = "../../hooking/guest-layout" }

@@ -2,11 +2,11 @@
 //! its plan (context-only hooks the pipelined render runs on its own
 //! thread; none with the master switch off).
 
-use feature::native_hud::{self, NativeHud};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_hud::{self, NativeHud};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 
-fn plan(switches: &str) -> feature::plan::Plan {
+fn plan(switches: &str) -> hooks::plan::Plan {
     let mut registry = Registry::new(Switches::parse(switches).unwrap());
     registry.add(&NativeHud).unwrap();
     registry.build(&Base).unwrap()
@@ -38,8 +38,8 @@ fn the_ui_hooks_can_run_on_the_render_thread() {
 #[test]
 fn ui_shares_the_loading_and_effect_points_with_other_features() {
     use engine::points::ui_render::LOADING_DRAW;
-    use feature::native_particles::{DYNAMIC_QUAD_READY, NativeParticles};
-    use feature::render_timing::RenderTiming;
+    use hooks::native_particles::{DYNAMIC_QUAD_READY, NativeParticles};
+    use hooks::render_timing::RenderTiming;
 
     let mut registry = Registry::new(Switches::parse("render-timing").unwrap());
     registry.add(&NativeHud).unwrap();
@@ -59,8 +59,8 @@ fn ui_shares_the_loading_and_effect_points_with_other_features() {
 #[test]
 fn scene_effect_instruction_entries_are_unique() {
     let mut seen = std::collections::HashSet::new();
-    for address in feature::scene_effect_instruction_entries() {
+    for address in hooks::scene_effect_instruction_entries() {
         assert!(seen.insert(address), "duplicate entry {address:#010x}");
     }
-    assert!(seen.contains(&feature::native_particles::DYNAMIC_QUAD_READY.base));
+    assert!(seen.contains(&hooks::native_particles::DYNAMIC_QUAD_READY.base));
 }

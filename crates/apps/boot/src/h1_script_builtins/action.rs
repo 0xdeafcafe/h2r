@@ -4,7 +4,7 @@ use engine::{
     hs_actions::{ACTION, CAPTURE, LATCHED, PLAYER_CONTROL, UNTIL_RELEASE},
     points,
 };
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 use runtime::{Guest, GuestFault};
 
 use super::converted_campaign;

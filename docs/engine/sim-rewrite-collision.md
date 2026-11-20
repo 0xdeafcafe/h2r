@@ -122,7 +122,7 @@ crates/rewrites/engine/src/sim_collision/
   layout.rs                 guest offsets as named constants (section 5)
   commit.rs                 ordered scatter helpers, mark replay
 crates/rewrites/engine/tests/sim_collision_differential.rs
-crates/hooking/feature/src/sim_native.rs   installs under impl.sim.native.collision
+crates/hooking/hooks/src/sim_native.rs   installs under impl.sim.native.collision
 docs/engine/collision-queries.md   contract page written in S0
 ```
 
@@ -776,7 +776,7 @@ differential oracles.
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
 `crates/rewrites/engine/tests/sim_collision_differential.rs`,
 `docs/engine/collision-queries.md`; edits to `crates/rewrites/sim-core` (S0),
-`crates/hooking/feature/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`, the agent
+`crates/hooking/hooks/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`, the agent
 crates for 8.3, and the workspace manifests. Nothing owned by Live, bots,
 theater or film.
 

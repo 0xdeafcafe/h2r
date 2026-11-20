@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
-use feature::{BuildError, Builder, Flow, Manifest};
+use hooks::{BuildError, Builder, Flow, Manifest};
 use map::writer::NATIVE_CAMPAIGN_FILE_LIMIT;
 use runtime::guest::{Guest, PAGE_SIZE, Permissions};
 
@@ -76,7 +76,7 @@ fn converted_limit(
     Ok(None)
 }
 
-impl feature::Feature for CampaignLimit {
+impl hooks::Feature for CampaignLimit {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             "h1-campaign-cache",
@@ -105,7 +105,7 @@ impl feature::Feature for CampaignLimit {
                 Ok(Flow::Continue)
             },
         );
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -134,7 +134,7 @@ fn resize_slots(memory: &mut Guest, limit: u32) -> Result<()> {
 }
 
 pub(super) fn configure(
-    features: &mut feature::Registry,
+    features: &mut hooks::Registry,
     rt: &runtime::Runtime,
     cfg: &mut vfs::Config,
     maps: &[(String, PathBuf)],

@@ -98,9 +98,9 @@ fn a_waiting_sign_in_opens_the_prompt_once_and_stays_pending() {
         });
     }
     let rt = Runtime::new(guest, dispatch);
-    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     assert!(signin_screen::install(&rt, &mut registry, Some(&hle)).unwrap());
-    let plan = registry.build(&feature::Base).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
     let _installed = plan.install(&rt).unwrap();
     let loader = boot::list_class::loader_of(signin_screen::SCREEN).expect("the class is built");
 

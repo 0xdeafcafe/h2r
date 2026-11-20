@@ -10,7 +10,7 @@ use engine::points::{
 };
 use engine::tags::GroupTag;
 use engine::view::{Tags, objects};
-use feature::{BuildError, Builder, Feature, Flow, Manifest};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::{Access, FaultReason};
 use tags::object::direct_drive::{H1_DIRECT_DRIVE, H1_SECOND_TRACK, Limits, tread_inputs};
@@ -431,7 +431,7 @@ impl Feature for DirectDrive {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         for (point, tank) in [
             (&VEHICLE_TREAD_UPDATE, true),
             (&VEHICLE_WHEEL_UPDATE, false),

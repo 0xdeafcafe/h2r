@@ -3,7 +3,7 @@
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::HUD_MESSAGE_LOOKUP;
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 use h1text::hud::{CONTROL_PROMPTS, CUSTOM_DEVICE, EVENT_SIZE, EVENTS, SHARED_MESSAGES};
 
 use super::{list_row, message_text, mission_hud};

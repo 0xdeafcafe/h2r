@@ -730,11 +730,11 @@ impl KitTexts {
     }
 }
 
-impl feature::Feature for KitTexts {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(self.id(), "A kit screen's texts").doc("docs/game/ui-screens.md")
+impl hooks::Feature for KitTexts {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(self.id(), "A kit screen's texts").doc("docs/game/ui-screens.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let s = &self.0;
         let len = s.texts.family.len * SLOT_LEN + KEYBOARD_UNITS * 2;
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
@@ -745,7 +745,7 @@ impl feature::Feature for KitTexts {
         // snapshot) and the class's; a load only has to write the texts
         // again over the saved run's.
         let (live, load) = (Arc::clone(s), Arc::clone(s));
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || live.snapshot_live(),
             Vec::new,
             move |bytes, _| {
@@ -807,7 +807,7 @@ mod tests {
         let b = Arc::new(crate::ui_kit::screens::choices_example(
             crate::ui_kit::choice::example::store(),
         ));
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         for s in [&a, &b] {
             assert!(r.add(&KitTexts(Arc::clone(s))).unwrap());
             assert!(r.add(&s.class()).unwrap());
@@ -818,7 +818,7 @@ mod tests {
             std::ptr::eq(KitTexts(Arc::clone(&a)).id(), KitTexts(Arc::clone(&a)).id()),
             "made once per screen"
         );
-        if let Err(e) = r.build(&feature::Base) {
+        if let Err(e) = r.build(&hooks::Base) {
             panic!("two kit screens conflict: {e:?}");
         }
     }

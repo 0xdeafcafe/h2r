@@ -4,7 +4,7 @@ Status: Built. Tested over synthetic machines and fakes; not yet run against
 the game ("Not verified").
 Code: `crates/runtime/snapshot` (container, RAM page codec, store, guest sections),
 `crates/runtime/runtime` (`Guest::layout`, `restore_with`, continuations),
-`crates/runtime/kernel/src/snapshot.rs`, `quiesce.rs`, `crates/hooking/feature/src/snapshot.rs`,
+`crates/runtime/kernel/src/snapshot.rs`, `quiesce.rs`, `crates/hooking/hooks/src/snapshot.rs`,
 `crates/apps/boot/src/snapshot_glue.rs`, `snapshot_probe.rs`,
 `crates/extensions/agent/src/exec/snap.rs`, `crates/extensions/agent-proto/src/state.rs`.
 Tests: `crates/runtime/snapshot/tests/machine.rs`, `crates/runtime/kernel/tests/snapshot.rs`,
@@ -652,7 +652,7 @@ Boot registers the render features in every run, with their
 `impl.render.*` switches off by default. Each declares its policy before
 any early return for a switch that is off, so a run with all of them off
 is not `Unaudited` and `state.save` is not refused. The other `native-*`
-features (`crates/hooking/feature/src/native_*.rs`) are `Stateless`.
+features (`crates/hooking/hooks/src/native_*.rs`) are `Stateless`.
 
 None of them changes simulation state. A save runs between slices, with
 the D3D render thread drained and the pipelined render not in flight

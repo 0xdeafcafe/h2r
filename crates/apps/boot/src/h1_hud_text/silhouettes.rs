@@ -4,7 +4,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points::{
     HUD_GLYPH_CREATE, HUD_GLYPH_FIND, HUD_GLYPH_LOAD, HUD_GLYPH_PIXELS, HUD_GLYPH_PIXELS_READY,
 };
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 use h1text::hud::{
     MARKER, MARKER_AT, SILHOUETTE_BASE, SILHOUETTE_LIMIT, SILHOUETTE_SIZE, SILHOUETTES,
 };

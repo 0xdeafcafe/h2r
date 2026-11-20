@@ -151,7 +151,7 @@ impl Telemetry {
 /// receives every projection before the scheduler crosses its tick boundary.
 /// Only legacy file/network delivery uses the asynchronous best-effort path.
 pub fn install_film(
-    registry: &mut feature::Registry,
+    registry: &mut ::hooks::Registry,
     config: &TelemetryConfig,
     observer: Option<Box<dyn FilmObserver>>,
     hooks: live_proto::film::TelemetryHooks,
@@ -287,7 +287,7 @@ mod tests {
         use live_proto::film::{TelemetryHooks, events::Event};
 
         let log = Arc::new(CaptureLog::default());
-        let mut registry = feature::Registry::new(feature::Switches::defaults());
+        let mut registry = ::hooks::Registry::new(::hooks::Switches::defaults());
         let t = install_film(
             &mut registry,
             &TelemetryConfig::default(),
@@ -315,7 +315,7 @@ mod tests {
         g.set_u32(fixture::TIME + layout::TIME_TICK, 1).unwrap();
         let runtime = runtime::Runtime::new(g, runtime::Dispatch::default());
         let cpu = runtime::CpuAbi::default();
-        let o = feature::Obs {
+        let o = ::hooks::Obs {
             thread_id: 1,
             cpu: &cpu,
             runtime: &runtime,
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn offline_film_keeps_each_sample_and_closes_without_an_engine_end_hook() {
         let log = Arc::new(CaptureLog::default());
-        let mut registry = feature::Registry::new(feature::Switches::defaults());
+        let mut registry = ::hooks::Registry::new(::hooks::Switches::defaults());
         let telemetry = install_film(
             &mut registry,
             &TelemetryConfig::default(),

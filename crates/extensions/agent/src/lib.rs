@@ -85,13 +85,13 @@ pub use tap::{AgentTap, Chain, Input, pad_steps};
 /// start and stop observers that set the `cinematic` phase.
 pub struct AgentFeature(pub Agent);
 
-impl feature::Feature for AgentFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("agent", "Agent API: answers requests at tick boundaries")
+impl hooks::Feature for AgentFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("agent", "Agent API: answers requests at tick boundaries")
             .doc("docs/runtime/agent-api.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let a = self.0.clone();
         // Last, so other observers (lockstep's hash) see the tick before a
         // pause holds it.
@@ -115,7 +115,7 @@ impl feature::Feature for AgentFeature {
                 .optional();
         }
         let (save, load) = (self.0.clone(), self.0.clone());
-        b.snapshot(feature::SnapshotPolicy::section(
+        b.snapshot(hooks::SnapshotPolicy::section(
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
         ));

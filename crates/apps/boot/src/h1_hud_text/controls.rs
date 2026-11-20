@@ -4,7 +4,7 @@
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 
 use h1scripts::hud::{CONTROL_BUILTINS, SCENARIO_HELP_BUILTIN};
 use h1text::hud::{

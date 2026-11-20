@@ -13,7 +13,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     points,
 };
-use feature::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use h1scripts::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
 
 mod action;
@@ -195,7 +195,7 @@ async fn skip_in_frame(cx: Cx, count: u16) -> EntryResult {
     Ok(Ret::new(0, 4))
 }
 
-fn calls_flashlight_list(call: &mut feature::Call<'_>, slot: &RuntimeSlot) -> Option<bool> {
+fn calls_flashlight_list(call: &mut hooks::Call<'_>, slot: &RuntimeSlot) -> Option<bool> {
     let head = crate::h1_ai_control::call_head(call, slot.index)?;
     let mem = call.ctx.runtime().memory();
     let scnr = mem.u32(points::SCENARIO.base).ok()?;

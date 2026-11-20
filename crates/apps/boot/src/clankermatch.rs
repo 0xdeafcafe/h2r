@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use live_proto::hopper::clankers::ClankerHoppers;
 use runtime::GuestFault;
 
@@ -228,7 +228,7 @@ fn switch_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
     })
 }
 
-impl feature::Feature for SwitchRow {
+impl hooks::Feature for SwitchRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             SWITCH_FEATURE,
@@ -296,7 +296,7 @@ impl feature::Feature for SwitchRow {
             .after_feature(h1row::ROW_FEATURE)
             .after_feature(crate::clankers::ROW_FEATURE);
         // Never snapshot while a Game Setup list is being built.
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             h1row::building_live(&live)
         }));
         Ok(())
@@ -383,7 +383,7 @@ pub struct PlaylistFilter {
     pub hle: Option<Arc<live_hle::Hle>>,
 }
 
-impl feature::Feature for PlaylistFilter {
+impl hooks::Feature for PlaylistFilter {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
@@ -457,7 +457,7 @@ impl feature::Feature for PlaylistFilter {
         );
         // Its state is the menu's choice and the server's marks, both read
         // afresh at each list build; nothing a snapshot would miss.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -465,7 +465,7 @@ impl feature::Feature for PlaylistFilter {
 /// Adds the playlist filter (with no Live it lists every hopper) and the
 /// lobby's "Switch To: Clankermatch" row (with no Live, never added).
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
     registry
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn the_switch_row_goes_after_the_other_game_setup_rows_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&h1row::SetupRow {
             data_root: std::env::temp_dir(),
         })
@@ -592,7 +592,7 @@ mod tests {
         r.add(&page.class()).unwrap();
         r.add(&crate::clankers::SetupRow { page }).unwrap();
         r.add(&SwitchRow { hle: None }).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         for point in [
             "SQUAD_SETTINGS_LIST_CTOR",
             "SQUAD_SETTINGS_ROW_TEXT",

@@ -9,9 +9,9 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_world::{self, Host, NativeWorld, PartSet};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_world::{self, Host, NativeWorld, PartSet};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS, STENCIL_MARK, STENCIL_OFF_FLAGS, StencilPlan};
 use native_render::world::Owner;
@@ -20,7 +20,7 @@ use native_render::world::Owner;
 fn the_plan_orders_it_inside_render_timing() {
     let switches = "render-timing=on,render-timing.deep=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
-    assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
+    assert!(r.add(&hooks::render_timing::RenderTiming::new()).unwrap());
     assert!(r.add(&NativeWorld).unwrap());
     let plan = match r.build(&Base) {
         Ok(p) => p,
@@ -71,7 +71,7 @@ fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
 
 /// The plan text with the native world and a pipeline that is on.
 fn plan_with_pipeline(switches: &str) -> String {
-    use feature::pipeline_render::{Addrs, PipelineRender};
+    use hooks::pipeline_render::{Addrs, PipelineRender};
     let pipeline = PipelineRender::with(true, Addrs::HALO2).print(false);
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     r.add(&pipeline).unwrap();

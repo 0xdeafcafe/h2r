@@ -498,12 +498,12 @@ including the exact retail operation order for normalisation and blending.
   - Sets the return registers.
   - Faults the way the guest would on an unmapped view: it reads the view
     before writing any output.
-- `crates/hooking/feature/src/sim_native.rs`: installs the three entries under
+- `crates/hooking/hooks/src/sim_native.rs`: installs the three entries under
   `impl.sim.native.anim` (hierarchical, default off until exit) and removes
   the `native_rotation_codec` and `native_animation_stream` entries.
 - `crates/rewrites/engine/src/points.rs`: the three wrapper points, with ABIs from
   step 0.
-- `crates/hooking/feature/src/switches.rs`: no new mechanism, because hierarchical
+- `crates/hooking/hooks/src/switches.rs`: no new mechanism, because hierarchical
   lookup already exists.
 
 **Guest readers still fed (unchanged):** the output records, which `112070`,
@@ -537,7 +537,7 @@ bounding-sphere update and the renderer all read those matrices.
 
 - new: `crates/rewrites/sim-core`, `crates/rewrites/sim-anim`, `crates/rewrites/engine/src/sim_anim.rs`,
   `docs/engine/anim-sampling.md`;
-- edited: `crates/hooking/feature/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`,
+- edited: `crates/hooking/hooks/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`,
   the workspace `Cargo.toml`, `crates/rewrites/engine/Cargo.toml`.
 
 It touches nothing owned by Live, bots, theater or film.

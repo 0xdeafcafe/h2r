@@ -230,7 +230,7 @@ fn a_map_without_a_halo1_sensor_gets_halo2s_back() {
 
 #[test]
 fn the_swap_plans_after_the_live_options() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&crate::variant_ext::Transport { hle: None }).unwrap();
     r.add(&HudSwap {
         table: Arc::default(),
@@ -238,7 +238,7 @@ fn the_swap_plans_after_the_live_options() {
         halo2_levels: Arc::default(),
     })
     .unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     let line = text.lines().find(|l| l.contains("GAME_ACTIVATE")).unwrap();
     let ext = line.find(crate::variant_ext::FEATURE).unwrap();
     assert!(ext < line.find(FEATURE).unwrap(), "{line}");

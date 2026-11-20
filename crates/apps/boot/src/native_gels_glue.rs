@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use engine::memory::GuestMemory;
-use feature::native_gels::{Call, Host};
+use hooks::native_gels::{Call, Host};
 use native_render::camera::GuestRead;
 use native_render::gels::{self, Key, Target};
 
@@ -199,7 +199,7 @@ pub fn install<B: d3d::Backend + Send + 'static>(
 ) -> Arc<Outputs> {
     let outputs = Arc::new(Outputs::default());
     let replacements = Arc::new(Replacements::default());
-    feature::native_gels::set_host(Arc::new(Glue {
+    hooks::native_gels::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         replacements,
         admission_registered: Once::new(),

@@ -121,10 +121,10 @@ impl LobbyFilm {
     }
 }
 
-pub(super) fn policy(lobby: Arc<Lobby>) -> feature::SnapshotPolicy {
+pub(super) fn policy(lobby: Arc<Lobby>) -> hooks::SnapshotPolicy {
     let check = lobby.clone();
     let save = lobby.clone();
-    feature::SnapshotPolicy::section_forbid_while(
+    hooks::SnapshotPolicy::section_forbid_while(
         move || {
             if !crate::theater::in_keyframe() {
                 return super::screens_live(&check);

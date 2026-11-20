@@ -82,16 +82,16 @@ impl Case {
 
 /// The registry boot would hand the plan for `case`, from the same
 /// registration functions.
-pub(crate) fn registry(case: &Case) -> feature::Registry {
+pub(crate) fn registry(case: &Case) -> hooks::Registry {
     registry_for_profile(case, super::compiled_render_hooks())
 }
 
-fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Registry {
+fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Registry {
     let rt = Arc::new(runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default()));
     let settings = case
         .settings
         .then(|| Arc::new(settings::Store::defaults(crate::setting_defs::ALL)));
-    let mut features = feature::Registry::new(feature::Switches::parse(&case.switches).unwrap());
+    let mut features = hooks::Registry::new(hooks::Switches::parse(&case.switches).unwrap());
     let nowhere = Path::new("");
     let telemetry = if case.telemetry {
         Ok(crate::telemetry::TelemetryConfig::file(std::env::temp_dir().join("h2-registration-test.telemetry")))
@@ -124,7 +124,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Reg
         replay: None,
     };
     let pipeline = super::pipeline_for(
-        feature::pipeline_render::PipelineRender::with(true, feature::pipeline_render::Addrs::HALO2),
+        hooks::pipeline_render::PipelineRender::with(true, hooks::pipeline_render::Addrs::HALO2),
         lockstep.enabled(),
         false,
     );
@@ -158,8 +158,8 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Reg
 }
 
 /// Builds the plan for `case`; the refusal, if any, says which features clash.
-fn plan(case: &Case) -> Result<feature::Plan, String> {
-    registry(case).build(&feature::Base).map_err(|conflicts| {
+fn plan(case: &Case) -> Result<hooks::Plan, String> {
+    registry(case).build(&hooks::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         format!("feature plan refused: {}\n  for {}", c.join("; "), case.describe())
     })
@@ -179,7 +179,7 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
             continue;
         }
         let plan = registry_for_profile(&Case::none(ALL_ON), profile)
-            .build(&feature::Base)
+            .build(&hooks::Base)
             .unwrap();
         let ids: Vec<_> = plan.features.iter().map(|f| f.id).collect();
         assert_eq!(ids.contains(&"native-map-work"), profile == Gpu);
@@ -199,7 +199,7 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 
 #[test]
 fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
-    use feature::pipeline_render::{Addrs, PipelineRender, SWITCH};
+    use hooks::pipeline_render::{Addrs, PipelineRender, SWITCH};
 
     for (switches, lockstep, light, expected) in [
         ("", false, false, false),
@@ -214,16 +214,16 @@ fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
         (SWITCH, false, true, false),
         (SWITCH, true, false, false),
     ] {
-        let mut features = feature::Registry::new(feature::Switches::parse(switches).unwrap());
+        let mut features = hooks::Registry::new(hooks::Switches::parse(switches).unwrap());
         let pipeline = super::pipeline_for(
             PipelineRender::with(false, Addrs::HALO2),
             lockstep,
             light,
         );
         features.add(&pipeline).unwrap();
-        let plan = features.build(&feature::Base).unwrap();
+        let plan = features.build(&hooks::Base).unwrap();
         assert_eq!(
-            plan.chains.contains_key(&feature::points::RENDER_FRAME.base),
+            plan.chains.contains_key(&hooks::points::RENDER_FRAME.base),
             expected,
             "{switches}, lockstep={lockstep}, light={light}"
         );
@@ -305,9 +305,9 @@ fn viewer_skips_follow_the_light_profile_and_independent_switches() {
         (true, "-impl.sim.submix-fx", [true, true, false]),
         (true, "-impl.sim", [false; 3]),
     ] {
-        let mut registry = feature::Registry::new(feature::Switches::parse(spec).unwrap());
+        let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
         super::register_viewer_skips(&mut registry, light).unwrap();
-        let plan = registry.build(&feature::Base).unwrap();
+        let plan = registry.build(&hooks::Base).unwrap();
         assert_eq!(
             points.map(|p| plan.chains.contains_key(&p.base)),
             expected,

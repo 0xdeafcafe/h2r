@@ -40,7 +40,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use feature::{BuildError, Builder, Flow, Manifest};
+use hooks::{BuildError, Builder, Flow, Manifest};
 use live_hle::HostVariantExt;
 use live_proto::session::VariantExt;
 use variants::ext::{self, Ext};
@@ -410,7 +410,7 @@ pub const VITALITY_FEATURE: &str = "variant-vitality";
 /// shield and health").
 pub struct Vitality;
 
-impl feature::Feature for Vitality {
+impl hooks::Feature for Vitality {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             VITALITY_FEATURE,
@@ -419,7 +419,7 @@ impl feature::Feature for Vitality {
         .doc("docs/game/game-options.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use feature::points::{BODY_DAMAGE, SHIELD_DAMAGE};
+        use hooks::points::{BODY_DAMAGE, SHIELD_DAMAGE};
         b.raw()
             .before(&SHIELD_DAMAGE, "scale a player's shield damage", |c| {
                 *SHIELD_SCALED.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -476,7 +476,7 @@ impl feature::Feature for Vitality {
             });
         // The scales are read from guest memory at each step; only the
         // shield step's factor waits on the host between its hooks.
-        b.snapshot(feature::SnapshotPolicy::forbid_while(vitality_live));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(vitality_live));
         Ok(())
     }
 }
@@ -490,13 +490,13 @@ pub struct Transport {
     pub hle: Option<Arc<live_hle::Hle>>,
 }
 
-impl feature::Feature for Transport {
+impl hooks::Feature for Transport {
     fn manifest(&self) -> Manifest {
         Manifest::new(FEATURE, "Game variant options sent to Live guests")
             .doc("docs/game/game-options.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use feature::points::GAME_ACTIVATE;
+        use hooks::points::GAME_ACTIVATE;
         let hle = self.hle.clone();
         b.raw()
             .before(&GAME_ACTIVATE, "the host's variant options", move |c| {
@@ -613,7 +613,7 @@ impl feature::Feature for Transport {
         // The host's block goes to `live_hle`, whose state is the Live
         // subsystem's; a guest keeps the host's block here.
         if self.hle.as_ref().is_some_and(|h| h.film_service_taped()) {
-            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 || {
                     if crate::theater::in_keyframe() {
                         None
@@ -633,7 +633,7 @@ impl feature::Feature for Transport {
                 },
             ));
         } else {
-            b.snapshot(feature::SnapshotPolicy::forbid_while(transport_live));
+            b.snapshot(hooks::SnapshotPolicy::forbid_while(transport_live));
         }
         Ok(())
     }

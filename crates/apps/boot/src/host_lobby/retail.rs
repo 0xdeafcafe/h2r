@@ -9,7 +9,7 @@ use bots::lobby;
 use bots::phantom::session::{self, at::*};
 use engine::entry::{Cx, GuestCall};
 use engine::{GuestMemory, MemFault};
-use feature::points;
+use hooks::points;
 use live_proto::hopper::variant;
 use serde_json::{Value, json};
 

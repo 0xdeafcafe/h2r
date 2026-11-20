@@ -6,7 +6,7 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::view::{Tags, objects};
-use feature::{Flow, points};
+use hooks::{Flow, points};
 
 mod control;
 mod motion;
@@ -294,13 +294,13 @@ async fn execute(
 
 pub(crate) struct CommandAtoms;
 
-impl feature::Feature for CommandAtoms {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("h1-command-atoms", "Halo 1 AI command atoms")
+impl hooks::Feature for CommandAtoms {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("h1-command-atoms", "Halo 1 AI command atoms")
             .doc("docs/halo1/ai.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         control::install(b);
         performance::install(b)?;
         motion::install(b)?;

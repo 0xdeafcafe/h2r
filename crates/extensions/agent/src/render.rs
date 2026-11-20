@@ -451,9 +451,9 @@ pub fn debug_fields(text: &str) -> Value {
     Value::Object(out)
 }
 
-/// The pipelined render's totals (`feature::pipeline_render::Stats`) as
+/// The pipelined render's totals (`hooks::pipeline_render::Stats`) as
 /// JSON: counts as they are, times in ms, the per-reason maps as objects.
-pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
+pub fn pipeline_json(s: &hooks::pipeline_render::Stats) -> Value {
     let ms = |d: std::time::Duration| (d.as_secs_f64() * 1e5).round() / 100.0;
     json!({
         "pipelined": s.pipelined,
@@ -1333,7 +1333,7 @@ mod tests {
 
     #[test]
     fn pipeline_stats_become_json() {
-        let mut s = feature::pipeline_render::Stats {
+        let mut s = hooks::pipeline_render::Stats {
             pipelined: 4,
             completed: 3,
             join_wait: std::time::Duration::from_micros(1500),

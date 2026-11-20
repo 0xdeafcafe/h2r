@@ -1936,15 +1936,15 @@ fn describe(title: &str, count: usize, row: impl Fn(i16) -> Option<String>) -> S
 /// The texts' memory, the locale source and the frame tick.
 pub struct ModTexts(pub Arc<Repo>);
 
-impl feature::Feature for ModTexts {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for ModTexts {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "The mod repository: the Live menu's Mods row and screens",
         )
         .doc("docs/game/maps.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let base = b.guest_alloc(TEXTS.len * SLOT_LEN, Permissions::RW)?;
         self.0.texts.base.store(base, Ordering::SeqCst);
         let repo = Arc::clone(&self.0);
@@ -1959,7 +1959,7 @@ impl feature::Feature for ModTexts {
             Arc::clone(&self.0),
             Arc::clone(&self.0),
         );
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || live.snapshot_live(),
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
@@ -2080,7 +2080,7 @@ fn reader(repo: std::sync::Weak<Repo>) {
 /// Live off (no HLE or no map gate): nothing, and the Live menu keeps
 /// Content Download's Map Pack dialog.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
     gate: Option<Arc<live_hle::maps::MapGate>>,
     data_root: &std::path::Path,

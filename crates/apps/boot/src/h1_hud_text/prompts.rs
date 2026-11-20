@@ -9,7 +9,7 @@ use engine::points::{
     HUD_INTERACTION_VISIBLE, PLAYER_PICKUP_CANDIDATE, PLAYER_PICKUP_SCAN, PLAYER_PRESS_INTERACT,
 };
 use engine::tags::{entry_layout, tag_entry_checked};
-use feature::{Builder, Flow, GuestCall, Ret};
+use hooks::{Builder, Flow, GuestCall, Ret};
 use h1text::hud::{
     EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE, PROMPT_SUBJECTS, SWAP_POWERUP,
 };

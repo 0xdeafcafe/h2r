@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
-use feature::native_hud::{Host, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
+use hooks::native_hud::{Host, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
 use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
 use timeline::native::{Metric, Stage, Ui};
@@ -391,8 +391,8 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
 }
 
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let switches = feature::Switches::from_env().unwrap_or_default();
-    if !feature::native_hud::on(&switches) {
+    let switches = hooks::Switches::from_env().unwrap_or_default();
+    if !hooks::native_hud::on(&switches) {
         return;
     }
     static OWNER: AtomicU64 = AtomicU64::new(0);
@@ -403,7 +403,7 @@ pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::Share
     if let Ok(mut device) = device.lock() {
         device.add_draw_admission(admission.clone());
     }
-    feature::native_hud::set_host(Arc::new(Glue {
+    hooks::native_hud::set_host(Arc::new(Glue {
         device: device.clone(),
         admission,
     }));

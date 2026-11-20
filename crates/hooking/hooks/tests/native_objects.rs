@@ -2,17 +2,17 @@
 //! 2): its plan next to every other hook on the layer draw, its snapshot
 //! policy, and which items of the native set a host is offered.
 
-use feature::native_objects::{self, NativeObjects, NativeSet, SetPart};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_objects::{self, NativeObjects, NativeSet, SetPart};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 use native_render::objects::ItemKey;
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_and_the_world() {
     let switches = "render-timing=on,render-timing.deep=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
-    assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
-    assert!(r.add(&feature::native_world::NativeWorld).unwrap());
+    assert!(r.add(&hooks::render_timing::RenderTiming::new()).unwrap());
+    assert!(r.add(&hooks::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = match r.build(&Base) {
         Ok(p) => p,
@@ -57,7 +57,7 @@ const DEF_B: u32 = 0xe000_0200;
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
     let mut r = Registry::new(Switches::defaults());
-    assert!(r.add(&feature::native_world::NativeWorld).unwrap());
+    assert!(r.add(&hooks::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = r.build(&Base).unwrap();
     let chain = plan

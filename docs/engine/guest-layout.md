@@ -56,7 +56,7 @@ crate's tests check for overlaps and bounds.
 
 ## The switch table
 
-`crates/hooking/feature/src/switches/table.rs` lists every `impl.*` switch: its
+`crates/hooking/hooks/src/switches/table.rs` lists every `impl.*` switch: its
 default (on, off, following `impl.render.native`, or a group), its owning
 area, the day it appeared and when it is deleted. `Switches::parse`
 refuses an `impl.*` name that is not a row, a parent of one, or an engine

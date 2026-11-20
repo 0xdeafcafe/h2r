@@ -190,16 +190,16 @@ pub struct CoopLatency {
     shared: Arc<Mutex<Shared>>,
 }
 
-impl feature::Feature for CoopLatency {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CoopLatency {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Co-op over Live: a latency line a second (update gaps, input to update, the host's wait, traffic)",
         )
         .doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         type Event = fn(&mut Latency, u64);
         let events: [(&'static points::Point, &'static str, Event); 4] = [
             (
@@ -244,14 +244,14 @@ impl feature::Feature for CoopLatency {
         }
         // docs/runtime/snapshots.md: an observer; its windows, wall-clock
         // times and traffic counters only make the log line.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
 /// Adds the feature on the co-op over Live arm, unless `H2_COOP_LATENCY`
 /// turns it off.
-pub fn install(registry: &mut feature::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
     if !wanted(std::env::var("H2_COOP_LATENCY").ok().as_deref()) {
         return Ok(false);
     }
@@ -352,11 +352,11 @@ mod tests {
             runtime::Guest::new(),
             runtime::dispatch::Dispatch::default(),
         );
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         crate::coop_probe::install_live(&rt, &mut r, std::path::Path::new("/nonexistent"))
             .unwrap()
             .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         assert!(text.contains(FEATURE), "{text}");
         for p in HOOKED {
             assert!(text.contains(p.name), "{} missing:\n{text}", p.name);

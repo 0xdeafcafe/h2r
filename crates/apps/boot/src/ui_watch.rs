@@ -461,16 +461,16 @@ pub fn wanted(v: Option<&str>) -> bool {
 
 pub struct UiWatch;
 
-impl feature::Feature for UiWatch {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for UiWatch {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "H2_UI_WATCH=1: the menu screen player one's input goes to, a line when it changes, and ui.screen",
         )
         .doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.raw()
             .observe_after(&points::GAME_TICK, "ui: watch the screen", |o| {
                 let g = o.guest();
@@ -481,13 +481,13 @@ impl feature::Feature for UiWatch {
             .optional();
         // An observer: `LAST` and `SAID` are the host's log of guest
         // memory, read again at the next tick.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
 /// Adds the watch when `H2_UI_WATCH` asks for it.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<bool> {
     if !wanted(std::env::var("H2_UI_WATCH").ok().as_deref()) {
         return Ok(false);
     }

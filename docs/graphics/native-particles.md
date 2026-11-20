@@ -1,7 +1,7 @@
 # Native particles and effect geometry
 
 Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, lens reflections, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
-Code: `crates/hooking/feature/src/native_particles.rs`, `native_effects.rs`, `crates/apps/boot/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/hooking/feature/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
+Code: `crates/hooking/hooks/src/native_particles.rs`, `native_effects.rs`, `crates/apps/boot/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/hooking/hooks/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
@@ -252,7 +252,7 @@ admission and fallback boundaries.
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
-- The feature test `crates/hooking/feature/tests/native_particles.rs` requires twenty-one render-safe observer points and none on `0x00174420`.
+- The feature test `crates/hooking/hooks/tests/native_particles.rs` requires twenty-one render-safe observer points and none on `0x00174420`.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified

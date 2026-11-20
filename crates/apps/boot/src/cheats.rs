@@ -629,16 +629,16 @@ pub fn snapshot_live(c: &Mutex<Cheats>) -> Option<String> {
         .then(|| "a cheat is on or has something to undo".into())
 }
 
-impl feature::Feature for CheatsFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CheatsFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Our cheats: god mode, ammo, game speed, fly, noclip, HUD (debug menu)",
         )
         .doc("docs/runtime/debug-menu.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::GAME_TICK;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::GAME_TICK;
         let c = Arc::clone(&self.0);
         let policy = Arc::clone(&self.1);
         b.raw()
@@ -666,7 +666,7 @@ impl feature::Feature for CheatsFeature {
             .after_feature(crate::skulls_custom::FEATURE)
             .after_feature(crate::h1_hud_text::FEATURE);
         let live = Arc::clone(&self.0);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             snapshot_live(&live)
         }));
         Ok(())
@@ -677,7 +677,7 @@ impl feature::Feature for CheatsFeature {
 /// `lockstep`: a lockstep run, which refuses them; `live`: the Live
 /// client, whose signed-in gamertags decide on Live.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     agent: &agent::Agent,
     rt: &Arc<runtime::Runtime>,
     lockstep: bool,

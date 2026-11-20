@@ -14,7 +14,7 @@ agent-proto = { path = "../agent-proto" }
 serde.workspace = true
 serde_json.workspace = true
 runtime.workspace = true
-feature = { path = "../../hooking/feature", default-features = false }
+hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 # Typed guest views (src/sim/state.rs).
 guest-layout = { path = "../../hooking/guest-layout" }

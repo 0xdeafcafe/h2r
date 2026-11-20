@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
-feature = { path = "../../hooking/feature", default-features = false }
+hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine" }
 
 [dev-dependencies]

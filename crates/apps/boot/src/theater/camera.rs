@@ -117,7 +117,7 @@ impl FilmCamera {
     }
 }
 
-pub(super) fn install(b: &mut feature::Builder, session: &Session) {
+pub(super) fn install(b: &mut hooks::Builder, session: &Session) {
     let state = session.lock();
     if state.header.version < 3 || state.header.meta.source != film::Source::Local {
         return;

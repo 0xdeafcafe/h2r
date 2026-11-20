@@ -285,7 +285,7 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
-    use feature::points;
+    use hooks::points;
 
     #[test]
     fn a_lost_contact_starts_the_clock_but_does_not_release_the_hold() {
