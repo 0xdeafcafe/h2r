@@ -10,7 +10,7 @@ use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim
 use shaders::vsh::{self, VertexOptions, VertexUniforms};
 use wgpu::util::DeviceExt;
 
-use crate::gels::{self, Key};
+use crate::gels::Key;
 use crate::gpu::{Image, texture};
 use crate::pass_state::PassState;
 
@@ -167,45 +167,6 @@ pub struct Output {
     pub view: wgpu::TextureView,
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
-}
-
-/// A ticket is retained for a particular light invocation. Publish only
-/// after all commands for a copy were recorded. A missing copy refuses
-/// the consumer; it must never borrow the previous light's output.
-#[derive(Clone)]
-pub struct Ticket {
-    pub key: Key,
-    copies: Arc<Mutex<Vec<Output>>>,
-}
-
-impl Ticket {
-    pub fn new(key: Key) -> Self {
-        Self {
-            key,
-            copies: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn publish(&self, output: Output) {
-        if output.key != self.key {
-            return;
-        }
-        let mut copies = self.copies.lock().unwrap_or_else(|e| e.into_inner());
-        copies.retain(|c| (c.guest_size, c.size) != (output.guest_size, output.size));
-        copies.push(output);
-    }
-
-    pub fn output(&self, key: Key, guest_size: (u32, u32), size: (u32, u32)) -> Option<Output> {
-        if key != self.key {
-            return None;
-        }
-        self.copies
-            .lock()
-            .ok()?
-            .iter()
-            .find(|c| c.guest_size == guest_size && c.size == size)
-            .cloned()
-    }
 }
 
 pub struct Producer {
@@ -570,127 +531,6 @@ impl ResidentCache {
     }
 }
 
-/// Comparison assets use the same immutable program cache. Bitmap
-/// identity includes the map generation; repeated stages share uploads.
-#[derive(Default)]
-pub struct BitmapCache {
-    views: HashMap<(u64, u32, u32), wgpu::TextureView>,
-    programs: ResidentCache,
-}
-impl BitmapCache {
-    pub fn producer(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        generation: u64,
-        program: Program,
-        identities: [Option<(u32, u32)>; 4],
-        images: &[Option<Image>; 4],
-    ) -> Result<Arc<Producer>, String> {
-        let mut stages: [Option<wgpu::TextureView>; 4] = Default::default();
-        for n in 0..4 {
-            if program.dims[n].is_none() {
-                continue;
-            }
-            let (bitmap, image) = identities[n].ok_or("gel bitmap identity missing")?;
-            let key = (generation, bitmap, image);
-            if !self.views.contains_key(&key) {
-                let pixels = images[n].as_ref().ok_or("gel bitmap missing")?;
-                self.views
-                    .insert(key, texture(device, queue, pixels, "native gel bitmap"));
-            }
-            stages[n] = self.views.get(&key).cloned();
-        }
-        self.programs.producer(
-            device,
-            generation,
-            program,
-            stages.each_ref().map(Option::as_ref),
-        )
-    }
-}
-
-/// Exact byte compare of two same-format copies at the production point.
-/// Mapping is scheduled on submission, never before its copy is submitted.
-pub fn compare_on_submit(
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    output: &Output,
-    reference: &wgpu::TextureView,
-) -> Result<(), String> {
-    let a = output.view.texture();
-    let b = reference.texture();
-    if a.size() != b.size()
-        || a.format() != b.format()
-        || a.sample_count() != 1
-        || b.sample_count() != 1
-        || !b.usage().contains(wgpu::TextureUsages::COPY_SRC)
-    {
-        return Err("unpaired target-13 copies".into());
-    }
-    let bpp = a
-        .format()
-        .block_copy_size(None)
-        .ok_or("gel format has no copy size")?;
-    let row = a.width().checked_mul(bpp).ok_or("gel row overflow")?;
-    let padded = row.div_ceil(256) * 256;
-    let bytes = u64::from(padded) * u64::from(a.height());
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("native gels compare"),
-        size: bytes * 2,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    for (texture, offset) in [(a, 0), (b, bytes)] {
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(a.height()),
-                },
-            },
-            a.size(),
-        );
-    }
-    let read = buffer.clone();
-    let key = output.key;
-    let size = output.size;
-    encoder.map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., move |result| {
-        if let Err(e) = result {
-            eprintln!("native-gels compare {key:?} {size:?}: map failed {e:?}");
-            return;
-        }
-        let result = read.slice(..).get_mapped_range().map(|data| {
-            let pack = |data: &[u8]| {
-                data.chunks_exact(padded as usize)
-                    .flat_map(|r| r[..row as usize].iter().copied())
-                    .collect::<Vec<_>>()
-            };
-            gels::compare(
-                &pack(&data[..bytes as usize]),
-                &pack(&data[bytes as usize..]),
-            )
-        });
-        match result {
-            Ok(Some(d)) => eprintln!(
-                "native-gels compare {key:?} {size:?}: {} of {} bytes differ, max {}, sum {}",
-                d.changed, d.bytes, d.max, d.sum
-            ),
-            _ => eprintln!("native-gels compare {key:?} {size:?}: unreadable pair"),
-        }
-        read.unmap();
-    });
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,23 +550,5 @@ mod tests {
             assert_eq!(v.registers[5], [0.0; 4]);
             assert_eq!(v.registers[6], [0.0; 4]);
         }
-    }
-
-    #[test]
-    fn tickets_refuse_another_invocation_and_missing_scaled_copies() {
-        let key = Key {
-            sequence: 1,
-            definition: 2,
-            shader: 3,
-            surface: 4,
-        };
-        let ticket = Ticket::new(key);
-        assert!(ticket.output(key, (32, 32), (32, 32)).is_none());
-        assert!(
-            ticket
-                .output(Key { sequence: 2, ..key }, (32, 32), (32, 32))
-                .is_none()
-        );
-        assert!(ticket.output(key, (32, 32), (64, 64)).is_none());
     }
 }

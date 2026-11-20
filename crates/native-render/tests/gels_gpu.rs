@@ -1,9 +1,9 @@
 #![cfg(feature = "gpu")]
-//! Synthetic shader target-13 production, ticket lifetime and copy
-//! identity. No original shader code, bitmap or disc data is used.
+//! Synthetic shader target-13 production and the resident program cache.
+//! No original shader code, bitmap or disc data is used.
 
 use native_render::gels::Key;
-use native_render::gels_gpu::{Frame, Producer, Program, Ticket, quad};
+use native_render::gels_gpu::{Frame, Producer, Program, quad};
 use native_render::pass_state::PassState;
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
@@ -78,101 +78,6 @@ fn read(ctx: &gfx::GfxContext, output: &native_render::gels_gpu::Output) -> Vec<
     data.chunks_exact(256)
         .flat_map(|row| row[..16].iter().copied())
         .collect()
-}
-
-#[test]
-fn target_thirteen_is_produced_and_a_later_light_cannot_overwrite_it() {
-    let Ok(ctx) = gfx::GfxContext::headless() else {
-        return;
-    };
-    let key = Key {
-        sequence: 1,
-        definition: 2,
-        shader: 3,
-        surface: 4,
-    };
-    let ticket = Ticket::new(key);
-    let frame = Frame {
-        vertex: VertexUniforms::default(),
-        pixel: PixelUniforms::default(),
-        vertices: quad((4, 4), [0.0, 1.0]),
-    };
-    let red = Producer::new(
-        &ctx.device,
-        &ctx.queue,
-        program("vec4f(1.0,0.0,0.0,1.0)"),
-        &Default::default(),
-    )
-    .unwrap();
-    let green = Producer::new(
-        &ctx.device,
-        &ctx.queue,
-        program("vec4f(0.0,1.0,0.0,1.0)"),
-        &Default::default(),
-    )
-    .unwrap();
-    let mut encoder = ctx.device.create_command_encoder(&Default::default());
-    let first = red
-        .encode(
-            &ctx.device,
-            &mut encoder,
-            key,
-            &frame,
-            wgpu::TextureFormat::Rgba8Unorm,
-            (4, 4),
-            (4, 4),
-        )
-        .unwrap();
-    let second = green
-        .encode(
-            &ctx.device,
-            &mut encoder,
-            Key { sequence: 2, ..key },
-            &frame,
-            wgpu::TextureFormat::Rgba8Unorm,
-            (4, 4),
-            (4, 4),
-        )
-        .unwrap();
-    ticket.publish(second.clone()); // Another invocation cannot publish to this ticket.
-    assert!(ticket.output(key, (4, 4), (4, 4)).is_none());
-    ticket.publish(first);
-    let no_copy_source = ctx
-        .device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("comparison source without COPY_SRC"),
-            size: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&Default::default());
-    let published = ticket.output(key, (4, 4), (4, 4)).unwrap();
-    assert!(
-        native_render::gels_gpu::compare_on_submit(
-            &ctx.device,
-            &mut encoder,
-            &published,
-            &no_copy_source
-        )
-        .is_err()
-    );
-    assert!(
-        ticket.output(key, (4, 4), (4, 4)).is_some(),
-        "comparison failure does not retract production"
-    );
-    assert!(ticket.output(key, (4, 4), (8, 8)).is_none());
-    ctx.queue.submit([encoder.finish()]);
-    let retained = ticket.output(key, (4, 4), (4, 4)).unwrap();
-    assert_eq!(read(&ctx, &retained), [255, 0, 0, 255].repeat(16));
-    assert_eq!(read(&ctx, &second), [0, 255, 0, 255].repeat(16));
 }
 
 #[test]
