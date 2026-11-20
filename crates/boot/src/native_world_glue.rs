@@ -1014,6 +1014,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         world,
         shaders,
         lightmap_bitmap,
+        lightmap_error,
         palettes: lightmap_palettes,
         failed_sections,
         ..
@@ -1074,8 +1075,14 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     let mut layered_images = LayeredImages::new();
     let mut prepared_parts = HashSet::new();
     let (programs, mut stage_images, refused) = if programs_on {
-        let out = material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
-            lightmap_bitmap.is_none(), &mut layered_images);
+        let out = match lightmap_error {
+            Some(reason) => Programs {
+                refused: BTreeMap::from([(format!("lightmap group does not decode ({reason})"), world.materials())]),
+                ..Default::default()
+            },
+            None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
+                lightmap_bitmap.is_none(), &mut layered_images),
+        };
         native.extend(out.programs.keys().copied());
         prepared_parts = out.parts;
         palettized = out.palettized;
