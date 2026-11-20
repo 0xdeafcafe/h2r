@@ -121,7 +121,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
 
 #[cfg(test)]
 mod tests {
-    use frame_scene::{ItemKey, SceneId, Stamp, ViewKey, ViewKind};
+    use frame_scene::{ItemKey, NODE_MATRIX_SIZE, SceneId, Stamp, ViewKey, ViewKind};
 
     use super::*;
     use crate::layout::object_nodes::{RECORD_MATRIX, RECORD_NODES};
@@ -152,14 +152,15 @@ mod tests {
     }
 
     /// Render record `record` lit by `lighting` whose draw uploads its
-    /// single matrix: rows `x, x+1, …`.
+    /// single matrix, the 13 words of a node matrix (scale, then forward,
+    /// left, up, position): `x, x+1, …`.
     fn object_record(m: &mut Mem, record: u32, lighting: Option<u32>, x: f32) {
         crate::testing::record(m, record, lighting);
         let at = RENDER_RECORDS + RENDER_RECORD_SIZE * record;
         let matrix = MATRIX + 0x40 * record;
         m.w(at + RECORD_MATRIX, matrix);
         m.w(at + RECORD_NODES, u32::MAX);
-        for i in 0..12 {
+        for i in 0..NODE_MATRIX_SIZE as u32 / 4 {
             m.f(matrix + 4 * i, x + i as f32);
         }
     }

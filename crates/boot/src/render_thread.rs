@@ -86,6 +86,13 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     #[cfg(feature = "gpu")]
     (
         "frame-scene",
+        "RENDER_VIEWS",
+        "context-only, but shares render_views with render-timing (off by default), \
+         whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
+        "frame-scene",
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread: seals the frame's scene",
     ),
