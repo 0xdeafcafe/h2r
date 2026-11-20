@@ -10,6 +10,7 @@ use h1map::H1Map;
 use h1map::scenario::{FlagKind, Multiplayer};
 
 use crate::Result;
+use crate::convert::halo1::{Halo1Spawn, vehicle_spawn};
 use crate::sandbox::{H2Item, h2_equivalent, h2_name_matches};
 
 /// A Halo 2 netgame flag kind, by role; [`H2Flag::raw`] is the stored value.
@@ -96,8 +97,31 @@ pub struct Plan {
     pub flags: Vec<Flag>,
     /// Weapon, powerup and vehicle spawns.
     pub items: Vec<ItemSpawn>,
+    /// Source vehicles that require a rebuilt vehicle collection.
+    pub source_vehicles: Vec<Halo1Spawn>,
     /// What was left out and why, one line each.
     pub dropped: Vec<String>,
+}
+
+/// H1 0x9032d recognizes exactly -1 before indexing the palette. A valid
+/// entry can itself contain a null tag (0x9038e).
+pub fn placement_entry<'a, T>(
+    map: &str,
+    kind: &str,
+    row: usize,
+    index: i16,
+    palette: &'a [T],
+) -> Result<Option<&'a T>> {
+    if index == -1 {
+        return Ok(None);
+    }
+    palette.get(index as usize).map(Some).ok_or_else(|| {
+        crate::Error::no_rebuild(
+            map,
+            format!("{kind} placement {row}"),
+            format!("palette index {index} outside {} entries", palette.len()),
+        )
+    })
 }
 
 /// The flags a Halo 1 flag becomes (a Halo 1 CTF flag is both where the
@@ -167,7 +191,6 @@ fn plan_selected(mp: &Multiplayer, item_names: impl Fn(usize) -> Option<Vec<Stri
                 .push(format!("{} at {:?}", names.join(" / "), e.position)),
         }
     }
-    // Vehicles: placed as vehicle spawns, by their palette entry's name.
     out
 }
 
@@ -197,33 +220,53 @@ pub(crate) fn plan_map_except(
     }
     let mut out = plan_selected(&mp, |i| names[i].clone());
     for (i, v) in mp.vehicles.iter().enumerate() {
-        // A placement naming no vehicle is a named error, never a nameless
-        // dropped line.
-        let r = usize::try_from(v.palette)
-            .ok()
-            .and_then(|k| mp.vehicle_palette.get(k))
-            .filter(|r| !r.id.is_none())
-            .ok_or_else(|| {
-                crate::Error::no_rebuild(
-                    &m.header().name,
-                    format!("vehicle placement {i}"),
-                    format!("palette entry {} names no vehicle", v.palette),
-                )
-            })?;
-        let name = m.tag(r.id)?.name.clone();
-        match h2_equivalent(&name) {
-            Some(item @ H2Item::Vehicle(_)) => out.items.push(ItemSpawn {
+        let Some(tag) = vehicle_tag(m, &mp, i, v)? else {
+            continue;
+        };
+        match crate::sandbox::vehicle_equivalent(&tag.name) {
+            Some(item) => out.items.push(ItemSpawn {
                 position: v.position,
                 facing: v.rotation[0],
                 item,
                 respawn: 0,
             }),
-            _ => out
-                .dropped
-                .push(format!("vehicle {name} at {:?}", v.position)),
+            None => out.source_vehicles.push(vehicle_spawn(m, tag, v)?),
         }
     }
     Ok(out)
+}
+
+pub(crate) fn vehicle_tag<'a>(
+    map: &'a H1Map,
+    mp: &Multiplayer,
+    row: usize,
+    vehicle: &h1map::scenario::ObjectPlacement,
+) -> Result<Option<&'a h1map::Tag>> {
+    let entry = placement_entry(
+        &map.header().name,
+        "vehicle",
+        row,
+        vehicle.palette,
+        &mp.vehicle_palette,
+    )?;
+    let Some(r) = entry.filter(|r| !r.id.is_none()) else {
+        return Ok(None);
+    };
+    let tag = map.tag(r.id).map_err(|e| {
+        crate::Error::no_rebuild(&map.header().name, format!("vehicle placement {row}"), e)
+    })?;
+    if tag.group != h1map::Group::new(b"vehi") {
+        return Err(crate::Error::no_rebuild(
+            &map.header().name,
+            &tag.name,
+            "expected vehicle",
+        ));
+    }
+    Ok(Some(tag))
+}
+
+pub(crate) fn spawn_points_and_flags(mp: &Multiplayer) -> Plan {
+    plan_selected(mp, |_| None)
 }
 
 /// The base map's tag for a role: the first of `tags` (group, path) whose

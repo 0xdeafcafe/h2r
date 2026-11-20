@@ -311,13 +311,13 @@ impl<'c, 's> Program<'c, 's> {
 
     /// A shared balanced selector keeps unscoped roles from each embedding
     /// a copy of the same squad or encounter literals in the node pool.
-    fn scope_selector(&mut self, kind: u16, scopes: &[String], cursor: &Global) -> Result<Script> {
+    fn scope_selector(&mut self, kind: u16, scopes: &[u32], cursor: &Global) -> Result<Script> {
         if let Some(script) = self.scope_selectors.get(&kind) {
             return Ok(script.clone());
         }
-        fn select(scopes: &[String], first: usize, cursor: &Global) -> Expr {
+        fn select(scopes: &[u32], first: usize, cursor: &Global) -> Expr {
             if scopes.len() == 1 {
-                return Expr::Hook(AI, scopes[0].clone());
+                return Expr::Ai(scopes[0]);
             }
             let mid = scopes.len() / 2;
             either(
@@ -546,15 +546,19 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 });
             return Ok(vec![reset, scratch.candidate.set(speaker), accept]);
         }
-        let (scope, count) = if let Some(scope) = &participant.encounter {
-            (Expr::Hook(AI, scope.clone()), 1)
+        let (scope, count) = if let Some(selector) = participant.encounter {
+            let Some(scope) = self.scopes.for_selector(selector) else {
+                // An explicitly AI-free scenario supplies an empty cast roster.
+                return Ok(Vec::new());
+            };
+            (Expr::Ai(scope), 1)
         } else {
             let scopes = self.scopes.for_actor_type(participant.actor_type);
             if scopes.is_empty() {
                 return Ok(Vec::new());
             }
             if let [scope] = scopes {
-                (Expr::Hook(AI, scope.clone()), 1)
+                (Expr::Ai(*scope), 1)
             } else {
                 let selector = self.program.scope_selector(
                     participant.actor_type,

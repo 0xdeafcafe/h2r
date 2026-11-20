@@ -1098,6 +1098,20 @@ warthog becomes the gauss warthog (the user's decision). Blood Gulch and
 Sidewinder place all 8 of their vehicles (2 warthogs, 4 ghosts, 2
 scorpions; the Xbox maps have no rocket warthog).
 
+**Built. Multiplayer vehicle placements.** In the Halo 2 sandbox, a vehicle
+with no counterpart uses the Halo 1 object converter. Its netgame entry
+names a newly built `vehc` whose sole weighted entry references the rebuilt
+`vehi`. Repeated placements share that collection and retain their own
+position and yaw. The source render-model depth raises the origin by the same amount
+as in the Halo 1 sandbox. The H2 spawner checks for a collection at
+`0x15ab12..0x15ab23`. Source controller types choose the H2 game-variant
+slot for a rebuilt vehicle: tracked uses heavy, wheeled and hover use the
+two light slots, aircraft use flying, and stationary uses primary turret.
+The retail maps place eight Ghosts, four Warthogs and four Scorpions.
+The disc regression renames the Blood Gulch Ghost in memory to check the
+unmatched path through fresh-map assembly and read the resulting vehicle
+and its placements back.
+
 **Added tags.** A built vehicle collection is added after the base's
 tags (`TagSet::add_tag`, which keeps the pinned index's tail); its datum
 is known when the placements are written (slot `n`, salt `0xe174 + n`,

@@ -36,9 +36,9 @@ use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use scenario_edit::{BlockKind, Scenario, Value};
 
-use super::{COLLECTION_ENTRY, COLLECTION_ROOT, Prepared, Sandbox, prepare, prepare_plan};
-use crate::apply::{NETGAME_ITEM, apply};
-use crate::placements::{Plan, plan_map, plan_map_except};
+use super::{Prepared, Sandbox, prepare_plan};
+use crate::apply::NETGAME_ITEM;
+use crate::placements::{placement_entry, plan_map_except, spawn_points_and_flags, vehicle_tag};
 use crate::sandbox::{H2Item, h2_equivalent, netgame_type};
 use crate::{Error, Result};
 
@@ -149,15 +149,19 @@ pub struct Halo1Spawn {
     pub facing: f32,
     /// Respawn seconds, 0 for the collection's.
     pub respawn: u16,
-    /// Scenario game-type filter and team for an item spawn.
-    filter: Option<([h1map::scenario::GameType; 4], u16)>,
+    source: SpawnSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SpawnSource {
+    Equipment([h1map::scenario::GameType; 4], u16),
+    Vehicle(u8),
 }
 
 impl Halo1Spawn {
     /// Whether it spawns a vehicle (a `vehc`) rather than an item (`itmc`).
     pub fn is_vehicle(&self) -> bool {
-        // Only source netgame equipment has a game-type filter.
-        self.filter.is_none()
+        matches!(self.source, SpawnSource::Vehicle(_))
     }
 }
 
@@ -170,36 +174,46 @@ pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
         .map(|e| item_spawn(h1, e))
         .collect::<Result<Vec<_>>>()?;
     for (i, v) in mp.vehicles.iter().enumerate() {
-        // A placement naming no vehicle is a named error, never a spawn
-        // of nothing.
-        let r = usize::try_from(v.palette)
-            .ok()
-            .and_then(|k| mp.vehicle_palette.get(k))
-            .filter(|r| !r.id.is_none())
-            .ok_or_else(|| {
-                Error::no_rebuild(
-                    &h1.header().name,
-                    format!("vehicle placement {i}"),
-                    format!("palette entry {} names no vehicle", v.palette),
-                )
-            })?;
-        let name = h1.tag(r.id)?.name.clone();
-        let [x, y, z] = v.position;
-        out.push(Halo1Spawn {
-            collection: name.clone(),
-            items: vec![Halo1Item {
-                group: *b"vehi",
-                name: name.clone(),
-                weight: 1.0,
-            }],
-            collection_respawn: 0,
-            position: [x, y, z + vehicle_depth(h1, &name)?],
-            facing: v.rotation[0],
-            respawn: 0,
-            filter: None,
-        });
+        if let Some(tag) = vehicle_tag(h1, &mp, i, v)? {
+            out.push(vehicle_spawn(h1, tag, v)?);
+        }
     }
     Ok(out)
+}
+
+pub(crate) fn vehicle_spawn(
+    h1: &H1Map,
+    tag: &h1map::Tag,
+    v: &h1map::scenario::ObjectPlacement,
+) -> Result<Halo1Spawn> {
+    let name = tag.name.as_str();
+    let named = |reason: String| Error::no_rebuild(&h1.header().name, name, reason);
+    let body = h1.tag_data(tag).map_err(|e| named(e.to_string()))?;
+    let controller = body
+        .get(0x2f4..0x2f6)
+        .ok_or_else(|| named("missing vehicle type".into()))?;
+    let class = match u16::from_le_bytes([controller[0], controller[1]]) {
+        0 => 3,     // tank: heavy vehicle
+        1 => 1,     // jeep: primary light vehicle
+        3 | 5 => 4, // aircraft
+        4 => 2,     // hover scout: secondary light vehicle
+        6 => 6,     // stationary: primary turret
+        other => return Err(named(format!("unsupported vehicle controller {other}"))),
+    };
+    let [x, y, z] = v.position;
+    Ok(Halo1Spawn {
+        collection: name.to_owned(),
+        items: vec![Halo1Item {
+            group: *b"vehi",
+            name: name.to_owned(),
+            weight: 1.0,
+        }],
+        collection_respawn: 0,
+        position: [x, y, z + vehicle_tag_depth(h1, tag)?],
+        facing: v.rotation[0],
+        respawn: 0,
+        source: SpawnSource::Vehicle(class),
+    })
 }
 
 fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1Spawn> {
@@ -220,7 +234,7 @@ fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1
         position: e.position,
         facing: e.facing,
         respawn: e.spawn_time,
-        filter: Some((e.game_types, e.team)),
+        source: SpawnSource::Equipment(e.game_types, e.team),
     })
 }
 
@@ -236,10 +250,16 @@ fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1
 /// points lifted it once spawned; in Halo 2 the converted ghost started
 /// 0.14 into the ground and stayed there.
 pub fn vehicle_depth(h1: &H1Map, name: &str) -> Result<f32> {
-    let named = |why: String| Error::no_rebuild(&h1.header().name, name, format!("vehicle depth: {why}"));
     let t = h1
         .find(h1map::Group::new(b"vehi"), name)
-        .ok_or_else(|| named("not a vehicle".into()))?;
+        .ok_or_else(|| Error::no_rebuild(&h1.header().name, name, "not a vehicle"))?;
+    vehicle_tag_depth(h1, t)
+}
+
+fn vehicle_tag_depth(h1: &H1Map, t: &h1map::Tag) -> Result<f32> {
+    let named = |why: String| {
+        Error::no_rebuild(&h1.header().name, &t.name, format!("vehicle depth: {why}"))
+    };
     let r = h1map::TagRef::read(h1.tag_data(t)?, VEHI_MODEL)
         .ok_or_else(|| named("model reference does not read".into()))?;
     // A vehicle with no model has nothing to reach below its origin.
@@ -284,33 +304,29 @@ impl Halo1Collection {
         &self,
         object: impl Fn(usize) -> TagId,
     ) -> std::result::Result<Block, tags::defs::DefError> {
-        if self.group == *b"itmc" {
-            use tags::defs::{self, Defs, Val};
+        use tags::defs::{self, Defs, Val};
 
-            let d = Defs::builtin().group(FourCC(self.group)).expect("itmc");
-            let entry = d.child("entries").expect("itmc entries");
-            let mut choices = Vec::with_capacity(self.entries.len());
-            for &(id, weight) in &self.entries {
-                let mut r = defs::default_record(entry);
-                r.set("weight", Val::Float(weight))?;
-                // The map builder resolves the object group's FourCC.
-                r.set("object", Val::tag(FourCC([0; 4]), object(id)))?;
-                choices.push(r);
-            }
-            let mut r = defs::default_record(d);
-            r.set("entries", Val::Block(choices))?;
-            r.set("respawn_time", Val::Int(i64::from(self.respawn as i16)))?;
-            return defs::to_built(d, &r, &mut |_| None);
+        let group = FourCC(self.group);
+        let d = Defs::builtin()
+            .group(group)
+            .filter(|_| matches!(&self.group, b"itmc" | b"vehc"))
+            .ok_or_else(|| defs::DefError {
+                path: self.name.clone(),
+                why: format!("invalid collection group {group}"),
+            })?;
+        let entry = d.child("entries").expect("collection entries");
+        let mut choices = Vec::with_capacity(self.entries.len());
+        for &(id, weight) in &self.entries {
+            let mut r = defs::default_record(entry);
+            r.set("weight", Val::Float(weight))?;
+            // The map builder resolves the object's group from its datum.
+            r.set("object", Val::tag(FourCC([0; 4]), object(id)))?;
+            choices.push(r);
         }
-        let mut entries = Block::zeroed(COLLECTION_ENTRY * self.entries.len());
-        for (k, (i, w)) in self.entries.iter().enumerate() {
-            let at = k * COLLECTION_ENTRY;
-            entries.put_f32(at, *w).tag_ref(at as u32 + 4, object(*i));
-        }
-        let mut root = Block::zeroed(COLLECTION_ROOT);
-        root.put_u16(8, self.respawn)
-            .block(0, self.entries.len() as u32, entries);
-        Ok(root)
+        let mut r = defs::default_record(d);
+        r.set("entries", Val::Block(choices))?;
+        r.set("respawn_time", Val::Int(i64::from(self.respawn as i16)))?;
+        defs::to_built(d, &r, &mut |_| None)
     }
 }
 
@@ -329,8 +345,7 @@ pub fn halo1_netgame_type(group: [u8; 4], name: &str) -> u8 {
 fn collect_spawns(
     map: &str,
     source: Vec<Halo1Spawn>,
-    objects: &mut dyn Halo1Objects,
-    unresolved: &mut Vec<String>,
+    mut object: impl FnMut([u8; 4], &str) -> std::result::Result<usize, String>,
     placed_vehicles: &mut Vec<String>,
 ) -> Result<(Vec<Halo1Collection>, Vec<(Halo1Spawn, usize, u8)>)> {
     // Each Halo 1 collection some spawn uses, built once, and the spawns
@@ -348,26 +363,25 @@ fn collect_spawns(
         {
             Some(c) => c,
             None => {
-                let mut entries = Vec::new();
-                let mut kind = None;
+                let first = sp.items.first().ok_or_else(|| {
+                    Error::no_rebuild(
+                        map,
+                        &sp.collection,
+                        format!("empty collection at {:?}", sp.position),
+                    )
+                })?;
+                let kind = match sp.source {
+                    SpawnSource::Vehicle(class) => class,
+                    SpawnSource::Equipment(..) => halo1_netgame_type(first.group, &first.name),
+                };
+                let mut entries = Vec::with_capacity(sp.items.len());
                 for it in &sp.items {
-                    match objects.object(it.group, &it.name) {
-                        Ok(k) => {
-                            if &it.group == b"vehi" && !placed_vehicles.contains(&it.name) {
-                                placed_vehicles.push(it.name.clone());
-                            }
-                            entries.push((k, it.weight));
-                            kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
-                        }
-                        Err(w) => return Err(Error::no_rebuild(map, &it.name, w)),
+                    let k = object(it.group, &it.name)
+                        .map_err(|why| Error::no_rebuild(map, &it.name, why))?;
+                    if &it.group == b"vehi" && !placed_vehicles.contains(&it.name) {
+                        placed_vehicles.push(it.name.clone());
                     }
-                }
-                if entries.is_empty() {
-                    unresolved.push(format!(
-                        "{} at {:?}: empty source collection",
-                        sp.collection, sp.position
-                    ));
-                    continue;
+                    entries.push((k, it.weight));
                 }
                 collections.push(Halo1Collection {
                     group,
@@ -375,7 +389,7 @@ fn collect_spawns(
                     entries,
                     respawn: sp.collection_respawn,
                 });
-                kinds.push(kind.unwrap_or(0));
+                kinds.push(kind);
                 collections.len() - 1
             }
         };
@@ -394,7 +408,7 @@ fn write_spawn(
 ) -> Result<()> {
     let e = BlockKind::NetgameEquipment;
     if kind == 9 {
-        if let Some((types, team)) = sp.filter {
+        if let SpawnSource::Equipment(types, team) = sp.source {
             // The four 16-bit game-type filters and the team are in the
             // same slots as on the source netgame equipment. Type 12 is
             // "all games" on both games' retail powerup placements.
@@ -416,44 +430,27 @@ fn write_spawn(
     Ok(())
 }
 
-/// [`prepare`] for the Halo 1 sandbox: the Halo 2 preparation (structure,
+/// [`super::prepare`] for the Halo 1 sandbox: the Halo 2 preparation (structure,
 /// spawns, flags), then every item and vehicle spawn replaced by its Halo
-/// 1 object from `objects`. Spawns whose object doesn't convert are listed
-/// in `applied.unresolved`.
+/// 1 object from `objects`. A failed object conversion names its source tag and map.
 pub fn prepare_halo1<R: Read + Seek>(
     h1: &H1Map,
     source_sha256: content::Sha256,
     base: &mut Map<R>,
     objects: &mut dyn Halo1Objects,
 ) -> Result<Prepared> {
-    let mut p = prepare(h1, source_sha256, base, Sandbox::Halo2)?;
-    let tags: Vec<_> = base
-        .tags()
-        .iter()
-        .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
-        .collect();
-    let mut s = Scenario::read(base)?;
-    let template = s.new_entry(
-        BlockKind::NetgameEquipment,
-        None,
-        None,
-    )?;
-    // Spawns and flags as the Halo 2 variant has them; no Halo 2 items.
-    let plan = plan_map(h1)?;
-    let spawns_only = Plan {
-        spawns: plan.spawns,
-        flags: plan.flags,
-        items: vec![],
-        dropped: vec![],
-    };
-    let mut applied = apply(&mut s, &spawns_only, &tags, &mut vec![])?;
+    let plan = spawn_points_and_flags(&h1.multiplayer()?);
+    let mut p = prepare_plan(h1, source_sha256, base, plan)?;
+    let template = p
+        .scenario
+        .new_entry(BlockKind::NetgameEquipment, None, None)?;
+    let mut applied = std::mem::take(&mut p.applied);
     let first = base.index_slots() as usize;
     let mut placed_vehicles = Vec::new();
     let (mut collections, spawns) = collect_spawns(
         &h1.header().name,
         plan_objects(h1)?,
-        objects,
-        &mut applied.unresolved,
+        |group, name| objects.object(group, name),
         &mut placed_vehicles,
     )?;
     // The player: Halo 1's multiplayer biped, converted like the objects.
@@ -517,9 +514,10 @@ pub fn prepare_halo1<R: Read + Seek>(
     let objects_out = objects.take();
     // The collections follow the objects.
     let after = first + objects_out.count;
+    let s = &mut p.scenario;
     for (sp, c, kind) in &spawns {
         write_spawn(
-            &mut s,
+            s,
             template.clone(),
             sp,
             collections[*c].group,
@@ -551,13 +549,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     }
     let tags_out = with_collections(objects_out, first, collections);
     p.applied = applied;
-    p.dropped = plan
-        .dropped
-        .into_iter()
-        .filter(|d| d.starts_with("flag "))
-        .collect();
     p.sandbox = Sandbox::Halo1;
-    p.scenario = s;
     p.objects = Some(tags_out);
     p.objects_first = first;
     p.player_biped = player_biped;
@@ -838,6 +830,18 @@ fn with_collections(
             let mut ids = install(set)?;
             for c in &collections {
                 let g = FourCC(c.group);
+                if c.group == *b"vehc" {
+                    for &(k, _) in &c.entries {
+                        if ids.get(k).and_then(|id| set.tag(*id)).map(|t| t.group)
+                            != Some(FourCC(*b"vehi"))
+                        {
+                            return Err(format!(
+                                "{}: vehicle collection {} needs rebuilt vehi at index {k}",
+                                set.name, c.name
+                            ));
+                        }
+                    }
+                }
                 set.add_group(g, None, None);
                 let root = c
                     .root(|k| added_datum(first + k))
@@ -879,8 +883,8 @@ pub struct Scenery {
     pub palette: Vec<TagId>,
     /// The placements, [`SCENERY_PLACEMENT`] bytes each.
     pub placements: Vec<Vec<u8>>,
-    /// Halo 1 placements left out (their palette entry didn't convert).
-    pub dropped: usize,
+    /// Source placements for which Halo 1 creates no object.
+    pub empty_placements: usize,
     /// Each placement written, as Halo 1 has it, in order.
     pub placed: Vec<PlacedScenery>,
     /// Placements whose collision joined the level's
@@ -938,8 +942,8 @@ pub fn scenery_placement(h1: &[u8], palette: u16, unique: u32) -> Vec<u8> {
 }
 
 /// Converts Halo 1's scenery palette through `objects` (whose tags are
-/// added from slot `first`) and plans its placements. Entries that don't
-/// convert are listed in `unresolved`.
+/// added from slot `first`) and plans its placements. Only H1's two
+/// no-object sentinels count as empty placements.
 pub fn plan_scenery(
     h1: &H1Map,
     objects: &mut dyn Halo1Objects,
@@ -953,30 +957,32 @@ pub fn plan_scenery(
     let mut out = Scenery::default();
     // Halo 1 palette index -> Halo 2's, and the tag's name.
     let mut index = Vec::new();
-    for e in &palette {
-        // An empty entry has no scenery; one that does not resolve is an
-        // error, not an empty entry.
-        let name = h1map::TagRef::read(e, 0)
-            .filter(|r| !r.id.is_none())
-            .map(|r| h1.tag(r.id).map(|t| t.name.clone()))
-            .transpose()?;
-        let Some(name) = name else {
+    for (i, e) in palette.iter().enumerate() {
+        let named =
+            |why: String| Error::no_rebuild(&h1.header().name, format!("scenery palette {i}"), why);
+        let r = h1map::TagRef::read(e, 0).ok_or_else(|| named("truncated reference".into()))?;
+        if r.id.is_none() {
             index.push(None);
             continue;
-        };
-        match objects.object(*b"scen", &name) {
-            Ok(k) => {
-                index.push(Some((out.palette.len() as u16, name)));
-                out.palette.push(added_datum(first + k));
-            }
-            Err(w) => return Err(Error::no_rebuild(&h1.header().name, name, w)),
         }
+        let tag = h1.tag(r.id).map_err(|e| named(e.to_string()))?;
+        if tag.group != h1map::Group::new(b"scen") {
+            return Err(named(format!("{} names a {}", tag.name, tag.group)));
+        }
+        let object = objects
+            .object(*b"scen", &tag.name)
+            .map_err(|e| Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+        let slot =
+            i16::try_from(out.palette.len()).map_err(|_| named("palette exceeds i16".into()))?;
+        index.push(Some((slot as u16, tag.name.clone())));
+        out.palette.push(added_datum(first + object));
     }
-    for e in space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)? {
+    let placements = space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)?;
+    for (row, e) in placements.into_iter().enumerate() {
         let p = i16::from_le_bytes([e[0], e[1]]);
-        match usize::try_from(p)
-            .ok()
-            .and_then(|p| index.get(p).cloned().flatten())
+        match placement_entry(&h1.header().name, "scenery", row, p, &index)?
+            .cloned()
+            .flatten()
         {
             Some((k, name)) => {
                 let unique = out.placements.len() as u32;
@@ -989,7 +995,7 @@ pub fn plan_scenery(
                     at_start: u16::from_le_bytes([e[4], e[5]]) & 1 == 0,
                 });
             }
-            None => out.dropped += 1,
+            None => out.empty_placements += 1,
         }
     }
     Ok(out)
@@ -1064,16 +1070,16 @@ pub fn merge_scenery_collision(
 }
 
 /// Prepares the Halo 2 sandbox, retaining Halo 1's scenery and native
-/// pickups. A collection with a retained pickup keeps its original
-/// weighted choices, placement and respawn, even if the base has a
-/// similar collection of its own.
+/// pickups and vehicles without a native counterpart. A retained pickup
+/// collection keeps its original weighted choices, placement and respawn,
+/// even if the base has a similar collection of its own.
 pub fn prepare_halo2<R: Read + Seek>(
     h1: &H1Map,
     source_sha256: content::Sha256,
     base: &mut Map<R>,
     objects: &mut dyn Halo1Objects,
 ) -> Result<Prepared> {
-    let mut powerups = Vec::new();
+    let mut retained_spawns = Vec::new();
     let mut retained = HashSet::new();
     let mut checked = HashSet::new();
     for e in &h1.multiplayer()?.equipment {
@@ -1092,10 +1098,11 @@ pub fn prepare_halo2<R: Read + Seek>(
             }
         }
         if retained.contains(&e.item.id) {
-            powerups.push(item_spawn(h1, e)?);
+            retained_spawns.push(item_spawn(h1, e)?);
         }
     }
-    let plan = plan_map_except(h1, &retained)?;
+    let mut plan = plan_map_except(h1, &retained)?;
+    retained_spawns.append(&mut plan.source_vehicles);
     let mut p = prepare_plan(h1, source_sha256, base, plan)?;
     let first = base.index_slots() as usize + p.applied.collections.len();
     let mut scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
@@ -1104,16 +1111,15 @@ pub fn prepare_halo2<R: Read + Seek>(
     p.applied.unresolved = unresolved;
     let (collections, spawns) = collect_spawns(
         &h1.header().name,
-        powerups,
-        objects,
-        &mut p.applied.unresolved,
+        retained_spawns,
+        |group, name| objects.object(group, name),
         &mut Vec::new(),
     )?;
     let converted = objects.take();
     let after = first + converted.count;
-    for (sp, c, _) in spawns {
-        // Beaver Creek's overshield and Zanzibar's camouflage both
-        // use flags 0 and the native powerup type 9.
+    for (sp, c, kind) in spawns {
+        // Retained equipment uses powerup settings, as on Beaver Creek
+        // and Zanzibar. Vehicles use the vehicle settings for their class.
         let entry = p
             .scenario
             .new_entry(BlockKind::NetgameEquipment, None, None)?;
@@ -1121,11 +1127,12 @@ pub fn prepare_halo2<R: Read + Seek>(
             &mut p.scenario,
             entry,
             &sp,
-            *b"itmc",
+            collections[c].group,
             added_datum(after + c),
-            9,
+            if sp.is_vehicle() { kind } else { 9 },
         )?;
         p.applied.counts[2] += 1;
+        p.applied.vehicles += usize::from(sp.is_vehicle());
     }
     p.objects = Some(with_collections(converted, first, collections));
     p.objects_first = first;
@@ -1177,6 +1184,7 @@ pub(super) fn install(objects: &ObjectTags, first: usize, set: &mut TagSet) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convert::{COLLECTION_ENTRY, COLLECTION_ROOT};
 
     #[test]
     fn added_tags_take_the_salt_of_their_slot() {
@@ -1216,6 +1224,93 @@ mod tests {
             })
             .collect();
         assert_eq!(refs, [(4, added_datum(103)), (0x14, added_datum(107))]);
+    }
+
+    #[test]
+    fn unmatched_vehicle_is_rebuilt_once_and_placed_at_both_source_sites() {
+        use h1map::scenario::layout::{VEHICLE_PALETTE, VEHICLES};
+        use h1map::testing::{BASE, SCNR_ID, Spec, build_with_extra_tags, group, put};
+        use map::build::FixupKind;
+
+        const NAME: &str = r"vehicles\custom\ghost_transport";
+        let mut built = build_with_extra_tags(
+            &Default::default(),
+            vec![Spec {
+                group: b"vehi",
+                parent: Some(b"unit"),
+                name: NAME,
+                data: Some(vec![0; 0x600]),
+            }],
+        );
+        let scnr = built.data_at[0].unwrap();
+        let id = built.data_at.len() - 1;
+        let vehicle = built.data_at[id].unwrap();
+        built.file[scnr..scnr + 0x600].fill(0);
+        put(&mut built.file, vehicle + VEHI_MODEL + 12, u32::MAX);
+        put(&mut built.file, vehicle + 0x2f4, 3); // dropship
+        let palette = vehicle + 0x340;
+        let rows = palette + 2 * VEHICLE_PALETTE.1;
+        for (field, count, at) in [(VEHICLE_PALETTE.0, 2, palette), (VEHICLES.0, 4, rows)] {
+            put(&mut built.file, scnr + field, count);
+            put(
+                &mut built.file,
+                scnr + field + 4,
+                BASE + (at - h1map::HEADER_LEN) as u32,
+            );
+        }
+        put(&mut built.file, palette, group(b"vehi"));
+        put(&mut built.file, palette + 12, SCNR_ID + id as u32);
+        put(&mut built.file, palette + VEHICLE_PALETTE.1 + 12, u32::MAX);
+        for (row, index) in [0i16, -1, 1, 0].into_iter().enumerate() {
+            let at = rows + row * VEHICLES.1;
+            built.file[at..at + 2].copy_from_slice(&index.to_le_bytes());
+            put(&mut built.file, at + 8, (row as f32).to_bits());
+            put(&mut built.file, at + 0x14, (0.25 * row as f32).to_bits());
+        }
+        let map = H1Map::from_decompressed(built.file).unwrap();
+        let plan = crate::placements::plan_map(&map).unwrap();
+        assert!(plan.dropped.is_empty());
+        assert!(plan.items.is_empty());
+        assert_eq!(plan.source_vehicles, plan_objects(&map).unwrap());
+        let mut calls = Vec::new();
+        let (collections, spawns) = collect_spawns(
+            "tiny",
+            plan.source_vehicles,
+            |group, path| {
+                calls.push((group, path.to_owned()));
+                Ok(5)
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(calls, [(*b"vehi", NAME.to_owned())]);
+        let [collection] = collections.as_slice() else {
+            panic!("expected one vehicle collection")
+        };
+        assert_eq!(collection.group, *b"vehc");
+        let root = collection.root(added_datum).unwrap();
+        let FixupKind::Block { count, child } = &root.fixups[0].kind else {
+            panic!("entries")
+        };
+        assert_eq!(*count, 1);
+        assert_eq!(child.fixups[0].kind, FixupKind::TagRef(added_datum(5)));
+        assert_eq!(spawns.len(), 2);
+        for ((spawn, collection_index, kind), x) in spawns.iter().zip([0.0, 3.0]) {
+            assert_eq!((*collection_index, *kind), (0, 4));
+            assert_eq!(spawn.position, [x, 0.0, 0.0]);
+            assert_eq!(spawn.facing, x * 0.25);
+        }
+    }
+
+    #[test]
+    fn malformed_palette_indices_identify_the_map_and_placement() {
+        for index in [-2, 2] {
+            let err = placement_entry("a10", "scenery", 17, index, &[1, 2]).unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("a10"));
+            assert!(message.contains("scenery placement 17"));
+            assert!(message.contains(&format!("palette index {index}")));
+        }
     }
 
     #[test]

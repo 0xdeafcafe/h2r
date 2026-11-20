@@ -1377,6 +1377,13 @@ impl Compiler<'_> {
                 _ => expected,
             }
         };
+        if h1_source == types::AI
+            && self.h2.types.get(usize::from(source)).is_some_and(|name| name == "ai")
+            && let Some(native) = self.ai_control.and_then(|control| control.script_index(bits))
+        {
+            let native = native.map_err(|e| invalid(format!("{}: {e} ({})", self.definition, String::from_utf8_lossy(&token))))?;
+            return Ok(self.literal(expected, source, native, &token));
+        }
         // A seat mapping is `count << 16 | first` into the scenario's
         // mapping table (retail: `0x10004` names one seat); 0 names none,
         // so an unresolved one moves nobody instead of indexing past it.

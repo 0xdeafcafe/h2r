@@ -5,8 +5,9 @@
 //! Halo 1 keeps in its default data, and an animated stream (codec 3,
 //! `8byte_quantized_rotation_only`: i16 quaternions like Halo 1's, float
 //! translations and scales) holding the channels Halo 1 animates. Overlays and
-//! replacements carry only their animated channels. Record names come from
-//! [`crate::names`]. The player graph binds the engine keys by source slot.
+//! replacements repeat their non-identity defaults in the animated stream.
+//! Record names come from [`crate::names`]. The player graph binds the engine
+//! keys by source slot.
 //!
 //! Layouts are those `crates/tags` decodes (`docs/formats/animation.md`).
 
@@ -55,8 +56,8 @@ pub struct GraphReport {
     pub variants: Vec<String>,
     /// Animations with per-frame root movement in the output resource.
     pub movement: Vec<String>,
-    /// Non-identity default channels of overlays and replacements, dropped.
-    pub dropped_default_channels: usize,
+    /// Non-identity overlay and replacement channels encoded on every frame.
+    pub carried_default_channels: usize,
     /// Zero quaternions in the source, written as identity.
     pub zero_rotations: usize,
     /// Suspension elements not written: their mass point has no marker on
@@ -261,21 +262,25 @@ fn encode(
     } else {
         (1u64 << nodes) - 1
     };
-    let animated: Channels = anim.animated;
+    let mut animated: Channels = anim.animated;
     let defaults: Channels = animated.map(|m| !m & all);
     let static_part = if anim.kind == AnimType::Base && defaults.iter().any(|&m| m != 0) {
         static_stream(&anim.frames[0], defaults)
     } else {
         if anim.kind != AnimType::Base {
-            let p = &anim.frames[0];
-            for n in 0..nodes {
-                let t = p[n];
-                let rot_id = (t.rotation[3].abs() - 1.0).abs() < 1e-4;
-                let trans_id = t.translation.iter().all(|v| v.abs() < 1e-6);
-                let scale_id = (t.scale - 1.0).abs() < 1e-6;
-                for (c, id) in [rot_id, trans_id, scale_id].into_iter().enumerate() {
-                    if defaults[c] >> n & 1 != 0 && !id {
-                        report.dropped_default_channels += 1;
+            // H2 only samples a static stream on base animations. A constant
+            // channel in codec 3 or 8 still participates in the overlay.
+            for (n, t) in anim.frames[0].iter().enumerate() {
+                let driven = [
+                    t.rotation[..3] != [0.0; 3] || t.rotation[3].abs() != 1.0,
+                    t.translation != [0.0; 3],
+                    t.scale != 1.0,
+                ];
+                for (c, non_identity) in driven.into_iter().enumerate() {
+                    let bit = 1u64 << n;
+                    if non_identity && defaults[c] & bit != 0 {
+                        animated[c] |= bit;
+                        report.carried_default_channels += 1;
                     }
                 }
             }

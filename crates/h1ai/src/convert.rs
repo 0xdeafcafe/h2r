@@ -42,7 +42,7 @@ pub struct Options {
     pub area_kind: u16,
     /// Style palette index of each order.
     pub order_style: i16,
-    /// Halo 1 platoons the scripts name (`encounter/platoon`, lower case),
+    /// Halo 1 platoons the scripts name, keyed by encounter and platoon ordinal,
     /// each converted to a squad group of that name under the encounter's
     /// group, holding exactly the platoon's squads. Halo 2's `ai` builtins
     /// walk a group's children (`ai_place`, `ai_actors`, `ai_strength`, ...
@@ -50,7 +50,7 @@ pub struct Options {
     /// platoon argument covers every squad it did in Halo 1 while the
     /// encounter's group still covers them all. Empty: no platoon groups
     /// (the squad's group is its encounter's, as before).
-    pub platoon_groups: std::collections::BTreeSet<String>,
+    pub platoon_groups: std::collections::BTreeSet<(usize, usize)>,
 }
 
 impl Default for Options {
@@ -152,6 +152,7 @@ pub struct Plan {
     /// Full script names in emitted index order, before the wire format truncates them.
     pub squad_names: Vec<String>,
     pub group_names: Vec<String>,
+    pub(crate) script_groups: std::collections::BTreeMap<u32, u32>,
     /// Character palette: the choice for each entry.
     pub characters: Vec<CharacterChoice>,
     pub voice_definitions: Vec<crate::voices::Definition>,
@@ -170,47 +171,65 @@ fn letter(group: u16) -> String {
 }
 
 /// Converts a Halo 1 scenario's AI data.
-pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
-    convert_for_map(src, opts, &[], &[])
+pub fn convert(src: &H1Ai, opts: &Options) -> Result<Plan> {
+    convert_for_map(src, opts, &[], None)
 }
 
 /// Converts with the generated meshes in scenario BSP order and the scenario
-/// weapon palette index chosen for each Halo 1 actor variant. Missing entries
-/// leave the corresponding reference unassigned.
+/// weapon palette index chosen for each Halo 1 actor variant. Analysis
+/// callers can omit weapon bindings until they have a destination map.
 pub fn convert_for_map(
     src: &H1Ai,
     opts: &Options,
     meshes: &[tags::pathfinding::PathfindingData],
-    weapons: &[Option<i16>],
-) -> Plan {
+    weapons: Option<&[Option<i16>]>,
+) -> Result<Plan> {
+    if let Some(indices) = weapons {
+        if indices.len() != src.actor_palette.len() {
+            return Err(Error::Invalid(format!(
+                "{} weapon bindings for {} actor palette entries",
+                indices.len(), src.actor_palette.len()
+            )));
+        }
+        for (i, (entry, index)) in src.actor_palette.iter().zip(indices).enumerate() {
+            let armed = entry.as_ref().is_some_and(|v| !v.weapon.id.is_none());
+            if armed != index.is_some() || index.is_some_and(|k| k < 0) {
+                let name = entry.as_ref().map_or("empty actor", |v| v.name.as_str());
+                return Err(Error::Invalid(format!("{name}: invalid weapon binding {index:?} for actor {i}")));
+            }
+        }
+    }
     let weapon = |actor: i16| {
-        usize::try_from(actor)
-            .ok()
-            .and_then(|i| weapons.get(i).copied().flatten())
-            .unwrap_or(-1)
+        weapons.and_then(|w| w.get(actor as usize).copied().flatten()).unwrap_or(-1)
     };
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
     let mut squad_names = Vec::new();
     let mut group_names = Vec::new();
+    let mut script_groups = std::collections::BTreeMap::new();
     let mut squad_voices = Vec::new();
+    if src.voice_definitions.len() > usize::from(u16::MAX) {
+        return Err(Error::Invalid("AI voice bank index overflow".into()));
+    }
     let voice_bank = |actor: i16| {
         let unit = src.actor_palette.get(actor as usize)?.as_ref()?.unit.id;
         src.voice_definitions
             .iter()
             .position(|bank| bank.tag == unit)
-            .and_then(|index| u16::try_from(index).ok())
+            .map(|index| index as u16)
     };
 
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
     let mut characters: Vec<CharacterChoice> = Vec::new();
-    let palette: Vec<Option<usize>> = (0..src.actor_palette.len())
-        .map(|i| {
-            let v = src.actor_palette[i].as_ref()?;
-            let actor = src.actor_of(i);
-            let kind = actor.map_or(ActorType(14), |a| a.kind);
-            let uncover = actor.map_or([0.0; 2], |a| a.uncover);
+    let palette: Vec<Option<usize>> = src.actor_palette.iter().enumerate()
+        .map(|(i, entry)| {
+            let Some(v) = entry else { return Ok(None) };
+            let actor = src.actor_of(i).ok_or_else(|| Error::Invalid(format!(
+                "{}: actor palette entry {i} has no actor definition", v.name
+            )))?;
+            let kind = actor.kind;
+            let uncover = actor.uncover;
             let (path, grenade) = character_for(kind, &v.name);
             let path = if !opts.halo2_assets || rebuilds_character(kind) {
                 v.name.as_str()
@@ -220,7 +239,7 @@ pub fn convert_for_map(
             if let Some(k) = characters.iter().position(|c| {
                 c.h2_character == path && c.uncover.map(f32::to_bits) == uncover.map(f32::to_bits)
             }) {
-                return Some(k);
+                return Ok(Some(k));
             }
             characters.push(CharacterChoice {
                 h1_variant: v.name.clone(),
@@ -229,9 +248,12 @@ pub fn convert_for_map(
                 grenade,
                 uncover,
             });
-            Some(characters.len() - 1)
+            Ok(Some(characters.len() - 1))
         })
-        .collect();
+        .collect::<Result<_>>()?;
+    if characters.len() > i16::MAX as usize + 1 {
+        return Err(Error::Invalid("AI character palette index overflow".into()));
+    }
     let char_of = |actor: i16| -> Option<usize> {
         usize::try_from(actor)
             .ok()
@@ -239,7 +261,10 @@ pub fn convert_for_map(
     };
 
     for (ei, e) in src.encounters.iter().enumerate() {
-        let zone_index = ei as i16;
+        let zone_index = i16::try_from(ei).map_err(|_| Error::Invalid(format!("{}: zone index overflow", e.name)))?;
+        if e.platoons.len() > usize::from(u8::MAX) + 1 {
+            return Err(Error::Invalid(format!("{}: platoon count exceeds the Halo 1 selection byte", e.name)));
+        }
         // Halo 1's manual BSP is only an editor input. Its compiled choice
         // names the collision mesh that the firing positions index.
         let bsp = if e.bsp >= 0 {
@@ -334,14 +359,17 @@ pub fn convert_for_map(
             parent: -1,
             initial_order: -1,
         });
-        let encounter_group = ai.squad_groups.len() as i16 - 1;
+        let group_index = |n: usize| i16::try_from(n - 1).map_err(|_| Error::Invalid(
+            format!("{}: squad group index overflow", e.name),
+        ));
+        let encounter_group = group_index(ai.squad_groups.len())?;
+        script_groups.insert(ei as u32, 0x4000_0000 | encounter_group as u32);
         // Platoons the scripts name become child groups of the encounter's,
         // holding exactly their squads: a platoon argument then covers every
         // squad it did in Halo 1 (see `Options::platoon_groups`).
         let mut platoon_of: Vec<Option<i16>> = vec![None; e.platoons.len()];
         for (pi, p) in e.platoons.iter().enumerate() {
-            let token = format!("{}/{}", e.name, p.name).to_ascii_lowercase();
-            if !opts.platoon_groups.contains(&token) {
+            if !opts.platoon_groups.contains(&(ei, pi)) {
                 continue;
             }
             group_names.push(format!("{}/{}", e.name, p.name));
@@ -350,13 +378,14 @@ pub fn convert_for_map(
                 parent: encounter_group,
                 initial_order: -1,
             });
-            platoon_of[pi] = Some(ai.squad_groups.len() as i16 - 1);
+            let id = group_index(ai.squad_groups.len())?;
+            platoon_of[pi] = Some(id);
+            script_groups.insert(0x4000_0000 | ((pi as u32) << 16) | ei as u32, 0x4000_0000 | id as u32);
         }
 
         for s in &e.squads {
             let full_name = format!("{}/{}", e.name, s.name);
             let name = name31(&full_name);
-            squad_names.push(full_name);
             // A Halo 1 squad with nowhere to start never spawns, but
             // scripts still name it (migration targets, counts). It is kept
             // with no starting locations and no actors, as retail Halo 2
@@ -370,9 +399,17 @@ pub fn convert_for_map(
                 ));
             }
             let character = char_of(s.actor);
-            if character.is_none() {
-                notes.push(format!("{name}: actor {} has no character", s.actor));
-            }
+            // Both engines try the location override first and inherit the
+            // squad only on -1. An explicit H1 override naming no actor
+            // fails that spawn. Keep such a start selectable in H2 with
+            // neither character set, moving the default to inherited starts.
+            let per_start_character = character.is_some() && s.starting_locations.iter()
+                .any(|l| l.actor != -1 && char_of(l.actor).is_none());
+            // H2 also inherits a squad weapon on -1. An explicitly unarmed
+            // variant must keep its hands empty in an otherwise armed squad.
+            let squad_weapon = weapon(s.actor);
+            let per_start_weapon = squad_weapon != -1 && s.starting_locations.iter()
+                .any(|l| l.actor != -1 && weapon(l.actor) == -1);
             // The order: the areas of the attacking groups, or every area.
             let mut set: Vec<AreaRef> = letters
                 .iter()
@@ -408,33 +445,41 @@ pub fn convert_for_map(
                     secondary_areas: Vec::new(),
                     endings: 0,
                 });
-                ai.orders.len() as i16 - 1
+                i16::try_from(ai.orders.len() - 1).map_err(|_| Error::Invalid(
+                    format!("{full_name}: initial order index overflow"),
+                ))?
             };
             let grenade = character.map(|c| characters[c].grenade).unwrap_or(0);
             let starting_locations = s
                 .starting_locations
                 .iter()
-                .map(|l| {
-                    let list = usize::try_from(l.command_list).ok()
-                        .filter(|&i| i < src.command_lists.len());
-                    let script = list.and_then(|i| {
-                        let index = opts.first_command_script?.checked_add(i as u16)?;
-                        Some((h1::command_script_name(i), i16::try_from(index).ok()?))
-                    });
-                    let (placement_script, placement_script_index) =
-                        script.unwrap_or_else(|| (String::new(), -1));
-                    h2::StartingLocation {
+                .enumerate()
+                .map(|(i, l)| {
+                    let (placement_script, placement_script_index) = match (l.command_list, opts.first_command_script) {
+                        (-1, _) => (String::new(), -1),
+                        (list, _) if list < 0 || list as usize >= src.command_lists.len() => {
+                            return Err(Error::Invalid(format!("{full_name} start {i}: command list {list} out of range")));
+                        }
+                        (_, None) => (String::new(), -1), // AI-only conversion
+                        (list, Some(first)) => {
+                            let index = i16::try_from(u32::from(first) + list as u32)
+                                .map_err(|_| Error::Invalid(format!("{full_name} start {i}: command script index overflow")))?;
+                            (h1::command_script_name(list as usize), index)
+                        }
+                    };
+                    let actor = if l.actor != -1 { l.actor } else { s.actor };
+                    Ok(h2::StartingLocation {
                         name: 0,
                         position: l.position,
                         reference_frame: -1,
                         facing: [l.facing, 0.0],
                         flags: 0,
-                        character: if l.actor == -1 {
-                            -1
+                        character: if per_start_character || l.actor != -1 {
+                            char_of(actor).map_or(-1, |c| c as i16)
                         } else {
-                            char_of(l.actor).map(|c| c as i16).unwrap_or(-1)
+                            -1
                         },
-                        initial_weapon: weapon(l.actor),
+                        initial_weapon: if per_start_weapon { weapon(actor) } else { weapon(l.actor) },
                         initial_secondary_weapon: -1,
                         vehicle: -1,
                         seat_type: 0,
@@ -443,9 +488,10 @@ pub fn convert_for_map(
                         emitter_vehicle: -1,
                         placement_script,
                         placement_script_index,
-                    }
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
+            squad_names.push(full_name);
             let leader_rule = if src
                 .actor_of(s.actor as usize)
                 .is_some_and(|a| a.kind.0 == 7)
@@ -477,9 +523,9 @@ pub fn convert_for_map(
                 insane_count: if unplaced { 0 } else { s.insane_count },
                 major_upgrade: s.major_upgrade,
                 vehicle: -1,
-                character: character.map(|c| c as i16).unwrap_or(-1),
+                character: if per_start_character { -1 } else { character.map_or(-1, |c| c as i16) },
                 initial_zone: zone_index,
-                initial_weapon: weapon(s.actor),
+                initial_weapon: if per_start_weapon { -1 } else { squad_weapon },
                 initial_secondary_weapon: -1,
                 grenade_type: grenade,
                 initial_order: order,
@@ -508,15 +554,16 @@ pub fn convert_for_map(
             flags: 0,
         });
     }
-    Plan {
+    Ok(Plan {
         ai,
         characters,
         squad_names,
         group_names,
+        script_groups,
         voice_definitions: src.voice_definitions.clone(),
         squad_voices,
         notes,
-    }
+    })
 }
 
 /// Blocks for the scenario's AI fields: `(field offset, count, child)`.

@@ -325,10 +325,20 @@ fn compare_animation(src: &h1::Animation, clip: &tags::anim_sample::AnimationCli
     assert_eq!(clip.frame_count(), usize::from(src.frame_count));
     for f in 0..clip.frame_count() {
         let pose = clip.sample_frame(f).expect("frame samples");
+        assert_eq!(pose.nodes.len(), src.frames[f].len());
         for (n, (got, want)) in pose.nodes.iter().zip(&src.frames[f]).enumerate() {
-            let carried = |c: usize| src.has(c, n) || src.kind == h1::AnimType::Base;
+            let non_identity = [
+                want.rotation != [0.0, 0.0, 0.0, 1.0] && want.rotation != [0.0, 0.0, 0.0, -1.0],
+                want.translation != [0.0; 3],
+                want.scale != 1.0,
+            ];
+            let carried =
+                |c: usize| src.has(c, n) || src.kind == h1::AnimType::Base || non_identity[c];
+            assert_eq!(
+                [got.has_rotation, got.has_translation, got.has_scale],
+                [carried(0), carried(1), carried(2)]
+            );
             if carried(0) {
-                assert!(got.has_rotation);
                 // Rotation angle between the two: 4 asin(|q1 - q2| / 2) on
                 // the same hemisphere (acos of the dot product would turn
                 // f32 rounding into ~1e-3 rad).
@@ -346,13 +356,11 @@ fn compare_animation(src: &h1::Animation, clip: &tags::anim_sample::AnimationCli
                 e[0] = e[0].max(4.0 * (chord / 2.0).min(1.0).asin());
             }
             if carried(1) {
-                assert!(got.has_translation);
                 for a in 0..3 {
                     e[1] = e[1].max((got.translation[a] - want.translation[a]).abs());
                 }
             }
             if carried(2) {
-                assert!(got.has_scale);
                 e[2] = e[2].max((got.scale - want.scale).abs());
             }
         }
@@ -674,11 +682,11 @@ fn synthetic_graph() -> (Image, u32) {
         default,
         data,
     );
-    // Overlay: rotation on node 0 only.
+    // Overlay: node 0 rotates. One constant channel of each kind is non-identity.
     let mut default = Vec::new();
-    default.extend(f(&[0.0; 3]));
-    default.extend(f(&[1.0]));
-    default.extend(q([0.0, 0.0, 0.0, 1.0]));
+    default.extend(f(&[0.0, -0.125, 0.0]));
+    default.extend(f(&[1.25]));
+    default.extend(q([0.0, 0.3, 0.0, 0.9]));
     default.extend(f(&[0.0; 3]));
     default.extend(f(&[1.0]));
     default.extend(q([0.0, 0.0, 0.0, 1.0]));
@@ -906,12 +914,32 @@ fn synthetic_graph_round_trips_through_the_h2_decoder() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
     let (out, report) = jmad::convert_graph(&g, None).unwrap();
+    assert_eq!(report.carried_default_channels, 3);
     assert_eq!(report.names[0].1, "combat:rifle:move_front");
     assert_eq!(report.names[1].1, "combat:rifle:aim_still");
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
     for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
         assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");
     }
+}
+
+#[test]
+fn replacement_with_only_default_channels_samples_on_every_frame() {
+    let (img, at) = synthetic_graph();
+    let mut graph = h1::Graph::read(&img, at).unwrap();
+    let a = &mut graph.animations[1];
+    a.kind = h1::AnimType::Replacement;
+    a.animated = [0; 3];
+    for pose in &mut a.frames {
+        pose[0].rotation = [0.0, 0.0, 0.0, -1.0];
+    }
+    let (out, report) = jmad::convert_graph(&graph, None).unwrap();
+    assert_eq!(report.carried_default_channels, 3);
+    let (bytes, ids) = build(vec![(out, "replacement")]);
+    let errors = check_graph(&graph, &[], bytes, ids[0]);
+    let (_, [rotation, translation, scale]) = errors[1];
+    assert!(rotation < 2e-4);
+    assert_eq!((translation, scale), (0.0, 0.0));
 }
 
 /// Every level of a converted graph's tree is laid out in ascending
@@ -1360,7 +1388,7 @@ fn real_graphs_round_trip() {
             std::array::from_fn(|k| w[k].max(e[k]))
         });
         println!(
-            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, dropped overlay defaults {}, zero rotations {}",
+            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, carried overlay defaults {}, zero rotations {}",
             g.animations.len(),
             g.animations
                 .iter()
@@ -1371,7 +1399,7 @@ fn real_graphs_round_trip() {
             worst[2],
             report.variants.len(),
             report.movement.len(),
-            report.dropped_default_channels,
+            report.carried_default_channels,
             report.zero_rotations
         );
         for (name, e) in errors.iter().take(4) {
@@ -1569,6 +1597,98 @@ fn h1_disc_maps() -> Option<Vec<(String, h1map::H1Map)>> {
             })
             .collect(),
     )
+}
+
+/// Decode every non-base clip through the native resource format, including
+/// graphs which get their skeleton from their owning object's render model.
+#[test]
+#[ignore = "reads H1_ISO"]
+fn retail_overlay_defaults_round_trip_on_all_23_maps() {
+    let disc = std::env::var_os("H1_ISO").expect("set H1_ISO");
+    let mut iso =
+        xiso::Xiso::open(std::io::BufReader::new(std::fs::File::open(disc).unwrap())).unwrap();
+    let entries = h1map::disc::Disc::open(&mut iso).unwrap().maps;
+    let mut maps = [0; 2];
+    let mut defaults = 0;
+    for entry in entries {
+        let map = h1map::H1Map::from_bytes(&iso.read(&entry).unwrap()).unwrap();
+        match map.header().cache_type {
+            h1map::CacheType::Campaign => maps[0] += 1,
+            h1map::CacheType::Multiplayer => maps[1] += 1,
+            h1map::CacheType::UserInterface => continue,
+            other => panic!("unexpected map type {other}"),
+        }
+        for tag in map
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"antr"))
+        {
+            let context = || format!("{} / {}", map.header().name, tag.name);
+            let source = h1::Graph::read(&map, tag.data_address)
+                .unwrap_or_else(|e| panic!("{}: {e}", context()));
+            if source
+                .animations
+                .iter()
+                .all(|a| a.kind == h1::AnimType::Base)
+            {
+                continue;
+            }
+            let skeleton = if source.nodes.is_empty() {
+                let mode = map
+                    .find(h1map::Group::new(b"mode"), &tag.name)
+                    .or_else(|| {
+                        let object = h1map::Group::new(b"obje");
+                        map.tags()
+                            .iter()
+                            .filter(|t| t.parent == object || t.grandparent == object)
+                            .find_map(|t| {
+                                let data = map.tag_data(t).unwrap();
+                                let graph = h1map::TagRef::read(data, 0x38)?;
+                                (graph.id == tag.id).then(|| {
+                                    let model = h1map::TagRef::read(data, 0x28).unwrap();
+                                    map.tag(model.id).unwrap()
+                                })
+                            })
+                    })
+                    .unwrap_or_else(|| panic!("{}: missing source skeleton", context()));
+                Some(h1::AnimNode::from_model(
+                    &h1::Model::read(&map, mode.data_address).unwrap(),
+                ))
+            } else {
+                None
+            };
+            let (out, report) = jmad::convert_graph(&source, skeleton.as_deref())
+                .unwrap_or_else(|e| panic!("{}: {e}", context()));
+            defaults += report.carried_default_channels;
+            let (bytes, ids) = build(vec![(out, &tag.name)]);
+            let mut built = Map::from_reader(Cursor::new(&bytes)).unwrap();
+            let graph = AnimationGraph::read(&mut built, ids[0]).unwrap();
+            let resource = graph.read_resource(0, &mut Raw(bytes)).unwrap();
+            assert_eq!(
+                graph.animations.len(),
+                source.animations.len(),
+                "{}",
+                context()
+            );
+            for (i, a) in source
+                .animations
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.kind != h1::AnimType::Base)
+            {
+                let clip = graph.clip_from_shared(i, &resource).unwrap();
+                let [r, t, s] = compare_animation(a, &clip);
+                assert!(
+                    r < 2e-4 && t == 0.0 && s == 0.0,
+                    "{} / {}: {r} {t} {s}",
+                    context(),
+                    a.name
+                );
+            }
+        }
+    }
+    assert_eq!(maps, [10, 13]);
+    assert!(defaults > 0);
 }
 
 /// Rotation angle between two unit quaternions, in radians.

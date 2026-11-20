@@ -121,7 +121,7 @@ pub fn wanted(h1: &H1Map) -> Result<Vec<(FourCC, String)>> {
             halo2_assets: true,
             ..Default::default()
         },
-    );
+    ).map_err(|e| invalid(format!("{} AI: {e}", h1.header().name)))?;
     let mut out: Vec<(FourCC, String)> = Vec::new();
     for c in &plan.characters {
         let w = match c.h1_type.0 {

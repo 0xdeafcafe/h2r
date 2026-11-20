@@ -78,7 +78,14 @@ fn spawn_locations(q: &mut Squad, fps: &[FiringPosition]) {
     }
 }
 
-fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
+pub(crate) struct Selection {
+    pub generated: HashSet<usize>,
+    pub indices: Vec<Vec<Option<u16>>>,
+    pub required_squads: HashSet<(usize, usize)>,
+}
+
+fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> crate::Result<Selection> {
+    let mut indices = Vec::with_capacity(src.encounters.len());
     let mut generated = HashSet::new();
     let mut output_index = 0;
     let id = |e: usize, s: usize| 0x8000_0000 | ((s as u32) << 16) | e as u32;
@@ -90,11 +97,11 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
         }
     }
     for (ei, e) in src.encounters.iter_mut().enumerate() {
-        let mut si = 0;
+        let mut rows = Vec::with_capacity(e.squads.len());
         let initially_created = e.flags & 1 == 0;
         e.squads.retain_mut(|q| {
-            let datum = id(ei, si);
-            si += 1;
+            let datum = id(ei, rows.len());
+            rows.push(None);
             let direct = uses.places.contains(&datum);
             let named = uses.named.contains(&datum);
             if q.starting_locations.is_empty() {
@@ -104,10 +111,10 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
                         generated.insert(output_index);
                     }
                 }
-                output_index += usize::from(named);
-                return named;
-            }
-            if !engine::campaign_squad_pool::holds(count, groups)
+                if !named {
+                    return false;
+                }
+            } else if !engine::campaign_squad_pool::holds(count, groups)
                 && !named
                 && !initially_created
                 && !uses.dynamic_place
@@ -120,11 +127,16 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
                 count -= 1;
                 return false;
             }
+            *rows.last_mut().unwrap() = u16::try_from(output_index).ok();
             output_index += 1;
             true
         });
+        indices.push(rows);
     }
-    generated
+    if output_index > usize::from(u16::MAX) {
+        return Err(crate::invalid("AI roster exceeds the native squad index range"));
+    }
+    Ok(Selection { generated, indices, required_squads: HashSet::new() })
 }
 
 pub(crate) fn prepare(
@@ -134,12 +146,27 @@ pub(crate) fn prepare(
     options: &mut h1ai::convert::Options,
     followed: Option<&std::collections::BTreeSet<u16>>,
     scripted: bool,
-) -> HashSet<usize> {
+) -> crate::Result<Selection> {
     // Without converted scripts nothing names or places a squad, and the
     // automatic migration orders (installed with the scripts' subjects) are
     // not written. Keeping those squads would only fill the native pool:
     // a50 has 485 squads that way, past its 384 slots.
     let mut uses = if scripted { Uses::read(tables) } else { Uses::default() };
+    if scripted {
+        for role in src.conversations.iter().flat_map(|scene| &scene.participants) {
+            if !role.radio() && role.existing_name.is_none()
+                && let Some(selector) = role.encounter
+            {
+                uses.named.insert(selector & 0xc0ff_ffff);
+            }
+        }
+    }
+    // Preserve directly referenced rows before expanding membership to
+    // optional empty squads. These ordinals must survive the pool budget.
+    let required_squads = uses.named.iter()
+        .filter(|&&id| id >> 30 == 2)
+        .map(|&id| (usize::from(id as u16), usize::from((id >> 16) as u8)))
+        .collect();
     let mut maneuver = h1ai::control::maneuver_targets(src, requests);
     if scripted {
         maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
@@ -149,24 +176,26 @@ pub(crate) fn prepare(
         .filter_map(|r| r.target)
         .collect();
     for (ei, encounter) in src.encounters.iter().enumerate() {
-        for (pi, platoon) in encounter.platoons.iter().enumerate() {
+        for pi in 0..encounter.platoons.len() {
             let datum = 0x4000_0000 | ((pi as u32) << 16) | ei as u32;
             if uses.named.contains(&datum) {
-                options.platoon_groups.insert(format!("{}/{}", encounter.name, platoon.name).to_ascii_lowercase());
+                options.platoon_groups.insert((ei, pi));
             }
         }
         for (si, squad) in encounter.squads.iter().enumerate() {
             let platoon = 0x4000_0000 | ((squad.platoon as u32) << 16) | ei as u32;
             if (squad.platoon >= 0 && uses.named.contains(&platoon))
                 || destinations.contains(&(ei as u32))
-                || maneuver.contains(&format!("{}/{}", encounter.name, squad.name).to_ascii_lowercase())
+                || maneuver.contains(&(ei, si))
             {
                 uses.named.insert(0x8000_0000 | ((si as u32) << 16) | ei as u32);
             }
         }
     }
     let groups = src.encounters.len() + options.platoon_groups.len();
-    select(src, &uses, groups)
+    let mut selection = select(src, &uses, groups)?;
+    selection.required_squads = required_squads;
+    Ok(selection)
 }
 
 #[cfg(test)]
@@ -271,7 +300,7 @@ mod tests {
             let before = ai.encounters.clone();
             let uses = Uses::read(&Tables::read(&map).unwrap());
             let groups = ai.encounters.len();
-            select(&mut ai, &uses, groups);
+            let selection = select(&mut ai, &uses, groups).unwrap();
             for &id in &uses.named {
                 if id >> 31 == 0 || id == u32::MAX {
                     continue;
@@ -279,11 +308,10 @@ mod tests {
                 let ei = (id & 65535) as usize;
                 let si = ((id >> 16) & 0x7fff) as usize;
                 let q = &before[ei].squads[si];
-                let target = ai.encounters[ei]
-                    .squads
-                    .iter()
-                    .find(|s| s.name == q.name)
-                    .unwrap();
+                let index = selection.indices[ei][si].expect("named squad retained");
+                let target = ai.encounters.iter().flat_map(|e| &e.squads)
+                    .nth(usize::from(index)).unwrap();
+                assert_eq!(target.name, q.name);
                 // A placed empty squad takes its sites from its move
                 // positions or its firing groups. b40's
                 // `a2_top_cov/grunt_sniper` names only group Y, which holds

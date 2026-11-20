@@ -357,7 +357,15 @@ pub fn prepare<R: Read + Seek>(
     if sandbox == Sandbox::Halo1 {
         return Err(Error::Halo1Sandbox);
     }
-    prepare_plan(h1, source_sha256, base, placements::plan_map(h1)?)
+    let plan = placements::plan_map(h1)?;
+    if let Some(vehicle) = plan.source_vehicles.first() {
+        return Err(Error::no_rebuild(
+            &h1.header().name,
+            &vehicle.collection,
+            "use prepare_halo2 with a Halo 1 object converter",
+        ));
+    }
+    prepare_plan(h1, source_sha256, base, plan)
 }
 
 fn prepare_plan<R: Read + Seek>(

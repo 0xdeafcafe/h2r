@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use h1ai::convert::{Plan, rebuilds_character};
+use h1ai::convert::rebuilds_character;
 use h1ai::h1::{H1Ai, actor, actor_variant};
 use h1map::{Group, H1Map};
 use h1objects::convert::{Converter, local_index};
-use map::build::{Block, FixupKind, TagPayload, TagSet};
+use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Val};
 
@@ -253,77 +253,8 @@ pub(crate) fn install(set: &mut TagSet, ids: &[TagId], variants: Vec<Variant>) -
 }
 
 impl Loadout {
-    pub(crate) fn equip(&self, scnr: &mut Block, plan: &mut Plan) -> Result<()> {
-        if self.0.is_empty() {
-            return Ok(());
-        }
-        let (_, pal, _) = tags::object::OBJECT_TYPES[2].placement.expect("weapon");
-        let pal = u32::from(pal);
-        if !scnr.fixups.iter().any(|f| f.offset == pal) {
-            scnr.block(pal, 0, Block::zeroed(0));
-        }
-        let f = scnr.fixups.iter_mut().find(|f| f.offset == pal).unwrap();
-        let FixupKind::Block { count, child } = &mut f.kind else {
-            return Err(invalid("weapon palette block"));
-        };
-        let mut weapon_indices = Vec::new();
-        for c in &plan.characters {
-            let Some(rebuilt) = self.0.get(&c.h2_character) else {
-                weapon_indices.push(None);
-                continue;
-            };
-            let Some(weapon) = *rebuilt else {
-                weapon_indices.push(Some(-1));
-                continue;
-            };
-            let entry = child
-                .fixups
-                .iter()
-                .find_map(|f| match &f.kind {
-                    FixupKind::TagRef(id) if *id == weapon => Some(f.offset / 0x28),
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    let entry = *count;
-                    child.bytes.resize(child.bytes.len() + 0x28, 0);
-                    child.tag_ref(entry * 0x28, weapon);
-                    *count += 1;
-                    entry
-                });
-            weapon_indices.push(Some(
-                i16::try_from(entry).map_err(|_| invalid("AI weapon palette overflow"))?,
-            ));
-        }
-        // Write the effective weapon on each location. An unarmed crewman
-        // override must not inherit an armed squad member's pistol.
-        let rebuilt_weapon = |character: i16| {
-            usize::try_from(character).ok()
-                .and_then(|index| weapon_indices.get(index).copied().flatten())
-        };
-        for q in &mut plan.ai.squads {
-            if let Some(index) = rebuilt_weapon(q.character) {
-                q.initial_weapon = index;
-            }
-            let default = q.initial_weapon;
-            if q.starting_locations.iter().any(|l| rebuilt_weapon(l.character) == Some(-1)) {
-                // A location with -1 inherits the squad weapon. Move that
-                // default onto the other locations in a mixed squad.
-                q.initial_weapon = -1;
-            }
-            for l in &mut q.starting_locations {
-                let character = if l.character < 0 {
-                    q.character
-                } else {
-                    l.character
-                };
-                if let Some(index) = rebuilt_weapon(character) {
-                    l.initial_weapon = index;
-                } else if l.initial_weapon == -1 && q.initial_weapon != default {
-                    l.initial_weapon = default;
-                }
-            }
-        }
-        Ok(())
+    pub(crate) fn weapon(&self, variant: &str) -> Option<Option<TagId>> {
+        self.0.get(variant).copied()
     }
 }
 

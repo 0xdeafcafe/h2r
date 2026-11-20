@@ -918,6 +918,85 @@ fn starting_locations(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<([f32; 3], Vec<u8>)> 
         .collect()
 }
 
+/// All retail multiplayer vehicles have named H2 counterparts. Rename only
+/// the source tag in memory to exercise the other branch with a full vehicle.
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn halo2_sandbox_places_a_vehicle_without_a_counterpart() {
+    let original = bloodgulch();
+    let tag = original
+        .find(h1map::Group::new(b"vehi"), r"vehicles\ghost\ghost_mp")
+        .unwrap();
+    let custom = r"vehicles\ghost\other_mp";
+    assert_eq!(custom.len(), tag.name.len());
+    let offset = original.header().index_offset + (tag.name_address - original.metadata_base());
+    let mut bytes = original.bytes().to_vec();
+    bytes[offset as usize..offset as usize + custom.len()].copy_from_slice(custom.as_bytes());
+    let source = H1Map::from_decompressed(bytes).unwrap();
+    let expected = h1convert::placements::plan_map(&source)
+        .unwrap()
+        .source_vehicles;
+    assert!(!expected.is_empty());
+    assert!(expected.iter().all(|s| s.collection == custom));
+
+    let mut base = h2_map("coagulation");
+    let programs = Base::read(&mut base).unwrap();
+    let mut objects = Objects::new(&source, &programs);
+    let p = h1convert::convert::halo1::prepare_halo2(
+        &source,
+        content::Sha256::of(source.bytes()),
+        &mut base,
+        &mut objects,
+    )
+    .unwrap();
+    assert_eq!(
+        p.applied.vehicles,
+        source.multiplayer().unwrap().vehicles.len()
+    );
+    let fresh = p
+        .build_fresh(&mut base, &structure_mopp(&p.collision).unwrap())
+        .unwrap();
+    let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
+    let mem = memory(&mut out);
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let scenario = Scenario::read(&mut out).unwrap();
+    let block = scenario.block(BlockKind::NetgameEquipment);
+    let mut found = Vec::new();
+    for e in (0..block.len()).map(|i| block.entry(i).unwrap()) {
+        if word(e, NETGAME_ITEM) != FourCC(*b"vehc").as_u32() {
+            continue;
+        }
+        let id = TagId(word(e, NETGAME_ITEM + 4));
+        if out.tag(id).unwrap().name.as_deref() != Some(custom) {
+            continue;
+        }
+        let collection = out.read_tag_bytes(id).unwrap();
+        assert_eq!(word(&collection, 0), 1);
+        let choice = mem.slice(word(&collection, 4), 0x10).unwrap();
+        assert_eq!(word(choice, 0), 1.0f32.to_bits());
+        assert_eq!(word(choice, 4), FourCC(*b"vehi").as_u32());
+        let vehicle = TagId(word(choice, 8));
+        assert_eq!(out.tag(vehicle).unwrap().name.as_deref(), Some(custom));
+        let body = out.read_tag_bytes(vehicle).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(body[0x1f0..0x1f2].try_into().unwrap()),
+            4
+        );
+        assert_eq!(e[0x14], 2);
+        found.push((
+            std::array::from_fn(|i| f32::from_bits(word(e, 0x40 + 4 * i))),
+            f32::from_bits(word(e, 0x4c)),
+        ));
+    }
+    assert_eq!(
+        found,
+        expected
+            .iter()
+            .map(|s| (s.position, s.facing))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Every converted starting location is in open space with the converted
 /// collision's floor under it (Battle Creek's player died at spawn and
 /// never respawned: not from where it stood).
@@ -1209,12 +1288,21 @@ fn every_map_places_halo1_s_scenery_in_both_sandboxes() {
         let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
         let ctx = tags::object::Context::read(&mut out).unwrap();
         let s = Scenario::read(&mut out).unwrap();
+        let equipment = s.block(BlockKind::NetgameEquipment);
+        let vehicles = (0..equipment.len())
+            .map(|i| equipment.entry(i).unwrap())
+            .filter(|row| {
+                let group = &row[NETGAME_ITEM..NETGAME_ITEM + 4];
+                group == FourCC(*b"vehc").as_u32().to_le_bytes()
+            })
+            .count();
+        assert_eq!(vehicles, p.source.vehicles, "{name} {sandbox:?}: vehicles");
         let b = s.block(BlockKind::Scenery);
         println!(
-            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} left out)",
+            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} empty in source)",
             b.len(),
             b.palette.len(),
-            sc.dropped
+            sc.empty_placements
         );
         total += b.len();
         for u in p.applied.unresolved.iter().filter(|u| u.starts_with("scenery")) {

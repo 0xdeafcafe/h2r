@@ -866,9 +866,15 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         let tables = Tables::read(map).unwrap();
         let requests = h1scripts::aicontrol::requests(&tables, &catalog);
         let source = h1ai::h1::H1Ai::read(map).unwrap();
-        let opts = h1ai::convert::Options::default();
-        let mut plan = h1ai::convert::convert(&source, &opts);
-        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let opts = h1ai::convert::Options {
+            platoon_groups: source.encounters.iter().enumerate()
+                .flat_map(|(ei, e)| (0..e.platoons.len()).map(move |pi| (ei, pi)))
+                .collect(),
+            ..Default::default()
+        };
+        let mut plan = h1ai::convert::convert(&source, &opts).unwrap();
+        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests).unwrap();
+        controls.bind_script_indices(&plan);
         let subjects = h1scripts::aicontrol::retained_subjects(&tables, &catalog);
         h1ai::control::install_teleport_starts(
             &source, &mut controls, subjects.teleport_subjects.as_ref(),

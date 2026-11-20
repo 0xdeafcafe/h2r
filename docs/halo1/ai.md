@@ -92,6 +92,28 @@ unrelated operands. Some go-to records also contain unusable targets
 (a10's `moving_1_3` names point 5 in a set of five). The interpreter skips
 that atom and can still run the next one.
 
+### Spawn and control indices
+
+**Built.** The converter preserves the effective actor, starting weapon and
+command list of each authored location. The retail Xbox executables show
+which absent indices actually suppress an action.
+
+| Source field | Retail behavior and v8 representation |
+|---|---|
+| Actor variant | H1 loads the squad default and replaces it only when the start's index differs from -1 (`0x13e390..0x13e3ae`). A negative or out-of-range effective index or a null palette datum skips creation (`0x13e3b0..0x13e3dd`). H2 makes the same checks at `0x2037bf..0x2037fa`. When an explicit empty override shares a squad with valid inherited starts, the converter puts the default on those siblings and leaves both character fields empty for the failed spawn. |
+| Weapon | H1 tests the effective variant's weapon datum at `0x14d6ee`. A null datum skips weapon creation at `0x14d70b`. A mixed squad stores its weapons on individual starts so an explicitly unarmed variant cannot inherit another variant's weapon. An armed source requires a resolved destination weapon palette slot. |
+| Starting command list | H1 forwards start `+0x1a` at `0x14e51b..0x14e540`, stores it at actor `+0x90` at `0x14cd76`, and bypasses the active-list path on -1 at `0x167c6a`. Scripted v8 maps bind every real list to its generated script. Unrepresentable indices and missing source lists are conversion errors. |
+| Conversation cast scope | H1 reads participant `+0x44` at `0x143d69` and passes every non-null selector to the actor iterator at `0x13eda0`. The display text at `+0x24` does not participate. Casting uses the converted numeric squad or group even when the text is empty or duplicated. Of 327 retail roles, 35 specify an encounter and 292 leave this scope open. |
+| Generic voice bank | H1 visits unit `+0x2b4`, takes up to 16 selectors below 100 and leaves the initial voice unchanged if none qualify (`0x46716..0x4675a`). In that case the converted unit has no generic bank. |
+| Squad and platoon | H1 decodes the encounter from the low word and the local squad or platoon from the next byte (`0x13eeee`, `0x13ef34..0x13ef63`). Campaign roster selection records those source ordinals through pruning and generated starts. Ordinary AI script literals and counted spawn controls bind those ordinals. Duplicate display names remain independently addressable. Counted spawn selects the first squad of a platoon and returns without spawning for a bare encounter or an empty platoon (`0x1422ec..0x14236c`). A required squad missing from the converted roster is an error. A squad with no matching platoon is outside that platoon's selection (`0x13e50f..0x13e522`). |
+| Maneuver and trigger targets | A negative or out-of-range maneuver target bypasses migration (`0x13e191..0x13e1be`). A trigger subject outside its platoon table uses the entire encounter's counts and vitality (`0x13af44..0x13af86`). Native order index overflow is a conversion error. |
+
+A read-only census of the 23 playable Xbox maps found 10,129 authored
+starts. Of these, 8,206 inherit the squad actor, 112 have no effective
+actor, and 1,614 specify a starting command list. The ignored
+`retail_spawn_bindings_keep_every_actor_weapon_and_command` check compares
+those bindings with the decoded v8 scenario for every location.
+
 ### `actr` and `actv`
 
 `actr` is `0x4f8` bytes; the converter reads flags `u32` `00`, more flags
@@ -747,10 +769,9 @@ b40's `a2_top_cov/grunt_sniper` names only firing group Y, and its
 encounter has no position in that group, so no site of any kind can be
 authored for it: it converts to a squad datum with zero starting
 locations, stays named and addressable, and a placement of it selects
-no start and spawns nothing. Halo 1's actor machinery walks the same
-authored starting-location records (Halo 1 `0x0015d3e9`–`0x0015d414`
-iterate them at stride `0x1c`, actor at `+0x18`, initial state at
-`+0x16`), and grunt_sniper authors none. The engine the converted map
+no start and spawns nothing. Halo 1 reads the squad's authored start count
+at `0x13b2bb` and indexes the selected 0x1c-byte record at `0x13e397`.
+This squad has zero records. The engine the converted map
 runs proves the outcome: the native selector (Halo 2 `0x002039d0`)
 reads the squad's starting-location count and, with none selectable,
 both passes fall through to `orl $-1, %eax` at `0x00203bb3`; it has no

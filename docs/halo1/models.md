@@ -727,9 +727,11 @@ the cyborg).
   resource. H2 `0x20aa70` reads one record per frame, with strides of 8,
   12 and 16 for XY, XY/yaw and XYZ/yaw. The source values retain their
   signs and order. The synthetic and disc round trips compare every byte.
-- Overlay and replacement animations keep only their animated channels.
-  Their Halo 1 default data is mostly the rest pose (1,567 non-identity
-  channels on the cyborg, 202 on the warthog), and is dropped.
+- **Built.** Overlay and replacement animations repeat each non-identity
+  default rotation, translation and scale in their animated stream. H2
+  reads the static stream only on base animations. An undriven identity
+  channel keeps its mask clear. The round-trip tests sample each frame
+  through the H2 decoder and check both channel presence and value.
 - Playback timing for the cyborg and first-person weapons is described
   above. Other graphs still omit loop starts and foot contacts.
 

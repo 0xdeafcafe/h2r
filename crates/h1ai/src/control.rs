@@ -108,6 +108,8 @@ pub struct AutomaticEncounter {
 #[derive(Default)]
 pub struct Control {
     squad_indices: Vec<Vec<Option<u16>>>,
+    /// Authored HaloScript AI selector to native datum, when serializing a level with AI.
+    script_indices: Option<BTreeMap<u32, u32>>,
     pub actions: BTreeMap<Request, Vec<Action>>,
     pub switches: BTreeSet<Platoon>,
     pub maneuver_requests: BTreeMap<Request, Vec<Platoon>>,
@@ -122,6 +124,36 @@ pub struct Control {
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
     pub automatic_encounters: BTreeMap<u16, AutomaticEncounter>,
+}
+
+impl Control {
+    /// Put authored script operands in the same numbering as the installed roster.
+    pub fn bind_script_indices(&mut self, plan: &Plan) {
+        let mut indices = plan.script_groups.clone();
+        for (ei, squads) in self.squad_indices.iter().enumerate() {
+            for (si, &native) in squads.iter().take(256).enumerate() {
+                if let Some(id) = native {
+                    indices.insert(0x8000_0000 | ((si as u32) << 16) | ei as u32, u32::from(id));
+                }
+            }
+        }
+        self.script_indices = Some(indices);
+    }
+
+    /// A missing table means this caller links symbolic hooks separately.
+    pub fn script_index(&self, source: u32) -> Option<crate::Result<u32>> {
+        let indices = self.script_indices.as_ref()?;
+        if source == u32::MAX {
+            return Some(Ok(u32::MAX));
+        }
+        let selector = match source >> 30 {
+            0 => source & 0xffff,
+            _ => source & 0xc0ff_ffff,
+        };
+        Some(indices.get(&selector).copied().ok_or_else(|| {
+            crate::Error::Invalid(format!("AI selector {source:#010x} has no converted roster entry"))
+        }))
+    }
 }
 
 pub struct UncoverRule {
@@ -176,18 +208,18 @@ fn maneuver_target(encounter: &Encounter, squad: &Squad) -> Option<usize> {
 
 /// The additional empty squads needed for scripted maneuvers. The caller
 /// still applies the runtime's total squad capacity.
-pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String> {
+pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<(usize, usize)> {
     let explicit = requests
         .iter()
         .filter(|r| r.operation == Operation::Maneuver)
         .filter_map(|r| decode(source, r.reference))
-        .flat_map(|(_, encounter, selection)| {
+        .flat_map(|(ei, encounter, selection)| {
             platoons(encounter, selection)
                 .flat_map(move |platoon| members(encounter, platoon))
                 .filter_map(|q| maneuver_target(encounter, q))
-                .map(|i| squad_name(encounter, &encounter.squads[i]).to_ascii_lowercase())
+                .map(move |i| (usize::from(ei), i))
         });
-    let triggered = source.encounters.iter().flat_map(|encounter| {
+    let triggered = source.encounters.iter().enumerate().flat_map(|(ei, encounter)| {
         encounter.squads.iter().filter_map(move |squad| {
             let platoon = encounter
                 .platoons
@@ -196,7 +228,7 @@ pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String>
                 return None;
             }
             let i = maneuver_target(encounter, squad)?;
-            Some(squad_name(encounter, &encounter.squads[i]).to_ascii_lowercase())
+            Some((ei, i))
         })
     });
     explicit.chain(triggered).collect()
@@ -206,18 +238,19 @@ pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String>
 pub fn automatic_migration_targets(
     source: &H1Ai,
     followed: Option<&BTreeSet<u16>>,
-) -> BTreeSet<String> {
+) -> BTreeSet<(usize, usize)> {
     source
         .encounters
         .iter()
         .enumerate()
         .filter(|(i, _)| followed.is_none_or(|groups| groups.contains(&(*i as u16))))
-        .flat_map(|(_, encounter)| {
+        .flat_map(|(ei, encounter)| {
             encounter
                 .squads
                 .iter()
-                .filter(|squad| squad.flags & 0x20 != 0)
-                .map(|squad| squad_name(encounter, squad).to_ascii_lowercase())
+                .enumerate()
+                .filter(|(_, squad)| squad.flags & 0x20 != 0)
+                .map(move |(si, _)| (ei, si))
         })
         .collect()
 }
@@ -226,34 +259,35 @@ fn squad_name(encounter: &Encounter, squad: &Squad) -> String {
     format!("{}/{}", encounter.name, squad.name)
 }
 
-fn converted_indices(source: &H1Ai, plan: &Plan) -> Vec<Vec<Option<u16>>> {
-    source
-        .encounters
-        .iter()
-        .enumerate()
-        .map(|(ei, encounter)| {
-            encounter
-                .squads
-                .iter()
-                .map(|squad| {
-                    let name = squad_name(encounter, squad);
-                    let mut matches = plan.ai.squads.iter().enumerate().filter(|(i, q)| {
-                        q.initial_zone == ei as i16 && plan.squad_names[*i].eq_ignore_ascii_case(&name)
-                    });
-                    let (i, _) = matches.next()?;
-                    // Ambiguous source names cannot identify the original squad.
-                    matches.next().is_none().then_some(i as u16)
-                })
-                .collect()
-        })
-        .collect()
-}
-
-/// Create the Halo 2 orders the scripts can select and keep every action's
-/// exact converted squad index. A maneuver with a stripped destination is
-/// kept unresolved because sending its actors elsewhere changes the level.
-pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Request]) -> Control {
-    let indices = converted_indices(source, plan);
+/// Prepare controls for a complete roster, in its source order. A filtered
+/// roster supplies the ordinals recorded during selection to `prepare_with_indices`.
+pub fn prepare(
+    source: &H1Ai,
+    plan: &mut Plan,
+    opts: &Options,
+    requests: &[Request],
+) -> crate::Result<Control> {
+    let mut next = 0;
+    let mut indices = Vec::with_capacity(source.encounters.len());
+    for (ei, encounter) in source.encounters.iter().enumerate() {
+        let mut rows = Vec::with_capacity(encounter.squads.len());
+        for squad in &encounter.squads {
+            let name = squad_name(encounter, squad);
+            if plan.squad_names.get(next) != Some(&name)
+                || plan.ai.squads.get(next).is_none_or(|q| q.initial_zone as usize != ei)
+            {
+                return Err(crate::Error::Invalid(format!("source squad {ei}/{name} has no ordinal {next} in roster")));
+            }
+            rows.push(Some(u16::try_from(next).map_err(|_| crate::Error::Invalid(
+                format!("{name}: squad index {next} exceeds native range"),
+            ))?));
+            next += 1;
+        }
+        indices.push(rows);
+    }
+    if next != plan.ai.squads.len() {
+        return Err(crate::Error::Invalid("control roster has extra squads".into()));
+    }
     prepare_with_indices(source, plan, opts, requests, indices)
 }
 
@@ -264,7 +298,23 @@ pub fn prepare_with_indices(
     opts: &Options,
     requests: &[Request],
     indices: Vec<Vec<Option<u16>>>,
-) -> Control {
+) -> crate::Result<Control> {
+    if indices.len() != source.encounters.len() || plan.ai.zones.len() != indices.len() {
+        return Err(crate::Error::Invalid("AI roster has the wrong encounter count".into()));
+    }
+    let mut seen = BTreeSet::new();
+    for (ei, (encounter, rows)) in source.encounters.iter().zip(&indices).enumerate() {
+        if rows.len() != encounter.squads.len() {
+            return Err(crate::Error::Invalid(format!("{}: AI roster has the wrong squad count", encounter.name)));
+        }
+        for (si, &id) in rows.iter().enumerate() {
+            if let Some(id) = id
+                && (!seen.insert(id) || plan.ai.squads.get(usize::from(id)).is_none_or(|q| q.initial_zone as usize != ei))
+            {
+                return Err(crate::Error::Invalid(format!("{} squad {si}: invalid native squad {id}", encounter.name)));
+            }
+        }
+    }
     let mut control = Control::default();
     let mut orders = BTreeMap::new();
     let mut follow_orders = BTreeMap::new();
@@ -301,9 +351,11 @@ pub fn prepare_with_indices(
                     .iter()
                     .position(|q| q.platoon == i16::from(i)),
             };
-            source_index
-                .and_then(|i| ids[i])
-                .map(|i| vec![Action::Spawn(i)])
+            let actions = match source_index {
+                Some(i) => vec![Action::Spawn(required_squad(encounter, ids, i)?)],
+                None => Vec::new(),
+            };
+            Some(actions)
         } else if request.operation == Operation::TimerExpire {
             Some(
                 encounter
@@ -341,7 +393,7 @@ pub fn prepare_with_indices(
                 encounter,
                 request,
                 radii.get(&encounter_index).copied().unwrap_or(4.0),
-            )
+            )?
         } else if request.operation == Operation::Migrate {
             migration_actions(
                 source,
@@ -361,7 +413,7 @@ pub fn prepare_with_indices(
                 encounter,
                 selection,
                 request.operation,
-            )
+            )?
         };
         if let Some(actions) = actions {
             control
@@ -373,7 +425,7 @@ pub fn prepare_with_indices(
             control.actions.insert(request, actions);
         }
     }
-    prepare_platoon_rules(source, plan, opts, &indices, &mut orders, &mut control);
+    prepare_platoon_rules(source, plan, opts, &indices, &mut orders, &mut control)?;
     for (ei, (encounter, ids)) in source.encounters.iter().zip(&indices).enumerate() {
         for (squad, &index) in encounter.squads.iter().zip(ids) {
             let Some(index) = index else {
@@ -398,14 +450,14 @@ pub fn prepare_with_indices(
             // migration and then be given a runtime follow target.
             if plan.ai.squads[usize::from(index)].initial_order < 0
                 && !plan.ai.zones[ei].areas.is_empty()
-                && let Some(order) = build_order(plan, opts, ei as u16, squad, index, Operation::Attack)
             {
+                let order = build_order(plan, opts, ei as u16, squad, index, Operation::Attack)?;
                 plan.ai.squads[usize::from(index)].initial_order = order as i16;
             }
         }
     }
     control.squad_indices = indices;
-    control
+    Ok(control)
 }
 
 /// Preserve flags in native start order. Roster-generated starts are spawn-only.
@@ -474,9 +526,7 @@ pub fn install_automatic_destinations(
                     let index = order_from_mask(
                         plan, opts, encounter, mask,
                         format!("h1_auto_{encounter}_{mask:x}_{:x}", masks[posture]),
-                    ).ok_or_else(|| crate::Error::Invalid(
-                        "too many native orders for automatic AI destinations".into(),
-                    ))?;
+                    )?;
                     orders.insert(key, index);
                     Ok(index)
                 };
@@ -515,7 +565,7 @@ fn prepare_platoon_rules(
     indices: &[Vec<Option<u16>>],
     orders: &mut BTreeMap<(u16, Operation), u16>,
     control: &mut Control,
-) {
+) -> crate::Result<()> {
     let explicit: BTreeSet<_> = control
         .maneuver_requests
         .values()
@@ -577,44 +627,30 @@ fn prepare_platoon_rules(
                 rule.members.push(id);
                 if rule.change.is_some() || initial == Operation::Defend {
                     // Cache the attacking order before installing a defensive default.
-                    let attack =
-                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Attack);
-                    let defend =
-                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Defend);
-                    if let (Some(attack), Some(defend)) = (attack, defend) {
-                        plan.ai.squads[usize::from(id)].initial_order =
-                            if initial == Operation::Attack {
-                                attack
-                            } else {
-                                defend
-                            } as i16;
-                        if rule.change.is_some() {
-                            rule.orders.push((
-                                id,
-                                if changed == Operation::Attack {
-                                    attack
-                                } else {
-                                    defend
-                                },
-                            ));
-                        }
+                    let attack = cached_order(plan, opts, orders, ei as u16, q, id, Operation::Attack)?;
+                    let defend = cached_order(plan, opts, orders, ei as u16, q, id, Operation::Defend)?;
+                    plan.ai.squads[usize::from(id)].initial_order =
+                        if initial == Operation::Attack { attack } else { defend } as i16;
+                    if rule.change.is_some() {
+                        rule.orders.push((id, if changed == Operation::Attack { attack } else { defend }));
                     }
                 }
                 if can_arm
                     && let Some(target) = maneuver_target(encounter, q)
-                    && let Some(to) = ids[target]
-                    && id != to
                 {
-                    if plan.ai.squads[usize::from(to)].initial_order < 0
-                        && let Some(order) = build_order(
+                    let to = required_squad(encounter, ids, target)?;
+                    if id == to {
+                        continue;
+                    }
+                    if plan.ai.squads[usize::from(to)].initial_order < 0 {
+                        let order = build_order(
                             plan,
                             opts,
                             ei as u16,
                             &encounter.squads[target],
                             to,
                             Operation::Attack,
-                        )
-                    {
+                        )?;
                         plan.ai.squads[usize::from(to)].initial_order = order as i16;
                     }
                     rule.routes.push((id, to));
@@ -625,6 +661,16 @@ fn prepare_platoon_rules(
             }
         }
     }
+    Ok(())
+}
+
+fn required_squad(encounter: &Encounter, ids: &[Option<u16>], index: usize) -> crate::Result<u16> {
+    ids[index].ok_or_else(|| {
+        crate::Error::Invalid(format!(
+            "{}/{}: source squad {index} missing from native roster",
+            encounter.name, encounter.squads[index].name
+        ))
+    })
 }
 
 fn cached_order(
@@ -635,9 +681,9 @@ fn cached_order(
     squad: &Squad,
     id: u16,
     operation: Operation,
-) -> Option<u16> {
+) -> crate::Result<u16> {
     use std::collections::btree_map::Entry;
-    Some(match orders.entry((id, operation)) {
+    Ok(match orders.entry((id, operation)) {
         Entry::Occupied(entry) => *entry.get(),
         Entry::Vacant(entry) => {
             *entry.insert(build_order(plan, opts, encounter, squad, id, operation)?)
@@ -655,7 +701,7 @@ fn platoon_actions(
     encounter: &Encounter,
     selection: Selection,
     operation: Operation,
-) -> Option<Vec<Action>> {
+) -> crate::Result<Option<Vec<Action>>> {
     let mut actions = Vec::new();
     for index in platoons(encounter, selection) {
         let platoon = Platoon {
@@ -677,7 +723,7 @@ fn platoon_actions(
                 let Some(target) = maneuver_target(encounter, squad) else {
                     continue;
                 };
-                let to = ids[target]?;
+                let to = required_squad(encounter, ids, target)?;
                 if to != from {
                     if plan.ai.squads[usize::from(to)].initial_order < 0 {
                         let order = build_order(
@@ -703,7 +749,7 @@ fn platoon_actions(
             }
         }
     }
-    Some(actions)
+    Ok(Some(actions))
 }
 
 // Move a destination's original actors first if it is itself a source.
@@ -731,11 +777,11 @@ fn build_order(
     source: &Squad,
     squad: u16,
     operation: Operation,
-) -> Option<u16> {
+) -> crate::Result<u16> {
     if operation == Operation::Attack
         && let Ok(index) = u16::try_from(plan.ai.squads[usize::from(squad)].initial_order)
     {
-        return Some(index);
+        return Ok(index);
     }
     let mask = if operation == Operation::Defend {
         source.groups[3]
@@ -752,7 +798,7 @@ fn order_from_mask(
     encounter: u16,
     mask: u32,
     name: String,
-) -> Option<u16> {
+) -> crate::Result<u16> {
     let zone = &plan.ai.zones[usize::from(encounter)];
     let mut primary_areas = Vec::new();
     for (index, area) in zone.areas.iter().enumerate() {
@@ -779,8 +825,7 @@ fn order_from_mask(
             area: i as i16,
         }));
     }
-    let index = i16::try_from(plan.ai.orders.len()).ok()?;
-    plan.ai.orders.push(Order {
+    push_order(plan, Order {
         name,
         style: opts.order_style,
         flags: 0,
@@ -792,8 +837,15 @@ fn order_from_mask(
         primary_areas,
         secondary_areas: Vec::new(),
         endings: 0,
-    });
-    Some(index as u16)
+    })
+}
+
+fn push_order(plan: &mut Plan, order: Order) -> crate::Result<u16> {
+    let index = i16::try_from(plan.ai.orders.len()).map_err(|_| {
+        crate::Error::Invalid(format!("{}: native AI order index overflow", order.name))
+    })?;
+    plan.ai.orders.push(order);
+    Ok(index as u16)
 }
 
 /// Halo 2 uses bit 4 to look up the nearest player for this squad, and bit
@@ -812,18 +864,18 @@ fn follow_actions(
     encounter: &Encounter,
     request: Request,
     radius: f32,
-) -> Option<Vec<Action>> {
+) -> crate::Result<Option<Vec<Action>>> {
     let target = if request.operation == Operation::FollowAi {
-        let (to_encounter, _, Selection::Squad(to)) = decode(source, request.target?)? else {
-            return None;
+        let Some((to_encounter, _, Selection::Squad(to))) = request.target.and_then(|ai| decode(source, ai)) else {
+            return Ok(None);
         };
         // Each retail call targets a squad in its own encounter. Those
         // calls also clear the leader's follow order before linking any
         // peers, so a change of leader can't form a native follow cycle.
         if to_encounter != encounter_index {
-            return None;
+            return Ok(None);
         }
-        Some(indices[usize::from(to_encounter)][usize::from(to)]?)
+        Some(required_squad(encounter, &indices[usize::from(to_encounter)], usize::from(to))?)
     } else {
         None
     };
@@ -848,8 +900,7 @@ fn follow_actions(
                 order.flags |= FOLLOW_PLAYER;
             }
             order.follow_radius = radius;
-            let index = i16::try_from(plan.ai.orders.len()).ok()? as u16;
-            plan.ai.orders.push(order);
+            let index = push_order(plan, order)?;
             orders.insert((squad, request.operation, target), index);
             index
         };
@@ -858,7 +909,7 @@ fn follow_actions(
     // A formerly followed squad must stop following before its peers
     // adopt its order. The native resolver follows order links recursively.
     actions.sort_by_key(|a| !matches!(a, Action::SetOrder { squad, .. } if Some(*squad) == target));
-    Some(actions)
+    Ok(Some(actions))
 }
 
 fn selected_squads(encounter: &Encounter, selection: Selection) -> impl Iterator<Item = usize> {
