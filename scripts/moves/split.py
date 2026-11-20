@@ -19,7 +19,9 @@ The domain of a new package is its entry in scripts/crate-domains.toml.
 --check prints the references that stop the move and exits 1 if there are
 any; the window refuses to run until there are none (--force overrides):
 
-    up    no module that stays may name a module that leaves
+    up    no module that stays may name a module that leaves (`crate::m`,
+          a bare `m::` in the root, `super::m` from a top-level module),
+          and no module that leaves may reach the root with `super::`
     down  no module that leaves may name a module that stays, or an item
           of the crate root
 
@@ -239,7 +241,26 @@ def main():
     # What stops the move.
     if up:
         blockers = references(staying_files, set(leaving))
-        rule = f"a module that stays in `{src_pkg}` names one that leaves"
+        # The root names its modules bare (`native_decals::X`), and a
+        # top-level module reaches the root's others with `super::`.
+        root_files = [f for f in staying_files if f == src_lib]
+        declared = {m.group(3) for m in map(MOD_LINE.match, (read(src_lib) or "").split("\n")) if m}
+        top_level = [f for f in staying_files + moving_files
+                     if os.path.dirname(f) == os.path.dirname(src_lib) and os.path.basename(f)[:-3] in declared]
+        for path in root_files + top_level:
+            for i, line in enumerate((read(path) or "").split("\n"), 1):
+                if re.match(r"\s*(pub(\([\w: ]+\))?\s+)?mod\s+\w+\s*\{", line):
+                    break  # an inline module (the tests): `super::` is the file there
+                if line.lstrip().startswith(("//", "pub mod ", "mod ", "#[")):
+                    continue
+                if path in root_files:
+                    names = set(re.findall(r"(?<![\w:$])(\w+)::", line)) & set(leaving)
+                else:
+                    names = set(re.findall(r"(?<![\w:])super::(\w+)", line))
+                    names = names & set(leaving) if path in staying_files else names - set(leaving)
+                for named in names:
+                    blockers.setdefault(named, []).append(f"{path}:{i}")
+        rule = f"a module that stays in `{src_pkg}` names one that leaves, or a path crosses the cut"
     else:
         named = references(moving_files, None)
         blockers = {n: sites for n, sites in named.items() if n not in leaving and n not in reexported}
