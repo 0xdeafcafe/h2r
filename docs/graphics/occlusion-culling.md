@@ -3,7 +3,7 @@
 Status: Research. The read below is current; the Hi-Z culling built on it
 was not adopted and is deleted ([not-adopted.md](notes/not-adopted.md)).
 Code: `crates/rewrites/engine/src/render_loop/occlusion/guest.rs` (the
-addresses), `crates/rewrites/engine/src/points.rs` (`OBJECT_RENDER_RECORDS`,
+addresses), `crates/hooking/guest-layout/src/points.rs` (`OBJECT_RENDER_RECORDS`,
 `OBJECT_RENDER_SETUP`, `SCENE_TRANSPARENTS`).
 
 The game's render front-end is CPU-bound guest code: each draw costs
