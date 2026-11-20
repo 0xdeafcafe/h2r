@@ -71,7 +71,6 @@ asf = { path = "../../formats/asf", optional = true }
 wma = { path = "../../platform/wma", optional = true }
 live-hle = { path = "../../live/live-hle", optional = true }
 live-proto.workspace = true
-live-hle = { path = "../../live/live-hle", optional = true }
 live-server.workspace = true
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
 cloud-saves = { workspace = true, optional = true }
@@ -144,7 +143,6 @@ desktop = [
     "dep:studio-proto",
     "dep:timeline",
     "dep:app",
-    "dep:live-hle",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
