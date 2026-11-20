@@ -52,7 +52,7 @@ crates/
   extensions/  agent agent-proto debug-menu hot-tags lockstep
                +game +ui-kit h1-runtime  [+net-glue +bot-glue +theater]
   tools/       h1map ~h1-assets h1convert h1objects ~h1campaign
-               editor-core scenario-edit hopper-edit hud-edit  perf viewer  [+live-art]
+               editor-core scenario-edit hopper-edit hud-edit  perf viewer  xtask  [+live-art]
   apps/        boot cli app app-icon studio studio-proto ~h2host uwp-host
                +cmd +cmd-host +cmd-play +cmd-tags +cmd-recomp +cmd-h1 +cmd-dev
                [+cmd-live +cmd-drive]
@@ -68,7 +68,7 @@ crates/
 | `rewrites` | Rust that replaces a guest subsystem: the native simulation, FrameScene, the native renderer, ported engine functions, and the bridge that installs each one | 2 | 67,225 |
 | `live` | Live, the co-op transport, bots, films, cloud saves, the dedicated host's data, the service | 11 | 222,959 |
 | `extensions` | Features we add to the game: menus and settings screens, skulls, the campaign picker, Halo 1 in game, Live and bots in game, theater, the agent API, the debug menu | 5 | 27,033 |
-| `tools` | Offline work on game data: the Halo 1 converters, the editor cores, the profiler, the Live art pipeline | 17 | 169,758 |
+| `tools` | Offline work on game data: the Halo 1 converters, the editor cores, the profiler, the Live art pipeline; and `xtask`, the workspace's test runner | 17 | 169,758 |
 | `apps` | What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts | 8 | 270,879 |
 
 `hooking` and `extensions` are small today because their code is inside
@@ -843,38 +843,45 @@ Rules:
 
 ## Gates
 
-### Local: `scripts/gate.sh`
+### Local: `cargo xtask`
 
-A proposal; the script is the coordinator's to write and run, since it
-runs cargo. It replaces `scripts/check.sh`, whose `cargo fmt --all
---check` cannot pass on crates that are not rustfmt-clean.
+`cargo xtask` (`crates/tools/xtask`, the alias is in `.cargo/config.toml`)
+runs the gates. The details of the test run, the affected set and the
+ledger are in [build-speed.md](build-speed.md), sections 3 to 5.
 
 ```sh
-scripts/gate.sh lint        # seconds, no compile
-scripts/gate.sh check       # desktop and host-only cargo check
-scripts/gate.sh test        # everything that needs no disc
-scripts/gate.sh disc        # everything that needs one
-scripts/gate.sh move <id>   # a window's check
-scripts/gate.sh all         # lint, check, test, disc
+cargo xtask check                 # the cli checks, the crate rules and table, changed docs
+cargo xtask test                  # the affected packages: nextest, then doctests
+cargo xtask test --all --web      # every package, and the web app
+cargo xtask test --disc           # and the tier that needs a disc
+cargo xtask affected              # the affected packages, one per line
+cargo xtask test --dry-run        # the packages and the exact commands
 ```
 
 | Tier | Runs |
 |---|---|
-| `lint` | `scripts/crate-table.py --check`; `scripts/crate-graph.py layers --check` (the domain rules); the host budget (`closure cli --features host` crate count at most the number in the script); the docs check from the docs lane; `rustfmt --check` on files changed against `master` that were clean there |
-| `check` | `cargo check --workspace --all-targets`; `cargo check -p cli --no-default-features --features host`; `cargo clippy --workspace --all-targets -- -D warnings` |
-| `test` | `cargo nextest run --workspace` with `.config/nextest.toml`; `cargo test --workspace --doc` |
-| `disc` | With `H2_DISC`, `H1_ISO`, `H2_XBE` and `H2_ORACLE_FIXTURES` set from `disc/` when unset: `cargo nextest run --workspace --run-ignored ignored-only -E 'not test(/bench|slow/)'`; `cargo test -p lift --features oracle-fixtures --test oracle`; `cargo test -p engine --features differential`. Prints the count of tests that ran and refuses zero |
-| `move <id>` | the rename-only diff between `move-<id>-pre` and `move-<id>`, then `lint`, `check`, `cargo test --workspace --no-run` |
+| `check` | `cargo check --locked -p cli`; the same with `--no-default-features --features host`; `scripts/crate-graph.py layers --check` (the domain rules); `scripts/crate-table.py --check`; `scripts/docs-check.py` on the docs changed against `--base` |
+| `test` | the two `cli` checks when `cli` is affected; one `cargo nextest run --profile xtask --no-fail-fast` over every affected package; `cargo test --doc` for those with doctests; with `--web` or a change under `web/`, `bun test` and `bun run typecheck` beside them |
+| `test --disc` | With `H2_XBE`, `H2_DISC`, `H1_ISO` and `H2_ORACLE_FIXTURES` set from `disc/` when unset (`default.xbe`, `halo2.iso`, `halo1.iso`, `oracle/*.jsonl`; `disc/` beside the main checkout, which worktrees share): `cargo nextest run --run-ignored ignored-only -E 'not test(/bench\|slow/)'` over the same packages; then, for each of these packages being tested, `cargo test -p lift --features oracle-fixtures --test oracle`, `cargo test -p engine --features differential`, `cargo test -p native-render --features differential`, `runtime` with `H2_EMIT_FLAT_RAM=1 H2_FLAT_RAM=1`, and `emit`'s flat-RAM tests with `H2_EMIT_FLAT_RAM=1`. A step that runs no test fails, and so does the tier without a disc or the oracle without fixtures |
 
-- Every cargo call goes through the shared test ledger, which moves into
-  the repository as `scripts/tested` with the cargo-slot path read from
-  `H2_CARGO_SLOT` instead of a session directory. A pass for a tree is
-  then a fact any agent can reuse.
+- A hung test does not hold the run: the `xtask` profile in
+  `.config/nextest.toml` kills a test after five minutes, a disc test
+  after thirty, and reports it as failed.
+- The output ends with one line per package (passed, failed, skipped,
+  the slowest test), the failed tests with the first lines of their
+  output, and one line per step: `PASS`, `FAIL`, `LEDGER` or
+  `NOT NEEDED`. The exit status is 0 only when nothing is `FAIL`.
+- Passes are shared between worktrees through the test ledger
+  (build-speed.md, section 4).
 - The disc tier needs one convention: a test that reads a disc has `_disc`
   in its module or test name, as `h1objects/tests/*_disc.rs` and
   `.config/nextest.toml` already assume, and a benchmark has `bench`.
   Today's 530 `#[ignore]`s carry 25 different reasons and 59 carry none.
-- The coordinator runs `all` before a push and `move <id>` in a window.
+- The coordinator runs `cargo xtask check` and `cargo xtask test --disc`
+  before a push.
+- `scripts/check.sh` stays for rustfmt and clippy on one package or the
+  workspace; its `cargo fmt --all --check` cannot pass on crates that
+  are not rustfmt-clean.
 
 ### CI: `.github/workflows/ci.yml`
 
@@ -883,9 +890,9 @@ not.
 
 | Job | Runner | Runs | Catches |
 |---|---|---|---|
-| `lint` | ubuntu | `scripts/gate.sh lint` | a crate with no description or outside its domain, a refused dependency, a stale table, the host budget |
+| `lint` | ubuntu | `python3 scripts/crate-graph.py layers --check`, `python3 scripts/crate-table.py --check` | a crate with no description or outside its domain, a refused dependency, a stale table |
 | `host` | ubuntu | `cargo check -p cli --no-default-features --features host` | desktop code leaking into the dedicated host; a Linux break |
-| `test` | macos | `scripts/gate.sh check`, then `scripts/gate.sh test` | what CI catches now, through nextest |
+| `test` | macos | `cargo xtask test --all` | what CI catches now, through nextest |
 
 The differential suites that prove ports (`crates/lift/tests/oracle.rs`,
 the 14 `*_differential.rs` in `crates/engine/tests`, the disc tests of
