@@ -1296,8 +1296,14 @@ mod tests {
 
     #[test]
     fn mounted_fire_is_the_seated_players_shot_and_handheld_waits_for_its_holder() {
+        // The sample's unit is the holder's own raw datum, so the two
+        // agree by construction (`player_of_unit` compares raws).
+        let holder = engine::DatumHandle::new(0xe, 1);
         let snap = telemetry::Snapshot {
-            players: vec![player(0, Some(0), 0xe001), player(1, None, 0xe002)],
+            players: vec![
+                player(0, Some(0), holder.raw()),
+                player(1, None, 0xe002),
+            ],
             objects: vec![Some(object(None, None, 1.0, 0)), Some(object(None, None, 1.0, 0))],
             ..Default::default()
         };
@@ -1309,7 +1315,6 @@ mod tests {
         assert_eq!(shot_of(Some(FiredBy::Seated(u32::MAX)), None), None);
         // A handheld weapon: the holder biped's player from the sample,
         // else deferred to the next tick's held-weapon snapshot.
-        let holder = engine::DatumHandle::new(0xe, 1);
         assert_eq!(shot_of(Some(FiredBy::Holder(holder)), Some(&s)), Some(0));
         assert_eq!(shot_of(Some(FiredBy::Holder(holder)), None), None);
         // Nothing readable behind the weapon: deferred as before.

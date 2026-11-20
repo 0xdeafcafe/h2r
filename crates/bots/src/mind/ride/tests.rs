@@ -536,7 +536,7 @@ fn a_driver_with_a_way_over_keeps_driving_and_never_holds_x() {
     for t in 0..150u32 {
         let at = [2.0, 2.0 + 0.5 * t as f32, 0.0];
         m.see_vehicles(driving(ghost(100, at)));
-        pad = step(m, bot(at), vec![], t, Some(&map));
+        pad = step(&mut m, bot(at), vec![], t, Some(&map));
         x |= holds_x(&pad);
     }
     assert!(!x, "nowhere to leave over a drivable link");
