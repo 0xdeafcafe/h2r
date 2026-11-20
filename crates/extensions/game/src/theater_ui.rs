@@ -18,6 +18,77 @@ pub const FILMS: &str = "theater.films";
 pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
 
+/// The main menu's retail list constructor, item text and press.
+pub(crate) mod menu {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub const LIST_NAME: u32 = 0x0045_8b38;
+    pub const VTABLE: u32 = 0x0045_8a70;
+    pub const ROW_TEXT: u32 = 0x0023_07c8;
+    pub const ROW_CHOSEN: u32 = 0x0023_0827;
+    pub const LAST_ROW: u32 = 0x0051_0a14;
+    pub const LABEL: &str = "THEATER";
+    pub const LABEL_ID: u32 = crate::ui_kit::ids::family("theater menu").id(0);
+
+    const VANILLA_ROWS: u32 = 5;
+    const XBOX_LIVE_ROW: i16 = 1;
+    pub const ROW: i16 = XBOX_LIVE_ROW + 1;
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_installed(installed: bool) {
+        INSTALLED.store(installed, Ordering::Relaxed);
+    }
+
+    pub fn installed() -> bool {
+        INSTALLED.load(Ordering::Relaxed)
+    }
+
+    pub fn count(name: u32, count: u32) -> u32 {
+        // The retail tag's pane already has room for six item widgets.
+        if name == LIST_NAME && count == VANILLA_ROWS {
+            count + 1
+        } else {
+            count
+        }
+    }
+
+    /// Rows after Theater still use their retail text and press handlers.
+    pub fn shifted_retail_row(row: i16) -> Option<i16> {
+        (ROW + 1..=VANILLA_ROWS as i16)
+            .contains(&row)
+            .then(|| row - 1)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::ui_kit::view::Opener;
+
+        #[test]
+        fn the_main_menu_puts_theater_immediately_after_xbox_live() {
+            let rows = Opener::MAIN_MENU.rows;
+            assert_eq!(count(LIST_NAME, VANILLA_ROWS) as usize, rows.len());
+            assert_eq!(count(LIST_NAME, VANILLA_ROWS + 1), VANILLA_ROWS + 1);
+            assert_eq!(
+                count(crate::custom_games::LIST_NAME, VANILLA_ROWS),
+                VANILLA_ROWS
+            );
+            assert_eq!(rows[Opener::MAIN_MENU.focus], "Xbox Live");
+            assert_eq!(ROW as usize, Opener::MAIN_MENU.focus + 1);
+            assert_eq!(rows[ROW as usize], "THEATER");
+            assert_eq!(
+                &rows[ROW as usize + 1..],
+                &["Split Screen", "System Link", "Settings"]
+            );
+            assert_eq!(shifted_retail_row(ROW), None);
+            assert_eq!(shifted_retail_row(3), Some(2));
+            assert_eq!(shifted_retail_row(4), Some(3));
+            assert_eq!(shifted_retail_row(5), Some(4));
+            assert_eq!(shifted_retail_row(6), None);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tab {
     #[default]

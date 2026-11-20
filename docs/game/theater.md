@@ -255,8 +255,10 @@ dedicated match.
 
 ### In-game Theater
 
-From the main menu, open **Xbox Live**, then **THEATER**. Use the top row
-and Left or Right to switch between **Recent**, **Saved** and **Clips**.
+Select **THEATER** directly below **Xbox Live** on the main menu. The
+entry in `crates/extensions/game/src/layout_glue.rs` opens the film
+selector for the controller that selects it. Use the top row and Left or
+Right to switch between **Recent**, **Saved** and **Clips**.
 The next three rows change the sort order (Newest, Map or Game type) and
 filter by map and game type. The film rows show the level and game type.
 Highlight a film to see its map preview, mode or playlist, variant, date,

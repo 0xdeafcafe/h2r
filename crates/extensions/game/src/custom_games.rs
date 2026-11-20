@@ -28,7 +28,7 @@
 //! show the rows in this order: rows 0 and 1 as retail, row 2 Clankermatch
 //! (OptiMatch's press with `crate::clankermatch::active` set,
 //! docs/game/bots.md §8.3), then Co-op Campaign when enabled, Custom Game,
-//! the browser, Content Download and THEATER. The browser's row opens
+//! the browser and Content Download. The browser's row opens
 //! the Live browser with
 //! `0x149f1e(1 << player, 0x2531c9)`, the request the System Link path
 //! builds at `0x252951`; Content Download opens the Mods screen or the
@@ -49,7 +49,7 @@
 //! (`0x24bb60`) links our additional item widgets after the four. The
 //! list lays the widgets out in order (`0x24bc12`). The tag's
 //! list shows at most seven items. [`Menu::extend_tag`] gives the added
-//! rows their panes. The eight-row list uses the retail scrolling path.
+//! rows their panes.
 //!
 //! **Privacy.** The party privacy screen (screen `0x19`, list "squad privacy
 //! setting list") offers 0 open, 1 friends, 2 invite only (the last two only
@@ -175,11 +175,6 @@ pub const VANILLA_ITEMS: u32 = 4;
 const VISIBLE_ITEMS: u32 = 7;
 pub const MAX_EXTRA_ITEMS: u32 = VISIBLE_ITEMS - VANILLA_ITEMS;
 
-const THEATER_TEXT_ID: u32 = crate::ui_kit::ids::family("live menu rows").id(10);
-const THEATER_HELP_ID: u32 = crate::ui_kit::ids::family("live menu rows").id(11);
-const THEATER_TEXT: &str = "THEATER";
-const THEATER_HELP: &str = "Watch saved films, recent games and clips.";
-
 // ---- the Map Pack dialog ----
 
 /// One-button dialog (stdcall: kind 1, error id, 4, player mask, on press,
@@ -243,22 +238,12 @@ pub fn set_mods_row(on: bool) {
 /// the lobby is registered after the layout hooks.
 #[derive(Clone, Copy)]
 pub struct Menu {
-    pub custom_games: bool,
     pub coop: bool,
-    pub theater: bool,
 }
 
 impl Menu {
-    fn custom_rows(self) -> u32 {
-        if self.custom_games {
-            2 + u32::from(self.coop)
-        } else {
-            0
-        }
-    }
-
     pub fn rows(self) -> u32 {
-        VANILLA_ROWS + self.custom_rows() + u32::from(self.theater)
+        VANILLA_ROWS + 2 + u32::from(self.coop)
     }
 
     pub fn visible(self) -> u32 {
@@ -274,13 +259,7 @@ impl Menu {
     }
 
     pub fn row_kind(self, row: i16) -> Row {
-        if self.theater && row == self.rows() as i16 - 1 {
-            Row::Theater
-        } else if self.custom_games {
-            row_kind_with(row, self.coop)
-        } else {
-            Row::Retail
-        }
+        row_kind_with(row, self.coop)
     }
 
     pub fn row_text_id(self, row: i16) -> Option<u32> {
@@ -292,22 +271,11 @@ impl Menu {
     }
 
     pub fn pane_of(self, row: i16, panes: u32) -> Pane {
-        let kind = self.row_kind(row);
-        if kind == Row::Theater {
-            let pane = self.rows() - 1;
-            if panes > pane {
-                Pane::Show(pane as i16)
-            } else {
-                Pane::Keep
-            }
-        } else {
-            pane_for(kind, panes)
-        }
+        pane_for(self.row_kind(row), panes)
     }
 
     pub fn extend_tag<M: Gm>(self, m: &mut M, wgit: u32, base: u32) -> Option<bool> {
-        let mods = self.custom_games && mods_row_enabled();
-        extend_tag_with(m, wgit, base, TAG_SPACE, self, mods)
+        extend_tag_with(m, wgit, base, TAG_SPACE, self, mods_row_enabled())
     }
 }
 
@@ -328,8 +296,6 @@ pub enum Row {
     /// Content Download, moved down: opens the Mods screen
     /// (`crate::mods_screen`), else the Map Pack dialog.
     Download,
-    /// Ours: opens the film library over this menu.
-    Theater,
 }
 
 pub fn row_kind_with(row: i16, coop: bool) -> Row {
@@ -370,7 +336,6 @@ fn text_id(kind: Row, mods: Option<u32>) -> Option<u32> {
         Row::Browser => Some(TEXT_ID),
         Row::Coop => Some(COOP_TEXT_ID),
         Row::Download => Some(mods.unwrap_or(DOWNLOAD_TEXT_ID)),
-        Row::Theater => Some(THEATER_TEXT_ID),
         Row::Retail => None,
     }
 }
@@ -398,7 +363,7 @@ fn pane_for(kind: Row, panes: u32) -> Pane {
         (Row::Coop, true) if panes > COOP_PANE as u32 => Pane::Show(COOP_PANE),
         // No pane of ours: keep the one shown rather than show another
         // row's help for ours.
-        (Row::Clankermatch | Row::Browser | Row::Coop | Row::Theater, _) => Pane::Keep,
+        (Row::Clankermatch | Row::Browser | Row::Coop, _) => Pane::Keep,
         (Row::Download, _) => Pane::Show(RETAIL_DOWNLOAD_ROW),
     }
 }
@@ -556,8 +521,6 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (CLANKERMATCH_HELP_ID, CLANKERMATCH_HELP),
         (SWITCH_CLANKERMATCH_TEXT_ID, SWITCH_CLANKERMATCH_TEXT),
         (MODS_HELP_ID, MODS_HELP),
-        (THEATER_TEXT_ID, THEATER_TEXT),
-        (THEATER_HELP_ID, THEATER_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),
     ]
@@ -758,7 +721,6 @@ fn extend_tag_with<M: Gm>(
     for p in 0..panes {
         let ours = p >= VANILLA_PANES;
         let help_id = match p as i16 {
-            _ if menu.theater && p == panes - 1 => THEATER_HELP_ID,
             COOP_PANE => COOP_HELP_ID,
             CLANKERMATCH_PANE => CLANKERMATCH_HELP_ID,
             _ => HELP_ID,
@@ -921,11 +883,7 @@ mod tests {
     }
 
     fn regular_menu(coop: bool) -> Menu {
-        Menu {
-            custom_games: true,
-            coop,
-            theater: false,
-        }
+        Menu { coop }
     }
 
     #[test]
@@ -1266,37 +1224,21 @@ mod tests {
     }
 
     #[test]
-    fn theater_adds_only_an_xbox_live_row_and_keeps_the_retail_scroll_budget() {
-        for (custom_games, coop, total, visible) in [
-            (false, false, 5, 5),
-            (true, false, 7, 7),
-            (true, true, 8, 7),
-        ] {
-            let menu = Menu {
-                custom_games,
-                coop,
-                theater: true,
-            };
-            let theater = total as i16 - 1;
-            assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), total);
-            assert_eq!(menu.count(0x0045_8b38, 5), 5, "title menu");
-            assert_eq!(menu.visible(), visible);
-            assert_eq!(menu.row_kind(theater), Row::Theater);
-            assert_eq!(menu.row_kind(theater - 1), if custom_games { Row::Download } else { Row::Retail });
-            assert_eq!(menu.row_text_id(theater), Some(THEATER_TEXT_ID));
-            assert_eq!(menu.pane_of(theater, VANILLA_PANES), Pane::Keep);
-            assert_eq!(menu.pane_of(theater, total), Pane::Show(theater));
+    fn content_download_is_last_and_the_live_menu_fits_the_visible_slots() {
+        for (coop, rows) in [(false, 6), (true, 7)] {
+            let menu = regular_menu(coop);
+            assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), rows);
+            assert_eq!(menu.visible(), rows);
+            assert_eq!(menu.row_kind(rows as i16 - 1), Row::Download);
+            assert_eq!(menu.row_kind(rows as i16), Row::Retail);
 
             let mut m = Fake::default();
             let wgit = live_tag(&mut m, 4);
             assert_eq!(menu.extend_tag(&mut m, wgit, BASE), Some(true));
-            assert_eq!(m.u32(wgit + 0x20), Some(total));
+            assert_eq!(m.u32(wgit + 0x20), Some(rows));
             let list = m.u32(BASE + 0x10).unwrap();
-            assert_eq!(i16_at(&m, list + 6), visible as i16);
-            let texts = m.u32(BASE + (total - 1) * PANE_SIZE + 0x20).unwrap();
-            assert_eq!(m.u32(texts + 2 * TEXT_SIZE + 0x24), Some(THEATER_HELP_ID));
+            assert_eq!(i16_at(&m, list + 6), rows as i16);
         }
-        assert_eq!(THEATER_TEXT, "THEATER");
     }
 
     #[test]

@@ -33,11 +33,13 @@ pub const CLANKERMATCH_ROW: u32 = 2;
 pub const COOP_ROW: u32 = 3;
 pub const CUSTOM_GAME_ROW: u32 = 4;
 pub const BROWSER_ROW: u32 = 5;
-/// Main menu rows (`boot::ui_watch`: `0x230827`): 0 Campaign, 1 Xbox Live,
+/// Retail main menu rows: 0 Campaign, 1 Xbox Live,
 /// 2 Split Screen, 3 System Link, 4 Settings.
 pub const MAIN_LIVE_ROW: u32 = 1;
 pub const MAIN_SPLIT_ROW: u32 = 2;
 pub const MAIN_SYSTEM_LINK_ROW: u32 = 3;
+/// The UI watch log marker for the players' screen when the main menu has Theater.
+pub const MAIN_MENU_THEATER_MARKER: &str = ", main menu theater";
 
 /// One press: held 150 ms and two reads, so a slow frame still sees it.
 pub const PRESS_MS: u64 = 150;
@@ -65,6 +67,9 @@ pub struct Screen {
     pub mode: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_menu_row: Option<u32>,
+    /// The main menu has Theater immediately after Xbox Live.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub main_menu_theater: bool,
 }
 
 /// What a press should lead to. Every field given must hold.
@@ -105,13 +110,15 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn row(self) -> u32 {
-        match self {
+    /// This mode's display row, with Theater between Xbox Live and Split Screen.
+    pub fn row(self, main_menu_theater: bool) -> u32 {
+        let retail = match self {
             Mode::Campaign => 0,
             Mode::XboxLive => MAIN_LIVE_ROW,
             Mode::SplitScreen => MAIN_SPLIT_ROW,
             Mode::SystemLink => MAIN_SYSTEM_LINK_ROW,
-        }
+        };
+        retail + u32::from(main_menu_theater && retail > MAIN_LIVE_ROW)
     }
 
     /// Where A on its row goes.
@@ -282,8 +289,8 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
                 main_menu: true,
                 ..Default::default()
             };
-            until(rpc, &main, STEP_MS, "mode: on the main menu")?;
-            let mut b = downs(mode.row());
+            let s = until(rpc, &main, STEP_MS, "mode: on the main menu")?;
+            let mut b = downs(mode.row(s.main_menu_theater));
             b.push("a");
             press(rpc, &b)?;
             let mut want = mode.opens();
@@ -396,6 +403,7 @@ mod tests {
             screen,
             mode,
             live_menu_row: row,
+            ..Default::default()
         }
     }
 
@@ -409,21 +417,28 @@ mod tests {
     }
 
     #[test]
-    fn mode_presses_down_to_the_row_and_checks_the_screen() {
-        let mut m = Menu {
-            now: Screen::default(),
-            after: [at(Some(JOIN_SCREEN), Some(MODE_SYSTEM_LINK), None)].into(),
-            pads: vec![],
-        };
-        let r = run(
-            &mut m,
-            &Lobby::Mode {
-                mode: Mode::SystemLink,
-            },
-        )
-        .unwrap();
-        assert_eq!(buttons(&m.pads[0]), ["down", "down", "down", "a"]);
-        assert_eq!(r["screen"]["mode"], MODE_SYSTEM_LINK);
+    fn mode_presses_down_to_system_link_with_or_without_theater() {
+        for (main_menu_theater, downs) in [(false, 3), (true, 4)] {
+            let mut m = Menu {
+                now: Screen {
+                    main_menu_theater,
+                    ..Default::default()
+                },
+                after: [at(Some(JOIN_SCREEN), Some(MODE_SYSTEM_LINK), None)].into(),
+                pads: vec![],
+            };
+            let r = run(
+                &mut m,
+                &Lobby::Mode {
+                    mode: Mode::SystemLink,
+                },
+            )
+            .unwrap();
+            let mut expected = vec!["down"; downs];
+            expected.push("a");
+            assert_eq!(buttons(&m.pads[0]), expected);
+            assert_eq!(r["screen"]["mode"], MODE_SYSTEM_LINK);
+        }
     }
 
     #[test]

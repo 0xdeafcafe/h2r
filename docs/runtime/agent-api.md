@@ -986,8 +986,10 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each tick (`boot::ui_watch`): `{screen, window, slot,
   live_menu_row, mode, dialog, age_ms}`, or `UNAVAILABLE` before the first
-  read. `dialog` is the dialog up (the first screen on windows 0 to 4, any
-  slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
+  read. `main_menu_theater` is present and true when Theater occupies the
+  row after Xbox Live. Lobby scripts use it to locate Split Screen and
+  System Link. `dialog` is the dialog up (the first screen on windows 0 to
+  4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   tag name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
   or `null` for an id not named yet. For the Clanker player card

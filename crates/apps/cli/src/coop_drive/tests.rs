@@ -490,28 +490,36 @@ fn a_main_menu_that_comes_back_on_campaign_is_corrected() {
 }
 
 #[test]
-fn the_players_screen_in_another_mode_says_which_row_it_was() {
-    let mut d = Driver::new("Bravo", Role::Guest);
-    d.line(0, "Bravo", "ui: screen none");
-    d.line(10, "Bravo", "coop-live: lobby mode 4294967295");
-    let mut t = 0;
-    let mut pressed = Vec::new();
-    while t < 5000 {
-        if let Some(p) = d.poll(t) {
-            pressed.push(p.button);
+fn system_link_recovers_to_xbox_live_with_or_without_theater() {
+    for (marker, ups) in [("", 2), (MAIN_MENU_THEATER_MARKER, 3)] {
+        let mut d = Driver::new("Bravo", Role::Guest);
+        d.line(0, "Bravo", "ui: screen none");
+        d.line(10, "Bravo", "coop-live: lobby mode 4294967295");
+        let mut t = 0;
+        let mut pressed = Vec::new();
+        while t < 5000 {
+            if let Some(p) = d.poll(t) {
+                pressed.push(p.button);
+            }
+            t += 100;
         }
-        t += 100;
-    }
-    assert_eq!(pressed, ["down", "a"]);
-    // That was System Link (row 3): back, up twice, A.
-    d.line(t, "Bravo", "ui: screen 0x1e (window 5, slot 4), mode 2");
-    while t < 12_000 {
-        if let Some(p) = d.poll(t) {
-            pressed.push(p.button);
+        assert_eq!(pressed, ["down", "a"]);
+        d.line(
+            t,
+            "Bravo",
+            &format!("ui: screen 0x1e (window 5, slot 4){marker}, mode 2"),
+        );
+        while t < 12_000 {
+            if let Some(p) = d.poll(t) {
+                pressed.push(p.button);
+            }
+            t += 100;
         }
-        t += 100;
+        let mut expected = vec!["down", "a", "b"];
+        expected.extend(vec!["up"; ups]);
+        expected.push("a");
+        assert_eq!(pressed, expected);
     }
-    assert_eq!(pressed, ["down", "a", "b", "up", "up", "a"]);
 }
 
 #[test]

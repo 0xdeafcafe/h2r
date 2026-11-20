@@ -17,7 +17,8 @@
 //! reaching it; a custom game's lobby sets 2, Live or not), and on it the
 //! list value's low 16 bits are the cursor's row (`0xe16d0000` on row 0,
 //! `0xe16f0002` on row 2 in that run). The rows are 0 Campaign, 1 Xbox
-//! Live, 2 Split Screen, 3 System Link, 4 Settings (`0x230827`).
+//! Live, then Theater when installed, then Split Screen, System Link and
+//! Settings (`0x230827`).
 //!
 //! The path, as `h2 coop test --drive`'s host takes it
 //! ([`crate::coop_drive`]), with the Live menu's retail Custom Game row
@@ -67,10 +68,12 @@
 
 use std::collections::BTreeSet;
 
+use agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER;
+
 use crate::bots_verdict::{phantom_joined_lobby, phantom_off};
 use crate::coop_drive::{
     CAMPAIGN_SCREENS, GAP_MS, JOIN_SCREEN, LIVE_MENU, MAIN_LIVE_ROW, MAIN_MENU, MODE_LIVE,
-    MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES, parse_screen,
+    MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES, back_to_live, parse_screen,
 };
 
 /// The Xbox Live menu's Custom Game row (retail row 2). The rows, with
@@ -704,7 +707,7 @@ impl Driver {
         if !self.at_main() {
             return None;
         }
-        self.list_value.map(|v| v & 0xffff).filter(|r| *r <= 4)
+        self.list_value.map(|v| v & 0xffff).filter(|r| *r <= 5)
     }
 
     fn fresh(&mut self, now: u64) -> bool {
@@ -763,18 +766,7 @@ impl Driver {
                     "the players' screen for Xbox Live: on to the Live menu",
                 )]
             }
-            (false, Some(MODE_SPLIT)) => vec![
-                press("b", "that was Split Screen"),
-                press("up", "to Xbox Live"),
-                press("a", "Xbox Live"),
-            ],
-            (false, Some(MODE_SYSTEM_LINK)) => vec![
-                press("b", "that was System Link"),
-                press("up", "to Xbox Live"),
-                press("up", "to Xbox Live"),
-                press("a", "Xbox Live"),
-            ],
-            (false, Some(m)) => vec![press("b", &format!("the players' screen in mode {m}"))],
+            (false, Some(mode)) => back_to_live(mode, self.ui.contains(MAIN_MENU_THEATER_MARKER)),
         };
         true
     }
