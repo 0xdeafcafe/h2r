@@ -460,8 +460,7 @@ mod tests {
     fn a_lights_groups_and_an_object_shadows_count_in_the_hash() {
         use crate::layer::LayerOwner;
         use crate::light::SceneLight;
-        use crate::light::{Light, LightConstants, LightVolume};
-use crate::light_group::{GroupSite, LightBinding, LightEntry, LightStream, Topology};
+        use crate::light_group::{GroupSite, LightBinding, LightEntry, LightStream, Topology};
         let entry = LightEntry {
             slot: 1,
             record: 2,
