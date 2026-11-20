@@ -294,9 +294,10 @@ fn byte_runs(
     let total = addresses.len();
     let mut runs: Vec<Vec<u32>> = Vec::new();
     for a in addresses {
+        let full = runs.len() == MAX_RUNS;
         match runs.last_mut() {
             Some(run) if *run.last().unwrap() + 1 == a && run.len() < MAX_RUN_BYTES => run.push(a),
-            _ if runs.len() == MAX_RUNS => break,
+            _ if full => break,
             _ => runs.push(vec![a]),
         }
     }
