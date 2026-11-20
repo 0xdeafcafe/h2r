@@ -5,8 +5,8 @@ game by the owner (2026-11-17). Each section says what is
 **Built** (with its proof) and what is design only. This applies the rules
 of [campaign.md](campaign.md) to multiplayer: Halo 2's engine runs
 everything (physics, AI, rendering, game types); Halo 1's health bar and
-health packs are the one thing kept from Halo 1; Halo 1's assets are the
-default, with a setting to use Halo 2's.
+Both settings retain Halo 1's health packs, overshields and active
+camouflage. Halo 1's assets are the default.
 
 Like every import, this reads the user's own disc (`disc/halo1.iso`). No
 map bytes, tag dumps or extracted assets are in the repository. Tests use
@@ -190,10 +190,10 @@ item is found in the base map by the words in its tag name.
 | Shotgun | Shotgun | |
 | Flamethrower | Shotgun | Close-range role; Halo 2 has none |
 | Frag grenade, plasma grenade | Same | |
-| Overshield, active camouflage | Same (`powerup_super_shield`, `powerup_invisibility`) | Dropped with a report when the base has no collection for it (Beaver Creek and Coagulation have no camouflage collection) |
+| Overshield, active camouflage | **Built** from Halo 1 | Native Halo 2 powerup types and rebuilt item collections |
 | Warthog, Ghost, Scorpion, Banshee | Same | A collection is built when the base lacks one ([Vehicles](#vehicles)) |
 | Rocket warthog | Gauss warthog | The user's decision |
-| Health pack | Dropped | Halo 2 has no health |
+| Health pack | **Built** from Halo 1 | The engine has a native health pickup (type 5) |
 | Ammo pickups | Dropped | Halo 2 has no ammo pickups |
 | Double speed, full-spectrum vision | Dropped | Unused on Xbox maps |
 
@@ -273,7 +273,7 @@ grow go to the end of the metadata. **Proof:** a synthetic test on the
 editor's fixture reads every written field back, and
 `the_plan_applies_to_a_retail_base` writes beavercreek's plan into the
 Halo 2 disc's `beavercreek` (70 spawns, 88 flags, 28 items, 56 base
-placements removed; the 3 camouflage spawns are reported, the base has
+placements removed; the 3 camouflage spawns were reported by the base-only conversion, the base has
 none) and reads the scenario back.
 
 The names of Halo 2's netgame flag kind values (`H2Flag::raw`) are
@@ -429,8 +429,8 @@ The base's old BSP region stays in the file, unused.
   on both its clusters' lists, and every cluster with geometry is reached
   through portals from every other, on every level (Chiron TL-34 has no
   portals at all: its rooms are sealed, and Halo 1 draws them one at a
-  time too). The visibility rows (`+0x54`) still say every cluster sees
-  every other.
+  time too). The v8 visibility data (`+0x54/+0x58`) carries the source
+  BSP's directional cluster bit rows in the original cluster order.
 - **Materials** (`h1convert::shaders`). One structure material per Halo 1
   shader, each copying the head (shader reference) of the base structure
   material it is matched to by name: the words of the Halo 1 shader's name
@@ -451,45 +451,33 @@ The base's old BSP region stays in the file, unused.
   collision material per
   Halo 1 collision material, copies of the base's first (no pointers in
   it), `+0x0a` = -1.
-- **Halo 1's own textures** (`h1convert::textures`). For each Halo 1
-  environment (`senv`) or water (`swat`) shader, its bitmaps by role:
-  `senv` base map `+0x88`, primary detail `+0xb8` (else micro detail
-  `+0xfc`), bump `+0x128`; `swat` base `+0x4c` (offsets from a sweep of
-  every shader on the 13 maps). The chosen base shader's roles come from
-  its compiled passes (`tags::material`): base is stage 0 of the first
-  pass with a bitmap, detail its stage 1, bump any parameter bitmap in
-  `P8Bump` (format 17 in both games; a Halo 1 bump is swapped only when
-  it is `P8Bump` too). The Halo 1 bitmaps are converted by
-  `h1bitmaps::convert_bitmap` and added as new `bitm` tags under their
-  Halo 1 names; a new `shad`, named after the Halo 1 shader, is the
-  chosen shader's whole tree (the schema's depth-first copy,
-  `Relocator::to_built`) in which every bitmap parameter (postprocess
-  `+0x20`, its parameters `+0x04`, stride `0xc`, datum at `+0`) holding
-  a swapped role's datum names the Halo 1 bitmap. The copy points at
-  nothing of the chosen shader's, so it holds in the fresh build too
-  (`tests/fresh.rs`: every reference of the fresh Blood Gulch
-  resolves); the blocks on the path to the parameters drop their
-  sharing key, the rest keep it. A material head is appended per
-  copy and the structure material points at it. `textures::plan` runs in
-  `prepare`, `Retexture::install` in `assemble` after the tags whose
-  datums are predicted (objects, collections). Shaders of other types
-  (`soso`, `schi`, `sgla`, ...) keep the base's, and the CLI says so.
-  Tiling: the copy's instance vectors that scale a swapped role's
-  texture coordinates take Halo 1's tiling, the base map 1× (Halo 1's
-  base map has no scale; Coagulation's ground tiled it 60×), the detail
-  and bump maps the `senv` scale before each reference (primary detail
-  `+0xb4`, micro `+0xf8`, bump `+0x124`; V: 1 wherever the map is null).
-  A role's vector is the one the template binds to vertex constant
-  `c[18 + stage]` with its x and y (`textures::stage_vector`); the disc
-  test resolves every copy on the converted map and finds each scale in
-  that constant. A role left as the base's (its bump map, when Halo 1's
-  isn't `P8Bump`) keeps the base's tiling.
-  Left out: the detail blend function, and the shader's `+0x2c` block (it still
-  names the chosen shader's bitmaps; the draw path reads the
-  parameters). On blend-detail templates (`tex_bump_detail_blend_detail`,
-  Coagulation's ground) stage 1 of the first pass is the second blended
-  base (`coag_grass`), so Halo 1's detail map lands there: a game run
-  shows whether that reads well.
+- **Halo 1's own textures** (`h1convert::textures`). The structure's
+  shaders are rebuilt as `shad` records from the definition, with the
+  appropriate Halo 2 `stem` and Halo 1's converted bitmaps. An `senv`
+  supplies base `+0x88`, primary detail `+0xb8`, secondary detail
+  `+0xcc`, micro detail `+0xfc` and bump `+0x128`. The base is sampled
+  at 1× and each other map uses the scale before its reference. On
+  `tex_bump_detail_blend_detail`, the colour pass uses the base alpha
+  to blend the primary and secondary details, then applies the micro
+  detail. The installer adds the rebuilt shader and a material head
+  that points to it (`textures::plan`, `Retexture::install`).
+- **Terrain detail blend and shader image list (Built).** Halo 1's
+  `senv +0xb0` and `+0xf4` select the operations for the detail
+  blend and micro detail independently (E `0x0007785d`.. `0x000778dd`).
+  For surface colour `c` and detail colour `d`, the XBE emits
+  `2*c*d`, `c*d` or `c+2*d-1` for values 0, 1 and 2. Where the
+  opaque blend-detail layout is available, the installer emits a
+  colour pass for non-default operations and connects it with the
+  existing light, shadow and fog passes. The pass bypasses an operation
+  when it has no detail bitmap. On the owner's disc both fields are
+  zero except for the shaft cover in `b30`, which uses value 1 in both
+  and has neither detail map. The rebuild also fills the `shad +0x2c`
+  image list with the new compiled bitmap datums, numbering repeats
+  from zero (V, the retail instance layout in
+  [shader-instances.md](../formats/shader-instances.md)).
+  `terrain_detail_modes_are_read_and_installed` checks the non-default
+  program against both discs, and `every_halo1_shader_and_sky_shader_rebuilds`
+  checks `+0x2c` against the rebuilt bindings.
 - **The sky is Halo 1's** (`h1convert::sky`). Cluster `+0x6e` is the
   cluster's sky index into the scenario's skies (`scnr+0x8`, 8-byte
   references; E `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to
@@ -1134,16 +1122,24 @@ slots the collections used before, is no longer called.)
 
 ## What isn't placed, and why
 
-Every placement the Halo 2 sandbox leaves out is one of these (the Halo 1
-sandbox leaves out race flags only), and `h2 h1 convert` lists each with
-its position (`not placed: ...`):
+`h2 h1 convert` reports race flags and the Halo 2 sandbox's omitted ammo
+pickups with their positions.
 
-| Left out | Why |
-|---|---|
-| Race flags (`RaceTrack`, `RaceVehicle`) | Halo 2 has no race game type |
-| Health packs | The base has no health pickup; the Halo 1 sandbox places Halo 1's |
-| Active camouflage | The base has no collection for it (`invisibility`; Beaver Creek and Coagulation have none). A built `itmc` would do, as for vehicles |
-| Overshield | The base has no collection for it (`super_shield`; Coagulation has none) |
+**Built in both sandboxes.** Halo 1's overshield, camouflage and health
+pack collections are rebuilt from `itmc`. The spawn points, facing,
+weights, game-type filters and respawn times come from Halo 1. Blood
+Gulch's shield-invisibility collection can still roll either item.
+Beaver Creek's `powerup_super_shield` and Zanzibar's
+`powerup_invisibility` establish the Halo 2 layout (V). Each uses a
+type 9 netgame equipment placement and a collection referencing an
+`eqip`. The game reads those references at `0x0015ab12` and selects
+by weight at `0x0019f1a0` (E). The normal import uses
+`prepare_halo1` or `prepare_halo2`, both supplied with the object
+converter. The direct base-only `prepare` reports missing collections.
+
+The ignored test `bloodgulch_native_powerups_spawn_in_both_sandboxes`
+reads both discs and checks all four placements and their rebuilt item
+and collection data in the fresh maps.
 
 All 13 multiplayer maps on the Halo 1 disc convert
 (`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
@@ -1357,7 +1353,7 @@ and reads every netgame equipment spawn of the built map back: 43 of 43
 added, whose entries name added objects of the collection's kind, each
 with a render model (`tags::object::Context`). 68 tags are added:
 8 weapons with their projectiles, camouflage, overshield, the health pack
-(on the overshield template), both grenades, warthog, ghost and scorpion,
+(each rebuilt from its Halo 1 equipment), both grenades, warthog, ghost and scorpion,
 and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
 73 in all.
 
@@ -1761,7 +1757,8 @@ weapon the converted player biped's graph holds in mode `combat`.
 `antr` and effects, converted per [campaign.md](campaign.md) §2, with
 Halo 2's physics. The health subsystem of campaign.md §6 is shared with
 the campaign: no body regeneration, health packs refill on pickup, a
-health meter under the shield meter, on for Halo 1 maps in this variant.
+health meter under the shield meter, on for Halo 1 maps. Health packs
+are placed in both asset settings.
 Hooks (docs/halo1/health.md): the game start sets the model from the map's
 name; the converted cyborg's HUD (`nhdt`) has a widget on the body
 (input 17), built by `h1objects::health_hud`. A health pack

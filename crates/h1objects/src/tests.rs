@@ -59,6 +59,56 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
 }
 
 #[test]
+fn weapon_zoom_rebuilds_from_the_halo1_tag() {
+    use crate::{arsenal, h1};
+    use h1map::testing::{self, BASE, Opts, put};
+
+    for (levels, range) in [(0i16, [1.5f32, 3.0]), (1, [2.5, 2.5]), (2, [2.25, 7.5])] {
+        let mut fixture = testing::build(&Opts::default());
+        // Use the last tag slot for a synthetic weapon root.
+        let slot = fixture.data_at.len() - 1;
+        let index = h1map::HEADER_LEN;
+        let entry = index + 0x24 + slot * h1map::TAG_ENTRY_LEN;
+        let root = fixture.file.len();
+        put(&mut fixture.file, entry, testing::group(b"weap"));
+        put(
+            &mut fixture.file,
+            entry + 0x14,
+            BASE + (root - index) as u32,
+        );
+        fixture.file.resize(root + h1::WEAP_SIZE, 0);
+        let length = fixture.file.len();
+        put(&mut fixture.file, 8, length as u32);
+        put(&mut fixture.file, 0x14, (length - index) as u32);
+        fixture.file[root + 0x3da..root + 0x3dc].copy_from_slice(&levels.to_le_bytes());
+        put(&mut fixture.file, root + 0x3dc, range[0].to_bits());
+        put(&mut fixture.file, root + 0x3e0, range[1].to_bits());
+
+        let map = h1map::H1Map::from_decompressed(fixture.file).unwrap();
+        let tag = &map.tags()[slot];
+        let weapon = h1::Weapon::read(&map, tag).unwrap();
+        let built = arsenal::weapon(
+            &weapon,
+            &arsenal::weapon_bytes(&map, tag).unwrap(),
+            &arsenal::WeaponParts::default(),
+        )
+        .unwrap();
+        let bytes = &built.bytes;
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            i16::from_le_bytes(bytes[0x1fe..0x200].try_into().unwrap()),
+            levels,
+        );
+        let expected_range = if levels == 0 { [0.0, 0.0] } else { range };
+        assert_eq!(
+            [f32::from_bits(word(0x200)), f32::from_bits(word(0x204))],
+            expected_range,
+        );
+        assert_eq!(word(0x12c) & (1 << 16) != 0, levels == 0);
+    }
+}
+
+#[test]
 fn collision_moves_node_bsps_under_region_permutations() {
     // Region "body" has two permutations; node 0 holds a BSP for each,
     // node 1 (no region) none, node 2 one for the first only.
@@ -449,7 +499,8 @@ fn rebuilt_scenery_has_only_definition_bytes() {
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
         object_type: 6,
-        flags: 0,
+        acceleration_scale: 1.75,
+        flags: 4,
         bounding_radius: 2.5,
         bounding_offset: [1.0, 2.0, 3.0],
         model: None,
@@ -468,15 +519,13 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         crate::rebuild::Predicted::RenderModel(mode_id),
         crate::rebuild::Predicted::Bitmap(bitm),
     ];
-    let words = vec![
-        ("object.unknown_6c".to_owned(), 0x3f80_0000),
-        ("unknown_bc".to_owned(), 7),
-    ];
-    let root = crate::rebuild::scenery(&obj, Some(hlmt), &predicted, &words).unwrap();
+    let root = crate::rebuild::scenery(&obj, Some(hlmt), &predicted).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let mut want = defs::default_record(def);
     want.set("object.object_type", Val::Enum(6)).unwrap();
+    want.set("object.flags", Val::Flags(4)).unwrap();
+    want.set("object.unknown_14", Val::Bytes(1.75f32.to_le_bytes().to_vec())).unwrap();
     want.set("object.bounding_radius", Val::Float(2.5)).unwrap();
     want.set("object.bounding_offset", Val::floats(&[1.0, 2.0, 3.0]))
         .unwrap();
@@ -488,9 +537,6 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         },
     )
     .unwrap();
-    for (path, w) in &words {
-        want.set(path, Val::Bytes(w.to_le_bytes().to_vec())).unwrap();
-    }
     // Everything but the predicted resources is the definition default
     // with the fields above set.
     let left: Vec<_> = defs::diff(def, &want, &got)
@@ -598,6 +644,7 @@ fn rebuilt_scenery_carries_its_change_colours() {
     };
     let obj = crate::h1::Object {
         object_type: 6,
+        acceleration_scale: 0.0,
         flags: 0,
         bounding_radius: 2.5,
         bounding_offset: [0.0; 3],
@@ -611,7 +658,7 @@ fn rebuilt_scenery_carries_its_change_colours() {
         widgets: Vec::new(),
         change_colours: ChangeColour::halo2_slots(&[tree], false),
     };
-    let root = crate::rebuild::scenery(&obj, None, &[], &[]).unwrap();
+    let root = crate::rebuild::scenery(&obj, None, &[]).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let n = |p: &str| match got.at(p) {
@@ -639,7 +686,7 @@ fn rebuilt_scenery_carries_its_change_colours() {
         change_colours: Vec::new(),
         ..obj
     };
-    let root = crate::rebuild::scenery(&plain, None, &[], &[]).unwrap();
+    let root = crate::rebuild::scenery(&plain, None, &[]).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     assert!(matches!(got.at("object.change_colors"), Some(Val::Block(b)) if b.is_empty()));
 }
@@ -651,12 +698,13 @@ fn rebuilt_scenery_carries_its_change_colours() {
 #[test]
 fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     use crate::rebuild::{
-        ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS,
+        ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS,
         VEHI_SEATS,
     };
     use tags::defs::{self, Defs, Str, Target, Val};
     let obj = crate::h1::Object {
         object_type: 1,
+        acceleration_scale: 0.0,
         flags: 0,
         bounding_radius: 0.9,
         bounding_offset: [0.0, 0.0, 0.45],
@@ -671,6 +719,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         change_colours: Vec::new(),
     };
     let seat = crate::h1::Seat {
+        camera_angles: [0; 5],
         flags: 0x1d,
         label: "CT-driver".into(),
         marker: "driver".into(),
@@ -688,6 +737,9 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+        physics: None,
+        source: &[],
+        references: &[],
         object: &obj,
         bounds: None,
         hlmt: Some(hlmt),
@@ -715,9 +767,6 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
 
     let word = |w: u32| Val::Bytes(w.to_le_bytes().to_vec());
     let mut want = defs::default_record(def);
-    for (p, w) in TURRET_ROLE {
-        want.set(p, word(*w)).unwrap();
-    }
     want.set("unit.obje.object_type", Val::Enum(1)).unwrap();
     want.set("unit.obje.bounding_radius", Val::Float(0.9))
         .unwrap();
@@ -802,10 +851,11 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
 /// role's.
 #[test]
 fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
-    use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, VehicleSpec};
+    use crate::rebuild::{VehicleRole, VehicleSpec};
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
         object_type: 1,
+        acceleration_scale: 0.0,
         flags: 0,
         bounding_radius: 2.0,
         bounding_offset: [0.0; 3],
@@ -820,47 +870,27 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         change_colours: Vec::new(),
     };
     let role = VehicleRole {
-        words: RoleWords {
-            members: vec!["jeep".into()],
-            root: vec![("unknown_210".into(), 0x43e1_0000)],
-            blocks: vec![(
-                VEHI_PHYSICS.into(),
-                vec![vec![("unknown_48".into(), 0xbf80_0000)]],
-            )],
-        },
-        // Driver, gunner and passenger seats' words; the driver's flags
-        // carry a bit Halo 1 lacks (19, kept), a boarding bit, a closed-to-
-        // players bit and the opens-the-vehicle bit (11, 16, 15: dropped)
-        // and a gunner bit (Halo 1's bits win).
-        seats: [
-            vec![
-                ("unknown_0".into(), 0x0009_8808),
-                ("unknown_20".into(), 0x3f00_0000),
-            ],
-            vec![("unknown_20".into(), 0x3e00_0000)],
-            vec![("unknown_20".into(), 0x3d00_0000)],
-        ],
-        flags_high: 0x0012_0000,
-        control: 2,
+        member: "jeep".to_owned(),
+        controller: vec![("unknown_2b0".into(), 1.5f32.to_bits())],
         friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
         friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
         hover: None,
         hover_each: Vec::new(),
         hover_at: Vec::new(),
         wheel_shapes: false,
-        gears: vec![vec![
-            ("unknown_0".into(), 0x4795_6a00),
-            ("raw_14".into(), 0x4000_1234),
-        ]],
     };
     let points = [
         crate::rebuild::Point {
+            sphere: [0.75, 0.0, 0.125, 0.25],
+            antigravity: None,
             marker: "tire_front_left".into(),
             region: "left_front_tire".into(),
             region_index: 2,
             steered: true,
         },
         crate::rebuild::Point {
+            sphere: [0.75, 0.0, 0.125, 0.25],
+            antigravity: None,
             marker: "tire_back_left".into(),
             region: String::new(),
             region_index: -1,
@@ -868,6 +898,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         },
     ];
     let seat = crate::h1::Seat {
+        camera_angles: [0; 5],
         flags: 0x14,
         label: "W-driver".into(),
         marker: "driver".into(),
@@ -875,6 +906,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         camera_tracks: Vec::new(),
     };
     let passenger = crate::h1::Seat {
+        camera_angles: [0; 5],
         flags: 0x60,
         label: "W-passenger".into(),
         marker: "passenger".into(),
@@ -888,7 +920,12 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // The driver's camera track converted; the passenger has none.
     let track = map::TagId(0xe001_0009);
     seats[0].camera_track = Some(track);
-    let root = crate::rebuild::vehicle(&VehicleSpec {
+    let mut physics = [0; crate::h1::PHYS_SIZE];
+    physics[0x68..0x6c].copy_from_slice(&2u32.to_le_bytes());
+    let spec = VehicleSpec {
+        physics: Some(&physics),
+        source: &[],
+        references: &[],
         object: &obj,
         bounds: Some((1.5, [0.1, 0.0, 0.5])),
         hlmt: None,
@@ -903,22 +940,33 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         attachments: &[],
         functions: &[],
         creation_effect: None,
-    })
-    .unwrap();
+    };
+    let root = crate::rebuild::vehicle(&spec).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
     assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
-    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0x0012_0cd1)));
-    assert_eq!(got.at("unknown_210").cloned(), word(0x43e1_0000));
+    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
+    assert_eq!(got.at("unknown_2b0").cloned(), word(1.5f32.to_bits()));
     assert_eq!(
         got.at("block_2f8[0].unknown_48").cloned(),
-        word(0xbf80_0000)
+        word(0.5_f32.to_bits())
     );
+
+    assert_eq!(got.get("unknown_2c0").cloned(), word(0));
+    assert_eq!(got.get("unknown_2c4").cloned(), word(0.0f32.next_up().to_bits()));
+    let mut passive = physics;
+    passive[0x68..0x6c].copy_from_slice(&1u32.to_le_bytes());
+    let passive = crate::rebuild::vehicle(&VehicleSpec { physics: Some(&passive), ..spec }).unwrap();
+    let passive = defs::from_built(def, &passive).unwrap();
+    assert_eq!(passive.get("unknown_260").cloned(), word(0));
+    let Some(Val::Block(gears)) = passive.get("block_268") else { panic!("missing direction records") };
+    assert_eq!(gears.len(), 2);
+    assert!(gears.iter().all(|g| g.get("speed_ratio") == Some(&Val::Float(0.0))));
     // Each seat takes its kind's words.
-    assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
-    assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
-    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_0014));
+    assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0));
+    assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0));
+    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x14));
     assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
     // Halo 1's entry markers face the vehicle's forward: no facing test,
     // whatever the role's seats hold.
@@ -953,18 +1001,14 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // point's region is the model's third, the back point names none.
     assert_eq!(got.at("block_2f0[0].unknown_48").cloned(), word(2));
     assert_eq!(got.at("block_2f0[1].unknown_48").cloned(), word(0xffff_ffff));
-    // The role's control word (the scorpion's 2 drives as a tank).
-    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![2, 0])));
+    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![0, 0])));
     // The front point steers with the role's steering words, the back one
     // takes the others.
     assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(0x26));
-    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x32));
+    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x3a));
     assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
-    assert_eq!(got.at("block_268[0].unknown_0").cloned(), word(0x4795_6a00));
-    assert_eq!(
-        got.at("block_268[0].raw_14"),
-        Some(&Val::Raw(defs::RawVal::Word(0x4000_1234)))
-    );
+    assert_eq!(got.at("block_268[0].speed_ratio"), Some(&Val::Float(-1.0)));
+    assert_eq!(got.at("block_268[1].speed_ratio"), Some(&Val::Float(1.0)));
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
     // Turret words stay off a vehicle with its own role.
@@ -1054,6 +1098,7 @@ fn h1_device(group: &[u8; 4]) -> crate::h1::Device {
         group: h1map::Group::new(group),
         object: crate::h1::Object {
             object_type: 7,
+            acceleration_scale: 0.0,
             flags: 0,
             bounding_radius: 1.5,
             bounding_offset: [0.0, 0.0, 1.0],
@@ -1420,15 +1465,13 @@ fn built_physics_model_round_trips_with_every_piece() {
     assert!(block("node_edges").is_empty() && block("ragdoll_constraints").is_empty());
 }
 
-/// A rebuilt biped: the role's root and block words, then the object
-/// header, Halo 1's camera field of view and `BIPED_WORDS` over them; it
-/// reads back through the definition, nothing pinned.
 #[test]
-fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
-    use crate::rebuild::{BIPED_TYPE, BIPED_WORDS, RoleWords};
+fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
+    use crate::rebuild::{BIPED_TYPE, BIPED_WORDS};
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
         object_type: 0,
+        acceleration_scale: 0.0,
         flags: 0,
         bounding_radius: 0.7,
         bounding_offset: [0.0, 0.0, 0.3],
@@ -1443,6 +1486,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         change_colours: Vec::new(),
     };
     let unit = crate::h1::Unit {
+        hud_interfaces: Vec::new(),
         group: h1map::Group::new(b"bipd"),
         object: obj,
         camera_field_of_view: 1.25,
@@ -1455,18 +1499,6 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         size: None,
         references: Vec::new(),
     };
-    let role = RoleWords {
-        members: vec!["a".into(), "b".into()],
-        root: vec![
-            ("unknown_1d0".into(), 7),
-            // Halo 1's own word replaces the role's.
-            (BIPED_WORDS[0].0.into(), 9),
-        ],
-        blocks: vec![(
-            "unit.block_1b8".into(),
-            vec![vec![("unknown_0".into(), 3)], vec![("unknown_4".into(), 4)]],
-        )],
-    };
     let hlmt = map::TagId(0xe001_0002);
     let mode = map::TagId(0xe001_0003);
     let predicted = [crate::rebuild::Predicted::RenderModel(mode)];
@@ -1474,7 +1506,6 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         &unit,
         Some(hlmt),
         &predicted,
-        &role,
         &crate::rebuild::BipedParts::default(),
     )
     .unwrap();
@@ -1493,12 +1524,11 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         r.at("unit.obje.model"),
         Some(Val::Ref { target: Target::Id(id), .. }) if *id == hlmt
     ));
-    assert_eq!(word("unknown_1d0"), 7);
+    assert_eq!(word("unknown_1d0"), 0);
     for (path, at) in BIPED_WORDS {
         assert_eq!(word(path), (*at as f32).to_bits(), "{path}");
     }
-    assert_eq!(word("unit.block_1b8[0].unknown_0"), 3);
-    assert_eq!(word("unit.block_1b8[1].unknown_4"), 4);
+    assert!(matches!(r.at("unit.block_1b8"), Some(Val::Block(entries)) if entries.is_empty()));
     let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
         panic!()
     };
@@ -1511,9 +1541,9 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
 /// radii; the HUD interfaces given replace the counterpart's; and the
 /// counterpart's references come with it, the model staying Halo 1's.
 #[test]
-fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
+fn rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud() {
     use crate::h1::BipedSize;
-    use crate::rebuild::{BIPD_HUD, BIPD_PILLS, BIPD_SPHERES, BipedParts, RoleWords};
+    use crate::rebuild::{BIPD_HUD, BIPD_PILLS, BIPD_SPHERES, BipedParts};
     use tags::defs::{self, Defs, Target, Val};
     let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
     let size = BipedSize {
@@ -1522,9 +1552,11 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         radius: 0.2,
     };
     let unit = crate::h1::Unit {
+        hud_interfaces: Vec::new(),
         group: h1map::Group::new(b"bipd"),
         object: crate::h1::Object {
             object_type: 0,
+            acceleration_scale: 0.0,
             flags: 0,
             bounding_radius: 0.7,
             bounding_offset: [0.0; 3],
@@ -1545,34 +1577,20 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         size: Some(size),
         references: Vec::new(),
     };
-    // A counterpart with a foot reference, a camera track and a model.
-    let foot = map::TagId(0xe100_0010);
-    let track = map::TagId(0xe100_0011);
-    let mut c = defs::default_record(d);
-    c.set(
-        "unit.obje.foot_ref_54",
-        Val::tag(map::FourCC(*b"foot"), foot),
-    )
-    .unwrap();
-    c.set(
-        "unit.obje.model",
-        Val::tag(map::FourCC(*b"hlmt"), map::TagId(0xe100_0012)),
-    )
-    .unwrap();
-    let mut e = defs::default_record(d.child("unit.block_e8").unwrap());
-    e.set("ref_0", Val::tag(map::FourCC(*b"trak"), track))
-        .unwrap();
-    c.set("unit.block_e8", Val::Block(vec![e])).unwrap();
+    let weapon = map::TagId(0xfffd_0010);
+    let track = map::TagId(0xfffd_0011);
     let hud = map::TagId(0xfffd_0007);
     let hlmt = map::TagId(0xfffd_0001);
     // The model has Halo 1's head and right hand markers, but no left.
     let parts = BipedParts {
-        counterpart: Some(c),
+        tracks: vec![track],
+        weapons: vec![weapon],
         hud: Some(vec![hud, hud]),
         markers: vec!["head".into(), "right hand".into(), "body".into()],
+        ..Default::default()
     };
     let root =
-        crate::rebuild::biped(&unit, Some(hlmt), &[], &RoleWords::default(), &parts).unwrap();
+        crate::rebuild::biped(&unit, Some(hlmt), &[], &parts).unwrap();
     let r = defs::from_built(d, &root).unwrap();
     let id = |p: &str| match r.at(p) {
         Some(Val::Ref {
@@ -1582,7 +1600,7 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         x => panic!("{p}: {x:?}"),
     };
     assert_eq!(id("unit.obje.model"), hlmt, "Halo 1's model");
-    assert_eq!(id("unit.obje.foot_ref_54"), foot);
+    assert_eq!(id("unit.weapons[0].weapon"), weapon);
     assert_eq!(id("unit.block_e8[0].ref_0"), track);
     assert_eq!(id(&format!("{BIPD_HUD}[1].ref_0")), hud);
     // The camera at the head, a weapon in the right hand; no left hand
@@ -1735,7 +1753,7 @@ fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
         lens_flare: None,
     };
     let d = Defs::builtin().group(FourCC(*b"ligh")).unwrap();
-    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    let r = defs::from_built(d, &crate::rebuild::light(&l).unwrap()).unwrap();
     assert_eq!(r.at("kind"), Some(&Val::Enum(0)));
     assert_eq!(r.at("radius"), Some(&Val::Float(2.5)));
     assert_eq!(r.at("flags"), Some(&Val::Int(8)));
@@ -1743,7 +1761,7 @@ fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
     assert_eq!(r.at("diffuse_colour_lower"), Some(&Val::floats(&[0.1, 0.2, 0.3])));
     assert_eq!(r.at("specular_colour_upper"), Some(&Val::floats(&[0.4, 0.5, 0.6])));
     l.cutoff_angle = 1.0;
-    let r = defs::from_built(d, &crate::rebuild::light(&l, None).unwrap()).unwrap();
+    let r = defs::from_built(d, &crate::rebuild::light(&l).unwrap()).unwrap();
     assert_eq!(r.at("kind"), Some(&Val::Enum(2)));
     assert_eq!(r.at("field_of_view"), Some(&Val::Float(1.0)));
     assert_eq!(r.at("cutoff_distance"), Some(&Val::Float(2.5)));
@@ -1751,9 +1769,9 @@ fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
 }
 
 #[test]
-fn rebuilt_decal_keeps_halo_1s_fields_and_the_roles_layer() {
+fn rebuilt_decal_keeps_halo_1s_fields_and_maps_its_layer() {
     use crate::h1::Decal;
-    use crate::rebuild::{DecalRole, decal};
+    use crate::rebuild::decal;
     use tags::defs::{self, Defs, Target, Val};
     let x = Decal {
         flags: 8,
@@ -1768,18 +1786,13 @@ fn rebuilt_decal_keeps_halo_1s_fields_and_the_roles_layer() {
         bitmap: None,
         maximum_sprite_extent: 16.0,
     };
-    let role = DecalRole {
-        layer: 3,
-        max_overlapping: 5,
-        scale_18: 0.5f32.to_bits(),
-    };
     let d = Defs::builtin().group(FourCC(*b"deca")).unwrap();
-    let root = decal(&x, Some(local(1)), Some(local(2)), Some(&role)).unwrap();
+    let root = decal(&x, Some(local(1)), Some(local(2))).unwrap();
     let r = defs::from_built(d, &root).unwrap();
     assert_eq!(r.at("flags"), Some(&Val::Int(8)));
     assert_eq!(r.at("kind"), Some(&Val::Int(2)));
-    assert_eq!(r.at("layer"), Some(&Val::Int(3)));
-    assert_eq!(r.at("max_overlapping"), Some(&Val::Int(5)));
+    assert_eq!(r.at("layer"), Some(&Val::Int(2)));
+    assert_eq!(r.at("max_overlapping"), Some(&Val::Int(0)));
     assert_eq!(r.at("radius"), Some(&Val::floats(&[0.1, 0.2])));
     assert_eq!(r.at("decay_time_bounds"), Some(&Val::floats(&[1.0, 2.0])));
     assert_eq!(r.at("maximum_sprite_extent"), Some(&Val::Float(16.0)));
@@ -2018,6 +2031,7 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
         object: [0; 4],
         unit: [1, 0, 0, 0],
         vehicle: [0, 12, 35, 0],
+        ..Default::default()
     };
     let mut engine = h1_function(3, 0, [0.0, 1.0]);
     engine.flags = 4;
@@ -2093,7 +2107,8 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
         tag: TagId(0xe100_0007),
         marker: String::new(),
         primary_scale: "c_out".into(),
-        h1_primary: 3,
+        secondary_scale: "b_out".into(),
+        change_colour: 0,
     }];
     let d = def(b"vehi").unwrap();
     let mut r = defs::default_record(d);
@@ -2105,6 +2120,8 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
     assert_eq!(r.at("unit.obje.functions[0].string_c"), Some(&Val::text("a_out")));
     assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
     assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
+    assert_eq!(r.at("unit.obje.attachments[0].string_14"), Some(&Val::text("b_out")));
+    assert_eq!(r.at("unit.obje.attachments[0].change_colour"), Some(&Val::Int(0)));
 }
 
 #[test]
@@ -2271,6 +2288,7 @@ fn wheel_nodes_are_the_gripping_points_nodes_and_below() {
         moments: [1.0; 3],
         powered_mass_points: 2,
         powered_flags: vec![flags, 0],
+        antigravity: Vec::new(),
         mass_points: points,
     };
     let wheel_nodes = crate::convert::wheel_nodes;
@@ -2317,40 +2335,6 @@ fn friction_points_follow_the_phantom_spheres() {
     assert_eq!(sphere_order(&points[..2], &spheres), vec![0, 1]);
 }
 
-/// The role's phantom spheres come from its physics element's words: the
-/// count at `+0x6c` and the centres from `+0x70`.
-#[test]
-fn role_spheres_read_the_physics_elements_multisphere() {
-    use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, role_spheres};
-    let f = |v: f32| v.to_bits();
-    let role = VehicleRole {
-        words: RoleWords {
-            members: vec!["jeep".into()],
-            root: Vec::new(),
-            blocks: vec![(
-                VEHI_PHYSICS.into(),
-                vec![vec![
-                    ("unknown_6c".into(), 2),
-                    ("unknown_70".into(), f(0.67)),
-                    ("unknown_74".into(), f(0.388)),
-                    ("unknown_78".into(), f(0.19)),
-                    ("unknown_7c".into(), f(0.25)),
-                    ("unknown_80".into(), f(-0.63)),
-                    // y left out: a zero word is not kept.
-                    ("unknown_88".into(), f(0.19)),
-                    ("unknown_90".into(), f(9.0)),
-                ]],
-            )],
-        },
-        ..Default::default()
-    };
-    assert_eq!(
-        role_spheres(&role),
-        vec![[0.67, 0.388, 0.19], [-0.63, 0.0, 0.19]]
-    );
-    assert!(role_spheres(&VehicleRole::default()).is_empty());
-}
-
 /// A weapon fires Halo 1's effects: each barrel takes its own trigger's
 /// firing effects (firing, misfire, empty) in order, with the damage the
 /// parts give, and a barrel whose trigger has none gets none (before
@@ -2362,17 +2346,18 @@ fn role_spheres_read_the_physics_elements_multisphere() {
 fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     use crate::arsenal::{
         FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, FiringParts, MAGAZINE_CHAMBERING_EFFECT,
-        MAGAZINE_RELOADING_EFFECT, Role, WeaponParts, weapon,
+        MAGAZINE_RELOADING_EFFECT, WeaponParts, weapon,
     };
     use crate::h1::{Magazine, TRIGGER_SIZE, Trigger, WEAP_SIZE, Weapon};
     use tags::defs::{self, Defs, Record, Target, Val};
 
     let w = Weapon {
-        magazines: vec![Magazine::default()],
+        magazines: vec![Magazine { flags: 5, chamber_time: 1.25, ..Default::default() }],
         triggers: vec![Trigger::default(), Trigger::default()],
         ..Default::default()
     };
-    let b = vec![0u8; WEAP_SIZE + 2 * TRIGGER_SIZE];
+    let mut b = vec![0u8; WEAP_SIZE + 2 * TRIGGER_SIZE];
+    b[WEAP_SIZE+0xc..WEAP_SIZE+0x10].copy_from_slice(&0.25f32.to_le_bytes());
     let shake = TagId(0xe123_0045);
     let (effe, snd) = (FourCC(*b"effe"), FourCC(*b"snd!"));
     let parts = WeaponParts {
@@ -2381,22 +2366,23 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
                 // Halo 1's empty effect may be a sound (the plasma rifle's).
                 effects: [Some((effe, local(3))), None, Some((snd, local(4)))],
                 damage: [Some(shake), None, None],
+                shot_count: [2, 7],
             },
             FiringParts {
                 effects: [Some((effe, local(5))), None, None],
                 damage: [None; 3],
+                shot_count: [8, 12],
             },
         ]],
+        magazine_objects: vec![vec![(9, local(12))]],
         magazine_effects: vec![[
             Some((FourCC(*b"effe"), local(6))),
             Some((FourCC(*b"effe"), local(7))),
         ]],
-        // The counterpart's ready effect is replaced by Halo 1's sound.
-        halo2: vec![("ready_effect".into(), FourCC(*b"effe"), TagId(0xe5ee_0479))],
         halo1: vec![("ready_effect".into(), FourCC(*b"snd!"), local(8))],
         ..Default::default()
     };
-    let root = weapon(&w, &b, &parts, &Role::default()).unwrap();
+    let root = weapon(&w, &b, &parts).unwrap();
     let d = Defs::builtin().group(FourCC(*b"weap")).unwrap();
     let r = defs::from_built(d, &root).unwrap();
     let block = |r: &Record, p: &str| match r.at(p) {
@@ -2413,8 +2399,12 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     };
     let barrels = block(&r, "barrels");
     assert_eq!(barrels.len(), 2);
+    assert_eq!(barrels[0].at("unknown_d4"), Some(&Val::Bytes(4.0f32.to_le_bytes().to_vec())));
+    assert_eq!(barrels[1].at("unknown_d4"), Some(&Val::Bytes(1000.0f32.to_le_bytes().to_vec())));
     let fx = block(&barrels[0], "block_e4");
     assert_eq!(fx.len(), 2);
+    assert_eq!(fx[0].at("unknown_0"), Some(&Val::Bytes(vec![2, 0, 7, 0])));
+    assert_eq!(fx[1].at("unknown_0"), Some(&Val::Bytes(vec![8, 0, 12, 0])));
     let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
     let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
     assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
@@ -2428,6 +2418,11 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
         "the second trigger has no firing effects of its own"
     );
     let mags = block(&r, "magazines");
+    assert_eq!(mags[0].at("unknown_0"), Some(&Val::Bytes(5u32.to_le_bytes().to_vec())));
+    assert_eq!(mags[0].at("unknown_18"), Some(&Val::Bytes(1.25f32.to_le_bytes().to_vec())));
+    let objects = block(&mags[0], "block_54");
+    assert_eq!(objects[0].at("unknown_0"), Some(&Val::Bytes(9u32.to_le_bytes().to_vec())));
+    assert_eq!(target(&objects[0], "ref_4"), Some(local(12)));
     assert_eq!(target(&mags[0], MAGAZINE_RELOADING_EFFECT), Some(local(6)));
     assert_eq!(target(&mags[0], MAGAZINE_CHAMBERING_EFFECT), Some(local(7)));
     assert_eq!(target(&r, "ready_effect"), Some(local(8)));
@@ -2460,6 +2455,7 @@ fn hover_points_take_their_paired_points_words() {
     use tags::defs::{self, Defs, Val};
     let obj = crate::h1::Object {
         object_type: 1,
+        acceleration_scale: 0.0,
         flags: 0,
         bounding_radius: 1.0,
         bounding_offset: [0.0; 3],
@@ -2488,6 +2484,8 @@ fn hover_points_take_their_paired_points_words() {
         ..Default::default()
     };
     let point = |m: &str| crate::rebuild::Point {
+            sphere: [0.75, 0.0, 0.125, 0.25],
+            antigravity: None,
         marker: m.into(),
         region: String::new(),
         region_index: -1,
@@ -2496,6 +2494,9 @@ fn hover_points_take_their_paired_points_words() {
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let build = |points: &[crate::rebuild::Point]| {
         let root = crate::rebuild::vehicle(&VehicleSpec {
+            physics: None,
+            source: &[],
+            references: &[],
             object: &obj,
             bounds: None,
             hlmt: None,
@@ -2597,27 +2598,21 @@ fn a_rebuilt_seat_s_gunner_is_halo_1_s_alone() {
 /// tag, or none where Halo 1 names none, over the counterpart's; the
 /// counterpart's other slots stay.
 #[test]
-fn halo1_slots_replace_the_counterparts_references() {
+fn only_the_source_projectile_slots_get_references() {
     use crate::arsenal::{self, PROJECTILE_DETONATION, PROJECTILE_FLYBY_SOUND};
     use tags::defs::{self, Defs, Target, Val};
     let d = Defs::builtin().group(FourCC(*b"proj")).unwrap();
     let mut r = defs::default_record(d);
-    let retail = TagId(0xe123_0045);
-    let halo2 = vec![
-        (PROJECTILE_FLYBY_SOUND.to_owned(), FourCC(*b"snd!"), retail),
-        (PROJECTILE_DETONATION.to_owned(), FourCC(*b"effe"), retail),
-        ("ref_140".to_owned(), FourCC(*b"effe"), retail),
-    ];
     let halo1 = vec![
         arsenal::halo1_ref(PROJECTILE_FLYBY_SOUND, b"snd!", None),
         arsenal::halo1_ref(PROJECTILE_DETONATION, b"effe", Some(local(3))),
     ];
-    arsenal::all_refs(&mut r, &halo2, &halo1).unwrap();
+    arsenal::refs(&mut r, &halo1).unwrap();
     let target = |p: &str| match r.at(p) {
         Some(Val::Ref { target, .. }) => target.clone(),
         v => panic!("{p}: {v:?}"),
     };
     assert_eq!(target(PROJECTILE_FLYBY_SOUND), Target::Null);
     assert_eq!(target(PROJECTILE_DETONATION), Target::Id(local(3)));
-    assert_eq!(target("ref_140"), Target::Id(retail));
+    assert_eq!(target("ref_140"), Target::Null);
 }

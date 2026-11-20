@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+h1ai = { path = "../h1ai" }
 h1map = { path = "../h1map" }
 # Halo 1 seat labels as the converted graphs (and rebuilt vehicles) name them.
 h1models = { path = "../h1models" }

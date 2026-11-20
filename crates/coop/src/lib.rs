@@ -23,6 +23,7 @@
 //! Nothing here reads a clock or a device by itself: the caller says when a
 //! frame starts and passes the local pad in, which is what makes it testable.
 
+pub mod cinematic;
 pub mod join;
 pub mod link;
 pub mod peer;

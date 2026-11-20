@@ -636,7 +636,10 @@ impl Part for FeaturesPart<'_> {
     }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
         let saved = snapshot::features::load_features(snapshot).map_err(err)?;
-        self.plan.load_sections(&saved, self.rt)
+        self.plan.load_sections(&saved, self.rt)?;
+        #[cfg(feature = "gpu")]
+        feature::native_map_work::reset();
+        Ok(())
     }
 }
 

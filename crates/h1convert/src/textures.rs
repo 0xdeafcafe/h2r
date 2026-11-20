@@ -283,6 +283,9 @@ pub fn plan<R: Read + Seek>(
             ));
             continue;
         };
+        if shad::uses_detail_program(chosen.layout, &chosen.extras) {
+            out.library.load_detail_program(base)?;
+        }
         let mut maps = Vec::new();
         let mut swapped = Vec::new();
         for (role, m) in &chosen.maps {
@@ -372,7 +375,7 @@ impl Retexture {
                             )
                         })
                         .collect();
-                    let tree = self.library.build_with(c.layout, &maps, &c.extras)?;
+                    let tree = self.library.build_surface(set, c.layout, &maps, &c.extras)?;
                     set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(tree))?
                 }
             };

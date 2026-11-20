@@ -65,7 +65,7 @@ pub enum Producer {
 }
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

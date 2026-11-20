@@ -95,6 +95,9 @@ pub struct StartingLocation {
     pub grenade_type: u16,
     /// Swarm count (`i16 +0x2e`).
     pub swarm_count: i16,
+    /// The command script to start on placement, name and compiled HS index.
+    pub placement_script: String,
+    pub placement_script_index: i16,
     /// Emitter vehicle, `-1` none (`i16 +0x3c`).
     pub emitter_vehicle: i16,
 }
@@ -149,8 +152,8 @@ pub struct FiringPosition {
     pub area: i16,
     /// Cluster (`i16 +0x12`).
     pub cluster: i16,
-    /// Collision surface (`u32 +0x14`).
-    pub surface: u32,
+    /// Pathfinding sector in the zone's BSP, u32::MAX if unassigned.
+    pub sector: u32,
     /// Normal: yaw, pitch in radians (`+0x18`).
     pub normal: [f32; 2],
 }
@@ -173,6 +176,8 @@ pub struct Area {
     pub first: i16,
     /// Firing position count (`i16 +0x3a`).
     pub count: i16,
+    /// Cluster bits at +0x3c.
+    pub clusters: [u32; 16],
     /// Manual reference frame (`i16 +0x7c`).
     pub manual_reference_frame: i16,
 }
@@ -216,7 +221,9 @@ pub struct Order {
     pub force_combat_status: u16,
     /// Entry script name (32 characters, `+0x2c`).
     pub entry_script: String,
-    /// Squad to follow, `-1` none (`i16 +0x4c`).
+    /// Static entry script index, or -1 (i16 +0x4c).
+    pub entry_script_index: i16,
+    /// Squad whose orders this one follows, or -1 (i16 +0x4e).
     pub follow_squad: i16,
     /// Follow radius (`f32 +0x50`).
     pub follow_radius: f32,
@@ -312,11 +319,31 @@ fn area_refs(v: &TagView, e: &[u8], l: (usize, usize)) -> Result<Vec<AreaRef>> {
         .collect())
 }
 
+/// A zone's firing positions or areas. The converter places identical zone
+/// arrays once and points every zone holding them at that copy (b40's
+/// encounters repeat theirs), so each distinct array is charged to the
+/// view's budget once; a repeat reads the same bytes again uncharged.
+fn shared_block<'a>(
+    v: &TagView<'a>,
+    seen: &mut std::collections::HashSet<(u32, u32, usize)>,
+    record: &[u8],
+    (field, stride): (usize, usize),
+) -> Result<Vec<&'a [u8]>> {
+    let (count, address) = (u32_at(record, field), u32_at(record, field + 4));
+    if seen.insert((count, address, stride)) {
+        return Ok(v.elements(count, address, stride)?);
+    }
+    // Validated by the charged read the first time.
+    let bytes = v.range(address, u64::from(count) * stride as u64)?;
+    Ok(bytes.chunks_exact(stride).collect())
+}
+
 impl ScenarioAi {
     /// Decodes the AI blocks of the scenario struct at the start of `v`.
     pub fn read(v: &TagView) -> Result<Self> {
         let root = v.at(0, layout::SCENARIO_MIN)?;
         let b = |l: (usize, usize)| v.block(root, l.0, l.1);
+        let mut shared = std::collections::HashSet::new();
         let squads = b(layout::SQUADS)?
             .into_iter()
             .map(|e| {
@@ -357,6 +384,8 @@ impl ScenarioAi {
                             grenade_type: u16_at(s, 0x2c),
                             swarm_count: i16_at(s, 0x2e),
                             emitter_vehicle: i16_at(s, 0x3c),
+                            placement_script: name32(s, 0x40),
+                            placement_script_index: i16_at(s, 0x60),
                         })
                         .collect(),
                 })
@@ -365,16 +394,12 @@ impl ScenarioAi {
         let zones = b(layout::ZONES)?
             .into_iter()
             .map(|e| {
+                let positions = shared_block(v, &mut shared, e, layout::ZONE_FIRING_POSITIONS)?;
                 Ok(Zone {
                     name: name32(e, 0),
                     flags: u32_at(e, 0x20),
                     manual_bsp: i16_at(e, 0x24),
-                    firing_positions: v
-                        .block(
-                            e,
-                            layout::ZONE_FIRING_POSITIONS.0,
-                            layout::ZONE_FIRING_POSITIONS.1,
-                        )?
+                    firing_positions: positions
                         .into_iter()
                         .map(|f| FiringPosition {
                             position: vec3(f, 0),
@@ -382,12 +407,11 @@ impl ScenarioAi {
                             flags: u16_at(f, 0xe),
                             area: i16_at(f, 0x10),
                             cluster: i16_at(f, 0x12),
-                            surface: u32_at(f, 0x14),
+                            sector: u32_at(f, 0x14),
                             normal: [f32_at(f, 0x18), f32_at(f, 0x1c)],
                         })
                         .collect(),
-                    areas: v
-                        .block(e, layout::ZONE_AREAS.0, layout::ZONE_AREAS.1)?
+                    areas: shared_block(v, &mut shared, e, layout::ZONE_AREAS)?
                         .into_iter()
                         .map(|a| Area {
                             name: name32(a, 0),
@@ -397,6 +421,7 @@ impl ScenarioAi {
                             deviation: f32_at(a, 0x34),
                             first: i16_at(a, 0x38),
                             count: i16_at(a, 0x3a),
+                            clusters: std::array::from_fn(|i| u32_at(a, 0x3c + 4 * i)),
                             manual_reference_frame: i16_at(a, 0x7c),
                         })
                         .collect(),
@@ -412,7 +437,8 @@ impl ScenarioAi {
                     flags: u32_at(e, 0x24),
                     force_combat_status: u16_at(e, 0x28),
                     entry_script: name32(e, 0x2c),
-                    follow_squad: i16_at(e, 0x4c),
+                    entry_script_index: i16_at(e, 0x4c),
+                    follow_squad: i16_at(e, 0x4e),
                     follow_radius: f32_at(e, 0x50),
                     primary_areas: area_refs(v, e, layout::ORDER_PRIMARY_AREAS)?,
                     secondary_areas: area_refs(v, e, layout::ORDER_SECONDARY_AREAS)?,

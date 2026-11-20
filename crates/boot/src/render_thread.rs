@@ -40,6 +40,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     #[cfg(feature = "gpu")]
     ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
     #[cfg(feature = "gpu")]
+    ("native-map-work", "GAME_ACTIVATE", AFTER),
+    #[cfg(feature = "gpu")]
+    ("native-map-work", "BSP_SWITCH", AFTER),
+    #[cfg(feature = "gpu")]
+    ("native-map-work", "GAME_STATE_REVERT", AFTER),
+    #[cfg(feature = "gpu")]
     (
         "native-transparents",
         "GAME_ACTIVATE",
@@ -95,6 +101,33 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "a damage instance in the simulation, on the game thread; scales the body and shield parts",
     ),
+    (
+        "h1-particle-physics",
+        "*",
+        "native particle simulation on the game thread, with post-step hooks around the guest bodies",
+    ),
+    ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
+    ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
+    ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
+    ("h1-conversations", "*", "uses the interpreter and tracks actor construction across guest calls"),
+    ("h1-recordings", "UNIT_APPLY_CONTROL", "applies recorded input through a guest continuation"),
+    ("h1-scope-zoom", "GAME_ACTIVATE", AFTER),
+    ("h1-scope-zoom", "SCREEN_EFFECT", AFTER),
+    ("h1-script-builtins", "GAME_ACTIVATE", AFTER),
+    ("h1-script-builtins", "GAME_TICK", AFTER),
+    ("h1-script-builtins", "GAME_UPDATE_FRAME", "runs extra game ticks through the guest simulation"),
+    ("h1-script-builtins", "OBJECT_FUNCTION_VALUE", "reads the simulation countdown for its digit shaders"),
+    ("h1-script-builtins", "OBJECT_FUNCTION_IMPORT", "reads weapon ownership and unit light power from the simulation"),
+    ("h1-script-builtins", "UNIT_LIGHT_UPDATE", "advances the simulation unit's flashlight"),
+    ("h1-script-builtins", "HS_UNUSED_EVALUATOR", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_UNIT_FLAG_SET", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_UNIT_FLAG_GET", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_AI_LIST_FLAG_SET", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_SHORT_TO_LONG_EVALUATOR", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_LOOK_ANY_DIRECTION", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_MOVE_ANY_DIRECTION", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_FALSE_EVALUATOR", "evaluates the script on its guest interpreter thread"),
+    ("h1-script-builtins", "HS_CONSTANT_LONG_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
@@ -122,6 +155,17 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // registration: all on game-thread points (the simulation's events, the
     // match start, the variant editor and the Game Setup lists), which the
     // render never meets.
+    (
+        "h1-hud-text",
+        "HS_UNUSED_EVALUATOR",
+        "a script builtin on the simulation thread evaluates its Boolean argument in the guest",
+    ),
+    (
+        "h1-hud-text",
+        "PLAYER_PRESS_INTERACT",
+        "a player's interact press in the simulation, on the game thread; swaps the powerup \
+         through guest calls it waits on",
+    ),
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),

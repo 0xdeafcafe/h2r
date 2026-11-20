@@ -13,6 +13,7 @@
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;
+mod campaign_cache;
 pub mod campaign_cards;
 pub mod campaign_info;
 pub mod campaign_menu;
@@ -36,9 +37,18 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod game_setup_help;
+mod h1_recordings;
+mod h1_conversation;
+mod h1_drive;
 pub mod h1_options;
 pub mod h1_options_row;
+mod h1_particle_physics;
+mod h1_cinematics;
+mod h1_script_builtins;
+mod h1_squad_storage;
 pub mod h1_variants;
+mod h1_ai_control;
+mod h1_command_atoms;
 pub mod health;
 pub mod host_audit;
 mod host_lobby;
@@ -47,6 +57,7 @@ pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
 pub mod hud_swap;
+mod h1_hud_text;
 pub mod icons;
 pub mod keyboard_glue;
 pub mod layout_glue;
@@ -1198,6 +1209,9 @@ fn run_configured(
     // Explicit editor maps still use H2_MAP_DIR. Installed packages use
     // their independent content offers (docs/game/maps.md).
     let maps = map_override::dir();
+    campaign_cache::configure(
+        &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
+    )?;
     let packages = map_override::packages_dir(&opts.data_root);
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").

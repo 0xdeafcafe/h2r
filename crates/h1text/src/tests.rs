@@ -746,3 +746,74 @@ fn an_extended_table_keeps_the_base_rows_first() {
     assert!(Locales::extending(&index[..12], blob.clone()).is_err());
     assert!(Locales::extending(&index, b"x\0".to_vec()).is_err());
 }
+
+#[test]
+fn mission_hud_rebuild_links_text_and_extends_pinned_locales() {
+    use crate::hud::{GROUP, MARKER, MARKER_AT, SCENARIO_HMT};
+    use crate::scenario::{LevelText, unicode_path};
+
+    let h1 = synth_map(vec![
+        tag(b"scnr", "levels\\synthetic", |_| {
+            let mut bytes = scnr_with(SCNR_ID + 1, SCNR_ID + 2);
+            put(&mut bytes, 0x574, u32::from_be_bytes(*b"ustr"));
+            put(&mut bytes, 0x580, SCNR_ID + 1);
+            bytes
+        }),
+        tag(b"ustr", "help", |at| ustr_tag(&["Walk slowly with %move"], at)),
+        tag(b"hmt ", "mission", |at| {
+            hmt_raw(
+                &["Try ", " next", "Reach the door"],
+                &[(0, 5), (1, 26), (0, 6), (0, 15)],
+                &[("hint", 0, 3), ("objective", 3, 1)],
+                at,
+            )
+        }),
+        tag(b"hudg", "globals", |_| vec![0; 0xe8]),
+    ]);
+    let base = build_text_map(&[("base", vec!["Already here"])]);
+    let mut map = Map::from_reader(Cursor::new(base.bytes)).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let mut locales = Locales::from_map(&mut map).unwrap();
+    assert_eq!(locales.len(), 1);
+
+    let level = LevelText::install(&h1, &mut set, &mut locales).unwrap();
+    assert_eq!(level.message_index("OBJECTIVE"), Some(1));
+    assert_eq!(level.message_index("missing"), None);
+    let mut scenario = Block::zeroed(0x3e0);
+    level.write(&mut scenario);
+    set.tag_mut(set.scenario).unwrap().payload = TagPayload::Built(scenario);
+    locales.install_pinned(&mut set).unwrap();
+    let (bytes, _) = set.build().unwrap();
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+
+    let root = map.read_tag_bytes(set.scenario).unwrap();
+    let word = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    assert_eq!(word(&root, SCENARIO_HMT as usize), GROUP.as_u32());
+    let hud = TagId(word(&root, SCENARIO_HMT as usize + 4));
+    let bytes = map.read_tag_bytes(hud).unwrap();
+    assert_eq!(word(&bytes, MARKER_AT as usize), MARKER);
+    assert_eq!(word(&bytes, 8), 6);
+    assert_eq!(word(&bytes, 0x10), 3);
+    assert_eq!(word(&bytes, crate::hud::SCENARIO_HELP as usize), 0x0001_0002);
+    let messages = map.file_offset(word(&bytes, 0x14), 0x80).unwrap();
+    let entries = map.read_file_range(messages, 0x80).unwrap();
+    assert_eq!(&entries[0x60..0x65], &[11, 0, 3, 0, 1]);
+
+    let localization = tags::Localization::read(&mut map).unwrap();
+    let english = localization.table(tags::Language::English);
+    assert_eq!(english.bytes(0), Some("Already here".as_bytes()));
+    let name = unicode_path("mission");
+    let tag = map
+        .tag(map::TagQuery::NameInGroup(&name, FourCC(*b"unic")))
+        .unwrap()
+        .id;
+    let unic = localization.unic(&mut map, tag).unwrap();
+    let key = tags::StringId(key_of(&map, "mission\\hint"));
+    assert_eq!(
+        localization
+            .text_in(&unic, key, tags::Language::English)
+            .unwrap()
+            .as_deref(),
+        Some("Try \u{e451} next"),
+    );
+}

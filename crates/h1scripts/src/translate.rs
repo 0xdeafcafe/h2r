@@ -18,12 +18,9 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("game_save_totally_unsafe", "game_save_immediate"),
     ("ai_attach", "ai_attach_units"),
     ("ai_exit_vehicle", "ai_vehicle_exit"),
+    ("ai_dialogue_triggers", "ai_dialogue_enable"),
     ("object_pvs_set_object", "pvs_set_object"),
     ("object_pvs_clear", "pvs_clear"),
-    // Halo 2 has no living fraction its scripts call; its strength is the
-    // squad's remaining vitality, 0 when all are dead (a30's waits on
-    // `(> 0.3 (ai_living_fraction x))` and `(= 0.0 ...)`).
-    ("ai_living_fraction", "ai_strength"),
     // The ticks left of a playing impulse sound (0 once it ends), as Halo
     // 1's. Halo 2's evaluator 0x2a9fe0 finds the sound among the 16 script
     // impulses and returns its permutation's length less the time played,
@@ -32,6 +29,28 @@ pub const RENAMES: &[(&str, &str)] = &[
     // script that replays a sound each time the wait ends replayed it every
     // tick. `docs/halo1/scripts.md`.
     ("sound_impulse_time", "sound_impulse_language_time"),
+    // Halo 1's own documentation string: "just another (old) name for
+    // object_pvs_set_object", which renames to this above. Same (object)
+    // -> void on both sides.
+    ("object_pvs_activate", "pvs_set_object"),
+    // Halo 1's documentation: "causes the player to revert to his previous
+    // saved game" — which is Halo 2's game_revert (568, evaluator
+    // 0x2a9a10: sets the three revert flags). a50 and d40's fail cases.
+    ("game_lost", "game_revert"),
+    // The look-inversion pair. Halo 2's take one controller flag instead of
+    // player0; a10's tutorial inverts and reads it back.
+    ("player0_look_invert_pitch", "controller_set_look_invert"),
+    ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+    // Both read player 0's light state through the same one-argument shape
+    // (Halo 1 0x3c030, Halo 2 0x14ed80) and nothing else: Halo 2 has no
+    // night vision, and on a converted dark level the night-vision button
+    // is the flashlight. a30's sniper tutorial waits on it.
+    (
+        "unit_solo_player_integrated_night_vision_is_active",
+        "player_flashlight_on",
+    ),
+    // Use Halo 2's latched dismissal action in the tutorial.
+    ("player_action_test_back", "player_action_test_cancel"),
 ];
 
 /// Halo 1 builtins whose Halo 2 counterpart takes different arguments, and
@@ -40,7 +59,18 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     // Halo 2 adds an optional count. Retail Halo 2 scripts leave it out in
     // 1309 of 2100 calls and never pass 0 (`ai_place_counts` in
     // h1campaign's survey), so the call keeps Halo 1's one argument.
+    ("cinematic_screen_effect_set_convolution", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_filter", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_filter_desaturation_tint", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_video", "set", Adapter::Cinematic),
+    ("rasterizer_model_ambient_reflection_tint", "set", Adapter::Cinematic),
     ("ai_place", "ai_place", Adapter::OmitOptional),
+    ("ai_spawn_actor", "ai_place_counted", Adapter::AppendShort(1)),
+    ("ai_command_list", "cs_run_command_script", Adapter::CommandList),
+    ("ai_command_list_by_unit", "cs_run_command_script", Adapter::CommandList),
+    ("ai_command_list_advance", "set", Adapter::CommandList),
+    ("ai_command_list_advance_by_unit", "set", Adapter::CommandList),
+    ("ai_command_list_status", "set", Adapter::CommandList),
     // Halo 2 adds an exit mode; every retail Halo 2 call passes 1.
     (
         "unit_exit_vehicle",
@@ -51,11 +81,31 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     ("device_group_set", "device_group_set", Adapter::PrependNone),
     // Halo 2's scripts never call `!=`: write `(not (= a b))`.
     ("!=", "=", Adapter::Negate),
+    // Halo 2 (unit_add_equipment, 250) adds a fourth boolean after Halo 1's
+    // reset flag. The fourth reaches the new weapon's flag byte
+    // (0xccde0); every retail Halo 2 script that gives profile equipment
+    // passes true.
+    (
+        "player_add_equipment",
+        "unit_add_equipment",
+        Adapter::AppendBool(true),
+    ),
+    // Slot 843 supplies an extra leading long. The host reads the two
+    // remaining arguments in their original types.
+    (
+        "numeric_countdown_timer_set",
+        "numeric_countdown_timer_set",
+        Adapter::PrependLong(0),
+    ),
 ];
 
 /// A rewrite from a Halo 1 call to a Halo 2 one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Adapter {
+    /// Write interpolated cinematic render controls to scenario globals.
+    Cinematic,
+    /// Start a generated command script or dispatch its per-unit control request.
+    CommandList,
     /// Same arity; argument nodes take Halo 2's parameter types and Halo 2's
     /// interpreter casts the values, as it casts any argument. Literals whose
     /// type changes (a marker string becoming a `string_id`) keep their
@@ -64,13 +114,21 @@ pub enum Adapter {
     /// Append a `short` literal argument. The literal is a hook too, so the
     /// converter can choose another value.
     AppendShort(i16),
+    /// Append a boolean literal argument.
+    AppendBool(bool),
     /// Insert `none` as the first argument.
     PrependNone,
+    /// Insert a signed integer as the first argument.
+    PrependLong(i32),
     /// Halo 2's last parameter is optional and Halo 1 has no counterpart:
     /// the call keeps Halo 1's arguments, one fewer than Halo 2's table.
     OmitOptional,
     /// Call the target (a comparison) inside `not`.
     Negate,
+    /// Use Halo 2's combat status and its ordered thresholds.
+    CombatStatus,
+    /// Dispatch the typed converted operation on the retail VM.
+    AiRuntime,
 }
 
 /// One Halo 2 builtin as the translation needs it.
@@ -91,6 +149,9 @@ pub struct H2Builtin {
 pub struct Target {
     /// Named builtins.
     pub builtins: HashMap<String, H2Builtin>,
+    /// Named overloads, keyed by name and descriptor arity. Generated CS calls
+    /// need both `cs_go_to(point)` and `cs_go_to(point, radius)`.
+    pub overloads: HashMap<(String, usize), H2Builtin>,
     /// Value type names, by index.
     pub types: Vec<String>,
     /// Engine (external) globals seen in Halo 2 scripts: name to index and
@@ -101,24 +162,44 @@ pub struct Target {
 impl Target {
     /// The named builtins and types of an observed Halo 2 catalog.
     pub fn from_catalog(c: &hs::Catalog) -> Self {
-        let mut builtins: HashMap<String, H2Builtin> = c
-            .named_functions()
-            .into_iter()
-            .filter_map(|(i, name)| {
-                let f = c.function(i).ok()?;
-                Some((
-                    name.to_owned(),
+        let mut builtins = HashMap::new();
+        let mut overloads = HashMap::new();
+        for (index, name) in c.named_functions() {
+            let Ok(f) = c.function(index) else { continue };
+            let builtin = H2Builtin {
+                index,
+                return_type: f.return_type(),
+                parameters: f.parameters().to_vec(),
+                special: f.flags() & 2 != 0,
+            };
+            overloads.insert((name.to_owned(), builtin.parameters.len()), builtin.clone());
+            builtins.insert(name.to_owned(), builtin);
+        }
+        crate::identified::name_unnamed(&mut builtins, c);
+        crate::aicontrol::bind(&mut builtins, c);
+        for (name, index) in hs::h1_conversation::BUILTINS {
+            if let Ok(f) = c.function(index)
+                && f.evaluate() == hs::h1_conversation::EVALUATE
+                && f.return_type() == 4
+                && f.parameters() == [8; 4]
+                && f.flags() & 2 == 0
+            {
+                builtins.insert(
+                    name.into(),
                     H2Builtin {
-                        index: i,
+                        index,
                         return_type: f.return_type(),
                         parameters: f.parameters().to_vec(),
-                        special: f.flags() & 2 != 0,
+                        special: false,
                     },
-                ))
-            })
-            .collect();
-        crate::identified::name_unnamed(&mut builtins, c);
+                );
+            }
+        }
+        crate::commands::identify(&mut builtins, c);
+        crate::hud::identify(&mut builtins, c);
+        crate::unit_builtins::name_runtime_slots(&mut builtins, c);
         Self {
+            overloads,
             builtins,
             types: c.types().to_vec(),
             externals: HashMap::new(),
@@ -188,9 +269,16 @@ pub struct Table {
 impl Table {
     /// Translates every builtin of `h1` against `h2`.
     pub fn build(h1: &Catalog, h2: &Target) -> Self {
-        let types: Vec<Option<u16>> = h1.types().iter().map(|t| h2.type_index(t)).collect();
+        let types: Vec<Option<u16>> = h1.types().iter().map(|t| match t.as_str() {
+            "ai_command_list" => h2.type_index("ai_command_script"),
+            ty => h2.type_index(ty),
+        }).collect();
         let map_ty = |t: u16| types.get(t as usize).copied().flatten();
-        let renames: HashMap<&str, &str> = RENAMES.iter().copied().collect();
+        let renames: HashMap<&str, &str> = RENAMES
+            .iter()
+            .chain(crate::aicontrol::RENAMES)
+            .copied()
+            .collect();
         let adapters: HashMap<&str, (&str, Adapter)> =
             ADAPTERS.iter().map(|&(a, b, k)| (a, (b, k))).collect();
         let builtins = h1
@@ -205,7 +293,12 @@ impl Table {
                     adapter: None,
                     reason: Some(reason),
                 };
-                if let Some(&(h2_name, adapter)) = adapters.get(f.name.as_str()) {
+                if let Some(&(h2_name, adapter)) = adapters.get(f.name.as_str())
+                    && !(adapter == Adapter::OmitOptional
+                        && h2.builtins.get(h2_name).is_some_and(|b| {
+                            b.parameters.len() == f.parameters.len()
+                        }))
+                {
                     let Some(b) = h2.builtins.get(h2_name) else {
                         return missing("adapter target not called by Halo 2 scripts");
                     };
@@ -214,6 +307,29 @@ impl Table {
                         kind: Kind::Adapter,
                         target: Some((h2_name.to_owned(), b.clone())),
                         adapter: Some(adapter),
+                        reason: None,
+                    };
+                }
+                if let Some(op) = crate::aicontrol::runtime_operation(&f.name)
+                    && let Some(b) = crate::aicontrol::runtime_target(h2, op)
+                {
+                    return Translation {
+                        name: f.name.clone(),
+                        kind: Kind::Adapter,
+                        target: Some((hs::h1_ai_slots::CONTROL_TOKEN.to_owned(), b.clone())),
+                        adapter: Some(Adapter::AiRuntime),
+                        reason: None,
+                    };
+                }
+                if f.name == "ai_status"
+                    && crate::aicontrol::status_supported(h2)
+                    && let Some(b) = h2.builtins.get("ai_combat_status")
+                {
+                    return Translation {
+                        name: f.name.clone(),
+                        kind: Kind::Adapter,
+                        target: Some(("ai_combat_status".to_owned(), b.clone())),
+                        adapter: Some(Adapter::CombatStatus),
                         reason: None,
                     };
                 }

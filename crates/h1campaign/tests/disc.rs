@@ -2,6 +2,11 @@
 //! `$H2_DISC`), and read back. Nothing is written to disk; counts go to
 //! stdout.
 
+#[path = "disc/ground_ai.rs"]
+mod ground_ai;
+#[path = "disc/a30_flow.rs"]
+mod a30_flow;
+
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -416,7 +421,8 @@ fn check_bsps(
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    let n = h1.structure_bsps().unwrap().len();
+    let sources = h1.structure_bsps().unwrap();
+    let n = sources.len();
     assert_eq!(done.report.bsps.len(), n, "every Halo 1 BSP converts");
     assert_eq!(word(&bytes, 0x210) as usize, n, "one descriptor per BSP");
     assert_eq!(word(&bytes, 0x290) as usize, n, "cluster data per BSP");
@@ -440,6 +446,13 @@ fn check_bsps(
         );
         regions.push((word(&bytes, e), word(&bytes, e + 4)));
         let b = m.read_tag_bytes(sbsp).unwrap();
+        let source = h1.structure_bsp(&sources[k]).unwrap();
+        let pvs = source.cluster_visibility().unwrap();
+        assert!(!pvs.is_empty(), "bsp {k}: source visibility");
+        let n = word(&b, 0x54) as usize;
+        let data = (word(&b, 0x58) - loc.address) as usize;
+        assert_eq!(&b[data..data + n], pvs, "bsp {k}: source PVS rows");
+
         // The cluster data matches the BSP: one entry per cluster, its
         // checksum.
         let c = clusters + k * 0x34;
@@ -560,6 +573,125 @@ fn h1_trigger_volumes_read() {
     }
 }
 
+fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, h1: &h1map::H1Map, scnr: &[u8], objects: bool) {
+    use h1text::hud::{
+        CONTROL_PROMPTS, EVENTS, EVENT_SIZE, EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE,
+        PROMPT_SUBJECTS, SCENARIO_HELP, SCENARIO_HMT, SHARED_MESSAGES, SILHOUETTE_BASE,
+        SILHOUETTE_SIZE, SILHOUETTES, SWAP_POWERUP, WIDGET_CONTROLS, WIDGET_CONTROL_SIZE,
+    };
+
+    let word = |b: &[u8], at: u32| u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap());
+    let short = |b: &[u8], at: u32| u16::from_le_bytes(b[at as usize..at as usize + 2].try_into().unwrap());
+    let hmt = m.read_tag_bytes(TagId(word(scnr, SCENARIO_HMT + 4))).unwrap();
+    let mut read = |addr: u32, size: u32| {
+        let offset = m.file_offset(addr, size).unwrap();
+        m.read_file_range(offset, u64::from(size)).unwrap()
+    };
+    assert_eq!(word(&hmt, MARKER_AT), MARKER);
+    assert_eq!(short(&hmt, SCENARIO_HELP + 2), 5);
+    let msgs = read(word(&hmt, 0x14), word(&hmt, 0x10) * 0x40);
+    let parts = read(word(&hmt, 0xc), word(&hmt, 8) * 2);
+    let glyphs = |row: u32| {
+        let row = row * 0x40;
+        let start = usize::from(short(&msgs, row + 0x22)) * 2;
+        let len = usize::from(msgs[row as usize + 0x24]) * 2;
+        parts[start..start + len].chunks_exact(2).filter_map(|p| (p[0] == 1).then_some(p[1]))
+            .collect::<Vec<_>>()
+    };
+    let help = u32::from(short(&hmt, SCENARIO_HELP));
+    assert_eq!(glyphs(help + 3), [30, 31]);
+    assert_eq!(glyphs(help + 4), [16]);
+
+    let widgets = read(word(&hmt, WIDGET_CONTROLS + 4), word(&hmt, WIDGET_CONTROLS) * WIDGET_CONTROL_SIZE);
+    let panels = widgets.chunks_exact(WIDGET_CONTROL_SIZE as usize)
+        .filter(|widget| word(widget, 8) != 0)
+        .collect::<Vec<_>>();
+    assert_eq!(panels.len(), 4);
+    assert_ne!(word(panels[2], 0x10), word(panels[3], 0x10), "radar layers have different flash colours");
+
+    if objects {
+        let routes = read(word(&hmt, EVENTS + 4), word(&hmt, EVENTS) * EVENT_SIZE);
+        let subjects = read(word(&hmt, PROMPT_SUBJECTS + 4), word(&hmt, PROMPT_SUBJECTS) * PROMPT_SUBJECT_SIZE);
+        let sprites = read(word(&hmt, SILHOUETTES + 4), word(&hmt, SILHOUETTES) * SILHOUETTE_SIZE);
+        let text = read(word(&hmt, 4), word(&hmt, 0));
+        let shared = u32::from(short(&hmt, SHARED_MESSAGES));
+        let at = |row| (shared + u32::from(row)) * 0x40;
+        let first_unit = |row| 2 * u32::from(short(&msgs, at(row) + 0x20));
+        let text_row = |row| {
+            let start = first_unit(row) as usize;
+            String::from_utf16(&text[start..].chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .take_while(|&unit| unit != 0)
+                .collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, EXIT_VEHICLE))), [18, 32]);
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, SWAP_POWERUP))), [18, 32, 33]);
+        for (name, group, label) in [
+            (r"vehicles\warthog\warthog", FourCC(*b"vehi"), "Warthog"),
+            (r"powerups\health pack", FourCC(*b"eqip"), "health pack"),
+        ] {
+            let id = m.tag(map::TagQuery::NameInGroup(name, group)).unwrap().id;
+            let subject = subjects.chunks_exact(PROMPT_SUBJECT_SIZE as usize)
+                .find(|subject| word(subject, 0) == id.0)
+                .expect("the contextual argument follows the rebuilt object datum");
+            assert_eq!(text_row(short(subject, 4)).to_ascii_lowercase(), label.to_ascii_lowercase());
+        }
+        let rifle = m
+            .tag(map::TagQuery::NameInGroup(
+                r"weapons\assault rifle\assault rifle",
+                FourCC(*b"weap"),
+            ))
+            .unwrap()
+            .id;
+        let rifle = m.read_tag_bytes(rifle).unwrap();
+        let route = routes.chunks_exact(EVENT_SIZE as usize)
+            .find(|route| word(route, 0) == word(&rifle, 0xcc))
+            .expect("the rifle pickup field names a converted route");
+        assert_eq!(glyphs(shared + u32::from(short(route, 4))), [18, 32]);
+        let argument = short(route, 6);
+        assert_eq!(short(&text, first_unit(argument) + 2), 0, "one inline glyph");
+        let index = short(&text, first_unit(argument)).checked_sub(SILHOUETTE_BASE).unwrap();
+        let start = usize::from(index) * SILHOUETTE_SIZE as usize;
+        let sprite = &sprites[start..start + SILHOUETTE_SIZE as usize];
+        let pixel_len = word(sprite, 0x10);
+        let offset = m.file_offset(word(sprite, 0x14), pixel_len).unwrap();
+        let pixels = m.read_file_range(offset, u64::from(pixel_len)).unwrap();
+        check_rifle_silhouette(h1, short(sprite, 4), short(sprite, 6), &pixels);
+        assert_eq!(word(&hmt, CONTROL_PROMPTS), 1, "the cave's placed control retains its prompt");
+    }
+}
+
+fn check_rifle_silhouette(h1: &h1map::H1Map, width: u16, height: u16, pixels: &[u8]) {
+    use h1bitmaps::decode::BitmapExt;
+    use h1map::{Group, TagRef, bitmap::Bitmap};
+
+    let rifle = h1.find(Group::new(b"weap"), r"weapons\assault rifle\assault rifle").unwrap();
+    let hud = TagRef::read(h1.tag_data(rifle).unwrap(), 0x480).unwrap();
+    let hud = h1.tag_data(h1.tag(hud.id).unwrap()).unwrap();
+    let sequence = usize::from(u16::from_le_bytes(hud[0x13c..0x13e].try_into().unwrap()));
+    assert_eq!(sequence, 8);
+    let globals = h1.tags().iter().find(|tag| tag.group == Group::new(b"hudg")).unwrap();
+    let atlas = TagRef::read(h1.tag_data(globals).unwrap(), 0xa4).unwrap();
+    let atlas = Bitmap::read(h1, h1.tag(atlas.id).unwrap()).unwrap();
+    let sprite = &atlas.sequences[sequence].sprites[0];
+    let image = atlas.decode(h1, sprite.image as usize, 0).unwrap();
+    let [left, right, top, bottom] = sprite.bounds;
+    assert_eq!(image.width, 128);
+    assert_eq!(image.height, 128);
+    let [left, right, top, bottom] = [left, right, top, bottom].map(|v| (128.0 * v).round() as usize);
+    assert_eq!((usize::from(width), usize::from(height)), (right - left, bottom - top));
+    let mut expected = Vec::new();
+    for row in image.rgba.chunks_exact(128 * 4).take(bottom).skip(top) {
+        for rgba in row.chunks_exact(4).take(right).skip(left) {
+            let nibble = |i: usize| u16::from(rgba[i] / 16);
+            let argb = 0x1000 * nibble(3) + 0x100 * nibble(0) + 0x10 * nibble(1) + nibble(2);
+            expected.extend(argb.to_le_bytes());
+        }
+    }
+    assert!(expected.chunks_exact(2).any(|p| p[1] & 0xf0 != 0));
+    assert_eq!(pixels, expected);
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a30_converts_onto_its_base_and_reads_back() {
@@ -593,6 +725,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    check_a30_hud(&mut m, &h1, &bytes, opts.objects);
 
     // Every tag reference in the scenario resolves to a tag of its group.
     // The whole ordinary metadata, unowned bytes included (the base
@@ -759,6 +892,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
         for c in &ai.character_palette {
             assert_eq!(m.tag(*c).unwrap().group, FourCC(*b"char"));
         }
+        ground_ai::check(&h1, &m, &ai, &decoded, &mem);
         println!(
             "ai read back: {} squads, {} zones, {} characters",
             ai.squads.len(),
@@ -769,8 +903,17 @@ fn a30_converts_onto_its_base_and_reads_back() {
 
     // Scripts: decode, codec symmetry, validation against Halo 2's table.
     if let Some(sc) = &s {
-        let _ = sc;
         let hs_s = hs::Scenario::read(&mut m).unwrap();
+        let (_, slot, _, _, _) = h1scripts::hud::SCENARIO_HELP_BUILTIN;
+        let mut hints = Vec::new();
+        for node in hs_s.nodes().iter().filter(|n| !n.atom() && n.opcode() == slot) {
+            let Ok(head) = hs_s.node(hs::Datum(node.data())) else { continue };
+            if hs_s.string(head.string_offset()).ok() == Some("display_scenario_help") {
+                hints.push(hs_s.node(head.next()).unwrap().data() as u16);
+            }
+        }
+        hints.sort_unstable();
+        assert_eq!(hints, [3, 4], "the cave's two script help calls");
         println!(
             "scripts read back: {} scripts, {} globals, {} nodes",
             hs_s.scripts().len(),
@@ -780,34 +923,46 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
-        // Halo 1's initially created encounters: a startup script places
-        // their squad groups, each argument resolved to a group.
-        if opts.ai && !r.initial.is_empty() {
-            let sc = hs_s.script(h1campaign::scenario::INITIAL_SCRIPT).unwrap();
-            assert_eq!(sc.kind(), 0, "startup");
-            let mut placed = Vec::new();
-            for n in hs_s.nodes() {
-                if n.atom() || n.data() == u32::MAX {
-                    continue;
+        if opts.sounds >= 1000 {
+            let placed: std::collections::HashSet<&str> = hs_s
+                .references()
+                .iter()
+                .filter(|r| r.group() == FourCC(*b"snd!"))
+                .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
+                .collect();
+            let scenes = h1ai::conversations::read(&h1).unwrap();
+            for scene in &scenes {
+                for path in scene
+                    .lines
+                    .iter()
+                    .flat_map(|line| line.sounds.iter().flatten())
+                {
+                    assert!(
+                        placed.contains(path.as_str()),
+                        "{}: missing converted sound {path}",
+                        scene.name
+                    );
                 }
-                let Ok(head) = hs_s.node(hs::Datum(n.data())) else {
-                    continue;
-                };
-                if hs_s.string(head.string_offset()).ok() != Some("ai_place") {
-                    continue;
-                }
-                let arg = hs_s.node(head.next()).unwrap();
-                // One argument, as most retail calls (no count).
-                assert_eq!(arg.next(), hs::Datum::NULL);
-                placed.push(arg.data());
             }
+        }
+        let original = h1scripts::Tables::read(&h1).unwrap();
+        assert_eq!(original.globals.len(), 108);
+        for (index, global) in original.globals.iter().enumerate() {
+            let written = &hs_s.globals()[index];
+            assert_eq!(written.name().unwrap(), global.name);
+            assert_eq!(Some(written.value_type()), sc.table.ty(global.value_type));
+        }
+        a30_flow::titles(&mut m, &bytes, addr, &h1);
+        assert!(r.missing_globals.is_empty(), "{:?}", r.missing_globals);
+        if opts.ai {
+            let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
+                !matches!((u.definition.as_str(), u.name.as_str()),
+                    ("objective_cave", "display_scenario_help"))
+            }).collect();
+            assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
-            for g in &r.initial {
-                let i = ai.squad_groups.iter().position(|x| &x.name == g).unwrap();
-                assert!(placed.contains(&(0x4000_0000 | i as u32)), "group {g}");
-            }
-            println!("placed at startup: {:?}", r.initial);
+            a30_flow::mission(&hs_s, &ai, &h1);
         }
     }
 
@@ -837,32 +992,8 @@ fn a30_converts_onto_its_base_and_reads_back() {
         println!("sounds read back: {ours} converted, {} in all", ids.len());
         // The scripts' own sounds and the looping sounds' tracks.
         assert!(ours >= r.sounds, "{ours} < {}", r.sounds);
-        // Each looping sound the scripts name is in the map under its
-        // Halo 1 name, or reported left out. The clusters' background
-        // sounds (h1convert::ambience) are Halo 1 looping sounds too, and
-        // not the scripts' unless a script also names one.
-        let ambient: std::collections::HashSet<String> = h1convert::ambience::read(&h1)
-            .backgrounds
-            .into_iter()
-            .map(|(_, l)| l.name)
-            .collect();
-        let lsnd = m
-            .tags()
-            .iter()
-            .filter(|t| t.group == FourCC(*b"lsnd") && t.location.is_some())
-            .filter(|t| {
-                t.name
-                    .as_deref()
-                    .is_some_and(|n| h1.find(h1sounds::looping::LSND, n).is_some())
-            })
-            .filter(|t| !t.name.as_deref().is_some_and(|n| ambient.contains(n)))
-            .count();
-        println!(
-            "looping sounds read back: {lsnd} ({} left out)",
-            r.looping_dropped.len()
-        );
-        assert_eq!(lsnd, r.looping);
-        assert!(r.looping > 0);
+        let loops = h1.tags().iter().filter(|t| t.group == h1sounds::looping::LSND).count();
+        assert_eq!(done.report.looping_sounds, loops);
     }
 
     // Listed by the Halo 1 campaign manifest under the map's own path.
@@ -876,6 +1007,241 @@ fn a30_converts_onto_its_base_and_reads_back() {
 /// string literal where Halo 2 wants a `unit_seat_mapping`: the cast table
 /// has no entry, and the interpreter called address 0. `$H1_LEVELS` (comma
 /// separated) limits the levels.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
+    let mut source = h1_iso();
+    let entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let entry = target.find("default.xbe").unwrap();
+    let target = target.read(&entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+    let call = |image: &xbe::Xbe<'_>, at: u32, expected| {
+        let bytes = image.bytes_at(at, 5).unwrap();
+        assert_eq!(bytes[0], 0xe8);
+        let displacement = u32::from_le_bytes(bytes[1..].try_into().unwrap());
+        assert_eq!(at.wrapping_add(5).wrapping_add(displacement), expected);
+    };
+    call(&source, 0x001415af, 0x0013b270);
+    call(&source, 0x0013e381, 0x0013b270);
+    call(&source, 0x0013bd1f, 0x0013b500);
+    call(&source, 0x0013eb01, 0x0013e280);
+    call(&source, 0x0013eb0d, 0x0013c910);
+    call(&target, 0x001c7813, 0x00200930);
+    assert_eq!(&target.bytes_at(0x00200957, 5).unwrap()[1..], &0xc760u32.to_le_bytes());
+    assert_eq!(&target.bytes_at(0x0020098a, 5).unwrap()[1..], &0x163cu32.to_le_bytes());
+    call(&target, 0x002016ab, 0x002039d0);
+    call(&target, 0x00201912, 0x00203780);
+    call(&target, 0x00274d61, 0x001a80e0);
+    let uncover = target.read_u32(0x0046eeb8 + 35 * 4).unwrap();
+    assert_eq!(uncover, 0x0047e908);
+    assert_eq!(target.read_u32(uncover + 0x10).unwrap(), 0x001b84a0);
+    assert_eq!(target.read_u32(uncover + 0x18).unwrap(), 0x001b8540);
+    assert_eq!(target.read_u32(uncover + 0x40).unwrap(), 0x001b85a0);
+    assert_eq!(target.read_u32(uncover + 0x44).unwrap(), 0x001b89d0);
+    assert_eq!(target.read_u32(uncover + 0x48).unwrap(), 0x001b8ae0);
+    call(&source, 0x001674be, 0x00165720);
+    call(&source, 0x0016573b, 0x0016e070);
+    call(&target, 0x001b2134, 0x002605d0);
+    call(&target, 0x001b2190, 0x002626b0);
+    let presearch = target.read_u32(0x0046eeb8 + 28 * 4).unwrap();
+    assert_eq!(target.read_u32(presearch + 0x10).unwrap(), 0x001b44d0);
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_uncover_and_combat_timer_contact_rules() {
+    let mut source = h1_iso();
+    let source_entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&source_entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let target_entry = target.find("default.xbe").unwrap();
+    let target = target.read(&target_entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+
+    // Actor-defined time and damage operands and the two inclusive thresholds.
+    assert_eq!(&source.bytes_at(0x163c96, 6).unwrap()[2..], &0x2d8u32.to_le_bytes());
+    assert_eq!(&source.bytes_at(0x163ce6, 6).unwrap()[2..], &0x324u32.to_le_bytes());
+    assert_eq!(source.bytes_at(0x163cdf, 4).unwrap(), [0x3b, 0xc1, 0x7d, 2]);
+    assert_eq!(source.bytes_at(0x163d07, 5).unwrap(), [0xf6, 0xc4, 5, 0x7a, 2]);
+    assert_eq!(source.read_u32(0x1f0aa8).unwrap(), 30.0f32.to_bits());
+    assert_eq!(source.read_u32(0x1f0ca0).unwrap(), (1.0f32 / 60.0).to_bits());
+    assert_eq!(source.bytes_at(0x966e6, 3).unwrap(), [0x83, 0xf8, 60]);
+
+    // Only the focused prop contributes awareness. Encounter timers use the
+    // actor's own mode and baseline. An actor in combat 5 releases its squad.
+    assert_eq!(source.bytes_at(0x1507e9, 6).unwrap(), [0x8b, 0x82, 0x70, 2, 0, 0]);
+    assert_eq!(source.bytes_at(0x152e76, 10).unwrap(),
+        [0xc7, 0x86, 0x6c, 2, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(source.bytes_at(0x150943, 7).unwrap(), [0x66, 0x83, 0x79, 0x32, 0, 0x7e, 0x22]);
+    let combat: Vec<_> = source.bytes_at(0x1f025c, 24).unwrap().chunks_exact(2)
+        .map(|word| u16::from_le_bytes(word.try_into().unwrap())).collect();
+    assert_eq!(combat, [0, 0, 0, 1, 2, 2, 3, 4, 5, 5, 7, 7]);
+    assert_eq!(source.bytes_at(0x13db0c, 16).unwrap(),
+        [0x66, 0x83, 0x7d, 0x6a, 3, 0x75, 0x0e, 0x66, 0x8b, 0x45, 0x6e, 0x66, 0x3b, 0x45, 0x72, 0x7e]);
+    assert_eq!(source.bytes_at(0x167bff, 5).unwrap(), [0x66, 0x83, 0x7e, 0x6e, 5]);
+
+    // Native H2 focus assignment, recognition timestamp and damage packet.
+    assert_eq!(target.bytes_at(0x267798, 6).unwrap(), [0x89, 0xbe, 0x38, 3, 0, 0]);
+    assert_eq!(target.bytes_at(0x1e3531, 5).unwrap(), [0xe8, 0x0a, 0x31, 8, 0]);
+    assert_eq!(target.bytes_at(0x200d11, 3).unwrap(), [0x8b, 0x48, 0x10]);
+    assert_eq!(target.bytes_at(0x265006, 3).unwrap(), [0x89, 0x4d, 0x10]);
+    assert_eq!(target.bytes_at(0x0d7cfc, 2).unwrap(), [0xf3, 0xab]);
+    assert_eq!(target.bytes_at(0x0d8e5e, 5).unwrap(), [0xf3, 0x0f, 0x11, 0x4f, 0x28]);
+    assert_eq!(target.bytes_at(0x0d9013, 3).unwrap(), [0xc2, 0x0c, 0]);
+}
+
+fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
+    level: &str,
+    source: &h1map::H1Map,
+    map: &Map<R>,
+    scenario: &hs::Scenario,
+    characters: &[(String, String)],
+) {
+    let global = scenario.globals().last().unwrap();
+    assert_eq!(global.name().unwrap(), hs::h1_ai_slots::PERCEPTION_STATE);
+    let offset = scenario.node(global.root()).unwrap().data();
+    let encoded = scenario.string(offset).unwrap();
+    let word = |s| u32::from_str_radix(s, 16).unwrap();
+    let count = word(&encoded[..8]);
+    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let references = scenario.references();
+    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+        .zip(&references[references.len() - count as usize..])
+        .map(|(row, character)| {
+            assert_eq!(character.group(), FourCC(*b"char"));
+            let row = std::str::from_utf8(row).unwrap();
+            (character.id(), [word(&row[..8]), word(&row[8..])])
+        }).collect();
+    assert_eq!(rules.len(), count as usize);
+    for (variant, character) in characters {
+        if character == "none" {
+            continue;
+        }
+        let variant = source.find(h1map::Group::new(b"actv"), variant).unwrap();
+        let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+        let actor = source.tag(variant.actor.id).unwrap();
+        let bytes = source.tag_data(actor).unwrap();
+        let expected = [0x2d8, 0x324].map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()));
+        let tag = map.tags().iter()
+            .find(|t| t.group == FourCC(*b"char") && t.name.as_deref() == Some(character.as_str()))
+            .unwrap();
+        assert_eq!(rules[&tag.id], expected, "{level}: {}", variant.name);
+        if character.starts_with("h1_ai\\character_") {
+            assert_eq!(tag.index_size, 0, "{level}: {character} is an alias");
+            assert!(map.tags().iter().any(|original| {
+                original.group == FourCC(*b"char")
+                    && original.index_size != 0
+                    && original.index_address == tag.index_address
+            }), "{level}: {character} keeps its native character payload");
+        }
+    }
+}
+
+fn check_authored_automatic_destinations(
+    level: &str,
+    source: &h1map::H1Map,
+    converted: &hs::Scenario,
+    scenario_tag: &[u8],
+    tag_base: u32,
+    catalog: &h1scripts::Catalog,
+) {
+    use hs::h1_ai_slots::{Operation, decode_words, migration as wire};
+
+    let count = |offset| {
+        u32::from_le_bytes(scenario_tag[offset..offset + 4].try_into().unwrap()) as usize
+    };
+    let (squads, groups, orders) = (count(0x160), count(0x158), count(0x240));
+    assert!(squads > 335, "{level}: retained physical squads");
+    assert!(engine::campaign_squad_pool::holds(squads, groups));
+
+    let reachable = converted.reachable(converted.roots()).unwrap();
+    let payload = reachable.into_iter().find_map(|datum| {
+        let node = converted.node(datum).unwrap();
+        if node.atom() || node.opcode() != hs::h1_ai_slots::CONTROL {
+            return None;
+        }
+        let head = converted.node(hs::Datum(node.data())).unwrap();
+        if head.data() != Operation::FollowWithSourcePositions.marker() {
+            return None;
+        }
+        let base = converted.node(head.next()).unwrap();
+        let offset = converted.node(base.next()).unwrap().data() as usize;
+        converted.strings().get(offset..)?.split(|&b| b == 0).next()
+    }).expect("runtime follow geometry");
+    let ai = h1ai::h1::H1Ai::read(source).unwrap();
+    let tables = h1scripts::Tables::read(source).unwrap();
+    let subjects = h1scripts::aicontrol::retained_subjects(&tables, catalog);
+    if level == "b40" {
+        let view = tags::geometry::TagView::new(scenario_tag, tag_base);
+        let native = h1ai::h2::ScenarioAi::read(&view).unwrap();
+        let mut named = std::collections::BTreeSet::new();
+        let mut expanded = 0;
+        let mut formerly_omitted = 0;
+        for &(group, squad) in &subjects.migration_destinations {
+            let encounter = &ai.encounters[usize::from(group)];
+            let source = &encounter.squads[usize::from(squad)];
+            let name: String = format!("{}/{}", encounter.name, source.name).chars().take(31).collect();
+            let index = native.squads.iter().enumerate().find(|(index, dest)| {
+                dest.parent == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
+            }).unwrap_or_else(|| panic!("missing native b40 destination {name}")).0;
+            named.insert(index);
+            expanded += usize::from(index >= 344);
+            formerly_omitted += usize::from((47..=63).contains(&group));
+        }
+        assert_eq!(formerly_omitted, 18);
+        assert!(expanded > 0);
+    }
+
+    let mut shared = 0;
+    for (index, encounter) in ai.encounters.iter().enumerate() {
+        let at = index * 2 * wire::HEADER;
+        let entries = wire::Location::decode(&payload[at..at + wire::HEADER]).unwrap();
+        let points = wire::Location::decode(&payload[at + wire::HEADER..at + 2 * wire::HEADER]).unwrap();
+        let expected = subjects.follow_encounters.as_ref()
+            .is_none_or(|groups| groups.contains(&(index as u16)));
+        let source: Vec<_> = encounter.squads.iter()
+            .filter(|squad| expected && squad.flags & 0x20 != 0).collect();
+        assert_eq!(usize::from(entries.rows), source.len(), "{level}: {}", encounter.name);
+        if source.is_empty() {
+            continue;
+        }
+        let at = entries.offset as usize;
+        let size = usize::from(entries.rows) * wire::Route::WIDTH;
+        let rows = decode_words(&payload[at..at + size]).unwrap();
+        let mut groups = 0;
+        for (row, source) in rows.chunks_exact(wire::Route::WIDTH / 4).zip(source) {
+            let route = wire::Route::decode(row).unwrap();
+            assert!(route.squad == u16::MAX || usize::from(route.squad) < squads);
+            for order in route.orders {
+                assert!(order == u16::MAX || usize::from(order) < orders);
+            }
+            if route.squad != u16::MAX && route.orders != [u16::MAX; 2] {
+                shared += 1;
+            }
+            let attacking = source.groups[0] | source.groups[1] | source.groups[2];
+            let defending = source.groups[3] | source.groups[4] | source.groups[5];
+            assert_eq!(route.masks, [attacking, defending]);
+            groups |= attacking | defending;
+        }
+        let at = points.offset as usize;
+        let size = usize::from(points.rows) * wire::POINT_WIDTH;
+        let words = decode_words(&payload[at..at + size]).unwrap();
+        let encoded: Vec<_> = words.chunks_exact(wire::POINT_WIDTH / 4)
+            .map(|row| wire::read_point(row).unwrap()).collect();
+        let original: Vec<_> = encounter.firing_positions.iter()
+            .filter(|point| point.group < 26 && groups & (1 << point.group) != 0)
+            .map(|point| (usize::from(point.group), point.position)).collect();
+        assert_eq!(encoded, original, "{level}: source firing positions for {}", encounter.name);
+    }
+    assert!(shared > 0, "{level}: expected reusable native squads");
+    assert!(converted.globals().iter()
+        .any(|global| global.name().ok() == Some(hs::h1_ai_slots::TELEPORT_STATE)));
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn every_level_s_scripts_run_on_the_retail_interpreter() {
@@ -922,6 +1288,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
+        check_authored_uncover_rules(
+            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+        );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
         // translation keeps: Halo 2's `switch_bsp` takes the same short)
@@ -929,6 +1298,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         // descriptors keep Halo 1's order and count.
         let scnr = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        if matches!(level, "a50" | "b40") {
+            check_authored_automatic_destinations(level, &h1, &sc, &bytes, scnr.location.unwrap().address, &s.catalog);
+        }
         let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
         assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());
         // Every reached atom naming a cutscene flag, camera point, title or
@@ -1394,7 +1766,7 @@ fn check_sound(
     (heard, total)
 }
 
-/// Every sound of a converted campaign level (`H1_LEVELS`, default a10)
+/// Every sound of each converted campaign level (`H1_LEVELS` selects a subset)
 /// read back through the gestalt as the engine plays it
 /// (`h1sounds::audit`): Halo 1 sounds (the scripts' dialogue and effects)
 /// hold exactly their Halo 1 samples, as long as they played there, and
@@ -1406,7 +1778,8 @@ fn check_sound(
 fn every_campaign_sound_plays_what_it_was_made_from() {
     let s = scripting();
     let donors = donors();
-    let levels = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
+    let levels = std::env::var("H1_LEVELS")
+        .unwrap_or_else(|_| h1map::disc::CAMPAIGN_LEVELS.join(","));
     let mut failed = Vec::new();
     for level in levels.split(',') {
         let h1 = h1_level(level);
@@ -1415,7 +1788,7 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
         let opts = Options {
             scripts: Some(&s),
-            sounds: 1000,
+            sounds: usize::MAX,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1444,34 +1817,46 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 a.unmatched.len()
             ));
         }
-        // Halo 1's vehicles are built from the `vehi` definition and loop
-        // no retail sound (the lifepods once hummed the pelican's engine
-        // from its template's attachments).
-        let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+        let source_count = h1.tags().iter().filter(|t| t.group == h1sounds::looping::LSND).count();
+        assert_eq!(a.loops, source_count, "{level}: audited loops");
+        assert_eq!(done.report.looping_sounds, source_count);
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        assert_eq!(u64::from(m.header().file_size), done.report.file_size);
+        assert_eq!(m.storage_length(), done.report.file_size);
+        m.validate_checksum().unwrap();
         let mem = map_memory(&mut m);
         let word = |a: u32| u32::from_le_bytes(mem.slice(a, 4).unwrap().try_into().unwrap());
-        let (at, stride) = (
-            h1objects::convert::h2::ATTACHMENTS as u32,
-            h1objects::convert::h2::ATTACHMENT as u32,
-        );
-        let mut pods = 0;
+        let at = h1objects::convert::h2::ATTACHMENTS as u32;
+        let stride = h1objects::convert::h2::ATTACHMENT as u32;
+        let pod = r"vehicles\lifepod_entry\lifepod_entry";
+        let mut saw_entry_pod = false;
         for t in m.tags().iter().filter(|t| t.group == FourCC(*b"vehi")) {
-            let name = t.name.clone().unwrap_or_default();
-            if name.starts_with("objects\\") {
-                continue;
+            let Some(name) = t.name.as_deref() else { continue };
+            let Some(vehicle) = h1.find(h1map::Group::new(b"vehi"), name) else { continue };
+            let attachments = h1objects::h1::attachments(&h1, h1.tag_data(vehicle).unwrap()).unwrap();
+            let expected: Vec<_> = attachments.iter().filter(|a| a.group == h1sounds::looping::LSND)
+                .filter_map(|a| a.tag).map(|id| h1.tag(id).unwrap().name.as_str()).collect();
+            let header = t.location.unwrap().address + at;
+            let rows = (0..word(header)).map(|i| word(header + 4) + i * stride);
+            let mut actual = Vec::new();
+            for row in rows.filter(|&r| word(r) == FourCC(*b"lsnd").as_u32()) {
+                let sound = m.tag(TagId(word(row + 4))).unwrap();
+                assert_eq!(sound.group, FourCC(*b"lsnd"));
+                actual.push(sound.name.as_deref().unwrap());
+                if name == pod {
+                    assert_eq!(word(row + 8), 0, "pod engine uses the root marker");
+                    assert_eq!(word(row + 0x10), 0, "pod engine has no primary scale");
+                }
             }
-            pods += 1;
-            let a = t.location.unwrap().address;
-            let (n, first) = (word(a + at), word(a + at + 4));
-            let loops = (0..n)
-                .filter(|i| word(first + i * stride) == u32::from_be_bytes(*b"lsnd"))
-                .count();
-            println!("  {name}: {n} attachments, {loops} looping sounds");
-            if loops > 0 {
-                failed.push(format!("{level}: {name} loops {loops} sounds"));
+            assert_eq!(actual, expected, "{level}: {name} engine loops");
+            if name == pod && level == "a30" {
+                saw_entry_pod = true;
+                assert_eq!(actual, [r"sound\sfx\vehicles\lifeboat"]);
             }
         }
-        println!("  {pods} Halo 1 vehicles");
+        if level == "a30" {
+            assert!(saw_entry_pod, "missing a30 entry pod");
+        }
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
@@ -2194,5 +2579,414 @@ fn physics_models_load_as_the_engine_reads_them() {
         }
         println!("{level}: {} physics models", phmos.len());
         assert!(bad.is_empty(), "{level}: {bad:#?}");
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn scripted_ring_and_boxes_use_native_scenario_palettes() {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let short = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+    for (level, source, ty, expected) in [
+        ("a10", "scenery\\halo\\halo", 6, 4),
+        ("b30", "cinematics\\props\\b30_falling_box", 11, 7),
+    ] {
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::base_for(level));
+        let options = Options {
+            ai: false,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &options).unwrap();
+        assert!(
+            !done.report.dropped.iter().any(|e| e.contains(source)),
+            "{:?}",
+            done.report.dropped
+        );
+        let mut map = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let mem = map_memory(&mut map);
+        let root = map.read_tag_bytes(map.scenario().unwrap().id).unwrap();
+        let (placement, palette, stride) = tags::object::OBJECT_TYPES[ty].placement.unwrap();
+
+        let h1_scnr = h1.tag_data(h1.scenario()).unwrap();
+        let space = h1.tag_space();
+        let h1_names = space.block_at(h1_scnr, 0x204, 0x24).unwrap();
+        let h1_places = space.block_at(h1_scnr, 0x240, 0x78).unwrap();
+        let h1_palette = space.block_at(h1_scnr, 0x24c, 0x30).unwrap();
+        let mut found = 0;
+        for (i, name) in h1_names.iter().enumerate() {
+            if short(name, 0x20) != 1 {
+                continue;
+            }
+            let Some(original) = h1_places.get(short(name, 0x22) as usize) else {
+                continue;
+            };
+            let p = short(original, 0) as usize;
+            let Some(src) = h1_palette.get(p).and_then(|b| h1map::TagRef::read(b, 0)) else {
+                continue;
+            };
+            if !h1.tag(src.id).is_ok_and(|tag| tag.name == source) {
+                continue;
+            }
+            let name = mem
+                .slice(word(&root, 0x4c) + 0x24 * i as u32, 0x24)
+                .unwrap();
+            assert_eq!(short(name, 0x20) as usize, ty);
+            let j = u32::from(short(name, 0x22));
+            assert!(j < word(&root, placement.into()));
+            let p = mem
+                .slice(
+                    word(&root, usize::from(placement) + 4) + j * u32::from(stride),
+                    stride.into(),
+                )
+                .unwrap();
+            assert_eq!(p[0x2e] as usize, ty);
+            assert_eq!(short(p, 2) as usize, i);
+            assert_eq!(word(p, 4), u32::from(short(original, 4) & 1));
+            assert_eq!(&p[8..0x20], &original[8..0x20]);
+            let k = u32::from(short(p, 0));
+            let entry = mem
+                .slice(word(&root, usize::from(palette) + 4) + 0x28 * k, 0x28)
+                .unwrap();
+            let id = TagId(word(entry, 4));
+            let tag = map.tag(id).unwrap();
+            assert_eq!(tag.name.as_deref(), Some(source));
+            assert_eq!(tag.group.0, if ty == 6 { *b"scen" } else { *b"bloc" });
+            let object = map.read_tag_bytes(id).unwrap();
+            assert_eq!(short(&object, 0) as usize, ty);
+            assert!(f32::from_bits(word(&object, 4)) > 0.0);
+            if ty == 11 {
+                let hlmt = map.read_tag_bytes(TagId(word(&object, 0x38))).unwrap();
+                assert_eq!(
+                    map.tag(TagId(word(&hlmt, 0xc))).unwrap().group,
+                    FourCC(*b"coll")
+                );
+                let physics = map.read_tag_bytes(TagId(word(&hlmt, 0x24))).unwrap();
+                assert_eq!(word(&physics, 0x38), 1, "one dynamic rigid body per crate");
+                let body = mem.slice(word(&physics, 0x3c), 0x90).unwrap();
+                assert_eq!(short(body, 0), u16::MAX, "one body on the object");
+                assert_eq!(short(body, 0x1a), 2, "box inertia");
+            }
+            found += 1;
+        }
+        assert_eq!(found, expected, "{level}");
+
+        if level == "b30" {
+            let placed = (0..word(&root, 0x80))
+                .map(|i| {
+                    let p = mem.slice(word(&root, 0x84) + 0x38 * i, 0x38).unwrap();
+                    let index = u32::from(short(p, 0));
+                    let pe = mem.slice(word(&root, 0x8c) + 0x28 * index, 0x28).unwrap();
+                    TagId(word(pe, 4))
+                })
+                .collect::<std::collections::HashSet<_>>();
+            for (name, ty, seconds) in [
+                ("powerups\\over shield", 2, 60.0f32),
+                ("powerups\\active camouflage", 3, 45.0),
+            ] {
+                let id = map
+                    .tags()
+                    .iter()
+                    .find(|t| t.group == FourCC(*b"eqip") && t.name.as_deref() == Some(name))
+                    .unwrap()
+                    .id;
+                assert!(placed.contains(&id), "{name} was placed");
+                let tag = map.read_tag_bytes(id).unwrap();
+                assert_eq!(short(&tag, 0x12c), ty);
+                assert_eq!(f32::from_bits(word(&tag, 0x130)), seconds);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn campaign_hud_text_and_builtins_round_trip() {
+    use h1scripts::hud::{BUILTINS, CONTROL_BUILTINS};
+    use h1text::h1::{Hmt, scenario_text};
+    use h1text::hud::{GROUP, MARKER, MARKER_AT, SCENARIO_HMT, localized_text};
+    use tags::{Language, Localization};
+
+    let script = scripting();
+    for (name, slot) in BUILTINS.iter().map(|&(name, slot, ..)| (name, slot)).chain(
+        CONTROL_BUILTINS
+            .iter()
+            .map(|&(name, slot, ..)| (name, slot)),
+    ) {
+        let from = script.catalog.index_of(name).unwrap();
+        let translation = script.table.builtin(from).unwrap();
+        assert_eq!(
+            translation.kind,
+            h1scripts::translate::Kind::Direct,
+            "{name}"
+        );
+        assert_eq!(translation.target.as_ref().unwrap().1.index, slot, "{name}");
+    }
+
+    // a30 exercises a message with a controller action, and d40 calls all
+    // six timer functions. Exercise both the pinned and scratch paths.
+    for (level, pinned) in [("a30", true), ("d40", false)] {
+        let h1 = h1_level(level);
+        let refs = scenario_text(&h1).unwrap();
+        let messages = h1.tag(refs.hud_messages.unwrap().id).unwrap();
+        let source = Hmt::read(&h1, messages).unwrap();
+        let mut base = h2_map(h1campaign::BASE);
+        let base_text = Localization::read(&mut base).unwrap();
+        let opts = Options {
+            objects: false,
+            ai: false,
+            scripts: Some(&script),
+            cutscene_data: false,
+            pinned,
+            ..Options::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        if !pinned {
+            assert!(done.report.fresh, "d40 should exercise relocation");
+        }
+        let mut map = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        map.validate_checksum().unwrap();
+        let scenario = map.scenario().unwrap().id;
+        let root = map.read_tag_bytes(scenario).unwrap();
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let at = SCENARIO_HMT as usize;
+        assert_eq!(word(&root, at), GROUP.as_u32());
+        let hud = map.read_tag_bytes(TagId(word(&root, at + 4))).unwrap();
+        assert_eq!(word(&hud, MARKER_AT as usize), MARKER);
+        assert_eq!(word(&hud, 0x10) as usize, source.messages.len());
+
+        let locales = Localization::read(&mut map).unwrap();
+        for language in Language::ALL {
+            let original = base_text.table(language);
+            let extended = locales.table(language);
+            assert!(extended.entries().len() >= original.entries().len());
+            for (i, entry) in original.entries().iter().enumerate() {
+                assert_eq!(extended.entries()[i].id, entry.id);
+                assert_eq!(extended.bytes(i), original.bytes(i));
+            }
+        }
+        let name = h1text::scenario::unicode_path(&messages.name);
+        let id = map
+            .tag(map::TagQuery::NameInGroup(&name, FourCC(*b"unic")))
+            .unwrap()
+            .id;
+        let unic = locales.unic(&mut map, id).unwrap();
+        let rows = locales.entries_for(&unic, Language::English).unwrap();
+        assert_eq!(rows.len(), source.messages.len());
+        for (row, original) in rows.iter().zip(&source.messages) {
+            assert_eq!(
+                locales
+                    .text_in(&unic, row.id, Language::English)
+                    .unwrap()
+                    .unwrap(),
+                localized_text(original).unwrap(),
+            );
+        }
+
+        let scripts = hs::Scenario::read(&mut map).unwrap();
+        let message_type = script.target.type_index("hud_message").unwrap();
+        let atoms: Vec<_> = scripts
+            .nodes()
+            .iter()
+            .filter(|n| n.live() && n.atom() && n.opcode() == message_type)
+            .collect();
+        assert!(!atoms.is_empty());
+        for atom in atoms {
+            let index = atom.data() as u16 as usize;
+            let name = scripts.string(atom.string_offset()).unwrap();
+            assert!(source.messages[index].name.eq_ignore_ascii_case(name));
+        }
+        if level == "d40" {
+            for slot in 667..=672 {
+                assert!(
+                    scripts.nodes().iter().any(|node| {
+                        node.live() && !node.atom() && !node.script_call() && node.opcode() == slot
+                    }),
+                    "missing timer builtin {slot}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads H2_DISC"]
+fn migration_speech_events_use_retail_order_patterns() {
+    let mut map = h2_map(h1campaign::base_for("a50"));
+    let tag = map.tags().iter().find(|tag| tag.group == FourCC(*b"adlg")).unwrap().clone();
+    let bytes = map.read_tag_bytes(tag.id).unwrap();
+    let base = tag.location.unwrap().address;
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let patterns = (word(0xc) - base) as usize;
+    let index = (word(0x20) - base) as usize;
+    for (event, pattern, name) in [
+        (111, 138, "newordr_advance"),
+        (114, 144, "newordr_retreat"),
+    ] {
+        let range = word(index + event * 4);
+        assert_eq!(range & 0xffff, pattern);
+        assert!(range >> 16 > 0);
+        let string = word(patterns + pattern as usize * 0x40 + 4) as u16;
+        assert_eq!(map.strings()[usize::from(string)].as_deref(), Some(name));
+    }
+}
+
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
+    use h1objects::convert::h2::{HLMT_ANIMATION, MODEL};
+    let reference = |bytes: &[u8], offset: usize| {
+        TagId(u32::from_le_bytes(
+            bytes[offset + 4..offset + 8].try_into().unwrap(),
+        ))
+    };
+    for (level, kind) in [("a10", 8), ("c40", 13)] {
+        let h1 = h1_level(level);
+        let src = h1ai::h1::H1Ai::read(&h1).unwrap();
+        let mut base = h2_map(h1campaign::BASE);
+        let done = h1campaign::convert(
+            &h1,
+            &mut base,
+            &Options {
+                objects: false,
+                ai: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let scenario = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scenario.id).unwrap();
+        let read = h1ai::h2::ScenarioAi::read(&tags::geometry::TagView::new(
+            &bytes,
+            scenario.location.unwrap().address,
+        ))
+        .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut graphs = std::collections::HashSet::new();
+        for (i, v) in src.actor_palette.iter().enumerate() {
+            if !src.actor_of(i).is_some_and(|a| a.kind.0 == kind) {
+                continue;
+            }
+            let v = v.as_ref().unwrap();
+            if !seen.insert(&v.name) {
+                continue;
+            }
+            let c = read
+                .character_palette
+                .iter()
+                .find_map(|&id| {
+                    let t = m.tag(id).ok()?;
+                    (t.name.as_deref() == Some(v.name.as_str())).then(|| t.clone())
+                })
+                .expect("actor variant in scenario char palette");
+            let bytes = m.read_tag_bytes(c.id).unwrap();
+            let decoded = h1ai::h2::Character::read(&tags::geometry::TagView::new(
+                &bytes,
+                c.location.unwrap().address,
+            ))
+            .unwrap();
+            assert_eq!(decoded.kind, Some(kind));
+            if !v.major_variant.id.is_none() {
+                assert_eq!(
+                    m.tag(decoded.major).unwrap().name.as_deref(),
+                    Some(h1.tag(v.major_variant.id).unwrap().name.as_str())
+                );
+            }
+            let cview = tags::geometry::TagView::new(&bytes, c.location.unwrap().address);
+            let weapons = cview.block(&bytes, 0xcc, 0xcc).unwrap();
+            if v.weapon.id.is_none() {
+                assert!(weapons.is_empty());
+            } else {
+                assert_eq!(weapons.len(), 1);
+                assert_eq!(
+                    m.tag(reference(weapons[0], 4)).unwrap().name.as_deref(),
+                    Some(h1.tag(v.weapon.id).unwrap().name.as_str())
+                );
+            }
+            let b = m.read_tag_bytes(decoded.unit).unwrap();
+            if kind == 13 {
+                let source = h1.tag_data(h1.tag(v.unit.id).unwrap()).unwrap();
+                assert_eq!(&b[0x2cc..0x2f8], &source[0x324..0x350]);
+            }
+            let hlmt = m.read_tag_bytes(reference(&b, MODEL)).unwrap();
+            let graph_id = reference(&hlmt, HLMT_ANIMATION);
+            if !graphs.insert(graph_id) {
+                continue;
+            }
+            let source = h1objects::h1::Unit::read(&h1, h1.tag(v.unit.id).unwrap()).unwrap();
+            let source_graph = h1.tag(source.object.animation.unwrap()).unwrap();
+            assert_eq!(
+                m.tag(graph_id).unwrap().name.as_deref(),
+                Some(source_graph.name.as_str())
+            );
+            let graph = tags::anim::AnimationGraph::read(&mut m, graph_id).unwrap();
+            assert_eq!(
+                graph.animations.len(),
+                h1models::graph_names(&h1, source_graph).unwrap().len()
+            );
+            if kind == 13 {
+                assert_eq!(graph.animations.len(), 13);
+                assert_eq!(graph.blend_screens.len(), 1);
+                for stance in ["combat", "patrol", "crouch"] {
+                    let strings = m.strings();
+                    let mode = graph
+                        .modes
+                        .iter()
+                        .find(|m| m.name.resolve(strings).unwrap() == Some(stance))
+                        .unwrap();
+                    let class = mode
+                        .classes
+                        .iter()
+                        .find(|c| c.name.resolve(strings).unwrap() == Some("any"))
+                        .unwrap();
+                    let ty = class
+                        .types
+                        .iter()
+                        .find(|t| t.name.resolve(strings).unwrap() == Some("any"))
+                        .unwrap();
+                    assert!(
+                        ty.actions
+                            .iter()
+                            .any(|a| a.name.resolve(strings).unwrap() == Some("idle"))
+                    );
+                    assert!(
+                        ty.overlays
+                            .iter()
+                            .any(|a| a.name.resolve(strings).unwrap() == Some("look"))
+                    );
+                    if stance != "crouch" {
+                        assert!(
+                            ty.overlays
+                                .iter()
+                                .any(|a| a.name.resolve(strings).unwrap() == Some("aim_still_up"))
+                        );
+                    }
+                }
+            }
+            assert!(!graph.animations.is_empty());
+            for (j, resource) in graph.resources.iter().enumerate() {
+                assert_eq!(resource.owner, graph_id);
+                let p = resource.pointer.unwrap();
+                assert_eq!(p.file, map::ResourceFile::Local);
+                let raw = m
+                    .read_file_range(p.offset.into(), resource.size.into())
+                    .unwrap();
+                for (k, _) in graph
+                    .animations
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.resource_index as usize == j)
+                {
+                    assert!(
+                        graph.engine_problems(k, &raw).is_empty(),
+                        "{level} clip {k}"
+                    );
+                }
+            }
+            assert!(!graph.resources.is_empty());
+        }
+        assert!(!seen.is_empty());
+        assert_eq!(graphs.len(), 1);
     }
 }

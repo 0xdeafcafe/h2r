@@ -17,6 +17,7 @@
 pub mod arena;
 pub mod bridge;
 pub mod entry;
+pub mod h1_scope_zoom;
 pub mod install;
 pub mod leaves;
 pub mod locale;
@@ -26,6 +27,7 @@ pub mod native_fog;
 pub mod native_gels;
 pub mod native_hud;
 pub mod native_lights;
+pub mod native_map_work;
 pub mod native_objects;
 pub mod native_particles;
 mod native_effects;

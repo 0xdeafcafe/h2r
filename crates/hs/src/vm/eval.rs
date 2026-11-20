@@ -7,7 +7,10 @@
 //! reservations.
 use super::thread::{Dest, FINISHED, INSPECT, SAVED_SLEEP};
 use super::value::{Cell, HsType};
-use super::{Binding, Engine, EngineCall, Native, VmError, VmResult, convert};
+use super::{
+    Binding, EXTERNAL_GLOBALS, Engine, EngineCall, Native, ScenarioGlobals, VmError, VmResult,
+    convert,
+};
 use crate::Datum;
 
 /// The shared engine LCG (`imul 0x19660d; add 0x3c6ef35f`).
@@ -91,7 +94,13 @@ impl super::Vm<'_> {
                 };
                 let result = match self.bindings.get(index) {
                     Some(body) => body(e, call),
-                    None => e.call(call),
+                    None => e.call_with_globals(
+                        call,
+                        ScenarioGlobals {
+                            cells: &mut self.globals[EXTERNAL_GLOBALS..],
+                            definitions: &self.scenario.globals,
+                        },
+                    ),
                 }
                 .map_err(|error| VmError::Engine { index, error })?;
                 self.ret(e, t, result)

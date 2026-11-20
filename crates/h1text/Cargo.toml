@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+h1bitmaps = { path = "../h1bitmaps" }
 h1map = { path = "../h1map" }
 h1models = { path = "../h1models" }
 map.workspace = true

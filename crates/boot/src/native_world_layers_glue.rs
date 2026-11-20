@@ -9,7 +9,7 @@ use d3d::backend::{
 };
 use d3d::shader::VertexProcessing;
 use engine::memory::GuestMemory as _;
-use feature::native_world_layers::{Layer, compare_frames, current};
+use feature::native_world_layers::{Layer, compare_on, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
@@ -56,9 +56,9 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     let switches = feature::Switches::from_env().unwrap_or_default();
     let native = feature::native_world_layers::on(&switches);
     let residual = feature::native_residual::on(&switches);
-    let objects = switches.feature(feature::native_objects::SWITCH, true);
+    let objects = feature::native_objects::on(&switches);
     let lights = feature::native_lights::on(&switches);
-    let frames = compare_frames();
+    let frames = compare_on(&switches);
     if !native && !residual && !objects && !lights && frames.is_empty() {
         return;
     }

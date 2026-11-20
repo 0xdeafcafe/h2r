@@ -45,6 +45,7 @@ use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
 use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
 use native_render::world::Owner;
 
+use crate::native_map_work::{self, BSP_LOAD_PENDING, Stage};
 use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world";
@@ -55,7 +56,7 @@ pub const DEFAULT: bool = true;
 
 /// Whether the native world is on.
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, DEFAULT)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// The world's materials drawn with their own layer-3 pass (vertex
@@ -83,6 +84,11 @@ pub type PartSet = HashMap<(Owner, u8), u32>;
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
+    /// Starts the shared BSP load once the scene binds its world palettes.
+    fn load_bsp(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
+        false
+    }
+
     /// Prefer resolved scene draws retaining individual fallbacks.
     fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool { false }
 
@@ -250,6 +256,25 @@ pub fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
+pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
+    use native_render::world_layers::{Site, layer_site};
+    if mem.u32(skip::CURRENT_LAYER).ok() != Some(LIGHTMAP_LAYER)
+        || mem.u32(esp).ok().is_none_or(|ret| layer_site(LIGHTMAP_LAYER, ret) == Site::FirstPerson)
+    {
+        return;
+    }
+    let Ok(bsp) = mem.u32(ACTIVE_BSP) else {
+        return;
+    };
+    if bsp == 0 || !BSP_LOAD_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if !host.is_some_and(|host| host.load_bsp(mem, bsp)) {
+        native_map_work::request_bsp_load();
+    }
+}
+
 pub struct NativeWorld;
 
 impl Feature for NativeWorld {
@@ -259,11 +284,6 @@ impl Feature for NativeWorld {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // Switched off: no hooks, nothing held. On: the host's GPU world
-        // is keyed by the map name, BSP address and index it reads from
-        // guest RAM at every ask, so a load re-keys it; the one thing
-        // held for the guest is `CLEARED`, the bits to set back at the
-        // next layer draw, which a load drops ([`forget_pending`]).
         if !on(b.switches()) {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
@@ -274,11 +294,15 @@ impl Feature for NativeWorld {
         }));
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_world_skip", |o| {
+                if Stage::World.standing_down() {
+                    return;
+                }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
                 before_layer(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
+            .after_feature(native_map_work::ID)
             .context_only();
         Ok(())
     }

@@ -262,9 +262,41 @@ gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
 the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
 on the Halo 1 disc converts, every named sound with it.
 
-The campaign converter (`h1campaign`, campaign.md §9, "Music, ambience and the map
-file") installs the looping sounds a level's scripts name, as many as fit
-the map file's size limit.
+### Campaign loops and cache slots (**Built**)
+
+The converter enumerates every `lsnd` in the level. It builds the tracks and
+detail sounds from the Halo 2 definition, converts each distinct referenced
+`snd!` once, and writes the original samples to local chunks in the level's
+`ugh!`. It retains each loop as an explicit root when rebuilding or pruning
+the map. Scripts, objects and BSP palettes can all reference the same datum.
+
+**Disc evidence.** In campaign order from a10 to d40 the source levels contain
+50, 55, 47, 49, 62, 55, 35, 66, 51 and 78 loops. Their distinct sample spans
+range from 41.9 MiB on c20 to 104.2 MiB on d40. Every populated track or
+detail reference resolves to a sound. All ten levels leave continuous damage
+empty. On a30, `vehicles\lifepod_entry\lifepod_entry` attaches
+`sound\sfx\vehicles\lifeboat` to the object origin with no scale function.
+Its track plays `sound\sfx\vehicles\lifeboat_entry`. The other campaign
+lifepod variants have no engine attachment in the source.
+
+**Engine evidence.** The retail header validator at `0x12289b` accepts up to
+520 MiB and calls `0x214ed0` to look up the lower per-type limit. Campaign
+slots 4 and 5 have a 280 MiB capacity in the row at `0x448fc8`. The allocator
+at `0x2139d4` and selector at `0x214bd0` both read that row. At boot,
+`boot::campaign_cache` takes the largest converted campaign map installed
+across both asset variants and loose overrides. For a level over 280 MiB
+it sizes both slots to the next whole MiB, up to 520 MiB, and supplies that
+capacity to the validator for Halo 1 campaign headers. The utility volume
+has room for both slots. The regular cache copy, checksum and sound streamer
+consume the entire declared file. A conversion over 520 MiB reports its
+required size.
+
+The synthetic test `two_unreferenced_loops_share_one_sample_and_keep_existing_datums`
+covers shared samples, stable references and a corrupted detail datum. The
+ignored campaign disc audit follows every source loop back through the built
+tracks and details, then compares each sound's permutation bytes. The cache
+table and header selection have separate synthetic and disc checks. The
+integration build and playback check are pending.
 
 ### Proof (V)
 
@@ -293,7 +325,7 @@ be byte for byte the same-named sound of the base or a donor. A sound
 pointing at the wrong or too few bytes plays as a short repeating buzz.
 
 `every_campaign_sound_plays_what_it_was_made_from` (h1campaign,
-`H1_LEVELS`, default a10) and `every_multiplayer_sound_plays_what_it_was_made_from`
+`H1_LEVELS`, default all ten) and `every_multiplayer_sound_plays_what_it_was_made_from`
 (h1convert, `H1_MAPS`, default bloodgulch) run it on converted maps.
 **V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
 Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no

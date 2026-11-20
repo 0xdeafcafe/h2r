@@ -25,7 +25,8 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use h1map::H1Map;
-use map::{FourCC, Map};
+use map::{CacheType, FourCC, Map, TagId, TagQuery};
+use tags::geometry::TagView;
 
 use crate::convert::snd;
 use crate::gestalt::{ChunkPointer, SoundGestalt, UGH, blocks};
@@ -37,6 +38,8 @@ use crate::{Result, convert_sound};
 pub struct Audit {
     /// `snd!` tags in the built map.
     pub sounds: usize,
+    /// Halo 1 campaign looping definitions with their tracks and details checked.
+    pub loops: usize,
     /// Sounds matched to a Halo 1 sound and checked against it.
     pub converted: usize,
     /// Sounds matched to a retail sound and checked against it.
@@ -113,23 +116,29 @@ fn read_map(
 ) -> Result<HashMap<String, Read>> {
     let mut m = Map::from_reader(Cursor::new(bytes))?;
     let mut out = HashMap::new();
-    let Some(t) = m.tags().iter().find(|t| t.group == UGH).cloned() else {
-        return Ok(out);
-    };
-    let Some(loc) = t.location else {
-        return Ok(out);
-    };
-    let g = SoundGestalt::decode(&m.read_tag_bytes(t.id)?, loc.address)?;
-    let element = |i: usize, n: usize| (n < g.count(i)).then(|| g.element(i, n).to_vec());
     let ids: Vec<_> = m
         .tags()
         .iter()
         .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
         .map(|t| (t.id, t.name.clone().unwrap_or_default()))
         .collect();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let gestalt = m.tags().iter().find(|t| t.group == UGH)
+        .and_then(|t| t.location.map(|loc| (t.id, loc.address)));
+    let Some((id, address)) = gestalt else {
+        problems.push(format!("{label}: {} sound tags without a sound gestalt", ids.len()));
+        return Ok(out);
+    };
+    let g = SoundGestalt::decode(&m.read_tag_bytes(id)?, address)?;
+    let element = |i: usize, n: usize| (n < g.count(i)).then(|| g.element(i, n).to_vec());
     for (id, name) in ids {
         let b = m.read_tag_bytes(id)?;
         let mut bad = |what: String| problems.push(format!("{label}: {name}: {what}"));
+        if out.contains_key(&name) {
+            bad("duplicate snd! path".into());
+        }
         if b.len() < snd::LEN {
             bad(format!("snd! is {} bytes", b.len()));
             continue;
@@ -181,7 +190,7 @@ fn read_map(
                 if sum != u64::from(size) {
                     bad(format!("{at}: size {size}, its chunks {sum}"));
                 }
-                let mut local = Some(Vec::with_capacity(size as usize));
+                let mut local = Some(Vec::new());
                 let mut stored = Vec::with_capacity(nc);
                 for c in chunks {
                     let len = c.size & 0x7fff_ffff;
@@ -243,12 +252,92 @@ fn shared_fields(h: &[u8; snd::LEN]) -> Vec<u8> {
     v
 }
 
+/// Start at the source tag list so a pruned loop also produces a finding.
+fn audit_loops(bytes: &[u8], h1: &H1Map, audit: &mut Audit) -> Result<()> {
+    use crate::looping::{H2_DETAIL, H2_TRACK, LSND, read_definition};
+    let mut map = Map::from_reader(Cursor::new(bytes))?;
+    if map.header().cache_type != CacheType::Campaign {
+        return Ok(());
+    }
+    let space = map.metadata_space().ok_or(map::Error::NoTagData)?;
+    let metadata = map.read_file_range(space.file_offset, u64::from(space.size))?;
+    for source in h1.tags().iter().filter(|t| t.group == LSND) {
+        let name = &source.name;
+        let address = match map
+            .tag(TagQuery::NameInGroup(name, FourCC(*b"lsnd")))
+            .ok()
+            .and_then(|t| t.location)
+        {
+            Some(loc) => loc.address,
+            _ => {
+                audit
+                    .problems
+                    .push(format!("{name}: missing or ambiguous lsnd"));
+                continue;
+            }
+        };
+        // Equal arrays may be shared between tags in a fresh map.
+        let view = TagView::new(&metadata, space.virtual_base);
+        let data = view
+            .range(address, crate::looping::H2_LEN as u64)
+            .map_err(|e| crate::Error::Invalid(format!("{name}: {e}")))?;
+        let want = read_definition(h1, source)?;
+        let rows = |offset, stride| {
+            view.block(data, offset, stride)
+                .map_err(|e| crate::Error::Invalid(format!("{name}: {e}")))
+        };
+        let tracks = rows(0x1c, H2_TRACK)?;
+        let details = rows(0x24, H2_DETAIL)?;
+        if tracks.len() != want.tracks.len() || details.len() != want.details.len() {
+            audit.problems.push(format!(
+                "{name}: {} tracks, {} details; expected {} and {}",
+                tracks.len(),
+                details.len(),
+                want.tracks.len(),
+                want.details.len()
+            ));
+        }
+        let mut check = |row: &[u8], at: usize, expected: &Option<String>, field: String| {
+            let datum = TagId(u32_at(row, at + 4));
+            let valid = match expected {
+                None => datum == TagId::NULL,
+                Some(n) => {
+                    u32_at(row, at) == FourCC(*b"snd!").as_u32()
+                        && map.tag(datum).is_ok_and(|t| {
+                            t.location.is_some()
+                                && t.group == FourCC(*b"snd!")
+                                && t.name.as_ref() == Some(n)
+                        })
+                }
+            };
+            if !valid {
+                audit.problems.push(format!(
+                    "{name}: {field} points to {datum}, expected {expected:?}"
+                ));
+            }
+        };
+        for (i, (row, t)) in tracks.iter().zip(&want.tracks).enumerate() {
+            for (at, expected) in [0x14, 0x1c, 0x24, 0x2c, 0x34].into_iter().zip(&t.sounds) {
+                check(row, at, expected, format!("track {i} +{at:#x}"));
+            }
+        }
+        for (i, (row, d)) in details.iter().zip(&want.details).enumerate() {
+            check(row, 4, &d.sound, format!("detail {i}"));
+        }
+        audit.loops += 1;
+    }
+    Ok(())
+}
+
 /// Audits every sound of `built` (a whole map file). Sounds named as a
 /// Halo 1 sound of `h1` are checked against its conversion; the rest
 /// against the same-named sound in the first of `retail` (`(label, map
 /// bytes)`) that has one.
 pub fn audit(built: &[u8], h1: Option<&H1Map>, retail: &[(&str, &[u8])]) -> Result<Audit> {
     let mut a = Audit::default();
+    if let Some(source) = h1 {
+        audit_loops(built, source, &mut a)?;
+    }
     let out = read_map(built, "built", &mut a.problems)?;
     a.sounds = out.len();
     let mut sources = Vec::with_capacity(retail.len());

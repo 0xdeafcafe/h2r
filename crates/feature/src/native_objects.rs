@@ -54,6 +54,10 @@ pub const ID: &str = "native-objects";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_objects";
 
+pub fn on(switches: &crate::Switches) -> bool {
+    crate::switches::native_stage_on(switches, SWITCH)
+}
+
 /// What the host draws natively right now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeSet {
@@ -569,7 +573,7 @@ impl Feature for NativeObjects {
         // count. The one thing held for the guest is `CLEARED`, the bits
         // to set back at the next layer draw, which a load drops
         // ([`forget_pending`]).
-        if !b.switches().feature(SWITCH, true) {
+        if !on(b.switches()) {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
@@ -579,6 +583,9 @@ impl Feature for NativeObjects {
         }));
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_objects_skip", |o| {
+                if crate::native_map_work::Stage::Objects.standing_down() {
+                    return;
+                }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
                 before_layer(&mut *g, ret);

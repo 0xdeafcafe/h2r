@@ -1021,3 +1021,39 @@ fn first_person_graphs_take_retail_modes() {
     assert!(converted >= 8);
     assert!(known.len() >= 10, "{known:?}");
 }
+
+/// The marine's beam is attached to the rifle and scales with the
+/// integrated light of the unit holding it.
+#[test]
+#[ignore = "reads the Halo 1 disc (H1_ISO) and the Halo 2 disc (H2_DISC)"]
+fn a50_marine_flashlight_is_a_scaled_rifle_attachment() {
+    let h1 = h1_level("a50").unwrap();
+    let mut h2 = h2_map("05a_deltaapproach").unwrap();
+    let base = Base::read(&mut h2).unwrap();
+    let mut converter = Converter::new(&h1, &base);
+    let weapon = h1.find(
+        h1map::Group::new(b"weap"),
+        "weapons\\assault rifle\\assault rifle",
+    ).unwrap();
+    let id = converter.object(weapon).unwrap();
+    let tag = local(&converter.tree, id).unwrap();
+    let record = defs::from_built(def(b"weap"), &tag.root).unwrap();
+    let Val::Block(functions) = record.at("item.obje.functions").unwrap() else {
+        panic!("missing rifle functions");
+    };
+    let Some(function) = functions.iter().find(|f| {
+        f.at("string_4") == Some(&Val::text("integrated_light_power"))
+    }) else {
+        panic!("missing integrated light function");
+    };
+    let scale = function.at("output").unwrap();
+    let Val::Block(attachments) = record.at("item.obje.attachments").unwrap() else {
+        panic!("missing rifle attachments");
+    };
+    assert!(attachments.iter().any(|a| {
+        a.at("marker") == Some(&Val::text("flashlight"))
+            && a.at(h1objects::rebuild::ATTACHMENT_PRIMARY_SCALE) == Some(scale)
+            && matches!(a.at("type"), Some(Val::Ref { target: Target::Id(id), .. })
+                if local(&converter.tree, *id).is_some_and(|t| t.group == FourCC(*b"ligh")))
+    }));
+}

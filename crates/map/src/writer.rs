@@ -488,6 +488,10 @@ impl<R: Read + Seek> MapEditor<'_, R> {
     }
 }
 
+/// Native campaign slots can stream a complete converted level up to the absolute
+/// v8 header limit at 0x12289b. The retail editing limits below still apply to retail maps.
+pub const NATIVE_CAMPAIGN_FILE_LIMIT: u32 = 0x2080_0000;
+
 /// Header validator `0x122870` / per-cache size limits at `0x214ed0`.
 pub fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
     Ok(match cache_type {

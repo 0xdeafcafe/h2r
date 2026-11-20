@@ -6,7 +6,14 @@ use std::{
 
 /// Maximum bytes before a token's terminating NUL (host resource policy).
 pub const MAX_TOKEN_BYTES: usize = 4096;
-pub const MAX_NODES: usize = 0x9000;
+/// Syntax slots retail's node array covers: `0x20a700` sizes its occupancy
+/// bitmap for `0x9000` slots.
+pub const RETAIL_NODES: usize = 0x9000;
+/// Most syntax slots a scenario may hold. A converted scenario above
+/// [`RETAIL_NODES`] gets a larger bitmap from the runtime
+/// (`engine::hs_syntax`). Slot `0xffff` is left out: with salt `0xffff` its
+/// datum would be none.
+pub const MAX_NODES: usize = 0xffff;
 pub const MAX_DEFINITIONS: usize = 0x7fff;
 /// Host limit, not a recovered engine reference-array capacity.
 pub const MAX_REFERENCES: usize = 0x10000;
@@ -262,6 +269,19 @@ impl Scenario {
             if name.is_empty() {
                 return Err(invalid("empty builtin name"));
             }
+            if name == crate::h1_ai_slots::CONTROL_TOKEN
+                && crate::h1_ai_slots::Operation::from_marker(head.data)
+                    .is_some_and(|operation| operation.slot() == n.opcode)
+            {
+                // A converted operation names its dispatch protocol. The
+                // unmarked retail call supplies the descriptor's name.
+                continue;
+            }
+            let name = if n.opcode == 312 && name == "units_set_desired_flashlight_state" {
+                "ai_braindead_by_unit"
+            } else {
+                name
+            };
             if names
                 .insert(n.opcode, name.to_owned())
                 .is_some_and(|old| old != name)
@@ -326,8 +346,21 @@ impl Scenario {
                 } else {
                     let function = catalog.function(n.opcode)?;
                     if function.flags & 2 == 0 {
-                        let mut argument = self.node(Datum(n.data))?.next;
-                        for &expected in &function.parameters {
+                        let head = self.node(Datum(n.data))?;
+                        let mut argument = head.next;
+                        let parameters = if matches!(
+                            n.opcode,
+                            crate::h1_ai_slots::CONTROL | crate::h1_ai_slots::VEHICLE_COUNT
+                        ) && self.string(head.string_offset)? == crate::h1_ai_slots::CONTROL_TOKEN
+                        {
+                            let operation = crate::h1_ai_slots::Operation::from_marker(head.data)
+                                .filter(|op| op.slot() == n.opcode)
+                                .ok_or_else(|| invalid(format!("node {i}: unknown Halo 1 AI operation")))?;
+                            operation.parameters()
+                        } else {
+                            function.parameters()
+                        };
+                        for &expected in parameters {
                             let actual = self.node(argument)?;
                             if actual.value_type != expected {
                                 return Err(invalid(format!(

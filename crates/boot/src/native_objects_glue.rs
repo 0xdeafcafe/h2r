@@ -35,6 +35,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
+use feature::native_map_work;
 use feature::native_objects::{Drawn, Host, ItemMasks, NativeSet, SetPart};
 use map::TagId;
 use native_render::camera::RenderCamera;
@@ -114,6 +115,23 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
     guard
 }
 
+/// Uploads model resources even if this layer offers no drawable object items.
+struct UploadModels(Arc<Models>);
+
+impl d3d::ExternalPass for UploadModels {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites::default()
+    }
+
+    fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
+        drop(upload_pending(&self.0, &target));
+    }
+}
+
 /// What one load of models belongs to: the map's name, the active BSP's
 /// address and its index (as the world's key them). A view under another
 /// key starts a new load (new [`Models`], a new worker); nothing queued
@@ -122,6 +140,7 @@ type MapKey = (String, u32, u16);
 
 struct MapState {
     key: MapKey,
+    map_generation: u64,
     /// This load's number, from [`GENERATIONS`]: the set carries it, and
     /// `Host::draw` refuses a view planned against another.
     generation: u64,
@@ -139,6 +158,18 @@ static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 struct LayerEntry {
     states: EntryStates,
     w_buffered: bool,
+}
+
+impl LayerEntry {
+    /// For an ordered replacement, inherited fog is checked on the resolved
+    /// draw. Fog the implementation explicitly sets still goes through resolve.
+    fn for_admission(&self) -> EntryStates {
+        use gfx::state::RenderStateType::FogEnable;
+        let mut states = self.states.clone();
+        states.0.retain(|(state, _)| *state != FogEnable);
+        states.0.push((FogEnable, 0));
+        states
+    }
 }
 
 /// The host: the device and the current map's models.
@@ -172,8 +203,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
+        let map_generation = native_map_work::generation();
         let key = map_key(mem)?;
-        let current = |st: &Option<MapState>| st.as_ref().map(|s| &s.key) == Some(&key);
+        let current = |st: &Option<MapState>| {
+            st.as_ref().is_some_and(|s| s.key == key && s.map_generation == map_generation)
+        };
         let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
         if !loaded {
             // The palettes bound now, for palettized base maps (P8, P8
@@ -188,10 +222,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if !current(&*st) {
                 let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let models = Arc::new(Models::default());
-                let worker = spawn_worker(key.0.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
+                let worker = spawn_worker(key.0.clone(), map_generation, Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
                 let set = NativeSet { map: key.0.clone(), generation, ..NativeSet::default() };
                 *st = Some(MapState {
                     key: key.clone(),
+                    map_generation,
                     generation,
                     models,
                     set: Arc::new(set),
@@ -205,6 +240,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let s = st.as_ref()?;
             (Arc::clone(&s.set), Arc::clone(&s.models))
         };
+        // A published CPU set can have no acceptable items in this view.
+        // Schedule the upload at the layer boundary independently of its draws.
+        if !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            self.device.lock().ok()?.request_external_pass(Box::new(UploadModels(Arc::clone(&models))));
+        }
         // A base map expanded through a palette that is no longer bound
         // would sample other colours than the D3D path: then it draws
         // every object.
@@ -236,6 +276,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, _masks: ItemMasks,
     ) -> Option<Drawn> {
         use timeline::native::{Metric, Stage, Timer};
+        // The guest material binder reads the cinematic reflection endpoints per draw.
+        if crate::h1_cinematics::reflection_active(mem) { return None; }
         let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
         let models = {
             let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,10 +297,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let refused = (items.len() - ranges) as u64;
         Stage::Objects.count(Metric::Examined, refused);
         Stage::Objects.count(Metric::RefusedInputs, refused);
-        let pending = !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if ranges == 0 && plan.compare.is_none() && !pending { return None; }
+        if ranges == 0 && plan.compare.is_none() { return None; }
         let probing = probe_at().is_some();
-        if pending || plan.compare.is_some() || probing {
+        if plan.compare.is_some() || probing {
             device.request_external_pass(Box::new(ObjectsPass {
                 models: Arc::clone(&models), camera: *camera,
                 objects: if probing { objects.clone() } else { Vec::new() },
@@ -313,6 +354,9 @@ fn object_key(geometry: Geometry) -> Option<(u32, ItemKey)> {
 
 impl d3d::DrawAdmission for ObjectAdmission {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        if feature::native_map_work::Stage::Objects.standing_down() {
+            return None;
+        }
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let draw = snapshot.draw;
         if context.layer.site != Site::Scene || context.layer.number != 3
@@ -333,6 +377,9 @@ impl d3d::DrawAdmission for ObjectAdmission {
         if !object_state_matches(draw, planned)
             || !crate::native_world_layers_glue::matches_triangle_range(draw, planned.indices.len())
         {
+            if draw.state.render.fog_enable {
+                count_refusal("fog is on (FOGENABLE)");
+            }
             return None;
         }
         let accum = native_render::object_program::TEXACCUM_HEADER;
@@ -397,6 +444,7 @@ fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry
     let Ok(index) = models.index.try_lock() else { return plan };
     let Ok(lit) = models.lit.try_lock() else { return plan };
     let compared = compare();
+    let admission_states = entry.for_admission();
     for (k, item) in items.iter().enumerate() {
         let o = &objects[item.object];
         let planned = (|| -> Result<(u32, PlannedDraw), String> {
@@ -405,7 +453,8 @@ fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry
             }
             let model = *index.get(&(o.definition as u16)).ok_or("its model is not uploaded")?;
             let lit = lit.as_ref().ok_or("no model is uploaded")?;
-            let d = lit.plan(model, o, &item.key, &item.rows, &entry.states)?;
+            let states = if item.shadow { &entry.states } else { &admission_states };
+            let d = lit.plan(model, o, &item.key, &item.rows, states)?;
             if d.texaccum && !levels {
                 return Err("it samples the texture accumulation target and the device does not sample levels in place".into());
             }
@@ -463,7 +512,7 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    if !switches.feature(feature::native_objects::SWITCH, true) {
+    if !feature::native_objects::on(&switches) {
         return;
     }
     let admission = Arc::new(ObjectAdmission::default());
@@ -481,6 +530,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 /// `None` when the thread cannot start (every object stays on D3D).
 fn spawn_worker(
     name: String,
+    map_generation: u64,
     models: Arc<Models>,
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
@@ -497,11 +547,18 @@ fn spawn_worker(
                     return;
                 }
             };
+            // The mounted map's index contains the definitions that the
+            // worker can load, including ones spawned later. The published
+            // set starts empty even on maps with definitions.
+            if !opened.map.tags().iter().any(|tag| tags::object::is_object_group(tag.group)) {
+                native_map_work::map_stage_empty(map_generation, &name, native_map_work::Stage::Objects);
+                return;
+            }
             let (mut loaded, mut refused) = (0u32, 0u32);
             while let Ok(def) = rx.recv() {
                 if excepted(def) {
                     refused += 1;
-                    if feature::native_verbose() {
+                    if refused == 1 || feature::native_verbose() {
                         eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
                     }
                     continue;
@@ -523,7 +580,9 @@ fn spawn_worker(
                         // worker of an earlier load of the same map (A, B,
                         // A again) publishes nothing.
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| publishes_to(s, &models)) else { return };
+                        let Some(s) = st.as_mut().filter(|s| {
+                            publishes_to(s, &models) && s.map_generation == native_map_work::generation()
+                        }) else { return };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
                         set.parts.extend(parts.into_iter().map(|((section, part), p)| ((def as u16, section, part), p)));
@@ -543,7 +602,7 @@ fn spawn_worker(
                     }
                     Err(e) => {
                         refused += 1;
-                        if feature::native_verbose() {
+                        if refused == 1 || feature::native_verbose() {
                             eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
                         }
                     }
@@ -936,12 +995,6 @@ impl d3d::ExternalPass for ObjectsPass {
         }
     }
 
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        // Comparison-only views can still upload models for the following view.
-        drop(upload_pending(&self.models, &t));
-        self.record_ranges(t);
-    }
-
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         let Some(constants) = self.view else { return 0 };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
@@ -1321,6 +1374,7 @@ mod tests {
     fn map_state(name: &str, generation: u64, models: &Arc<Models>) -> MapState {
         MapState {
             key: (name.to_owned(), 0x800e_6010, 0),
+            map_generation: 0,
             generation,
             models: Arc::clone(models),
             set: Arc::new(NativeSet { map: name.to_owned(), generation, ..NativeSet::default() }),
@@ -1360,6 +1414,33 @@ mod tests {
             rows: vec![[0.0; 4]; 3],
             shadow,
         }
+    }
+
+    #[test]
+    fn ordered_object_planning_defers_only_inherited_fog() {
+        use gfx::state::{CompareFunc, CullMode, DepthBufferMode, FillMode, FrontFace, RenderStateType as R};
+        use native_render::object_state::resolve;
+
+        let entry = LayerEntry {
+            states: EntryStates::read(|state| Some(match state {
+                R::ZEnable => DepthBufferMode::W.xbox_value(),
+                R::ZFunc => CompareFunc::LessEqual.xbox_value(),
+                R::ColorWriteEnable => 0x0101_0101,
+                R::CullMode => CullMode::Cw.xbox_value(),
+                R::FrontFace => FrontFace::Cw.xbox_value(),
+                R::FillMode | R::BackFillMode => FillMode::Solid.xbox_value(),
+                R::FogEnable => 1,
+                _ => 0,
+            })),
+            w_buffered: true,
+        };
+        assert_eq!(resolve(&[], &entry.states, None), Err("fog is on (FOGENABLE)".into()));
+        let admission = entry.for_admission();
+        assert!(resolve(&[], &admission, None).is_ok());
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = table.canonical_to_guest(R::FogEnable.index()).unwrap() as u8;
+        let own = tags::shader::RenderStateValue { state: slot, value: 1 };
+        assert_eq!(resolve(&[own], &admission, None), Err("fog is on (FOGENABLE)".into()));
     }
 
     /// Every item the plan cannot resolve is refused, with why, before the

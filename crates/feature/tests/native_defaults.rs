@@ -1,16 +1,15 @@
 //! Every native stage is on with the empty switch string (since
-//! 2026-11-20), and each turns off with its own `=off`: the comparison
-//! against the D3D path is one switch per stage, not a list of `=on`s.
+//! 2026-11-20). The master default can be overridden for each stage.
 //! `impl.render.native_lights_split` stays off unless named.
 
 use feature::plan::Base;
 use feature::{Feature, Registry, Switches};
 
 /// One stage: its switch, a label only its hooks put in the plan text,
-/// and the feature that places it. `None` for a stage that places no
-/// hooks without its probe environment (`native-residual`).
+/// and the feature that places it. The world programs use the world's hooks.
 struct Stage {
     switch: &'static str,
+    on: fn(&Switches) -> bool,
     label: &'static str,
     feature: Option<&'static dyn Feature>,
     /// What else must be off for the stage's hooks to go: the shared
@@ -24,13 +23,23 @@ fn stages() -> Vec<Stage> {
     vec![
         Stage {
             switch: feature::native_world::SWITCH,
+            on: feature::native_world::on,
             label: "native_world_skip",
             feature: Some(&feature::native_world::NativeWorld),
             off_with: &[],
             compare_env: None,
         },
         Stage {
+            switch: feature::native_world::PROGRAMS_SWITCH,
+            on: feature::native_world::programs_on,
+            label: "",
+            feature: None,
+            off_with: &[],
+            compare_env: None,
+        },
+        Stage {
             switch: feature::native_world_layers::SWITCH,
+            on: feature::native_world_layers::on,
             label: "native_world_layers_begin",
             feature: Some(&feature::native_world_layers::NativeWorldLayers),
             off_with: &[
@@ -38,10 +47,11 @@ fn stages() -> Vec<Stage> {
                 feature::native_lights::SWITCH,
                 feature::native_residual::SWITCH,
             ],
-            compare_env: None,
+            compare_env: Some("H2_NATIVE_WORLD_LAYERS_COMPARE"),
         },
         Stage {
             switch: feature::native_objects::SWITCH,
+            on: feature::native_objects::on,
             label: "native_objects_skip",
             feature: Some(&feature::native_objects::NativeObjects),
             off_with: &[],
@@ -49,6 +59,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_first_person::SWITCH,
+            on: feature::native_first_person::on,
             label: "native_first_person_skip",
             feature: Some(&feature::native_first_person::NativeFirstPerson),
             off_with: &[],
@@ -56,6 +67,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_fog::SWITCH,
+            on: feature::native_fog::on,
             label: "native_fog_skip",
             feature: Some(&feature::native_fog::NativeFog),
             off_with: &[],
@@ -63,6 +75,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_water::SWITCH,
+            on: feature::native_water::on,
             label: "native_water_skip",
             feature: Some(&feature::native_water::NativeWater),
             off_with: &[],
@@ -70,6 +83,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_transparents::SWITCH,
+            on: feature::native_transparents::on,
             label: "native_transparents_entry",
             feature: Some(&feature::native_transparents::NativeTransparents),
             off_with: &[],
@@ -77,6 +91,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_decals::SWITCH,
+            on: feature::native_decals::on,
             label: "native_decals_begin",
             feature: Some(&feature::native_decals::NativeDecals),
             off_with: &[],
@@ -84,6 +99,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_particles::SWITCH,
+            on: feature::native_particles::on,
             label: "native_particles_emit",
             feature: Some(&feature::native_particles::NativeParticles),
             off_with: &[],
@@ -91,6 +107,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_lights::SWITCH,
+            on: feature::native_lights::on,
             label: "native_lights_view",
             feature: Some(&feature::native_lights::NativeLights),
             off_with: &[],
@@ -98,6 +115,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_gels::SWITCH,
+            on: feature::native_gels::on,
             label: "native_gels_template",
             feature: Some(&feature::native_gels::NativeGels),
             off_with: &[],
@@ -105,6 +123,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_shadows::SWITCH,
+            on: feature::native_shadows::on,
             label: "shadow layer",
             feature: Some(&feature::native_shadows::NativeShadows),
             off_with: &[],
@@ -112,6 +131,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_post::SWITCH,
+            on: feature::native_post::on,
             label: "native_post_colour",
             feature: Some(&feature::native_post::NativePost),
             off_with: &[],
@@ -119,6 +139,7 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_hud::SWITCH,
+            on: feature::native_hud::on,
             label: "native_hud_quad",
             feature: Some(&feature::native_hud::NativeHud),
             off_with: &[],
@@ -126,10 +147,11 @@ fn stages() -> Vec<Stage> {
         },
         Stage {
             switch: feature::native_residual::SWITCH,
+            on: feature::native_residual::on,
             label: "residual_frame_scope",
-            feature: None,
+            feature: Some(&feature::native_residual::NativeResidual),
             off_with: &[],
-            compare_env: None,
+            compare_env: Some("H2_NATIVE_RESIDUAL_PROBE"),
         },
     ]
 }
@@ -141,6 +163,12 @@ fn stages() -> Vec<Stage> {
 #[test]
 fn every_stage_is_on_with_the_empty_switch_string_and_off_with_equals_off() {
     for stage in stages() {
+        assert!((stage.on)(&Switches::defaults()), "{}", stage.switch);
+        if stage.switch == feature::native_residual::SWITCH
+            && feature::native_residual::probe_frames().is_empty()
+        {
+            continue;
+        }
         let Some(feature) = stage.feature else {
             continue;
         };
@@ -188,4 +216,73 @@ fn the_residual_helper_defaults_on_and_the_subswitches_hold() {
         !feature::native_lights::split_on(&empty),
         "the split stays off"
     );
+}
+
+fn plan(switches: Switches) -> feature::Plan {
+    let mut registry = Registry::new(switches);
+    assert!(registry.add(&feature::native_map_work::NativeMapWork).unwrap());
+    for feature in stages().into_iter().filter_map(|stage| stage.feature) {
+        assert!(registry.add(feature).unwrap());
+    }
+    registry.build(&Base).unwrap()
+}
+
+#[test]
+fn the_native_master_switch_removes_every_stage_hook() {
+    let off = Switches::parse("impl.render.native=off").unwrap();
+    for stage in stages() {
+        assert!(!(stage.on)(&off), "{}", stage.switch);
+    }
+    let plan = plan(off);
+    assert!(
+        plan.chains.is_empty() && plan.entries.is_empty(),
+        "{}",
+        plan.text(),
+    );
+}
+
+#[test]
+fn the_world_override_restores_only_the_world_and_its_programs() {
+    for spec in [
+        "impl.render.native=off,impl.render.native_world=on",
+        "impl.render.native_world=on,impl.render.native=off",
+    ] {
+        let switches = Switches::parse(spec).unwrap();
+        let plan = plan(switches.clone());
+        let placed = plan.text();
+        for stage in stages() {
+            let world = stage.switch == feature::native_world::SWITCH;
+            let programs = stage.switch == feature::native_world::PROGRAMS_SWITCH;
+            assert_eq!((stage.on)(&switches), world || programs, "{}", stage.switch);
+            if stage.feature.is_some() {
+                assert_eq!(placed.contains(stage.label), world, "{placed}");
+            }
+        }
+        assert!(placed.contains("native_bsp_load"), "{placed}");
+        assert!(
+            plan.chains
+                .values()
+                .flat_map(|chain| chain.hooks())
+                .all(|hook| [feature::native_world::ID, feature::native_map_work::ID].contains(&hook.feature)),
+            "{placed}"
+        );
+    }
+}
+
+#[test]
+fn the_render_group_and_native_stages_are_independent() {
+    let ordinary_render_off = Switches::parse("impl.render=off").unwrap();
+    assert!(!ordinary_render_off.implementation("render.layer_draw", true));
+    for stage in stages() {
+        assert!((stage.on)(&ordinary_render_off), "{}", stage.switch);
+    }
+
+    let switches = Switches::parse("impl.render.native=on,impl.render.native_world=off").unwrap();
+    assert!(!feature::native_world::on(&switches));
+    assert!(!feature::native_world::programs_on(&switches));
+    assert!(feature::native_lights::on(&switches));
+
+    let switches = Switches::parse("impl.render.native=off,impl.render.native_lights=on").unwrap();
+    assert!(feature::native_lights::on(&switches));
+    assert!(!feature::native_lights::split_on(&switches));
 }

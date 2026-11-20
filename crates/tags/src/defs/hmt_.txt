@@ -1,0 +1,65 @@
+# hmt : the compiled legacy HUD message list read by Halo 2's setters.
+# E: 0x24c831 and 0x24c878. D: source message records on the Halo 1 disc.
+# The converter owns the fields after +0x18. Retail only reads through +0x14.
+# No retail map has an hmt , so the schema takes this layout whole
+# (schema::infer::apply_converter_groups). Colours and the silhouette cache
+# key are words: their values can fall in the metadata address space.
+struct h1_hud_flash 0x18
+  0x00 word colour -- ARGB drawn when not flashing (boot h1_hud_text/flash.rs)
+  0x04 word flash_colour -- ARGB at the flash peak
+  0x08 f32 repeat -- seconds; the flash pattern restarts after this when positive
+  0x0c f32 off -- seconds dark between flashes
+  0x10 u16 count -- flashes per pattern
+  0x12 u16 flags -- bit 0 swaps the two colours
+  0x14 f32 on -- seconds lit per flash
+group 686d7420 0xc8 align 4
+  0x00 data text align 4 -- UTF-16LE runs consumed by the message elements
+  0x08 block elements 0x2 align 4 -- E 0x24c8af reads the array address at +0xc
+    0x00 u8 kind -- E 0x24c8b2: 0 is text
+    0x01 u8 value -- text length including NUL or glyph index
+  0x10 block messages 0x40 align 4 -- E 0x24c864: element index times 0x40
+    0x00 unknown 0x20 -- NUL-padded name
+    0x20 u16 text_start -- UTF-16 unit offset (Halo 1 draw at 0xdfbd6)
+    0x22 u16 first_element -- E 0x24c8ab
+    0x24 u8 element_count -- E 0x24c8a5
+    0x25 pad 0x1b
+  0x18 u32 converter_marker
+  0x1c u32 control_flags
+  0x20 struct help_flash h1_hud_flash -- Halo 1's hudg +0xd0 record
+  0x38 block widgets 0x24 align 4
+    0x0 string name
+    0x4 u32 control
+    0x8 u32 has_colour
+    0xc struct flash h1_hud_flash -- the source unhi panel's colour and flash record
+  0x40 pad 0x48
+  0x88 u32[3] blink_start_ticks
+  0x94 u16 help_first
+  0x96 u16 help_count
+  0x98 u16 shared_first
+  0x9a u16 shared_count
+  0x9c block events 0xc align 4
+    0x0 string key
+    0x4 u16 template
+    0x6 u16 first_argument
+    0x8 u16 second_argument
+    0xa u16 control
+  0xa4 block control_prompts 2 align 4
+    0x0 u16 argument
+  0xac u16 custom_device
+  0xae pad 2
+  0xb0 block silhouettes 0x18 align 4
+    0x0 word cache_key -- bit 31 set (h1text silhouettes)
+    0x4 u16 width
+    0x6 u16 height
+    0x8 i16 advance
+    0xa i16 x_offset
+    0xc i16 y_offset
+    0xe pad 2
+    0x10 data pixels align 4
+  0xb8 block prompt_subjects 0x8 align 4
+    0x0 datum object groups=eqip|vehi
+    0x4 u16 argument
+    0x6 pad 2
+  0xc0 u16 exit_vehicle
+  0xc2 u16 swap_powerup
+  0xc4 pad 4

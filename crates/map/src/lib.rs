@@ -15,6 +15,8 @@ pub mod build;
 pub mod checksum;
 mod format;
 mod reader;
+/// Converted campaign recording controls shared by the encoder and playback.
+pub mod recording;
 /// Pass-through cache writing (not a rebuild) and bounded edits.
 pub mod writer;
 

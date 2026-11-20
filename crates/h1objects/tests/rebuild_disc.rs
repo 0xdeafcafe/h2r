@@ -12,8 +12,8 @@
 //!   `hlmt` and `mode` read back through the definitions, write the same
 //!   again, pin nothing, hold no raw data and reference only converted
 //!   tags; the known fields are Halo 1's (type, bounds, the model chain,
-//!   the predicted resources), the unknown spans the base's scenery role
-//!   words; no `phmo` (the engine gives scenery no Havok body, so a
+//!   the predicted resources, attachments at Halo 1's markers), other
+//!   spans at the definition default; no `phmo` (the engine gives scenery no Havok body, so a
 //!   placement's collision joins the level's instead,
 //!   `h1convert::scenery_collision`), and its `coll` one BSP physics slot
 //!   per BSP, as retail scenery with no `phmo`.
@@ -182,7 +182,13 @@ fn read_back(
     targets(&r, &c.group.to_string(), &mut named);
     for (p, id) in named {
         // The tag's own datum, filled in at install.
-        if id == h1models::SELF_ID {
+        if id == h1models::SELF_ID { continue; }
+        if id.0 & 0xffff_0000 == h1objects::convert::sound(0).0 {
+            assert!(tree.sounds.get(id.0 as usize & 0xffff).is_some());
+            continue;
+        }
+        if id.0 & 0xffff_0000 == h1objects::convert::looping(0).0 {
+            assert!(tree.loops.get(id.0 as usize & 0xffff).is_some());
             continue;
         }
         if Some(id) == stand_in && p.contains(".materials[") {
@@ -215,7 +221,6 @@ fn every_scenery_rebuilds_from_its_definition() {
         let base = Base::read(&mut base_map).unwrap();
         let stand_in = base.model_shader.as_ref().map(|m| m.shader);
         let mut seen = HashSet::new();
-        let mut role = None;
         for level in levels {
             if !wanted(&level) {
                 continue;
@@ -229,14 +234,6 @@ fn every_scenery_rebuilds_from_its_definition() {
                 let obj = h1::Object::read(&h1, h1.tag_data(t).unwrap()).unwrap();
                 let mut c = Converter::new(&h1, &base);
                 let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
-                let words = c.scenery_role().unwrap().expect("the base has scenery");
-                if role.as_ref() != Some(&words) {
-                    println!(
-                        "{base_name}: scenery role words from {} scenery ({} with a model): scen {:x?}, hlmt {:x?}",
-                        words.members, words.models, words.scen, words.hlmt
-                    );
-                    role = Some(words.clone());
-                }
                 count += 1;
                 let tree = &c.tree;
                 let got = local(tree, id).expect("scen in the tree");
@@ -262,16 +259,39 @@ fn every_scenery_rebuilds_from_its_definition() {
                     Some(&Val::floats(&obj.bounding_offset)),
                     "{name}"
                 );
-                for (p, w) in &words.scen {
-                    assert_eq!(word(&r, p), *w, "{name}: {p}");
-                }
-                for f in ["attachments", "widgets", "functions"] {
-                    assert_eq!(
-                        r.at(&format!("object.{f}")),
-                        Some(&Val::Block(Vec::new())),
-                        "{name}: {f}"
+                assert_eq!(word(&r, "object.unknown_6c"), 0, "{name}");
+                assert_eq!(
+                    r.at("object.widgets"),
+                    Some(&Val::Block(Vec::new())),
+                    "{name}: widgets"
+                );
+                // Halo 1's attachments and the functions scaling them
+                // (`convert_attachments`), each at one of Halo 1's
+                // markers; none without.
+                let bytes = h1.tag_data(t).unwrap();
+                let markers: Vec<Val> = h1::attachments(&h1, bytes)
+                    .unwrap()
+                    .iter()
+                    .map(|a| Val::text(&a.marker))
+                    .collect();
+                let Some(Val::Block(attached)) = r.at("object.attachments") else {
+                    panic!("{name}: attachments")
+                };
+                for a in attached {
+                    let marker = a.get("marker").expect("an attachment marker");
+                    assert!(
+                        markers.contains(marker),
+                        "{name}: attachment at {marker:?}, Halo 1's at {markers:?}"
                     );
                 }
+                let Some(Val::Block(functions)) = r.at("object.functions") else {
+                    panic!("{name}: functions")
+                };
+                assert!(
+                    functions.len() <= h1::functions(&h1, bytes).unwrap().len(),
+                    "{name}: {} functions",
+                    functions.len()
+                );
                 // Change colours: Halo 1's in Halo 2's four slots
                 // (`h1::ChangeColour::halo2_slots`), each with Halo 1's
                 // permutations; none without (unless the model reads C).
@@ -321,9 +341,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                 let hc = local(tree, h).unwrap();
                 assert_eq!(hc.group, FourCC(*b"hlmt"));
                 let hr = read_back(tree, hc, &name, None, &mut stand_ins);
-                for (p, w) in &words.hlmt {
-                    assert_eq!(word(&hr, p), *w, "{name}: hlmt {p}");
-                }
+
                 // No physics model: the engine gives scenery no Havok
                 // body (docs/halo1/objects.md, "Collision for Havok").
                 assert!(reference(&hr, "physics_model").is_none(), "{name}: phmo");

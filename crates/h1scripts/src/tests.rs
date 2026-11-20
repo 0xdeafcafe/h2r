@@ -1,4 +1,7 @@
 //! Synthetic tables only: invented scripts, builtins and types.
+mod commands;
+mod cinematics;
+
 use hs::Datum;
 
 use crate::catalog::{Catalog, Function};
@@ -463,6 +466,28 @@ fn compiled(policy: Missing) -> (Tables, crate::compile::Compiled) {
 }
 
 #[test]
+fn global_uses_its_declaration_even_when_the_reference_lacks_a_type() {
+    for opcode in [0, u16::MAX] {
+        let mut b = Builder::default();
+        let initial = b.atom(SHORT, SHORT, "5", 5);
+        let name = b.string("g_count");
+        let reference = b.node(opcode, SHORT, 13, name, 0);
+        let t = read(&scenario(
+            &b, &[("read", 3, SHORT, reference)], &[("g_count", SHORT, initial)],
+        )).unwrap();
+        let h1 = h1_catalog();
+        let h2 = h2_target();
+        let table = Table::build(&h1, &h2);
+        let out = compile(&t, &h1, &table, &h2, Missing::Stub, &[]).unwrap();
+        let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+        let node = s.node(s.script("read").unwrap().root()).unwrap();
+        assert!(node.global());
+        assert_eq!(node.opcode(), s.globals()[0].value_type());
+        assert_eq!(node.data(), 0);
+    }
+}
+
+#[test]
 fn compiled_tables_round_trip_through_the_halo2_decoder() {
     for policy in [Missing::Stub, Missing::Extension] {
         let (t, out) = compiled(policy);
@@ -606,8 +631,20 @@ fn install_writes_the_halo2_scenario_fields() {
 }
 
 #[test]
-fn startup_placements_decode_as_a_startup_script() {
+fn initial_placement_starts_its_own_thread_when_there_is_no_startup() {
     let (_, mut out) = compiled(Missing::Stub);
+    let roots = out.scripts.clone();
+    crate::compile::add_startup_placements(&mut out, &h2_target(), "initial", &["first".into()]).unwrap();
+    assert_eq!(&out.scripts[..roots.len()], roots.as_slice());
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.script("initial").unwrap().kind(), 0);
+}
+
+#[test]
+fn startup_places_encounters_before_the_authored_body() {
+    let (_, mut out) = compiled(Missing::Stub);
+    // Make the fixture's dormant void helper a startup script.
+    out.scripts[1][32..34].copy_from_slice(&0u16.to_le_bytes());
     let hooks = out.hooks.len();
     let scripts = out.scripts.len();
     crate::compile::add_startup_placements(
@@ -620,7 +657,13 @@ fn startup_placements_decode_as_a_startup_script() {
     let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
     assert_eq!(s.scripts().len(), scripts + 1);
     let script = s.script("h1_initial").unwrap();
-    assert_eq!((script.kind(), script.return_type()), (0, VOID));
+    assert_eq!((script.kind(), script.return_type()), (3, VOID));
+    let startup = s.scripts().iter().find(|sc| sc.kind() == 0).unwrap();
+    let begin = s.node(startup.root()).unwrap();
+    let first = s.node(s.node(Datum(begin.data())).unwrap().next()).unwrap();
+    assert!(first.script_call());
+    assert_eq!(usize::from(first.opcode()), scripts);
+    assert_ne!(first.next(), Datum::NULL);
     assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
     // Two one-argument ai_place calls inside begin, each squad hooked.
     let places: Vec<_> = s
@@ -699,7 +742,12 @@ mod level_and_seats {
             h1::CAMERA_POINTS,
             vec![named(4, "cam", &[(0x28, 3.0), (0x34, 0.25)])],
         );
-        add(&mut space, h1::TITLES, vec![named(4, "arrival", &[])]);
+        let mut title = named(4, "arrival", &[(0x44, 15.0), (0x48, 90.0), (0x4c, 30.0)]);
+        title[0x28..0x30].copy_from_slice(&[12, 0, 40, 0, 60, 0, 90, 0]);
+        title[0x30] = 3;
+        title[0x34] = 1;
+        title[0x3c..0x40].copy_from_slice(&0xff112233u32.to_le_bytes());
+        add(&mut space, h1::TITLES, vec![title]);
         add(
             &mut space,
             h1::DEVICE_GROUPS,
@@ -720,7 +768,7 @@ mod level_and_seats {
         assert_eq!(l.flags[1].position, [0.0, 2.0, 0.0]);
         assert_eq!(l.camera_points[0].position, [3.0, 0.0, 0.0]);
         assert_eq!(l.camera_points[0].orientation, [0.25, 0.0, 0.0]);
-        assert_eq!(l.titles, ["arrival"]);
+        assert_eq!(l.titles[0].name, "arrival");
         assert_eq!(l.device_groups[0].initial, 1.0);
         assert_eq!(l.resolve(&hook("cutscene_flag", "second_flag")), Some(1));
         assert_eq!(l.resolve(&hook("cutscene_camera_point", "cam")), Some(0));
@@ -738,7 +786,7 @@ mod level_and_seats {
 
     #[test]
     fn halo2_blocks_take_halo2_layouts() {
-        let blocks = level().blocks();
+        let blocks = level().blocks(&[0, 0, 0, 0x0500_0033]).unwrap();
         let field = |at: u32| blocks.iter().find(|b| b.0 == at).unwrap();
         let (_, stride, flags) = field(h2::FLAGS.0);
         assert_eq!(*stride, 0x38);
@@ -757,7 +805,16 @@ mod level_and_seats {
             0.25
         );
         let (_, _, titles) = field(h2::TITLES.0);
-        assert!(matches!(&titles[0].fixups[0].kind, FixupKind::StringId(s) if s == "arrival"));
+        assert!(level().blocks(&[0, 1, 2]).is_err());
+        assert_eq!(titles[0].bytes[..4], 0x0500_0033u32.to_le_bytes());
+        assert_eq!(level().titles[0].text_index, 3);
+        let row = &titles[0].bytes;
+        assert_eq!(&row[4..12], &[12, 0, 40, 0, 60, 0, 90, 0]);
+        assert_eq!(&row[12..16], &[1, 0, 9, 0]);
+        assert_eq!(&row[16..20], &0xff112233u32.to_le_bytes());
+        for (i, seconds) in [0.5f32, 3.0, 1.0].into_iter().enumerate() {
+            assert_eq!(row[24+4*i..28+4*i], seconds.to_le_bytes());
+        }
         let (_, stride, groups) = field(h2::DEVICE_GROUPS.0);
         assert_eq!(*stride, 0x28);
         assert_eq!(&groups[0].bytes[..4], b"door");
@@ -778,7 +835,11 @@ mod level_and_seats {
         assert!(h2_label_matches("GT-gunner", "guntower_d"));
         assert!(h2_label_matches("gt-gunner", "guntower_d"));
         assert!(h2_label_matches("pchair-driver", "pchair_driver"));
-        assert!(h2_label_matches("driver lifepod", "driver"));
+        // The lifepod's seat keeps its whole mode (`driver lifepod`, a
+        // unit of the cyborg's graph), not the plain driver's.
+        assert!(h2_label_matches("driver lifepod", "driver lifepod"));
+        assert!(h2_label_matches("Driver Lifepod", "driver lifepod"));
+        assert!(!h2_label_matches("driver lifepod", "driver"));
         assert!(h2_label_matches("W-driver", "scorpion_d"));
         assert!(!h2_label_matches("driver", "warthog_b_d"));
         assert!(h2_label_matches("gunner", "warthog_g"));
@@ -880,15 +941,14 @@ mod level_and_seats {
 
 /// `(script static boolean cinematic_skip_start true)`, two dormant
 /// scripts `tutorial_setup` and `fast_setup`, and `(script startup main
-/// (begin (cinematic_skip_start) (wake tutorial_setup)
-/// (ai_conversation_status squad_a)))`, compiled with `cutscenes`.
+/// (begin (cinematic_skip_start) (wake tutorial_setup)))`, compiled with
+/// `cutscenes`.
 fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     const SCRIPT: u16 = 10;
     let c = Catalog::new(
         vec![
             f("begin", PASS, 0x2000, &[]),
             f("wake", VOID, ORDINARY, &[SCRIPT]),
-            f("ai_conversation_status", SHORT, ORDINARY, &[AI]),
             f("print", VOID, ORDINARY, &[STRING]),
         ],
         h1_types(),
@@ -912,7 +972,7 @@ fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     let guard = b.call(0, BOOL, "begin", &[yes]);
     let dormant = |b: &mut Builder, s: &str| {
         let text = b.atom(STRING, STRING, s, 0);
-        let p = b.call(3, VOID, "print", &[text]);
+        let p = b.call(2, VOID, "print", &[text]);
         b.call(0, VOID, "begin", &[p])
     };
     let tutorial = dormant(&mut b, "t");
@@ -920,9 +980,7 @@ fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     let skip = b.call_with(0, 0, BOOL, 10, "cinematic_skip_start", &[]);
     let target = b.atom(SCRIPT, SCRIPT, "tutorial_setup", 1);
     let wake = b.call(1, VOID, "wake", &[target]);
-    let squad = b.atom(AI, AI, "squad_a", 0);
-    let status = b.call(2, SHORT, "ai_conversation_status", &[squad]);
-    let main = b.call(0, VOID, "begin", &[skip, wake, status]);
+    let main = b.call(0, VOID, "begin", &[skip, wake]);
     let scripts = vec![
         ("cinematic_skip_start", 3, BOOL, guard),
         ("tutorial_setup", 1, VOID, tutorial),
@@ -985,12 +1043,6 @@ fn skipped_cutscenes_take_halo1_s_skip_path() {
     assert!(body[0].atom() && body[0].opcode() == BOOL && body[0].data() == 0);
     assert_eq!(s.string(body[0].string_offset()).unwrap(), "false");
     assert_eq!(wake_arg(&s, &body[1]), (2, "fast_setup".into()));
-    // Either way the stubbed conversation status reads as finished.
-    for s in [cutscene_level(Cutscenes::Play), s] {
-        let status = main_body(&s)[2];
-        assert!(status.atom());
-        assert_eq!((status.opcode(), status.data()), (SHORT, 5));
-    }
 }
 
 /// `(script startup main (begin (object_teleport obj f_known)
@@ -1131,8 +1183,6 @@ fn ai_status_reads_halo2_s_combat_status_on_halo1_s_scale() {
         n = rest;
     }
     assert!(n.atom() && n.data() == 0);
-    // ai_living_fraction is Halo 2's ai_strength.
-    assert!(crate::translate::RENAMES.contains(&("ai_living_fraction", "ai_strength")));
 }
 
 /// `(op (ai_status x) k)` becomes one comparison of `ai_combat_status`
@@ -1239,6 +1289,7 @@ fn ai_status_comparisons_compare_combat_status_once() {
     assert!(out.nodes.len() < 80, "{}", out.nodes.len());
 }
 
+mod conversations;
 mod cutscenes;
 
 /// `(script startup main (begin (unit_open tube_placed) (unit_open
@@ -1462,4 +1513,206 @@ fn negative_sleeps_become_sleep_forever() {
     let other = args(&body[3]);
     assert_eq!(other.len(), 1);
     assert_eq!((other[0].value_type(), other[0].data() as u16), (SCRIPT, 1));
+}
+
+#[path = "tests/ai_control.rs"]
+mod ai_control;
+/// The string argument of `unit_enter_vehicle` and `unit_set_seat` becomes
+/// a `SEAT_NAME` hook: Halo 2's engine matches the seat's label string ID
+/// exactly, so the converter writes the label the rebuilt vehicle carries,
+/// not the script's Halo 1 spelling. A plain `string_id` argument of any
+/// other builtin stays a plain string hook.
+#[test]
+fn seat_names_are_hooked_with_their_label_role() {
+    const UNIT: u16 = 14;
+    const VEHICLE: u16 = 15;
+    let mut types = h1_types();
+    types.extend(["unit", "vehicle"].map(String::from));
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f(
+                "unit_enter_vehicle",
+                VOID,
+                ORDINARY,
+                &[UNIT, VEHICLE, STRING],
+            ),
+            f("unit_set_seat", VOID, ORDINARY, &[UNIT, STRING]),
+            f("objects_attach", VOID, ORDINARY, &[OBJECT, STRING]),
+        ],
+        types.clone(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types
+        .extend(["unit", "vehicle"].map(String::from));
+    let (h2_unit, h2_vehicle) = (14, 15);
+    for (name, b) in [
+        (
+            "unit_enter_vehicle",
+            H2Builtin {
+                index: 60,
+                return_type: VOID,
+                parameters: vec![h2_unit, h2_vehicle, H2_STRING_ID],
+                special: false,
+            },
+        ),
+        (
+            "unit_set_seat",
+            H2Builtin {
+                index: 61,
+                return_type: VOID,
+                parameters: vec![h2_unit, H2_STRING_ID],
+                special: false,
+            },
+        ),
+    ] {
+        h2.builtins.insert(name.into(), b);
+    }
+    let mut b = Builder::default();
+    let chief = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let jeep = b.atom(VEHICLE, VEHICLE, "jeep", u32::MAX);
+    let seat = b.atom(STRING, STRING, "w-gunner", 0);
+    let enter = b.call(1, VOID, "unit_enter_vehicle", &[chief, jeep, seat]);
+    let chief2 = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let pose = b.atom(STRING, STRING, "alert", 0);
+    let set_seat = b.call(2, VOID, "unit_set_seat", &[chief2, pose]);
+    let obj = b.atom(OBJECT, OBJECT, "obj", u32::MAX);
+    let marker = b.atom(STRING, STRING, "head", 0);
+    let attach = b.call(3, VOID, "objects_attach", &[obj, marker]);
+    let root = b.call(0, VOID, "begin", &[enter, set_seat, attach]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, root)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    let by_type = |ty: &str| -> Vec<&str> {
+        out.hooks
+            .iter()
+            .filter(|h| h.h1_type == ty)
+            .map(|h| h.token.as_str())
+            .collect()
+    };
+    assert_eq!(by_type(crate::compile::SEAT_NAME), ["w-gunner"]);
+    assert_eq!(by_type(crate::compile::SEAT_POSE), ["alert"]);
+    // The marker string of another builtin keeps the plain string role.
+    assert_eq!(by_type("string"), ["head"]);
+}
+
+/// Halo 2's `unit_add_equipment` takes a fourth boolean Halo 1's
+/// `player_add_equipment` has no counterpart for. Keep the starting
+/// profile as a named hook and append `true` as a boolean literal.
+#[test]
+fn player_add_equipment_appends_the_give_flag() {
+    const UNIT: u16 = 14;
+    const STARTING_PROFILE: u16 = 15;
+    let mut types = h1_types();
+    types.extend(["unit", "starting_profile"].map(String::from));
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("print", VOID, ORDINARY, &[STRING]),
+            f(
+                "player_add_equipment",
+                VOID,
+                ORDINARY,
+                &[UNIT, STARTING_PROFILE, BOOL],
+            ),
+        ],
+        types.clone(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types
+        .extend(["unit", "starting_profile"].map(String::from));
+    let (h2_unit, h2_profile) = (14, 15);
+    h2.builtins.insert(
+        "unit_add_equipment".into(),
+        H2Builtin {
+            index: 70,
+            return_type: VOID,
+            parameters: vec![h2_unit, h2_profile, BOOL, BOOL],
+            special: false,
+        },
+    );
+    let mut b = Builder::default();
+    let chief = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let profile = b.atom(STARTING_PROFILE, STARTING_PROFILE, "profile_a", u32::MAX);
+    let yes = b.atom(BOOL, BOOL, "true", 1);
+    let add = b.call(2, VOID, "player_add_equipment", &[chief, profile, yes]);
+    let root = b.call(0, VOID, "begin", &[add]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, root)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let tr = table.builtin(2).unwrap();
+    assert_eq!(tr.kind, Kind::Adapter);
+    assert_eq!(tr.adapter, Some(Adapter::AppendBool(true)));
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    let main = s.script("main").unwrap();
+    let begin = s.node(main.root()).unwrap();
+    let head = s.node(Datum(begin.data())).unwrap();
+    let call = s.node(head.next()).unwrap();
+    assert_eq!(call.opcode(), 70);
+    let mut a = s.node(Datum(call.data())).unwrap().next();
+    let mut args = Vec::new();
+    while a != Datum::NULL {
+        let x = *s.node(a).unwrap();
+        args.push(x);
+        a = x.next();
+    }
+    assert_eq!(args.len(), 4);
+    assert_eq!(args[3].value_type(), BOOL);
+    assert_eq!(args[3].data(), 1);
+    assert_eq!(args[1].value_type(), h2_profile);
+    assert!(out.hooks.iter().any(|h| {
+        h.type_name == "starting_profile" && h.token == "profile_a"
+    }));
+}
+
+/// The renames of this round carry Halo 1 builtins to Halo 2 ones of the
+/// same signature: the PVS old name, the fail-and-revert, the look-invert
+/// pair, the night-vision query, the look tests and the back button.
+#[test]
+fn renamed_unit_and_misc_builtins_translate() {
+    let names: &[(&str, &str)] = &[
+        ("object_pvs_activate", "pvs_set_object"),
+        ("game_lost", "game_revert"),
+        ("player0_look_invert_pitch", "controller_set_look_invert"),
+        ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+        (
+            "unit_solo_player_integrated_night_vision_is_active",
+            "player_flashlight_on",
+        ),
+        ("player_action_test_back", "player_action_test_cancel"),
+    ];
+    let c = Catalog::new(
+        names.iter().map(|&(n, _)| f(n, VOID, ORDINARY, &[])).collect(),
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    for &(_, to) in names {
+        h2.builtins.insert(
+            to.into(),
+            H2Builtin {
+                index: 40,
+                return_type: VOID,
+                parameters: vec![],
+                special: false,
+            },
+        );
+    }
+    let table = Table::build(&c, &h2);
+    for (i, &(from, to)) in names.iter().enumerate() {
+        let tr = table.builtin(i as u16).unwrap();
+        assert_eq!(tr.kind, Kind::Renamed, "{from}");
+        assert_eq!(tr.target.as_ref().unwrap().0, to);
+    }
 }

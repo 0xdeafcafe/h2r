@@ -13,7 +13,7 @@ pub const ID: &str = "native-gels";
 pub const SWITCH: &str = "impl.render.native_gels";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

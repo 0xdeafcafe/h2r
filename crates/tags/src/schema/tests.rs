@@ -684,6 +684,22 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
     assert_eq!(&inferred, Schema::builtin());
 }
 
+#[test]
+fn gear_curves_are_inline_floats_through_extraction_and_inference() {
+    let mut inferred = Schema::builtin().clone();
+    let group = FourCC(*b"vehi");
+    let Some(Field::Block(gear)) = inferred.groups.get_mut(&group).unwrap().fields.get_mut(&0x268)
+    else { panic!("missing gear block") };
+    assert!(gear.fields.is_empty());
+    for offset in [0x14, 0x1c, 0x28, 0x2c] {
+        gear.fields.insert(offset, Field::Raw);
+    }
+    gear.fields.insert(0x10, Field::RawSize(0x14));
+    gear.fields.insert(0x38, Field::Word);
+    super::infer::apply_engine_data(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
 /// The weapon slots no retail tag fills but Halo 1's weapons do (the
 /// flashlight's power-on and power-off effects, the detonation effects,
 /// the collision sound, the magazines' chambering effect) are tag
@@ -691,32 +707,25 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
 /// ([`super::infer::apply_engine_refs`]): without, an extract read the
 /// converted assault rifle's flashlight effect as bytes, with no tag.
 #[test]
-fn weapon_slots_retail_leaves_empty_are_tag_references() {
-    let weap = FourCC(*b"weap");
+fn converted_slots_retail_leaves_empty_are_tag_references() {
     let schema = Schema::builtin();
-    let root = &schema.groups[&weap];
-    let Some(Field::Block(magazine)) = root.fields.get(&0x2c0) else {
-        panic!("weap +0x2c0 is no block");
-    };
-    for &(group, path, offset) in super::infer::ENGINE_REFS {
-        assert_eq!(group, weap);
-        let s = if path.is_empty() { root } else { &**magazine };
-        assert_eq!(
-            s.fields.get(&offset),
-            Some(&Field::TagRef),
-            "{path:x?} +{offset:#x}"
-        );
-    }
-    // What inference made of them before: no field.
     let mut inferred = schema.clone();
-    let r = inferred.groups.get_mut(&weap).unwrap();
-    for o in [0xfc, 0x11c, 0x124, 0x17c, 0x244, 0x24c] {
-        r.fields.remove(&o);
+    for group in [b"eqip", b"garb"] {
+        let header = inferred.groups.get_mut(&FourCC(*group)).unwrap();
+        for at in [0x64, 0x94] {
+            assert!(matches!(header.fields.remove(&at), Some(Field::Block(_))));
+        }
     }
-    let Some(Field::Block(m)) = r.fields.get_mut(&0x2c0) else {
-        unreachable!()
-    };
-    m.fields.remove(&0x44);
+    for &(group, path, offset) in super::infer::ENGINE_REFS {
+        let mut record = inferred.groups.get_mut(&group).unwrap();
+        for at in path {
+            let Some(Field::Block(child)) = record.fields.get_mut(at) else {
+                panic!("{group} {path:x?} lacks block at {at:#x}");
+            };
+            record = child;
+        }
+        assert_eq!(record.fields.remove(&offset), Some(Field::TagRef), "{group} {path:x?} +{offset:#x}");
+    }
     super::infer::apply_engine_refs(&mut inferred);
     assert_eq!(&inferred, schema);
 }
@@ -786,4 +795,54 @@ fn hud_thresholds_survive_an_unpinned_build() {
     assert_eq!(bitmap[0x18..0x1c], thresholds);
     assert_eq!(text[0x18..0x1c], thresholds);
     assert_eq!(text[0x2c..0x2e], 2u16.to_le_bytes());
+}
+
+/// No retail map has an `hmt `, so its layout is the Halo 1 converter's
+/// definition, whole ([`super::infer::apply_converter_groups`]): the
+/// checked-in schema holds exactly that, and inference adds it back.
+#[test]
+fn converter_hud_messages_take_their_layout_from_the_definition() {
+    let hmt = FourCC(*b"hmt ");
+    let def = crate::defs::Defs::builtin().group(hmt).unwrap();
+    assert_eq!(Schema::builtin().groups[&hmt], def.schema_fields().unwrap());
+    let mut inferred = Schema::builtin().clone();
+    inferred.groups.remove(&hmt);
+    super::infer::apply_converter_groups(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
+/// A rebuilt `hmt ` moves even when its flash colours and silhouette cache
+/// key fall in the metadata address space (a10's help flash colour
+/// `0x8075baff` did): those words are data, and the widget and silhouette
+/// blocks past the legacy `0x94` bytes are followed.
+#[test]
+fn converted_hud_messages_walk_with_colours_that_look_like_addresses() {
+    let hmt = FourCC(*b"hmt ");
+    let address = 0x8010_0000u32;
+    let (widget, silhouette) = (0xc8u32, 0xecu32);
+    let mut bytes = vec![0u8; 0x104];
+    let mut put = |at: u32, v: u32| bytes[at as usize..at as usize + 4].copy_from_slice(&v.to_le_bytes());
+    put(0x18, 0x4831_4857);
+    put(0x20, 0x8075_baff);
+    put(0x24, 0x80ff_0040);
+    put(0x38, 1);
+    put(0x3c, address + widget);
+    put(0xb0, 1);
+    put(0xb4, address + silhouette);
+    put(widget + 0xc, 0x8075_baff);
+    put(widget + 0x10, 0x80ff_0040);
+    put(silhouette, 0x80c0_ffee);
+    let mem = Memory::from_regions(vec![(address, bytes)], vec![(0x8000_0000, 0x8100_0000)]);
+    let schema = Schema::builtin();
+    let walked = walk(&schema.groups[&hmt], address, &mem).unwrap();
+    assert_eq!(
+        walked.pointers,
+        [(0x38, 1, address + widget), (0xb0, 1, address + silhouette)]
+    );
+    assert_eq!(walked.arrays, [(0, 0xc8), (widget, 0x24), (silhouette, 0x18)]);
+    // Without the help flash colour as a word, it reads as a pointer.
+    let mut root = schema.groups[&hmt].clone();
+    root.fields.remove(&0x20);
+    let refused = walk(&root, address, &mem).unwrap_err();
+    assert_eq!((refused.refusal, refused.offset, refused.value), (Refusal::UnknownPointer, 0x20, 0x8075_baff));
 }

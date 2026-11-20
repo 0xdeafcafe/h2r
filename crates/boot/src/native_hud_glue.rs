@@ -1081,7 +1081,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
-    let compare = feature::native_hud::compare_spec().map(|n| {
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    let native = feature::native_hud::on(&switches);
+    let compare = feature::native_hud::compare_on(&switches).map(|n| {
         Arc::new(Compare {
             pairing: Mutex::new(Pairing::default()),
             left: AtomicU64::new(n),
@@ -1094,7 +1096,9 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     {
         d.add_draw_admission(Arc::clone(c) as Arc<dyn d3d::DrawAdmission>);
     }
-    let native = feature::Switches::from_env().is_ok_and(|s| feature::native_hud::on(&s));
+    if !native && compare.is_none() {
+        return;
+    }
     let hud = Arc::new(Mutex::new(None));
     if native && let Ok(mut d) = device.lock() {
         d.add_draw_admission(Arc::new(HudAdmission {

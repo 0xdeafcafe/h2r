@@ -421,6 +421,44 @@ pub fn install_sounds(
     Ok(ids)
 }
 
+/// Install distinct source sounds in one gestalt pass. Existing references
+/// to a retail namesake retain their datum. Callers discard the set on error.
+pub fn install_source_sounds(
+    h1: &h1map::H1Map,
+    set: &mut TagSet,
+    names: impl IntoIterator<Item = String>,
+) -> Result<std::collections::HashMap<String, TagId>> {
+    let mut ids = std::collections::HashMap::new();
+    let mut names = names.into_iter().peekable();
+    if names.peek().is_none() {
+        return Ok(ids);
+    }
+    let mut gestalt = SoundGestalt::from_set(set)?;
+    for name in names {
+        if ids.contains_key(&name) {
+            continue;
+        }
+        let tag = h1
+            .find(crate::h1::SND, &name)
+            .ok_or_else(|| Error::Invalid(format!("missing snd! {name}")))?;
+        let converted = Sound::read(h1, tag)
+            .and_then(|s| convert_sound(&s, h1.bytes()))
+            .and_then(|s| s.add_to(&mut gestalt, set))
+            .map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
+        ids.insert(name, install_named(converted, set, &tag.name)?);
+    }
+    gestalt.install(set, crate::gestalt::DEFAULT_NAME)?;
+    Ok(ids)
+}
+
+pub(crate) fn install_named(tag: Converted, set: &mut TagSet, name: &str) -> Result<TagId> {
+    match set.find(tag.group, name) {
+        Some(id) => tag.install_at(set, id, name),
+        None => tag.install(set, name),
+    }
+    .map_err(|e| Error::Invalid(format!("{name}: {e}")))
+}
+
 /// Lets a set decomposed from a retail map ([`TagSet::from_map`]) gain
 /// tags. The builder never writes over the uninterpreted bytes after a
 /// pinned map's tag entries, so a pinned index can't grow; this zeroes

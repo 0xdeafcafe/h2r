@@ -10,7 +10,9 @@
 //! for the recordings, the evaluators of 138, 139 and 140 call one function
 //! (`0x001fb360`) with play flags 0, 8 and 0x10, which bounds the
 //! recording index by `scnr +0x110` and reads `0x34`-byte elements at
-//! `+0x114` (the scenario's recorded animations).
+//! `+0x114` (the scenario's recorded animations). Kill searches by unit at
+//! `0x1fb760`; time queries `0x1fb4c0`. Hover calls the same function
+//! (`0xf0fd0`) as completion of a play-and-hover recording.
 
 use crate::translate::H2Builtin;
 use std::collections::HashMap;
@@ -24,7 +26,7 @@ pub struct Identified {
     pub parameters: &'static [&'static str],
 }
 
-const fn id(
+pub(crate) const fn id(
     name: &'static str,
     index: u16,
     returns: &'static str,
@@ -115,6 +117,9 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
+    // 0x002a3b70 passes the short as the facial-expression selector to
+    // 0x0010e9f0, also called by unit_set_emotional_state (220).
+    id("unit_set_emotion", 218, "void", &["unit", "short"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -129,6 +134,32 @@ pub const IDENTIFIED: &[Identified] = &[
     // evaluator (0x002a4780) returns the device's float at +0x134 (d40's
     // control rooms wait on it).
     id("device_get_power", 255, "real", &["device"]),
+    id(
+        "cs_stack_command_script",
+        367,
+        "void",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_running",
+        370,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_queued",
+        371,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id("cs_look_object", 394, "void", &["boolean", "object"]),
+    id("cs_face_object", 400, "void", &["boolean", "object"]),
+    id(
+        "cs_approach",
+        429,
+        "void",
+        &["object", "real", "real", "real"],
+    ),
     // Halo 1 247..250 after camera_set (450); camera_set_dead takes an
     // object in Halo 2 (a unit casts to it).
     id(
@@ -167,6 +198,7 @@ pub const IDENTIFIED: &[Identified] = &[
     // boolean): the first of the three such builtins after
     // hud_cinematic_fade (624). The first is the one Halo 1's order gives.
     id("show_hud", 625, "boolean", &["boolean"]),
+
 ];
 
 /// Identifications not used yet; a held builtin stays missing and compiles
@@ -180,34 +212,43 @@ pub const HELD: &[&str] = &[];
 /// Adds each identification whose Halo 2 builtin is unnamed and has the
 /// signature it expects to `builtins`, except those [`HELD`].
 pub fn name_unnamed(builtins: &mut HashMap<String, H2Builtin>, c: &hs::Catalog) {
-    let ty = |t: u16| c.type_name(t).ok();
-    for e in IDENTIFIED {
-        let Ok(f) = c.function(e.index) else {
-            continue;
-        };
-        let signature = ty(f.return_type()) == Some(e.returns)
-            && f.parameters().len() == e.parameters.len()
-            && f.parameters()
-                .iter()
-                .zip(e.parameters)
-                .all(|(&p, want)| ty(p) == Some(*want));
-        if f.name().is_some()
-            || !signature
-            || builtins.contains_key(e.name)
-            || HELD.contains(&e.name)
-        {
-            continue;
-        }
-        builtins.insert(
-            e.name.to_owned(),
-            H2Builtin {
-                index: e.index,
-                return_type: f.return_type(),
-                parameters: f.parameters().to_vec(),
-                special: f.flags() & 2 != 0,
-            },
-        );
+    for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+        name_one(builtins, c, e);
     }
+}
+
+pub(crate) fn name_one(
+    builtins: &mut HashMap<String, H2Builtin>,
+    c: &hs::Catalog,
+    e: &Identified,
+) {
+    let ty = |t: u16| c.type_name(t).ok();
+    let Ok(f) = c.function(e.index) else {
+        return;
+    };
+    let signature = ty(f.return_type()) == Some(e.returns)
+        && f.parameters().len() == e.parameters.len()
+        && f.parameters().iter().zip(e.parameters).all(|(&p, want)| ty(p) == Some(*want));
+    let flashlight_alias = e.index == 312
+        && e.name == "units_set_desired_flashlight_state"
+        && f.name().is_none_or(|name| name == "ai_braindead_by_unit");
+    if (f.name().is_some() && !flashlight_alias)
+        || !signature
+        || builtins.contains_key(e.name)
+        || (!flashlight_alias && builtins.values().any(|b| b.index == e.index))
+        || HELD.contains(&e.name)
+    {
+        return;
+    }
+    builtins.insert(
+        e.name.to_owned(),
+        H2Builtin {
+            index: e.index,
+            return_type: f.return_type(),
+            parameters: f.parameters().to_vec(),
+            special: f.flags() & 2 != 0,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -225,6 +266,13 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 25);
+        let mut slots = std::collections::HashSet::new();
+        for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+        }
+        for e in crate::unit_builtins::RUNTIME_SLOTS {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+            assert_ne!(e.index, 300, "reserved by the AI-control lane");
+        }
     }
 }

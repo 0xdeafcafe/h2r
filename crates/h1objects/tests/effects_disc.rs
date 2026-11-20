@@ -16,8 +16,7 @@
 //!   nothing (no template bytes: nothing but the definition is read); its
 //!   locations and events are Halo 1's; every part's reference resolves
 //!   to a converted sound or a tree tag of its group; every vehicle
-//!   attachment resolves to a converted looping sound or effect at Halo
-//!   1's marker.
+//!   attachment resolves to its converted tag at Halo 1's marker.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -204,6 +203,11 @@ fn every_effect_rebuilds_from_its_definition() {
                 let got = &tree.tags[id.0 as usize & 0xffff].1;
                 assert_eq!(got.group, FourCC(*b"effe"), "{name}");
                 let r = read_back(got, &name);
+                assert_eq!(
+                    r.at("loop_start_event"),
+                    Some(&Val::Int(e.loop_start_event.into())),
+                    "{name}"
+                );
                 let locs = block(&r, "locations");
                 assert_eq!(locs.len(), e.locations.len(), "{name}");
                 for (x, l) in locs.iter().zip(&e.locations) {
@@ -295,14 +299,23 @@ fn every_effect_rebuilds_from_its_definition() {
                 let r = read_back(got, &name);
                 let b = m.tag_data(t).unwrap();
                 let h1a = h1::attachments(&m, b).unwrap();
-                let att = block(&r, "unit.obje.attachments");
+                let path = if got.group == FourCC(*b"vehi") {
+                    "unit.obje.attachments"
+                } else {
+                    "object.attachments"
+                };
+                let att = block(&r, path);
                 for a in att {
                     let (_, tag) = target(a, "type");
                     let g = resolve(tree, tag.expect("attachment")).expect("resolves");
                     assert!([*b"lsnd", *b"effe", *b"ligh", *b"cont"].contains(&g.0), "{name}: {g}");
                     let marker = text(a, "marker");
                     assert!(
-                        h1a.iter().any(|x| x.marker == marker && x.group.0.to_be_bytes() == g.0),
+                        h1a.iter().any(|x| {
+                            let source = x.group.0.to_be_bytes();
+                            x.marker == marker
+                                && (source == g.0 || (&source == b"pctl" && &g.0 == b"effe"))
+                        }),
                         "{name}: {marker}"
                     );
                 }
@@ -310,11 +323,15 @@ fn every_effect_rebuilds_from_its_definition() {
                     .iter()
                     .filter(|x| {
                         x.tag.is_some()
-                            && [*b"lsnd", *b"effe", *b"ligh", *b"cont"].contains(&x.group.0.to_be_bytes())
+                            && [*b"lsnd", *b"effe", *b"ligh", *b"cont", *b"pctl"]
+                                .contains(&x.group.0.to_be_bytes())
                     })
                     .count();
                 if att.len() != kept {
-                    println!("{name}: {} of {kept} looping sounds and effects attached", att.len());
+                    println!(
+                        "{name}: {} attachments from {kept} source elements",
+                        att.len()
+                    );
                 }
                 attached += att.len();
                 println!(
@@ -928,8 +945,8 @@ fn every_foot_converts() {
             for t in m.tags().iter().filter(|t| {
                 t.group == Group::new(b"bipd") || t.group == Group::new(b"vehi")
             }) {
-                let u = h1::Unit::read(&m, t).unwrap();
-                let named = u.references.iter().find(|r| r.group == foot).and_then(|r| r.tag);
+                let offset = if t.group == Group::new(b"vehi") { 0x3d0 } else { 0x38c };
+                let named = h1::reference(&m, m.tag_data(t).unwrap(), offset);
                 if let Ok(id) = c.object(t) {
                     rebuilt.push((t, id, named));
                 }
@@ -963,7 +980,8 @@ fn every_foot_converts() {
                 let b = &tree.tags[id.0 as usize & 0xffff].1;
                 let Some(n) = named else { continue };
                 let r = defs::from_built(def(&b.group.0), &b.root).unwrap();
-                let (_, f) = target(&r, h1objects::convert::FOOT_FIELD);
+                let field = if t.group == Group::new(b"vehi") { "foot_ref_294" } else { h1objects::convert::FOOT_FIELD };
+                let (_, f) = target(&r, field);
                 let want = got.iter().find(|g| g.0.id == *n).map(|g| g.1);
                 assert_eq!(f, want, "{level} {}: material effects", t.name);
                 units += 1;
@@ -971,4 +989,217 @@ fn every_foot_converts() {
         }
     }
     println!("{feet} foot tags, {sounds} sound and {effects} effect elements; {units} rebuilt units name theirs");
+}
+
+/// The native attached effect references the source model marker and emits
+/// even though the Halo 1 system starts with an empty particle pool.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn entry_lifepod_burns_at_its_halo1_marker_and_rate() {
+    use h1objects::particles::{self, TICK};
+    use tags::effects::function::Function;
+    use tags::effects::h1_attachment::{PointPhysics, population_word};
+
+    let m = h1_level("a30").unwrap();
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    let vehicle = m
+        .find(
+            Group::new(b"vehi"),
+            "vehicles\\lifepod_entry\\lifepod_entry",
+        )
+        .unwrap();
+    let source = h1::attachments(&m, m.tag_data(vehicle).unwrap()).unwrap();
+    let burn = source
+        .iter()
+        .find(|a| a.group == Group::new(b"pctl"))
+        .unwrap();
+    assert_eq!(burn.marker, "burn");
+    let pctl = m.tag(burn.tag.unwrap()).unwrap();
+    let types = particles::particle_system_types(&m, pctl).unwrap();
+    assert_eq!(types.len(), 1);
+    let ty = &types[0];
+    assert_eq!(ty.initial_count, 0);
+    assert_eq!(ty.emitter_states.len(), 1);
+    let emitter = &ty.emitter_states[0];
+    assert_eq!(emitter.particles_per_second, 30.0);
+
+    let mut c = Converter::new(&m, &base);
+    let id = c.object(vehicle).unwrap();
+    let vehi = read_back(&c.tree.tags[id.index()].1, &vehicle.name);
+    let model = target(&vehi, "unit.obje.model").1.unwrap();
+    let hlmt = &c.tree.tags[model.index()].1;
+    let hlmt = defs::from_built(def(b"hlmt"), &hlmt.root).unwrap();
+    let mode = target(&hlmt, "render_model").1.unwrap();
+    let mode = &c.tree.tags[mode.index()].1;
+    let mode = defs::from_built(def(b"mode"), &mode.root).unwrap();
+    assert!(
+        block(&mode, "marker_groups")
+            .iter()
+            .any(|r| text(r, "name") == burn.marker)
+    );
+
+    let attachments = block(&vehi, "unit.obje.attachments");
+    let att = attachments
+        .iter()
+        .find(|a| text(a, "marker") == burn.marker)
+        .unwrap();
+    let id = target(att, "type").1.unwrap();
+    assert_eq!(resolve(&c.tree, id), Some(FourCC(*b"effe")));
+    let (name, effect) = &c.tree.tags[id.index()];
+    assert!(name.starts_with(&pctl.name));
+    let effect = read_back(effect, name);
+    assert_eq!(effect.at("loop_start_event"), Some(&Val::Int(0)));
+    assert_eq!(text(&block(&effect, "locations")[0], "marker"), burn.marker);
+    let events = block(&effect, "events");
+    assert_eq!(events.len(), 2);
+    assert_eq!(emitter.minimum_population, 10.0);
+    for (event, bounds) in events.iter().zip([emitter.duration, emitter.transition]) {
+        assert_eq!(event.at("duration_bounds"), Some(&Val::floats(&bounds)));
+        assert_eq!(
+            event.at("attachment_population"),
+            Some(&Val::Int(
+                population_word([emitter.minimum_population; 2], false).into()
+            )),
+        );
+    }
+    let event = &events[0];
+    let states: Vec<_> = ty.states.iter().filter(|s| s.lasts()).collect();
+    let systems = block(event, "particle_systems");
+    assert_eq!(systems.len(), states.len());
+    assert_eq!(systems.len(), 2);
+    for (system, state) in systems.iter().zip(states) {
+        assert_eq!(system.at("location"), Some(&Val::Int(0)));
+        let particle = target(system, "particle").1.unwrap();
+        let (name, particle) = &c.tree.tags[particle.index()];
+        assert_eq!(particle.group, FourCC(*b"prt3"));
+        assert!(name.ends_with(&state.name));
+        let emitter_record = &block(system, "emitters")[0];
+        let movement = target(emitter_record, "movement").1.unwrap();
+        assert_eq!(resolve(&c.tree, movement), Some(FourCC(*b"pmov")));
+        let (name, tag) = &c.tree.tags[movement.index()];
+        let movement = read_back(tag, name);
+        assert_eq!(movement.at("movements[0].kind"), Some(&Val::Int(1)));
+        let parameters = block(&block(&movement, "movements")[0], "parameters");
+        let source = m.tag(state.physics.unwrap()).unwrap();
+        let bytes = m.tag_data(source).unwrap();
+        let f32_at = |i: usize| f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        let mut extended = [[0; 4]; 2];
+        for (i, parameter) in parameters.iter().enumerate() {
+            let Some(Val::Data(curve)) = parameter.at("function") else {
+                panic!("missing collision curve");
+            };
+            assert_eq!(
+                Function::parse(curve).unwrap().range,
+                [f32_at(0x2c + 4 * i); 2]
+            );
+            for (word, bytes) in extended[i].iter_mut().zip(curve[12..].chunks_exact(4)) {
+                *word = u32::from_le_bytes(bytes.try_into().unwrap());
+            }
+        }
+        let physical = PointPhysics::from_words(extended).unwrap();
+        assert_eq!(physical.mass, f32_at(4));
+        assert_eq!(physical.drag, [f32_at(0x24), f32_at(0x28)]);
+        assert!(physical.acceleration[0] > 0.0);
+        let Some(Val::Data(rate)) = emitter_record.at("property_8.function") else {
+            panic!("particle rate");
+        };
+        let rate = f32::from_le_bytes(rate[4..8].try_into().unwrap());
+        assert_eq!(rate, emitter.particles_per_second * TICK);
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn placed_object_builders_keep_halo1_attachments() {
+    let m = h1_level("b30").unwrap();
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    let mut c = Converter::new(&m, &base);
+    for (source_group, name, object_path, marker, group, scale) in [
+        (
+            b"bipd",
+            "characters\\cyborg\\cyborg",
+            "unit.obje",
+            "flashlight",
+            b"ligh",
+            "a_out",
+        ),
+        (
+            b"weap",
+            "weapons\\assault rifle\\assault rifle",
+            "item.obje",
+            "primary trigger",
+            b"ligh",
+            "b_out",
+        ),
+        (
+            b"proj",
+            "weapons\\assault rifle\\bullet",
+            "object",
+            "",
+            b"cont",
+            "",
+        ),
+        (
+            b"scen",
+            "scenery\\emitters\\condensation\\condensation",
+            "object",
+            "smoker",
+            b"effe",
+            "",
+        ),
+        (
+            b"mach",
+            "levels\\b30\\devices\\interior tech objects\\holo beam tube\\holo beam tube",
+            "devi.obje",
+            "point light",
+            b"ligh",
+            "",
+        ),
+        (
+            b"ctrl",
+            "levels\\b30\\devices\\interior tech objects\\holo control\\holo control",
+            "devi.obje",
+            "holo light",
+            b"ligh",
+            "",
+        ),
+        (
+            b"lifi",
+            "levels\\b30\\devices\\light fixtures\\light fixture wall3\\light fixture wall3",
+            "devi.obje",
+            "point light01",
+            b"ligh",
+            "",
+        ),
+        (
+            b"ssce",
+            "sound\\sfx\\ambience\\b30\\waves",
+            "object",
+            "",
+            b"lsnd",
+            "",
+        ),
+    ] {
+        let t = m
+            .find(Group::new(source_group), name)
+            .unwrap_or_else(|| panic!("{name}"));
+        let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let object = &c.tree.tags[id.index()].1;
+        let record = defs::from_built(def(&object.group.0), &object.root).unwrap();
+        let att = block(&record, &format!("{object_path}.attachments"))
+            .iter()
+            .find(|a| {
+                text(a, "marker") == marker
+                    && target(a, "type").1.and_then(|id| resolve(&c.tree, id))
+                        == Some(FourCC(*group))
+            })
+            .unwrap_or_else(|| panic!("{name}: {marker}"));
+        let (_, id) = target(att, "type");
+        assert_eq!(
+            resolve(&c.tree, id.unwrap()),
+            Some(FourCC(*group)),
+            "{name}"
+        );
+        assert_eq!(text(att, "string_10"), scale, "{name}");
+    }
 }

@@ -80,6 +80,17 @@ The full active Cairo payload is compared against the ISO after every injected
 failure and after recovery; the recovered tutorial payload is also compared.
 This pause/reopen test does not terminate and relaunch the whole runner.
 
+## Converted Halo 1 campaign slots (**Built**)
+
+At boot an installed converted level larger than 280 MiB increases the
+capacity of slots 4 and 5. Both the allocator and the selector read the
+campaign row at `0x448fc8`. The header validator reads the new capacity
+for Halo 1 campaign headers, bounded by its own 520 MiB check. The VFS
+adds two slots' worth of growth to each selectable utility partition and
+accounts for the extra space in the synthetic disk geometry. The size
+lookup, slot selection and source inventory are documented with the
+converter. [Campaign audio](../halo1/sounds.md#campaign-loops-and-cache-slots-built).
+
 ## Changed maps
 
 A static read of the slot code (1.0 XBE), made when map packages became

@@ -547,6 +547,63 @@ fn cinematic_scripts(t: &h1scripts::Tables, c: &h1scripts::Catalog) -> BTreeSet<
     all
 }
 
+#[test]
+fn default_campaign_cinematics_play_every_authored_path() {
+    use h1scripts::compile::Cutscenes;
+    for level in LEVELS {
+        assert_eq!(h1campaign::cutscenes::policy(&Default::default(), level), Cutscenes::Play);
+    }
+    assert_eq!(Cutscenes::default(), Cutscenes::Play);
+}
+
+fn command_targets(t: &h1scripts::Tables, d: hs::Datum, out: &mut Vec<u16>) {
+    let n = t.node(d).unwrap();
+    if n.atom() { return; }
+    let head = t.node(hs::Datum(n.data())).unwrap();
+    let mut arg = head.next();
+    if !n.script_call() && matches!(token(t, head).as_str(), "ai_command_list" | "ai_command_list_by_unit") {
+        let list = t.node(t.node(arg).unwrap().next()).unwrap();
+        out.push(list.data() as u16);
+    }
+    while arg != hs::Datum::NULL {
+        command_targets(t, arg, out);
+        arg = t.node(arg).unwrap().next();
+    }
+}
+
+fn command_script_links(level: &str, t: &h1scripts::Tables, output: &hs::Scenario, cinematic: &BTreeSet<String>) {
+    let mut count = 0;
+    for script in t.scripts.iter().filter(|s| matches!(level, "c10" | "c40") || cinematic.contains(&s.name)) {
+        let mut source = Vec::new();
+        command_targets(t, script.root, &mut source);
+        if source.is_empty() { continue; }
+        let mut written = Vec::new();
+        let mut nodes = vec![output.script(&script.name).unwrap().root()];
+        while let Some(node) = nodes.pop() {
+            let hs::Expression::Call { name, children, .. } = output.expression(node).unwrap() else { continue };
+            let args = children.collect::<hs::Result<Vec<_>>>().unwrap();
+            if name == "cs_run_command_script" {
+                let arg = output.node(args[1]).unwrap();
+                if arg.data() == u32::MAX {
+                    written.push(u16::MAX);
+                    continue;
+                }
+                let target = &output.scripts()[arg.data() as u16 as usize];
+                assert_eq!(target.kind(), 5);
+                written.push(target.name().unwrap().strip_prefix("h1_cmd_").unwrap().parse::<u16>().unwrap());
+            }
+            nodes.extend(args.into_iter().rev());
+        }
+        assert_eq!(written,source,"{} command-list targets",script.name);
+        count += source.len();
+    }
+    match level {
+        "c10" => assert_eq!(count, 10, "x50 crew and Monitor command lists"),
+        "c40" => assert_eq!(count, 20, "Monitor and sentinel command lists"),
+        _ => {}
+    }
+}
+
 /// Per level, played: each cutscene's builtins that are still stubbed, the
 /// hooks a cutscene needs that do not resolve, the graphs and recordings
 /// written, and the tag memory; then the converted
@@ -594,7 +651,7 @@ fn cutscenes_convert_and_read_back() {
         if let Some(m) = played
             .missing
             .iter()
-            .find(|m| m.name.starts_with("recording_"))
+            .find(|m| m.name.starts_with("recording_") || m.name == "vehicle_hover")
         {
             failed.push(format!("{level}: {} still missing", m.name));
         }
@@ -603,9 +660,8 @@ fn cutscenes_convert_and_read_back() {
 
         let opts = h1campaign::Options {
             scripts: Some(&s),
-            sounds: 1000,
+            sounds: usize::MAX,
             donors: Some(&donors),
-            cutscenes: Some(Cutscenes::Play),
             ..Default::default()
         };
         let mut base = h2_map(h1campaign::base_for(&level));
@@ -619,7 +675,7 @@ fn cutscenes_convert_and_read_back() {
                         cutscene_data: false,
                         ..h1campaign::Options {
                             scripts: Some(&s),
-                            sounds: 1000,
+                            sounds: usize::MAX,
                             donors: Some(&donors),
                             ..Default::default()
                         }
@@ -638,7 +694,7 @@ fn cutscenes_convert_and_read_back() {
                 cutscene_data: false,
                 ..h1campaign::Options {
                     scripts: Some(&s),
-                    sounds: 1000,
+                    sounds: usize::MAX,
                     donors: Some(&donors),
                     cutscenes: Some(Cutscenes::Play),
                     ..Default::default()
@@ -674,39 +730,96 @@ fn cutscenes_convert_and_read_back() {
         // Read back.
         let mut m = map::Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
+        if level == "d40" {
+            for (place, input) in h1convert::shad::COUNTDOWN_DIGITS.iter().enumerate().skip(3).take(4) {
+                assert!(m.strings().iter().any(|s| s.as_deref() == Some(*input)));
+                let shader = format!("levels\\d40\\shaders\\sd numbers_{place}");
+                assert!(m.tags().iter().any(|t| {
+                    t.group == map::FourCC(*b"shad") && t.name.as_deref() == Some(shader.as_str())
+                }), "converted countdown shader {shader:?}");
+            }
+        }
         let tag = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(tag.id).unwrap();
         let w = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        let with_data = !r.lean.leaves_out(h1campaign::Lean::CutsceneData);
-        if !with_data
-            || r.retries
-                .iter()
-                .any(|d| d.ends_with("no cutscene animation graphs"))
+        let level_data = h1scripts::level::Level::read(&h1).unwrap();
+        for (field, count) in [
+            (h1scripts::level::h2::CAMERA_POINTS.0, level_data.camera_points.len()),
+            (h1scripts::level::h2::FLAGS.0, level_data.flags.len()),
+            (h1scripts::level::h2::TITLES.0, level_data.titles.len()),
+        ] {
+            assert_eq!(w(field as usize) as usize, count, "{level}: scenario +{field:#x}");
+        }
+        assert_eq!(r.lean, h1campaign::Lean::Everything, "{level}: {:?}", r.retries);
+        assert!(sr.graphs.dropped.is_empty(), "{level}: {:?}", sr.graphs.dropped);
+        for h in played.hooks.iter().filter(|h| h.type_name == "animation_graph"
+            && h.h1_type != "command_unit_graph_candidate" && h1.find(h1map::Group::new(b"antr"), &h.token).is_some())
         {
-            // What the graphs would need: every graph the scripts name.
-            let mut need = 0;
-            let mut seen = BTreeSet::new();
-            for h in played
-                .hooks
-                .iter()
-                .filter(|h| h.type_name == "animation_graph")
-            {
-                if !seen.insert(h.token.clone()) {
-                    continue;
-                }
-                if let Some(t) = h1.find(h1map::Group::new(b"antr"), &h.token)
-                    && let Ok((_, _, c)) = h1models::graph_from_map(&h1, t, None)
-                {
-                    need += c.raw.iter().map(|r| r.0.len()).sum::<usize>();
+            assert!(m.tags().iter().any(|tag| tag.group == map::FourCC(*b"jmad")
+                && tag.name.as_deref() == Some(h.token.as_str()) && tag.location.is_some()),
+                "{level}: missing cinematic graph {}", h.token);
+        }
+        let recs = h1campaign::cutscenes::read_recordings(&h1).unwrap();
+        let scripts = hs::Scenario::read(&mut m).unwrap();
+        command_script_links(&level, &t, &scripts, &cinematic);
+        if level == "a10" {
+            let wake = s.catalog.index_of("wake").unwrap();
+            let expected = calls(&t).into_iter().filter(|(op, args)| {
+                *op == wake && t.scripts.get(args[0].data() as u16 as usize)
+                    .is_some_and(|target| target.name == "tutorial_setup")
+            }).count();
+            assert!(expected > 0, "the original tutorial must be reachable");
+            let mut actual = 0;
+            for n in scripts.nodes().iter().filter(|n| n.live() && !n.atom() && !n.script_call()) {
+                let head = scripts.node(hs::Datum(n.data())).unwrap();
+                if scripts.string(head.string_offset()).unwrap() == "wake" {
+                    let arg = scripts.node(head.next()).unwrap();
+                    if scripts.scripts().get(arg.data() as u16 as usize)
+                        .is_some_and(|target| target.name().ok() == Some("tutorial_setup")) {
+                        actual += 1;
+                    }
                 }
             }
-            println!("  without cutscene data; its graphs need {need:#x} bytes of animation data");
+            assert_eq!(actual, expected, "a10 tutorial wake targets");
         }
-        let recs = if with_data {
-            h1campaign::cutscenes::read_recordings(&h1).unwrap()
-        } else {
-            Vec::new()
-        };
+        if level == "b40" {
+            let mut roots = BTreeMap::new();
+            let mut reused = 0;
+            for g in scripts.globals().iter().filter(|g| g.name().unwrap().starts_with("h1_ai_state_")) {
+                let value = scripts.node(g.root()).unwrap().data();
+                if let Some(existing) = roots.insert((g.value_type(), value), g.root()) {
+                    assert_eq!(existing, g.root());
+                    reused += 1;
+                }
+            }
+            assert!(reused > 0, "b40 should have shared AI initializer roots");
+            println!("b40 shared {reused} initializer nodes, saving {} bytes", reused * hs::Node::SIZE);
+        }
+        for u in sr.missing_builtins.iter().filter(|u| cinematic.contains(&u.definition)) {
+            failed.push(format!("{level}: {} still drops {}", u.definition, u.name));
+        }
+        if let Some(op) = s.catalog.index_of("cinematic_screen_effect_set_video")
+            && calls(&t).iter().any(|(index, _)| *index == op) {
+            for name in h1scripts::cinematics::VIDEO_BITMAPS {
+                assert!(scripts.references().iter().any(|r| r.group() == map::FourCC(*b"bitm") &&
+                    m.tag(r.id()).is_ok_and(|t| t.name.as_deref() == Some(name) && t.location.is_some())));
+            }
+        }
+        let ty = s.target.type_index("cutscene_recording").unwrap();
+        for node in scripts.nodes().iter().filter(|n| {
+            n.atom() && !n.global() && n.value_type() == ty && n.opcode() == ty
+        }) {
+            let name = scripts.string(node.string_offset()).unwrap();
+            if name.is_empty() || name.eq_ignore_ascii_case("none") {
+                assert_eq!(node.data(), u32::MAX);
+            } else {
+                assert_eq!(
+                    h1campaign::cutscenes::recording_index(&recs, name),
+                    Some(node.data()),
+                    "{level} recording literal {name}"
+                );
+            }
+        }
         let (n, at) = (w(0x110) as usize, w(0x114));
         if n != recs.len() {
             failed.push(format!(
@@ -722,34 +835,36 @@ fn cutscenes_convert_and_read_back() {
             let o = (a - space.virtual_base) as usize;
             meta[o..o + len].to_vec()
         };
-        let original = recs;
-        let mut recs = original.clone();
-        let rewritten = h1campaign::recordings::for_halo2(&mut recs);
-        if !rewritten.stilled.is_empty() {
-            failed.push(format!("{level}: held still {:?}", rewritten.stilled));
-        }
+        let mut recs = recs;
+        h1campaign::recordings::for_halo2(&mut recs).unwrap();
         for (i, rec) in recs.iter().enumerate().take(n) {
             let e = mem(at + (i * 0x34) as u32, 0x34);
             let size = u32::from_le_bytes(e[0x2c..0x30].try_into().unwrap()) as usize;
             let p = u32::from_le_bytes(e[0x30..0x34].try_into().unwrap());
-            if e[..0x2c] != rec.head[..] || size != rec.stream.len() {
+            if &e[..rec.name.len()] != rec.name.as_bytes()
+                || e[rec.name.len()..32].iter().any(|b| *b != 0)
+                || e[0x20..0x24] != [rec.version, 0, rec.control_version, 0]
+                || e[0x24..0x26] != rec.ticks.to_le_bytes()
+                || e[0x26..0x2c] != [0; 6]
+                || size != rec.stream.len()
+            {
                 failed.push(format!("{level}: recording {i} differs"));
             } else if size > 0 && mem(p, size) != rec.stream {
                 failed.push(format!("{level}: recording {i}'s stream differs"));
             } else if let Err(e) = h1campaign::recordings::walk(
                 h1campaign::recordings::Game::Halo2,
-                rec.control_version(),
+                rec.control_version,
                 &mem(p, size),
             ) {
                 failed.push(format!("{level}: recording {i} as Halo 2 reads it: {e}"));
             }
-            if !(1..=4).contains(&rec.version()) {
-                failed.push(format!("{level}: recording {i} version {}", rec.version()));
+            if !(1..=4).contains(&rec.version) {
+                failed.push(format!("{level}: recording {i} version {}", rec.version));
             }
         }
         let versions: BTreeSet<(u8, u8)> = recs
             .iter()
-            .map(|r| (r.version(), r.control_version()))
+            .map(|r| (r.version, r.control_version))
             .collect();
         println!("  recording (version, unit control version): {versions:?}");
         let jmad = map::FourCC(*b"jmad");
@@ -764,4 +879,90 @@ fn cutscenes_convert_and_read_back() {
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// A converted enter-vehicle call must use the exact seat label on the
+/// vehicle it names. Check the source placements, vehicle presets and
+/// rebuilt seat names on all ten campaign levels.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn seat_names_name_seats_the_vehicles_carry() {
+    use h1campaign::scenario::h1 as scnr;
+    use h1scripts::compile::SEAT_NAME;
+    let s = scripting();
+    let enter = s.target.builtins["unit_enter_vehicle"].index;
+    let mut matched = 0;
+    for level in levels() {
+        let h1 = h1_level(&level);
+        let t = h1scripts::Tables::read(&h1).unwrap();
+        let compiled = h1scripts::compile::compile(
+            &t,
+            &s.catalog,
+            &s.table,
+            &s.target,
+            h1scripts::compile::Missing::Stub,
+            &[],
+        )
+        .unwrap();
+        let sc = h1.tag_data(h1.scenario()).unwrap();
+        let space = h1.tag_space();
+        let names = space.block_at(sc, scnr::OBJECT_NAMES.0, scnr::OBJECT_NAMES.1).unwrap();
+        let vehicles = space.block_at(sc, scnr::VEHICLES.0, scnr::VEHICLES.1).unwrap();
+        let palette = space.block_at(sc, scnr::VEHICLE_PALETTE.0, scnr::VEHICLE_PALETTE.1).unwrap();
+        let base = 0x8000_0000;
+        let decoded = hs::Scenario::decode(&compiled.scenario_bytes(base), base).unwrap();
+        let hooks: BTreeMap<_, _> = compiled.hooks.iter().map(|h| (h.slot, h)).collect();
+        for call in decoded.nodes().iter().filter(|n| !n.atom() && !n.script_call() && n.opcode() == enter) {
+            let head = decoded.node(hs::Datum(call.data())).unwrap();
+            let rider = decoded.node(head.next()).unwrap();
+            let vehicle_datum = rider.next();
+            let seat_datum = decoded.node(vehicle_datum).unwrap().next();
+            let vehicle = hooks[&(vehicle_datum.slot() as u16)];
+            let seat = hooks[&(seat_datum.slot() as u16)];
+            assert_eq!(seat.h1_type, SEAT_NAME);
+            let name = names.iter().find(|entry| {
+                let len = entry[..32].iter().position(|&c| c == 0).unwrap_or(32);
+                entry[..len].eq_ignore_ascii_case(vehicle.token.as_bytes())
+            }).unwrap_or_else(|| panic!("{level}: vehicle {:?} has no name", vehicle.token));
+            let index = u16::from_le_bytes([name[0x22], name[0x23]]);
+            let placement = vehicles[usize::from(index)];
+            let index = u16::from_le_bytes([placement[0], placement[1]]);
+            let tag = h1map::TagRef::read(palette[usize::from(index)], 0).unwrap();
+            let unit = h1objects::h1::Unit::read(&h1, h1.tag(tag.id).unwrap()).unwrap();
+            let expected = h1models::names::mode_name(&seat.token);
+            assert!(
+                unit.seats.iter().any(|s| h1objects::rebuild::seat_names(s, &[]).label == expected),
+                "{level}: vehicle {:?} has no seat {expected:?}",
+                vehicle.token
+            );
+            matched += 1;
+        }
+    }
+    assert!(matched > 0);
+}
+
+/// The equipment adapter's starting profiles resolve in rebuilt scenario
+/// order. Check the spelling against the source's encoded index.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn player_add_equipment_names_rebuilt_profiles() {
+    let scripting = scripting();
+    let add = scripting.catalog.index_of("player_add_equipment").unwrap();
+    let mut count = 0;
+    for level in levels() {
+        let h1 = h1_level(&level);
+        let profiles = h1campaign::profiles::read(&h1).unwrap();
+        let tables = h1scripts::Tables::read(&h1).unwrap();
+        for (index, args) in calls(&tables).into_iter().filter(|(index, _)| *index == add) {
+            let name = tables.string(args[1].string_offset()).unwrap();
+            let expected = u32::from(args[1].data() as u16);
+            assert_eq!(
+                h1campaign::profiles::script_index(&profiles, name),
+                Some(expected),
+                "{level}: builtin {index} profile {name:?}",
+            );
+            count += 1;
+        }
+    }
+    assert!(count > 0);
 }

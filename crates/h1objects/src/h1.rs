@@ -83,6 +83,7 @@ pub struct Object {
     pub object_type: u16,
     pub flags: u16,
     pub bounding_radius: f32,
+    pub acceleration_scale: f32,
     pub bounding_offset: [f32; 3],
     /// `0x28` render model (`mode`), `0x38` animation graph (`antr`),
     /// `0x70` collision model (`coll`), `0x80` physics (`phys`).
@@ -184,6 +185,7 @@ impl Object {
             object_type: u16_at(b, 0),
             flags: u16_at(b, 2),
             bounding_radius: f32_at(b, 4),
+            acceleration_scale: f32_at(b, 0x20),
             bounding_offset: vec3(b, 8),
             model: reference(map, b, 0x28),
             animation: reference(map, b, 0x38),
@@ -607,6 +609,8 @@ pub const SEAT_SIZE: usize = 0x11c;
 pub struct Seat {
     /// `0x00` flags (Halo 1's; no Halo 2 meaning established).
     pub flags: u32,
+    /// Pitch auto-level and range, then yaw range (raw float words).
+    pub camera_angles: [u32; 5],
     /// `0x04` the label scripts name the seat by (`W-driver`, `CT-driver`),
     /// 32 characters.
     pub label: String,
@@ -673,6 +677,8 @@ pub struct Unit {
     /// vehicle.
     pub biped_words: Vec<(usize, u32)>,
     pub seats: Vec<Seat>,
+    /// The unit HUD interfaces at +0x2a8, in authored order.
+    pub hud_interfaces: Vec<TagId>,
     /// The unit's own camera tracks ([`UNIT_CAMERA_TRACKS`]).
     pub camera_tracks: Vec<TagId>,
     /// A biped's collision size ([`BIPED_SIZE`]); `None` for a vehicle.
@@ -707,7 +713,7 @@ impl Unit {
             return Err(Error::WrongGroup(tag.group.to_string(), *b"unit"));
         }
         let b = map.tag_data(tag)?;
-        if b.len() < UNIT_SEATS + 12 {
+        if b.len() < UNIT_SEATS + 12 || (g == b"bipd" && b.len() < 0x2f8) {
             return Err(Error::Truncated("unit seats"));
         }
         let seats = elements(map, b, UNIT_SEATS, SEAT_SIZE)?
@@ -720,6 +726,7 @@ impl Unit {
                 Ok(Seat {
                     flags: u32_at(e, 0),
                     label: name32(e, 4),
+                    camera_angles: [0xc4, 0xc8, 0xcc, 0xf0, 0xf4].map(|at| u32_at(e, at)),
                     marker: name32(e, 0x24),
                     camera_marker: name32(e, 0x84),
                     camera_tracks,
@@ -727,10 +734,11 @@ impl Unit {
             })
             .collect::<Result<Vec<_>>>()?;
         let biped_words = if g == b"bipd" {
-            crate::rebuild::BIPED_WORDS
-                .iter()
+            crate::rebuild::BIPED_WORDS.iter().chain(crate::rebuild::UNIT_WORDS)
+                .chain(crate::rebuild::BIPED_RATES)
                 .filter(|w| w.1 + 4 <= b.len())
                 .map(|w| (w.1, u32_at(b, w.1)))
+                .chain(std::iter::once((0x2f4, u32_at(b, 0x2f4))))
                 .collect()
         } else {
             Vec::new()
@@ -741,6 +749,8 @@ impl Unit {
             camera_field_of_view: f32_at(b, 0x1a0),
             biped_words,
             seats,
+            hud_interfaces: elements(map, b, 0x2a8, 0x30)?.into_iter()
+                .filter_map(|e| reference(map, e, 0)).collect(),
             camera_tracks: elements(map, b, UNIT_CAMERA_TRACKS, SEAT_CAMERA_TRACK_SIZE)?
                 .into_iter()
                 .filter_map(|t| reference(map, t, 0))
@@ -998,6 +1008,8 @@ pub struct Physics {
     /// (wheels and treads), bit 6 on the ghost's (antigravity). V: Blood
     /// Gulch's three vehicles.
     pub powered_flags: Vec<u32>,
+    /// Strength, offset, height, damping per tick and the two lift slope cosines.
+    pub antigravity: Vec<[f32; 6]>,
     /// `0x74`.
     pub mass_points: Vec<MassPoint>,
 }
@@ -1012,6 +1024,8 @@ impl Physics {
             gravity_scale: f32_at(b, 0x1c),
             moments: vec3(b, 0x50),
             powered_mass_points: Block::read(b, 0x68).map_or(0, |b| b.count),
+            antigravity: elements(map, b, 0x68, 0x80)?.into_iter()
+                .map(|p| [0x24, 0x28, 0x2c, 0x30, 0x34, 0x38].map(|at| f32_at(p, at))).collect(),
             powered_flags: elements(map, b, 0x68, 0x80)?
                 .into_iter()
                 .map(|p| u32_at(p, 0x20))
@@ -1176,7 +1190,7 @@ impl Effect {
 
 /// One attachment of a Halo 1 object (`obje +0x140`, `0x48`): the
 /// attached tag at `+0`, the model marker it rides at `+0x10` (32
-/// characters) and its primary scale at `+0x30`.
+/// characters), two output scales and a change-colour selector.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub group: Group,
@@ -1188,6 +1202,10 @@ pub struct Attachment {
     /// 1, its taillights 2 and its engine sound 3, which are the outputs
     /// its functions name `headlights`, `taillights` and `speed`.
     pub primary_scale: u16,
+    /// `+0x32`: same output indices as the primary scale.
+    pub secondary_scale: u16,
+    /// `+0x34`: 0 none, 1 to 4 change colour A to D.
+    pub change_colour: u16,
 }
 
 /// Every attachment of the object in `b` (a tag's bytes from `obje +0`).
@@ -1199,6 +1217,8 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
             tag: reference(map, e, 0),
             marker: name32(e, 0x10),
             primary_scale: u16_at(e, 0x30),
+            secondary_scale: u16_at(e, 0x32),
+            change_colour: u16_at(e, 0x34),
         })
         .collect())
 }
@@ -1259,7 +1279,8 @@ pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
 
 /// Where an object's A to D inputs come from: its `obje` sources
 /// (`+0x108`), a unit's (`unit +0x198`) and a vehicle's (`vehi +0x31c`),
-/// each four 16-bit enums. V (`halo1_vehicle_functions_survey`): a
+/// or a weapon's (`weap +0x330`), each four 16-bit enums. V
+/// (`halo1_vehicle_functions_survey`): a
 /// vehicle's input takes the vehicle's source where it names one, else
 /// the unit's: the warthog's A (headlights) is the unit's 1 (driver's
 /// seat power) with the vehicle's 0, its B (taillights) the vehicle's 12
@@ -1272,11 +1293,13 @@ pub struct FunctionInputs {
     pub object: [u16; 4],
     pub unit: [u16; 4],
     pub vehicle: [u16; 4],
+    pub weapon: [u16; 4],
+    pub device: [u16; 4],
 }
 
 impl FunctionInputs {
     /// The inputs of the object in `b` whose type is `object_type`
-    /// ([`OBJECT_TYPES`]): units and vehicles read their own.
+    /// ([`OBJECT_TYPES`]): units, vehicles, weapons and devices read their own.
     pub fn read(b: &[u8], object_type: u16) -> Self {
         let four = |at: usize| -> [u16; 4] {
             if b.len() >= at + 8 {
@@ -1290,6 +1313,17 @@ impl FunctionInputs {
             object: four(0x108),
             unit: if unit { four(0x198) } else { [0; 4] },
             vehicle: if object_type == 1 { four(0x31c) } else { [0; 4] },
+            // E (Halo 1) 0x000bec67 and 0x00117c49, respectively.
+            weapon: if object_type == 2 {
+                four(0x330)
+            } else {
+                [0; 4]
+            },
+            device: if matches!(object_type, 7..=9) {
+                four(0x198)
+            } else {
+                [0; 4]
+            },
         }
     }
 }

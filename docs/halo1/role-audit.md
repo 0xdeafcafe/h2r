@@ -1,218 +1,98 @@
-# Role audit: Halo 2 values in converted Halo 1 tags
+# Halo 1 sources for rebuilt object tags
 
-Status (2026-11-19, converter v91): first run on Blood Gulch (on
-Coagulation; v85, before the fixes below): 526 tags, 2,341 role values
-noted, 3,169 leaks over 426 (group, field, kind) rows; 24 rows were
-unclassified and are now in the rule lists. Since v91 the weapons'
-overheated effect and melee damage, the projectiles' detonation effects
-and flyby sound, and the items' and projectiles' material effects are
-Halo 1's (below, "Fixed"). The v91 run passes on Blood Gulch; on every
-multiplayer map (`H1_MAPS=all`) it left one row, the flamethrower's HUD,
-fixed in v91 with the flamethrower's weapon class.
+The converter starts with a Halo 2 tag definition and writes the source
+object and its dependencies into it. A field without a source mapping
+keeps the definition default. The following changes are **Built** in
+the full-rebuild lane. The disc tests are written for the coordinator's
+integration run. There is no new pass count or play result yet.
 
-## Why
+| Area | Source and evidence |
+| --- | --- |
+| Items and weapons | **Built**. The shared item layer carries flags, pickup order, collision sound, material effects, detonation effects, damage and delay bounds. Weapon ready and flashlight times, magazine flags, chamber time, ammunition objects and firing-effect shot ranges come from their own records. Each trigger supplies its own effect and damage references. Halo 2 caches ten inverse barrel times; the retail barrels on Coagulation use 1000 for instantaneous changes. Six of the times have Halo 1 fields. The remaining four are instantaneous. See `arsenal.rs` and `weapon_rebuild_disc.rs`. |
+| Projectiles and damage | **Built**. Projectiles carry their flags, own impact and attached damage, and damage from the relevant normal or super-detonation event's parts. A damage tag carries radius, cutoff, damage bounds, impulse, camera shake, sound, screen flash and motor fades. Each motor has its own duration and transition; the Halo 2 response selectors share Halo 1's authored feedback. Blood Gulch's needle and plasma grenade distinguish the normal and attached damage slots. |
+| Object functions and attachments | **Built**. Scenery, bipeds, vehicles, projectiles, weapons, equipment and debris resolve the source creation effect, attachment and marker, and bind primary scales to the output names of the converted object functions. The object acceleration scale moves from H1 `+0x20` to H2 `+0x14`. The ball carries 2 in both formats. The schema includes the creation-effect reference and inherited function and attachment blocks even in groups where retail leaves them empty. |
+| Bipeds and models | **Built**. Camera tracks, HUD interfaces, weapon lists, integrated light, melee damage, dialogue, blood effect and material effects follow the original unit and collision references. Unit camera and acceleration parameters, landing and slope limits, jump and crouch rates, and flying motion are written from Halo 1. The crewman's angles on a30 distinguish cutoff and falloff. The monitor and sentinel on c20 and 04b distinguish flying physics. Standing and crouching use the source collision dimensions or a pair of spheres for sphere-only characters. The alternate three sphere sizes remain available to the engine. `0x001c2460` and `0x001d6dd6` select those shapes. |
+| Vitality and shields | **Built**. The model's damage record uses H1 collision body and shield vitality, body and shield global material, shield stun and recharge times, the reciprocal recharge rate, and shield damaged/depleted/recharging effects. The cyborg and elite's `coll +0x198` name their depletion effects; their H2 models use `+0xac` in the damage element. First- and third-person shield shaders and the native damage section array are the exceptions below. |
+| Vehicles | **Built**. Speeds scale by 30 and accelerations by 900 when converting per-tick cache values. Seat flags, camera/pitch/yaw limits and tracks, vehicle sounds, material effects and antigravity effects come from H1. Powered mass points supply lift strength, offset, height and damping, wheel radii and marker positions. The friction points and their phantom spheres use the same point order. The Warthog's four tires and the Scorpion's treads show the two layouts. The loader at `0x00205550` constructs the Havok headers and pointers from the number of shapes at `+0x38` and the inline arrays at `+0x60` (stride `0x90`, eight spheres each). `0x002067dd` pairs each friction point with the same-numbered contact. |
+| Lights, decals and particles | **Built**. Lights use H1's radius, cone, duration and colours and a unity brightness multiplier (`0x000c0dc9`). H1 decal layers 0, 1, 2 and 3 select H2 layers 2, 4, 5 and 1. The overlap limit and optional scale use their definition defaults; the placement branches are recorded in `docs/formats/effects.md`. Particle properties use functions with neutral multipliers and the emitter's H1 values. Shader constants use identity UV scale and zero offset; the second vertex vector is the homogeneous origin. The compiled stem supplies the bindings (`0x00017000` and `0x00017170`). The single-bitmap particle instances on Coagulation supply the comparison. |
 
-The converter rebuilds each tag from its Halo 2 definition
-(`crates/h1objects`: `rebuild.rs`, `arsenal.rs`, `particles.rs`, the
-garbage builder) and writes Halo 1's values into the fields it knows.
-The fields it doesn't know are filled from a **role**: the base map's
-retail Halo 2 tags of the same kind, as majority words per unknown span
-(`rebuild::RoleWords`, `arsenal::Role`, `rebuild::VehicleRole`, ...), a
-role's named values (light brightness, decal layer), retail values kept
-in the source (`rebuild::TURRET_ROLE`, `TURRET_SEAT_ROLE`), whole blocks
-copied from a Halo 2 counterpart (`rebuild::counterpart_fields`), and
-references to the counterpart's tags (`arsenal::halo2_refs`).
+## Native engine fields
 
-Some of those fields have no Halo 1 equivalent, which is fine. Others do,
-and then Halo 2 content leaks into a Halo 1 map with nothing saying so.
-Found by playing before this audit: the weapons' firing sounds were the
-SMG's, the Ghost's driving words were zeroed by a bad majority, the
-Warthog's driver seat bit, the HUD widget thresholds. The audit lists
-every such field, so each one is either allowed with a reason or a bug
-with an owner.
+- **Built. Ground drive.** Halo 1 advances contact speed directly at
+  `0x39785` and `0x80c10`. The two Warthog groups receive the same speed
+  and opposite steering angles at `0x3925c`. The Scorpion gets forward
+  speed minus and plus turn speed at `0x39301` and `0x39325`.
+  The converted definitions select that velocity controller in the engine.
+  Its two direction records have speed ratios −1 and +1. The solver
+  receives the track assigned by the source powered group for every contact.
+- **Built. Gear format.** At H2 `0xf1540` throttle blends two inline
+  torque profiles. Each profile gives torque at rest, peak torque, the
+  fraction of redline at the peak, the falloff exponent, and torques at
+  redline and twice redline (`0xf15d0`). The remaining five floats are
+  the upshift delay and threshold, speed ratio, and downshift delay and
+  threshold (`0xf152c`, `0xf18aa`). Engine inertia divides net torque
+  before integration at `0xf1c02`. Halo 1's velocity law supplies no unique
+  torque, inertia, redline, or shift schedule. A zero redline bypasses
+  native gear selection and torque integration at `0xf17b1` and `0xf1981`.
+  The native steering curve has a reference angle and exponent at
+  `+0x250/+0x254`. `0xeee7c` supplies one for either zero. An exponent
+  of one gives a linear angle. The ground controller applies H1's signed
+  steering limits and slew directly at the contacts.
+- **Built. Ghost and contacts.** The H1 hover drive uses one horizontal
+  speed cap and one acceleration magnitude at `0x38152..0x38232`. The
+  Ghost gets 6.75 world units/s and 4.5 units/s² on both axes and signs.
+  H1 `0x84376..0x84485` and H2 `0x20631d..0x20656e` give the lift
+  height, point radius, damping and two slope cosines. H1 fixed lift
+  height gives zero H2 banking-height modulation. The ground spring on
+  both engines uses gravity times penetration divided by depth, minus
+  damping times normal velocity (`0x83df4`, `0x2069b6`). Converting the
+  velocities and force units multiplies the damping coefficient by 30.
+- The remaining native root values are the vehicle priority compared at
+  `0x1ab48a` (`+0x244`), the unit input activation rate at `0xf045b`
+  (`+0x25c`), the two impulse gains selected at `0xe538c`
+  (`+0x274/+0x278`), and the contact friction coefficients
+  (`+0x2b0/+0x2bc`). H2 switches tire friction laws at a per-point slip
+  threshold, using a square-root coefficient and normal load at
+  `0x207017` and `0x2070e8`. H1 applies longitudinal and transverse drag
+  at `0x80f80` and `0x83e30`. The speed ramps do not determine those
+  gains or the native tire slip and material response. For example, the
+  Coagulation Warthog's first tire has gain 14 at `+0x08` and a slip
+  threshold of 7 at `+0x18`. The Scorpion's are 40 and 200. Blood
+  Gulch's Warthog instead has two directional drag factors per point,
+  0.45/0.65 at the rear and 0.75/0.45 at the front. The Scorpion has
+  1/1 on its tracks. Aircraft retain
+  their subtype and flight gains (`+0x218/+0x270/+0x27c/+0x280`).
+  The dispatch table at `0xf069c` selects their controllers, which use
+  those terms for flight at `0xf23b9`, `0xf2875`, `0xf2aab` and
+  `0xf5a89`. The seat entry test needs positive distance and angle
+  limits (`0xc9040`). `+0x258` and `+0x2e4` keep their definition defaults.
+  Neither has an identified read in the ground or hover drive equations.
+- Biped models keep the native damage section array that `object_new`
+  indexes at damage info `+0xbc`, and native shield/overshield shaders
+  at `+0x7c/+0x84/+0xe8/+0xf0`. The per-model camouflage shader is
+  H2-specific. Halo 1 implements camouflage through its globals.
+- The optional Halo 2 side of the paired HUD, HUD drawing shaders,
+  particle and material shader templates, default texture inputs, the
+  scope effect's screen vertex shader and the player emblem are native
+  rendering dependencies. The primary HUD and source bitmap slots use
+  converted Halo 1 tags.
+- **Known gap.** A Halo 1 model shader with no base map gets the base's
+  stand-in model shader, a marine's head on 05a_deltaapproach. a10's
+  `light siren` on the alert light names no map at all. The fix needs
+  Halo 1's draw of a null base map.
 
-## How it finds them
+## Running the audit
 
-- **Provenance** (`crates/h1objects/src/provenance.rs`). Every builder
-  notes each value it takes from a role, by its path in the tag's record
-  (`barrels[0].unknown_4`), as it writes it. The converter collects the
-  notes made while one tag's root is built (`provenance::capture`, which
-  nests, so a tag built while another is being built keeps its own) and
-  keeps them per tag in `convert::Tree::role_fields`. Nothing is noted
-  outside a capture, and the notes change no output.
-- **Value leaks.** The audit reads each built tag back through its
-  definition (`tags::defs::from_built`) and reports a noted field only
-  when it still holds the role's value: a Halo 1 value written later to
-  the same field is not a leak. Zero, null and empty values are skipped
-  (they are the definition's default too).
-- **Copied blocks.** A block or struct taken whole from the counterpart
-  (the biped's `unit.obje.functions`, the biped model's damage info) is
-  reported as `copied` while it is still the counterpart's.
-- **Reference leaks.** Every reference in a built tag to a tag of the base
-  map (not one the conversion built, not a sound placeholder) is a retail
-  Halo 2 tag in a slot. Found in the built tags themselves, so it needs no
-  notes; groups with no definition are walked by fixup (paths are
-  offsets, `+0x34`).
-
-Each leak is keyed by (tag group, path with element indices as `[]`,
-what: `value`, `copied` or the referenced tag's group) and matched against
-two rule lists in `crates/h1objects/tests/role_audit_disc.rs`:
-
-- `ALLOWED`: **(a)** Halo 1 has no equivalent. One line of reason each.
-- `KNOWN`: **(b)** Halo 1 has an equivalent the converter does not
-  translate yet, with its owner or what the fix needs; and
-  **unidentified**: a Halo 2 unknown span, where whether Halo 1 has the
-  equivalent cannot be told until the span is named. Unidentified spans
-  list their suspects and count as bugs until shown otherwise.
-
-A leak in neither list fails the test, and the failure prints it as a
-row to paste into one of them: a new (b) leak cannot land silently. Rules
-no leak meets any more (a lane fixed it) are printed as stale.
-
-Run it (the coordinator; it converts in memory and writes nothing unless
-asked):
+`role_audit_disc.rs` walks built records and their references. A value
+taken from the base is recorded by field path and reported when it is
+still present in the output. Unclassified entries fail the test.
+`H1_MAPS=multiplayer` selects the multiplayer maps, `campaign` selects
+all ten campaign levels from a10 to d40, and `all` selects both.
+Comma-separated names select individual maps. The campaign scan includes
+all supported object roots and their rebuilt dependencies on
+05a_deltaapproach, including objects reachable only by script.
+`ROLE_AUDIT_OUT` optionally names a Markdown output file.
 
 ```sh
-H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
-  cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
-H1_MAPS=all ...                       # every multiplayer map on its base
-ROLE_AUDIT_OUT=/tmp/role-audit.md ... # the tables below, regenerated
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
 ```
-
-## Classification
-
-`ALLOWED` and `KNOWN` in `tests/role_audit_disc.rs` are the source;
-this is them by group, with the evidence. "V" names come from the
-retail tags the counterparts hold in the slot (Coagulation).
-
-### Allowed (a): Halo 1 has no equivalent
-
-| Group | Field | What | Why |
-|---|---|---|---|
-| any | words that are half of an unnamed reference holding none (a group word such as `jpt!`, `foot`, `effe`, or `-1`) | `none-word` | no value: weapon `+0x148`, `+0x174` .. `+0x198`, `+0x244` .. `+0x250`, magazines `+0x3c` .. `+0x50`, barrels `+0x94`, `+0x98`, item `+0xf4` .. `+0x120` |
-| `hlmt` | `block_60` (damage info) and its shaders and effects | copied, references | Halo 2's damage and shield model wins ([campaign.md](campaign.md) decision 2) |
-| `hlmt` | `shad_ref_94` (active camouflage) | `shad` | Halo 1 draws camouflage from its globals |
-| `prt3` | `input_mask`, `vertex_shader`, `quad`, `uv_window`; the unit `color`, `alpha`, `size`, `rotation` constants; `shader_template`, `postprocess[].template` | values, copied, `stem` | Halo 2's particle shader inputs; Halo 1's values go on the emitter, which multiplies the constants |
-| `shad` | templates, default and rasterizer bitmaps | `stem`, `bitm` | Halo 2's shader system; Halo 1's bitmaps fill the slots it has |
-| `nhdt` | widget shaders; the Halo 2 HUD of the pair's bitmaps | `shad`, `bitm` | Halo 1's HUD has no shaders; the Halo 2 HUD is Halo 2's by design ([hud.md](hud.md)) |
-| `bipd` | `unit.ref_16c`, `unit.ref_174` | `jpt!` | boarding melee and its response (V: `masterchief_boarding_melee`): Halo 1 has no boarding |
-| `proj` | `unknown_178`, `unknown_e4` | values | Halo 1's own values (`PROJECTILE_WORDS`, the detonation noise), equal to the role's |
-| `deca` | `unknown_18` (scale), `max_overlapping` | values | no Halo 1 decal field |
-
-### Owned by other lanes (not touched here)
-
-| Group | Field | What | Lane |
-|---|---|---|---|
-| `weap` | `barrels[].block_e4[]` | firing effects, dry-fire sounds, trigger damage | h1-weap-snd |
-| `weap` | `ready_effect` (`+0x140`, V `needler\ready`), `pickup_sound` (`+0x264`), `zoom_in_sound`, `zoom_out_sound` (`+0x26c`, `+0x274`) | `effe`, `snd!` | h1-weap-snd |
-| `eqip` | `snd_ref_134` (pickup sound) | `snd!` | h1-weap-snd |
-| `bipd` | `unit.obje.functions` | copied | h1-bipd-colour |
-| `bipd` | `unit.obje.attachments` (shield-down effect, flashlight lights) | `effe`, `ligh` | a bug, after h1-bipd-colour: Halo 1's attachments name the functions that lane owns |
-| `vehi` | seats, hover and friction points, gears, physics, root and unit words | values | h1-veh-phys |
-
-### Fixed (v91): the named slots
-
-| Group | Field | Was | Now (Halo 1) | Evidence |
-|---|---|---|---|---|
-| `weap` | `overheated_effect` (`+0x16c`) | the plasma weapons' `overheated` | `weap +0x374`, converted (`Converter::weapon_slot`, with the weapon's other effects and sounds) | V: the slot holds `overheated` on both plasma weapons |
-| `weap` | `ref_1bc` melee damage, `ref_1c4` melee response | `smash_melee`/`strike_melee` and responses | `weap +0x394`, `+0x3a4`, converted (`Converter::damage`) | V: 8 of 8 weapons |
-| `proj` | `ref_e8` detonation started | the plasma grenade's `detonation_start` | `proj +0x1f4` | V: the one projectile with it |
-| `proj` | `ref_f0`, `ref_f8` (airborne) detonation | `airborne_detonation`, `detonation`, `standard_detonation` | `proj +0x1ac`, Halo 1's one detonation effect, in both | V: 3 of 3 grenades and needle |
-| `proj` | `ref_110` super detonation | the needle's `super_detonation` | `proj +0x18c` | V |
-| `proj` | `ref_138` flyby sound | `bullet_flyby_*` | `proj +0x204`, converted (`Converter::sound`) | V: 8 bullets |
-| `weap`, `eqip`, `proj` | `foot_ref_54` material effects | the counterpart's (`effects\materials\objects\weapons\*`) | the first `foot` Halo 1's root names (`Converter::h1_foot`); the counterpart's stays where it names none | as units since v48 (`unit_foot`) |
-
-A slot Halo 1 leaves empty, or whose tag does not convert (noted in the
-object's report), is now empty: Halo 1's content, not a retail stand-in.
-These slots are named in `arsenal` (`WEAPON_OVERHEATED`,
-`PROJECTILE_FLYBY_SOUND`, ...) rather than in the definitions, so the
-lanes editing the same files keep their names. Proven by unit test
-(`halo1_slots_replace_the_counterparts_references`) and, once run, by the
-audit's v91 output; not seen in a game.
-
-An object whose conversion reaches itself (a projectile whose detonation
-effect creates it) is now refused at that point instead of recursed into
-(`Converter::objects_open`); the effect part is left out and reported.
-
-### Fixed (v91): flamethrower
-
-| Group | Field | Was | Now (Halo 1) | Evidence |
-|---|---|---|---|---|
-| `weap` | `hud` (`+0x2b0`), the flamethrower's | `ui\hud\shotgun`, its counterpart's | an `nhdt` with no widget (`Converter::weapon_hud`) | V: Halo 1's `weapons\flamethrower\flame thrower` and its child `ui\hud\master fuel` list no static, meter, number, crosshair or overlay, so Halo 1 draws nothing for it; `weapon_hud` refused a chain with no element, and the counterpart's HUD stayed. The shotgun's is still the Halo 2 side of its HUD swap |
-| `weap` | class and type (`+0x288`, `+0x28c`), the flamethrower's | (`rifle`, `ft`) | none | `ft` is in no Halo 1 animation name. Since v84 a label no name holds took a class from any graph's slot tables, a biped's included; the converted cyborg graph has no `combat:rifle:ft` (`sandbox_disc` `every_halo1_weapon_is_held_by_the_halo1_player_graph` failed on Derelict, master too). Now vehicle graphs' tables only (`h1models::h1::weapon_types`), the ones whose converted graph holds the pairs (the warthog's `cg` under `fixed`) |
-
-Both proven by unit tests (`a_weapon_hud_with_no_element_is_an_nhdt_with_no_widget`,
-`reads_a_vehicle_graph_s_tables`) and, once run, by the all-maps audit and
-the sandbox test; neither is seen in a game. A Halo 2 weapon whose HUD has
-no bitmap widget is untested in the engine.
-
-### Bugs (b) not fixed
-
-| Group | Field | What leaks | Halo 1 source | What it needs |
-|---|---|---|---|---|
-| `eqip` | `item.detonation_effect` (`+0x124`, effe), `item.ref_10c` (jpt!) | the grenades' `airborne_detonation`, `equipment_detonation`, `*_equipment_explosion` | the item's detonation effect (the explosion when a lying grenade is shot) | `h1::Equipment` does not read the item's detonation fields yet: read them (offsets by pairs), then as `proj` |
-| `bipd` | `unit.block_e8[].ref_0` | `camera\biped_follow_camera` | the unit's camera track | read the unit's camera tracks; convert as the seats' (`Converter::camera_track`) |
-| `bipd` | `unit.effe_ref_c4` | the Chief's `flashlight` effect | the unit's integrated light toggle | read it, then `Converter::effect` |
-| `weap` | the detonation effect | none on Coagulation's weapons | `weap +0x384` | named `detonation_effect` (`+0x17c`) and written from Halo 1 by h1-weap-snd (`arsenal::WEAPON_EFFECTS`) |
-| `deca` | `layer` | the base's majority (5) | the decal's layer (its own enumeration) | Halo 2's layer values named |
-
-**Missing, not leaking.** `jpt!` leaks one word (`+0xa0`, 1.0): the base's
-damage effects agree on almost nothing, so a converted damage effect is
-Halo 1's bounds over **zeros**. Halo 1's radius, cutoff scale,
-acceleration, camera shake and rumble are not translated and not taken
-from anywhere either; the audit cannot see a field left at its default.
-Naming Halo 2's `jpt!` fields by pairs is the next step there.
-
-### Unidentified: Halo 2 spans not named yet
-
-The role's words in unknown spans. Whether Halo 1 has their equivalent
-is open until each is named; the suspects are listed.
-
-| Group | Fields | Values | Suspects in Halo 1 |
-|---|---|---|---|
-| every object | `+0x6c` .. `+0x8c` of the header | 1, 2.5, 4.5, 0.2, 1.25, 2.5 (7 on the biped), 10, 0.2, 1.25 on every object of every group | none: Halo 1's `obje` has one acceleration scale; likely (a) |
-| `bipd` | header `+0x14` .. `+0x1c`; `unit +0xbc`, `+0xc0`, `+0x1b0`, `+0x1b4`; root `+0x1ec` .. `+0x2c8`; the character shapes' (`block_284`, `block_28c`) words | speeds and angles (1.2, 8.49, 3.08, 0.6, 7, 12, cos 45 and 50 degrees, ...) | Halo 1's unit and biped speeds, jump velocity, stationary turning, ground angles; `rebuild::BIPED_WORDS` carries some |
-| `bipd` | `ref_25c` | `blood_aoe_human_masterchief` | none: likely (a) |
-| `weap` | root `+0x1b0` .. `+0x1b8`, `+0x27c`, `+0x2d8`, `+0x2dc`; barrels `+0x50`, `+0x54`, `+0x68`, `+0xc4` .. `+0xe0` (1000) | | ready time, zoom, autoaim, movement penalty, flags |
-| `weap` | `ref_1cc` .. `ref_1ec` | further `strike`/`smash` melee damage | Halo 1 has one melee damage and response (now in `ref_1bc`, `ref_1c4`); likely (a) |
-| `proj` | `+0x194` (1.0); `ref_140` (the rocket's `rocket_detonation` only) | | projectile flags |
-| `eqip`, `weap`, `proj` | `foot_ref_54` where Halo 1's root names no `foot` | | whether Halo 1's object has material effects at all |
-| `jpt!` | `+0xa0` (1.0) | | see "Missing, not leaking" |
-| `ligh` | `+0x8`, `+0xc`, `+0x14`, `+0x80` .. `+0x8c`, `brightness` | | the light's intensity and falloff |
-| `effe` | particle-system `fade`, `lod`, emitter `+0xb0`, `+0xb4` | | particle fade times |
-| `scen` | header words only | | none past the header |
-
-## What the audit does not see
-
-- **Partly role values.** A field built from Halo 1's bits and the role's
-  is noted with the role's value, and only reported when it still equals
-  it: the seat flags (`rebuild::seat_flags`, Halo 1's low bits over the
-  role's), the projectile's `unknown_e4` (the role's high half, Halo 1's
-  detonation noise low) and `vehicle_flags` (the role's high half) are
-  not reported. The seat flags and vehicle flags are h1-veh-phys's.
-- **Retail values in the source that are not a role's**: the physics
-  model's body words (`rebuild::DEVICE_BODY`, `BIPED_BODY`,
-  `PIECE_MATERIAL`), the stand-in sphere (`convert::STAND_IN_SPHERE`),
-  the decal fallback when the base has no decal. Havok's tuning has no
-  Halo 1 source; the decal fallback only applies to a base without
-  decals.
-- **The Halo 2 HUD of a HUD pair** (`health_hud`): built from a retail
-  `nhdt` on purpose ([hud.md](hud.md)); its references show up under
-  `nhdt` and need rules on the first run.
-- **Tags outside `h1objects`** (the structure, sky, shaders made by
-  `h1convert`): not in the object tree.
-
-## Results
-
-First run, Blood Gulch on Coagulation, converter v85 (the tables
-`ROLE_AUDIT_OUT` wrote; values abridged): 526 tags; leaks by group:
-`vehi` 195 rows (all h1-veh-phys's), `weap` 76, `bipd` 71, `proj` 19,
-`eqip` 19, `scen` 9, `prt3` 8, `ligh` 7, `hlmt` 7, `shad` 4, `effe` 4,
-`deca` 3, `nhdt` 3, `jpt!` 1. Each row is classified above. The rows the
-v91 fixes remove are under "Fixed".
-
-v91, `H1_MAPS=all`: the thirteen multiplayer maps on this disc (the PC
-maps are not on it), eleven on Beaver Creek and two on Coagulation, from
-393 to 603 tags and 2,104 to 3,541 leaks each. Every row but one was
-classified by the Blood Gulch rules: Derelict's (`carousel`) flamethrower
-named the shotgun's HUD, fixed in v91 (above).

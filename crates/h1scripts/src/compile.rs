@@ -8,6 +8,9 @@
 //! token in the string data, hold a placeholder value, and are listed as
 //! [`Hook`]s the converter fills in.
 
+mod commands;
+mod cinematic;
+
 use std::collections::HashMap;
 
 use hs::{Datum, Node};
@@ -17,6 +20,10 @@ use crate::catalog::{Catalog, types};
 use crate::layout::Tables;
 use crate::translate::{Adapter, Kind, Table, Target};
 use crate::{Result, invalid};
+
+#[path = "aicontrol_compile.rs"]
+mod aicontrol_compile;
+mod conversations;
 
 /// Halo 2 scenario fields the tables go in (docs/formats/haloscript.md).
 pub mod field {
@@ -56,7 +63,9 @@ const SCRIPT_CALL: u16 = 10;
 const GLOBAL: u16 = 13;
 /// Placeholder value of a hooked atom: Halo 2's `none`.
 pub const NONE: u32 = u32::MAX;
-/// Most nodes Halo 2's syntax pool holds (`0x9000`).
+/// Most nodes a converted scenario holds. Retail Halo 2's syntax pool
+/// covers [`hs::RETAIL_NODES`]; the runtime gives a larger scenario a larger
+/// occupancy bitmap (`engine::hs_syntax`, docs/halo1/scripts.md).
 pub const MAX_NODES: usize = hs::MAX_NODES;
 /// First opcode of [`Missing::Extension`] calls: one past Halo 2's table.
 pub const EXTENSION_BASE: u16 = 0x8000;
@@ -73,11 +82,11 @@ pub enum Missing {
     Extension,
 }
 
-/// Halo 1 cutscenes and tutorials, which need what is not converted yet
-/// (cutscene animation, recordings, command lists, HUD help text).
+/// How to compile the cutscene guard and tutorial wake targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cutscenes {
     /// Compile them as written.
+    #[default]
     Play,
     /// Take the path Halo 1 takes when the player skips: every call of the
     /// level's `cinematic_skip_start` script is `false`, so `(if
@@ -85,11 +94,8 @@ pub enum Cutscenes {
     /// script carries on as after a skip (its fade in, `cinematic_stop`,
     /// control back). A wake of a tutorial script with a short path
     /// ([`SHORT_PATHS`]) wakes the short path.
-    #[default]
     Skip,
-    /// Play the cinematics, but wake the short path of a tutorial that
-    /// cannot finish ([`SHORT_PATHS`]; a10's cryo tutorial waits on look
-    /// tests Halo 2 has no builtin for).
+    /// Explicitly select the short tutorial path while playing cinematics.
     PlayShortPaths,
 }
 
@@ -98,29 +104,9 @@ pub const SKIP_GUARD: &str = "cinematic_skip_start";
 
 /// Under [`Cutscenes::Skip`], `(wake from)` becomes `(wake to)` when the
 /// level has both scripts. a10: the cryo tutorial (normal difficulty, single
-/// player) disables input and waits on look and movement tests and command
-/// lists Halo 2 lacks; the fast setup is the path Halo 1 takes in co-op
-/// and on other difficulties, and gives control back.
+/// player) disables input and waits on look and movement tests. The fast
+/// setup is the path Halo 1 takes in co-op and on other difficulties.
 pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
-
-/// What a stubbed status query returns under [`Missing::Stub`] instead of
-/// zero, where zero would hold a `sleep_until` forever. Every use in the
-/// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
-/// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
-/// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
-/// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
-/// are true; the HUD timer never runs out; a conversation is past any line.
-pub const DONE_VALUES: &[(&str, i32)] = &[
-    ("ai_conversation_status", 5),
-    ("ai_command_list_status", 2),
-    ("game_all_quiet", 1),
-    ("game_safe_to_speak", 1),
-    // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
-    // as failed; Halo 2 has no HUD timer, so it never runs out.
-    ("hud_get_timer_ticks", 32767),
-    // b30: `(< 1 (ai_conversation_line jeep_load))`, a line past the first.
-    ("ai_conversation_line", 99),
-];
 
 /// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:
 /// the Halo 2 engine global a status must reach, and the Halo 1 value.
@@ -145,6 +131,14 @@ pub const STATUS_LADDER: &[(&str, i32)] = &[
 /// string ID of that animation's name in the converted `jmad`
 /// (`h1models::jmad::animation_names`).
 pub const ANIMATION_NAME: &str = "animation_name";
+
+/// A vehicle-seat argument. Its token is resolved to the exact label ID
+/// checked by the Halo 2 seat search at `0x0011ade0`.
+pub const SEAT_NAME: &str = "seat_name";
+
+/// A unit pose argument. Slot 234 writes the converted animation mode,
+/// independently of the vehicle-seat table.
+pub const SEAT_POSE: &str = "seat_pose";
 
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
@@ -295,7 +289,7 @@ pub fn compile_with(
     resolves: &dyn Fn(&str, &str) -> bool,
     reference_names: &[String],
 ) -> Result<Compiled> {
-    let mut c = Compiler {
+    compile_scenario(
         t,
         h1,
         table,
@@ -303,40 +297,154 @@ pub fn compile_with(
         policy,
         cutscenes,
         resolves,
+        reference_names,
+        None,
+        None,
+    )
+}
+
+/// Compile with the converted scenario's platoon controls and their
+/// indexed orders and squads.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_with_ai(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    ai_control: Option<&h1ai::control::Control>,
+) -> Result<Compiled> {
+    compile_scenario(t, h1, table, h2, policy, cutscenes, resolves, reference_names, ai_control, None)
+}
+
+/// Compiles a level's scripts together with its scenario AI conversations.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_with_conversations(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    conversations: &[h1ai::conversations::Conversation],
+    speaker_scopes: &h1ai::conversations::SpeakerScopes,
+) -> Result<Compiled> {
+    compile_scenario(
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        cutscenes,
+        resolves,
+        reference_names,
+        None,
+        Some((conversations, speaker_scopes)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Compile with both the scenario AI controls and its conversation speaker scopes.
+pub fn compile_scenario(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    ai_control: Option<&h1ai::control::Control>,
+    conversation_data: Option<(
+        &[h1ai::conversations::Conversation],
+        &h1ai::conversations::SpeakerScopes,
+    )>,
+) -> Result<Compiled> {
+    let commands = commands::Program::new(t, h1)?;
+    let mut c = Compiler {
+        commands: &commands,
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        cutscenes,
+        resolves,
+        ai_control,
+        maneuver_switches: Default::default(),
+        maneuver_latches: Default::default(),
+        ai_registries: Vec::new(),
+        cinematic_base: None,
+        global_constants: HashMap::new(),
+        shared_roots: HashMap::new(),
+        ai_scripts: Default::default(),
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
+        conversations: None,
+        conversation_heads: HashMap::new(),
     };
+    c.out.scripts.resize(t.scripts.len(), [0; 40]);
+    c.out.globals.resize(t.globals.len(), [0; 40]);
+    // Spawn locations and command-list literals address the command definitions
+    // directly after the authored scripts. Allocate those before any other helpers.
+    c.generate_commands()?;
+    if let Some((scenes, scopes)) = conversation_data {
+        let lowering = conversations::build(&mut c, scenes, scopes)?;
+        c.conversations = Some(lowering);
+    }
+    c.install_maneuver_switches()?;
     for (i, g) in t.globals.iter().enumerate() {
         c.definition = g.name.clone();
         let ty = c.ty(g.value_type)?;
         let root = c.expr(g.root, ty)?;
-        c.out.globals.push(definition(&g.name, ty, 0, root, i)?);
+        c.out.globals[i] = definition(&g.name, ty, 0, root, i)?;
     }
     for (i, s) in t.scripts.iter().enumerate() {
         c.definition = s.name.clone();
         let ty = c.ty(s.return_type)?;
         let root = c.expr(s.root, ty)?;
-        c.out
-            .scripts
-            .push(definition(&s.name, s.kind, ty, root, i)?);
+        c.out.scripts[i] = definition(&s.name, s.kind, ty, root, i)?;
     }
+    let (hook_state, teleport) = c.install_ai_ticks()?;
+    let timers = c.install_combat_timers()?;
+    // Keep lookup markers together after the variable-length state tables.
+    c.cinematic_marker()?;
+    if let Some(state) = hook_state {
+        c.declare_state_word(hs::h1_ai_slots::HOOK_STATE, state)?;
+    }
+    if let Some(base) = timers {
+        c.declare_state_word(hs::h1_ai_slots::timers::PHASED_GLOBAL, base)?;
+    }
+    if let Some(base) = teleport {
+        c.declare_state_word(hs::h1_ai_slots::TELEPORT_STATE, u32::from(base))?;
+    }
+    c.install_platoon_tick()?;
     c.out.references = t
         .references
         .iter()
         .enumerate()
         .map(|(i, r)| (r.group, reference_names.get(i).cloned().unwrap_or_default()))
         .collect();
+    if let Some((scenes, _)) = conversation_data {
+        conversations::append_sound_references(&mut c.out, scenes);
+    }
+    c.install_perception_state()?;
     if c.out.nodes.len() > MAX_NODES {
         return Err(invalid(format!(
-            "{} nodes, Halo 2 holds {MAX_NODES}",
+            "{} nodes, the syntax pool holds {MAX_NODES}",
             c.out.nodes.len()
         )));
     }
     Ok(c.out)
 }
 
-/// Appends a startup script `name` that places each of `squads` with a
+/// Adds a script `name` run at startup that places each of `squads` with a
 /// one-argument `ai_place`, each squad an `ai` atom hooked with its name
 /// (the converter resolves it like any other). Halo 1 creates an encounter
 /// at load unless it is flagged "not initially created"; Halo 2 places
@@ -366,6 +474,15 @@ pub fn add_startup_placements(
         .first()
         .ok_or_else(|| invalid("ai_place takes no squad"))?;
     let type_name = h2.types.get(ai as usize).cloned().unwrap_or_default();
+    let startup = out.scripts.iter().position(|row| row[32..34] == [0, 0]);
+    let i = out.scripts.len();
+    let index = u16::try_from(i).map_err(|_| invalid("too many HS scripts"))?;
+    let kind = if startup.is_some() { 3 } else { 0 };
+    let mut helper = definition(name, kind, h2t::VOID, Datum::NULL, i)?;
+    let added = squads.len().saturating_mul(3).saturating_add(2 + 4 * usize::from(startup.is_some()));
+    if out.nodes.len().saturating_add(added) > MAX_NODES {
+        return Err(invalid(format!("startup placements exceed the syntax pool's {MAX_NODES} nodes")));
+    }
     let push = |out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32| {
         let string = out.strings.len() as u32;
         out.strings.extend_from_slice(token);
@@ -413,14 +530,17 @@ pub fn add_startup_placements(
         calls.push(call(out, &place, b"ai_place", &[atom]));
     }
     let body = call(out, &begin, b"begin", &calls);
-    let i = out.scripts.len();
-    out.scripts.push(definition(name, 0, h2t::VOID, body, i)?);
-    if out.nodes.len() > MAX_NODES {
-        return Err(invalid(format!(
-            "{} nodes, Halo 2 holds {MAX_NODES}",
-            out.nodes.len()
-        )));
+    helper[36..40].copy_from_slice(&body.0.to_le_bytes());
+    // Keep every authored script index. Run the placements before the
+    // first startup script can inspect an encounter or wake a mission.
+    if let Some(startup) = startup {
+        let original = Datum(u32::from_le_bytes(out.scripts[startup][36..40].try_into().unwrap()));
+        let head = push(out, index, h2t::FUNCTION_NAME, ATOM, name.as_bytes(), 0);
+        let invoke = push(out, index, h2t::VOID, SCRIPT_CALL, b"", head.0);
+        let root = call(out, &begin, b"begin", &[invoke, original]);
+        out.scripts[startup][36..40].copy_from_slice(&root.0.to_le_bytes());
     }
+    out.scripts.push(helper);
     Ok(())
 }
 
@@ -437,6 +557,7 @@ fn definition(name: &str, a: u16, b: u16, root: Datum, i: usize) -> Result<[u8; 
 }
 
 struct Compiler<'a> {
+    commands: &'a commands::Program,
     t: &'a Tables,
     h1: &'a Catalog,
     table: &'a Table,
@@ -444,9 +565,19 @@ struct Compiler<'a> {
     policy: Missing,
     cutscenes: Cutscenes,
     resolves: &'a dyn Fn(&str, &str) -> bool,
+    ai_control: Option<&'a h1ai::control::Control>,
+    maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
+    maneuver_latches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
+    cinematic_base: Option<u16>,
+    global_constants: HashMap<(u16, i32), Datum>,
+    shared_roots: HashMap<(u16, u16, u32, u32), Datum>,
+    ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
+    ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
+    conversations: Option<conversations::Lowering>,
+    conversation_heads: HashMap<u16, Datum>,
 }
 
 /// A node before its slot is known to its parent: its fields.
@@ -499,6 +630,12 @@ impl Compiler<'_> {
     fn set_next(&mut self, d: Datum, next: Datum) {
         let mut b = self.out.nodes[d.slot()].encode();
         b[8..12].copy_from_slice(&next.0.to_le_bytes());
+        self.out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
+    }
+
+    fn set_type(&mut self, d: Datum, ty: u16) {
+        let mut b = self.out.nodes[d.slot()].encode();
+        b[4..6].copy_from_slice(&ty.to_le_bytes());
         self.out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
     }
 
@@ -556,6 +693,42 @@ impl Compiler<'_> {
             }
             _ => self.literal(ty, ty, NONE, b"none"),
         }
+    }
+
+    /// Global initializer roots have no sibling. Generated globals with the same
+    /// scalar default can share the syntax node while keeping separate VM cells.
+    /// Argument nodes cannot be shared this way because their siblings differ.
+    fn global_constant(&mut self, ty: u16, value: i32) -> Datum {
+        if let Some(&root) = self.global_constants.get(&(ty, value)) {
+            return root;
+        }
+        let root = self.number(ty, value);
+        self.global_constants.insert((ty, value), root);
+        root
+    }
+
+    /// A generated global's initializer `root`, just compiled, or an equal
+    /// literal root compiled before it. Like [`Self::global_constant`], a
+    /// root has no sibling and each global keeps its own VM cell, so one
+    /// node serves every global with the same literal initial value. Hooked
+    /// literals keep their own slot: the converter patches each hook's.
+    fn shared_root(&mut self, root: Datum) -> Datum {
+        let slot = root.slot();
+        let node = self.out.nodes[slot];
+        if slot + 1 != self.out.nodes.len()
+            || node.flags() != ATOM
+            || node.next() != Datum::NULL
+            || self.out.hooks.iter().any(|h| usize::from(h.slot) == slot)
+        {
+            return root;
+        }
+        let key = (node.opcode(), node.value_type(), node.string_offset(), node.data());
+        if let Some(&shared) = self.shared_roots.get(&key) {
+            self.out.nodes.pop();
+            return shared;
+        }
+        self.shared_roots.insert(key, root);
+        root
     }
 
     /// `v` as a literal of `ty` (boolean, real, short or long).
@@ -625,6 +798,22 @@ impl Compiler<'_> {
         Ok(())
     }
 
+    fn mark_seat_name(&mut self, builtin: &str, args: &[Datum]) {
+        let (index, role) = match builtin {
+            "unit_enter_vehicle" => (2, SEAT_NAME),
+            "unit_set_seat" => (1, SEAT_POSE),
+            _ => return,
+        };
+        if let Some(d) = args.get(index)
+            && let Some(hook) = self.out.hooks.last_mut()
+            && hook.slot as usize == d.slot()
+            && hook.type_name == "string_id"
+            && hook.h1_type == "string"
+        {
+            hook.h1_type = role.to_owned();
+        }
+    }
+
     /// The first of `args` that is an atom of an [`INDEXED`] type (or, for
     /// a [`NONE_UNSAFE`] builtin, an object name) which will not resolve:
     /// its Halo 2 type name and token.
@@ -652,7 +841,13 @@ impl Compiler<'_> {
                 continue;
             }
             let token = self.t.string(n.string_offset())?;
-            if !(self.resolves)(ty, token) {
+            let captured = none_unsafe
+                && OBJECT_NAME_TYPES.contains(&ty.as_str())
+                && self
+                    .conversations
+                    .as_ref()
+                    .is_some_and(|l| l.has_alias(token));
+            if !captured && !(self.resolves)(ty, token) {
                 return Ok(Some((ty.clone(), token.to_owned())));
             }
         }
@@ -842,11 +1037,22 @@ impl Compiler<'_> {
             return Ok(self.call(n.opcode(), SCRIPT_CALL, expected, token.as_bytes(), &[]));
         }
         let index = n.opcode();
-        let f = self.h1.function(index)?;
+        let catalog = self.h1;
+        let f = catalog.function(index)?;
+        if let Some(d) = self.cinematic_call(&f.name, &args, expected)? {
+            return Ok(d);
+        }
+        if let Some(d) = conversations::translate(self, &f.name, &args, expected)? {
+            return Ok(d);
+        }
         let tr = self
             .table
             .builtin(index)
             .ok_or_else(|| invalid("no translation"))?;
+        if f.name.starts_with("ai_command_list") {
+            return self.command_builtin(&f.name, &args, expected)?
+                .ok_or_else(|| invalid(format!("invalid command list call {}", f.name)));
+        }
         if matches!(f.name.as_str(), "=" | "<" | ">" | "<=" | ">=")
             && let Some(d) = self.status_compare(&f.name, &args, expected)?
         {
@@ -856,6 +1062,9 @@ impl Compiler<'_> {
             && let Some(d) = self.status_ladder(&args, expected)?
         {
             return Ok(d);
+        }
+        if let Some(call) = self.ai_control(&f.name, &args, expected)? {
+            return Ok(call);
         }
         if f.name == "sleep"
             && let Some(d) = self.sleep_forever(&args, expected)?
@@ -868,10 +1077,7 @@ impl Compiler<'_> {
                 name: f.name.clone(),
             });
             return match self.policy {
-                Missing::Stub => Ok(match DONE_VALUES.iter().find(|d| d.0 == f.name) {
-                    Some(&(_, v)) => self.number(expected, v),
-                    None => self.default(expected),
-                }),
+                Missing::Stub => Ok(self.default(expected)),
                 Missing::Extension => {
                     let fixed = self.h1.fixed_signature(index);
                     let mut out = Vec::new();
@@ -921,6 +1127,15 @@ impl Compiler<'_> {
                 let first = self.literal(b.parameters[0], b.parameters[0], NONE, b"none");
                 out.push(first);
             }
+            Some(Adapter::PrependLong(value)) => {
+                let first = self.literal(
+                    b.parameters[0],
+                    h2t::LONG,
+                    value as u32,
+                    value.to_string().as_bytes(),
+                );
+                out.push(first);
+            }
             _ => {}
         }
         let offset = out.len();
@@ -943,7 +1158,17 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
+        if let Some(Adapter::AppendBool(v)) = tr.adapter {
+            let ty = *b
+                .parameters
+                .get(out.len())
+                .ok_or_else(|| invalid("adapter arity"))?;
+            let t: &[u8] = if v { b"true" } else { b"false" };
+            let d = self.literal(ty, h2t::BOOLEAN, u32::from(v), t);
+            out.push(d);
+        }
         self.mark_animation_names(&args, &out[offset..])?;
+        self.mark_seat_name(&h2_name, &out[offset..]);
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(
@@ -951,7 +1176,8 @@ impl Compiler<'_> {
                 out.len()
             )));
         }
-        let call = self.call(b.index, CALL, expected, h2_name.as_bytes(), &out);
+        let name = crate::aicontrol::retail_name(&h2_name);
+        let call = self.call(b.index, CALL, expected, name.as_bytes(), &out);
         if NONE_UNSAFE.contains(&h2_name.as_str())
             && let &[arg] = &args[..]
             && let Some(guard) = self.none_guard(arg)?
@@ -1053,9 +1279,15 @@ impl Compiler<'_> {
             let index = n.data() as u16;
             let name = String::from_utf8_lossy(&token).into_owned();
             if index & 0x8000 == 0 {
+                // A reference can carry 0 or 0xffff as its source opcode,
+                // particularly on the left of set. The declaration owns the type.
+                let global = self.t.globals.get(usize::from(index)).ok_or_else(|| {
+                    invalid(format!("{}: global index {index} out of range", self.definition))
+                })?;
+                let source = self.ty(global.value_type)?;
                 let string = self.intern(&token);
                 return Ok(self.push(New {
-                    opcode: self.table.ty(n.opcode()).unwrap_or(n.opcode()),
+                    opcode: source,
                     ty: expected,
                     flags: GLOBAL,
                     string,
@@ -1080,6 +1312,9 @@ impl Compiler<'_> {
         }
         let h1_source = n.opcode();
         let bits = n.data();
+        if self.h1.type_name(h1_source)? == "ai_command_list" {
+            return self.command_literal(bits as u16, expected);
+        }
         let scalar = match h1_source {
             types::VOID => Some(h2t::VOID),
             types::BOOLEAN => Some(h2t::BOOLEAN),
@@ -1148,7 +1383,7 @@ impl Compiler<'_> {
         let d = self.literal(expected, source, empty, &token);
         let text = String::from_utf8_lossy(&token).into_owned();
         self.hook(d, source, h1_source, &text);
-        Ok(d)
+        conversations::named_atom(self, expected, source, &text, d)
     }
 }
 

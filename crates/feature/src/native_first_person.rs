@@ -36,6 +36,10 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-first-person";
 pub const SWITCH: &str = "impl.render.native_first_person";
 
+pub fn on(switches: &crate::Switches) -> bool {
+    crate::switches::native_stage_on(switches, SWITCH)
+}
+
 /// Tentative mask edits and the candidate identities, committed only after
 /// every required GPU copy has been reserved.
 pub struct ItemMasks {
@@ -291,7 +295,7 @@ impl Feature for NativeFirstPerson {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().feature(SWITCH, true) {
+        if !on(b.switches()) {
             return Ok(());
         }
         b.raw()

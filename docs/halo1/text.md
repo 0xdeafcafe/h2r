@@ -66,8 +66,9 @@ Element (`2` bytes): `type` (u8), `value` (u8).
   included. The lengths of all type-0 elements in tag order sum to
   exactly the blob (checked per tag on every map): the messages consume
   the blob sequentially, in element order.
-- Type 1, **glyph** (**V** for the shape, S for the meaning): a
-  substituted glyph — a controller button or keyword — by index (the
+- Type 1, **glyph** (**V**, **E** at `0x000dfc14`): a
+  literal controller glyph, an action bound to a control, or an event
+  parameter, by index (the
   shared `ui\hud\hud messages` uses 18, 32, 33, 24…; a30's level
   messages use one glyph, 26). Counts vary per tag, and no type other
   than 0 and 1 occurs on the disc; the blob sums leave no bytes for
@@ -78,10 +79,10 @@ Message (`0x40` bytes):
 | Offset | Type | Meaning | Evidence |
 |---|---|---|---|
 | `00` | char[32] | Message name, NUL-padded, ASCII on the disc | V |
-| `20` | u16 | Unresolved: observed values (0, 4, 12, 70…) match no layout here | V for the bytes, meaning open |
+| `20` | u16 | Start of this message in the UTF-16 blob, in code units | E `0xdfbd6`, V on a10, a30 and d40 |
 | `22` | u16 | First element of the message | V |
-| `24` | u32 | Element count | V |
-| `28`..`40` | — | Zero on the disc | V |
+| `24` | u8 | Element count | E `0xdfbdf`, V |
+| `25`..`40` | — | Zero on the disc | V |
 
 **V:** the messages tile the element block in order — message `i` starts
 where message `i−1` ends, at element 0, and together they cover every
@@ -145,11 +146,181 @@ back through `tags::Localization` byte-identical, and synthetic tests
 check the empty string, non-ASCII text, range isolation between two
 `unic` tags, and the malformed inputs the reader refuses.
 
+## Campaign integration
+
+**Built.** `h1text::scenario::LevelText` rebuilds the level's `ustr` tags
+and mission `hmt ` as `unic` lists under `h1\<source path>`. The base's
+English rows keep their indices and bytes. New rows append at the end.
+The `matg` describes the rebuilt index and blob with sector-aligned
+file offsets. The pinned builder places them in the file prefix, and
+the scratch writer relocates them as local resources. The byte extents
+are row count times eight and blob size (E `0x1a01e0`).
+`scnr +0x1f8` keeps the object-name `unic` reference. The converted
+help `ustr` is available as a `unic` list. Mission scripts use the
+scenario's `hmt ` index for the help that appears during play.
+
+**Built.** The legacy `hmt ` is rebuilt from
+`tags::defs/hmt_.txt` alongside its localized list. Halo 2's help
+and objective setters read `scnr +0x20c` for the datum, then the
+message pointer at `hmt +0x14` and the element pointer at `+0x0c`
+(E `0x24c831`, `0x24c878`). The UTF-16 data reference, elements and
+messages are laid out by the builder. Message indices keep their source
+order. The compiler resolves tokens case-insensitively and fails the
+conversion if a HUD message term cannot be resolved, since the native
+setter indexes the array directly. On the ten campaign levels every one
+of the 70 help setters and 44 objective setters names the message at
+its encoded index. Each objective is one text run.
+
+**Built.** Mission glyphs survive in both representations. Halo 1's
+draw takes literal controls 0–17, resolves indices 18–28 through its
+input-action table at `0x21bfc0`, and handles the last literal controls
+at 29–31 (E `0xdfc14`–`0xdfd27`). The converter uses Halo 2's font
+glyphs and input-action substitutions (E `0x22d2ee`, `0x22dcbc`,
+`0x22df04`, [button icons](../input/button-icons.md)). The
+shared event-message list uses glyphs 32 and up as the argument indices
+in the player HUD message entry (E `0xdfc65`–`0xdfd19`).
+
+**Built.** The campaign converter keeps the shared templates from
+`hudg +0xfc` and binds them to the native interaction and pickup string
+fields of the rebuilt objects. At `0x13925f` the game already chose the
+object and action. The hook uses that string ID to select a template, then
+expands the template with its argument rows. Vehicle entry uses the seat
+and vehicle names from `hudg +0xc0`, the vehicle's `+0x13c` and the seat's
+`+0xec` (E `0xe2d28`, `0xe2fc3`). Vehicle flip uses the vehicle name.
+
+**Built.** Weapon pickup, swap and switch reminders use the silhouette
+selected by the weapon's `wphi +0x13c` in the `hudg +0xa4` bitmap
+(E `0xe2ed5`, `0xe2f5e`, `0xe31e7`, `0xdf520`). Each pickup weapon
+with an authored icon on the ten Xbox campaign maps uses a static
+sprite. The converter crops its UV rectangle and stores ARGB4444 pixels
+and glyph metrics in the rebuilt `hmt `. Halo 2 measures and advances
+the sprite inline with the text and button glyphs. The hooks supply
+metrics to the font cache (E `0x140b20`, `0x140b80`, `0x141020`)
+and pixels to the existing atlas upload (E `0x140870`, `0x140960`,
+`0x1f85f`). The cache key includes the pixels and metrics so a changed
+map sprite is loaded separately. A weapon with no authored sprite uses
+its label. The a30 disc test compares the rifle prompt's glyph pixels
+against its source atlas rectangle.
+
+**Built.** On the native interaction fallback (E `0x191976`),
+`exit_vehicle` takes the name of the local unit's live parent vehicle
+while it occupies a valid seat. Halo 1's action 3 reads that parent's
+icon-message row (E `0xe2dd4`, `0xe25d0`). `swap_powerup` uses the
+held and nearby powerup names in that order (E `0xe2d77`). The nearby
+candidate comes from Halo 2's pickup scan (E `0x1508e0`, `0x150e30`),
+and is eligible only when the unit is on foot and its held-equipment
+slot (E `0xccb80`) names a live powerup of a different type. The Xbox
+Halo 1 candidate code compares the incoming type with itself at
+`0xf5939`, leaving action 5 unreachable through that comparison.
+The converted trigger compares the two equipment definitions. It uses
+the source equipment's pickup text when the icon-message row is the
+placeholder. The interact press uses the native object attachment and
+detachment paths (E `0x151c90`, `0xb8ee0`, `0xb9a50`) to exchange
+the held and offered items. The ordinary automatic pickups still use
+their native scan path when the held slot is empty.
+
+The source control placement's `+0x34` holds a one-based custom phrase
+index (E `0x118f16`, `0xe2e30`). The converter keeps that argument
+through placement remapping. The interaction hook reads the selected
+object's placement index at `+0x1a` (E `0x191cf0`, `0xb7c87`), so two
+instances of the same switch can show different prompts. Pickup
+notifications use the source item row at `+0x180` (E `0xe0147`) and
+the next row's `%d` becomes the queued-count substitution U+E422
+(E `0x24caf4`, `0x24d472`, `0x22d9e0`). Counted ammo and grenades
+use the native queue's singular/plural selection and accumulation.
+
+## Script control and the native HUD draw
+
+**Built.** Every slot in the first table already has a native evaluator.
+`h1scripts::hud::BUILTINS` checks the evaluator address and signature
+in the retail Xbox XBE when naming the slot. A static survey of all
+30 retail Halo 2 scenarios found no calls to these slots or 657–663.
+
+| Halo 1 builtin | Halo 2 slot | Evidence |
+|---|---:|---|
+| `show_hud` | 625 | E `0x2aa5e0` sets the HUD visibility byte |
+| `show_hud_help_text` | 626 | E `0x2aa640` sets the legacy help flag and returns the Boolean |
+| `enable_hud_help_flash`, `hud_help_flash_restart` | 628, 629 | E `0x2aa700`, `0x2aa770` write the flag and timestamp |
+| `hud_clear_messages` | 664 | E `0x2aae20` clears the native display queue through `0x24cdaf` |
+| `hud_set_help_text`, `hud_set_objective_text` | 665, 666 | E `0x2aae40`, `0x2aae90` pass the short index to `0x24c831`, `0x24c878` |
+| `hud_set_timer_time`, `hud_set_timer_warning_time`, `hud_set_timer_position` | 667–669 | E `0x2aaee0`–`0x2ab002` write duration, threshold and anchor |
+| `show_hud_timer`, `pause_hud_timer`, `hud_get_timer_ticks` | 670–672 | E `0x2ab010`–`0x2ab12c` manage visibility, pause and remaining ticks |
+
+**Built.** `boot::h1_hud_text` restores the link between selection and
+drawing. Halo 2's legacy display already tests an objective's hold time
+and the help visibility flag at `0x24d02c` and `0x24d045`. Its text
+pass copies an inline UTF-16 buffer at `0x24d2b7`. The hook opens that
+path for the selected message and supplies a full-length buffer to the
+substitution, measurement and draw calls. Halo 2 draws it with its own font and
+current controller bindings. Objective messages have priority during
+their native hold time. Help flashing applies Halo 1's `hudg +0xd0`
+record, sampled from Halo 2's script-controlled tick (`+0x1380` in the
+HUD state). The original help draw passes that record to its flash
+curve at `0xdf9d3` and the curve is at `0xe04b0`.
+
+**Built.** The countdown uses the final text pass of the legacy draw
+(`0x24d67f`, `0x24d698`, `0x24d6bb`) while the timer is shown. The
+text takes the script's corner and offsets. A warning colour starts at
+the native threshold. This pass carries the countdown in place of its
+normal auxiliary label while the timer is up.
+
+**Built.** `h1scripts::hud::CONTROL_BUILTINS` reserves the following
+retired entries. Their retail signature is `(boolean) -> void` and
+they share evaluator `0x2ab130`. The hook evaluates the argument with
+the retail VM at `0x209d50` and returns through `0x209ae0`. It runs
+only when the scenario names a rebuilt mission HUD. The slots are
+independent of AI's slot 300.
+
+| Slot | Control |
+|---:|---|
+| 657 | `hud_show_health` |
+| 658 | `hud_blink_health` |
+| 659 | `hud_show_shield` |
+| 660 | `hud_blink_shield` |
+| 661 | `hud_show_motion_sensor` |
+| 662 | `hud_blink_motion_sensor` |
+| 663 | `hud_show_crosshair` |
+| 903 | `display_scenario_help` |
+
+**Built.** Slot 903 has the retail discarded `(short) -> void`
+signature and shares the argument evaluator. The Halo 1 evaluator
+`0xf2f30` passes a help-list row to `0xd0930`. The converter appends the
+scenario's help rows to its HUD tag, with their own base index so the
+mission indices still address the original messages. The evaluator shows
+the selected row in the native HUD help panel. The two a30 cave rows use
+`%move`, `%look` and `%left-stick`. The first pair follows the current
+player's thumbstick layout at `0x51ea18 + 0x1c * port + 0x18`
+(E `0x22df4c`). The last token always shows the physical left stick.
+
+The flags reflect the stores in Halo 1's evaluators
+(`0xee820`–`0xee580`). The widget gate at `0x13ac87` matches string
+IDs recorded at conversion. The radar blip draw at `0x1a2823` follows
+the motion-sensor visibility gate.
+
+**Built.** The campaign health and shield panels and the two radar
+layers keep their original bitmap alpha. Each layer carries its own
+colour pair and flash timing from `unhi`, following the static draw at
+`0xe18ed` and the flash curve at `0xe04b0`. The sampled ARGB goes into
+the native widget shader's active combiner constants at draw time
+(E `0x22a7dd`, `0x18ee0`, `0x1b050`). The material cache is restored
+after the native material upload. The fill and blip passes keep the separate
+widget behaviour seen in Halo 1 at `0xdd2ea`, `0xdd52e` and
+`0xdd690`.
+
+The retail HUD readers consume the first `0x18` bytes of the rebuilt
+`hmt `. The rest holds converter metadata for the message lists and
+widget controls. The hooks check the marker and source call site. The
+simulation thread writes the control bits and blink start ticks from
+scripts. The render thread reads the resulting guest state and uses
+the native draw calls.
+
+The code and regression tests are ready for the integration pass. The
+evidence here comes from static inspection of the two discs and XBEs.
 ## Commands
 
-None yet: the reader and converter are library code, exercised by the
-tests below. (The `h2 h1 tags` command lists `ustr`/`hmt ` tags like any
-other group.)
+The campaign import installs the converted lists. `h2 h1 tags` lists
+source `ustr` and `hmt ` tags. `h2 strings` reads the localized lists
+in the converted map.
 
 ## Verifying on the disc
 
@@ -162,3 +333,12 @@ counts, string and message totals, and glyph counts; disc-wide:
 **418 `ustr` tags, 5,397 strings; 34 `hmt ` tags, 400 messages; 0
 failures.** `real_disc_a30_converts_and_reads_back_through_halo_2`
 prints the unic/row counts and the strings-checked count (239).
+
+The integration test checks the native and retired builtin signatures,
+loads converted a30 and d40 back from pinned and fresh builds, checks
+the base locale rows and new mission rows, and resolves the script
+message atoms and countdown calls.
+
+```sh
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc campaign_hud_text_and_builtins_round_trip -- --ignored
+```

@@ -124,8 +124,8 @@ Each step is proven with tests; the user plays the result.
    `Missing::Stub`, hooks resolved to the placed names, trigger volumes,
    squads and the sounds the scripts name.
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
-   Until cutscene animation and recordings are converted, the converter
-   skips Halo 1's cinematics and a10's tutorial (§9, Cutscenes).
+   The converter rebuilds cutscene graphs and recordings. Per-level
+   policy selects the cinematics and a10 tutorial path (§9, Cutscenes).
 8. **Menus.** The campaign picker and its level list (§4), and progress
    saved per campaign. **Built** ([campaign-picker.md](campaign-picker.md)),
    confirmed in the game.
@@ -138,7 +138,7 @@ merged, built and tested together, then played.
 
 | Gap | Branch | Notes |
 |---|---|---|
-| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
+| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built in converter version 99.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
 | a10, a50, c40, d20 and d40 failed unpinning with Halo 1 assets in the v90 import | `a30convert` | **Built.** Both fresh paths read locale data at the lengths recorded in `matg`. The 20-variant disc test is pending the integration run (§9) |
 | Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |
 | AI command lists (`ai_command_list*`) | `commandlists` | Halo 2 uses command scripts instead |
@@ -201,6 +201,7 @@ name (`h2assets::find`). No tag list is copied from either game.
 | Energy sword | Energy blade | |
 | Frag and plasma grenades | Halo 2's | The globals keep the base's grenade types (Halo 1's are not written) |
 | Health pack | Halo 1's, converted | Halo 1's health model stays whatever the assets (§6) |
+| Overshield, active camouflage | Halo 1's, converted | The engine reads the rebuilt `eqip` type and duration |
 | Ammo pickups | Left out | Halo 2 has none, and the Halo 1 weapons they fill are gone |
 | Warthog, rocket warthog | Warthog | The gauss warthog is a model variant a campaign placement does not name |
 | Ghost, scorpion, banshee, wraith | The same | |
@@ -220,11 +221,9 @@ in place (converted); a `dropped` line says so.
   Halo 2 assets they need retargeting; until that exists, cutscenes keep
   Halo 1's characters in both variants. They play on eight of the ten
   levels (§9, Cutscenes).
-- **The AI's characters** are retail Halo 2 `char` tags in both
-  (`h1ai::convert::character_for`): their bipeds and weapons are Halo 2's
-  already, squads name them the same way (squad weapons -1, the
-  character's own). The disc test checks the two variants pick the same
-  characters.
+- **The AI's characters.** Both asset variants use the same squad roster.
+  Crew and Sentinels take Halo 1's actor variants, equipment and rebuilt
+  bipeds. Other types use the retail character table in `h1ai`.
 - **Scenery, devices, sounds, text**: the level.
 
 **The scripts' references.** Object names point at the placements as
@@ -350,7 +349,8 @@ convert --pinned` skip it):
    | `+0x138`/`+0x140` decals and palette | its own | empty |
    | `+0x150` AI styles (7) | its own | empty (every converted order has style -1) |
    | `+0x170` mission scenes (15) | its own | empty |
-   | `+0x200`, `+0x358`, `+0x3b8` chapter title, subtitles, objectives | 05a's | null |
+   | `+0x200` chapter titles | 05a's | converted Halo 1 help-text list |
+   | `+0x358`, `+0x3b8` subtitles, objectives | 05a's | null |
    | `+0x210` BSP descriptors | template elements | zeroed elements, region and `sbsp`/`ltmp` written |
    | `+0x218` resources (1), `+0x230` kill triggers (4), `+0x248` AI triggers (50) | its own | empty |
    | `+0x250`..`+0x260` background sound, sound environment, weather palettes | its own | empty (the cluster data names none) |
@@ -423,7 +423,7 @@ and all; pruned is version 23's fresh build):
 
 The bound is `0xc24000`: every level has 3.6 to 4.9 MB to spare, and the
 lean ladder fires nowhere (b40 keeps its level data, seat table and object
-textures; the ladder stays as a safety net). The file bound is
+textures; the ladder stays as a safety net). The file bound for these measurements was
 `0x11800000` (293,601,280 bytes). On every level the map is built from
 scratch with one index slot per tag, and: no tag from
 `scenarios\solo\05a_deltaapproach\` or `scenarios\multi\`, every script
@@ -479,12 +479,11 @@ Why (surveys `base_memory_and_vehicles`, `survey_bases`):
 
 - It is the only campaign map with every vehicle template Halo 1's levels
   use: warthog, ghost, scorpion, banshee, pelican,
-  phantom (for the dropship), wraith and `c_turret_ap`, and the pelican
-  again for the lifepod (by role, objects.md). 03b has most of
+  phantom (for the dropship), wraith and `c_turret_ap`. 03b has most of
   them but not `c_turret_ap`, and `0xca000` less room; 05b, 04a and 07b,
   the ones with more room, lack the warthog, ghost and scorpion.
 - It has Halo 2's marine, elite, grunt, jackal, drone and Chief bipeds and
-  the AI characters a30 maps to (every base lacks the crewman). The
+  the retail AI characters used on a30. Halo 1 supplies the crew. The
   hunter, flood and monitor it lacks come from donors
   (below).
 - It is big enough once the conversion stops wasting it: every level fits
@@ -528,34 +527,43 @@ What each layer writes, from the base map up:
 | Sky | Halo 1's skies (`h1sky`), scaled to stay behind the level (sky.md, "The model scale"), every cluster on the first; the model's materials name copies of the base's sky shaders with Halo 1's bitmaps and map scale (sky.md, "The model's shaders"), else the base sky's shader, never NONE (`0x1bbf0` draws NONE, a null read in `0x16b90`; multiplayer.md) | |
 | Scenario | The base `scnr` relocated as a block tree, replaced fields emptied. One BSP descriptor per Halo 1 BSP (`FixupKind::Bsp`, its `sbsp` and `ltmp`), so `switch_bsp`, zone and placement BSP indices keep Halo 1's meaning. The two root blocks every retail map holds one element per BSP of (survey `per_bsp_scenario_blocks`): cluster data `+0x290` (per cluster its background sound and sound environment, as the structure's cluster `+0x72`/`+0x74` names them, and the cluster's centroid, and the BSP's checksum `sbsp+0x08`) and `+0x388` (no points). BSP switch trigger volumes `+0x130`: Halo 1's (`scnr+0x39c`, 8 bytes, survey `h1_bsp_switch_volumes`) on its converted volumes | The base's own BSP switch volumes |
 | Player | The level's starting locations, each on the base's first element. The cyborg is converted and set as the campaign players' unit (`matg +0x138` elements 0 and 1, `h1convert::globals::set_player_unit`); Halo 1 health follows from the map name (`boot::health`) | |
-| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery, placed bipeds and devices from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | Palette entries with no template: over shield and camouflage (no powerup on 05a), b30's falling box. Vehicles with no template (a10's cryotube, chairs, fighterbomber and Halo ring) are built from the `vehi` definition as turrets since converter version 33, with a physics model so `vehicle_new` creates them (a stand-in sphere in version 38, Halo 1's collision as Havok polyhedra since 43; tag-definitions.md). Machines, controls and light fixtures (as machines) are placed since version 38 with their power and position device groups and flags; since version 43 a device with solid collision has a physics model built from it, a body per moving node, so a closed door blocks the player; fixtures give no light |
+| Objects | Every base placement removed. Weapons, equipment, vehicles, scenery, placed bipeds and devices from the level's palettes through `h1objects` (palettes keep Halo 1's order, a null entry for one that doesn't convert; templates in objects.md), placements with unique IDs `0x4831xxxx`, origin BSP -1, source 1. Object names are Halo 1's, each pointing at its converted placement or -1. A palette entry whose template only a donor brought places the retail object itself. Halo 1's "not placed automatically" (bit 0 of the `u16` at `+4`) is written as Halo 2's "not at start" (bit 0 of the `u32` at `+4`), so cutscene casts and props wait for the scripts that create them (a10: 67 of 107 bipeds, 51 of 56 vehicles, 92 of 274 scenery) | **Built.** Overshield and camouflage as native `eqip`, b30's falling box as a dynamic `bloc`, and a10's Halo ring as `scen`. The cryotube and chairs retain the stationary seats used by a10's scripts, with collision bodies on the model nodes. The fighter-bomber and lifepods use their respective source vehicle types and physics. The entry pod carries Halo 1’s reentry fire on its `burn` marker. Details and disc evidence are in [objects.md](objects.md#native-pickups-and-scripted-props). Machines, controls and light fixtures (as machines) are placed since version 38 with their power and position device groups and flags; since version 43 a device with solid collision has a physics model built from it, a body per moving node, so a closed door blocks the player; fixtures carry their Halo 1 lights on the original markers |
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
-| Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
-| AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
-| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
-| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit; each permutation's length at `+6`, which the scripts' waits read (`sound_impulse_time` is Halo 2's `sound_impulse_language_time`). `h1sounds::audit` reads every sound of a converted level back: a10's 3,988 play exactly what they were made from. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`), in first-use order while they fit the map file (Music, below). Every BSP's background sounds and sound environments (`h1convert::ambience`, all BSPs' together) as the scenario's palettes `+0x250`/`+0x258` and each structure's copy (`sbsp+0xd4`/`+0xdc`) | Every other sound; looping sounds past the map file's size limit; lifepods drop the pelican template's engine loops |
+| Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | Crew and Sentinels use the source level's units and animation graphs |
+| AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | **Built** crew and Sentinel variants, ground and airborne firing positions, scripted spawns and migration targets (ai.md) |
+| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Script-named squads retain their own indices, including migration destinations. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
+| Sounds | **Built.** Every source looping sound, its tracks and details, and each distinct referenced sound rebuilt in the level's gestalt. All loops survive the fresh-map and pruning passes. Script sounds, object attachments, BSP background palettes and environments resolve by tag. The a30 entry pod plays its Halo 1 lifeboat track. Source inventory and cache evidence are in [sounds.md](sounds.md#campaign-loops-and-cache-slots-built). | End-to-end disc audit and playback pending |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
-### Cutscenes (played on eight levels)
+### Cutscenes on all ten levels
 
-`h1campaign::Options::cutscenes` is `None` by default: each level takes
-its own policy from `h1campaign::cutscenes::LEVELS` (`Some(..)` forces
-one). `Cutscenes::Play` compiles the scripts as written;
-`PlayShortPaths` plays the cinematics but still wakes a10's
-`fast_setup` for `tutorial_setup` (`SHORT_PATHS`: the cryo tutorial
-waits on `player_action_test_look_relative_left`/`_right`, which the
-progression lane maps; until then it would hold input forever); `Skip`
-compiles every call of the level's `cinematic_skip_start` guard as
-`false`, the path Halo 1 takes after a skip (its fade in,
-`cinematic_stop`, control back), and takes the short paths too.
+**Built.** The default policy is `Cutscenes::Play` on every level. The
+compiler preserves Halo 1's skip guards, including a player's deliberate
+skip, and a10 wakes its authored cryo tutorial. Its signed look latches,
+controller layout and pitch settings come from the converted unit builtins.
+An explicit `Options::cutscenes` can still select the shorter diagnostic paths.
 
-| Level | Policy | Why |
-|---|---|---|
-| a10 | `PlayShortPaths` | every cutscene converts; the tutorial is the progression lane's |
-| a30, a50, b30, c20, d20 | `Play` | every cutscene converts |
-| c10, c40 | `Play` | every cutscene converts; the command lists that walk actors through x50 and c40's cinematics are stubbed (they stand) |
-| b40 | `Skip` | at the tag memory bound: converted without level data, graphs and recordings (`Lean::LevelData`), so its cinematics would have no camera points, flags or animations |
-| d40 | `Skip` | over the campaign cache's file size (`0x11800000`) with its cutscene graphs: they need `0x1baa00` bytes of animation data and `0x7c000` are left, so its characters would not animate |
+The ordinary fresh writer retains the reachable base tags and resources.
+Generated AI and cinematic globals share identical scalar initializer nodes
+while retaining independent checkpointed cells. Each duplicate removed saves
+one 20-byte syntax node. A full fresh scripted conversion reports a capacity
+error before a fallback can discard content.
+The earlier b40 limit was measured on the pinned base. The version 55
+fresh-assets measurement above used `0x966000` of `0xc24000` bytes with
+Halo 1 assets. Graphs already converted for an object are shared with
+scripts. Recordings, camera points, flags, titles and the remaining graphs
+have their original scenario indices or named tag references. d40 uses the
+native campaign cache expansion on the sounds branch, which raises slots
+4 and 5 up to the header validator's 520 MiB ceiling. The disc readback
+requires the full conversion on both levels. The earlier measurements
+below are historical, not measurements of this change.
+
+**Built.** x50 and c40 actor movement runs through the rebuilt command
+scripts. The disc readback walks each cinematic's original command-list
+calls and compares their targets in order with the emitted
+`cs_run_command_script` calls. On the source disc c10 has ten by-unit
+commands, including Mendoza and Johnson's looks. c40 has twenty, including
+the Monitor's flight and individual orders for four sentinels.
 
 What a cutscene needed (survey `cutscene_survey`, h1campaign
 `tests/cutscenes.rs`, over all ten levels):
@@ -578,40 +586,44 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   characters already have their own Halo 1 model and graph (h1objects'
   placed bipeds, on the Chief's template), so a cinematic graph animates
   the skeleton it was made for. 9 graphs on a10, 2 to 9 elsewhere.
-- **Recorded animations.** Halo 2 keeps them: E, `0x001fb360` (called by
-  builtins 138, 139 and 140 with play flags 0, 8 and `0x10`) bounds the
-  index by `scnr +0x110` and reads `0x34`-byte elements at `+0x114`:
-  version `+0x20`, unit control data version `+0x22`, length `+0x24`, the
-  event stream's pointer `+0x30`. That is Halo 1's element (`scnr
-  +0x36c`, `0x40`) with Halo 2's 8-byte data reference. No retail Halo 2
-  scenario has one. `read_recordings`/`recordings_block` copy the first
-  `0x2c` bytes and the stream as they are; `cutscene_recording` hooks
-  are the index in Halo 1's order. Every recording on the ten levels is
-  version 4 (Halo 2's decoder table at `0x0046fd5c` has four versions);
-  unit control versions 0, 3 and 4. `recording_play`, `_and_delete`,
-  `_and_hover`, `recording_kill` and `recording_time` are 138 to 142.
-  **Streams rewritten (converter version 28).** Copied as they are,
-  Halo 1's streams faulted Halo 2's player (a30 and a50 headless: calls
-  to pc 4 and pc 1 from `0x0029f13d`, under `0x001fb61e`), and version
-  27 held the five builtins as stubs. Both games' version-4 players are
-  the same loop: a header byte whose low two bits give the delay (none,
-  one tick, a byte, a short) and whose upper six bits are the event type,
-  dispatched through a handler table with no bound (Halo 2 `0x004710f0`,
-  24 types; Halo 1 `0x00232538`, 23). The payloads differ in one place:
-  control flags (type 4) are two bytes in Halo 1 and four in Halo 2, so
-  Halo 2 lost its place in 189 of the 349 streams, most of them then
-  reading a payload byte as a type past the table (the word after it is
-  `0x00000001`). The
-  initial unit control state differs too (Halo 2's fields are wider).
-  `h1campaign::recordings` rewrites each stream: the state field by
-  field, flag events widened, animation-state events (Halo 2's state is
-  a mode string ID a byte cannot carry) folded into the initial mode,
-  and only Halo 1's movement and stance flags (bits 0 to 9) kept: Halo 2
-  moved the weapon actions to its high half, so recorded units move and
-  look but do not fire. The disc test `every_converted_recording_walks_in_halo_2`
-  walks every rewritten stream through Halo 2's table, and
-  `decoder_tables_match_the_executables` checks the tables against both
-  `default.xbe` files.
+- **Recorded animations. Built.** Halo 2's player at `0x1fb360` bounds the
+  index by `scnr +0x110`. Each row is `0x34` bytes, with stream version
+  at `+0x20`, unit control version at `+0x22`, duration at `+0x24` and
+  the event-stream pointer at `+0x30`. The writer reads the Halo 1 rows
+  at `scnr +0x36c` (stride `0x40`) and builds fresh rows from the
+  `recorded_animation` definition. Script references use the original
+  ordering. Each stream gets a relocatable Halo 2 data reference. The
+  writer includes the block when building without scripts and throughout
+  the lean ladder.
+- **Control streams and playback. Built.** The ten Halo 1 campaign levels
+  contain 349 version-4 streams, using unit control versions 0, 3 and 4.
+  The Xbox decoder loops at H1 `0x119910` and H2 `0x29f0c0` agree on
+  event types and delays. The initial layouts differ, and a flag event
+  grows from two payload bytes to four. Reading the original encoding
+  directly loses event framing on 189 streams. The encoder rebuilds the
+  initial state, translates the flags and preserves each delay, control
+  delta and end event. An unsupported stream fails conversion with its name.
+  H1 control bits 2, 3, 14 and 15 have no observed campaign use and are
+  rejected if encountered.
+
+  All 73 timed animation-state changes retain their original tick. The
+  Halo 2 type-2 handler (`0x29ec30`) sign-extends a single byte. A
+  converted stream carries the low byte of the target mode, which the
+  playback adapter expands to its full string ID. Only calls from the
+  recording player (`0x1fb630`) carrying both single-weapon markers take
+  this path. At that boundary the adapter also resolves inventory
+  generation and the other hand's current slot. H1's `-1` slot means
+  keep the current weapon (H1 `0x3b3d3`, H2 `0xc6e2b`).
+  Crouch, jump, throttle, facing, aim, weapon triggers and reload go
+  through the native unit control reader. The biped's held-facing and the forced-alert
+  overrides apply to a private copy of the current tick. Grenade and
+  seat-exit requests use the ordinary Halo 2 unit actions (`0x14fe58`,
+  `0x14fb55`). The decoder keeps its own state across ticks.
+- **Recording script calls. Built.** The existing signature-checked
+  translations select the native play, play-and-delete, play-and-hover,
+  kill and time builtins (138–142), and vehicle hover (621). The Xbox
+  evaluators and their native call targets are listed in
+  [scripts.md](scripts.md#builtins-named-by-position).
 - **Camera.** `camera_set`, `camera_control`, `camera_time` map directly;
   `camera_set_relative` (451), `camera_set_first_person` (456) and
   `camera_set_dead` (457, an object in Halo 2) by position. No level
@@ -630,17 +642,15 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   `object_teleport` map directly; `cinematic_set_title_delayed` (561),
   `object_set_facing` (106), `object_pvs_set_camera` (471), `show_hud`
   (625, the first of three boolean-to-boolean builtins there),
-  `unit_open`/`unit_close` (194, 195), `unit_suspended` (249),
-  `unit_enter_vehicle` (216) and `vehicle_hover` (621) by position.
+  `unit_open`/`unit_close` (194, 195), `unit_set_emotion` (218),
+  `unit_suspended` (249),
+  `unit_enter_vehicle` (216) by position.
 
-Still stubbed inside cinematics (`cutscenes_convert_and_read_back` lists
-them per level; none is waited on): `object_beautify`,
-`object_pvs_activate`, `unit_set_emotion`, `unit_set_seat`, the
-`cinematic_screen_effect_set_*` effects, `cinematic_set_near_clip_distance`,
-`player_effect_set_max_translation` (camera shake), and on c10, c40, c20
-and d40 the command lists (`ai_command_list_by_unit`, `ai_attach_free`).
-`unit_enter_vehicle` passes Halo 1's seat text as the string ID, which no
-Halo 2 seat label matches yet.
+The [unit builtin mappings](script-builtins.md) cover object beautification
+and PVS activation, emotion and animation modes, the vehicle seat labels,
+near clip distance, dynamic lights, BSP object spawn suppression and camera
+shake. The same page describes the rebuilt screen effects, model reflection
+tint, light-cache invalidation and co-op tick authority.
 
 **a10's opening (`x10`), call by call** (2026-11-18, converter version
 67). `x10` calls `autumn_glory_1`, `autumn_glory_2` (space, `a10_space`),
@@ -650,13 +660,10 @@ are the Halo 2 builtins of the same name with the same parameter types,
 so every duration stays a count of ticks (`cinematic_calls_keep_halo1_s_ticks`,
 h1scripts: `fade_in`/`fade_out` `(real real real short)`, `camera_set`
 `(cutscene_camera_point short)`; retail Halo 2's own literals are 15, 30,
-60, 500 ticks). No fade or camera call is mistranslated. Stubbed in `x10`:
-`render_lights` (`hangar_1` turns dynamic lights off, `hangar_2` on),
-`rasterizer_lights_reset_for_new_map` (space), `game_skip_ticks`,
-`object_pvs_activate`, `cinematic_set_near_clip_distance` (0.0625, 0.01
-on the bridge), and the three `cinematic_screen_effect_set_*` calls, while
-`cinematic_screen_effect_start` (705) is kept: the bridge's last second
-starts Halo 2's screen effect with nothing set. The cinematic's
+60, 500 ticks). No fade or camera call is mistranslated. **Built.** The hangar toggles dynamic lights, the space scene invalidates
+cached lighting, and the bridge updates its PVS, clip distance and screen
+effect. Extra cinematic ticks go through the native simulation batch.
+The cinematic's
 "big whirring sound" was a10's continuous `dialog_flavor_captain`
 restarting each tick (scripts.md, Sleeping forever), fixed in version 67.
 The reported flicker has no cause in the script translation; what a run
@@ -670,21 +677,21 @@ of them nothing handles (a stub not in `DONE_VALUES`, not `ai_status`,
 and not one whose zero is already the done value: `recording_time`,
 `ai_going_to_vehicle`). What reads a stub most, over all ten levels (uses, before this round):
 
-| Stub | Uses | Now |
+| Stub | Uses | Behaviour in the 2026-11-17 survey |
 |---|---|---|
 | `ai_status` | 35 (a50 16, b40 17, b30 2) | `ai_combat_status` on Halo 1's scale (scripts.md, Step 2) |
-| `ai_conversation_status` | 34 | done value 5 |
+| `ai_conversation_status` | 34 | live status from the generated dialogue worker |
 | `ai_command_list_status` | 20 | done value 2 |
-| `game_all_quiet` | 17 | done value true |
+| `game_all_quiet` | 17 | retail Halo 2 threat query (587) |
 | `ai_living_fraction` | 14 (a30) | `ai_strength` |
 | `device_get_power` | 8 (d40) | Halo 2's unnamed builtin 255 (`IDENTIFIED`) |
-| `player0_joystick_set_is_normal` | 7 | `false` (help text only) |
-| `game_time` | 6 (a30) | `0`, or'd with a seat test |
-| `game_safe_to_speak` | 5 | done value true |
+| `player0_joystick_set_is_normal` | 7 | active local look-stick layout (722) |
+| `game_time` | 6 (a30) | current simulation tick (888) |
+| `game_safe_to_speak` | 5 | retail Halo 2 dialogue safety query (586) |
 | `ai_going_to_vehicle` | 5 | `0` (none is going) |
 | `sound_impulse_time` | 4 (a10) | `sound_impulse_language_time` (the ticks the line has left) |
-| `hud_get_timer_ticks` | 3 (d40) | done value 32767: the escape timer never runs out |
-| `ai_conversation_line` | 1 (b30) | done value 99 |
+| `hud_get_timer_ticks` | 3 (d40) | Built. The native countdown returns the remaining ticks (see [text.md](text.md)). |
+| `ai_conversation_line` | 1 (b30) | the current line, or 999 when inactive |
 
 `ai_living_count`, `ai_strength`, `unit_get_health`, `volume_test_objects`
 and `objects_can_see_object`/`_flag` translate directly; they are not
@@ -708,10 +715,10 @@ load (Objects, above): a10's x10 crew in the space BSP (`keyes_x10_space`,
 `space_crew_1` to `_3`, at about (500, -147, -28)), Keyes and the bridge
 crew, the hangar marines. Skipped cinematics never create them.
 
-**Tag memory and file size.** Graphs put their animation data in the
-map file (raw; the campaign cache bounds the file at `0x11800000`),
-recordings their streams in tag memory, inside the scenario. Per level, tag memory and file with them, and tag memory
-without (`Options::cutscene_data` off):
+**Historical pinned sizes.** Graphs put their animation data in the
+map file (raw, measured here with the retail 280 MiB slot),
+recordings their streams in tag memory, inside the scenario. These
+measurements predate the change to keep recordings on every lean step. The Without column uses `Options::cutscene_data` off.
 
 | Level | Graph data | Recordings (bytes) | Tag memory | Without | File |
 |---|---|---|---|---|---|
@@ -733,14 +740,13 @@ d40 keep everything.
 
 a10's jump (`0x7f000`) is its scenario no longer fitting the base
 scenario's old range and being appended (`0xb512c` bytes). The lean
-ladder (`h1campaign::Lean`) drops the graphs and recordings
+ladder (`h1campaign::Lean`) drops the graphs
 (`CutsceneData`) after the music and before the level data; a level over
 the campaign cache's file size is converted again with less music, then
 without the background sounds, then without the graphs (Engine caps, "Music, ambience and the map file"). To play b40's cutscenes, b40 needs
-its level data plus the cinematics' graphs and 24 recordings back, which
-is what dropping the base level's unreachable tags (`h1convert::fresh`'s
-prune, for campaign) would free; d40 needs `0x1baa00` bytes of file, which
-the same prune frees from the base's raw.
+its level data plus the cinematics' graphs back, which
+is space the fresh writer recovers by dropping the base level's unreachable
+tags. The historical d40 deficit was `0x1baa00` bytes of animation data.
 
 Placed objects Halo 1 leaves to the scripts are not created at load
 (Objects, above): a10's x10 crew in the space BSP, Keyes and the bridge
@@ -753,8 +759,7 @@ Proof: `skipped_cutscenes_take_halo1_s_skip_path`,
 `skipped_cutscenes_on_every_level` (h1scripts disc);
 `cutscenes_convert_and_read_back` (h1campaign disc, `H1_LEVELS` for
 some): per level, played, it converts, reopens the map and checks that
-`scnr +0x110` holds Halo 1's recordings in order with their streams byte
-for byte, and that every graph it converted is a `jmad` under its name;
+`scnr +0x110` holds the named recording rows in order with their re-encoded streams, and that every graph it converted is a `jmad` under its name;
 `every_level_s_scripts_run_on_the_retail_interpreter` with the
 identified builtins; `a30_converts_onto_its_base_and_reads_back` checks
 every placement's flags against Halo 1's; `h1_placement_flags` and
@@ -765,7 +770,7 @@ version-4 event streams and unit control data as recorded; that
 `custom_animation` takes a converted graph on a converted biped (node
 list checksums are Halo 1's on both); every identified builtin's
 behaviour (they are found by position and signature, E only for the
-recordings); the dialogue sleeps lining up with the converted sounds.
+recordings and vehicle hover); the dialogue sleeps lining up with the converted sounds.
 
 **Built, device change-colour relocation.** The holo control a30 borrows
 from b30 failed fresh conversion because its `+0xb0` pointed to the
@@ -835,22 +840,15 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
 
 ### Engine caps and unchecked indices
 
-- **Squads.** The AI's squad array at load holds 335 (`0x00200974`,
-  `mov ebx,14Fh`, `0x98` per datum); `0x00200b30` takes one datum per
-  scenario squad (`+0x160`, `0x74` each) and a squad past the cap faults
-  at `0x00200c44` (a50 did, with 384). Squad groups have their own array
-  of 100 (`0x002009ad`). `h1campaign::scenario::MAX_SQUADS` and
-  `MAX_SQUAD_GROUPS`; the converter refuses a level over either. Squads
-  with starting locations are always kept; the empty ones the scripts
-  name (migration and attach targets, mostly) only while the total fits.
-  a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out,
-  and the scripts' names for them resolve to a sibling squad (the
-  encounter's first converted one), or the encounter's squad group if it
-  has none. A squad group is no stand-in for a squad: Halo 2's
-  `ai_migrate` ignores a destination with either top bit set
-  (`0x002a54cc`), and `ai_attach_units` reads the low 16 bits as a squad
-  index (`0x0027305e`) (ai.md). Every other level fits with them (the most: c40, 227).
-  Survey: `ai_counts_against_the_caps`, `empty_squad_uses`.
+- **Squads. Built.** The retail arrays hold 335 squads and 100 groups.
+  On levels over the squad cap, the converter can omit unreferenced
+  squads in encounters with deferred creation when no placement call
+  can reach them. Script-named migration targets retain their own
+  indices. The campaign allocator reserves 384 squad records and 100 groups.
+  Before `0x00200b30` populates them, the runtime exposes the scenario's
+  required squad count, with 335 as the retail minimum. The group array
+  stays at its allocated address across map loads. See ai-control.md for
+  the allocator and b40 readback checks.
 - **Cutscene flags, camera points, titles and device groups.** The
   engine indexes these blocks without a check (b40 faulted at
   `0x002a003f` in `object_teleport`, reading flag -1): a call naming one
@@ -859,6 +857,8 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   reached atom of these types against its converted block on all ten
   levels. Names resolve without case (b30 and d40 named 3 and 9 flags
   and a device group in another case and lost them).
+  The a30 disc test also reads the English string of each chapter from
+  the final map. See [mission flow and title layout](scripts.md#level-data-the-scripts-name).
 - **Units opened or closed.** `unit_open` and `unit_close` do not check
   their unit for `none` (`0x00113eae` reads `+0x33e` through object
   header 0xffff's null pointer), so a call naming an object name with no
@@ -889,41 +889,24 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   nodes, as fresh a10's lifepod) gets one, so `vehicle_new` creates it:
   a stand-in sphere in version 38, Halo 1's collision as Havok
   polyhedra since 43 (tag-definitions.md, Physics models from Halo 1).
-- **b40's level data.** b40 is at the tag memory bound. A level over
+- **Historical pinned b40.** The pinned conversion reached the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
-  in turn: the empty squads kept for their names (`EmptySquads`), the
-  seat table (`SeatTable`), Halo 1's textures on object models
-  (`ObjectTextures`), the music (`Music`), the cutscenes' graphs and
+  in turn: the seat table (`SeatTable`), Halo 1's textures on object models
+  (`ObjectTextures`), the cutscenes' graphs and
   recordings (`CutsceneData`), the level data (`LevelData`). A level
-  still over this bound or the file's (below) places fewer devices
+  still over the tag memory bound places fewer devices
   (`Options::devices`): no light fixtures (lamp models that give no
-  light in Halo 2), then none. b40 still
-  converts only without its level data (`0xc22000` of `0xc24000`): its
+  light in Halo 2), then none. That pinned build
+  converted only without its level data (`0xc22000` of `0xc24000`): its
   74 calls naming a flag, camera point, title or device group are
   stubbed (the insertion's teleports and camera moves among them), and
-  it has no music.
-- **Music, ambience and the map file.** Halo 2's campaign map file is
-  capped at `0x11800000` bytes (`map::writer::cache_size_limit`, the
-  header validator's table at `0x00214ed0`). On the pinned base (its own
-  raw kept whole) a level's BSPs, textures, sounds and the clusters'
-  background sounds (`h1convert::ambience`, from `0x177810` bytes on c20
-  to `0xc8a108` on c10) leave little for the scripts' looping sounds,
-  which Halo 1 ships as Xbox ADPCM, kept as they are. A level over the cap
-  (`Error::FileSize`) is converted again with that many fewer music bytes
-  (and 256 KiB margin; the looping sounds go in in the order the scripts
-  first name them while they fit), down to none; then with that many
-  fewer background sound bytes (`scenario::bound_ambience`: an entry left
-  out keeps its palette slot and tracks, with null sounds, so the
-  clusters' indices stand), down to none; then without the cutscenes'
-  animation graphs, which the cutscenes need. Each retry is in the
-  report (`Report::retries`). Only d40 goes past the music: without music
-  it is still `0x12254800`, so its 13 background sounds are silenced and
-  its graphs dropped (`0x118f0c00` without them). The sound-zone split of
-  the clusters (`h1convert::structure::sound_zones`) costs next to
-  nothing: Halo 1's sections already outnumber the zones everywhere but
-  c40's BSPs 3 and 4 (1 and 2 sections to 4: 322 and 710 vertices more).
-  Building the levels fresh (no pinned base, its unreachable raw
-  dropped) frees 30 to 60 MB of file a level and is the fix.
+  that build omitted its music.
+- **Music, ambience and the map file. Built.** All 548 source loop
+  definitions across the ten levels have explicit roots. Local raw chunks
+  hold their samples. Native campaign slots 4 and 5 grow for installed
+  Halo 1 maps up to the header validator's 520 MiB maximum. A level over
+  that limit reports its size. The disc audit compares the built tags and
+  sample chains with the source. [Cache and disc evidence](sounds.md#campaign-loops-and-cache-slots-built).
 
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,
@@ -1064,7 +1047,5 @@ before it resolves the level.
   the base's unreached tags) or less. Its zones (`scnr+0x168`,
   `0xce898` bytes, mostly firing positions) are the scenario's largest
   field.
-- The sentinel: `tags::schema` refuses `sentinel_aggressor`'s animation
-  graph, which every sentinel character but the enforcer uses.
 - Which `stem` templates in the shared maps cover Halo 1's shader types.
 - Generating pathfinding that Halo 2's AI accepts.

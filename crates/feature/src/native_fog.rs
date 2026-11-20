@@ -55,7 +55,7 @@ pub const DEFAULT: bool = true;
 
 /// Whether the native fog is on.
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, DEFAULT)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// What draws the fog: boot's glue over the GPU world and the device.
@@ -190,6 +190,10 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     }
 }
 
+pub(crate) fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 pub struct NativeFog;
 
 impl Feature for NativeFog {
@@ -204,6 +208,9 @@ impl Feature for NativeFog {
         }
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_fog_skip", |o| {
+                if crate::native_map_work::Stage::Fog.standing_down() {
+                    return;
+                }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
                 before_layer(&mut *g, ret);

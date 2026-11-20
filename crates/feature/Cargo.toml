@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
+tags.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
 timeline = { path = "../timeline" }
 # The world skip and camera read (pure: no GPU, no map reader).

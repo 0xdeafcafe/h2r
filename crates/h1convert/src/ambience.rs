@@ -89,6 +89,18 @@ fn entry_name(e: &[u8]) -> String {
 /// Reads both palettes of every structure BSP (entries the BSPs share
 /// once), converting each looping sound with its sounds.
 pub fn read(h1: &H1Map) -> Ambience {
+    read_with(h1, h1sounds::looping::read_looping)
+}
+
+/// Read the palettes when the campaign installs all looping sounds in a single pass.
+pub fn read_campaign(h1: &H1Map) -> Ambience {
+    read_with(h1, h1sounds::looping::read_definition)
+}
+
+fn read_with(
+    h1: &H1Map,
+    read_loop: fn(&H1Map, &h1map::Tag) -> h1sounds::Result<Looping>,
+) -> Ambience {
     let mut out = Ambience::default();
     let bsps = match h1.structure_bsps() {
         Ok(b) => b,
@@ -126,7 +138,7 @@ pub fn read(h1: &H1Map) -> Ambience {
                         push_index(&mut out.bsp_backgrounds, Some(k));
                         continue;
                     }
-                    match h1sounds::looping::read_looping(h1, t) {
+                    match read_loop(h1, t) {
                         Ok(l) => {
                             out.notes.extend(l.notes.iter().cloned());
                             out.backgrounds.push((entry, l));

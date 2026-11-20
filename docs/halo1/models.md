@@ -573,7 +573,7 @@ grenades left from its origin (inferred: the lookup's fallback).
 | What | How |
 |---|---|
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
-| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, both link indices -1, frame info type 0 |
+| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, both link indices -1, source frame info type |
 | Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on a vehicle's steering and aim overlays. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
 | Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The tree also carries Halo 1's **borrowed slots**: Halo 1 finds a unit's animations through slot tables (`antr +0x0c` units, `0x64` each, label at +0, weapon classes at +0x58; a class is `0xbc`, label at +0, slot indices (`i16`) at +0x98, types at +0xb0; a type is `0x3c`, label at +0, slots at +0x30), and a slot may name another class's animation (every cyborg class's throw slot is `stand rifle throw-grenade`). Each such slot becomes an action of the borrowing mode, class and type naming the same animation, unless that path already has the action |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
@@ -637,9 +637,10 @@ the cyborg).
   not converted beyond borrowed slots, aiming screens and weapon pairs;
   Halo 2's tree comes from names. The vehicles and objects blocks are
   (Vehicle graphs, above).
-- Root movement (frame info) is dropped: 109 of the cyborg's 195
-  animations have it. Halo 2 has a movement section after the flag sets
-  that `crates/tags` does not decode yet.
+- **Built.** Root movement follows both channel flag sets in the rebuilt
+  resource. H2 `0x20aa70` reads one record per frame, with strides of 8,
+  12 and 16 for XY, XY/yaw and XYZ/yaw. The source values retain their
+  signs and order. The synthetic and disc round trips compare every byte.
 - Overlay and replacement animations keep only their animated channels.
   Their Halo 1 default data is mostly the rest pose (1,567 non-identity
   channels on the cyborg, 202 on the warthog), and is dropped.

@@ -80,6 +80,19 @@ pub struct CameraPoint {
     pub orientation: [f32; 3],
 }
 
+/// One chapter title. The displayed string is an index into the scenario's
+/// help-text ustr. Halo 1 stores durations on disc in 30 Hz ticks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Title {
+    pub name: String,
+    pub text_index: i16,
+    pub bounds: [i16; 4],
+    pub justification: u16,
+    pub text_color: u32,
+    pub shadow_color: u32,
+    pub seconds: [f32; 3],
+}
+
 /// One device group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceGroup {
@@ -98,8 +111,8 @@ pub struct Level {
     pub flags: Vec<Flag>,
     /// Camera points.
     pub camera_points: Vec<CameraPoint>,
-    /// Cutscene title names.
-    pub titles: Vec<String>,
+    /// Cutscene titles in script index order.
+    pub titles: Vec<Title>,
     /// Device groups.
     pub device_groups: Vec<DeviceGroup>,
 }
@@ -146,7 +159,15 @@ impl Level {
                 .collect(),
             titles: elements(h1::TITLES)?
                 .into_iter()
-                .map(|e| name(&e[4..0x24]))
+                .map(|e| Title {
+                    name: name(&e[4..0x24]),
+                    text_index: crate::u16_at(e, 0x30).unwrap() as i16,
+                    bounds: std::array::from_fn(|i| crate::u16_at(e, 0x28 + 2 * i).unwrap() as i16),
+                    justification: crate::u16_at(e, 0x34).unwrap(),
+                    text_color: u32_at(e, 0x3c).unwrap(),
+                    shadow_color: u32_at(e, 0x40).unwrap(),
+                    seconds: f32s::<3>(e, 0x44).map(|ticks| ticks / 30.0),
+                })
                 .collect(),
             device_groups: elements(h1::DEVICE_GROUPS)?
                 .into_iter()
@@ -161,7 +182,7 @@ impl Level {
 
     /// Halo 2's blocks: (field, element size, elements), for each field
     /// this module writes. An empty list empties the field.
-    pub fn blocks(&self) -> Vec<(u32, usize, Vec<Block>)> {
+    pub fn blocks(&self, help_ids: &[u32]) -> Result<Vec<(u32, usize, Vec<Block>)>> {
         let put = |b: &mut Block, at: usize, v: &[f32]| {
             for (i, x) in v.iter().enumerate() {
                 b.put_f32(at + 4 * i, *x);
@@ -197,20 +218,21 @@ impl Level {
             .titles
             .iter()
             .map(|t| {
-                // The name is the key into the level's text; Halo 1's text
-                // is not converted yet. Bounds, colour and timing are this
-                // crate's own defaults: a band near the bottom, white, one
-                // second in, four up, one out.
                 let mut b = Block::zeroed(h2::TITLES.1);
-                b.string_id(0, t);
-                for (i, v) in [360i16, 0, 400, 640].iter().enumerate() {
+                let id = usize::try_from(t.text_index).ok().and_then(|i| help_ids.get(i))
+                    .ok_or_else(|| invalid(format!("title {}: help string {} out of range", t.name, t.text_index)))?;
+                b.put_u32(0, *id);
+                for (i, v) in t.bounds.iter().enumerate() {
                     b.put_u16(4 + 2 * i, *v as u16);
                 }
-                b.put_u32(0x10, 0xffff_ffff);
-                put(&mut b, 0x18, &[1.0, 4.0, 1.0]);
-                b
+                b.put_u16(0xc, t.justification);
+                b.put_u16(0xe, 9); // retail Halo 2 chapter-title font
+                b.put_u32(0x10, t.text_color);
+                b.put_u32(0x14, t.shadow_color);
+                put(&mut b, 0x18, &t.seconds);
+                Ok(b)
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let groups = self
             .device_groups
             .iter()
@@ -222,12 +244,12 @@ impl Level {
                 b
             })
             .collect();
-        vec![
+        Ok(vec![
             (h2::FLAGS.0, h2::FLAGS.1, flags),
             (h2::CAMERA_POINTS.0, h2::CAMERA_POINTS.1, cameras),
             (h2::TITLES.0, h2::TITLES.1, titles),
             (h2::DEVICE_GROUPS.0, h2::DEVICE_GROUPS.1, groups),
-        ]
+        ])
     }
 
     /// The value a hook of one of this module's types takes: the element's
@@ -246,7 +268,7 @@ impl Level {
         match h.type_name.as_str() {
             "cutscene_flag" => index(self.flags.iter().map(|f| f.name.as_str()), t),
             "cutscene_camera_point" => index(self.camera_points.iter().map(|c| c.name.as_str()), t),
-            "cutscene_title" => index(self.titles.iter().map(String::as_str), t),
+            "cutscene_title" => index(self.titles.iter().map(|t| t.name.as_str()), t),
             "device_group" => index(self.device_groups.iter().map(|g| g.name.as_str()), t)
                 .map(|i| (h2::DEVICE_GROUP_SALT + i) << 16 | i),
             "navpoint" => Some(0),

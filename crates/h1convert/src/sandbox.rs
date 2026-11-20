@@ -6,6 +6,12 @@
 //! 2 side is a role that the converter resolves to a tag of the base map by
 //! the words in its tag name. No tag list is copied from either game.
 
+/// Pickups retained from Halo 1 in both asset settings. Halo 2's native
+/// equip pickup branches on these same type values at 0x00151f3e.
+pub fn native_powerup(kind: i16) -> bool {
+    matches!(kind, 2 | 3 | 5)
+}
+
 /// What a Halo 1 item becomes in the Halo 2 sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum H2Item {
