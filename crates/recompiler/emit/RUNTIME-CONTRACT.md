@@ -400,6 +400,19 @@ so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
 
+#### The block clock (`H2_ACCESS_COUNT=block`, module feature 32)
+
+A module built with the block clock (it also has feature 1) uses all of
+the above, but `h2acc` counts the plan's block costs instead of accesses
+(`crates/recompiler/emit/src/clock.rs`): the guest instructions of the
+function's entry block when the handler is entered with the entry as its
+selector, and of a loop header's block on each trip that runs the header,
+after its poll. An access, and a REP bulk copy, add nothing. The runtime
+charges `preempt::HLE_COST` for each Rust handler it invokes. Atomics
+charge as before. The runtime refuses the bit without feature 1, and a
+module whose clock differs from one already registered
+(docs/runtime/block-clock-imprecise-faults.md).
+
 `H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules
 with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
 charge adds the count to the view's own (`accesses`), raising SLICE on the
@@ -484,7 +497,8 @@ typedef struct H2GenModule {
 - `features` is a bit set of optional schemes the module's handlers use:
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
   §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
-  section), or 0. It was `reserved`, always 0.
+  section), `H2GEN_FEATURE_BLOCK_CLOCK` (32, §1.5 "The block clock"), or
+  0. It was `reserved`, always 0.
 
 ## 3. Registration adapter (**new**)
 

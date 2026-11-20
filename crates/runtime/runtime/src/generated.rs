@@ -165,8 +165,18 @@ pub const FEATURE_DIRECT_CALLS: u32 = 2;
 /// callee neither acquires nor releases one ([`crate::direct`]). A runtime
 /// whose block ends before that word must refuse the module.
 pub const FEATURE_DIRECT_VIEW: u32 = 4;
+/// Module feature (`H2GEN_FEATURE_BLOCK_CLOCK`, `H2_ACCESS_COUNT=block`;
+/// needs [`FEATURE_ACCOUNTING`]): the handlers' count is the plan's block
+/// costs (`crates/recompiler/emit/src/clock.rs`), charged at function
+/// entries and loop trips through accounting's plumbing, not their memory
+/// accesses. The runtime then also charges [`crate::preempt::HLE_COST`] for
+/// each Rust handler it invokes. One dispatch runs one clock
+/// (docs/runtime/block-clock-imprecise-faults.md). Bits 8 and 16 are the
+/// contract slices' (docs/runtime/contract-thin-transfers-flat-ram.md).
+pub const FEATURE_BLOCK_CLOCK: u32 = 32;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 = FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW;
+pub const FEATURES: u32 =
+    FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW | FEATURE_BLOCK_CLOCK;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +245,15 @@ impl Dispatch {
         if module.features & !FEATURES != 0 {
             return Err(RegistrationError::UnknownFeatures(module.features & !FEATURES));
         }
+        if module.features & FEATURE_BLOCK_CLOCK != 0 && module.features & FEATURE_ACCOUNTING == 0 {
+            return Err(RegistrationError::BlockClockWithoutAccounting(module.features));
+        }
+        if self.modules != 0 && (module.features ^ self.module_features) & FEATURE_BLOCK_CLOCK != 0 {
+            return Err(RegistrationError::MixedClock {
+                module: module.features,
+                registered: self.module_features,
+            });
+        }
         // SAFETY: the caller guarantees the table shapes.
         let entries = unsafe { table(module.entries, module.entry_count, ModuleTable::Entries)? };
         // SAFETY: as above.
@@ -276,6 +295,8 @@ impl Dispatch {
             self.register_resume(r.pc, r.owner, r.start)
                 .expect("validated resume row");
         }
+        self.modules += 1;
+        self.module_features |= module.features;
         Ok(RegisteredModule {
             entries: entries.len(),
             resumes: resumes.len(),

@@ -605,7 +605,7 @@ fn counted_inline_ram_gives_up_its_slice_where_charged_inline_ram_does() {
     // The charging build without the passes first: every build must match it.
     let combos = [(false, Passes::NONE), (true, Passes::NONE), (false, Passes::ALL), (true, Passes::ALL)];
     let builds = combos.map(|(accounting, passes)| {
-        let built = compile_module_with("fast-accounting", vec![f()], false, true, passes, emit::Codegen { accounting });
+        let built = compile_module_with("fast-accounting", vec![f()], false, true, passes, emit::Codegen::accesses(accounting));
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("perf-fast-accounting-false-true-{accounting}-{}", passes.spec()))
             .join("src");
@@ -883,7 +883,7 @@ fn lifted_rep_movs_reaches_the_bulk_copy() {
             let owners = emit::plan_with(vec![f], emit::opt::Passes::ALL);
             let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
                 .join(format!("rep-movs-shape-{width}-{accounting}"));
-            emit::write_module_with(&owners, &dir, emit::Codegen { accounting }).unwrap();
+            emit::write_module_with(&owners, &dir, emit::Codegen::accesses(accounting)).unwrap();
             let mut c = String::new();
             for e in std::fs::read_dir(&dir).unwrap() {
                 let path = e.unwrap().path();
@@ -911,7 +911,7 @@ fn bulk_rep_movs_preserves_overlap_fault_progress_watch_and_accounting() {
         });
         let (_lib, dispatch) = compile_module_with(
             &format!("bulk-rep-{width}"), vec![f], false, true,
-            emit::opt::Passes::ALL, emit::Codegen { accounting: true },
+            emit::opt::Passes::ALL, emit::Codegen::accesses(true),
         );
         let rt = Runtime::new(Guest::new(), dispatch);
         for (src, dst, count) in [
@@ -1082,7 +1082,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting },
+            emit::Codegen::accesses(accounting),
             &defines,
         );
         let rt = Runtime::new(memory(), dispatch);
@@ -1176,7 +1176,7 @@ fn run_held_gate_fixture(accounting: bool, kind: &str, defines: &str) -> libload
         false,
         true,
         emit::opt::Passes::ALL,
-        emit::Codegen { accounting },
+        emit::Codegen::accesses(accounting),
         defines,
     );
     let mut mem = Guest::new();
@@ -1321,7 +1321,7 @@ fn held_gate_gives_way_to_a_waiting_memory_guard() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting },
+            emit::Codegen::accesses(accounting),
         );
         let mut mem = Guest::new();
         mem.map(A, 4096, 0, Permissions::RX).unwrap();
@@ -1604,7 +1604,7 @@ fn inline_accesses_match_the_helper_path_at_every_width_and_edge() {
                 false,
                 true,
                 emit::opt::Passes::ALL,
-                emit::Codegen { accounting },
+                emit::Codegen::accesses(accounting),
             );
             let rt = Runtime::new(memory().0, dispatch);
             let good_src = SRC + 0x100;
@@ -1702,7 +1702,7 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting },
+            emit::Codegen::accesses(accounting),
         );
         let mut mem = Guest::new();
         mem.map(A, 4096, 0, Permissions::RX).unwrap();
@@ -1777,7 +1777,7 @@ fn stores_mark_exactly_their_pages_with_and_without_dirty_inline() {
                 false,
                 true,
                 emit::opt::Passes::ALL,
-                emit::Codegen { accounting },
+                emit::Codegen::accesses(accounting),
                 defines,
             );
             let mut mem = Guest::new();
@@ -1894,7 +1894,7 @@ fn image_dirty_inline_code_size() {
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_direct_gate_code_size() {
-    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true });
+    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen::accesses(true));
 }
 
 /// As [`image_direct_gate_code_size`], for `H2_DIRECT_COUNT=1`.
@@ -1902,7 +1902,7 @@ fn image_direct_gate_code_size() {
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_direct_count_code_size() {
-    image_switch_code_size("H2_DIRECT_COUNT", emit::Codegen { accounting: true });
+    image_switch_code_size("H2_DIRECT_COUNT", emit::Codegen::accesses(true));
 }
 
 /// `switch`: the names to set, joined by `+`.
@@ -1996,7 +1996,7 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
     let owners = emit::plan(vec![f.clone()]);
     let o = &owners[0];
     let text = emit::c::function(&o.func, &emit::c::OwnerShape {
-        selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None,
+        selectors: &o.selectors, loops: &o.loops, accounting: false, block_clock: false, functions: None,
     });
     assert!(text.contains("H2_SPAN_ST(sp_"), "{text}");
     let (lib, dispatch) = compile_module_defines(

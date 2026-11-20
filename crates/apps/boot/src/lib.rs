@@ -2673,12 +2673,7 @@ mod tests {
                 "{name}: {stamp}"
             );
         }
-        let accounting = format!(
-            "{:?}",
-            emit::Codegen {
-                accounting: on("H2_ACCESS_COUNT"),
-            }
-        );
+        let accounting = format!("{:?}", emit::Codegen::from_env().unwrap());
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
     }
 
@@ -2686,7 +2681,7 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!("{:?}", emit::Codegen { accounting: true });
+        let on = format!("{:?}", emit::Codegen::accesses(true));
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(
             base,

@@ -75,6 +75,9 @@ typedef struct H2GenResume {
 } H2GenResume;
 /* features: H2GEN_FEATURE_ACCOUNTING or 0 (runtime generated.rs). */
 #define H2GEN_FEATURE_ACCOUNTING 1u
+/* The block clock (below, "Block clock"). Bits 8 and 16 are the contract
+ * slices' (docs/runtime/contract-thin-transfers-flat-ram.md). */
+#define H2GEN_FEATURE_BLOCK_CLOCK 32u
 typedef struct H2GenModule {
     uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;
@@ -350,6 +353,31 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_ACC_OVER() 0
 #define H2_ACC_SETTLE(extra) ((void)0)
 #define H2_ACC_SETTLE_POLLED(extra) ((void)0)
+#endif
+
+/* ---- Block clock (module feature H2GEN_FEATURE_BLOCK_CLOCK). ------------
+ * A module emitted with H2_ACCESS_COUNT=block defines H2_BLOCK_CLOCK to 1
+ * (and H2_ACCOUNTING, whose plumbing it uses). h2acc then counts the plan's
+ * block costs, not accesses (crates/recompiler/emit/src/clock.rs): the
+ * emitter writes H2_CLOCK(n) where the handler is entered at its function
+ * entry and after each loop header's poll, and an access adds nothing. The
+ * charge, the budget, the polls and the exit are accounting's, unchanged,
+ * so the slice ends at the first poll where the cost reaches the budget,
+ * whatever the handler's accesses were and however it made them. A REP
+ * bulk copy adds nothing either (the emitter leaves its count out and lets
+ * it copy the whole run). */
+#ifndef H2_BLOCK_CLOCK
+#define H2_BLOCK_CLOCK 0
+#endif
+#if H2_BLOCK_CLOCK
+#if !H2_ACCOUNTING
+#error "H2_BLOCK_CLOCK counts through accounting's plumbing: define H2_ACCOUNTING 1 too"
+#endif
+#undef H2_ACC_ONE
+#define H2_ACC_ONE() ((void)0)
+#define H2_CLOCK(n) (h2acc += (uint64_t)(n))
+#else
+#define H2_CLOCK(n) ((void)0)
 #endif
 
 /* ---- Code-shape macros. They name the handler's locals: cpu, ctx, the

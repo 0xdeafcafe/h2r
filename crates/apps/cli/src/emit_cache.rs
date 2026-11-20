@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn the_key_covers_access_accounting_and_its_default() {
         let passes = emit::opt::Passes::parse("all").unwrap();
-        let on = settings(&passes, emit::Codegen { accounting: true });
-        let off = settings(&passes, emit::Codegen { accounting: false });
+        let on = settings(&passes, emit::Codegen::accesses(true));
+        let off = settings(&passes, emit::Codegen::accesses(false));
         assert_ne!(on, off);
         assert_eq!(settings(&passes, emit::Codegen::parse(None).unwrap()), on);
         assert_eq!(settings(&passes, emit::Codegen::parse(Some("0")).unwrap()), off);

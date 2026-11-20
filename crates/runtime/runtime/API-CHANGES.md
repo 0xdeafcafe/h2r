@@ -464,6 +464,18 @@ four new exports, `ffi::h2abi_v1_read_counted` and `h2abi_v1_write_counted`
 `h2abi_v1_budget(ctx)`. A bridge that loads such a module forwards them.
 Modules without the bit, and every helper, charge as before.
 
+## The block clock and the fault census
+
+`generated::FEATURE_BLOCK_CLOCK` (32, with `FEATURE_ACCOUNTING`) marks a
+module built with `H2_ACCESS_COUNT=block`; registration refuses it without
+accounting (`RegistrationError::BlockClockWithoutAccounting`) and refuses
+mixing clocks in one dispatch (`RegistrationError::MixedClock`).
+`Dispatch::module_features` and `Runtime::block_clock` report it, and under
+it the runner charges `preempt::HLE_COST` per Rust handler.
+`Runtime::fault_census` counts every memory fault and whether execution went
+on from it; `ExecCtx::discard_fault` and `ExecCtx::open_fault_pc` go with it
+(docs/runtime/block-clock-imprecise-faults.md).
+
 ## One call at a handler's exit
 
 `ffi::h2abi_v1_exit(ctx, n)` settles the inline RAM view's count and then

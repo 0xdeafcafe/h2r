@@ -403,7 +403,7 @@ fn build(direct: bool, old: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}"));
     let src = dir.join("src");
-    emit::write_module_with(&owners, &src, emit::Codegen { accounting: true }).unwrap();
+    emit::write_module_with(&owners, &src, emit::Codegen::accesses(true)).unwrap();
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();

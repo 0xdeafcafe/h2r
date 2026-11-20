@@ -1,8 +1,8 @@
 # Block clock and imprecise memory faults
 
-Status: Partly built. The fault census is built; the block clock and imprecise memory faults are design.
-Code: `crates/runtime/runtime/src/fault_census.rs` (`FaultCensus`). Tests: `crates/runtime/runtime/src/fault_census.rs` (unit).
-Switch: none yet; the block clock is to take `H2_ACCESS_COUNT=block`, listed in [switches.md](switches.md).
+Status: Partly built. The fault census and the block clock are built; imprecise memory faults are design.
+Code: `crates/runtime/runtime/src/fault_census.rs` (`FaultCensus`), `crates/recompiler/emit/src/clock.rs` (the costs), `crates/recompiler/emit/c/h2gen.h` ("Block clock"). Tests: `crates/runtime/runtime/src/fault_census.rs` (unit), `crates/runtime/runtime/tests/generated.rs`, `crates/recompiler/emit/tests/block_clock.rs`.
+Switch: `H2_ACCESS_COUNT=block` (the block clock; the access clock by default), listed in [switches.md](switches.md).
 
 Item 3 of the [architecture review](../reviews/2026-11-20-architecture.md)
 (sections 1.4 and 5) changes two rules of the recompiler contract
@@ -135,6 +135,11 @@ Bits 8 and 16 belong to the contract slices T2 and F3
   `going_on_from_a_generated_fault_needs_a_precise_exit`,
   `a_discarded_or_restarted_fault_is_not_continued`,
   `a_rust_handlers_fault_is_counted_as_the_runtimes` (fault_census.rs).
+- **Test.** `every_slice_ends_where_the_ir_rule_says` and
+  `the_block_clock_does_not_move_with_memory_accesses` (block_clock.rs):
+  the generated C gives up its slice where a model built from the IR alone
+  says, and two loops of the same shape, one with memory operands and one
+  without, interleave identically.
 
 ## Not verified
 

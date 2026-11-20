@@ -993,3 +993,84 @@ fn a_module_names_its_features_and_unknown_ones_are_refused() {
     );
     assert_eq!(with(0x8000_0000 | accounting), (Err(RegistrationError::UnknownFeatures(0x8000_0000)), false));
 }
+
+/// The block clock: a module declares it with accounting, the runtime then
+/// charges a declared constant for every Rust handler it runs, and one
+/// dispatch never mixes it with the access clock.
+#[test]
+fn the_block_clock_needs_accounting_and_one_clock_per_dispatch() {
+    use runtime::generated::{FEATURE_ACCOUNTING as ACC, FEATURE_BLOCK_CLOCK as BLOCK};
+    let register = |d: &mut Dispatch, addr: u32, features: u32| {
+        let rows = [entry(addr, 0, good_probe), ZERO_ENTRY];
+        let resumes = [ZERO_RESUME];
+        let module = H2GenModule {
+            abi_version: runtime::cpu::ABI_VERSION,
+            entry_count: 1,
+            resume_count: 0,
+            features,
+            entries: rows.as_ptr(),
+            resumes: resumes.as_ptr(),
+        };
+        // SAFETY: each table holds count + 1 rows; the handler follows ABI v1.
+        unsafe { d.register_generated_module(&module, good_probe) }
+    };
+    let mut d = Dispatch::default();
+    assert_eq!(register(&mut d, 0x1000, BLOCK), Err(RegistrationError::BlockClockWithoutAccounting(BLOCK)));
+    assert_eq!(d.module_features(), 0, "nothing registered");
+    assert!(register(&mut d, 0x1000, ACC | BLOCK).is_ok());
+    assert_eq!(
+        register(&mut d, 0x2000, ACC),
+        Err(RegistrationError::MixedClock { module: ACC, registered: ACC | BLOCK })
+    );
+    assert!(register(&mut d, 0x3000, ACC | BLOCK).is_ok(), "the same clock again");
+    assert_eq!(d.module_features(), ACC | BLOCK);
+    let rt = Runtime::new(Guest::new(), d);
+    assert!(rt.block_clock());
+
+    let mut d = Dispatch::default();
+    assert!(register(&mut d, 0x1000, ACC).is_ok());
+    assert_eq!(
+        register(&mut d, 0x2000, ACC | BLOCK),
+        Err(RegistrationError::MixedClock { module: ACC | BLOCK, registered: ACC })
+    );
+    let rt = Runtime::new(Guest::new(), Dispatch::default());
+    assert!(!rt.block_clock());
+    rt.edit_dispatch(|d| register(d, 0x1000, ACC | BLOCK)).unwrap();
+    assert!(rt.block_clock(), "edit_dispatch keeps the flag in step");
+}
+
+/// Under the block clock a Rust handler costs `HLE_COST`, however much
+/// guest memory it touches; under the access clock it costs nothing.
+#[test]
+fn a_rust_handler_charges_the_declared_cost_only_under_the_block_clock() {
+    use runtime::generated::{FEATURE_ACCOUNTING as ACC, FEATURE_BLOCK_CLOCK as BLOCK};
+    const HLE: u32 = 0x0002_0000;
+    for features in [ACC, ACC | BLOCK] {
+        let rows = [entry(0x1000, 0, good_probe), ZERO_ENTRY];
+        let resumes = [ZERO_RESUME];
+        let module = H2GenModule {
+            abi_version: runtime::cpu::ABI_VERSION,
+            entry_count: 1,
+            resume_count: 0,
+            features,
+            entries: rows.as_ptr(),
+            resumes: resumes.as_ptr(),
+        };
+        let mut d = Dispatch::default();
+        // SAFETY: each table holds count + 1 rows; the handler follows ABI v1.
+        unsafe { d.register_generated_module(&module, good_probe) }.unwrap();
+        let _ = d.register_override(HLE, "hle", |_, ctx, _| {
+            // Touching memory costs nothing extra.
+            let _ = ctx.memory().u32(HLE);
+            Ok(TransferAbi::stop(0))
+        });
+        let rt = Runtime::new(Guest::new(), d);
+        rt.memory().map_zeroed(HLE, 0x1000, Permissions::RX).unwrap();
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.arm_preemption(1 << 20);
+        let mut cpu = CpuAbi::default();
+        Runner::default().run(&mut cpu, &mut ctx, HLE);
+        let want = if features & BLOCK != 0 { runtime::preempt::HLE_COST } else { 0 };
+        assert_eq!(ctx.slice_spent(), want, "features {features:#x}");
+    }
+}
