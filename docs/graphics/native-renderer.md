@@ -1,12 +1,13 @@
 # Native GPU renderer
 
-Status: every stage built, and the whole set measured as one all-native
-push on 2026-11-19/20 (below, "The all-native push"): frames identical
-to D3D, fps still behind, and **on by default since 2026-11-20** — each
-stage's `impl.render.native_*=off` gives it back to the D3D path for a
-comparison (`impl.render.native_lights_split` stays off: a diagnostic,
-not a stage). The goal
-is every frame drawn from GPU-resident data, with the game's recompiled
+Every stage has defaulted on since the all-native A/B on 2026-11-19/20
+(below, "The all-native push"). The frames matched D3D and the frame rate
+was lower. Set `H2_FEATURES=impl.render.native=off` for the D3D path or
+use a stage's `impl.render.native_*=off` for a narrower comparison.
+An explicit stage switch takes precedence in either order. Enabling
+`native_world` also enables its material programs unless
+`impl.render.native_world_programs=off` is set. The split lights diagnostic
+still requires `impl.render.native_lights_split=on`. The goal is every frame drawn from GPU-resident data, with the game's recompiled
 render front-end left doing only what the GPU path cannot do yet. Evidence
 labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
 (read in the disassembly, `h2 disasm`), **Test**, **S** (supposed). No
@@ -164,11 +165,21 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
-Each stage is a feature switch under `impl.render.native_*`, off by
-default until its A/B passes, and each falls back per material (or per
-draw) to the D3D path for anything it cannot draw yet. The visibility
-work (`0x00040e90`, 0.91 ms) and the object setup are removed in stages 2
-and 3, once nothing on the D3D path reads their records.
+Each stage falls back to D3D for the materials or draws it cannot handle.
+
+### Maps with no native work
+
+The world stands down when its BSP loads yield no drawable native parts.
+The lights stand down when the native world is disabled or its BSPs yield
+no native lit parts. Fog and water stand down when their translated passes
+yield no drawable parts. A BSP-backed stage stays eligible while any BSP
+has work or has yet to be checked. Water's per-draw census follows the
+water stage.
+
+Objects stand down only when the map's tag index contains no object
+definitions. Model loads and uploads stay lazy when definitions exist.
+An empty map result logs once per stage. The hooks then return at an
+atomic flag check until the next map activation or snapshot restore.
 
 ## Stage 1: the static world
 

@@ -72,7 +72,7 @@ pub const EVERY: u64 = 1800;
 
 /// Whether the native water census is on.
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, DEFAULT)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// The layers `H2_NATIVE_WATER_CENSUS` names, or `None` when the variable
@@ -383,6 +383,10 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left });
 }
 
+pub(crate) fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 pub struct NativeWater;
 
 impl Feature for NativeWater {
@@ -397,6 +401,9 @@ impl Feature for NativeWater {
         }
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_water_skip", |o| {
+                if crate::native_map_work::Stage::Water.standing_down() {
+                    return;
+                }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
                 before_layer(&mut *g, ret);

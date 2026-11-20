@@ -28,7 +28,7 @@ pub const SWITCH: &str = "impl.render.native_decals";
 const CURRENT_MODE: u32 = 0x004c_8790;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 thread_local! {
@@ -159,6 +159,11 @@ pub fn comparing(mode: Mode, list: i16) -> bool {
     compare().is_some_and(|c| c.matches(mode, list))
 }
 
+pub fn hooks_on(switches: &Switches) -> bool {
+    on(switches) || (crate::switches::native_render_default(switches)
+        && std::env::var_os("H2_NATIVE_DECALS_COMPARE").is_some())
+}
+
 pub struct NativeDecals;
 
 impl Feature for NativeDecals {
@@ -168,7 +173,7 @@ impl Feature for NativeDecals {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) && std::env::var_os("H2_NATIVE_DECALS_COMPARE").is_none() {
+        if !hooks_on(b.switches()) {
             return Ok(());
         }
         b.raw()

@@ -25,7 +25,7 @@ use native_render::world::{Owner, World, WorldDraw};
 use native_render::program::InheritedCull;
 use tags::material::{EngineInputs, Material, ShaderLibrary, TextureSource};
 
-use crate::native_world_glue::{Load, Ready, State, ReadMemory, StagePalettes, inherited_cull, light_image, upload};
+use crate::native_world_glue::{Load, Ready, State, ReadMemory, StagePalettes, current_ready, inherited_cull, light_image, upload};
 
 /// The hook's guest memory as the device's.
 pub struct DeviceMemory<'a>(pub &'a mut dyn GuestMemory);
@@ -192,14 +192,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let constants = constants(light)?;
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let (Some((name, bsp, index)), Load::Ready(r)) = (&state.0, &state.1) else { return Err(Keep::NoWorld) };
-            if mem.u32(feature::native_world::ACTIVE_BSP).ok() != Some(*bsp)
-                || crate::native_world_glue::active_bsp_index(mem) != Some(*index)
-                || crate::health::loaded_map_name(mem).ok().as_ref() != Some(name)
-            {
-                return Err(Keep::NoWorld);
-            }
-            Arc::clone(r)
+            Arc::clone(current_ready(&state, mem).ok_or(Keep::NoWorld)?)
         };
         let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
         let parts = select_parts(&world.clusters, &sorted.entries, split)?;
@@ -387,6 +380,9 @@ impl LightLayer {
 
 impl d3d::DrawAdmission for LightAdmission {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        if feature::native_map_work::Stage::Lights.standing_down() {
+            return None;
+        }
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let geometry = context.geometry?;
         let draw = snapshot.draw;
@@ -954,6 +950,9 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
         images.len(),
         gels.len()
     );
+    if clusters.is_empty() {
+        return None;
+    }
     Some(LightsWorld {
         resolver: Mutex::new(Resolver {
             lib,

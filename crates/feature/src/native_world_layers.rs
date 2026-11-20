@@ -18,7 +18,7 @@ pub const SWITCH: &str = "impl.render.native_world_layers";
 const SCENE_VIEW: u32 = 0x004b_a050;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// Present numbers are 1-based, as in the agent frame recorder.
@@ -58,6 +58,14 @@ pub fn current() -> Option<Layer> {
     LAYER.get()
 }
 
+pub fn compare_on(switches: &crate::Switches) -> &'static [u64] {
+    if on(switches) || crate::switches::native_render_default(switches) {
+        compare_frames()
+    } else {
+        &[]
+    }
+}
+
 pub struct NativeWorldLayers;
 
 impl Feature for NativeWorldLayers {
@@ -66,18 +74,22 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let objects = b.switches().feature(crate::native_objects::SWITCH, true);
+        let objects = crate::native_objects::on(b.switches());
         let lights = crate::native_lights::on(b.switches());
-        if !on(b.switches())
-            && !objects
-            && !lights
-            && !crate::native_residual::on(b.switches())
-            && compare_frames().is_empty()
-        {
+        let independent = on(b.switches())
+            || crate::native_residual::on(b.switches())
+            || !compare_on(b.switches()).is_empty();
+        if !independent && !objects && !lights {
             return Ok(());
         }
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", move |o| {
+                use crate::native_map_work::Stage;
+                let lights = lights && !Stage::Lights.standing_down();
+                if !independent && !lights && (!objects || Stage::Objects.standing_down()) {
+                    LAYER.set(None);
+                    return;
+                }
                 let mut guest = o.guest();
                 let mem = Mem(&mut *guest);
                 let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n) || (lights && matches!(n, 12 | 13)));

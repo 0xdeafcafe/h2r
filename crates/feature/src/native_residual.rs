@@ -11,7 +11,7 @@ pub const SWITCH: &str = "impl.render.native_residual";
 pub const ID: &str = "native-residual";
 
 pub fn on(switches: &Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 pub fn probe_frames() -> &'static [u64] {
@@ -48,6 +48,14 @@ pub fn view() -> ViewScope {
     VIEW.get()
 }
 
+pub fn probe_on(switches: &Switches) -> &'static [u64] {
+    if on(switches) || crate::switches::native_render_default(switches) {
+        probe_frames()
+    } else {
+        &[]
+    }
+}
+
 pub struct NativeResidual;
 
 impl Feature for NativeResidual {
@@ -57,7 +65,7 @@ impl Feature for NativeResidual {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if probe_frames().is_empty() {
+        if probe_on(b.switches()).is_empty() {
             return Ok(());
         }
         b.raw()

@@ -35,7 +35,7 @@ pub const SWITCH: &str = "impl.render.native_post";
 /// `impl.render.native_post=off` turns it off for the comparison against
 /// the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// The caller's floating-point state at the hook: the numbers are the
@@ -314,7 +314,7 @@ impl Feature for NativePost {
         // to the D3D path, which draws the same picture.
         b.snapshot(crate::SnapshotPolicy::Stateless);
         let native = on(b.switches());
-        if !native && !CAPTURE.load(Ordering::Relaxed) {
+        if !native && !(crate::switches::native_render_default(b.switches()) && CAPTURE.load(Ordering::Relaxed)) {
             return Ok(());
         }
         b.raw()

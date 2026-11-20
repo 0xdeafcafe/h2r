@@ -37,6 +37,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
+use feature::native_map_work::{self, Stage as MapStage};
 use feature::native_world::{Host, PartSet};
 use map::{Map, TagId};
 use native_render::camera::RenderCamera;
@@ -91,25 +92,31 @@ pub struct Ready {
     pub(crate) palettes: StagePalettes,
 }
 
-/// The current (map, BSP) and its world.
-/// The current (map, BSP address, BSP index) and its world. The index
-/// matters: a level's BSPs load at one address (03a's intro cinematic and
-/// its first play space share `0x800e6010`), so the address alone loaded
-/// the play space's world for the cinematic's BSP.
-pub(crate) type State = Arc<Mutex<(Option<(String, u32, u16)>, Load)>>;
+/// The active BSP. The index and activation distinguish reused addresses
+/// within a map and a reload of the same map.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct BspKey {
+    map: String,
+    bsp: u32,
+    index: u16,
+    generation: u64,
+}
+
+pub(crate) type State = Arc<Mutex<(Option<BspKey>, Load)>>;
 
 /// Match the guest's active BSP even if it changed before the next layer 3.
-pub(crate) fn current_ready<'a>(state: &'a (Option<(String, u32, u16)>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
-    let (Some((map, bsp, index)), Load::Ready(ready)) = state else { return None };
-    (mem.u32(feature::native_world::ACTIVE_BSP).ok() == Some(*bsp)
-        && active_bsp_index(mem) == Some(*index)
-        && crate::health::loaded_map_name(mem).ok().as_ref() == Some(map))
+pub(crate) fn current_ready<'a>(state: &'a (Option<BspKey>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
+    let (Some(key), Load::Ready(ready)) = state else { return None };
+    (key.generation == native_map_work::generation()
+        && mem.u32(feature::native_world::ACTIVE_BSP).ok() == Some(key.bsp)
+        && active_bsp_index(mem) == Some(key.index)
+        && crate::health::loaded_map_name(mem).ok().as_ref() == Some(&key.map))
         .then_some(ready)
 }
 
 pub(crate) enum Load {
     Idle,
-    Loading,
+    Loading(Arc<()>),
     Ready(Arc<Ready>),
     Failed,
 }
@@ -118,91 +125,97 @@ pub(crate) enum Load {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
+    switches: feature::Switches,
     ordered_scene_world: bool,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    fn ready(&self, mem: &dyn GuestMemory, bsp: u32) -> Option<Arc<Ready>> {
-        let name = crate::health::loaded_map_name(mem).ok()?;
-        if name.is_empty() || bsp == 0 {
-            return None;
+impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
+        let generation = native_map_work::generation();
+        let Ok(map) = crate::health::loaded_map_name(mem) else { return false };
+        let Some(index) = active_bsp_index(mem) else { return false };
+        if map.is_empty() {
+            return false;
         }
-        let index = active_bsp_index(mem)?;
-        let key = (name, bsp, index);
+        if !feature::native_world::on(&self.switches) {
+            if feature::native_lights::on(&self.switches) {
+                native_map_work::map_stage_empty(generation, &map, MapStage::Lights);
+            }
+            if !feature::native_fog::on(&self.switches) && !feature::native_water::on(&self.switches) {
+                return true;
+            }
+        }
+        let key = BspKey { map, bsp, index, generation };
+        let job = Arc::new(());
         {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if st.0.as_ref() == Some(&key) {
-                return match &st.1 {
-                    Load::Ready(r) => Some(Arc::clone(r)),
-                    Load::Idle | Load::Loading | Load::Failed => None,
-                };
+                return true;
             }
-            *st = (Some(key.clone()), Load::Loading);
+            *st = (Some(key.clone()), Load::Loading(Arc::clone(&job)));
         }
-        // The palettes bound now, for the stage bitmaps that are
-        // palettized (P8, P8 bump): the D3D path samples them through
-        // the device's palette at their stage, which the load expands
-        // them through. Read with no other lock held.
+        // Capture the device's palettes on the render thread for the
+        // palettized stage bitmaps, with no world lock held.
         let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
         let state = Arc::clone(&self.state);
-        std::thread::Builder::new()
+        let switches = self.switches.clone();
+        let started = std::thread::Builder::new()
             .name("native-world load".into())
             .spawn(move || {
                 let t0 = std::time::Instant::now();
-                let out = load_ready(&key.0, key.1, key.2, palettes);
+                let out = load_ready(&key.map, key.bsp, key.index, palettes, &switches);
                 let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                if st.0.as_ref() != Some(&key) {
+                if !matches!(&st.1, Load::Loading(current) if Arc::ptr_eq(current, &job))
+                    || key.generation != native_map_work::generation()
+                {
                     return;
                 }
                 st.1 = match out {
-                    Ok(r) => {
-                        // One guard, dropped before the print: two
-                        // `lock()`s in the macro's arguments both live
-                        // to the statement's end, and the second
-                        // waited on the first forever (with `state`
-                        // held, so the render thread's next ask hung).
-                        let (draws, batches) = {
-                            let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
-                            cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
-                        };
-                        eprintln!(
-                            "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s",
-                            key.0,
-                            key.2,
-                            key.1,
-                            r.coverage.0,
-                            r.coverage.1,
-                            draws,
-                            batches,
-                            r.parts.len(),
-                            t0.elapsed().as_secs_f32()
-                        );
+                    Ok((r, bsp_count)) => {
+                        if feature::native_world::on(&switches) {
+                            let (draws, batches) = {
+                                let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
+                                cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
+                            };
+                            eprintln!(
+                                "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s",
+                                key.map, key.index, key.bsp, r.coverage.0, r.coverage.1,
+                                draws, batches, r.parts.len(), t0.elapsed().as_secs_f32(),
+                            );
+                        }
+                        let empty = [
+                            (feature::native_world::on(&switches) && r.parts.is_empty()).then_some(MapStage::World),
+                            (feature::native_lights::on(&switches) && r.lights.is_none()).then_some(MapStage::Lights),
+                            r.fog.as_ref().filter(|fog| fog.part_set.is_empty()).map(|_| MapStage::Fog),
+                            r.water.as_ref().filter(|water| water.part_set.is_empty()).map(|_| MapStage::Water),
+                        ];
+                        let index = usize::from(key.index);
+                        native_map_work::bsp_loaded(key.generation, &key.map, index, bsp_count, empty);
                         Load::Ready(Arc::new(r))
                     }
                     Err(e) => {
-                        eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.2, key.1);
+                        eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
                         Load::Failed
                     }
                 };
-            })
-            .ok()?;
-        None
-    }
-}
-
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn use_resolved_scene(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
-        if !self.ordered_scene_world || Diagnostics::get().requires_mask_pass() {
+            });
+        if started.is_err() {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            *st = (None, Load::Idle);
             return false;
         }
-        // Keep the BSP load for lights, water and fog. The opaque draw
-        // itself will use the live range and keep its queued D3D fallback.
-        let _ = self.ready(mem, bsp);
         true
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
-        let ready = self.ready(mem, bsp)?;
+    fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
+        self.ordered_scene_world && !Diagnostics::get().requires_mask_pass()
+    }
+
+    fn ask(&self, mem: &mut dyn GuestMemory, _bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(current_ready(&state, mem)?)
+        };
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
@@ -294,6 +307,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
+        switches,
     }));
     crate::native_transparents_glue::install(device);
     crate::native_fog_glue::install(device, Arc::clone(&state));
@@ -938,7 +952,7 @@ fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Optio
     (addresses.get(i).copied().flatten() == Some(bsp)).then_some(i)
 }
 
-fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Result<Ready, load::Error> {
+fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switches: &feature::Switches) -> Result<(Ready, usize), load::Error> {
     let (mut map, files) = crate::native_map::open(name)?;
     let bsps = load::scenario_bsps(&mut map)?;
     let addresses: Vec<Option<u32>> = bsps
@@ -956,7 +970,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     } = load::load_world(&mut map, &mut raw, index)?;
     let mut files = raw.0;
 
-    let programs_on = feature::Switches::from_env().is_ok_and(|s| feature::native_world::programs_on(&s));
+    let world_on = feature::native_world::on(switches);
+    let programs_on = feature::native_world::programs_on(switches);
     // Lightmap pages through their palettes, with their mip chains.
     let mut lightmaps = HashMap::new();
     let mut linear_pages = 0;
@@ -1005,7 +1020,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         palettized = out.palettized;
         rigid_refused = out.rigid_refused;
         (out.programs, out.images, out.refused)
-    } else {
+    } else if world_on {
         let mut decoded: HashMap<TagId, Option<Image>> = HashMap::new();
         for m in world.materials() {
             let Some(&shader) = shaders.get(usize::from(m)) else { continue };
@@ -1019,6 +1034,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
                 native.insert(m);
             }
         }
+        Default::default()
+    } else {
         Default::default()
     };
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
@@ -1045,8 +1062,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         }
     }
     // The sorted geometry entries identify individual cluster parts and their full shader datums.
-    let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
-    let lights = if lights_on {
+    let lights_on = feature::native_lights::on(switches);
+    let lights = if lights_on && !native.is_empty() {
         crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m), &decoder.palettes)
             .map(Arc::new)
     } else {
@@ -1057,7 +1074,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // The fog (layer 16), over the whole world before its draws are kept:
     // a material that stays on the D3D path for layer 3 may still fog
     // natively.
-    let fog_on = feature::Switches::from_env().is_ok_and(|s| feature::native_fog::on(&s));
+    let fog_on = feature::native_fog::on(switches);
     let fog = if fog_on {
         Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
     } else {
@@ -1065,12 +1082,13 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     };
     // The water/camouflage census (`native_water_glue`), read-only: with
     // the water switch on, before the world's draws are kept.
-    if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+    let water_on = feature::native_water::on(switches);
+    if water_on {
         crate::native_water_glue::census(&mut map, &shaders, &world);
     }
     // The water edge blend (layer 6), over the world's transparent parts
     // before its draws are kept.
-    let water = if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+    let water = if water_on {
         Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
     } else {
         None
@@ -1081,7 +1099,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
-    Ok(Ready {
+    Ok((Ready {
         part_bounds, programs_on, coverage,
         cpu: Mutex::new(Some(CpuWorld {
             world,
@@ -1097,7 +1115,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         water,
         lights,
         palettes: decoder.used().clone(),
-    })
+    }, bsps.len()))
 }
 
 /// A P8 page's decoded levels (the index in every channel) through

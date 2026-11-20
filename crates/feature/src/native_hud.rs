@@ -44,7 +44,7 @@ pub const SWITCH: &str = "impl.render.native_hud";
 /// `impl.render.native_hud=off` turns it off for the comparison against
 /// the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// One call of `0x0022a664`.
@@ -192,6 +192,14 @@ pub fn on_hud_quad(mem: &mut dyn GuestMemory, ecx: u32, eax: u32, esp: u32) {
     }
 }
 
+pub fn compare_on(switches: &crate::Switches) -> Option<u64> {
+    if on(switches) || crate::switches::native_render_default(switches) {
+        compare_spec()
+    } else {
+        None
+    }
+}
+
 pub struct NativeHud;
 
 impl Feature for NativeHud {
@@ -204,7 +212,7 @@ impl Feature for NativeHud {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) && compare_spec().is_none() {
+        if !on(b.switches()) && compare_on(b.switches()).is_none() {
             return Ok(());
         }
         b.raw()

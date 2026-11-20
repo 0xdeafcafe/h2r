@@ -326,6 +326,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::occlusion::OcclusionCull)
         .map_err(|e| anyhow::anyhow!("occlusion: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_map_work::NativeMapWork)
+        .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
     // The static world on the native GPU renderer
     // (on by default, H2_FEATURES=impl.render.native_world=off turns it
     // off; docs/graphics/native-renderer.md). Its layer-draw observer is

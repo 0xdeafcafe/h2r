@@ -96,6 +96,17 @@ impl Switches {
     }
 }
 
+/// The default for native stages without an explicit setting.
+pub(crate) fn native_render_default(switches: &Switches) -> bool {
+    switches.feature("impl.render.native", true)
+}
+
+/// Native stages use exact keys. The older `impl.render` group controls
+/// the lifted render-loop ports independently.
+pub(crate) fn native_stage_on(switches: &Switches, stage: &str) -> bool {
+    switches.feature(stage, native_render_default(switches))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

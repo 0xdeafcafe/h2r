@@ -40,6 +40,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     #[cfg(feature = "gpu")]
     ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
     #[cfg(feature = "gpu")]
+    ("native-map-work", "GAME_ACTIVATE", AFTER),
+    #[cfg(feature = "gpu")]
+    ("native-map-work", "BSP_SWITCH", AFTER),
+    #[cfg(feature = "gpu")]
+    ("native-map-work", "GAME_STATE_REVERT", AFTER),
+    #[cfg(feature = "gpu")]
     (
         "native-transparents",
         "GAME_ACTIVATE",

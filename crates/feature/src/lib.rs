@@ -26,6 +26,7 @@ pub mod native_fog;
 pub mod native_gels;
 pub mod native_hud;
 pub mod native_lights;
+pub mod native_map_work;
 pub mod native_objects;
 pub mod native_particles;
 mod native_effects;

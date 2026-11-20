@@ -17,6 +17,7 @@ use native_render::light_list::{self, SortedLayer};
 use native_render::lights::{Light, LightConstants};
 use native_render::skip;
 
+use crate::native_map_work::Stage;
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-lights";
@@ -27,7 +28,7 @@ pub const SWITCH: &str = "impl.render.native_lights";
 /// `impl.render.native_lights=off` turns them off for the comparison
 /// against the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, true)
+    crate::switches::native_stage_on(switches, SWITCH)
 }
 
 /// A light the host cannot draw whole
@@ -325,10 +326,17 @@ impl Feature for NativeLights {
             return Ok(());
         }
         b.raw()
-            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| new_view())
+            .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
+                if !Stage::Lights.standing_down() {
+                    new_view();
+                }
+            })
             .context_only();
         b.raw()
             .observe_before(&points::RENDER_LIGHT_PASSES, "native_lights_begin", |o| {
+                if Stage::Lights.standing_down() {
+                    return;
+                }
                 begin_light(&*o.guest(), Entry { eax: o.cpu.eax, ecx: o.cpu.ecx, esp: o.cpu.esp,
                     mxcsr: o.cpu.mxcsr, x87_control: o.cpu.x87.control });
             })
@@ -336,6 +344,9 @@ impl Feature for NativeLights {
         SPLIT_ENABLED.store(split_on(b.switches()), Ordering::Relaxed);
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_lights_layer", |o| {
+                if Stage::Lights.standing_down() {
+                    return;
+                }
                 let mem = o.guest();
                 enter_layer(&*mem, mem.u32(o.cpu.esp).unwrap_or(0));
             })
@@ -344,6 +355,9 @@ impl Feature for NativeLights {
             .context_only();
         b.raw()
             .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
+                if Stage::Lights.standing_down() {
+                    return Ok(Flow::Continue);
+                }
                 let rt = Arc::clone(c.ctx.runtime());
                 let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |pc| {
                     c.ctx.live_continuations().iter().any(|k| k.token == pc
@@ -354,6 +368,9 @@ impl Feature for NativeLights {
             .context_only();
         b.raw()
             .observe_before(&points::LAYER_END, "native_lights_end", |_| {
+                if Stage::Lights.standing_down() {
+                    return;
+                }
                 let inside = CANDIDATE.with_borrow(|c| c.as_ref().is_some_and(|c| c.inside_layer));
                 if inside { finish_candidate(); }
                 if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -366,6 +383,9 @@ impl Feature for NativeLights {
         if compare {
             b.raw()
                 .observe_before(&points::LAYER_END, "native_lights_compare_end", |o| {
+                    if Stage::Lights.standing_down() {
+                        return;
+                    }
                     let mut guest = o.guest();
                     let ret = guest.u32(o.cpu.esp).unwrap_or(0);
                     if !(native_render::lights::RENDER_LIGHT_PASSES..0x0003_1511).contains(&ret) {

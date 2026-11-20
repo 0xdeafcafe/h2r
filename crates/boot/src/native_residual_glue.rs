@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use feature::native_residual::{ViewScope, probe_frames, view};
+use feature::native_residual::{ViewScope, probe_on, view};
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -38,7 +38,7 @@ impl Drop for Restore {
 static CENSUS: Mutex<BTreeMap<u64, Counts>> = Mutex::new(BTreeMap::new());
 
 pub(crate) fn install_census(rt: &runtime::Runtime, entries: &[(u32, &'static str)]) {
-    let frames = probe_frames();
+    let frames = probe_on(&feature::Switches::from_env().unwrap_or_default());
     if frames.is_empty() {
         return;
     }
@@ -104,7 +104,7 @@ pub(crate) fn backend_draw(entry: &'static str) {
 }
 
 pub(crate) fn census() -> Option<Value> {
-    let requested = probe_frames();
+    let requested = probe_on(&feature::Switches::from_env().unwrap_or_default());
     if requested.is_empty() {
         return None;
     }

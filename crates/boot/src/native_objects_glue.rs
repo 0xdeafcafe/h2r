@@ -35,6 +35,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
+use feature::native_map_work;
 use feature::native_objects::{Drawn, Host, ItemMasks, NativeSet, SetPart};
 use map::TagId;
 use native_render::camera::RenderCamera;
@@ -122,6 +123,7 @@ type MapKey = (String, u32, u16);
 
 struct MapState {
     key: MapKey,
+    map_generation: u64,
     /// This load's number, from [`GENERATIONS`]: the set carries it, and
     /// `Host::draw` refuses a view planned against another.
     generation: u64,
@@ -172,8 +174,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
+        let map_generation = native_map_work::generation();
         let key = map_key(mem)?;
-        let current = |st: &Option<MapState>| st.as_ref().map(|s| &s.key) == Some(&key);
+        let current = |st: &Option<MapState>| {
+            st.as_ref().is_some_and(|s| s.key == key && s.map_generation == map_generation)
+        };
         let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
         if !loaded {
             // The palettes bound now, for palettized base maps (P8, P8
@@ -188,10 +193,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if !current(&*st) {
                 let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let models = Arc::new(Models::default());
-                let worker = spawn_worker(key.0.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
+                let worker = spawn_worker(key.0.clone(), map_generation, Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
                 let set = NativeSet { map: key.0.clone(), generation, ..NativeSet::default() };
                 *st = Some(MapState {
                     key: key.clone(),
+                    map_generation,
                     generation,
                     models,
                     set: Arc::new(set),
@@ -313,6 +319,9 @@ fn object_key(geometry: Geometry) -> Option<(u32, ItemKey)> {
 
 impl d3d::DrawAdmission for ObjectAdmission {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        if feature::native_map_work::Stage::Objects.standing_down() {
+            return None;
+        }
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let draw = snapshot.draw;
         if context.layer.site != Site::Scene || context.layer.number != 3
@@ -463,7 +472,7 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    if !switches.feature(feature::native_objects::SWITCH, true) {
+    if !feature::native_objects::on(&switches) {
         return;
     }
     let admission = Arc::new(ObjectAdmission::default());
@@ -481,6 +490,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 /// `None` when the thread cannot start (every object stays on D3D).
 fn spawn_worker(
     name: String,
+    map_generation: u64,
     models: Arc<Models>,
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
@@ -497,6 +507,13 @@ fn spawn_worker(
                     return;
                 }
             };
+            // The mounted map's index contains the definitions that the
+            // worker can load, including ones spawned later. The published
+            // set starts empty even on maps with definitions.
+            if !opened.map.tags().iter().any(|tag| tags::object::is_object_group(tag.group)) {
+                native_map_work::map_stage_empty(map_generation, &name, native_map_work::Stage::Objects);
+                return;
+            }
             let (mut loaded, mut refused) = (0u32, 0u32);
             while let Ok(def) = rx.recv() {
                 if excepted(def) {
@@ -523,7 +540,9 @@ fn spawn_worker(
                         // worker of an earlier load of the same map (A, B,
                         // A again) publishes nothing.
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| publishes_to(s, &models)) else { return };
+                        let Some(s) = st.as_mut().filter(|s| {
+                            publishes_to(s, &models) && s.map_generation == native_map_work::generation()
+                        }) else { return };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
                         set.parts.extend(parts.into_iter().map(|((section, part), p)| ((def as u16, section, part), p)));
@@ -1321,6 +1340,7 @@ mod tests {
     fn map_state(name: &str, generation: u64, models: &Arc<Models>) -> MapState {
         MapState {
             key: (name.to_owned(), 0x800e_6010, 0),
+            map_generation: 0,
             generation,
             models: Arc::clone(models),
             set: Arc::new(NativeSet { map: name.to_owned(), generation, ..NativeSet::default() }),
