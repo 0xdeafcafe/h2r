@@ -418,8 +418,9 @@ member, and accepts a current ticket for renewal.
 
 When Live grants a Cloudflare lease, the hub calls the room named by the
 lease ID. Its private `start` request asks the class's pool room to place
-the match on a pack container with room. Only when no pack has room does a
-new pack room launch the image entrypoint with `H2_PACK=1`, which executes
+the match on a pack container with room. An eligible search can start a pack
+before a lease exists. When placement finds no room, a new pack room launches
+the image entrypoint with `H2_PACK=1`, which executes
 `/opt/h2/h2 host pack`. The pack starts the match's `h2 host run`.
 [Packed hosts](dedicated-host.md#packed-hosts) The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL

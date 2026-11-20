@@ -80,6 +80,7 @@ fn fake_pack(cap: usize) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
                     })
                     .unwrap(),
                 ),
+                ("POST", None) if req.path == host_pack::WARM_PATH => (204, vec![]),
                 ("POST", None) => {
                     let add: AddMatch = serde_json::from_slice(&req.body).unwrap();
                     assert_eq!(add.archive, live_proto::hosts::HostArchive::Film);
@@ -128,13 +129,18 @@ fn sleeper() -> Child {
     cmd.spawn().unwrap()
 }
 
+fn small_key(name: &str) -> PackKey {
+    ((None, HostClass::Small), name.into())
+}
+
 async fn with_pack(packs: &LocalPacks, name: &str, window: u16, control: SocketAddr) {
     packs.state.lock().await.packs.insert(
-        name.into(),
+        small_key(name),
         LocalPack {
             window,
             control,
             child: sleeper(),
+            idle_task: None,
         },
     );
 }
@@ -155,24 +161,30 @@ fn packing_is_off_unless_configured() {
     assert_eq!(pack_matches(None), None);
     assert_eq!(pack_matches(Some("3")), Some(3));
     assert_eq!(pack_matches(Some("0")), Some(1));
+    assert_eq!(pack_matches(Some("auto")), Some(10));
+    assert_eq!(pack_matches(Some("99")), Some(10));
     assert_eq!(pack_matches(Some("x")), None);
 }
 
 #[test]
 fn pack_windows_do_not_overlap() {
-    let a = window(3, 31000, 31100, 32000, 0).unwrap();
-    let b = window(3, 31000, 31100, 32000, 1).unwrap();
+    let a = window(31000, 31100, 32000, 0).unwrap();
+    let b = window(31000, 31100, 32000, 1).unwrap();
     assert_eq!(
         (a.base_port, a.tunnel_port, a.agent_port, a.control),
         (31000, 31100, 14720, 32000)
     );
-    // Three slots of seven UDP ports, then the next pack.
+    // One large-class window even when the actual pack is smaller.
     assert_eq!(
         (b.base_port, b.tunnel_port, b.agent_port, b.control),
-        (31021, 31103, 14723, 32001)
+        (31070, 31110, 14730, 32001)
     );
-    assert!(window(3, 65530, 31100, 32000, 0).is_err());
-    assert!(window(3, 0, 31100, 32000, 0).is_err());
+    assert!(window(65530, 31100, 32000, 0).is_err());
+    assert!(window(0, 31100, 32000, 0).is_err());
+    // After 90 occupied windows the next tunnel range collides with the
+    // first control ports. Window 99 collides with its own control port.
+    let used: Vec<_> = (0..90).collect();
+    assert_eq!(next_window(31000, 31100, 32000, &used).unwrap().0, 101);
 }
 
 #[tokio::test]
@@ -188,7 +200,7 @@ async fn leases_share_a_pack_until_it_refuses_then_the_next_pack_takes_them() {
     let a = packs.start(bin.clone(), &lease("hl-a"), &boot()).await.unwrap();
     assert_eq!(a, "pack:pack-1/hl-a");
     assert_eq!(full_log.lock().unwrap().as_slice(), ["POST /v1/pack/matches"]);
-    assert!(!packs.state.lock().await.packs.contains_key("pack-0"));
+    assert!(!packs.state.lock().await.packs.contains_key(&small_key("pack-0")));
 
     // The next lease joins the running pack instead of starting another.
     let b = packs.start(bin.clone(), &lease("hl-b"), &boot()).await.unwrap();
@@ -201,14 +213,14 @@ async fn leases_share_a_pack_until_it_refuses_then_the_next_pack_takes_them() {
     packs.stop("hl-a", &a).await.unwrap();
     assert!(roomy_log.lock().unwrap().contains(&"DELETE /v1/pack/matches/hl-a".to_owned()));
     assert!(!packs.alive(&a).await.unwrap());
-    assert!(packs.state.lock().await.packs.contains_key("pack-1"));
+    assert!(packs.state.lock().await.packs.contains_key(&small_key("pack-1")));
     assert_eq!(packs.tunnel_addr("hl-a", &a), None);
 
-    // The last stop ends the pack's process.
+    // The last stop removes the match but leaves reusable capacity during linger.
     packs.stop("hl-b", &b).await.unwrap();
     let state = packs.state.lock().await;
-    assert!(state.packs.is_empty());
-    assert!(state.pool.is_empty());
+    assert_eq!(state.packs.len(), 1);
+    assert_eq!(state.pools[&(None, HostClass::Small)].leases("pack-1"), 0);
     drop(state);
     // Stopping again, or with another lease's reference, is harmless.
     packs.stop("hl-b", &b).await.unwrap();
@@ -226,11 +238,56 @@ async fn a_dead_pack_reports_its_matches_dead_and_is_forgotten() {
         .unwrap();
     {
         let mut state = packs.state.lock().await;
-        let local = state.packs.get_mut("pack-0").unwrap();
+        let local = state.packs.get_mut(&small_key("pack-0")).unwrap();
         stop_child(&mut local.child).unwrap();
     }
     assert!(!packs.alive(&a).await.unwrap());
     let state = packs.state.lock().await;
     assert!(state.packs.is_empty());
-    assert_eq!(state.pool.pack_of("hl-a"), None);
+    assert_eq!(state.pools[&(None, HostClass::Small)].pack_of("hl-a"), None);
+}
+
+#[tokio::test]
+async fn search_starts_the_right_class_and_silence_reaps_it_after_sixty_seconds() {
+    let mut packs = LocalPacks::new(10, std::env::temp_dir());
+    let launches = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&launches);
+    packs.launch = Box::new(move |_bin, limits, used| {
+        let (window, _) = next_window(31000, 31100, 32000, used)?;
+        let (control, log) = fake_pack(limits.max_matches);
+        observed.lock().unwrap().push((limits, window, log));
+        Ok(LocalPack { window, control, child: sleeper(), idle_task: None })
+    });
+    let bin = PathBuf::from("/nonexistent/h2");
+    let small = HostClass::Small;
+    let large = HostClass::Large;
+    let searching = WarmDemand { searchers: 1, leases: 0, available: 1 };
+    assert_eq!(packs.warm(bin.clone(), None, &small, WarmDemand::default()).await.unwrap(), 0);
+    assert!(launches.lock().unwrap().is_empty());
+
+    // A search alone starts a supervisor, and only in its class and region.
+    assert_eq!(packs.warm(bin.clone(), None, &small, searching).await.unwrap(), 5);
+    assert_eq!(packs.warm(bin.clone(), None, &small, searching).await.unwrap(), 5);
+    assert_eq!(packs.warm(bin.clone(), Some("west"), &large, searching).await.unwrap(), 10);
+    {
+        let rows = launches.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].0.memory_mib, rows[0].0.vcpus, rows[0].1), (1536, 1.0, 0));
+        assert_eq!((rows[1].0.memory_mib, rows[1].0.vcpus, rows[1].1), (3072, 2.0, 1));
+        assert_eq!(rows[0].2.lock().unwrap().as_slice(), ["GET /v1/pack", "POST /v1/pack/warm"]);
+    }
+    let reference = packs.start(bin, &lease("hl-search"), &boot()).await.unwrap();
+    assert_eq!(launches.lock().unwrap().len(), 2);
+    assert!(packs.alive(&reference).await.unwrap());
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(packs.state.lock().await.packs.len(), 1, "only occupied small pack remains");
+    packs.stop("hl-search", &reference).await.unwrap();
+    tokio::time::advance(Duration::from_secs(59)).await;
+    assert_eq!(packs.state.lock().await.packs.len(), 1);
+    tokio::time::advance(Duration::from_millis(1001)).await;
+    tokio::task::yield_now().await;
+    assert!(packs.state.lock().await.packs.is_empty());
 }

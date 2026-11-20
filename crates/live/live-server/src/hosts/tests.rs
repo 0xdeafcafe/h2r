@@ -581,6 +581,7 @@ async fn reaper_recovers_the_reserved_room_after_a_lost_start_reply() {
         HostRequested {
             lease: lease.clone(),
             provider_ref: Some(reference.clone()),
+            pack_linger: false,
         },
     )
     .await

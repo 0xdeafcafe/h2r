@@ -408,3 +408,17 @@ fn explicit_public_ports_shift_with_the_slot() {
     );
     assert!(slot_public_addr(Some("203.0.113.5:65530"), 31000, 31007).is_err());
 }
+
+#[test]
+fn warm_pulse_renews_an_empty_pack_without_starting_a_match() {
+    let (mut pack, launches) = pack(roomy());
+    let start = pack.idle_since.unwrap();
+    let pulse = start + Duration::from_secs(59);
+    let request = http::Request {
+        method: "POST".into(), path: host_pack::WARM_PATH.into(), body: Vec::new(),
+    };
+    assert_eq!(handle(&mut pack, &request, pulse).0, 204);
+    assert!(launches.lock().unwrap().is_empty());
+    assert!(!pack.should_exit(pulse + Duration::from_secs(59)));
+    assert!(pack.should_exit(pulse + Duration::from_secs(60)));
+}

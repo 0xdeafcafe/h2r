@@ -199,6 +199,88 @@ fn a_tunnel_needs_a_rostered_account_on_a_joinable_cloudflare_lease() {
     );
 }
 
+#[path = "../src/hostroom/pack_state.rs"]
+mod pack_state;
+
+#[test]
+fn search_warms_an_empty_pack_and_silence_retires_it_even_after_eviction() {
+    use live_proto::host_pack::LINGER_MS;
+    use pack_state::PackLeases;
+    let mut pack = PackLeases::default();
+    assert_eq!(pack.deadline(), None);
+    pack.hold_until(10 + LINGER_MS);
+    pack.hold_until(1_000 + LINGER_MS);
+    let mut restored: PackLeases = serde_json::from_value(serde_json::to_value(pack).unwrap()).unwrap();
+    let end = 1_000 + LINGER_MS;
+    restored.expire(end - 1);
+    assert_eq!(restored.deadline(), Some(end));
+    restored.expire(end);
+    assert_eq!(restored.deadline(), None);
+}
+
+#[test]
+fn releasing_the_last_match_lingers_once_and_a_new_match_supersedes_the_timer() {
+    use live_proto::host_pack::LINGER_MS;
+    use pack_state::{PackLease, PackLeases};
+    // The persisted layout predates warm packs.
+    let mut pack: PackLeases = serde_json::from_value(json!({
+        "leases":{"first":{"deadline_ms":1_000_000,"tunnel_port":31100}}
+    })).unwrap();
+    pack.hold_until(LINGER_MS);
+    assert_eq!(pack.deadline(), Some(1_000_000));
+    pack.release("first", 3);
+    pack.release("first", 9);
+    assert_eq!(pack.deadline(), Some(3 + LINGER_MS));
+    pack.admitted("next".into(), PackLease { deadline_ms: 2_000_000, tunnel_port: 31100 });
+    pack.expire(3 + LINGER_MS);
+    assert_eq!(pack.deadline(), Some(2_000_000));
+    pack.expire(2_000_000);
+    assert_eq!(pack.deadline(), None);
+}
+
+#[test]
+fn the_pool_and_container_agree_when_a_search_starts_and_its_hold_expires() {
+    use live_proto::host_pack::{LINGER_MS, Placement, Pool, WarmDemand};
+    use pack_state::PackLeases;
+    let mut pool = Pool::default();
+    let mut container = PackLeases::default();
+    let quiet = WarmDemand { available: 4, ..WarmDemand::default() };
+    assert!(pool.warm_plan(quiet, 3, 0).start.is_none());
+    let searching = WarmDemand { searchers: 1, ..quiet };
+    let name = pool.warm_plan(searching, 3, 0).start.unwrap();
+    container.hold_until(20 + LINGER_MS);
+    pool.warmed(&name, 20, Some(20));
+    assert_eq!(pool.place("synthetic-lease", 3), Placement::Existing(name.clone()));
+    let hold = pool.warm_plan(quiet, 3, 21);
+    assert!(hold.start.is_none() && hold.refresh.is_empty());
+    let end = container.deadline().unwrap();
+    assert_eq!(end, 20 + LINGER_MS);
+    assert_eq!(pool.next_deadline(), Some(end));
+    assert!(pool.expire(end - 1).is_empty());
+    container.expire(end);
+    assert_eq!(pool.expire(end), vec![name]);
+    assert!(container.deadline().is_none() && pool.is_empty());
+}
+
+#[test]
+fn a_stale_quote_cannot_start_a_replacement_or_extend_the_paid_interval() {
+    use live_proto::host_pack::{LINGER_MS, WarmPlan};
+    use pack_state::{funded, grant_deadline};
+
+    let grant = WarmPlan { refresh: vec!["pack-2".into()], start: Some("pack-3".into()) };
+    let changed = WarmPlan {
+        refresh: vec!["pack-2".into(), "pack-3".into()],
+        start: Some("pack-4".into()),
+    };
+    let plan = funded(changed, &grant);
+    assert_eq!(plan.refresh, ["pack-2"]);
+    assert_eq!(plan.start, None);
+    let until = 200 + LINGER_MS;
+    assert_eq!(grant_deadline(200, until + 1), Some(until));
+    assert_eq!(grant_deadline(until - 1, until), Some(until));
+    assert_eq!(grant_deadline(until, until), None);
+}
+
 // Wrangler's cap is a deploy-time number; LIVE_MAX_HOSTS is read at runtime.
 // Catch an edit that changes capacity in just one place or environment.
 #[test]

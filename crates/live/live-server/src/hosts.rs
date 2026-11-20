@@ -26,6 +26,8 @@ use crate::store::{RecordedEvent, StoreError};
 mod endpoint;
 pub mod fly;
 mod lifecycle;
+mod warm_cost;
+mod warming;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 #[cfg(test)]
@@ -79,6 +81,18 @@ impl From<std::io::Error> for HostError {
 pub trait HostProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     async fn start(&self, lease: &HostLease, boot: &HostBoot) -> Result<String, HostError>;
+    /// Renew only the free capacity justified by live demand. Providers
+    /// without a pack supervisor expose zero warm slots.
+    async fn warm(
+        &self,
+        _live: &Live,
+        _region: Option<&str>,
+        _class: &HostClass,
+        _demand: live_proto::host_pack::WarmDemand,
+    ) -> Result<usize, HostError> {
+        Ok(0)
+    }
+
     /// Stopping an already stopped host succeeds.
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError>;
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError>;
@@ -177,6 +191,8 @@ impl HostView {
 #[derive(Default)]
 struct Registry {
     leases: BTreeMap<String, HostView>,
+    // Warming runs on queue polls; terminal match history can be arbitrarily long.
+    active: std::collections::BTreeSet<String>,
     next_version: u64,
     // Terminal leases that had a provider reference, in log position order.
     cleanup: BTreeMap<u64, String>,
@@ -188,12 +204,8 @@ struct Registry {
 
 impl Registry {
     fn occupied(&self) -> usize {
-        let mut occupied: std::collections::BTreeSet<&str> = self
-            .leases
-            .values()
-            .filter(|r| r.active())
-            .map(|r| r.lease.id.as_str())
-            .collect();
+        let mut occupied: std::collections::BTreeSet<&str> =
+            self.active.iter().map(String::as_str).collect();
         occupied.extend(self.cleanup.values().map(String::as_str));
         occupied.extend(self.launching.keys().map(String::as_str));
         occupied.len()
@@ -205,6 +217,7 @@ pub(crate) struct Hosts {
     registry: RwLock<Registry>,
     writes: Mutex<()>,
     cleanup_work: Mutex<()>,
+    warm_pulses: Mutex<BTreeMap<(Option<String>, HostClass), i64>>,
     last_probe_ms: AtomicI64,
     reports: crate::guard::RateLimiter,
     provider: RwLock<Option<Arc<dyn HostProvider>>>,
@@ -232,6 +245,7 @@ impl Hosts {
                 ..Registry::default()
             }),
             cleanup_work: Default::default(),
+            warm_pulses: Default::default(),
             last_probe_ms: Default::default(),
             writes: Default::default(),
             reports: crate::guard::RateLimiter::new(write_rate.0, write_rate.1),
@@ -369,8 +383,12 @@ impl Subscriber for Hosts {
         let at = (at.unix_timestamp_nanos() / 1_000_000) as i64;
         let data = &e.body.data;
         if e.body.kind == HOST_REQUESTED {
-            if let Ok(HostRequested { lease, provider_ref }) = HostRequested::deserialize(data) {
-                registry.leases.entry(lease.id.clone()).or_insert(HostView {
+            if let Ok(HostRequested { lease, provider_ref, .. }) = HostRequested::deserialize(data) {
+                if registry.leases.contains_key(&lease.id) {
+                    return;
+                }
+                registry.active.insert(lease.id.clone());
+                registry.leases.insert(lease.id.clone(), HostView {
                     lease,
                     state: HostState::Requested,
                     endpoint: None,
@@ -446,8 +464,12 @@ impl Subscriber for Hosts {
             _ => return,
         }
         row.updated_ms = at;
-        if !row.active() && row.provider_ref.is_some() {
-            let id = row.lease.id.clone();
+        let terminal = !row.active() && row.provider_ref.is_some();
+        let id = row.lease.id.clone();
+        if e.body.kind == HOST_ENDED {
+            registry.active.remove(&id);
+        }
+        if terminal {
             if e.position > registry.cleaned_through {
                 registry.cleanup.insert(e.position, id);
             }

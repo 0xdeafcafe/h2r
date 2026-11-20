@@ -88,7 +88,8 @@ impl Live {
         }
         let provider = self.hosts.provider_for(&lease)?;
         lease.created_ms = now;
-        if !self.hosts.costs.can_start(&lease) {
+        let pack_linger = launch && lease.provider == ProviderKind::Cloudflare;
+        if !self.hosts.costs.can_start(&lease, pack_linger) {
             provider.log_budget_refusal(&format!(
                 "live: monthly dedicated host budget refused assignment {} (spent ${:.4}, cap ${:.2})",
                 lease.assignment_id,
@@ -145,6 +146,7 @@ impl Live {
             HostRequested {
                 lease: lease.clone(),
                 provider_ref,
+                pack_linger,
             },
         )
         .await?;
@@ -728,6 +730,7 @@ impl Live {
 
     pub async fn sweep_hosts(&self) {
         self.sweep_hosts_at(now_ms()).await;
+        self.refresh_host_pools().await;
     }
 
     pub(super) async fn sweep_hosts_at(&self, at: i64) {

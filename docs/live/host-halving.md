@@ -256,29 +256,25 @@ limit for 30 minutes, checking every pack sample for a tick p99 under 36 ms.
 
 ### Warm capacity from demand
 
-The pool (`pool-<hint>` on Cloudflare, the same logic in
-`local_pack.rs`) keeps free slots, not idle containers. With a template in
-every pack, a free slot in a running pack is a match that starts in under
-2 s, and it costs nothing extra: Cloudflare bills CPU on use and the pack's
-memory is already paid for.
+Each class and region has a pool. Matchmaking counts unexpired search
+tickets in dedicated-enabled hoppers by each player’s best region. Active
+leases in that class and region also count as demand. Placement fills the
+most occupied pack with capacity first.
 
-- **Demand** for a region is the players searching in a hopper that is
-  opted in to dedicated hosts and whose best region it is, plus the leases
-  running there. Matchmaking reports it to the pool on each queue sweep.
-- **Free slots wanted** = ⌈arrival rate × cold pack start × 2⌉, where the
-  arrival rate is leases per second over the last five minutes and the
-  cold start is the pool's own measured median. With one searcher and no
-  history it is 1.
-- **Start on search.** When the wanted figure exceeds the free slots, the
-  pool starts a pack then, before a cohort forms. A search lasts longer
-  than a cold pack start, so the first match of the evening also finds a
-  template.
-- **Stop on silence.** A pack with no match exits after `H2_PACK_LINGER_S`
-  (60 s) unless the pool still wants its slots. With no searcher and no
-  lease in a region, wanted is 0 and every pack there lingers out. Nothing
-  is kept overnight.
-- **Fill first.** Placement stays fullest-pack-first, so a quiet hour
-  drains the emptiest packs.
+The pool estimates spare slots as twice the observed five-minute lease
+arrival rate times its median cold start duration. Its minimum is one slot
+for the first searcher. It subtracts free slots in occupied packs, renews
+only the required empty packs, and starts at most one more per reconciliation.
+A supervisor can start before a cohort forms. Its game child and data
+provisioning start with the lease. The under-two-second join gate still
+depends on the proposed template.
+
+Without searchers or active leases, the wanted count falls to zero. The
+empty supervisor lingers for 60 seconds. Native Live reaps it and the Worker
+persists cleanup deadlines across room eviction. Before starting or renewing
+an empty Cloudflare pack, Live records its paid interval against the host
+budget. A lost response can leave a conservative reservation. A zero lease
+cap or exhausted budget prevents new capacity.
 
 ### Region placement by ping
 
@@ -342,7 +338,7 @@ A managed fleet at any step still needs the rights determination in
 | `POST /v1/pack/matches` | unchanged on the wire; served by a fork when a template exists |
 | `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api.md#hostmetrics)) | reports the Linux resident split, CPU seconds, and a rolling 30-second gameplay tick p99 and count above 36 ms |
 | Sim report `wall` block (`crates/live/sim-bench/src/metrics.rs`) | adds `mapped_read_bytes` and `copied_read_bytes` |
-| Pool `place` (`hostroom.rs`, `local_pack.rs`) | takes the demand figure; returns whether the slot was warm |
+| Pool `place` (`hostroom.rs`, `local_pack.rs`) | reconciles demand independently of placement; the Worker records whether a placement reused a running supervisor |
 | `HostEnded` (`live-proto`) | carries the match's CPU seconds and peak Pss, so the cost row is the match's share and not a whole container |
 | `host_costs.rs` | charges memory and disk as container time ÷ occupied slots, and CPU as measured; the budget check still reserves a whole new container when no slot is free |
 | `FlyProvider` (`crates/live/live-server/src/hosts/fly.rs`) | runs `h2 host pack` in each Machine and claims one 7-port window per slot |
@@ -353,8 +349,8 @@ every later slice and by admission.
 
 ## Rules and limits
 
-- **Ad hoc.** No pack, template or Machine runs without a searcher or a
-  lease in its region. A stopped Fly Machine is not running.
+- **Ad hoc.** A new pack requires a searcher or lease in its region. A paid idle
+  hold expires after the one-minute linger. A stopped Fly Machine is not running.
 - **Two homes.** The supervisor, template, admission and pool are the same
   code locally and on Cloudflare. A provider-specific piece (the pool
   room's echo, custom instance sizes, Fly's stopped Machines) has a local
@@ -425,7 +421,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
-| 9 | Demand-driven warm slots | the pool in `hostroom.rs` and `local_pack.rs`, `hosts/lifecycle.rs`, `matchmaking/dedicated.rs` (the demand figure) | `tests/hostroom.rs` and `local_pack_tests.rs` with a fake clock: start on search, linger out on silence, never a pack with zero demand | First match of a session joinable within 2 s of its cohort forming, in both homes |
 | 10 | Region probes without a host | `matchmaking/dedicated.rs`, `selection.rs`, `crates/live/live-hle/src/qos.rs`, the pool room's echo route, `docs/live/live-matchmaking.md` | `matchmaking/tests.rs`: the three sources in order, the warm tie-break, the peer fallback | Probe RTT within 10 ms of the in-match RTT for the same client and region |
 | 11 | Cost by share and the caps | `host_costs.rs`, `live-proto/src/hosts.rs`, `hosts/lifecycle.rs`, `wrangler.toml` | `host_costs.rs` tests: four matches in one pack sum to one container | The month's estimate within 20% of the invoice |
 | 12 | Packs on Fly | `hosts/fly.rs` | the fake-API tests: windows per slot, a stopped pool, destroy on silence | One packed Machine, four matches, UDP |

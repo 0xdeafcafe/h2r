@@ -492,11 +492,16 @@ impl DurableObject for LiveHub {
             self.schedule(&live).await?;
             return resp;
         }
+        let queue_ticket = path == "/v1/matchmaking/queue" && req.method() == http::Method::PUT;
         let mut router = live_server::http::router(live.clone());
         let mut resp = match router.call(req).await {
             Ok(resp) => resp,
             Err(never) => match never {},
         };
+        if queue_ticket && resp.status().is_success() {
+            let live = live.clone();
+            self.state.wait_until(async move { live.refresh_host_pools().await });
+        }
         if let Some((ms, head)) = cold
             && let Ok(v) = format!("start;dur={ms}, events;desc={head}").parse()
         {

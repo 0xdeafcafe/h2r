@@ -195,8 +195,8 @@ the lease, its token and the signed bundle URL. The supervisor passes them
 to its child and never writes them down. Each child is its own process
 group. A removal sends SIGTERM to the group, so `h2 host run` reports
 `Stopped` to Live, and sends SIGKILL after 15 seconds. The children watch
-a pipe from the supervisor and stop if it dies. A pack that has run
-nothing for `H2_PACK_LINGER_S` (default 60 s) exits.
+a pipe from the supervisor and stop if it dies. A private `POST /v1/pack/warm` renews an empty supervisor’s idle
+deadline. Unused supervisors exit after `H2_PACK_LINGER_S` (default 60 s).
 
 **Admission.** The supervisor samples the match process group every two
 seconds on Linux. The game agent supplies gameplay tick p99 on both homes.
@@ -217,16 +217,15 @@ policy. The supervisor accepts explicit CPU, memory and slot limits.
 room asks the class's pool room for its location
 (`pool-<hint>`, or `pool-any` when the region is not a Cloudflare location
 hint) to place the lease. The pool sends the match to the fullest pack
-with room and starts a new pack room (`pool-<hint>/pack-<n>`) only when
-none has room. A refusal marks that pack full until one of its leases
+with room. It starts a new pack room (`pool-<hint>/pack-<n>`) when
+search demand exceeds free slots or a lease cannot be placed. A refusal marks that pack full until one of its leases
 ends, and the pool tries the next pack, up to three new packs per lease.
-The pack room starts its container with only the pack's size in the
-environment and waits up to 30 seconds for the control port. The lease
+The pack room passes its resource settings and configured feature switches to the container and waits up to 30 seconds for the control port. The lease
 room forwards each tunnel upgrade to its pack room, which connects it to
 the match's tunnel port. When Live stops a lease, the pool removes the
-match from its pack. When that was the pack's last lease, the pack room
-destroys the container instead. Pack names are never reused. Each room
-keeps an alarm at its latest lease deadline as a backstop for a lost stop.
+match from its pack. The final lease starts a 60-second idle hold. Fresh search demand can
+renew it. Durable alarms expire leases and empty holds across eviction.
+The pool assigns a new name to every new pack.
 `LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
 (five for small, ten for large, or a lower configured limit).
 
@@ -235,8 +234,10 @@ Native Live uses the same pool logic and supervisor when
 pack with its control port on loopback from `LIVE_HOST_PACK_CONTROL_PORT`
 (default 32000) plus the pack's window. Each later window shifts its UDP,
 tunnel and agent ports past the previous pack's slots. Its provider
-references are `pack:<pack>/<lease>`. Unset, each lease runs its own
-`h2 host run` as before.
+references are `pack:<pack>/<lease>`. Set the slot limit to `auto` for
+class-sized packs. Each child writes under `window-<n>/<lease>` in the
+host data directory. Unset, each lease runs its own `h2 host run`.
+[Warm capacity policy](host-halving.md#warm-capacity-from-demand)
 
 Live's cost estimate still counts a full container for each lease, and
 `LIVE_MAX_HOSTS` still counts leases. Packing three matches per container

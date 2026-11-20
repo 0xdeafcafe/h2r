@@ -47,6 +47,9 @@ pub const TUNNEL_PORT: u16 = 31100;
 pub const AGENT_PORT: u16 = 14720;
 
 pub const STATUS_PATH: &str = "/v1/pack";
+/// Refresh the idle deadline of an empty supervisor.
+pub const WARM_PATH: &str = "/v1/pack/warm";
+pub const LINGER_MS: i64 = 60_000;
 pub const MATCHES_PATH: &str = "/v1/pack/matches";
 
 /// What one pack may run.
@@ -238,6 +241,9 @@ impl Placement {
 struct PackEntry {
     /// Lease ID → its hard deadline (Unix ms).
     leases: BTreeMap<String, i64>,
+    /// Deadline to discard an empty supervisor after a release or demand pulse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idle_until_ms: Option<i64>,
     /// The lease count when the pack last refused. It has no room until
     /// it drops below this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,6 +255,21 @@ impl PackEntry {
         let n = self.leases.len();
         n < max_matches && self.full_at.is_none_or(|full| n < full)
     }
+}
+
+/// Live tickets and active leases for this region and class. Available is
+/// bounded by the remaining lease cap and monthly budget at the hub.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WarmDemand {
+    pub searchers: usize,
+    pub leases: usize,
+    pub available: usize,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct WarmPlan {
+    pub refresh: Vec<String>,
+    pub start: Option<String>,
 }
 
 /// Every pack of one class and region and the leases each runs. The Worker
@@ -263,6 +284,12 @@ pub struct Pool {
     /// Pack names are never reused, so a late call to a stopped pack
     /// cannot land on a new one.
     next: u64,
+    /// Lease arrivals grouped by second, covering the last five minutes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    arrivals: BTreeMap<i64, usize>,
+    /// Last 31 observed cold start durations from spawn to control readiness.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cold_ms: Vec<u64>,
 }
 
 impl Pool {
@@ -289,10 +316,89 @@ impl Pool {
         match best {
             Some(pack) => Placement::Existing(pack),
             None => {
-                let name = format!("pack-{}", self.next);
-                self.next += 1;
-                Placement::New(name)
+                Placement::New(self.next_pack())
             }
+        }
+    }
+
+    fn next_pack(&mut self) -> String {
+        let name = format!("pack-{}", self.next);
+        self.next += 1;
+        name
+    }
+
+    /// Routable slots, including empty supervisors still inside their hold.
+    pub fn free_slots(&self, max_matches: usize) -> usize {
+        self.packs.values().map(|p| {
+            p.full_at.unwrap_or(max_matches).min(max_matches).saturating_sub(p.leases.len())
+        }).sum()
+    }
+
+    /// Refresh only the empty packs needed beyond spare slots in occupied
+    /// packs. Plan at most one cold start per reconciliation, then remeasure.
+    pub fn warm_plan(&mut self, demand: WarmDemand, max_matches: usize, now_ms: i64) -> WarmPlan {
+        let mut plan = WarmPlan::default();
+        if max_matches == 0 || demand.available == 0 || (demand.searchers == 0 && demand.leases == 0) {
+            return plan;
+        }
+        let second = now_ms.div_euclid(1000);
+        self.arrivals.retain(|&t, _| t <= second && second.saturating_sub(t) < 300);
+        let arrivals: usize = self.arrivals.values().sum();
+        let mut times = self.cold_ms.clone();
+        times.sort_unstable();
+        let median = match times.len() {
+            0 => 0,
+            n => times[(n - 1) / 2].midpoint(times[n / 2]),
+        };
+        let forecast = (arrivals as u128 * u128::from(median) * 2).div_ceil(300_000);
+        let wanted = demand.available.min(usize::try_from(forecast).unwrap_or(usize::MAX)
+            .max(usize::from(demand.searchers > 0)));
+        let mut free = self.packs.values().filter(|p| !p.leases.is_empty())
+            .map(|p| p.full_at.unwrap_or(max_matches).min(max_matches).saturating_sub(p.leases.len()))
+            .sum::<usize>();
+        for (name, entry) in &self.packs {
+            if free >= wanted {
+                break;
+            }
+            if entry.leases.is_empty() && entry.idle_until_ms.is_some_and(|until| until > now_ms) {
+                // A refresh every 20 s keeps a 60 s hold across slow requests.
+                if entry.idle_until_ms.unwrap() <= now_ms.saturating_add(2 * LINGER_MS / 3) {
+                    plan.refresh.push(name.clone());
+                }
+                free += max_matches;
+            }
+        }
+        if free < wanted {
+            plan.start = Some(self.next_pack());
+        }
+        plan
+    }
+
+    pub fn warmed(&mut self, pack: &str, now_ms: i64, cold_start_ms: Option<u64>) {
+        let entry = self.packs.entry(pack.to_owned()).or_default();
+        if entry.leases.is_empty() {
+            entry.idle_until_ms = Some(now_ms.saturating_add(LINGER_MS));
+        }
+        if let Some(elapsed) = cold_start_ms {
+            if self.cold_ms.len() >= 31 {
+                self.cold_ms.remove(0);
+            }
+            self.cold_ms.push(elapsed);
+        }
+    }
+
+    pub fn admitted_at(&mut self, pack: &str, lease: &str, deadline_ms: i64, now_ms: i64) {
+        if self.pack_of(lease).is_none() {
+            let second = now_ms.div_euclid(1000);
+            self.arrivals.retain(|&t, _| t <= second && second.saturating_sub(t) < 300);
+            *self.arrivals.entry(second).or_default() += 1;
+        }
+        self.admitted(pack, lease, deadline_ms);
+    }
+
+    pub fn release_at(&mut self, lease: &str, now_ms: i64) {
+        if let Some(pack) = self.release(lease) {
+            self.warmed(&pack, now_ms, None);
         }
     }
 
@@ -305,11 +411,9 @@ impl Pool {
         {
             self.next = self.next.max(n + 1);
         }
-        self.packs
-            .entry(pack.to_owned())
-            .or_default()
-            .leases
-            .insert(lease.to_owned(), deadline_ms);
+        let entry = self.packs.entry(pack.to_owned()).or_default();
+        entry.idle_until_ms = None;
+        entry.leases.insert(lease.to_owned(), deadline_ms);
     }
 
     /// `pack` refused a lease. Returns true when the pack runs nothing and
@@ -352,7 +456,15 @@ impl Pool {
             .filter(|(_, deadline)| **deadline <= now_ms)
             .map(|(lease, _)| lease.clone())
             .collect();
-        expired.iter().filter_map(|lease| self.release(lease)).collect()
+        let mut stopped: Vec<_> = expired.iter().filter_map(|lease| self.release(lease)).collect();
+        self.packs.retain(|name, p| {
+            if p.idle_until_ms.is_some_and(|until| until <= now_ms) {
+                stopped.push(name.clone());
+                return false;
+            }
+            true
+        });
+        stopped
     }
 
     /// Forget a pack whose container is gone, with all its leases.
@@ -389,7 +501,7 @@ impl Pool {
     pub fn next_deadline(&self) -> Option<i64> {
         self.packs
             .values()
-            .flat_map(|p| p.leases.values().copied())
+            .flat_map(|p| p.leases.values().copied().chain(p.idle_until_ms))
             .min()
     }
 

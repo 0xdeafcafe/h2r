@@ -14,6 +14,8 @@ use time::{Date, OffsetDateTime};
 use crate::dispatch::Subscriber;
 use crate::store::RecordedEvent;
 
+mod warm;
+
 pub const DEFAULT_WORKER_BUDGET_USD: f64 = 25.0;
 
 // Both Wrangler container applications provision 3 GiB per vCPU and 12 GB disk.
@@ -109,6 +111,8 @@ pub struct LeaseUsage {
     #[serde(skip)]
     managed: bool,
     #[serde(skip)]
+    pack_linger: bool,
+    #[serde(skip)]
     stopped_ms: Option<i64>,
 }
 
@@ -127,6 +131,7 @@ impl LeaseUsage {
             max_players: lease.max_players,
             deadline_ms: lease.deadline_ms(),
             managed,
+            pack_linger: false,
             stopped_ms: None,
         }
     }
@@ -150,6 +155,7 @@ pub struct HostCosts {
     prices: PriceTable,
     budget_usd_month: Option<f64>,
     leases: Mutex<BTreeMap<String, LeaseUsage>>,
+    warm: Mutex<warm::WarmLedger>,
 }
 
 impl HostCosts {
@@ -212,14 +218,22 @@ impl HostCosts {
             return;
         };
         let at_ms = at.unix_timestamp_nanos().div_euclid(1_000_000) as i64;
+        if event.kind == hosts::HOST_PACK_WARM_RESERVED {
+            if let Ok(grant) = hosts::HostPackWarmReserved::deserialize(&event.data) {
+                self.warm.lock().unwrap().apply(&grant);
+            }
+            return;
+        }
         let mut leases = self.leases.lock().unwrap();
         match event.kind.as_str() {
             hosts::HOST_REQUESTED => {
-                if let Ok(HostRequested { lease, provider_ref }) =
+                if let Ok(HostRequested { lease, provider_ref, pack_linger }) =
                     HostRequested::deserialize(&event.data)
                 {
                     leases.entry(lease.id.clone()).or_insert_with(|| {
-                        LeaseUsage::requested(&lease, at_ms, provider_ref.is_some())
+                        let mut usage = LeaseUsage::requested(&lease, at_ms, provider_ref.is_some());
+                        usage.pack_linger = pack_linger && usage.managed && lease.provider == ProviderKind::Cloudflare;
+                        usage
                     });
                 }
             }
@@ -296,7 +310,8 @@ impl HostCosts {
             .unwrap()
             .values()
             .map(|lease| self.estimate(lease, month_start, now_ms, false).cost_usd)
-            .sum()
+            .sum::<f64>()
+            + self.warm.lock().unwrap().cost(&self.prices.cloudflare, month_start, now_ms)
     }
 
     pub fn budget_usd_month(&self) -> Option<f64> {
@@ -305,11 +320,17 @@ impl HostCosts {
 
     /// Called under the host writer lock, before appending HostRequested.
     /// In-flight starts and running hosts already claim their full duration.
-    pub(crate) fn can_start(&self, lease: &HostLease) -> bool {
+    pub(crate) fn can_start(&self, lease: &HostLease, pack_linger: bool) -> bool {
+        let mut candidate = LeaseUsage::requested(lease, lease.created_ms, false);
+        candidate.pack_linger = pack_linger;
+        self.fits_budget(&candidate, None)
+    }
+
+    fn fits_budget(&self, candidate: &LeaseUsage, grant: Option<&hosts::HostPackWarmReserved>) -> bool {
         let Some(cap) = self.budget_usd_month else {
             return true;
         };
-        let now = lease.created_ms;
+        let now = candidate.requested_ms;
         let Some((mut from, mut until)) = utc_month(now) else {
             return false;
         };
@@ -325,29 +346,48 @@ impl HostCosts {
 
         // Require room for a full match in the admission month, even when
         // some of the runtime will be charged to the next month.
-        let candidate = LeaseUsage::requested(lease, now, false);
-        let mut additional = self.estimate(&candidate, now, candidate.deadline_ms, true).cost_usd;
+        let finish = candidate.deadline_ms.saturating_add(if candidate.pack_linger {
+            live_proto::host_pack::LINGER_MS
+        } else { 0 });
+        let mut additional = self.estimate(candidate, now, finish, true).cost_usd;
         loop {
             let committed: f64 = leases
                 .values()
                 .map(|lease| self.estimate(lease, from, until, true).cost_usd)
                 .sum();
-            let projected = committed + additional;
+            let warm = self.warm.lock().unwrap().cost(&self.prices.cloudflare, from, until);
+            let extension = grant.map_or(0.0, |g| warm::grant_cost(g, &self.prices.cloudflare, from, until));
+            let projected = committed + additional + warm + extension;
             if !projected.is_finite() || projected > cap {
                 return false;
             }
-            if candidate.deadline_ms <= until {
+            if finish <= until {
                 return true;
             }
             let Some(next) = utc_month(until) else {
                 return false;
             };
             (from, until) = next;
-            additional = self.estimate(&candidate, from, until, true).cost_usd;
+            additional = self.estimate(candidate, from, until, true).cost_usd;
         }
     }
 
     fn estimate(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
+        let mut cost = self.estimate_match(lease, from_ms, to_ms, forecast);
+        if lease.pack_linger {
+            let start = lease.stopped_ms.or(forecast.then_some(lease.deadline_ms));
+            if let Some(start) = start {
+                let tail = hosts::PackWarmPeriod {
+                    pack: String::new(), from_ms: start,
+                    until_ms: start.saturating_add(live_proto::host_pack::LINGER_MS), start: false,
+                };
+                cost.cost_usd += warm::period_cost(&lease.class, &tail, &self.prices.cloudflare, from_ms, to_ms);
+            }
+        }
+        cost
+    }
+
+    fn estimate_match(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
         let reserving = forecast && lease.billing_end().is_none();
         let start = match lease.start_ms {
             Some(start) => start,
@@ -712,28 +752,54 @@ mod tests {
     }
 
     #[test]
+    fn only_new_managed_packed_leases_reserve_the_empty_hold() {
+        let costs = HostCosts::configured(
+            Some(r#"{"egress_gb_per_player_minute":0,"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            Some("59"),
+        ).unwrap();
+        let lease = candidate(FEB, 1);
+        assert!(costs.can_start(&lease, false));
+        assert!(!costs.can_start(&lease, true));
+
+        for (name, has_hold) in [("legacy", false), ("packed", true)] {
+            let mut request = managed_request(name, FEB, 2);
+            if has_hold {
+                request.data["pack_linger"] = json!(true);
+            }
+            costs.fold(&request);
+            costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": name }), FEB+1_000));
+        }
+        let legacy = costs.lease_cost("legacy", FEB + 100_000).unwrap();
+        let packed = costs.lease_cost("packed", FEB + 100_000).unwrap();
+        close(legacy.cost_usd, 1.0);
+        close(packed.cost_usd, 61.0);
+        assert_eq!(packed.ran_ms, legacy.ran_ms);
+        close(costs.month_to_date(FEB + 20_000), 21.0);
+    }
+
+    #[test]
     fn reserves_pending_cloudflare_starts_and_settles_once_the_room_stops() {
         let costs = budget_fixture();
-        assert!(costs.can_start(&candidate(FEB, 4)));
-        assert!(!costs.can_start(&candidate(FEB, 8)));
+        assert!(costs.can_start(&candidate(FEB, 4), false));
+        assert!(!costs.can_start(&candidate(FEB, 8), false));
         costs.fold(&managed_request("match", FEB, 4));
         close(costs.month_to_date(FEB), 1.0);
-        assert!(!costs.can_start(&candidate(FEB, 4)));
+        assert!(!costs.can_start(&candidate(FEB, 4), false));
 
         // A game can report that it ended while its container is still up.
         costs.fold(&end("match", 100, 2, FEB + 1_000));
         assert_eq!(costs.stop_confirmed("match"), Some(false));
-        assert!(!costs.can_start(&candidate(FEB + 1_000, 4)));
+        assert!(!costs.can_start(&candidate(FEB + 1_000, 4), false));
         close(costs.month_to_date(FEB + 2_000), 3.0);
-        assert!(!costs.can_start(&candidate(FEB + 4_000, 1)));
+        assert!(!costs.can_start(&candidate(FEB + 4_000, 1), false));
 
         for at in [FEB + 2_000, FEB + 3_000] {
             costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "match" }), at));
         }
         assert_eq!(costs.stop_confirmed("match"), Some(true));
         close(costs.month_to_date(FEB + 5_000), 3.0);
-        assert!(costs.can_start(&candidate(FEB + 5_000, 4)));
-        assert!(!costs.can_start(&candidate(FEB + 5_000, 5)));
+        assert!(costs.can_start(&candidate(FEB + 5_000, 4), false));
+        assert!(!costs.can_start(&candidate(FEB + 5_000, 5), false));
     }
 
     #[test]
@@ -742,7 +808,7 @@ mod tests {
         costs.fold(&managed_request("match", FEB - 1_000, 7));
         close(costs.month_to_date(FEB - 1), 2.0);
         // January can cover the reservation (2 + 5). February cannot (6 + 3).
-        assert!(!costs.can_start(&candidate(FEB - 1_000, 4)));
+        assert!(!costs.can_start(&candidate(FEB - 1_000, 4), false));
         close(costs.month_to_date(FEB), 0.0);
         close(costs.month_to_date(FEB + 1_000), 1.0);
         costs.fold(&event(
@@ -751,7 +817,7 @@ mod tests {
             FEB + 1_000,
         ));
         close(costs.month_to_date(FEB + MINUTE), 1.0);
-        assert!(costs.can_start(&candidate(FEB + MINUTE, 4)));
+        assert!(costs.can_start(&candidate(FEB + MINUTE, 4), false));
     }
 
     #[test]
@@ -773,7 +839,7 @@ mod tests {
             }
         };
         let disabled = HostCosts::from_env(&override_cap, worker).unwrap();
-        assert!(!disabled.can_start(&candidate(FEB, 4)));
+        assert!(!disabled.can_start(&candidate(FEB, 4), false));
     }
 
     #[test]
@@ -789,7 +855,7 @@ mod tests {
         let cost = costs.lease_cost("match", FEB + MINUTE).unwrap();
         close(cost.estimated_egress_gb, 0.003);
         close(cost.cost_usd, 0.0030004);
-        assert!(!costs.can_start(&candidate(FEB + MINUTE, 1)));
+        assert!(!costs.can_start(&candidate(FEB + MINUTE, 1), false));
     }
 
     #[test]

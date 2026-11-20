@@ -10,13 +10,15 @@ pub const HOST_READY: &str = "HostReady";
 pub const HOST_PLAYING: &str = "HostPlaying";
 pub const HOST_ENDED: &str = "HostEnded";
 pub const HOST_STOPPED: &str = "HostStopped";
-pub const KINDS: [&str; 6] = [
+pub const HOST_PACK_WARM_RESERVED: &str = "HostPackWarmReserved";
+pub const KINDS: [&str; 7] = [
     HOST_REQUESTED,
     HOST_BOOTING,
     HOST_READY,
     HOST_PLAYING,
     HOST_ENDED,
     HOST_STOPPED,
+    HOST_PACK_WARM_RESERVED,
 ];
 
 pub const DEFAULT_IDLE_TIMEOUT_S: u32 = 120;
@@ -191,6 +193,9 @@ pub struct HostRequested {
     /// A provider address known before launch, usable for cleanup after replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_ref: Option<String>,
+    /// A managed packed lease reserves its share of the final empty hold.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pack_linger: bool,
 }
 
 /// Data for [`HOST_BOOTING`].
@@ -223,6 +228,23 @@ pub struct HostEnded {
     pub reason: EndReason,
     pub ran_ms: u64,
     pub players_peak: u8,
+}
+
+/// Incremental idle capacity granted by the hub before a Cloudflare pool acts.
+/// Times are UTC Unix milliseconds. Retrying a recorded grant is idempotent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPackWarmReserved {
+    pub pool: String,
+    pub class: HostClass,
+    pub periods: Vec<PackWarmPeriod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackWarmPeriod {
+    pub pack: String,
+    pub from_ms: i64,
+    pub until_ms: i64,
+    pub start: bool,
 }
 
 /// Data for [`HOST_STOPPED`], recorded after a managed host confirms shutdown.
@@ -416,12 +438,14 @@ mod tests {
                 "HostPlaying",
                 "HostEnded",
                 "HostStopped",
+                "HostPackWarmReserved",
             ],
         );
         round_trip(
             HostRequested {
                 lease: lease(),
                 provider_ref: None,
+                pack_linger: false,
             },
             json!({ "lease": lease() }),
         );
@@ -429,6 +453,7 @@ mod tests {
             HostRequested {
                 lease: lease(),
                 provider_ref: Some("room".into()),
+                pack_linger: false,
             },
             json!({ "lease": lease(), "provider_ref": "room" }),
         );

@@ -471,6 +471,12 @@ fn handle(pack: &mut Pack, req: &http::Request, now: Instant) -> (u16, Vec<u8>) 
         .filter(|id| valid_lease(id));
     match (req.method.as_str(), req.path.as_str(), lease) {
         ("GET", host_pack::STATUS_PATH, _) => ok_json(&pack.status()),
+        ("POST", host_pack::WARM_PATH, _) if !pack.draining => {
+            if pack.idle_since.is_some() {
+                pack.idle_since = Some(now);
+            }
+            (204, Vec::new())
+        }
         ("POST", host_pack::MATCHES_PATH, _) => {
             let Ok(add) = serde_json::from_slice::<AddMatch>(&req.body) else {
                 return error(400, "expected an AddMatch body");

@@ -352,3 +352,52 @@ fn add_match_omits_an_absent_region() {
         serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
     assert_eq!(back, status);
 }
+
+#[test]
+fn search_warms_one_pack_and_silence_retires_it() {
+    let mut pool = Pool::default();
+    let demand = WarmDemand { searchers: 1, leases: 0, available: 4 };
+    let start = pool.warm_plan(demand, 5, 0).start.unwrap();
+    pool.warmed(&start, 1000, Some(1000));
+    assert_eq!(pool.free_slots(5), 5);
+    assert!(pool.warm_plan(demand, 5, 2_000).start.is_none());
+    let refresh = pool.warm_plan(demand, 5, 21_000);
+    assert_eq!(refresh.refresh, [start.clone()]);
+    pool.warmed(&start, 21_000, None);
+    let silence = pool.warm_plan(WarmDemand::default(), 5, 30_000);
+    assert!(silence.refresh.is_empty() && silence.start.is_none());
+    assert!(pool.expire(80_999).is_empty());
+    assert_eq!(pool.expire(81_000), [start]);
+    assert!(pool.is_empty());
+}
+
+#[test]
+fn demand_uses_recent_arrivals_and_the_observed_median_start() {
+    let mut pool = Pool::default();
+    let demand = WarmDemand { searchers: 1, leases: 99, available: 2 };
+    for t in 0..100 {
+        pool.admitted_at("pack-0", &format!("lease-{t}"), 1_000_000, t);
+    }
+    // 100 arrivals in five minutes, median 3s: ceil(100 × 3 × 2 / 300) = 2.
+    for elapsed in [500, 3000, 20_000] {
+        pool.warmed("pack-0", 100, Some(elapsed));
+    }
+    assert!(pool.warm_plan(demand, 101, 100).start.is_some(), "one free, want two");
+    assert!(pool.warm_plan(WarmDemand { available: 1, ..demand }, 101, 100).start.is_none());
+    assert!(pool.warm_plan(demand, 101, 300_000).start.is_none(), "history has expired");
+}
+
+#[test]
+fn occupied_capacity_is_used_before_an_idle_hold() {
+    let mut pool = Pool::default();
+    pool.admitted_at("pack-0", "lease", 1_000_000, 0);
+    let empty = pool.place("another", 1);
+    pool.warmed(empty.pack(), 0, None);
+    let demand = WarmDemand { searchers: 1, leases: 1, available: 1 };
+    let plan = pool.warm_plan(demand, 3, 55_000);
+    assert!(plan.start.is_none() && plan.refresh.is_empty());
+    pool.release_at("lease", 55_000);
+    assert_eq!(pool.next_deadline(), Some(60_000));
+    assert_eq!(pool.expire(60_000), [empty.pack()]);
+    assert_eq!(pool.place("later", 3), Placement::Existing("pack-0".into()));
+}

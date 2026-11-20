@@ -348,6 +348,31 @@ impl Matchmaker {
     }
 }
 
+impl Matchmaker {
+    /// Count independent searchers by their current best region, including
+    /// the default location (None) when there are no configured probes.
+    pub(crate) fn search_demand(&self, clock: i64) -> BTreeMap<Option<String>, usize> {
+        let mut demand = BTreeMap::new();
+        let Some((_, rules)) = &self.rules else { return demand };
+        for (&hopper, bucket) in &self.buckets {
+            if !self.config.enabled(hopper)
+                || !rules.get(hopper as usize).copied().flatten()
+                    .is_some_and(|r| r.size <= MAX_DEDICATED_SOLO_PLAYERS)
+            {
+                continue;
+            }
+            for player in bucket.waiting.values() {
+                if !player.dedicated && player.seen + TICKET_SECONDS > clock {
+                    let region = self.config.regions.pick(&[player.entrant()])
+                        .map(|choice| choice.region.to_owned());
+                    *demand.entry(region).or_default() += 1;
+                }
+            }
+        }
+        demand
+    }
+}
+
 impl Bucket {
     fn remove(&mut self, xuid: Xuid) {
         if self.waiting.remove(&xuid).is_some() {
@@ -617,6 +642,13 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
         }
         matcher.submit(ticket, endpoint, xuid, clock, provider, &live)?
     };
+    // The first ticket gets its QoS candidates while the pack starts. On
+    // the Worker the hub attaches this work to the request with waitUntil.
+    #[cfg(not(target_arch = "wasm32"))]
+    if request.is_none() {
+        let live = live.clone();
+        crate::rt::spawn(async move { live.refresh_host_pools().await });
+    }
     if let Some(request) = request {
         // LiveHub schedules its next sweep after this response. Wait for the
         // host request to be recorded with the matcher lock released.

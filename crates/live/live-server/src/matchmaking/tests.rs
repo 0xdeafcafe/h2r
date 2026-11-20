@@ -356,3 +356,23 @@ async fn leased_publication_authorizes_only_the_assigned_session() {
         pos
     );
 }
+
+#[test]
+fn warm_demand_counts_only_fresh_players_in_opted_in_hoppers() {
+    let mut matcher = Matchmaker { config: config(true, HOPPER), ..Default::default() };
+    let rules = Rules { size: 2, team_count: 2, ranked: false };
+    matcher.rules = Some(("synthetic".into(), [Some(rules); HOPPERS]));
+    let endpoint = "192.0.2.1:31000".parse().unwrap();
+    let bucket = matcher.buckets.entry(HOPPER).or_default();
+    let mut first = ticket(31000);
+    let lhr = matcher.config.regions.candidates().next().unwrap().clone();
+    first.samples.push(sample(&lhr, 60));
+    bucket.submit(&first, FIRST, endpoint, 1, FORMED, Some(&matcher.config.regions)).unwrap();
+    let mut registered = ticket(31001);
+    registered.dedicated = true;
+    bucket.submit(&registered, SECOND, endpoint, 1, FORMED, None).unwrap();
+    matcher.buckets.entry(HOPPER + 1).or_default()
+        .submit(&ticket(31002), Xuid(3), endpoint, 1, FORMED, None).unwrap();
+    assert_eq!(matcher.search_demand(FORMED), BTreeMap::from([(Some("lhr".into()), 1)]));
+    assert!(matcher.search_demand(FORMED + TICKET_SECONDS).is_empty());
+}
