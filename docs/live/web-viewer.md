@@ -303,9 +303,11 @@ node for is drawn from `models.objects.<kind>` when the server has that
 glb, else as a box. A map glb's `asset.extras.features` lists teleporters
 (with `links` between them) and gravity lifts (`map/features.ts`): the 3D
 view stands a ring at each teleporter in its role's colour, arcs each link
-through the air with an arrowhead where it arrives, and draws each lift as
-a translucent column with an arrow along its push
-(`viewer/features3d.ts`); the 2D maps draw rings, dashed curves and a disc
+through the air with an arrowhead where it arrives, and marks each lift
+with a faint ring and a short arrow along its up axis
+(`viewer/features3d.ts`). The lift's placement in the map art supplies
+its pose until a matching machine or moved-object sample supplies its
+position and up axis. The 2D maps draw rings, dashed curves and a disc
 with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.

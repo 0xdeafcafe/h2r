@@ -48,7 +48,7 @@ import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeDevice, placeMachine, type MachineNode } from "./machines3d";
 import { FilmWorld3D } from "./film-world3d";
 import { FrameObjects } from "./objects3d";
-import { buildFeatures } from "./features3d";
+import { buildFeatures, placeLiftGuides } from "./features3d";
 import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
 import { ScenarioObjects, isVehicle, objectOf } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
@@ -1825,6 +1825,7 @@ export class ViewerScene {
       return file ? this.library.vehicle(modelUrl(m.root, file, m.table.stamp))?.root ?? null : null;
     }, this.insideReveal)) this.dirty = true;
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
+    if (this.featureGroup && placeLiftGuides(this.featureGroup, frame.machines, frame.objects)) this.dirty = true;
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret
     // is drawn as part of the vehicle it is mounted on, aimed.
