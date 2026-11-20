@@ -123,7 +123,11 @@ presentation active, confirmed replacements keep the guest draw for replay.
 A confirmed admission on the threaded backend needs a synchronous worker
 round trip. `encode_pending` closes the preceding merged D3D pass, and each
 physical copy gets a private command buffer. World and object hooks batch a
-view into one reservation. A packet holder can batch consecutive native draws
+view into one reservation. When the render thread takes scene stages
+(`Device::queues_scene_stages`), the world and objects queue one instead
+(`Device::reserve_scene_stage`): no round trip, and their preparation and
+recording run on the render thread
+([framescene.md](framescene.md), "Slice 2"). A packet holder can batch consecutive native draws
 on the same targets in a single `ExternalPlan` and encode their ranges in
 guest order. End the batch before any guest-owned draw, target/state change
 that the batch does not reproduce, or guest-visible read. A one-draw helper
@@ -169,7 +173,10 @@ World placement transforms are initialized once at map load.
 | `examined`, `suppressed` | Guest items considered and items committed. Multi-range passes override `ExternalPass::items(ranges)` to report their logical item count. |
 | `refused_ownership`, `refused_resources`, `refused_inputs` | Unowned items, unavailable surfaces or bindings, and rejected stage preflight. |
 | `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
-| `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
+| `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation on the game thread and private command recording, respectively. |
+| `render_prepare_ns` | The same preparation on the render thread (`timeline::native::mark_render_thread`): scene stages, and passes the threaded backend prepares on its worker. |
+| `extract_ns` | Game-thread time a scene stage spends deciding what the guest skips: its guest reads and the checks that can refuse. |
+| `scene_stages`, `scene_dropped` | Scene stages queued to the render thread, and those it could not record after the guest skipped their items (`d3d::scene_stage`; the stage then reserves on the game thread). |
 | `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
 | `cache_hits`, `cache_misses` | Draws whose pipeline and bindings were already resident, and draws that created one. |
 | `command_buffers` | Committed recordings with a private command buffer (`record_ranges`). Each also ends the open encoder and adds a render pass. Packets (`record_draws`), encoded commands (`record_encoded`) and bundles add none. |

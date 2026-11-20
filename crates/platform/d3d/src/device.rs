@@ -1207,6 +1207,42 @@ impl<B: Backend> PreparedExternal<'_, B> {
     }
 }
 
+/// A scene stage reserved at a drained boundary
+/// ([`Device::reserve_scene_stage`]): nothing is queued yet. Borrowing the
+/// device keeps the bindings and the queue's order fixed while the guest's
+/// skip is applied.
+#[must_use = "drop to cancel, commit after telling the guest to skip the stage's items"]
+pub struct SceneReservation<'a, B: Backend> {
+    device: &'a mut Device<B>,
+    stage: crate::SceneStage<B::Surface>,
+    binding: ExternalBinding<B::Surface>,
+}
+
+impl<B: Backend> SceneReservation<'_, B> {
+    /// The device after the drain.
+    pub fn device(&self) -> &Device<B> {
+        self.device
+    }
+
+    /// Queues the stage for the render thread, in order after the work so
+    /// far. It cannot refuse: the guest has been told to skip the stage's
+    /// items, so a stage the render thread does not take is counted dropped.
+    pub fn commit(self) {
+        let (kind, ranges) = (self.stage.plan.stage, self.stage.plan.ranges);
+        if !self.device.backend.queue_scene_stage(self.stage) {
+            crate::scene_stage::dropped(kind, ranges, "the render thread stopped taking scene stages");
+            return;
+        }
+        for (header, _) in self.binding.colors {
+            self.device.mark_color_written(header);
+        }
+        if self.binding.depth_write {
+            self.device.mark_depth_written();
+        }
+        self.device.stats.external_passes += 1;
+    }
+}
+
 /// An equivalent, immutable vertex binding for an already resolved indexed
 /// draw. The original indices, shader, render state, textures and attachments
 /// are kept. A hook can decline without changing the original submission.
@@ -2147,11 +2183,75 @@ impl<B: Backend> Device<B> {
         self.prepare_external_inner(mem, plan, pass, Some(slots), Some(rect))
     }
 
+    /// Whether a scene stage of `stage` can be queued now: a render thread
+    /// whose backend records them (docs/graphics/framescene.md, slice 2),
+    /// and the stage has not dropped one ([`crate::scene_stage::stood_down`]).
+    /// Asked before the guest is told to skip anything.
+    pub fn queues_scene_stages(&self, stage: timeline::native::Stage) -> bool {
+        self.backend.queues_scene_stages() && !crate::scene_stage::stood_down(stage)
+    }
+
+    /// At a drained boundary, reserves `pass` as a scene stage: the bound
+    /// targets by slot, the request, and the view's constants and W clip as
+    /// a pass issued now takes them, with every check that would refuse it
+    /// on the render thread made here (the targets resolve, the viewport
+    /// lies inside the target, the slots have sizes). `None`: not taken,
+    /// with nothing counted; the caller reserves on the game thread
+    /// ([`Self::prepare_external_bound`]) or leaves the items to the guest.
+    /// Nothing is queued until [`SceneReservation::commit`]; dropping the
+    /// reservation cancels it.
+    pub fn reserve_scene_stage(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
+    ) -> Result<Option<SceneReservation<'_, B>>, D3dError> {
+        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 {
+            return Ok(None);
+        }
+        self.swallow_external_boundary()?;
+        let _extract = timeline::native::Timer::start(plan.stage, timeline::native::Metric::ExtractNs);
+        let Ok(binding) = self.bind_external(mem, &plan, &mut *pass, None) else {
+            return Ok(None);
+        };
+        let (x, y, w, h) = binding.request.rect;
+        let (sw, sh) = binding.request.surface_size;
+        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw) || y.checked_add(h).is_none_or(|b| b > sh) {
+            return Ok(None);
+        }
+        let s = &binding.surfaces;
+        let slots_valid = s.slots.len() == s.slot_sizes.len()
+            && s.slots.iter().zip(&s.slot_sizes).all(|(slot, size)| match (slot, size) {
+                (None, None) => true,
+                (Some(_), Some((w, h))) => *w != 0 && *h != 0,
+                _ => false,
+            });
+        if !slots_valid {
+            return Ok(None);
+        }
+        for &(_, surface) in &binding.colors {
+            self.before_target_write(surface)?;
+        }
+        let stage = crate::SceneStage {
+            surfaces: binding.surfaces.clone(),
+            request: binding.request,
+            plan,
+            pass: Arc::new(std::sync::Mutex::new(pass)),
+        };
+        Ok(Some(SceneReservation { device: self, stage, binding }))
+    }
+
     fn external_binding(
         &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
         let _timer = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
+        self.bind_external(mem, plan, pass, held)
+    }
+
+    /// [`Self::external_binding`], untimed: a scene stage charges it to its
+    /// extraction ([`Self::reserve_scene_stage`]).
+    fn bind_external(
+        &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
+        held: Option<&[Option<B::Surface>]>,
+    ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
         let request = self.external_ready(mem, pass.colour_only())?;
         let writes = pass.writes();
         if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {

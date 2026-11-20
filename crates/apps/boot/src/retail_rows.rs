@@ -5,11 +5,19 @@
 //!
 //! The row count (the shared datum array constructor) and the pane hook are
 //! still `layout_glue`'s raw hooks: they serve every list at once.
+//!
+//! **Our rows among the retail ones** ([`crate::ui::Extension::at`]): a
+//! list that tells its rows apart by index (the campaign pause menu) shows
+//! a retail row past ours at a higher index than the original knows. Its
+//! text and press go to the original with the handle of the retail row it
+//! shows ([`moved`]), the item's row word (`+0x70`) or the press's row
+//! word swapped for the call and the item's put back after. Our hooks let
+//! that call through.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{EntryFuture, Ret};
+use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::points::Point;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
@@ -51,8 +59,54 @@ fn once(seen: &AtomicBool, what: &str) {
     }
 }
 
-fn row_text(c: &mut Call, e: &Ext) -> Result<Flow, GuestFault> {
+/// The handle of retail row `retail` on the list at `list` (its rows'
+/// datum array at `+0x70`): what a moved retail row's call takes.
+pub fn retail_handle(m: &dyn engine::memory::GuestMemory, list: u32, retail: i16) -> Option<u32> {
+    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(LIST_ROWS)).ok()?);
+    Some(array.handle_of(m, i32::from(retail)).ok()??.0)
+}
+
+/// The rows' datum array of a list handler.
+pub const LIST_ROWS: u32 = 0x70;
+/// An item widget's row handle.
+pub const ITEM_ROW: u32 = 0x70;
+
+/// Row `row` of `list` when it is a retail row shown at another index:
+/// the retail row's index.
+pub fn moved(model: &Model, list: List, row: i16) -> Option<i16> {
+    model.retail_index(list, row).filter(|r| *r != row)
+}
+
+fn row_text(c: &mut Call, e: &Arc<Ext>) -> Result<Flow, GuestFault> {
+    if e.passing.load(Ordering::SeqCst) {
+        return Ok(Flow::Continue);
+    }
     let call = text_call(&*c.ctx.runtime().memory(), c.cpu.esp);
+    if let Some((item, retail)) =
+        call.and_then(|(item, row)| Some((item, moved(&e.model, e.list, row)?)))
+    {
+        let list = c.cpu.ecx;
+        let word = c.ctx.runtime().memory().u32(c.cpu.esp + 8).unwrap_or(0);
+        let Some(handle) = retail_handle(&*c.ctx.runtime().memory(), list, retail) else {
+            return Ok(Flow::Continue);
+        };
+        let (e, text) = (Arc::clone(e), e.text);
+        return c.answer_async(move |cx| -> EntryFuture {
+            Box::pin(async move {
+                let at = item + ITEM_ROW;
+                let was = cx.read(|m| m.u32(at))?;
+                cx.write(|m| m.set_u32(at, handle))?;
+                e.passing.store(true, Ordering::SeqCst);
+                let r = cx
+                    .call(GuestCall::new(text).ecx(list).args([item, word]))
+                    .await;
+                e.passing.store(false, Ordering::SeqCst);
+                cx.write(|m| m.set_u32(at, was))?;
+                r?;
+                Ok(Ret::new(0, 8))
+            })
+        });
+    }
     // The model reads the store: never with guest memory held.
     let Some((item, texts)) =
         call.and_then(|(item, row)| Some((item, texts(&e.model, e.list, row, e.label_only)?)))
@@ -68,8 +122,37 @@ fn row_text(c: &mut Call, e: &Ext) -> Result<Flow, GuestFault> {
     })
 }
 
-fn row_chosen(c: &mut Call, e: &Ext) -> Result<Flow, GuestFault> {
+fn row_chosen(c: &mut Call, e: &Arc<Ext>) -> Result<Flow, GuestFault> {
+    if e.passing.load(Ordering::SeqCst) {
+        return Ok(Flow::Continue);
+    }
     let row = chosen_row(&*c.ctx.runtime().memory(), c.cpu.esp);
+    if let Some(retail) = row.and_then(|r| moved(&e.model, e.list, r)) {
+        let list = c.cpu.ecx;
+        let (chain, handle) = {
+            let m = c.ctx.runtime().memory();
+            (
+                m.u32(c.cpu.esp + 4).unwrap_or(0),
+                retail_handle(&*m, list, retail),
+            )
+        };
+        let Some(handle) = handle else {
+            return Ok(Flow::Continue);
+        };
+        let (e, chosen, scratch) = (Arc::clone(e), e.chosen, e.scratch);
+        return c.answer_async(move |cx| -> EntryFuture {
+            Box::pin(async move {
+                cx.write(|m| m.set_u32(scratch, handle))?;
+                e.passing.store(true, Ordering::SeqCst);
+                let r = cx
+                    .call(GuestCall::new(chosen).ecx(list).args([chain, scratch]))
+                    .await;
+                e.passing.store(false, Ordering::SeqCst);
+                r?;
+                Ok(Ret::new(0, 8))
+            })
+        });
+    }
     // The store is written with no guest memory held.
     let Some(chosen) = row
         .and_then(|r| e.model.row(e.list, r))
@@ -100,6 +183,13 @@ struct Ext {
     label_only: bool,
     model: Arc<Model>,
     drawn: AtomicBool,
+    /// The row text and row chosen's addresses, for a moved retail row.
+    text: u32,
+    chosen: u32,
+    /// A word for a moved retail row's press handle.
+    scratch: u32,
+    /// A moved retail row's call is going through to the original.
+    passing: Arc<AtomicBool>,
 }
 
 impl hooks::Feature for Extension {
@@ -107,12 +197,23 @@ impl hooks::Feature for Extension {
         Manifest::new(self.id, self.title).doc("docs/game/settings-menu.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let moves = (0..64).any(|i| moved(&self.model, self.list, i).is_some());
+        let scratch = if moves {
+            b.guest_alloc(0x1000, runtime::guest::Permissions::RW)?
+        } else {
+            0
+        };
+        let passing = Arc::new(AtomicBool::new(false));
         let e = Arc::new(Ext {
             id: self.id,
             list: self.list,
             label_only: self.label_only,
             model: Arc::clone(&self.model),
             drawn: AtomicBool::new(false),
+            text: self.text.base,
+            chosen: self.chosen.base,
+            scratch,
+            passing: Arc::clone(&passing),
         });
         let t = Arc::clone(&e);
         b.raw()
@@ -122,8 +223,17 @@ impl hooks::Feature for Extension {
         // Texts and presses go through the model, whose strings are fixed
         // at build and whose values are the settings store's, kept outside
         // the snapshot; their async answers are continuations the machine
-        // check sees. `drawn` only quiets a log line.
-        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        // check sees. `drawn` only quiets a log line. A moved retail row's
+        // call holds the item's swapped row word until it returns.
+        if moves {
+            let p = Arc::clone(&passing);
+            b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
+                p.load(Ordering::SeqCst)
+                    .then(|| "a moved retail row's call is going through".to_string())
+            }));
+        } else {
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
+        }
         Ok(())
     }
 }

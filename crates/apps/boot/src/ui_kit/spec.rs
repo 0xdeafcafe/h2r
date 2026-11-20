@@ -75,6 +75,11 @@ pub struct RowSpec {
     pub description: Option<String>,
     /// The string ids the row shows (empty for texts served by slot).
     pub ids: Vec<u32>,
+    /// Art drawn while the row has the focus, beside the screen's own
+    /// ([`ScreenSpec::shown_art`]): a row's icon in Quick Options' game
+    /// type picture (`crate::ui_kit::dialog::quick_icon`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub art: Option<crate::ui_kit::view::PaneArt>,
 }
 
 impl RowSpec {
@@ -86,6 +91,7 @@ impl RowSpec {
             prompts: None,
             description: None,
             ids: Vec::new(),
+            art: None,
         }
     }
     pub fn value(label: &str, values: &[&str], current: usize) -> Self {
@@ -99,6 +105,7 @@ impl RowSpec {
             prompts: None,
             description: None,
             ids: Vec::new(),
+            art: None,
         }
     }
     pub fn info(label: &str, value: &str) -> Self {
@@ -111,6 +118,7 @@ impl RowSpec {
             prompts: None,
             description: None,
             ids: Vec::new(),
+            art: None,
         }
     }
     pub fn text(label: &str, value: &str, max_chars: u16) -> Self {
@@ -124,6 +132,7 @@ impl RowSpec {
             prompts: None,
             description: None,
             ids: Vec::new(),
+            art: None,
         }
     }
     pub fn press(mut self, press: Press) -> Self {
@@ -136,6 +145,11 @@ impl RowSpec {
     }
     pub fn ids(mut self, ids: &[u32]) -> Self {
         self.ids = ids.to_vec();
+        self
+    }
+    /// Art shown while the row has the focus.
+    pub fn art(mut self, art: crate::ui_kit::view::PaneArt) -> Self {
+        self.art = Some(art);
         self
     }
     /// The value as shown: `< On >` for a value row, the text for the
@@ -333,6 +347,14 @@ impl ScreenSpec {
             .get(self.focus)
             .and_then(|r| r.prompts.as_deref())
             .unwrap_or(&self.prompts)
+    }
+
+    /// The art drawn: the screen's own, then the focused row's
+    /// ([`RowSpec::art`]), so a row's icon follows the focus.
+    pub fn shown_art(&self) -> Vec<crate::ui_kit::view::PaneArt> {
+        let mut v = self.art.clone();
+        v.extend(self.rows.get(self.focus).and_then(|r| r.art));
+        v
     }
 
     /// The footer legend as drawn, when the prompts go there.

@@ -44,7 +44,7 @@ crates/
   platform/    d3d gfx assets hot-render  dsound audio wma  xapi input  bink-hle voice
   hooking/     ~hooks (feature)  +guest-layout  +switches
   rewrites/    engine native-render
-               +sim-core +sim-anim +sim-collision +sim-state +sim-bridge
+               +sim-core +sim-anim +sim-collision +sim-objects +sim-state +sim-bridge
                +frame-scene +scene-extract +render-bridge
   live/        [live-proto live-hle live-telemetry live-server live-worker coop bots film
                 cloud-saves host-data sim]

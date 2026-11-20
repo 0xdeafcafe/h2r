@@ -14,7 +14,10 @@ impl Feature for NativePhysics {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
         for port in PORTS {
-            let installed = b.switches().implementation(port.switch, false);
+            // A body under `impl.sim.native.objects` owns its point; the
+            // port is then a test oracle.
+            let installed = b.switches().implementation(port.switch, false)
+                && !crate::sim_objects::owns(b.switches(), port.point.base);
             crate::shadow::register(port.switch, crate::shadow::SIM_PHYSICS, port.point, installed);
             if installed {
                 b.raw().implement(port.point, port.switch, move |cpu, ctx, pc| {

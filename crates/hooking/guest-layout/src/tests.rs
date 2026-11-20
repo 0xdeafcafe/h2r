@@ -10,6 +10,10 @@ fn all_views() -> Vec<(&'static str, u32, &'static [FieldInfo])> {
     vec![
         v::<ObjectHeader>(),
         v::<Object>(),
+        v::<ObjectDefinition>(),
+        v::<DatumArray>(),
+        v::<TagIndex>(),
+        v::<TagEntry>(),
         v::<Unit>(),
         v::<Biped>(),
         v::<Weapon>(),

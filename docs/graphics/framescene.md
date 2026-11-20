@@ -5,8 +5,9 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 [sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
-Nothing here is built. Lanes write code and tests; the coordinator builds,
-runs and measures.
+Slices 0 to 2 are built, and their sections say how; the rest is the
+plan. Lanes write code and tests; the coordinator builds, runs and
+measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -361,11 +362,13 @@ From slice 6 it is not drawn that frame and is counted
 palettes name at map load so that the count is zero after loading.
 
 **Before slice 6** the D3D backend is still in the frame, so its command
-queue is the order. A typed stage is one command in that queue, carrying
-an `Arc` of the sealed view; the render thread culls, prepares and
-records it when it reaches it, into the pass that is open (the packet
-path the native-cost lane built). The sim thread does none of that work
-and does not wait for it.
+queue is the order. A typed stage is one command in that queue
+(`d3d::SceneStage`): its attachments by slot, the plan naming the stage,
+its guest view and its ranges, and the stage's typed inputs by value.
+The render thread prepares and records it when it reaches it, into the
+pass that is open (the packet path the native-cost lane built). The sim
+thread does none of that work and does not wait for it. Slice 2 says
+which stages queue one and what stays on the sim thread.
 
 **Snapshots and pause.** `state.save` needs no scene. `state.load`
 publishes a scene with `cut` set. A paused game publishes nothing; the
@@ -618,20 +621,77 @@ commands are for the coordinator.
 
 ### Slice 2: typed stages prepare and record on the render thread
 
-- **Code.** The shared data types move from `d3d::backend` and
-  `d3d::nv2a` to `gfx` (4.1), with re-exports so `d3d` compiles
-  unchanged. One new command in `ThreadedBackend`'s queue: a scene
-  stage (a sealed view, a stage id, the attachments by slot). The world
-  and object stages cull, prepare and build packets when the render
-  thread reaches the command. Residency is read at extraction; what is
-  not resident or not supported stays a remainder for the guest. A
-  failure on the render thread after the guest was told to skip is a
-  named error, so every check that can refuse moves to extraction.
-  Extraction moves to the first `LAYER_DRAW` of the view.
-- **Tests.** Ordering: a scene stage between two D3D draws on one
-  target records between them (the `ThreadedBackend` rig). No game
-  thread work: the stage's prepare counters are zero on the game
-  thread. A remainder is drawn by D3D exactly once.
+- **Code.** The world and object stages queue a scene stage and the
+  render thread prepares and records it.
+  - **Types.** `TargetCopy`, `ExternalDraws` and `ExternalEncoded` are
+    `gfx::external`'s, re-exported at their `d3d::backend` paths, so
+    `native-render`'s world and object modules (`gpu`,
+    `object_program_gpu`) build their packets without `d3d`.
+    `ResolvedDraw` and the NV2A pipeline key stay in `d3d` until slice 6
+    carries draws: they are made of `d3d`'s state model (`DrawState`,
+    `ShaderInputs`, `HwState`), which would move with them.
+  - **The command.** `d3d::SceneStage` in `ThreadedBackend`'s queue.
+    `Device::queues_scene_stages(stage)` says whether one is taken now:
+    a render thread whose backend records them
+    (`Backend::runs_scene_stages`: `GfxBackend`, `ScaledBackend` when
+    both copies do, `InterpBackend` while it is not replaying), and the
+    stage has not stood down. `Device::reserve_scene_stage` resolves the
+    bound targets, the request and the view's constants and W clip, and
+    makes here the checks that would refuse it on the render thread (the
+    targets resolve, the viewport lies in the target, the slots have
+    sizes). The glue then tells the guest to skip and commits
+    (`SceneReservation::commit`); dropping the reservation cancels it.
+    The render thread maps the attachments and calls
+    `Backend::run_scene_stage`, which prepares and records every target
+    copy and commits them in order.
+  - **What stays at extraction, on the sim thread.** Every check that
+    can refuse, because a refusal must leave the items to the guest.
+    World (`boot::native_world_glue`): W-buffering, the stage palettes,
+    the stencil plan, the inherited cull, and the parts the guest skips
+    (frustum against the parts' bounds). Objects
+    (`boot::native_objects_glue`): the render-state checks and each
+    part's plan (`LitObjects::plan_part_of`, where an item refuses).
+  - **What runs on the render thread.** World: the GPU world's upload,
+    part slots, pipelines and packets (`WorldPass::record_draws`).
+    Objects: pipelines, uniform uploads and packets
+    (`ObjectsPass::packets`).
+  - **Named errors.** What the render thread cannot record
+    (`d3d::scene_stage`) is counted, its cause logged once, and the
+    stage stands down: from then on it reserves on the sim thread, where
+    a refusal leaves the items to the guest. One frame at most is short
+    of the stage's items.
+  - **Where nothing is queued.** Without a render thread, while
+    interpolation replays, and after a stand-down, the stages reserve on
+    the sim thread through `Device::prepare_external_bound`.
+  - **Inputs by value.** A stage carries the inputs it reads (the
+    world's camera and parts, the objects' planned draws), not an `Arc`
+    of its view: a view seals at the present, after its stages are
+    queued.
+  - **Extraction points.** The view opens at the base layer 3 and the
+    objects are extracted at the walk's first geometry handler, as in
+    slice 1. The walk's sorted entries live on the stack of the layer-3
+    call (`object_walk::read`), so layer 1 cannot read them; opening the
+    view at the first `LAYER_DRAW` waits on reading what the item list
+    holds at layer 1.
+  - **Counters.** `native_<stage>_extract_ns` is the sim thread's
+    extraction of a scene stage, `prepare_ns` the game thread's
+    preparation alone, `render_prepare_ns` preparation on the render
+    thread (`timeline::native::mark_render_thread`),
+    `native_<stage>_scene_stages` and `_scene_dropped` the stages queued
+    and dropped; `render.scene` adds `scene_stages_<stage>` and
+    `scene_dropped_<stage>` for the world and objects.
+- **Tests.** `crates/platform/d3d/tests/scene_stage.rs` over the
+  `ThreadedBackend` rig with the recording backend: a scene stage
+  between two D3D draws on one target records between them, on the
+  render thread, and the stage's preparation runs only there; a dropped
+  reservation queues nothing; no stage is taken without a render thread,
+  while the backend replays, after a stand-down, or with no ranges.
+  `timeline`: preparation counted on the render thread is charged as
+  `render_prepare_ns`. A remainder is drawn by D3D exactly once: the
+  world's skip clears only the parts it draws
+  (`an_untranslated_material_keeps_its_d3d_draws_and_a_translated_one_is_skipped`
+  in `boot::native_world_glue`), and the object walk consumes only the
+  run it queued.
 - **Gate.** Pixels and hashes as slice 1. On the gate corpus,
   `native_world_prepare_ns` and `native_objects_prepare_ns` on the game
   thread are zero, `native_objects_worker_round_trips` and
@@ -789,7 +849,7 @@ uses move to `native-render` or `scene-extract` and stay.
 
 | When | What goes | About |
 |---|---|---|
-| Slice 2 | `native-render`'s `d3d` dependency for world and objects | |
+| Slice 2 | `native-render`'s `d3d` dependency for world and objects: their modules use `gfx::external`; the crate keeps `d3d` for the other stages | |
 | Slice 4 | `scene-extract/src/layout/skip.rs`; the mask and admission halves of `boot/src/native_{world,objects,lights,shadows,first_person,world_layers}_glue.rs` and `feature/src/native_{world,objects,lights,shadows,first_person,world_layers}*`; `d3d/src/device/{opaque_world,opaque_vertices}.rs` | 18,000 |
 | Slice 5 | `boot/src/native_{fog,water,post}_glue.rs`, `feature/src/native_{fog,water,post}.rs` | 5,000 |
 | Slice 6 | `DrawAdmission`, `ExternalPass`, `ExternalPlan`, reservations and `device/admission_scope.rs`; `gfx_backend/native_runs.rs`; the scene-stage command of slice 2; the remaining `boot/src/native_*_glue.rs` and `feature/src/native_*` except the scene lists | 7,800 |
@@ -854,6 +914,7 @@ $H agent render.scene --socket $S > scene.json          # from slice 1
 
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,
+from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dropped}`,
 `walk_unsupported`, and from slice 1 `scene_dropped_*`,
 `scene_unresident`, `scene_readback`, `scene_held_draws`.
 

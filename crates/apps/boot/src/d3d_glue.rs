@@ -1117,6 +1117,22 @@ impl d3d::backend::Backend for Headless {
         self.0.reusable_external_attachments()
     }
 
+    fn runs_scene_stages(&self) -> bool {
+        self.0.runs_scene_stages()
+    }
+
+    fn run_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> Result<bool, String> {
+        self.0.run_scene_stage(stage)
+    }
+
+    fn queues_scene_stages(&self) -> bool {
+        self.0.queues_scene_stages()
+    }
+
+    fn queue_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> bool {
+        self.0.queue_scene_stage(stage)
+    }
+
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
         self.0.commit_external(recording);
     }

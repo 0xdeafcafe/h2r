@@ -163,27 +163,34 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen (crate::voice_settings), opened from the pause menu's
-    // Settings.
+    // The Voice screen (crate::voice_settings), opened from the pause menus.
     let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
     }
     let mut extensions = vec![controls, settings];
-    // Video and Voice at the end of the pause menu's Settings dialog
-    // (crate::pause_menu), after the Controller Speaker row; a row whose
-    // screen has no rows is left out by the model.
+    // Video Settings and Voice Settings on both pause menus, right below
+    // their own settings row (crate::pause_menu); a row whose screen has no
+    // rows is left out by the model.
     if on.pause_rows {
+        use crate::pause_menu::{VIDEO_LABEL, VOICE_LABEL};
         let rows = |list, retail| {
             ui::extend(list, retail)
-                .row(Row::open(SCREEN))
-                .row(Row::open(VOICE_SCREEN))
+                .row(Row::open(SCREEN).label(VIDEO_LABEL))
+                .row(Row::open(VOICE_SCREEN).label(VOICE_LABEL))
         };
-        extensions.push(rows(
-            List::GameSettings,
-            u32::from(crate::pause_menu::FIRST_VALUE),
-        ));
+        // Below Controller Settings: on the campaign menu by index (Save
+        // and Quit moves down past ours), on the multiplayer menu by the
+        // rows' order (`pause_menu::order_actions`).
+        extensions.push(
+            rows(List::Pause, crate::pause_menu::PAUSE_ROWS)
+                .at(crate::pause_menu::PAUSE_CONTROLLER_ROW as u32 + 1),
+        );
+        extensions.push(rows(List::MpPause, crate::pause_menu::MP_ACTIONS));
     }
+    // Voice Chat on a profile's Edit Profile, after Voice Masking
+    // (crate::profile_voice_row); left out with the Voice screen.
+    extensions.push(crate::profile_voice_row::rows());
     Model::with_ids(
         store,
         vec![video, voice],

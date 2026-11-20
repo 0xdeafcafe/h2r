@@ -446,11 +446,8 @@ pub struct ExternalWrites {
     pub depth_stencil: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TargetCopy {
-    Reference,
-    Display,
-}
+/// Defined in `gfx` (docs/graphics/framescene.md, section 4.1).
+pub use gfx::external::TargetCopy;
 
 /// A guest colour surface required for intermediate draws within one replacement.
 #[derive(Clone, Copy, Debug)]
@@ -614,31 +611,9 @@ impl ExternalBundles {
     }
 }
 
+/// Defined in `gfx` (docs/graphics/framescene.md, section 4.1).
 #[cfg(feature = "gpu")]
-pub struct ExternalDraws {
-    /// Guest ranges represented by the packets (a range may have several
-    /// scissors, and adjacent ranges may share a packet).
-    pub ranges: usize,
-    pub packets: Vec<gfx::RecordedDraw>,
-    pub discards: bool,
-    /// Persistent buffer ranges the packets read, written ahead of them:
-    /// at the front of the submission when it holds no other bytes for
-    /// them, otherwise in draw order before the run (`GfxBackend`).
-    pub writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
-}
-
-/// Commands a pass issues into the frame's open encoder at commit
-/// ([`ExternalPass::record_encoded`]). Everything they use is made and
-/// written at prepare; the closure only records, once on a scratch encoder
-/// under a validation scope and once for real.
-#[cfg(feature = "gpu")]
-pub struct ExternalEncoded {
-    /// Guest ranges recorded.
-    pub ranges: usize,
-    /// Render passes the commands begin (a submission's passes are bounded).
-    pub passes: usize,
-    pub commands: Box<dyn Fn(&mut wgpu::CommandEncoder) + Send>,
-}
+pub use gfx::external::{ExternalDraws, ExternalEncoded};
 
 #[cfg(feature = "gpu")]
 pub enum ExternalCommands {
@@ -672,6 +647,24 @@ pub struct QueuedExternalDraw<S> {
     pub fallback_depth: Option<S>,
     /// None on native commit, otherwise the result of the fallback draw.
     pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
+}
+
+/// A typed stage of the frame step's scene (docs/graphics/framescene.md,
+/// slice 2): one command in the render thread's queue, in order with the
+/// draws around it. The game thread has already decided, from the scene
+/// and the guest, every item the stage draws and told the guest to skip
+/// them; the render thread prepares and records the stage when it reaches
+/// the command ([`Backend::run_scene_stage`]). What it cannot record is a
+/// named error ([`crate::scene_stage`]), not a fallback.
+pub struct SceneStage<S> {
+    /// The attachments by slot: colour, depth, sampled levels and slots,
+    /// as the device resolved them when the stage was queued.
+    pub surfaces: ExternalSurfaces<S>,
+    pub request: ExternalPassRequest,
+    /// The stage, the guest view and the ranges the stage promised.
+    pub plan: ExternalPlan,
+    /// The stage's typed inputs and its recording.
+    pub pass: SharedReplacement,
 }
 
 /// Validate and seal every copy, either on the worker or over pinned handles
@@ -1357,6 +1350,50 @@ pub trait Backend: Send {
     /// non-batch command? Backends with live admission policy can opt out.
     fn reusable_external_attachments(&self) -> bool { false }
 
+    /// Whether [`run_scene_stage`](Self::run_scene_stage) records a stage
+    /// asked now (docs/graphics/framescene.md, slice 2). `false` by
+    /// default.
+    fn runs_scene_stages(&self) -> bool { false }
+
+    /// Prepares and records `stage` on this backend's thread, every copy,
+    /// and commits it in order after the work so far. `Ok(false)`: it
+    /// could not be recorded (the caller counts it dropped).
+    fn run_scene_stage(&mut self, stage: SceneStage<Self::Surface>) -> Result<bool, String> {
+        #[cfg(feature = "gpu")]
+        {
+            let SceneStage { surfaces, request, plan, pass } = stage;
+            let Some(recordings) = self.prepare_external(surfaces, request, [None; 4], &plan, TargetCopy::Reference, pass)? else {
+                return Ok(false);
+            };
+            if !crate::device::complete_recordings(&plan, &recordings) {
+                return Ok(false);
+            }
+            for recording in recordings {
+                self.commit_external(recording);
+            }
+            Ok(true)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = stage;
+            Ok(false)
+        }
+    }
+
+    /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
+    /// stage now: a render thread whose backend
+    /// [runs scene stages](Self::runs_scene_stages). Asked before the
+    /// guest is told to skip anything. `false` by default.
+    fn queues_scene_stages(&self) -> bool { false }
+
+    /// Queues `stage` for the render thread, in order after the work so
+    /// far; it is prepared and recorded there. `false`: not taken (only
+    /// when [`queues_scene_stages`](Self::queues_scene_stages) said no).
+    fn queue_scene_stage(&mut self, stage: SceneStage<Self::Surface>) -> bool {
+        let _ = stage;
+        false
+    }
+
     /// Splice an already validated recording into submission order. A backend
     /// implementing prepare must also implement commit. Commit cannot refuse.
     fn commit_external(&mut self, _recording: ExternalRecording) {
@@ -1706,6 +1743,18 @@ pub enum Recorded {
     ReadPixelCount {
         /// The ticket.
         ticket: u64,
+    },
+    /// `run_scene_stage`.
+    SceneStage {
+        /// The stage.
+        stage: timeline::native::Stage,
+        /// Its colour and depth surfaces.
+        color: u32,
+        depth: u32,
+        /// The guest items it stands for ([`ExternalPass::items`]).
+        items: usize,
+        /// The thread that ran it.
+        thread: Option<String>,
     },
 }
 
@@ -2093,6 +2142,27 @@ impl Backend for RecordingBackend {
 
     fn supports_external_pass(&self) -> bool {
         self.external_passes
+    }
+
+    fn runs_scene_stages(&self) -> bool {
+        self.external_passes
+    }
+
+    /// Records the stage, the items its pass stands for and the thread it
+    /// ran on; nothing is encoded (there is no GPU).
+    fn run_scene_stage(&mut self, stage: SceneStage<u32>) -> Result<bool, String> {
+        if !self.external_passes {
+            return Ok(false);
+        }
+        let items = stage.pass.lock().map_err(|_| "native pass poisoned")?.items(stage.plan.ranges);
+        self.calls.push(Recorded::SceneStage {
+            stage: stage.plan.stage,
+            color: stage.surfaces.color,
+            depth: stage.surfaces.depth,
+            items,
+            thread: std::thread::current().name().map(str::to_owned),
+        });
+        Ok(true)
     }
 
     fn external_pass(

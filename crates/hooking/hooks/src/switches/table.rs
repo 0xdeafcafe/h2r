@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 50;
+pub const BUDGET: usize = 51;
 
 use Initial::{Group, Off, On};
 
@@ -96,13 +96,15 @@ pub const TABLE: &[Switch] = &[
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
+        "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.static-light", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
-    // Simulation: hand ports (`crate::sim_native`).
+    // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_point_to_leaf", Off, "sim", "2026-11-20", SIM_PORT),

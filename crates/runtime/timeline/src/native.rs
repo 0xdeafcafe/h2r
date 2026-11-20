@@ -19,13 +19,25 @@ pub enum Metric {
     /// Committed recordings with a private command buffer (`record_ranges`):
     /// each also ends the open encoder and adds a render pass of its own.
     CommandBuffers,
+    /// Game-thread nanoseconds a scene stage spends deciding what the
+    /// guest skips: guest reads and every check that can refuse
+    /// (docs/graphics/framescene.md, slice 2).
+    ExtractNs,
+    /// [`Metric::PrepareNs`] charged on the render thread
+    /// ([`mark_render_thread`]): `prepare_ns` is the game thread's alone.
+    RenderPrepareNs,
+    /// Scene stages queued to the render thread.
+    SceneStages,
+    /// Scene stages the render thread could not record after the guest
+    /// was told to skip their items: a named error, not a fallback.
+    SceneDropped,
 }
-const METRICS: [&str; 30] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+const METRICS: [&str; 34] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
     "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
     "worker_round_trips", "reference_passes", "display_passes",
     "walk_examined", "walk_suppressed", "walk_refused_inputs", "walk_refused_reservation",
     "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped", "cache_hits", "cache_misses",
-    "command_buffers"];
+    "command_buffers", "extract_ns", "render_prepare_ns", "scene_stages", "scene_dropped"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
@@ -402,8 +414,13 @@ pub(crate) fn labels() -> &'static [String] {
 }
 
 impl Stage {
+    /// The stage's name in its counters (`native_<name>_...`).
+    pub fn name(self) -> &'static str {
+        STAGES[self as usize]
+    }
+
     pub fn count(self, metric: Metric, n: u64) {
-        phase::count_index(phase::Counter::ALL.len() + self as usize * STRIDE + metric as usize, n);
+        phase::count_index(phase::Counter::ALL.len() + self as usize * STRIDE + charged(metric) as usize, n);
     }
 
     fn view_index(self, view: u32) -> usize {
@@ -430,6 +447,28 @@ impl Stage {
 
 thread_local! {
     static ACTIVE: std::cell::Cell<Option<Stage>> = const { std::cell::Cell::new(None) };
+    static RENDER_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the calling thread as the render thread (`d3d`'s
+/// `ThreadedBackend` worker): [`Metric::PrepareNs`] counted on it is
+/// charged as [`Metric::RenderPrepareNs`].
+pub fn mark_render_thread() {
+    RENDER_THREAD.with(|r| r.set(true));
+}
+
+/// The metric `metric` is charged as on this thread: preparation on the
+/// render thread is not the game thread's.
+fn charged(metric: Metric) -> Metric {
+    match metric {
+        Metric::PrepareNs if on_render_thread() => Metric::RenderPrepareNs,
+        m => m,
+    }
+}
+
+/// Whether [`mark_render_thread`] was called on this thread.
+pub fn on_render_thread() -> bool {
+    RENDER_THREAD.with(std::cell::Cell::get)
 }
 
 /// Charge actual GPU resource operations to the stage currently executing
@@ -484,5 +523,25 @@ mod tests {
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
         assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
         assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");
+        let world = phase::Counter::ALL.len() + Stage::World as usize * STRIDE;
+        for (metric, label) in [(Metric::ExtractNs, "native_world_extract_ns"),
+            (Metric::RenderPrepareNs, "native_world_render_prepare_ns"), (Metric::SceneStages, "native_world_scene_stages"),
+            (Metric::SceneDropped, "native_world_scene_dropped")] {
+            assert_eq!(columns[world + metric as usize].1, label);
+        }
+    }
+
+    #[test]
+    fn preparation_on_the_render_thread_is_charged_apart_from_the_game_thread() {
+        assert!(matches!(charged(Metric::PrepareNs), Metric::PrepareNs));
+        std::thread::spawn(|| {
+            mark_render_thread();
+            assert!(on_render_thread());
+            assert!(matches!(charged(Metric::PrepareNs), Metric::RenderPrepareNs));
+            assert!(matches!(charged(Metric::EncodeNs), Metric::EncodeNs));
+        })
+        .join()
+        .unwrap();
+        assert!(!on_render_thread(), "the mark is the marked thread's alone");
     }
 }

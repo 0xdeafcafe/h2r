@@ -32,8 +32,16 @@ pub struct ChoiceRow {
     pub def: &'static Def,
     /// The row's name, before its value ("Count: < 4 >").
     pub label: &'static str,
-    /// The description pane's text while the row has the focus.
+    /// The description pane's text while the row has the focus: one line
+    /// on a Quick Options page.
     pub description: &'static str,
+    /// What the value picker A opens says about the setting: what it does
+    /// and what its choices mean, in a few short sentences. The
+    /// description when empty.
+    pub explain: &'static str,
+    /// The row's icon in its page's header picture while it has the focus
+    /// (`crate::ui_kit::dialog::icon`), on a page with one.
+    pub icon: Option<u16>,
 }
 
 impl ChoiceRow {
@@ -42,6 +50,27 @@ impl ChoiceRow {
             def,
             label,
             description,
+            explain: "",
+            icon: None,
+        }
+    }
+    /// The value picker's text ([`ChoiceRow::explain`]).
+    pub const fn explain(mut self, text: &'static str) -> Self {
+        self.explain = text;
+        self
+    }
+    /// The row's icon ([`ChoiceRow::icon`]).
+    pub const fn icon(mut self, icon: u16) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    /// What the value picker says: [`ChoiceRow::explain`], else the
+    /// description.
+    pub fn picker_text(&self) -> &'static str {
+        if self.explain.is_empty() {
+            self.description
+        } else {
+            self.explain
         }
     }
 
@@ -118,6 +147,8 @@ impl ChoiceRow {
             move |i| self.set(&store, i),
         )
         .describe(self.description)
+        .explain(self.picker_text())
+        .icon_opt(self.icon)
     }
 }
 

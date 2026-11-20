@@ -700,14 +700,19 @@ h2 agent render.parity '{"arm": true}'
   content (framescene.md 9.2).
 - **`render.scene`.** The last sealed `FrameScene`, from the source the
   frame step registers (`agent::render::set_scene_source`, in boot's
-  `scene_glue` over `feature::scene_step`): whether
+  `scene_glue` over `hooks::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
   cut, its clusters, instances, parts, rows, lights, shadow maps, the
   instances the guest still draws (`remainder`), and carried ops by slot
-  and by `CameraUse` (empty while no stage carries ops); `counters` (`scene_dropped_*`,
-  `scene_unresident`, `scene_readback`, `scene_held_draws`,
-  `scenes_sealed`, ...). With `dump`, the whole scene is written as JSON
+  and by `CameraUse` (empty while no stage carries ops); `counters`
+  (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
+  `scene_refused_writes`, and from `d3d::scene_stage`
+  `scene_stages_world`, `scene_stages_objects`, the scene stages queued
+  to the render thread, and `scene_dropped_world`,
+  `scene_dropped_objects`, those it could not record after the guest
+  skipped their items; framescene.md, slice 2; later slices add
+  `scene_unresident`, `scene_readback`, `scene_held_draws`). With `dump`, the whole scene is written as JSON
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".
@@ -1131,6 +1136,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
+| `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -1156,6 +1162,22 @@ two weapon strengths; a rejected gather reports false and zeros.
 `assist_player` identifies the player controlling the selected aim-assist
 target when one exists. To verify damage, read the target's shield and
 health with `h2 agent sim view player`.
+
+**`sim.objects`** reads the objects pool through `sim-state`
+(`crates/rewrites/sim-state`, the read side of the object update rewrite,
+[sim-rewrite-objects.md](../engine/sim-rewrite-objects.md) section 8), so
+it shows what the simulation's own views see, offsets and all. `kinds`
+filters by tag group (`bipd`, `vehi`, `weap`, `eqip`, `garb`, `proj`,
+`scen`, `mach`, `ctrl`, `lifi`, `ssce`, `bloc`, `crea`); `max` caps the
+list (default and cap 2048) and `truncated` says more matched. Each object
+has `id` (its salted handle, `0x` and eight hex digits), `kind` (`null`
+outside the type table), `definition`, `flags` (the header flags set:
+`active`, `awake`, `post`, `new`, `deleting`, `defer`, `attach`, `child`),
+`parent`, `position`, `forward`, `up` and `scale` (parent-relative under a
+parent), `velocity` (units a second), `sphere {center, radius}`,
+`vitality {body, shield, depleted}`, `nodes` (node matrix count) and, for
+bipeds and vehicles, `unit {player, actor, team, seat, weapons, held}`.
+The wire types are `agent_proto::sim::objects`.
 
 **`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
 answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the `world`

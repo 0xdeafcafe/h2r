@@ -24,18 +24,22 @@ mod macros;
 mod field;
 mod mem;
 
+pub mod datum_array;
 pub mod game;
 pub mod global;
 pub mod object;
 pub mod player;
+pub mod tag;
 pub mod unit;
 
 pub use field::{Datum, Field, FieldInfo, MAX_FIELD, Off, View};
 pub use mem::{Fault, FlatRam, Mem, MemMut};
 
+pub use datum_array::DatumArray;
 pub use game::{GameEngine, GameGlobals, GameOptions, GameTime, GameVariant, PlayerGlobals};
-pub use object::{Object, ObjectHeader, ObjectType};
+pub use object::{Object, ObjectDefinition, ObjectHeader, ObjectType};
 pub use player::Player;
+pub use tag::{TagEntry, TagIndex};
 pub use unit::{Biped, Device, Unit, Weapon};
 
 #[cfg(test)]

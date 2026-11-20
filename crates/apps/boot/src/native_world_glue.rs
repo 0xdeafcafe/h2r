@@ -261,7 +261,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
-        let planning = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::PrepareNs);
+        // With a render thread that records scene stages, everything here
+        // is extraction: the guest reads and the checks that can refuse,
+        // which decide what the guest skips. The world's own preparation
+        // (upload, part slots, pipelines, packets) runs on the render
+        // thread (docs/graphics/framescene.md, slice 2).
+        let scene = d.queues_scene_stages(timeline::native::Stage::World);
+        let metric = if scene { timeline::native::Metric::ExtractNs } else { timeline::native::Metric::PrepareNs };
+        let planning = timeline::native::Timer::start(timeline::native::Stage::World, metric);
         // The programs write w as depth and clip w (`xps_w_depth`): a view
         // whose draws store z instead (`SET_CONTROL0` without
         // z-perspective) is the D3D path's.
@@ -315,24 +322,46 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
-        let pass = Box::new(WorldPass {
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = |selected: Vec<(Owner, u8)>| Box::new(WorldPass {
             selected,
             selection: None,
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
             w_clip: None,
-            stencil,
+            stencil: stencil.clone(),
             cull,
-            run: u64::from(d.swap_count()).wrapping_add(1),
+            run,
         });
         drop(planning);
-        let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok()??;
-        if !masks.apply(&mut hooks::native_world::Mem(mem)) {
-            timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-            return None;
+        // A scene stage: queued now, prepared and recorded when the render
+        // thread reaches it. Not taken, the pass is reserved here as before.
+        let staged = if scene {
+            let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass(selected.clone()));
+            match reserved {
+                Ok(Some(reservation)) => {
+                    if !masks.apply(&mut hooks::native_world::Mem(mem)) {
+                        timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
+                        return None;
+                    }
+                    reservation.commit();
+                    true
+                }
+                Ok(None) => false,
+                Err(_) => return None,
+            }
+        } else {
+            false
+        };
+        if !staged {
+            let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(selected), Vec::new()).ok()??;
+            if !masks.apply(&mut hooks::native_world::Mem(mem)) {
+                timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
+                return None;
+            }
+            reservation.commit();
         }
-        reservation.commit();
         if let Some(owners) = counted {
             crate::native_world_layers_glue::count_frontend(crate::d3d_diag::presents() + 1, view, bsp,
                 timeline::native::WorldOpaque::Prereserved, owners);

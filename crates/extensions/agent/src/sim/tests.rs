@@ -980,3 +980,34 @@ fn a_local_bot_is_refused_saying_why() {
     assert!(e["message"].as_str().unwrap().contains("controller seats are for people"));
     assert!(h.bots.log().bots.is_empty());
 }
+
+#[test]
+fn sim_objects_lists_the_pool_through_the_typed_views() {
+    let (h, mut game) = (Harness::new(), game());
+    let r = h.ok(&mut game, method::OBJECTS, Value::Null);
+    let objects = r["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 2, "{r}");
+    assert_eq!(r["truncated"], false);
+    let (unit, weapon) = (&objects[0], &objects[1]);
+    assert_eq!(unit["kind"], "bipd");
+    assert_eq!(weapon["kind"], "weap");
+    assert_eq!(unit["velocity"][0], 3.0);
+    assert_eq!(
+        unit["vitality"],
+        json!({"body": 1.0, "shield": 1.0, "depleted": false})
+    );
+    assert_eq!(unit["unit"]["weapons"][0], weapon["id"]);
+    assert_eq!(unit["unit"]["weapons"][1], Value::Null);
+    assert_eq!(unit["unit"]["held"], weapon["id"]);
+    assert!(weapon.get("unit").is_none());
+    assert_eq!(unit["nodes"], 0);
+
+    let r = h.ok(&mut game, method::OBJECTS, json!({"kinds": ["weap"]}));
+    assert_eq!(r["objects"].as_array().unwrap().len(), 1);
+    assert_eq!(r["objects"][0]["id"], weapon["id"]);
+    let r = h.ok(&mut game, method::OBJECTS, json!({"max": 1}));
+    assert_eq!(r["objects"].as_array().unwrap().len(), 1);
+    assert_eq!(r["truncated"], true);
+    let e = h.err(&mut game, method::OBJECTS, json!({"kinds": ["moon"]}));
+    assert_eq!(e["code"], code::INVALID_PARAMS);
+}

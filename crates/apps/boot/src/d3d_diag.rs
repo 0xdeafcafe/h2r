@@ -764,6 +764,25 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.reusable_external_attachments()
     }
 
+    // Scene stages (docs/graphics/framescene.md, slice 2): typed native
+    // stages, not guest draws; the probes and captures see the frame they
+    // join, as with the other native passes.
+    fn runs_scene_stages(&self) -> bool {
+        self.inner.runs_scene_stages()
+    }
+
+    fn run_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> Result<bool, String> {
+        self.inner.run_scene_stage(stage)
+    }
+
+    fn queues_scene_stages(&self) -> bool {
+        self.inner.queues_scene_stages()
+    }
+
+    fn queue_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> bool {
+        self.inner.queue_scene_stage(stage)
+    }
+
     fn queue_external_draw(
         &mut self, mut candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],

@@ -25,6 +25,8 @@
 //! * `nv2a`: the `ShaderProvider` over `crates/formats/shaders`;
 //! * `threaded`: a render thread that runs a backend's work off the
 //!   guest's thread (opt-in, docs/graphics/render-thread.md);
+//! * [`scene_stage`]: the typed scene stages it prepares and records
+//!   (docs/graphics/framescene.md, slice 2);
 //! * `interp`: in-between frames replayed with interpolated matrices
 //!   (opt-in, docs/game/high-framerate.md).
 
@@ -52,6 +54,7 @@ pub mod resource;
 pub mod runtime_glue;
 #[cfg(feature = "gpu")]
 pub mod scaled;
+pub mod scene_stage;
 pub mod shader;
 pub mod state;
 mod texdesc;
@@ -63,10 +66,10 @@ pub mod vertex_cache;
 pub use backend::{
     DrawAdmission, DrawSnapshot, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
     Backend, ChannelMask, DepthClip, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
-    RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
+    RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{
-    Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal,
+    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };

@@ -68,6 +68,7 @@ dependencies = [
  "serde_json",
  "settings",
  "sim",
+ "sim-state",
  "snapshot",
  "tags",
  "timeline",
@@ -5911,6 +5912,22 @@ version = "0.1.0"
 dependencies = [
  "simd",
  "x87",
+]
+
+[[package]]
+name = "sim-objects"
+version = "0.1.0"
+dependencies = [
+ "guest-layout",
+ "sim-core",
+]
+
+[[package]]
+name = "sim-state"
+version = "0.1.0"
+dependencies = [
+ "guest-layout",
+ "sim-objects",
 ]
 
 [[package]]

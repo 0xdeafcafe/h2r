@@ -45,6 +45,8 @@ mod recheck_fixes;
 mod registration;
 #[path = "render_scale.rs"]
 mod render_scale;
+#[path = "scene_stage.rs"]
+mod scene_stage;
 #[path = "review_fixes.rs"]
 mod review_fixes;
 #[path = "round5.rs"]
