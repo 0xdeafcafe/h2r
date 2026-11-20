@@ -1088,9 +1088,9 @@ impl Rows for ModelRows {
     }
 }
 
-/// The loaders of the classes built so far, by screen id, so an `Open` row
-/// (on a screen of ours or on a retail list) finds the screen it names.
-static LOADERS: Mutex<BTreeMap<&'static str, u32>> = Mutex::new(BTreeMap::new());
+/// Each class's (loader, screen vtable). An `Open` row finds the loader by
+/// name, and the agent identifies the instantiated class by its vtable.
+static LOADERS: Mutex<BTreeMap<&'static str, (u32, u32)>> = Mutex::new(BTreeMap::new());
 
 /// The loader of our screen `screen`, once its class is built.
 pub fn loader_of(screen: &str) -> Option<u32> {
@@ -1098,7 +1098,29 @@ pub fn loader_of(screen: &str) -> Option<u32> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(screen)
-        .copied()
+        .map(|&(loader, _)| loader)
+}
+
+/// The runtime class of a screen, even when its retail base id is shared.
+pub(crate) fn class_name(vtable: u32) -> Option<&'static str> {
+    if vtable == 0 {
+        return None;
+    }
+    LOADERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find_map(|(&name, &(_, table))| (vtable == table).then_some(name))
+}
+
+/// The tag copy already built for a class with a custom layout.
+pub(crate) fn built_tag(m: &dyn GuestMemory, vtable: u32) -> Option<u32> {
+    if crate::ui_kit::dialog_tag::by_vtable(vtable).is_some() {
+        return crate::ui_kit::dialog_tag::served(m, vtable).ok().flatten();
+    }
+    (layout_screen(vtable).is_some() && m.u32(vtable.checked_add(TAG_SOURCE)?).ok()? != 0)
+        .then(|| vtable.checked_add(TAG_COPY))
+        .flatten()
 }
 
 /// The rows our loader is building a screen with (0: no loader of ours is
@@ -2324,7 +2346,7 @@ impl hooks::Feature for ListClass {
         LOADERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.screen, loader);
+            .insert(self.screen, (loader, tables));
         b.snapshot(hooks::SnapshotPolicy::forbid_while(building_live));
         Ok(())
     }
@@ -2414,7 +2436,7 @@ mod tests {
         LOADERS
             .lock()
             .unwrap()
-            .insert("test-open-target", 0xa0f0_5000);
+            .insert("test-open-target", (0xa0f0_5000, 0));
         assert_eq!(
             press_open("test-open-target", 2),
             [Gc::new(points::OPEN_SCREEN.base).args([1 << 2, 0xa0f0_5000])]

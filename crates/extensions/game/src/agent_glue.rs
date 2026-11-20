@@ -157,7 +157,9 @@ impl AgentGlue {
                     agent::Chain::After
                 };
                 let inner = x.take_input_tap().map(|t| (t, chain));
-                x.set_input_tap(Some(Box::new(agent.input_tap(inner))));
+                let tap = agent.input_tap(inner);
+                crate::ui_press::install(&agent, tap.menu_pad());
+                x.set_input_tap(Some(Box::new(tap)));
             }
             None => eprintln!("agent: no XAPI input; the input methods are off"),
         }
@@ -370,6 +372,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
             )),
         },
     );
+    crate::ui_audit::install(agent);
     agent.add_game_method(method::UI_CAMPAIGN, Access::Read, |_, ctx| {
         ctx.read_guest(crate::campaign_menu::inspect)
     });

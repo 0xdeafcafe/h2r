@@ -103,6 +103,8 @@ remote client and with a human guest signed in on a second controller.
 Check the same name after restart and in a non-team System Link game
 against its Live card and web emblem. Use a legacy friends
 entry if available, since new friend requests to bots cannot create one.
+The menu parity check visits recent entries, verifies the Clanker card
+class and reports missing widget text. [Crawling the menus](../runtime/agent-api.md#crawling-the-menus)
 
 ## 1. Decision
 

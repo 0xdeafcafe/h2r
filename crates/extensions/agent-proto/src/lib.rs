@@ -186,6 +186,10 @@ pub mod method {
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Active widget panes, resolved text and audit findings at this boundary.
+    pub const UI_AUDIT: &str = "ui.audit";
+    /// Deliver one menu action guarded by the input owner and focus from `ui.audit`.
+    pub const UI_PRESS: &str = "ui.press";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";

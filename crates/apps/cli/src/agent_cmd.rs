@@ -64,6 +64,9 @@ or a short form:
   hostmetrics            host.metrics: tick cost, CPU and RSS
   hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
+  ui-crawl [--depth N] [--budget-ms N] [--require-clanker] [--from-current]
+                         audit menu navigation and report findings as JSON; defaults to
+                         six levels and 120 seconds; exits 1 on findings or interruption
   frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
                          render.frame: record the next whole frame and
                          print it: passes (target, clears, draws by outcome,
@@ -189,6 +192,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     c.set_timeout(timeout)?;
     match first.as_str() {
         "-" => script(&mut c),
+        "ui-crawl" => crate::agent_ui_crawl::run(&mut c, &rest[1..], timeout),
         "watch" => watch(&mut c, &rest[1..]),
         "run" => run_script(&mut c, &rest[1..], false),
         "sim" if rest.get(1).is_some_and(|w| w == "run") => run_script(&mut c, &rest[2..], true),
