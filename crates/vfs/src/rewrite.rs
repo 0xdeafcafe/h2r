@@ -9,8 +9,9 @@
 //! The boot runner uses it to swap button-icon glyphs in the disc's font
 //! files (`docs/input/button-icons.md`).
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
+use crate::{Backend, DirectoryEntry, Error, FileSource, HostFile, Metadata, Result, VolumeInfo};
 
 /// Files larger than this are served as they are, without asking the rewrite.
 pub const MAX_REWRITE_BYTES: u64 = 64 * 1024 * 1024;
@@ -80,7 +81,7 @@ pub struct RewriteBackend<B, R> {
     rewrite: R,
     /// By lowercase path: the rewritten bytes, or `None` for a file the
     /// rewrite declined (so it is not read and asked again).
-    files: HashMap<String, Option<Vec<u8>>>,
+    files: HashMap<String, Option<Arc<[u8]>>>,
 }
 
 impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
@@ -94,7 +95,7 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
 
     /// The rewritten contents of `path`, loading and rewriting it on first
     /// use. `None` when the file is served from the inner backend.
-    fn rewritten(&mut self, path: &str) -> Result<Option<&[u8]>> {
+    fn rewritten(&mut self, path: &str) -> Result<Option<&Arc<[u8]>>> {
         if path.is_empty() || !self.rewrite.wants(path) {
             return Ok(None);
         }
@@ -120,9 +121,9 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
                 }
                 self.rewrite.rewrite(path, &original)
             };
-            self.files.insert(key.clone(), new);
+            self.files.insert(key.clone(), new.map(Arc::from));
         }
-        Ok(self.files[&key].as_deref())
+        Ok(self.files[&key].as_ref())
     }
 
     fn resize(meta: &mut Metadata, len: usize) {
@@ -196,6 +197,12 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
             return None;
         }
         self.inner.host_file(path)
+    }
+    fn file_source(&mut self, path: &str) -> Option<FileSource> {
+        if let Some(bytes) = self.rewritten(path).ok()? {
+            return Some(FileSource::Memory(Arc::clone(bytes)));
+        }
+        self.inner.file_source(path)
     }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)

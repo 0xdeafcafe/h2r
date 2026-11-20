@@ -1,4 +1,4 @@
-use crate::{BasicInfo, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
+use crate::{BasicInfo, DirectoryEntry, Error, FileSource, HostFile, Metadata, Result, VolumeInfo};
 
 /// Backend paths are root-relative, backslash-separated, with no dot components.
 /// Implementations must validate inputs even when used without Vfs. All calls are serialized by &mut Vfs.
@@ -17,6 +17,10 @@ pub trait Backend: Send {
     /// rewritten or in-memory files.
     fn host_file(&mut self, _path: &str) -> Option<HostFile> {
         None
+    }
+    /// Backing for readers outside the VFS, including immutable in-memory files.
+    fn file_source(&mut self, path: &str) -> Option<FileSource> {
+        self.host_file(path).map(FileSource::Host)
     }
     /// Which map exactly is served at `path`, when that differs from the
     /// retail disc map: a map package's [`content::MapId`], or the identity

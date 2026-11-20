@@ -5,7 +5,7 @@
 //! `impl.render.native_world` is on (nothing asks).
 //!
 //! - **Load once.** On a new (map, BSP) the worker opens the map through
-//!   the VFS ([`set_locator`]), finds the scenario BSP whose tag data sits
+//!   the VFS, finds the scenario BSP whose tag data sits
 //!   at the active BSP's address, builds the world (`native_render::load`),
 //!   decodes each lightmap page, and translates each material's layer-3
 //!   pass. The GPU side is made on the render thread by the first pass.
@@ -34,12 +34,11 @@
 //!   world, loaded with it (`native_lights_glue::load`).
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use feature::native_world::{Host, PartSet};
-use map::{Map, ResourceFile, TagId};
+use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport, WorldSelection};
 use native_render::load::{self, LoadedWorld};
@@ -47,19 +46,6 @@ use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
-
-use crate::telemetry::{MapFile, MapLocator};
-
-static LOCATOR: Mutex<Option<MapLocator>> = Mutex::new(None);
-
-/// How the glue finds a map's file by its short name (boot: the VFS).
-pub fn set_locator(locate: MapLocator) {
-    *LOCATOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(locate);
-}
-
-pub(crate) fn locate(name: &str) -> Option<MapFile> {
-    LOCATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?(name)
-}
 
 /// What the worker hands the render thread: the world and its images.
 pub struct CpuWorld {
@@ -932,14 +918,6 @@ impl tags::geometry::RawSource for Raw {
     }
 }
 
-pub(crate) fn region(f: &MapFile) -> assets::Region {
-    assets::Region {
-        path: f.path.clone(),
-        base: f.offset,
-        length: f.len,
-    }
-}
-
 /// Loads the world of map `name`'s BSP whose tag data sits at `bsp`.
 /// The active structure BSP's index in the scenario's BSP block: the
 /// game globals' (`engine::points::GAME_GLOBALS`) `i16` at `+2`, as
@@ -961,19 +939,7 @@ fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Optio
 }
 
 fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Result<Ready, load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (mut map, files) = crate::native_map::open(name)?;
     let bsps = load::scenario_bsps(&mut map)?;
     let addresses: Vec<Option<u32>> = bsps
         .iter()

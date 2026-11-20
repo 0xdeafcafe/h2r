@@ -4,12 +4,11 @@
 //! provide the model, material and stream implementation.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use feature::native_objects::{NativeSet, SetPart};
-use map::{Map, ResourceFile, TagId};
+use map::TagId;
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
@@ -24,7 +23,8 @@ use native_render::object_program_gpu::{
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use tags::model::RenderModelGeometry;
 
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, region};
+use crate::native_map::{self, NativeMap};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes};
 
 pub(crate) struct CpuModel {
     pub(crate) definition: u32,
@@ -144,7 +144,7 @@ fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
 }
 
 struct Opened {
-    map: Map<BufReader<std::fs::File>>,
+    map: NativeMap,
     raw: Raw,
     decoder: StageDecoder,
     images: StageImages,
@@ -159,23 +159,7 @@ fn open(
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
 ) -> Result<Opened, load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(
-        BufReader::new(std::fs::File::open(&file.path)?),
-        file.offset,
-        file.len,
-    )?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (map, files) = native_map::open(name)?;
     Ok(Opened {
         map,
         raw: Raw(files),
@@ -188,7 +172,7 @@ fn open(
     })
 }
 
-fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
+fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
     if let Ok(tag) = map.tag(TagId(datum)) {
         return Some(tag.id);
     }

@@ -21,7 +21,6 @@
 //! the same quads, dropping none, so both sides are captured at the same
 //! draw.
 
-use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -34,7 +33,7 @@ use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
 use feature::native_post::{self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect};
 use gfx::vertex::PrimitiveType;
-use map::{Map, ResourceFile, TagId};
+use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
@@ -44,8 +43,8 @@ use native_render::screen_gpu::{
 use native_render::screen_look::ScreenStage;
 
 use crate::native_lights_glue::DeviceMemory;
+use crate::native_map;
 use crate::native_post_load::ScreenEffects;
-use crate::native_world_glue::{locate, region};
 
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -1467,23 +1466,9 @@ fn spawn_load(name: String, slot: Arc<Mutex<EffectsSlot>>) {
     }
 }
 
-/// Map `name` opened as the native world opens it (its file through the
-/// locator, the shared maps as resources), and its egors loaded
-/// (`native_post_load::load`).
+/// Loads the map's screen effects with the raw resources served by the VFS.
 fn load_effects(name: &str) -> Result<ScreenEffects, native_render::load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (mut map, mut files) = native_map::open(name)?;
     Ok(crate::native_post_load::load(&mut map, &mut files))
 }
 

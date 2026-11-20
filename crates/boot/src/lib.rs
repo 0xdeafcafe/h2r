@@ -83,6 +83,8 @@ pub mod native_hud_glue;
 #[cfg(feature = "gpu")]
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
+mod native_map;
+#[cfg(feature = "gpu")]
 mod native_shadows_draw;
 #[cfg(feature = "gpu")]
 mod native_shadows_scope;
@@ -1632,20 +1634,8 @@ fn run_configured(
     };
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
-    // The native world's map file (native_world_glue.rs): read from the
-    // loaded map's file, found through the VFS.
     #[cfg(feature = "gpu")]
-    if let Some(vfs) = k.vfs() {
-        native_world_glue::set_locator(Box::new(move |map| {
-            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile {
-                path: file.path,
-                offset: file.offset,
-                len: file.len,
-            })
-        }));
-    }
+    native_map::set_vfs(k.vfs());
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
     let late = registration::register_late(
