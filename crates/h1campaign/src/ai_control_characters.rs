@@ -22,15 +22,23 @@ const MAJOR: usize = 0x24;
 
 /// The datum of the `char` tag's root reference at `at` (its group word;
 /// the datum at `at + 4`), through an alias to the tag holding the bytes.
+/// A built tag holds it as a fixup, or, transplanted from a donor map
+/// (`tags::schema::transplant`, which remaps datums in place), in its
+/// bytes.
 fn root_reference(set: &TagSet, id: TagId, at: usize) -> Option<TagId> {
     match &set.tag(id)?.payload {
-        TagPayload::Built(block) => block.fixups.iter().find_map(|fixup| {
-            match &fixup.kind {
+        TagPayload::Built(block) => {
+            let fixup = block.fixups.iter().find_map(|fixup| match &fixup.kind {
                 FixupKind::TagRef(target) if fixup.offset as usize == at => Some(*target),
                 FixupKind::TagId(target) if fixup.offset as usize == at + 4 => Some(*target),
                 _ => None,
-            }
-        }),
+            });
+            fixup.or_else(|| {
+                let datum = block.bytes.get(at + 4..at + 8)?;
+                let datum = TagId(u32::from_le_bytes(datum.try_into().ok()?));
+                set.tag(datum).map(|t| t.id)
+            })
+        }
         TagPayload::Pinned { bytes, .. } => Some(TagId(u32::from_le_bytes(
             bytes.get(at + 4..at + 8)?.try_into().ok()?,
         ))),
@@ -374,6 +382,45 @@ mod tests {
         inherit_majors(&mut set, &mut control, &mut [], &mut []).unwrap();
         assert_eq!(control.uncover[&major.0].requirements, [0.5, 0.1]);
         assert_eq!(control.uncover[&major.0].character, "h1\\major");
+    }
+
+    /// A character transplanted from a donor map (c10's flood combat
+    /// elite, from 04b) is built with its datums remapped in its bytes and
+    /// no fixups. Its major is found there, and the major takes its
+    /// thresholds.
+    #[test]
+    fn a_transplanted_characters_major_is_read_from_its_bytes() {
+        let (mut set, major, ..) = set_with_major();
+        let mut bytes = vec![0; 0x2c];
+        bytes[0x24..0x28].copy_from_slice(&u32::from_be_bytes(*b"char").to_le_bytes());
+        bytes[0x28..0x2c].copy_from_slice(&major.0.to_le_bytes());
+        let donor = set
+            .add_tag(
+                FourCC(*b"char"),
+                "donor\\transplanted",
+                TagPayload::Built(Block::new(bytes)),
+            )
+            .unwrap();
+        assert_eq!(major_character(&set, donor), Some(major));
+        let mut control = Control::default();
+        control.uncover.insert(donor.0, UncoverRule {
+            character: "donor\\transplanted".into(),
+            requirements: [0.0, 0.0],
+        });
+        inherit_majors(&mut set, &mut control, &mut [donor], &mut []).unwrap();
+        assert_eq!(control.uncover[&major.0].requirements, [0.0, 0.0]);
+        assert_eq!(control.uncover[&major.0].character, "h1\\major");
+        // A datum naming no tag in the set is no reference.
+        let mut stale = vec![0; 0x2c];
+        stale[0x28..0x2c].copy_from_slice(&0xdead_beef_u32.to_le_bytes());
+        let stale = set
+            .add_tag(
+                FourCC(*b"char"),
+                "donor\\stale",
+                TagPayload::Built(Block::new(stale)),
+            )
+            .unwrap();
+        assert_eq!(major_character(&set, stale), None);
     }
 
     /// Two palette characters with different thresholds promote through
