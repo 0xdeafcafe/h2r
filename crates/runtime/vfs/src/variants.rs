@@ -417,6 +417,9 @@ impl<B: Backend> Backend for VariantFiles<B> {
         }
         self.inner.rescan()
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.inner.resolves_on_use(path)
+    }
     fn map_changed(&mut self, path: &str) -> bool {
         if self.variants.get(path).is_none() {
             return self.packages.as_ref().is_some_and(|p| p.changed(path))

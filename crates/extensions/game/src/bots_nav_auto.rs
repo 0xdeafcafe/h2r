@@ -17,6 +17,10 @@
 //! If it was stale the bots walk straight until the build lands, then take
 //! the new mesh without a reload ([`bots::autonav::offer`]).
 //!
+//! The scans never resolve a map package: a packaged map nothing has
+//! opened yet is skipped ([`unresolved`]) until the game loads it, so the
+//! worker never holds the VFS for a read of a whole base map.
+//!
 //! The main menu and the shared resource maps are never scanned or built
 //! ([`bots::autonav::map_use`]).
 //!
@@ -139,6 +143,9 @@ pub fn scan_light(vfs: &SharedVfs, first: Option<&str>) -> Vec<Box<dyn Source>> 
     };
     let name = first.to_ascii_lowercase();
     let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+    if unresolved(vfs, &path) {
+        return Vec::new();
+    }
     vfs_source(vfs, &name, &path).into_iter().collect()
 }
 
@@ -148,6 +155,9 @@ pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>
     let mut out = Vec::new();
     for name in disc_map_names(disc).into_iter().filter(|n| played(n)) {
         let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+        if unresolved(vfs, &path) {
+            continue;
+        }
         out.extend(vfs_source(vfs, &name, &path));
     }
     let mut dirs: Vec<_> = std::fs::read_dir(content)
@@ -179,10 +189,24 @@ pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>
                 vfs::CONTENT_DIR,
                 d.file_name().to_string_lossy()
             );
+            if unresolved(vfs, &path) {
+                continue;
+            }
             out.extend(vfs_source(vfs, key, &path));
         }
     }
     out
+}
+
+/// Whether `path` is a packaged map nothing has looked at yet: its first
+/// look reads the whole base map with the VFS held
+/// ([`vfs::Vfs::resolves_on_use`]), which would stall the game's own reads.
+/// The scans leave it to the game's first open; when the game loads it, the
+/// glue's [`Handle::want`] scans again and finds it resolved.
+fn unresolved(vfs: &SharedVfs, path: &str) -> bool {
+    vfs.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .resolves_on_use(path)
 }
 
 /// The disc's `maps\*.map` names; none if the image does not read.

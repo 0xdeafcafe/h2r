@@ -144,6 +144,9 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
     fn rescan(&mut self) {
         self.inner.rescan()
     }
+    fn resolves_on_use(&mut self, path: &str) -> bool {
+        self.inner.resolves_on_use(path)
+    }
     fn map_changed(&mut self, path: &str) -> bool {
         self.inner.map_changed(path)
     }
