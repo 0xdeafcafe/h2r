@@ -100,6 +100,8 @@ struct Outcome {
     refills: u64,
     /// Most callbacks waiting at once between slices.
     max_waiting: usize,
+    /// Clock-only A/B: (logical guest time, packet index) at every successful refill.
+    refill_times: Vec<(u64, u32)>,
 }
 
 /// A tiny deterministic generator for the jitter.
@@ -147,15 +149,22 @@ fn packet(i: u32) -> u32 {
 }
 
 fn run(game: Game, completion_dpc: bool) -> Outcome {
-    run_with_clock(game, completion_dpc, false)
+    run_with_clock(game, completion_dpc, false, false)
 }
 
-fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome {
+fn run_with_clock(
+    game: Game,
+    completion_dpc: bool,
+    clock_only: bool,
+    batch_packets: bool,
+) -> Outcome {
     let h = Harness::with_guest(kernel::Config::default(), |g| {
         g.map_zeroed(0x0037_9000, 0xf000, runtime::guest::Permissions::RX)
             .unwrap();
     });
-    let mixer = Arc::new(Mutex::new(Mixer::new(MIX as u32)));
+    let mut mixer = Mixer::new(MIX as u32);
+    mixer.set_packet_clock(batch_packets);
+    let mixer = Arc::new(Mutex::new(mixer));
     let hle = Hle::new(
         DirectSound::new(Arc::clone(&mixer), Layout::default()),
         Box::new(KernelEvents(Arc::clone(&h.kernel))),
@@ -241,6 +250,19 @@ fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome
     }
 
     let refills = Arc::new(AtomicU64::new(0));
+    let refill_times = Arc::new(Mutex::new(Vec::new()));
+    let record_refill = {
+        let times = Arc::clone(&refill_times);
+        let kernel = Arc::clone(&h.kernel);
+        move |packet| {
+            if clock_only {
+                times
+                    .lock()
+                    .unwrap()
+                    .push((kernel.clock().counter(), packet));
+            }
+        }
+    };
     let frame_no = Arc::new(AtomicU64::new(0));
     let rng = Arc::new(AtomicU64::new(0x5eed));
     let frames = game.seconds * TICKS / game.frame;
@@ -274,10 +296,12 @@ fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome
     // The sound update: poll and refill (polled streams), packet 0 then 1.
     for i in 0..2u32 {
         let refills = Arc::clone(&refills);
+        let record_refill = record_refill.clone();
         let poll = matches!(game.refill, Refill::Poll);
         h.code(0x10 + i * 8, move |cpu, ctx, _| {
             let next = CODE + 0x10 + (i + 1) * 8;
             if poll && ctx.memory().u32(STATUS + i * 8)? != XMEDIAPACKET_STATUS_PENDING {
+                record_refill(i);
                 refills.fetch_add(1, Ordering::Relaxed);
                 return guest_call(cpu, ctx, PROCESS, &[stream, packet(i), 0], next);
             }
@@ -313,6 +337,7 @@ fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome
             if status != 0 {
                 return ctx.memory().ret(cpu, 12);
             }
+            record_refill(which);
             refills.fetch_add(1, Ordering::Relaxed);
             guest_call(cpu, ctx, PROCESS, &[stream, packet(which), 0], CODE + 0x210)
         });
@@ -359,6 +384,7 @@ fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome
         starve_frames: health.starve_frames,
         refills: refills.load(Ordering::Relaxed),
         max_waiting,
+        refill_times: std::mem::take(&mut *refill_times.lock().unwrap()),
     }
 }
 
@@ -435,9 +461,13 @@ fn clock_only_keeps_callback_and_poll_refill_timing() {
         },
     ] {
         let rendered = run(game, true);
-        let clock = run_with_clock(game, true, true);
-        assert_eq!(clock.refills, rendered.refills, "{game:?}");
-        assert_eq!(clock.max_waiting, rendered.max_waiting, "{game:?}");
+        let scalar = run_with_clock(game, true, true, false);
+        let batched = run_with_clock(game, true, true, true);
+        assert_eq!(scalar.refill_times, batched.refill_times, "{game:?}");
+        for clock in [scalar, batched] {
+            assert_eq!(clock.refills, rendered.refills, "{game:?}");
+            assert_eq!(clock.max_waiting, rendered.max_waiting, "{game:?}");
+        }
     }
 }
 

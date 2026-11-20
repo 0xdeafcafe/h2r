@@ -386,6 +386,16 @@ pub struct PlayerReport {
     pub aim: Option<AimReport>,
 }
 
+/// One post-tick observation. Hex strings preserve all 64 bits in JSON clients.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickHash {
+    pub tick: u32,
+    pub gameplay: String,
+    /// Present when arena verification was enabled and the arena was readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arena: Option<String>,
+}
+
 /// The whole report: one JSON file per match.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Report {
@@ -395,6 +405,9 @@ pub struct Report {
     pub match_: serde_json::Value,
     pub result: MatchResult,
     pub ticks: u64,
+    /// Gameplay digests in guest tick order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_hashes_v1: Vec<TickHash>,
     pub game_seconds: f64,
     pub wall: Wall,
     pub players: Vec<PlayerReport>,
@@ -491,6 +504,7 @@ pub struct Tally {
     acc: BTreeMap<u8, Acc>,
     kills: Vec<KillEvent>,
     last: Option<TickSample>,
+    hashes: Vec<(u32, u64, Option<u64>)>,
     /// Bot port → player index, from the snapshots.
     ports: BTreeMap<u8, u8>,
     resets: u32,
@@ -583,6 +597,21 @@ impl Tally {
             }
         }
         self.last = Some(s);
+    }
+
+    /// Record the post-tick digest on the same timeline as the tally. The
+    /// latest observation wins for a duplicate tick; a snapshot load resets both.
+    pub fn tick_hashed(&mut self, sample: TickSample, gameplay: u64, arena: Option<u64>) {
+        let tick = sample.tick;
+        self.tick_owned(sample);
+        let entry = (tick, gameplay, arena);
+        if let Some(last) = self.hashes.last_mut()
+            && last.0 == tick
+        {
+            *last = entry;
+        } else {
+            self.hashes.push(entry);
+        }
     }
 
     /// The player on this port, from the snapshots so far.
@@ -829,6 +858,15 @@ impl Tally {
                 teams,
             },
             ticks: self.ticks,
+            state_hashes_v1: self
+                .hashes
+                .iter()
+                .map(|&(tick, gameplay, arena)| TickHash {
+                    tick,
+                    gameplay: format!("{gameplay:016x}"),
+                    arena: arena.map(|h| format!("{h:016x}")),
+                })
+                .collect(),
             game_seconds: speed.game_seconds(),
             wall: Wall {
                 setup_s: speed.setup_s,
@@ -870,6 +908,50 @@ mod tests {
             players,
             teams: vec![],
         }
+    }
+
+    #[test]
+    fn tick_hashes_follow_duplicates_gaps_and_rewinds() {
+        let mut tally = Tally::new();
+        for (tick, hash) in [(5, 1), (5, 2), (7, 3)] {
+            tally.tick_hashed(
+                TickSample {
+                    tick,
+                    ..Default::default()
+                },
+                hash,
+                Some(hash + 1),
+            );
+        }
+        let report = tally.report(Finish::bare(End::Stopped));
+        assert_eq!(report.ticks, 2);
+        assert_eq!(report.state_hashes_v1.len(), 2);
+        assert_eq!(
+            report.state_hashes_v1[0],
+            TickHash {
+                tick: 5,
+                gameplay: "0000000000000002".into(),
+                arena: Some("0000000000000003".into()),
+            }
+        );
+        assert_eq!(report.state_hashes_v1[1].tick, 7);
+        let mut old = serde_json::to_value(report).unwrap();
+        old.as_object_mut().unwrap().remove("state_hashes_v1");
+        assert!(
+            serde_json::from_value::<Report>(old)
+                .unwrap()
+                .state_hashes_v1
+                .is_empty()
+        );
+        tally.tick_hashed(
+            TickSample {
+                tick: 3,
+                ..Default::default()
+            },
+            9,
+            None,
+        );
+        assert_eq!(tally.hashes, [(3, 9, None)]);
     }
 
     #[test]

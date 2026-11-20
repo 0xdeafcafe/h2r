@@ -1003,6 +1003,7 @@ impl Mixer {
             clock,
             // Diagnostics.
             health: _,
+            packet_clock: _,
             taps,
         } = self;
         w.bool(*hrtf).bool(*distance_reverb);
@@ -1139,6 +1140,7 @@ impl Mixer {
             distance_reverb: _,
             clock,
             health: _,
+            packet_clock: _,
             taps,
         } = self;
         *master_mb = s.master_mb;

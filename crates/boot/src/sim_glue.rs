@@ -50,6 +50,7 @@ use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally,
 use crate::level_boot;
 use std::collections::BTreeMap;
 pub(crate) mod hosted;
+mod state_hash;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is (docs/graphics/pipelined-render.md, "random").
@@ -758,6 +759,11 @@ impl feature::Feature for SimMetrics {
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.0);
+        let arena_buffer = b
+            .switches()
+            .implementation("sim.arena-hash", false)
+            .then(|| Mutex::new(Vec::new()));
+        let projected = b.switches().implementation("sim.metrics-projection", true);
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -769,13 +775,26 @@ impl feature::Feature for SimMetrics {
             {
                 return;
             }
-            let snap = telemetry::snapshot(&g);
+            let snap = if projected {
+                telemetry::sim_snapshot(&g)
+            } else {
+                telemetry::snapshot(&g)
+            };
+            let rng = g
+                .u32(RANDOM_SEED_PTR)
+                .ok()
+                .filter(|p| *p != 0)
+                .and_then(|p| g.u32(p).ok());
             let ended = g
                 .u32(telemetry::layout::GAME_GLOBALS_PTR)
                 .ok()
                 .filter(|p| *p != 0)
                 .and_then(|p| g.u8(p + telemetry::layout::GAME_ENDED).ok())
                 .is_some_and(|b| b != 0);
+            let arena = arena_buffer.as_ref().and_then(|buffer| {
+                let mut bytes = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                lockstep::hash_sim_buffered(&g, lockstep::SimRegion::HALO2, &mut bytes)
+            });
             drop(g);
             let mut s = me.lock();
             match snap {
@@ -796,7 +815,14 @@ impl feature::Feature for SimMetrics {
                     }
                     let resets = s.tally.resets();
                     let tick = sample.tick;
-                    s.tally.tick_owned(sample);
+                    s.tally
+                        .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
+                    if arena_buffer.is_some() && arena.is_none() {
+                        const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
+                        if !s.notes.iter().any(|n| n == NOTE) {
+                            s.notes.push(NOTE.into());
+                        }
+                    }
                     if s.tally.resets() != resets {
                         // A snapshot load (a forked run): the match is
                         // timed, seeded and teamed from here.
@@ -1143,6 +1169,26 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tick_hash_detects_motion_inventory_and_rng_before_score_changes() {
+        let mut snap = telemetry::Snapshot {
+            tick: 77,
+            players: vec![player(0, Some(0), 0xe001)],
+            objects: vec![Some(object(Some(0xa1), None, 1.0, 2))],
+            ..Default::default()
+        };
+        let hash = |s: &telemetry::Snapshot| state_hash::gameplay(s, Some(7));
+        let original = hash(&snap);
+        snap.players[0].player.name = "renamed".into();
+        assert_eq!(hash(&snap), original);
+        assert_ne!(state_hash::gameplay(&snap, Some(8)), original);
+        snap.objects[0].as_mut().unwrap().pos[0] = 0.5;
+        let moved = hash(&snap);
+        assert_ne!(moved, original);
+        snap.objects[0].as_mut().unwrap().motion.magazine = Some((0, 0));
+        assert_ne!(hash(&snap), moved);
     }
 
     #[test]

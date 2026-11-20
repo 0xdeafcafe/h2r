@@ -768,6 +768,7 @@ mod tests {
                 teams: vec![],
             },
             ticks: 0,
+            state_hashes_v1: Vec::new(),
             game_seconds: 0.0,
             wall: Wall::default(),
             players,

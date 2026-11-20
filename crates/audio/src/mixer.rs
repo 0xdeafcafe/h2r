@@ -76,6 +76,7 @@ pub struct Mixer {
     /// Frames rendered since creation: the clock [`StreamHealth`] uses.
     pub(crate) clock: u64,
     pub(crate) health: StreamHealth,
+    pub(crate) packet_clock: bool,
     /// Bins whose sends are captured rather than mixed ([`Mixer::set_taps`]).
     pub(crate) taps: Vec<Tap>,
 }
@@ -127,6 +128,7 @@ impl Mixer {
             room: Vec::new(),
             clock: 0,
             health: StreamHealth::default(),
+            packet_clock: false,
             taps: Vec::new(),
         }
     }
@@ -570,18 +572,32 @@ impl Mixer {
         self.clock += frames as u64;
     }
 
+    /// Enable packet-sized clock advances for a light host or silent sim.
+    pub fn set_packet_clock(&mut self, enabled: bool) {
+        self.packet_clock = enabled;
+    }
+
     /// Drives guest-visible cursors and packet completions without generating
     /// samples. Stream pitch effects change its read position only.
     pub fn advance_clock(&mut self, frames: usize) {
         let rate = self.sample_rate;
         for buffer in self.buffers.values_mut().filter(|b| b.is_playing()) {
-            let pitch = buffer.params().spatial.as_ref()
-                .map_or(1.0, |source| self.listener.spatial(source).pitch);
+            let pitch = buffer.params().spatial.as_ref().map_or(1.0, |source| {
+                if self.packet_clock {
+                    self.listener.clock_pitch(source)
+                } else {
+                    self.listener.spatial(source).pitch
+                }
+            });
             buffer.set_doppler_pitch(pitch);
             buffer.advance_clock(frames, rate);
         }
         for stream in self.streams.values_mut().filter(|s| s.is_audible()) {
-            stream.advance_clock(frames, rate);
+            if self.packet_clock {
+                stream.advance_packet_clock(frames, rate);
+            } else {
+                stream.advance_clock(frames, rate);
+            }
         }
         for mix in self.mix_ins.values_mut().filter(|m| m.is_playing()) {
             mix.advance_clock(frames as u64);
