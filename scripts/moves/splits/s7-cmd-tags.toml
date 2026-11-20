@@ -1,0 +1,9 @@
+from = "cli"
+to = "cmd-tags"
+direction = "down"
+description = "The tag, map and asset inspection commands"
+modules = [
+    "anim", "bitmap", "collision", "effects", "extract_shaders", "fonts", "lighting", "lights",
+    "map_testbuild", "maps", "object", "scripts", "server_map", "shader", "sound", "strings",
+    "tag_repo_cmd", "testmap_cmd", "ui",
+]

@@ -1,0 +1,7 @@
+# The Live owner's. Review the module list before the window.
+from = "game"
+to = "theater"
+direction = "up"
+glob_in = ["boot"]
+description = "Films in the game process: recording, replay and the theater screens (docs/live/theater.md)"
+modules = ["theater", "theater_ui"]

@@ -1,0 +1,10 @@
+from = "game"
+to = "h1-runtime"
+direction = "up"
+glob_in = ["boot"]
+description = "Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md)"
+modules = [
+    "h1_ai_control", "h1_cinematics", "h1_command_atoms", "h1_conversation", "h1_drive", "h1_flag",
+    "h1_glow", "h1_hud_text", "h1_lightning", "h1_particle_physics", "h1_recordings",
+    "h1_script_builtins", "h1_sound_promotion", "h1_squad_storage",
+]
