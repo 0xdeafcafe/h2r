@@ -731,8 +731,18 @@ bot-style profile would be reconciled into a real session player by
 consume a slot and could affect teams, spawns and results. No owner
 profile or player record is manufactured.
 
-The first expected profile-specific refusal is the controller countdown
-at `0x19a78e`. It reads the pressing controller's local-user index,
+Selecting Create in the System Link browser calls `0x199df9(0,0)`
+and `0x199a03(2)`. A human host's menu then opens the pregame screen.
+Each frame the menu reconciler (`0x199b08`) compares its screen with the
+network lifecycle. With zero signed-in users, the pregame branch at
+`0x19b284` requests a squad leave. A playerless host skips that UI update
+while it owns the active squad. Ownership checks the squad address,
+incarnation, network class and local host peer. The title screen's
+controller reset also requests a leave during boot. Its call at
+`0x1906d3` preserves the same owned squad. Explicit close uses the
+network teardown and releases ownership.
+
+The next profile-specific refusal is the controller countdown at `0x19a78e`. It reads the pressing controller's local-user index,
 which is −1 on the playerless host. The machine fallback requests stage
 2 through `0x5a220` after the remote roster, map properties, ownership
 and retail start check pass. It calls `0x5a220` as the countdown

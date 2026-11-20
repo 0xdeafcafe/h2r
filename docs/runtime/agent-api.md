@@ -1838,9 +1838,17 @@ an ordinary run.
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `lobby` (startup progress, below), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
 | `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md section 6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
 | `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
+
+`match.status.lobby.step` advances through `Create`, `SquadCreated`,
+`SessionStarted`, `Start` and `Loading`. Its `wait` field gives the current
+setup blocker or `null`. The numeric `session_type` (retail lifecycle)
+and `squad_state` come from the same setup tick. A missing reading is
+`null`. An allocated idle squad reads 0, and a hosted pregame squad reads
+5 with session type 1 or 2. These fields retain the last setup observation
+during play. Use `phase` and `bound_seats` for gameplay progress.
 
 ```sh
 h2 sim run docs/runtime/sim-examples/aim-net-2v2.toml --socket /tmp/sim.sock &

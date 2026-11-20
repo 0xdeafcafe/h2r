@@ -1022,6 +1022,12 @@ points! { ALL;
     /// once its session is made (`0x23101b`), the lobby's "Switch To: Co-Op
     /// Game" with 0 (`0x2bba30`).
     LOBBY_MODE_SET @ 0x0019_9a03: [fn(mode: stack 0) ret 4]; "docs/live/live-coop.md";
+    /// Available Games' Create row (local and Live flags both zero for System Link).
+    BROWSER_CREATE_SQUAD @ 0x0019_9df9: [fn(local: stack 0, live: stack 1) -> al ret 8]; "docs/live/dedicated-host.md";
+    /// Per-frame reconciliation of the local UI screen and network life cycle.
+    UI_SYNC_NETWORK_SCREEN @ 0x0019_9b08: [fn() ret 0]; "docs/live/dedicated-host.md";
+    /// The menu leaves the squad and target, immediately or gracefully.
+    UI_LEAVE_SESSIONS @ 0x0019_9e2e: [fn(immediate: stack 0) ret 4]; "docs/live/dedicated-host.md";
     /// Lobby: why the game cannot start yet (stdcall, an optional float
     /// out); 9 ready, 7 the teams or co-op check (`0x19a4be`: co-op needs
     /// exactly two players, both on this console), 8 and 10 the load and

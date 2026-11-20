@@ -2,6 +2,7 @@
 //! lobby setters. See docs/live/dedicated-host.md, "Playerless lobby".
 
 use super::{Command, Config, Variant, unavailable};
+use crate::variant_ext::SESSION_NETWORK_CLASS;
 use crate::{coop_probe, layout_glue::ReadGm, level_boot, telemetry};
 use agent_proto::host_lobby::{EmptyResult, OpenResult, Phase, Player, StateResult};
 use agent_proto::{RpcError, code};
@@ -15,8 +16,6 @@ use serde_json::{Value, json};
 
 mod checkpoint;
 
-const CREATE_BROWSER_SQUAD: u32 = 0x0019_9df9;
-const LIVE_MENU_PREPARE: u32 = 0x0019_9e2e;
 const CREATE_SQUAD: u32 = 0x0005_9890;
 /// Retail lifecycle teardown, also used before a checkpoint scenario load.
 const LEAVE_SESSIONS: u32 = 0x0005_93e0;
@@ -28,7 +27,6 @@ const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 const MACHINE_LOAD_REQUEST: u32 = 0x0005_a220;
 /// Session `+0x4980` after the load request: the machines load the map.
 const STAGE_LOAD: u32 = 2;
-const SESSION_NETWORK_CLASS: u32 = 0x18;
 
 pub(super) enum Progress {
     Done(Value),
@@ -57,12 +55,41 @@ async fn call(cx: &Cx, f: GuestCall) -> Result<u32, RpcError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setup {
     Created,
+    Pregame,
     Applied,
     Open,
 }
 
+/// The title reuses its squad allocation after leave. The incarnation
+/// changes on teardown, even when the next squad has the same address.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SquadId {
+    addr: u32,
+    incarnation: u32,
+    class: u32,
+}
+
+impl SquadId {
+    pub(crate) fn is_current(self, m: &dyn GuestMemory) -> bool {
+        squad(m).ok().flatten() == Some(self.addr)
+            && m.u32(self.addr + INCARNATION) == Ok(self.incarnation)
+            && m.u32(self.addr + SESSION_NETWORK_CLASS) == Ok(self.class)
+            && matches!(self.class, 1 | 2)
+    }
+
+    pub(super) fn playerless_host(self, m: &dyn GuestMemory) -> bool {
+        self.is_current(m)
+            && m.u32(self.addr + STATE) == Ok(session::STATE_LIVE)
+            && m.u32(self.addr + LOCAL_PEER).is_ok_and(|local| {
+                local < session::MAX && m.u32(self.addr + HOST_PEER) == Ok(local)
+            })
+            && profiles(m).is_ok()
+    }
+}
+
 struct Owned {
     addr: u32,
+    incarnation: u32,
     config: Config,
     setup: Setup,
     applied_variant: Option<Box<[u8; variant::SIZE]>>,
@@ -138,6 +165,9 @@ impl Squad {
             .filter(|&s| s == owner.addr)
             .ok_or_else(|| unavailable("the dedicated squad disappeared"))?;
         let get = |off| m.u32(addr + off).map_err(read_fault);
+        if get(INCARNATION)? != owner.incarnation {
+            return Err(unavailable("the dedicated squad was replaced"));
+        }
         if get(STATE)? != session::STATE_LIVE {
             return Err(unavailable("squad is outside retail host state 5"));
         }
@@ -313,6 +343,15 @@ pub fn sim_blocker(lobby: Option<String>, players: usize, seats: usize) -> Optio
     (players != seats).then(|| format!("{players} of {seats} seats have a player"))
 }
 
+/// Milestones acknowledged by retail while opening a playerless lobby.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SimOpen {
+    Wait(&'static str),
+    SquadCreated,
+    SessionStarted,
+    Ready,
+}
+
 /// What one playerless sim start attempt did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SimStart {
@@ -355,6 +394,14 @@ fn phase(
 }
 
 impl Machine {
+    pub(crate) fn owned_squad(&self) -> Option<SquadId> {
+        self.owned.as_ref().filter(|o| !o.closing).map(|o| SquadId {
+            addr: o.addr,
+            incarnation: o.incarnation,
+            class: o.config.class(),
+        })
+    }
+
     pub(super) fn advertisement(
         &self,
         cmd: &Command,
@@ -484,7 +531,20 @@ impl Machine {
         machine_start: bool,
     ) -> Result<Progress, RpcError> {
         match cmd {
-            Command::Open(config) => self.open(cx, config, scratch, advertised, &[]).await,
+            Command::Open(config) => Ok(
+                match self.open(cx, config, scratch, advertised, &[]).await? {
+                    SimOpen::Wait(why) => Progress::Wait(why),
+                    SimOpen::SquadCreated => {
+                        Progress::Wait("waiting for the retail pregame session")
+                    }
+                    SimOpen::SessionStarted => {
+                        Progress::Wait("applying the requested map and variant")
+                    }
+                    SimOpen::Ready => Progress::Done(json!(OpenResult {
+                        session_id: self.owned.as_ref().and_then(|o| o.live_id.clone()),
+                    })),
+                },
+            ),
             Command::Start => self.start(cx, machine_start).await,
             Command::Close => self.close(cx, advertised).await,
         }
@@ -498,17 +558,24 @@ impl Machine {
         matched: &sim_bench::config::Match,
         scratch: u32,
     ) -> Result<bool, RpcError> {
+        Ok(self.advance_sim_open(cx, map, matched, scratch).await? == SimOpen::Ready)
+    }
+
+    pub(crate) async fn advance_sim_open(
+        &mut self,
+        cx: &Cx,
+        map: u32,
+        matched: &sim_bench::config::Match,
+        scratch: u32,
+    ) -> Result<SimOpen, RpcError> {
         let config = Config {
             live: false,
             map,
             max_players: matched.bots.len() as u8,
             variant: Variant::Stock(matched.game_type),
         };
-        Ok(matches!(
-            self.open(cx, &config, scratch, None, &matched.variant)
-                .await?,
-            Progress::Done(_)
-        ))
+        self.open(cx, &config, scratch, None, &matched.variant)
+            .await
     }
 
     /// One start attempt for a playerless sim with `seats` phantoms: the
@@ -540,7 +607,7 @@ impl Machine {
         scratch: u32,
         advertised: Option<&str>,
         settings: &[(u32, i32)],
-    ) -> Result<Progress, RpcError> {
+    ) -> Result<SimOpen, RpcError> {
         if let Some(owner) = &self.owned {
             if owner.config != *config || owner.closing {
                 return Err(RpcError::new(
@@ -549,32 +616,48 @@ impl Machine {
                 ));
             }
         } else {
-            let addr = cx.read(|m| {
-                if level_boot::active_mode(&ReadGm(m)) != Some(level_boot::MODE_MAINMENU)
-                    || m.u8(lobby::LOBBY_ON).map_err(read_fault)? == 0
-                {
-                    return Ok(None);
+            let waiting = cx.read(|m| {
+                if level_boot::active_mode(&ReadGm(m)) != Some(level_boot::MODE_MAINMENU) {
+                    return Ok(Some("waiting for the main menu"));
+                }
+                if m.u8(lobby::LOBBY_ON).map_err(read_fault)? == 0 {
+                    return Ok(Some("waiting for the lobby subsystem"));
+                }
+                if m.u8(lobby::NETWORKING).map_err(read_fault)? == 0 {
+                    return Ok(Some("waiting for networking"));
                 }
                 profiles(m)?;
                 let Some(addr) = squad(m)? else {
-                    return Ok(None);
+                    return Ok(Some("waiting for the squad allocation"));
                 };
                 if m.u32(addr + STATE).map_err(read_fault)? != 0
                     && m.u32(addr + SESSION_NETWORK_CLASS).map_err(read_fault)? != 0
                 {
                     return Err(unavailable("a network squad already exists"));
                 }
-                Ok::<_, RpcError>(Some(addr))
+                // Both Create paths first ask retail to leave the squad and
+                // target. It dereferences both, even at the initial menu.
+                let target = m.u32(lobby::TARGET_SESSION).map_err(read_fault)?;
+                if target == 0 {
+                    return Ok(Some("waiting for the target session allocation"));
+                }
+                let state = target
+                    .checked_add(STATE)
+                    .ok_or_else(|| unavailable("invalid target session"))?;
+                if target != addr && m.u32(state).map_err(read_fault)? != 0 {
+                    return Err(unavailable("another target session is active"));
+                }
+                Ok::<_, RpcError>(None)
             })?;
-            let Some(addr) = addr else {
-                return Ok(Progress::Wait("waiting for the main menu and networking"));
-            };
+            if let Some(why) = waiting {
+                return Ok(SimOpen::Wait(why));
+            }
             let prior_live_id = advertised.map(str::to_owned);
             let create = if config.live {
-                call(cx, GuestCall::new(LIVE_MENU_PREPARE).args([1])).await?;
+                call(cx, GuestCall::new(points::UI_LEAVE_SESSIONS.base).args([1])).await?;
                 GuestCall::new(CREATE_SQUAD).args([2, 0, 0])
             } else {
-                GuestCall::new(CREATE_BROWSER_SQUAD).args([0, 0])
+                GuestCall::new(points::BROWSER_CREATE_SQUAD.base).args([0, 0])
             };
             if call(cx, create).await? as u8 == 0 {
                 return Err(unavailable(
@@ -582,9 +665,21 @@ impl Machine {
                 ));
             }
             // Create may replace the menu's offline session object.
-            let addr = cx.read(|m| squad(m))?.unwrap_or(addr);
+            let (addr, incarnation) = cx.read(|m| {
+                let addr =
+                    squad(m)?.ok_or_else(|| unavailable("Create returned without a squad"))?;
+                if m.u32(addr + STATE).map_err(read_fault)? == 0
+                    || m.u32(addr + SESSION_NETWORK_CLASS).map_err(read_fault)? != config.class()
+                {
+                    return Err(unavailable(
+                        "Create returned without the requested network squad",
+                    ));
+                }
+                Ok((addr, m.u32(addr + INCARNATION).map_err(read_fault)?))
+            })?;
             self.owned = Some(Owned {
                 addr,
+                incarnation,
                 config: config.clone(),
                 setup: Setup::Created,
                 applied_variant: None,
@@ -593,6 +688,7 @@ impl Machine {
                 closing: false,
             });
             call(cx, GuestCall::new(points::LOBBY_MODE_SET.base).args([2])).await?;
+            return Ok(SimOpen::SquadCreated);
         }
         let owner = self.owned.as_mut().expect("created a squad");
         let waiting = cx.read(|m| {
@@ -602,7 +698,7 @@ impl Machine {
             m.u32(owner.addr + STATE).map_err(read_fault)
         })?;
         if waiting != session::STATE_LIVE {
-            return Ok(Progress::Wait(
+            return Ok(SimOpen::Wait(
                 "waiting for the retail squad to reach host state 5",
             ));
         }
@@ -614,7 +710,7 @@ impl Machine {
         }
         if !matches!(s.cycle, 1 | 2) {
             return if s.cycle == 0 {
-                Ok(Progress::Wait("waiting for the retail pregame life cycle"))
+                Ok(SimOpen::Wait("waiting for the retail pregame life cycle"))
             } else {
                 Err(unavailable("squad is outside the pregame lobby"))
             };
@@ -627,9 +723,13 @@ impl Machine {
             return Err(unavailable("joined players exceed the requested limit"));
         }
         if s.stage != 1 || cx.read(|m| m.u8(lobby::LOBBY_ON)).map_err(read_fault)? == 0 {
-            return Ok(Progress::Wait("waiting for the retail pregame lobby"));
+            return Ok(SimOpen::Wait("waiting for the retail pregame lobby"));
         }
         if owner.setup == Setup::Created {
+            owner.setup = Setup::Pregame;
+            return Ok(SimOpen::SessionStarted);
+        }
+        if owner.setup == Setup::Pregame {
             if call(
                 cx,
                 GuestCall::new(points::LOBBY_SET_MAP.base)
@@ -681,27 +781,27 @@ impl Machine {
             }
             owner.applied_variant = Some(applied);
             owner.setup = Setup::Applied;
-            return Ok(Progress::Wait("checking replicated lobby parameters"));
+            return Ok(SimOpen::Wait("checking replicated lobby parameters"));
         }
         if s.map != config.map || s.protocol != 2 {
-            return Ok(Progress::Wait(
+            return Ok(SimOpen::Wait(
                 "waiting for the requested map and distributed protocol",
             ));
         }
         if !cx.read(|m| replicated_variant(m, s.addr, owner))? {
-            return Ok(Progress::Wait(
+            return Ok(SimOpen::Wait(
                 "waiting for the requested variant in the squad",
             ));
         }
         let max = u32::from(config.max_players);
         if s.max != max {
             cx.write(|m| set_capacity(m, s.addr, max))?;
-            return Ok(Progress::Wait("checking the squad's player limit"));
+            return Ok(SimOpen::Wait("checking the squad's player limit"));
         }
         if config.live {
             let Some(id) = advertised.filter(|id| Some(*id) != owner.prior_live_id.as_deref())
             else {
-                return Ok(Progress::Wait("Live has not advertised the new squad"));
+                return Ok(SimOpen::Wait("Live has not advertised the new squad"));
             };
             if owner
                 .live_id
@@ -713,9 +813,7 @@ impl Machine {
             owner.live_id = Some(id.to_owned());
         }
         owner.setup = Setup::Open;
-        Ok(Progress::Done(json!(OpenResult {
-            session_id: owner.live_id.clone()
-        })))
+        Ok(SimOpen::Ready)
     }
 
     async fn start(&mut self, cx: &Cx, machine_start: bool) -> Result<Progress, RpcError> {
@@ -793,7 +891,10 @@ impl Machine {
             if state == 0 || class == 0 {
                 return Ok((false, in_menu));
             }
-            if addr != owner.addr || class != owner.config.class() {
+            if addr != owner.addr
+                || class != owner.config.class()
+                || m.u32(addr + INCARNATION).map_err(read_fault)? != owner.incarnation
+            {
                 return Err(unavailable("squad changed before close"));
             }
             if state == session::STATE_LIVE

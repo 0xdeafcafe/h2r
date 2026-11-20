@@ -6,11 +6,14 @@ const S: u32 = 0x8100_0000;
 const GAME: u32 = 0x8200_0000;
 const SCRATCH: u32 = 0x8300_0000;
 const WORLD: u32 = 0x8400_0000;
+const TARGET: u32 = 0x8600_0000;
 const MAP: u32 = 50;
 
 fn menu() -> FakeGuest {
     let mut m = FakeGuest::new();
     m.map(S, 0x7900)
+        .map(TARGET, 0x7900)
+        .put_u32(lobby::TARGET_SESSION, TARGET)
         .map(GAME, 0x2000)
         .map(SCRATCH, level_boot::VARIANT_SIZE)
         .map(WORLD, 0x1000)
@@ -55,12 +58,12 @@ fn rpc(e: RpcError) -> EntryError {
 
 fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
     let eax = match f.target {
-        LIVE_MENU_PREPARE => {
+        t if t == points::UI_LEAVE_SESSIONS.base => {
             assert_eq!(f.args, [1]);
             0
         }
-        CREATE_BROWSER_SQUAD | CREATE_SQUAD => {
-            let class = if f.target == CREATE_BROWSER_SQUAD {
+        t if t == points::BROWSER_CREATE_SQUAD.base || t == CREATE_SQUAD => {
+            let class = if f.target == points::BROWSER_CREATE_SQUAD.base {
                 assert_eq!(f.args, [0, 0]);
                 1
             } else {
@@ -129,6 +132,110 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
 }
 
 #[test]
+fn browser_create_waits_for_network_allocations_and_pregame_acknowledgement() {
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let mut machine = Machine::default();
+            let config = config();
+            for (squad, target, reason) in [
+                (0, TARGET, "waiting for the squad allocation"),
+                (S, 0, "waiting for the target session allocation"),
+            ] {
+                cx.write(|m| -> Result<(), MemFault> {
+                    m.set_u32(lobby::SESSION, squad)?;
+                    m.set_u32(lobby::TARGET_SESSION, target)
+                })?;
+                assert_eq!(
+                    machine
+                        .open(&cx, &config, SCRATCH, None, &[])
+                        .await
+                        .map_err(rpc)?,
+                    SimOpen::Wait(reason)
+                );
+                assert!(machine.owned_squad().is_none());
+            }
+            cx.write(|m| m.set_u32(lobby::TARGET_SESSION, TARGET))?;
+            assert_eq!(
+                machine
+                    .open(&cx, &config, SCRATCH, None, &[])
+                    .await
+                    .map_err(rpc)?,
+                SimOpen::SquadCreated
+            );
+
+            // Retail owns the lifecycle. A successful browser call alone
+            // does not permit the map/variant setters or a match start.
+            cx.write(|m| m.set_u32(S + STATE, 3))?;
+            assert_eq!(
+                machine.open(&cx, &config, SCRATCH, None, &[]).await.map_err(rpc)?,
+                SimOpen::Wait("waiting for the retail squad to reach host state 5")
+            );
+            cx.write(|m| m.set_u32(S + STATE, session::STATE_LIVE))?;
+            assert_eq!(
+                machine
+                    .open(&cx, &config, SCRATCH, None, &[])
+                    .await
+                    .map_err(rpc)?,
+                SimOpen::Wait("waiting for the retail pregame life cycle")
+            );
+            assert!(cx.read(|m| machine.owned_squad().unwrap().playerless_host(m)));
+            cx.write(|m| m.set_u32(lobby::SESSION_TYPE, 1))?;
+            assert_eq!(
+                machine
+                    .open(&cx, &config, SCRATCH, None, &[])
+                    .await
+                    .map_err(rpc)?,
+                SimOpen::SessionStarted
+            );
+            assert_eq!(cx.read(|m| m.u32(S + PLAYER_COUNT))?, 0);
+            Ok(Ret::new(1, 0))
+        })
+    };
+    let run = testing::run(&test, menu(), Regs::default(), |call, m| {
+        let result = reply(call, m);
+        if call.target == points::BROWSER_CREATE_SQUAD.base {
+            m.set_u32(lobby::SESSION_TYPE, 0).unwrap();
+        }
+        result
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+    assert_eq!(
+        run.calls.iter().map(|c| c.target).collect::<Vec<_>>(),
+        [
+            points::BROWSER_CREATE_SQUAD.base,
+            points::LOBBY_MODE_SET.base
+        ]
+    );
+}
+
+#[test]
+fn the_menu_guard_only_keeps_the_driver_owned_playerless_host() {
+    let id = SquadId {
+        addr: S,
+        class: 1,
+        incarnation: 9,
+    };
+    let mut m = menu();
+    m.put_u32(S + INCARNATION, 9)
+        .put_u32(S + STATE, session::STATE_LIVE)
+        .put_u32(S + SESSION_NETWORK_CLASS, 1)
+        .put_u32(S + PEER_COUNT, 5);
+    assert!(id.playerless_host(&m));
+    for (field, value) in [
+        (lobby::SESSION, TARGET),
+        (S + INCARNATION, 10),
+        (S + STATE, 0),
+        (S + SESSION_NETWORK_CLASS, 2),
+        (S + HOST_PEER, 1),
+        (bots::guest::slot(3), bots::guest::SLOT_PROFILE),
+    ] {
+        let mut other = m.clone();
+        other.put_u32(field, value);
+        assert!(!id.playerless_host(&other));
+    }
+}
+
+#[test]
 fn a_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
@@ -139,18 +246,20 @@ fn a_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
             .unwrap();
             let matched = sim_bench::config::resolve(config, &|_| unreachable!()).unwrap();
             let mut lobby = Machine::default();
-            assert!(
-                !lobby
-                    .open_sim(&cx, MAP, &matched, SCRATCH)
-                    .await
-                    .map_err(rpc)?
-            );
-            assert!(
-                lobby
-                    .open_sim(&cx, MAP, &matched, SCRATCH)
-                    .await
-                    .map_err(rpc)?
-            );
+            for progress in [
+                SimOpen::SquadCreated,
+                SimOpen::SessionStarted,
+                SimOpen::Wait("checking replicated lobby parameters"),
+                SimOpen::Ready,
+            ] {
+                assert_eq!(
+                    lobby
+                        .advance_sim_open(&cx, MAP, &matched, SCRATCH)
+                        .await
+                        .map_err(rpc)?,
+                    progress,
+                );
+            }
             assert_eq!(
                 cx.read(|m| m.u32(S + VARIANT + variant::SCORE_TO_WIN as u32))?,
                 17
@@ -545,13 +654,15 @@ fn playerless_open_join_start_postgame_and_close_follow_retail() {
                 map: MAP + 1,
                 ..config()
             });
-            assert!(matches!(
-                machine
-                    .advance(&cx, &next, SCRATCH, None, true)
-                    .await
-                    .map_err(rpc)?,
-                Progress::Wait(_)
-            ));
+            for _ in 0..3 {
+                assert!(matches!(
+                    machine
+                        .advance(&cx, &next, SCRATCH, None, true)
+                        .await
+                        .map_err(rpc)?,
+                    Progress::Wait(_)
+                ));
+            }
             assert!(matches!(
                 machine
                     .advance(&cx, &next, SCRATCH, None, true)
@@ -589,6 +700,7 @@ fn playerless_open_join_start_postgame_and_close_follow_retail() {
 fn a_local_seat_migration_or_broken_membership_refuses_start() {
     let owner = Owned {
         addr: S,
+        incarnation: 0,
         config: config(),
         setup: Setup::Open,
         applied_variant: None,
@@ -696,7 +808,7 @@ fn live_open_waits_for_a_new_advertisement_and_close_for_withdrawal() {
         reply(f, m)
     });
     assert_eq!(run.result.unwrap(), Ret::new(1, 0));
-    assert_eq!(run.calls[0].target, LIVE_MENU_PREPARE);
+    assert_eq!(run.calls[0].target, points::UI_LEAVE_SESSIONS.base);
     assert_eq!(run.calls[1].target, CREATE_SQUAD);
     assert_eq!(
         run.calls
@@ -716,13 +828,15 @@ fn open_tracks_the_network_squad_when_create_replaces_the_menu_squad() {
         Box::pin(async move {
             let mut machine = Machine::default();
             let open = Command::Open(config());
-            assert!(matches!(
-                machine
-                    .advance(&cx, &open, SCRATCH, None, true)
-                    .await
-                    .map_err(rpc)?,
-                Progress::Wait(_)
-            ));
+            for _ in 0..3 {
+                assert!(matches!(
+                    machine
+                        .advance(&cx, &open, SCRATCH, None, true)
+                        .await
+                        .map_err(rpc)?,
+                    Progress::Wait(_)
+                ));
+            }
             assert!(matches!(
                 machine
                     .advance(&cx, &open, SCRATCH, None, true)
@@ -736,7 +850,7 @@ fn open_tracks_the_network_squad_when_create_replaces_the_menu_squad() {
         })
     };
     let run = testing::run(&test, memory, Regs::default(), |call, m| {
-        if call.target == CREATE_BROWSER_SQUAD {
+        if call.target == points::BROWSER_CREATE_SQUAD.base {
             m.set_u32(lobby::SESSION, S).unwrap();
         }
         reply(call, m)
