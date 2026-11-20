@@ -209,7 +209,7 @@ impl Converter<'_> {
         let Some(id) = source else { return Ok((None, None)) };
         let tag = self.h1_tag(id)?;
         let effect = h1::Effect::read(self.h1, tag)?;
-        let mut primary = None;
+        let mut primary: Option<(h1map::TagId, usize, bool)> = None;
         for (index, part) in effect
             .events
             .iter()
