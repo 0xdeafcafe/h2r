@@ -505,6 +505,33 @@ fn scenery_geometry<R: Read + Seek>(
 }
 
 #[cfg(test)]
+pub(super) fn test_roof(x_edge: f32, z: f32) -> impl Fn(Vec3, Vec3, f32) -> [bool; 2] {
+    let corners = [
+        [-10., -10., z],
+        [x_edge, -10., z],
+        [x_edge, 10., z],
+        [-10., 10., z],
+    ];
+    let triangles = [[0, 1, 2], [2, 3, 0]].map(|indices| Triangle {
+        positions: indices.map(|i| corners[i]),
+        uv: [[0.; 2]; 3],
+        material: 0,
+    });
+    let scene = Scene {
+        world: Bvh::new(vec![]),
+        scenery: Bvh::new(Vec::from(triangles)),
+        coverage: vec![Coverage::Solid],
+        light: None,
+        selected_clusters: vec![],
+        objects: vec![],
+        warnings: vec![],
+        world_triangles: 0,
+        scenery_triangles: 2,
+    };
+    move |origin, dir, limit| scene.visible_to(origin, dir, limit)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -575,29 +602,3 @@ mod tests {
 }
 
 /// Geometric shadow caster for the forward model's independent area fixture.
-#[cfg(test)]
-pub(super) fn test_roof(x_edge: f32, z: f32) -> impl Fn(Vec3, Vec3, f32) -> [bool; 2] {
-    let corners = [
-        [-10., -10., z],
-        [x_edge, -10., z],
-        [x_edge, 10., z],
-        [-10., 10., z],
-    ];
-    let triangles = [[0, 1, 2], [2, 3, 0]].map(|indices| Triangle {
-        positions: indices.map(|i| corners[i]),
-        uv: [[0.; 2]; 3],
-        material: 0,
-    });
-    let scene = Scene {
-        world: Bvh::new(vec![]),
-        scenery: Bvh::new(Vec::from(triangles)),
-        coverage: vec![Coverage::Solid],
-        light: None,
-        selected_clusters: vec![],
-        objects: vec![],
-        warnings: vec![],
-        world_triangles: 0,
-        scenery_triangles: 2,
-    };
-    move |origin, dir, limit| scene.visible_to(origin, dir, limit)
-}
