@@ -755,7 +755,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -895,8 +895,19 @@ h2 agent render.parity '{"arm": true}'
   `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
   `scene_side_target_frames` (frames that named a side target in a
   game view), `scene_readback` and `scene_readback_<kind>` (in a game
-  view, since the start). Without the option `carried` and those
-  counters are absent. With
+  view, since the start). `carried_census` keeps transient uses across
+  all recorded frames. `frames` counts sink presents from one and
+  `game_frames` counts those with guest D3D ops in a game view.
+  `targets` groups game-view side surfaces by `width`, `height`,
+  `format`, `depth`, `slot` and `operation`. Operations distinguish
+  attachment binds and clears, the source and destination of a copy,
+  uploads, snapshots, in-place samples and depth samples. `reads`
+  groups guest readbacks by `slot` and `kind`, including the overlay
+  and outside slots. Each row gives its `count`, `first_frame` and
+  `last_frame`. Compare counts at two boundaries to isolate a window.
+  The per-frame `aux` number appears only under `carried.side_targets`.
+  Both carried records are absent until the sink records a frame.
+  Without the option the sink counters are also absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`

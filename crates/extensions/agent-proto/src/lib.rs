@@ -38,7 +38,7 @@ pub use render::{
     CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
     PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
-    SceneSideTarget, SceneViewRecord,
+    SceneCarriedCensus, SceneReadUse, SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord,
     SnapRecord, SpawnViewParams,
 };
 

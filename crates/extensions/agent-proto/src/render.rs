@@ -368,9 +368,52 @@ pub struct SceneReply {
     /// recorded no frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried: Option<SceneCarried>,
+    /// Side target uses and readbacks across all frames the device's sink recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_census: Option<SceneCarriedCensus>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
+}
+
+/// Totals over sink frames, including targets that only appeared during loading.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCarriedCensus {
+    pub frames: u64,
+    /// Frames containing a guest D3D op inside a game view.
+    pub game_frames: u64,
+    pub targets: Vec<SceneTargetUse>,
+    pub reads: Vec<SceneReadUse>,
+}
+
+/// Occurrences of a census row. Sink frames are numbered from one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneUses {
+    pub count: u64,
+    pub first_frame: u64,
+    pub last_frame: u64,
+}
+
+/// A side surface class, where it was used, and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneTargetUse {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub depth: bool,
+    pub slot: String,
+    pub operation: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
+}
+
+/// Guest reads inside or outside a game view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneReadUse {
+    pub slot: String,
+    pub kind: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
 }
 
 /// `render.scene`'s entry census.
@@ -671,6 +714,32 @@ mod tests {
         assert_eq!(v["post"]["effects"], 1);
         assert!(v.get("water").is_none());
         assert_eq!(serde_json::from_value::<SceneViewRecord>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn the_census_preserves_counts_and_frame_bounds_on_the_wire() {
+        let uses = SceneUses { count: 3, first_frame: 2, last_frame: 7 };
+        let reply = SceneReply {
+            carried_census: Some(SceneCarriedCensus {
+                frames: 10,
+                game_frames: 8,
+                targets: vec![SceneTargetUse {
+                    width: 9, height: 7, format: 6, depth: false,
+                    slot: "after_lights".into(), operation: "copy_from".into(), uses,
+                }],
+                reads: vec![SceneReadUse { slot: "outside".into(), kind: "mirror".into(), uses }],
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&reply).unwrap();
+        let census = &v["carried_census"];
+        assert_eq!(census["targets"][0]["first_frame"], 2);
+        assert_eq!(census["reads"][0]["last_frame"], 7);
+        assert_eq!(census["reads"][0]["count"], 3);
+        assert_eq!(serde_json::from_value::<SceneReply>(v).unwrap(), reply);
+        let mut old = serde_json::to_value(SceneReply::default()).unwrap();
+        assert!(old.as_object_mut().unwrap().remove("carried_census").is_none());
+        assert!(serde_json::from_value::<SceneReply>(old).unwrap().carried_census.is_none());
     }
 
     #[test]

@@ -60,16 +60,19 @@ fn source(dump: bool) -> Result<SceneReply, String> {
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
     let summary = if sink { d3d::scene_sink::last() } else { None };
+    let census = if sink { d3d::scene_sink::census().map(carried_census) } else { None };
     let Some(scene) = render_bridge::scene_step::last() else {
         return Ok(SceneReply {
             counters,
             entries: entries(),
             carried: summary.as_ref().map(carried),
+            carried_census: census,
             ..SceneReply::default()
         });
     };
     let mut reply = reply(&scene, counters, summary.as_ref());
     reply.entries = entries();
+    reply.carried_census = census;
     if dump {
         reply.dump = Some(write_dump(&scene)?);
     }
@@ -113,6 +116,23 @@ fn carried(s: &CarriedSummary) -> SceneCarried {
             .collect(),
         readbacks: readbacks(&s.readbacks),
         readbacks_outside: readbacks(&s.readbacks_outside),
+    }
+}
+
+fn carried_census(census: d3d::scene_sink::Census) -> agent_proto::SceneCarriedCensus {
+    let uses = |u: d3d::scene_sink::Uses| agent_proto::SceneUses {
+        count: u.count, first_frame: u.first_frame, last_frame: u.last_frame,
+    };
+    agent_proto::SceneCarriedCensus {
+        frames: census.frames,
+        game_frames: census.game_frames,
+        targets: census.targets.into_iter().map(|(t, u)| agent_proto::SceneTargetUse {
+            width: t.width, height: t.height, format: t.format, depth: t.depth,
+            slot: t.slot.name().into(), operation: t.operation.into(), uses: uses(u),
+        }).collect(),
+        reads: census.reads.into_iter().map(|((slot, kind), u)| agent_proto::SceneReadUse {
+            slot: slot.name().into(), kind: kind.into(), uses: uses(u),
+        }).collect(),
     }
 }
 
@@ -179,6 +199,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         counters,
         entries: None,
         carried: summary.map(carried),
+        carried_census: None,
         dump: None,
     }
 }

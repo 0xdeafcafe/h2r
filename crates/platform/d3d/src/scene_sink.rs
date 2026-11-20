@@ -20,6 +20,9 @@
 //! the depth bound with that colour. Until a surface has been presented a
 //! draw into it names a side target, so a run's first frames do.
 
+mod census;
+pub use census::{Census, TargetUse, Uses, census};
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -223,6 +226,7 @@ impl<B: Backend> SceneSink<B> {
             return;
         }
         let summary = self.frame.summary();
+        census::record(&self.frame);
         FRAMES.fetch_add(1, Ordering::Relaxed);
         DRAWS.fetch_add(summary.draws(), Ordering::Relaxed);
         OPS.fetch_add(summary.slots.iter().map(|c| u64::from(c.total())).sum(), Ordering::Relaxed);
