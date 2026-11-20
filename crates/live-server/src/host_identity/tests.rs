@@ -361,7 +361,7 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     });
     let film = film_fixture(2, &summary);
     let mut public_summary = summary.clone();
-    public_summary["players"][0]["xuid"] = Value::Null;
+    public_summary["players"][0].as_object_mut().unwrap().remove("xuid");
     let incomplete = upload(Some(&token), None, Body::from(film[..film.len()-1].to_vec())).await.unwrap();
     assert_eq!(incomplete.status(), StatusCode::BAD_REQUEST);
     assert!(store.get(&key).await.unwrap().is_none());
