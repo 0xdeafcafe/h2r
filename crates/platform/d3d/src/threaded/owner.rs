@@ -66,11 +66,20 @@ pub struct OwnerStats {
     pub presented: u64,
     /// All other presentations on devices with an owner installed.
     pub declined: u64,
+    /// Paired game frames checked on a healthy display worker.
+    pub candidates: u64,
+    pub barriers: u64,
+    pub mismatches: u64,
+    pub target_refusals: u64,
     /// Matched GET_REPORT tickets in game views of successfully adopted presents.
     pub flare_queries: u64,
 }
 
 static FLARE_QUERIES: AtomicU64 = AtomicU64::new(0);
+static CANDIDATES: AtomicU64 = AtomicU64::new(0);
+static BARRIERS: AtomicU64 = AtomicU64::new(0);
+static MISMATCHES: AtomicU64 = AtomicU64::new(0);
+static TARGET_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static ACTIVE: AtomicU64 = AtomicU64::new(0);
 static PRESENTED: AtomicU64 = AtomicU64::new(0);
 static DECLINED: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +88,10 @@ pub fn stats() -> Option<OwnerStats> {
     (ACTIVE.load(Ordering::Relaxed) > 0).then(|| OwnerStats {
         presented: PRESENTED.load(Ordering::Relaxed),
         flare_queries: FLARE_QUERIES.load(Ordering::Relaxed),
+        candidates: CANDIDATES.load(Ordering::Relaxed),
+        barriers: BARRIERS.load(Ordering::Relaxed),
+        mismatches: MISMATCHES.load(Ordering::Relaxed),
+        target_refusals: TARGET_REFUSALS.load(Ordering::Relaxed),
         declined: DECLINED.load(Ordering::Relaxed),
     })
 }
@@ -326,14 +339,27 @@ impl<B: Backend> Worker<B> {
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|candidate| {
             let frame = &candidate.frame;
-            if self.shared.failed.load(Ordering::Acquire) || transaction.refused || frame.present != n || frame.flags != flags || frame.gamma != gamma {
+            if self.shared.failed.load(Ordering::Acquire) {
                 return None;
             }
-            let proxies = target_map(frame, &transaction.commands, surface)?;
+            CANDIDATES.fetch_add(1, Ordering::Relaxed);
+            if transaction.refused {
+                BARRIERS.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            let matching_swap = frame.present == n && frame.flags == flags && frame.gamma == gamma;
+            let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, surface)).flatten() else {
+                MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                return None;
+            };
             let surfaces = proxies.targets.into_iter().map(|(key, id)| {
                 self.surfaces.get(&id).copied().map(|actual| (key, actual))
-            }).collect::<Option<HashMap<_, _>>>()?;
-            (candidate.eligible)(&self.inner, &surfaces).then_some((candidate.frame, candidate.draw, surfaces, proxies.samples))
+            }).collect::<Option<HashMap<_, _>>>();
+            let Some(surfaces) = surfaces.filter(|targets| (candidate.eligible)(&self.inner, targets)) else {
+                TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                return None;
+            };
+            Some((candidate.frame, candidate.draw, surfaces, proxies.samples))
         });
 
         self.inner.stamp_present(at);

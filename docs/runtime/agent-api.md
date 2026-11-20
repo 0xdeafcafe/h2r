@@ -990,6 +990,14 @@ h2 agent render.parity '{"arm": true}'
   counts presentations that take the ordinary backend path, including
   frames outside game views. `scene_owned_flare_queries` counts
   game-view pixel reports whose native result the owner installed.
+  `scene_owned_candidates` counts sealed game frames paired with their
+  guest presents and checked by the display worker. For each rejected
+  candidate the worker records the first cause. `scene_owned_barriers`
+  counts frames whose original commands had to run before Swap, for example
+  for a guest read. `scene_owned_mismatches` counts disagreement between
+  the seal and the queued commands or Swap parameters.
+  `scene_owned_target_refusals` counts missing physical attachments and
+  frames the physical backend cannot reproduce at the active scale or mode.
   With the sink and a render worker, `scene_residency_frames` counts
   presents where the worker observed a draw, a committed scene stage,
   an owned frame or a failure. `scene_unresident` counts distinct

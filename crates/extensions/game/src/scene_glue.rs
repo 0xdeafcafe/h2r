@@ -63,6 +63,10 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         counts.insert("scene_owned_presented".into(), owner.presented);
         counts.insert("scene_owned_declined".into(), owner.declined);
         counts.insert("scene_owned_flare_queries".into(), owner.flare_queries);
+        counts.insert("scene_owned_candidates".into(), owner.candidates);
+        counts.insert("scene_owned_barriers".into(), owner.barriers);
+        counts.insert("scene_owned_mismatches".into(), owner.mismatches);
+        counts.insert("scene_owned_target_refusals".into(), owner.target_refusals);
     }
     counts
 }
