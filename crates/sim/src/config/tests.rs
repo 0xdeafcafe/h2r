@@ -786,6 +786,23 @@ fn swapping_seats_preserves_brains_teams_and_allocates_dense_local_ports() {
 }
 
 #[test]
+fn midship_parity_example_disables_transport_delay_in_both_legs() {
+    let plan = batch(
+        include_str!("../../../../docs/runtime/sim-examples/midship-seat-swap.toml"),
+        include_str!("../../../../docs/runtime/sim-examples/midship-seats.toml"),
+    )
+    .unwrap();
+    assert_eq!(plan.runs.len(), 20);
+    for run in plan.runs {
+        let played = resolve(run.config, &no_files).unwrap();
+        for bot in played.bots {
+            assert_eq!(bot.params.phantom_ping_ms, Some(0.));
+            assert_eq!(bot.params.phantom_jitter_ms, Some(0.));
+        }
+    }
+}
+
+#[test]
 fn swapped_layout_can_be_playerless_but_still_has_at_most_four_pads() {
     let spec = "out='o'\nmatch='m'\nmode='seat_swap'\n[a]\n";
     let one = "map='midship'\n[[bot]]\n";

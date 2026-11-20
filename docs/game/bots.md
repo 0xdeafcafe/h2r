@@ -846,9 +846,13 @@ The host now runs the retail local builder on each arrived phantom pad.
 Its private copy of user zero has the phantom's unit, camera origin,
 profile binding and control history, including on a host with no local
 profile. The host validates the full action at `0x14d0a0` (§5.1).
-**Same-view assist parity is inferred, needs a run.** Hit-rate parity
-remains unmeasured. Compare matched Midship
-seats with `H2_BOTS_ALL_PHANTOM=0` using the ten-seed
+The first ten-seed Midship batch measured four players for 9,000 ticks
+in each original leg. Red locals averaged 0.165 opposing hits per shot
+and Blue phantoms 0.155. Every swapped report had zero measured ticks
+and named the two Blue locals as unbound. These observations leave team
+and transport confounded. **Same-view assist parity is inferred, needs
+a run.** Compare matched Midship seats with `H2_BOTS_ALL_PHANTOM=0`
+using the ten-seed
 [seat-swap batch](../runtime/sim.md#local-and-phantom-seat-swaps).
 Check `sim.player.list` for `aim.assist_player` and `aim.assist_strength`
 as a target enters and leaves the reticle. Compare opposing hits per shot
@@ -2673,8 +2677,11 @@ one-way delivery after half that ping plus uniform jitter of up to ±4 ms.
 Arrival is rounded up to the next simulation sample, normally one or two
 ticks later. The host builds and stamps the action record at arrival
 using the current weapon and facing. While it waits, it holds the latest
-arrived pad. Several packets arriving together can collapse to the newest
-report. A new unit or a break in the stream clears the queue.
+arrived pad. The latest arrival supplies the stick position. The host
+delivers each trigger's pressure changes in send order, at most one per
+tick after arrival. This lets the retail reader see a tap when the press
+and release arrive together. A new unit or a break in the stream clears
+the pending reports and trigger changes.
 `phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
 `phantom_jitter_ms` sets the one-way jitter bound.
 
