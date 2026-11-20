@@ -226,6 +226,7 @@ pub struct Live {
     /// Where content, cloud saves and published art are kept
     /// ([`crate::blobs`]); the data directory unless [`Live::set_blobs`].
     blobs: std::sync::OnceLock<crate::blobs::Blobs>,
+    screenshot_classifier: std::sync::OnceLock<Arc<dyn crate::screenshot_classifier::Classifier>>,
     /// Shared game art in the public blob store, redirected to once it is
     /// uploaded ([`crate::art::PublishedArt`]).
     published_art: std::sync::OnceLock<crate::art::PublishedArt>,
@@ -608,6 +609,7 @@ impl Live {
             started_at: now(),
             data_dir: Default::default(),
             blobs: Default::default(),
+            screenshot_classifier: Default::default(),
             published_art: Default::default(),
             policy,
             dispatcher,
@@ -681,6 +683,21 @@ impl Live {
 
     pub fn blobs(&self) -> Option<&crate::blobs::Blobs> {
         self.blobs.get()
+    }
+
+    /// Installs the screenshot classifier once, before the router is built.
+    /// With no classifier, screenshots wait for review.
+    pub fn set_screenshot_classifier(
+        &self,
+        classifier: Arc<dyn crate::screenshot_classifier::Classifier>,
+    ) {
+        let _ = self.screenshot_classifier.set(classifier);
+    }
+
+    pub(crate) fn screenshot_classifier(
+        &self,
+    ) -> Option<Arc<dyn crate::screenshot_classifier::Classifier>> {
+        self.screenshot_classifier.get().cloned()
     }
 
     /// Redirects `/art/game/*` to `art`'s public copies once it has

@@ -28,7 +28,7 @@ use worker::{
     SqlStorage, State, WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
-use crate::bindings::{BLOBS, HUB, HUB_NAME};
+use crate::bindings::{BLOBS, HUB, HUB_NAME, SCREENSHOT_AI};
 use crate::dosql::DoSql;
 use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
@@ -327,6 +327,9 @@ impl LiveHub {
             private,
             public: None,
         });
+        if let Ok(ai) = self.env.ai(SCREENSHOT_AI) {
+            live.set_screenshot_classifier(Arc::new(crate::screenshot_ai::WorkersClassifier(ai)));
+        }
         // Dedicated host leases use this environment's private container namespace.
         live.set_host_config(live_server::hosts::HostConfig::from_env(&|name| {
             self.setting(name)
