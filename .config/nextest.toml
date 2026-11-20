@@ -49,3 +49,18 @@ store-failure-output = true
 filter = 'package(h1objects) | package(h1convert) | package(h1campaign) | binary(disc) | test(/_disc(::|$)/)'
 test-group = 'disc'
 slow-timeout = { period = "300s", terminate-after = 6 }
+
+[test-groups.shared-fixture]
+# Test files whose tests build one fixture into a fixed directory (a C
+# library, a compiled bridge) behind a `OnceLock`. Each nextest process
+# builds it again, and two at once race on the same files, so these run
+# one at a time.
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary_id(emit::direct) | binary_id(emit::native_x87) | binary_id(kernel::preempt) | binary_id(perf::end_to_end)'
+test-group = 'shared-fixture'
+
+[[profile.xtask.overrides]]
+filter = 'binary_id(emit::direct) | binary_id(emit::native_x87) | binary_id(kernel::preempt) | binary_id(perf::end_to_end)'
+test-group = 'shared-fixture'
