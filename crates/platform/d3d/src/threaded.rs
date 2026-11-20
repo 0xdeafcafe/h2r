@@ -62,6 +62,8 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
+pub mod owner;
+
 /// Synchronous light reservations submitted to an actual worker thread.
 pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -105,6 +107,9 @@ enum Cmd<B: Backend> {
     /// allocation per draw.
     Draw(DrawBox),
     ExternalRun(Vec<ExternalRecording>),
+    /// Only emitted on the frame-owner path.
+    Render(owner::RenderOp),
+    OwnerPresent(owner::Present<B>),
 }
 
 /// A queued draw's box: `Some` while queued, emptied by the render thread.
@@ -175,6 +180,7 @@ impl<B: Backend> Queue<B> {
 /// What lives on the render thread.
 pub struct Worker<B: Backend> {
     inner: B,
+    transaction: Option<owner::Transaction<B>>,
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
     /// Pixel-count tickets not yet landed: proxy to the inner backend's,
@@ -336,7 +342,29 @@ impl<B: Backend> Worker<B> {
     }
 
     fn exec(&mut self, cmd: Cmd<B>) {
+        if let Cmd::OwnerPresent(present) = cmd {
+            self.owner_present(present);
+            return;
+        }
+        if let Some(pending) = self.transaction.as_mut() {
+            if pending.hold(&cmd) {
+                pending.commands.push(cmd);
+                return;
+            }
+            // A read, query, resource lifetime change or external command
+            // needs the original GPU state in queue order.
+            let commands = pending.barrier();
+            for saved in commands {
+                self.exec_original(saved);
+            }
+        }
+        self.exec_original(cmd);
+    }
+
+    fn exec_original(&mut self, cmd: Cmd<B>) {
         match cmd {
+            Cmd::Render(op) => self.run(|worker| op.issue(worker)),
+            Cmd::OwnerPresent(_) => unreachable!("a present terminates the owner transaction"),
             Cmd::Job(job) => job(self),
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
@@ -446,6 +474,7 @@ struct PinnedExternalRun {
 /// [`Backend`] that queues `B`'s work to a render thread.
 pub struct ThreadedBackend<B: Backend + 'static> {
     queue: Arc<Queue<B>>,
+    frame_owner: Option<owner::FrameOwner<B>>,
     /// Stream buffers taken from [`Shared::spent`], handed back one draw's
     /// worth per draw.
     spare: Vec<Vec<StreamBytes>>,
@@ -500,6 +529,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                 timeline::native::mark_render_thread();
                 let mut w = Worker {
                     inner,
+                    transaction: None,
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
                     tickets: BTreeMap::new(),
@@ -580,6 +610,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                 pending: Mutex::new(PendingBatch { commands: Vec::with_capacity(BATCH), order: 0 }),
                 tx,
             }),
+            frame_owner: None,
             spare: Vec::new(),
             spare_boxes: Vec::new(),
             join: Some(join),
@@ -815,6 +846,10 @@ impl<B: Backend + 'static> Drop for ThreadedBackend<B> {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+        if let Some(owner) = self.frame_owner.take() {
+            owner::uninstall();
+            (owner.stopped)();
+        }
     }
 }
 
@@ -906,6 +941,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn clear(&mut self, color: u32, depth: Option<u32>, clear: Clear) -> Result<(), String> {
         self.check()?;
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Clear { color, depth, clear }));
+            return Ok(());
+        }
         self.post(move |w| {
             let (c, d) = (w.surface(color)?, w.depth(depth)?);
             w.inner.clear(c, d, clear)
@@ -977,15 +1016,21 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         // The arrival, read on the guest's thread (the render thread may
         // reach this present a frame later).
         let at = std::time::Instant::now();
-        self.post(move |w| {
-            let s = w.surface(surface)?;
-            w.inner.stamp_present(at);
-            let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
-            *w.shared.presented.lock().unwrap() = n;
-            w.shared.presented_cv.notify_all();
-            r?;
-            w.land_pixel_counts()
-        });
+        if let Some(owner) = self.frame_owner.as_mut() {
+            let candidate = (owner.select)(n);
+            let declined = owner.declined;
+            self.push(Cmd::OwnerPresent(owner::Present { n, surface, at, flags, gamma, candidate, declined }));
+        } else {
+            self.post(move |w| {
+                let s = w.surface(surface)?;
+                w.inner.stamp_present(at);
+                let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
+                *w.shared.presented.lock().unwrap() = n;
+                w.shared.presented_cv.notify_all();
+                r?;
+                w.land_pixel_counts()
+            });
+        }
         self.flush();
         // Frame-in-flight limit: wall time only, never logical time.
         let t = std::time::Instant::now();
@@ -1011,6 +1056,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     ) -> Result<DrawOutcome, String> {
         self.check()?;
         let clear = clear.clone();
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::ClearRects { color, depth, clear }));
+            return Ok(DrawOutcome::Drawn);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let (c, d) = (w.surface(color)?, w.depth(depth)?);
@@ -1053,6 +1102,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
         self.check()?;
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Copy { src, dst }));
+            return Ok(true);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let (s, d) = (w.surface(src)?, w.surface(dst)?);
@@ -1073,6 +1126,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let desc = desc.clone();
         let bytes = bytes.to_vec();
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Upload { surface, desc, bytes }));
+            return Ok(true);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let s = w.surface(surface)?;
