@@ -652,9 +652,13 @@ The native server uses its private blob store. The Worker uses its private
 | Endpoint | Token | Contract |
 |---|---|---|
 | `POST /v1/admin/sim-runs` | `games.write` | Admin starts a game with the normal game-start body and a required `sim` object. Returns `201` and `{game_id, position}`. The same host and start body can retry the same run ID. |
-| `GET /v1/admin/sim-runs` | `read` | Lists runs newest first, 50 per page. Accepts `map`, `tuning` (case-insensitive arm or parameter text), `batch` and `before` (the previous page's `next`). |
+| `GET /v1/admin/sim-runs` | `read` | Lists runs newest first, 50 per page. Accepts `map`, `tuning` (case-insensitive arm or parameter text), `batch` and `before` (the previous page's `next`). `tuning_choice` selects `arm:<name>` exactly, `custom` (unnamed bots with tuning parameters), or `default` (unnamed bots without tuning parameters). |
 | `GET /v1/admin/sim-runs/{game_id}` | `read` | Returns `{run, game, report}`. `game` is the normal game detail and `report` is the original JSON or null while the upload is pending. |
 | `PUT /v1/admin/sim-runs/{game_id}/report` | `games.write` | The admin who hosted the ended recording stores its `h2-sim-report/1` JSON. Returns `204`. An identical retry succeeds. A different report for that run returns `409`. |
+
+With `include_options=1`, the list also returns `options` with sorted
+`maps`, `arms` and `batches`, and `custom_tuning` and `default_tuning`
+flags. These describe all available runs regardless of filters or cursor.
 
 The `sim` object carries `run_id`, optional `batch_id`, `seed` as a decimal
 string (all 64 bits), `gametype`, `pace`, resolved `bots` including tuning,

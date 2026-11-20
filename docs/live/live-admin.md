@@ -286,31 +286,49 @@ the game's own things: what it shows and plays. Running the service
 is the dashboard's server screens (§5), styled like the rest of the
 dashboard. Each side links to the other: the dashboard's "halo admin" pod
 opens `/games/halo2/admin`, and the Halo Admin title bar's "Server admin" goes back
-to `/dash/server`. The Halo Admin's three sections:
+to `/dash/server`. The Halo Admin sections are:
 
 - **Message of the Day** — the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
   form (255 UTF-16 units, 32 messages). After a publish it notes that the
   game picks the new text up at its next sign-in.
-- **Playlists** — the 16 hoppers: pick one, edit its title and
-  description, and per entry its map (a picker of the game's maps, by
-  name, when the server has a catalog) and weight; each entry shows its
-  game variant. Reorder, duplicate, add or remove entries with the same
-  validation the server applies (title ≤ 15 bytes, description ≤ 127,
-  1..100 entries). Entries remember where their bytes come from, so
-  reorders and copies carry the game variant whole. **Advanced: raw
-  fields** keeps the type, status, ranges, raw name and every record word
-  editable as numbers. **Start from preset** fills the playlist from a
-  historical lineup (below).
+- **Playlists** — the list shows active playlists and how many of the 16
+  slots are in use. Add a playlist from a matchmaking template, or open a
+  playlist to see its kind and player counts. Its toolbar duplicates or
+  removes it, or resets its title, description, rotation and any ranges
+  supplied by a historical preset. **Change rules** applies a matchmaking template while keeping
+  the title, description and rotation. Clanker marks belong to the original
+  playlist ID and slot. A duplicate starts from a human matchmaking template.
 - **Custom content** — §7.
+- **Clanker Training** — upload a batch from the h2recomp checkout using
+  the command shown on the empty page. With runs on the server, the map,
+  tuning and batch filters use values from the uploaded runs across all
+  pages. Open a run for its results, speed, bot stats and live or replay
+  viewer, or select two runs to compare them. See
+  [Watching in Uplink](../runtime/sim.md#watching-in-uplink).
 
-The same playlist editing is available offline in the native editor's
-hopper tool (`h2-editor`, [editor.md](../editor/editor.md)): it opens and saves a
-`multiplayer_hopper.dat` file (raw image or envelope) with the same
-fields, validation and presets, and it can also give an entry another
-game variant (a disc built-in, a saved variant or a `.h2variant` file),
-which the web builder cannot; publish the result with `h2 live hopper
-import`.
+The playlist editor (`web/src/admin/HopperBuilder.tsx`) groups maps by
+game variant. Choose maps from a dialog that shows previews from game art
+when available. Use the weight stepper to set how often each entry plays.
+Its bar shows the entry's percentage of the playlist's total clamped weight.
+Drag a map's handle within its variant, or focus it and press Up or Down.
+**Advanced: raw fields** opens the editor for descriptor fields and the
+underlying entry list, including reordering across variants. Entries remember
+their published source slots so reorders and copies preserve the game variant.
+
+Titles are limited to 15 UTF-8 bytes, descriptions to 127, and playlists
+to 1–100 entries. **Review & publish** shows added, removed and edited
+playlists and their changed fields against the loaded published file.
+**Publish changes** checks that the published fields still match the draft's
+base before writing `multiplayer_hopper.dat`. The game downloads the file
+at sign-in.
+
+The native editor's hopper tool (`h2-editor`, [editor.md](../editor/editor.md))
+opens and saves the raw image or download envelope with the same fields,
+validation and presets. In the web editor, pick from built-in variants or
+variants already in the published file. The native tool also accepts saved
+variants and `.h2variant` files. Publish an offline edit with
+`h2 live hopper import`.
 
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
