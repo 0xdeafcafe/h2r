@@ -18,7 +18,7 @@ pub const SWITCH: &str = "impl.render.native_world_layers";
 const SCENE_VIEW: u32 = 0x004b_a050;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// Present numbers are 1-based, as in the agent frame recorder.
@@ -66,7 +66,7 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let objects = b.switches().feature(crate::native_objects::SWITCH, false);
+        let objects = b.switches().feature(crate::native_objects::SWITCH, true);
         let lights = crate::native_lights::on(b.switches());
         if !on(b.switches())
             && !objects

@@ -49,21 +49,28 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     (
         "native-post",
         "COLOUR_PASS",
-        "off by default; the post call's draws are held until it returns, so the \
+        "on by default; the post call's draws are held until it returns, so the \
          return hook decides commit or replay",
     ),
     #[cfg(feature = "gpu")]
     (
         "native-post",
         "SCREEN_EFFECT",
-        "off by default; the post call's draws are held until it returns, so the \
+        "on by default; the post call's draws are held until it returns, so the \
          return hook decides commit or replay",
+    ),
+    #[cfg(feature = "gpu")]
+    (
+        "native-shadows",
+        "RENDER_LIGHT_PASSES",
+        "context-only, but shares the light passes with render-timing (off by default), \
+         whose timer runs after the body",
     ),
     #[cfg(feature = "gpu")]
     (
         "native-decals",
         "DECAL_RENDER",
-        "off by default; the decal scope opens at the callback and closes at its return",
+        "on by default; the decal scope opens at the callback and closes at its return",
     ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
@@ -242,7 +249,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, registry};
+    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -264,14 +271,18 @@ mod tests {
         let mut unlisted = Vec::new();
         let mut used = vec![false; REFUSED.len()];
         let mut safe = Vec::new();
-        // The native world (on by default) and objects at the layer draw,
+        // The empty switch string places every native stage (on by default
+        // since 2026-11-20): the native world and objects at the layer draw,
         // and the transparents' handler, with nothing else there, are
         // render-thread safe together, and so are the lights' skip and view
         // observer (placed only without render-timing) and the HUD's
         // screen-quad and HUD-quad befores.
-        let native =
-            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on,impl.render.native_hud=on".to_owned();
-        for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
+        for switches in [
+            String::new(),
+            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
+            ALL_ON.to_owned(),
+            format!("{ALL_ON},render-census"),
+        ] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {

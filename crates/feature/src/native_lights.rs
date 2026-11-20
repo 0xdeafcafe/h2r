@@ -23,9 +23,11 @@ pub const ID: &str = "native-lights";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_lights";
 
-/// Whether the native lights are on (off by default).
+/// Whether the native lights are on (on by default since 2026-11-20;
+/// `impl.render.native_lights=off` turns them off for the comparison
+/// against the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// A light the host cannot draw whole

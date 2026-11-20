@@ -275,14 +275,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled, binding)?;
         if Self::probe(&mut d, mem, &plan, probe.as_deref_mut()) {
-            let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
-                mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
-            eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
-                plan.scissor, sorted.entries.len());
-            for (i, e) in sorted.entries.iter().enumerate() {
-                eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
-                    e.slot, e.handler_item, e.geometry.map(|g| g.part), e.implementation,
-                    if i < count { "native" } else { "D3D" });
+            if feature::native_verbose() {
+                let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
+                    mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
+                eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
+                    plan.scissor, sorted.entries.len());
+                for (i, e) in sorted.entries.iter().enumerate() {
+                    eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
+                        e.slot, e.handler_item, e.geometry.map(|g| g.part), e.implementation,
+                        if i < count { "native" } else { "D3D" });
+                }
             }
             return Err(Keep::Unsupported("D3D comparison sample"));
         }
@@ -633,8 +635,10 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
                 let levels = assets::bitmap::decode_bytes(desc, bytes).map_err(|e| format!("{id:?} does not decode: {e}"))?;
                 let shape = shape(&levels);
                 let image = layered(levels, dim).ok_or_else(|| format!("{id:?} is not a {dim:?} ({shape})"))?;
-                eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)",
-                    image.width, image.height, image.layers, 1 + image.mips.len());
+                if feature::native_verbose() {
+                    eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)",
+                        image.width, image.height, image.layers, 1 + image.mips.len());
+                }
                 Ok(image)
             })
         })();

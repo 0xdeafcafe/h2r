@@ -5,7 +5,7 @@
 //! `impl.render.native_objects` is on (nothing asks).
 //!
 //! - **Load once per map.** On a new map a worker opens the loaded map
-//!   through the VFS (the world's locator, `native_world_glue::locate`)
+//!   through the VFS (`native_map`)
 //!   with its shared maps and the object tag context. Each definition the
 //!   feature meets is sent once; the worker resolves its model
 //!   (`native_render::model_load`) and compiles its opaque materials'
@@ -31,13 +31,12 @@
 //!   with a base-map stand-in.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
 use feature::native_objects::{Drawn, Host, ItemMasks, NativeSet, SetPart};
-use map::{Map, ResourceFile, TagId};
+use map::TagId;
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
@@ -55,7 +54,8 @@ use native_render::objects::{ItemDraw, ItemKey, ObjectFrame};
 use native_render::world_layers::{Geometry, Owner, Site};
 use native_render::program::ViewInputs;
 
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
+use crate::native_map::{self, NativeMap};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, stage_palettes};
 
 /// A model loaded on the worker, waiting for the render thread.
 struct CpuModel {
@@ -463,7 +463,7 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    if !switches.feature(feature::native_objects::SWITCH, false) {
+    if !switches.feature(feature::native_objects::SWITCH, true) {
         return;
     }
     let admission = Arc::new(ObjectAdmission::default());
@@ -501,7 +501,9 @@ fn spawn_worker(
             while let Ok(def) = rx.recv() {
                 if excepted(def) {
                     refused += 1;
-                    eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    if feature::native_verbose() {
+                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    }
                     continue;
                 }
                 let t0 = std::time::Instant::now();
@@ -532,17 +534,22 @@ fn spawn_worker(
                         // No lock held across the print.
                         drop(st);
                         loaded += 1;
-                        eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
-                            t0.elapsed().as_secs_f32() * 1000.0
-                        );
+                        if feature::native_verbose() {
+                            eprintln!(
+                                "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                                t0.elapsed().as_secs_f32() * 1000.0
+                            );
+                        }
                     }
                     Err(e) => {
                         refused += 1;
-                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        if feature::native_verbose() {
+                            eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        }
                     }
                 }
             }
+            eprintln!("native-objects: {name}: {loaded} models native, {refused} left to the D3D path");
         })
         .ok()?;
     Some(tx)
@@ -550,7 +557,7 @@ fn spawn_worker(
 
 /// The map open for model loads.
 struct Opened {
-    map: Map<BufReader<std::fs::File>>,
+    map: NativeMap,
     ctx: tags::object::Context,
     raw: Raw,
     /// Base maps as their stages sample them (palettized ones expanded
@@ -571,19 +578,7 @@ struct Opened {
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (mut map, files) = native_map::open(name)?;
     let ctx = tags::object::Context::read(&mut map)?;
     Ok(Opened {
         map,
@@ -600,7 +595,7 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
 
 /// The map's tag whose index is the datum's low word (the guest's datum
 /// and the map's agree on the index; the salt is not relied on).
-fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
+fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
     if let Ok(t) = map.tag(TagId(datum)) {
         return Some(t.id);
     }
@@ -774,7 +769,11 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
     if o.lightmap.is_none() {
         let l = object_lightmap(o);
         match &l {
-            Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
+            Ok(i) => {
+                if feature::native_verbose() {
+                    eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height);
+                }
+            }
             Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
         }
         o.lightmap = Some(l);

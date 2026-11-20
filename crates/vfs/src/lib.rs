@@ -420,6 +420,11 @@ impl Vfs {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.host_file(&path)
     }
+    /// The backing for `name` as mounted, when it can be read outside the VFS.
+    pub fn file_source(&mut self, name: &str) -> Option<FileSource> {
+        let (mount, path) = self.resolve(name).ok()?;
+        self.mounts[mount].backend.file_source(&path)
+    }
     /// The entries of the directory `name` (any object name or link), as
     /// its backend lists them: for host-side readers that look for a file
     /// by its contents (a map by its header's name), not for the guest.

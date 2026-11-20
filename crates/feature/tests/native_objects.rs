@@ -42,7 +42,7 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
 
 #[test]
 fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_objects=off").unwrap());
     r.add(&NativeObjects).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();

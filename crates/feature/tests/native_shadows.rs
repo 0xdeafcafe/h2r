@@ -4,8 +4,8 @@ use feature::{
 };
 
 #[test]
-fn shadows_are_opt_in_and_share_a_typed_sorted_hook_with_lights() {
-    let mut off = Registry::new(Switches::defaults());
+fn the_switch_off_places_nothing_and_on_shares_a_typed_sorted_hook_with_lights() {
+    let mut off = Registry::new(Switches::parse("impl.render.native_shadows=off").unwrap());
     off.add(&NativeShadows).unwrap();
     assert!(off.build(&Base).unwrap().chains.is_empty());
 

@@ -2,7 +2,10 @@
 
 Status: every stage built, and the whole set measured as one all-native
 push on 2026-11-19/20 (below, "The all-native push"): frames identical
-to D3D, fps still behind, every switch off by default. The goal
+to D3D, fps still behind, and **on by default since 2026-11-20** — each
+stage's `impl.render.native_*=off` gives it back to the D3D path for a
+comparison (`impl.render.native_lights_split` stays off: a diagnostic,
+not a stage). The goal
 is every frame drawn from GPU-resident data, with the game's recompiled
 render front-end left doing only what the GPU path cannot do yet. Evidence
 labels as in [feature-engine.md](../engine/feature-engine.md): **Code**

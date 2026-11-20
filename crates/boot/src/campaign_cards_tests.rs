@@ -63,25 +63,29 @@ fn mainmenu_with(template: &[u8]) -> Vec<u8> {
         };
         let size = pixels.len() as u32;
         let raw = set.add_raw(pixels, 0x200);
-        let mut image = Block::zeroed(rgba_bitmap::IMAGE_LEN);
-        image
-            .put_u32(0, FourCC(*b"bitm").as_u32())
-            .put_u16(4, 8)
-            .put_u16(6, 6)
-            .put_u16(0xc, rgba_bitmap::FORMAT_ARGB8888)
-            .put_u16(0xe, 0x290)
-            .put_u32(0x34, size)
-            .raw(0x1c, RawRef::Local(raw));
-        image.bytes[8] = 1;
-        let mut header = Block::zeroed(rgba_bitmap::HEADER_LEN);
-        header
-            .put_u16(0, 4)
-            .block(0x3c, 0, Block::zeroed(0))
-            .block(0x44, 1, image);
-        set.add_tag(FourCC(*b"bitm"), name, TagPayload::Built(header))
-            .unwrap();
+        add_bitmap(&mut set, name, RawRef::Local(raw), size);
     }
     set.build().unwrap().0
+}
+
+fn add_bitmap(set: &mut TagSet, name: &str, raw: RawRef, size: u32) -> TagId {
+    let mut image = Block::zeroed(rgba_bitmap::IMAGE_LEN);
+    image
+        .put_u32(0, FourCC(*b"bitm").as_u32())
+        .put_u16(4, 8)
+        .put_u16(6, 6)
+        .put_u16(0xc, rgba_bitmap::FORMAT_ARGB8888)
+        .put_u16(0xe, 0x290)
+        .put_u32(0x34, size)
+        .raw(0x1c, raw);
+    image.bytes[8] = 1;
+    let mut header = Block::zeroed(rgba_bitmap::HEADER_LEN);
+    header
+        .put_u16(0, 4)
+        .block(0x3c, 0, Block::zeroed(0))
+        .block(0x44, 1, image);
+    set.add_tag(FourCC(*b"bitm"), name, TagPayload::Built(header))
+        .unwrap()
 }
 
 fn card(map: &str, w: u32, h: u32) -> Card {
@@ -193,6 +197,72 @@ fn the_rewrite_wants_mainmenu_only_and_fills_the_table() {
     let out = r.rewrite(MAINMENU, &mainmenu()).unwrap();
     assert!(Map::from_reader(Cursor::new(out)).is_ok());
     assert_eq!(table.lock().unwrap().keys().collect::<Vec<_>>(), ["a10"]);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn native_bitmap_reads_from_the_rewritten_mainmenu_resource() {
+    use crate::native_map::open_from_vfs;
+    use crate::native_world_glue::decode_first;
+
+    struct Temp(std::path::PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir = Temp(std::env::temp_dir().join(format!(
+        "native-map-resources-{}",
+        std::process::id()
+    )));
+    let disc = dir.0.join("disc");
+    let maps = disc.join("maps");
+    std::fs::create_dir_all(&maps).unwrap();
+
+    let menu = mainmenu();
+    let mut original = Map::from_reader(Cursor::new(menu.as_slice())).unwrap();
+    let template_id = original
+        .tags()
+        .iter()
+        .find(|tag| tag.name.as_deref() == Some(TEMPLATE))
+        .unwrap()
+        .id;
+    let template = Template::read(&mut original, template_id).unwrap();
+    let offset = u32::from_le_bytes(template.image[0x1c..0x20].try_into().unwrap());
+    let size = u32::from_le_bytes(template.image[0x34..0x38].try_into().unwrap());
+    std::fs::write(maps.join("mainmenu.map"), &menu).unwrap();
+
+    let mut level = TagSet::new(CacheType::Campaign, "level", "level");
+    level.add_group(FourCC(*b"bitm"), None, None);
+    let bitmap = add_bitmap(
+        &mut level,
+        "menu_bitmap",
+        RawRef::External {
+            file: map::ResourceFile::MainMenu,
+            offset,
+        },
+        size,
+    );
+    std::fs::write(maps.join("level.map"), level.build().unwrap().0).unwrap();
+
+    let table = Table::default();
+    let picture = card("level", 8, 6);
+    let rewrite = CardRewrite::new(vec![picture.clone()], table.clone()).unwrap();
+    let config = vfs::Config::new(dir.0.join("data"), 0x4D530064);
+    let mut vfs = crate::map_override::mount(config, &disc, Some(rewrite), None, &[]).unwrap();
+    assert!(vfs.host_file(r"\Device\CdRom0\maps\mainmenu.map").is_none());
+    let vfs = Mutex::new(vfs);
+
+    let (mut level, mut resources) = open_from_vfs(&vfs, "level").unwrap();
+    let image = decode_first(&mut level, &mut resources, bitmap).unwrap();
+    assert_eq!((image.width, image.height), (8, 6));
+    assert_eq!(image.rgba, framed_template());
+
+    let card_id = TagId(table.lock().unwrap()["level"]);
+    let (mut menu, mut resources) = open_from_vfs(&vfs, "mainmenu").unwrap();
+    let image = decode_first(&mut menu, &mut resources, card_id).unwrap();
+    assert_eq!(image.rgba, framed(&picture.rgba, &framed_template()));
 }
 
 #[test]

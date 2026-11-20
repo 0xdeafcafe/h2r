@@ -1,8 +1,9 @@
 //! `native-water`: the water edge blend, layer 6, drawn by the native
 //! renderer instead of the game's items (docs/graphics/native-renderer.md,
 //! "Stage 4b: water and the rest"), and the census of the water,
-//! camouflage and hologram layers (6, 18, 19, 21). Off by default
-//! ([`DEFAULT`]); `H2_FEATURES=impl.render.native_water=on` places both.
+//! camouflage and hologram layers (6, 18, 19, 21). On by default
+//! ([`DEFAULT`], since 2026-11-20); `H2_FEATURES=impl.render.native_water=off`
+//! turns both off for the comparison against the D3D path.
 //!
 //! **The skip** (layer 6 only): one context-only observer before the
 //! layer draw `LAYER_DRAW` (`0x00044550`), after the fog's. It restores
@@ -61,7 +62,7 @@ pub const ID: &str = "native-water";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_water";
 /// The switch's value when `H2_FEATURES` does not name it.
-pub const DEFAULT: bool = false;
+pub const DEFAULT: bool = true;
 
 /// The census layers `H2_NATIVE_WATER_CENSUS` can name: water (6), active
 /// camouflage (18, 19) and the hologram (21).

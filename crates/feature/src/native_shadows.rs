@@ -13,7 +13,7 @@ pub const SWITCH: &str = "impl.render.native_shadows";
 pub const ID: &str = "native-shadows";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 pub fn comparing() -> bool {

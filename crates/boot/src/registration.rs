@@ -330,14 +330,15 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (on by default, H2_FEATURES=impl.render.native_world=off turns it
     // off; docs/graphics/native-renderer.md). Its layer-draw observer is
     // context-only, so the pipelined render runs it on its own thread. It
-    // runs after render-timing's; the world's map file comes from the
-    // locator boot sets (native_world_glue::set_locator).
+    // runs after render-timing's. The world reads its map and resources
+    // through the VFS (native_map).
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
     // Planar fog, layer 16, on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_fog=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_fog=off
+    // turns it off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
     // observer sits inside render-timing's and the world's; the fog
     // materials load with the world (native_world_glue's worker,
@@ -353,7 +354,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_water::NativeWater)
         .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
     // Objects' render models on the native GPU renderer, skinned on the
-    // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
+    // GPU (on by default since 2026-11-20;
+    // H2_FEATURES=impl.render.native_objects=off turns it off for the
+    // comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 2). Its observers on the
     // layer draw sit inside render-timing's and the world's; the models
     // load per map through native_objects_glue.
@@ -362,8 +365,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
     // The first-person arms and weapon on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_first_person=on, off by default):
-    // both 0x0003fdf0 layer-3 draws, with the light and transparent calls
+    // (on by default since 2026-11-20;
+    // H2_FEATURES=impl.render.native_first_person=off turns it off for
+    // the comparison against the D3D path): both 0x0003fdf0 layer-3
+    // draws, with the light and transparent calls
     // between and after them left in guest order.
     #[cfg(feature = "gpu")]
     features
@@ -384,7 +389,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
     // Dynamic decals in their seven observed pass positions
-    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_decals=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-decals-research.md). Only a fully resolved callback
     // is replaced; all others keep their D3D draws.
     #[cfg(feature = "gpu")]
@@ -396,7 +402,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_particles::NativeParticles)
         .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
     // The dynamic lights on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_lights=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_lights=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
     // each light's passes, in the game's light order. Its host
     // (native_lights_glue) does the device side of a skipped light's tail
@@ -416,7 +423,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_shadows::NativeShadows)
         .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     // The view's post passes on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_post=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at
     // the colour pass's entry. Its host (native_post_glue, installed with
     // the world's) plans the glow, has the device drop exactly its quads
@@ -430,7 +438,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
     // The HUD's and the UI's screen draws on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_hud=on, off by default, or
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
+    // turns them off for the comparison against the D3D path, or
     // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
     // context-only hooks on the screen-quad batch (text) and the HUD shader
     // quad. Its host (native_hud_glue) draws accepted quads natively and

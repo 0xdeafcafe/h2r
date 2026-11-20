@@ -1,7 +1,8 @@
 //! `native-hud`: the HUD's and the UI's screen draws met by the native
 //! renderer (docs/graphics/native-renderer.md, "Stage 5: post and HUD",
-//! "The UI and HUD"). Off by default; `H2_FEATURES=impl.render.native_hud=on`
-//! turns it on (exactly that key).
+//! "The UI and HUD"). On by default (since 2026-11-20);
+//! `H2_FEATURES=impl.render.native_hud=off` turns it off for the
+//! comparison against the D3D path (exactly that key).
 //!
 //! Four hooks, all context-only with nothing after a body, so the
 //! pipelined render runs them on its own thread:
@@ -39,9 +40,11 @@ pub const ID: &str = "native-hud";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_hud";
 
-/// Whether the native HUD is on (off by default).
+/// Whether the native HUD is on (on by default since 2026-11-20;
+/// `impl.render.native_hud=off` turns it off for the comparison against
+/// the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// One call of `0x0022a664`.

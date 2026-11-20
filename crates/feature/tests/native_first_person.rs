@@ -18,7 +18,7 @@ use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RE
 
 #[test]
 fn the_plan_places_a_render_thread_observer_only_when_on() {
-    let mut off = Registry::new(Switches::parse("").unwrap());
+    let mut off = Registry::new(Switches::parse("impl.render.native_first_person=off").unwrap());
     off.add(&NativeFirstPerson).unwrap();
     assert!(
         !off.build(&Base)

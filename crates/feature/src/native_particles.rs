@@ -1,4 +1,6 @@
-//! Particle submission observer, off by default. The helper and all its
+//! Particle submission observer, on by default (since 2026-11-20;
+//! `H2_FEATURES=impl.render.native_particles=off` turns it off for the
+//! comparison against the D3D path). The helper and all its
 //! parents still run: especially the state updates in `0x00174420`.
 //! A host may replace only the helper's single, fully captured draw, after
 //! every target copy is prepared. It must preserve attribute carry/state.
@@ -63,7 +65,7 @@ pub enum Producer {
 }
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

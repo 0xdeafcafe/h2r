@@ -181,12 +181,16 @@ mod tests {
     }
 
     /// The render features boot always registers, with their `impl.render.*`
-    /// switches at the defaults (off): each declares its policy before it
-    /// returns, so none is left unaudited and none blocks a save (the
-    /// agent's `state.save` once refused with all six "not audited").
+    /// switches off (the native ones are on by default): each declares its
+    /// policy before it returns, so none is left unaudited and none blocks a
+    /// save (the agent's `state.save` once refused with all six "not
+    /// audited").
     #[test]
     fn switched_off_render_features_block_nothing() {
-        let mut r = feature::Registry::new(feature::Switches::default());
+        let off = "impl.render.native_world=off,impl.render.native_objects=off,\
+                   impl.render.native_transparents=off,impl.render.native_lights=off,\
+                   impl.render.native_post=off";
+        let mut r = feature::Registry::new(feature::Switches::parse(off).unwrap());
         r.add(&feature::occlusion::OcclusionCull).unwrap();
         r.add(&feature::native_world::NativeWorld).unwrap();
         r.add(&feature::native_objects::NativeObjects).unwrap();

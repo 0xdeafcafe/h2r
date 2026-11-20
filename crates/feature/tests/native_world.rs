@@ -32,9 +32,9 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
     assert!(!text.contains("native_world_restore"), "nothing after the body: {text}");
 }
 
-/// Alone at the layer draw (switched on: it is off by default), the chain
-/// runs on the pipelined render thread: one context-only observer before,
-/// nothing after.
+/// Alone at the layer draw (on by default), the chain runs on the
+/// pipelined render thread: one context-only observer before, nothing
+/// after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("impl.render.native_world=on").unwrap());
@@ -49,13 +49,13 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert!(chain.render_thread().is_ok());
 }
 
-/// Off, it holds nothing and never blocks a snapshot; on, its section
-/// (no bytes) drops the pending restore at a load.
+/// Off, it holds nothing and never blocks a snapshot; on (the default),
+/// its section (no bytes) drops the pending restore at a load.
 #[test]
 fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
     for (switches, policy) in [
-        ("", "stateless"),
-        ("impl.render.native_world=on", "section"),
+        ("impl.render.native_world=off", "stateless"),
+        ("", "section"),
     ] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         assert!(r.add(&NativeWorld).unwrap());
@@ -74,7 +74,7 @@ fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
 fn material_programs_are_on_with_the_world_and_need_it() {
     let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
     assert!(native_world::PROGRAMS_DEFAULT);
-    assert!(!on(""), "the world is off by default");
+    assert!(on(""), "on with the world, on by default");
     assert!(on("impl.render.native_world=on"), "on with the world");
     assert!(!on("impl.render.native_world=on,impl.render.native_world_programs=off"), "stage 1 for the A/B");
     assert!(!on("impl.render.native_world=off,impl.render.native_world_programs=on"));
@@ -92,13 +92,13 @@ fn plan_with_pipeline(switches: &str) -> String {
 }
 
 #[test]
-fn it_is_off_by_default_and_on_keeps_pipelining() {
-    assert!(!native_world::DEFAULT);
+fn it_is_on_by_default_and_keeps_pipelining() {
+    assert!(native_world::DEFAULT);
     let text = plan_with_pipeline("");
-    assert!(!text.contains("native_world"), "{text}");
-    let text = plan_with_pipeline("impl.render.native_world=on");
     assert!(text.contains("native_world_skip"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
+    let text = plan_with_pipeline("impl.render.native_world=on");
+    assert!(text.contains("native_world_skip"), "{text}");
 }
 
 #[test]
