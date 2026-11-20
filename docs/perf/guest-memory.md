@@ -575,7 +575,8 @@ held across the handler's out-of-line calls (the memory helpers, the direct
 callee) also occupies a callee-saved host register or a stack slot for the
 whole handler, whether the guest code touches the register or not.
 
-Now (`emit::c::homes`, on unless `H2_REG_HOMES=0`):
+Now (`emit::c::homes`; the `H2_REG_HOMES=0` comparison switch was removed
+once the result below settled it):
 
 - A handler keeps in locals only the registers it can write (a partial
   write such as `AL` counts; EFLAGS with its mask when any flag is read or
@@ -595,8 +596,8 @@ never touches EFLAGS still sets its bit 1 on the way out.
 Static effect, measured before the inline loads and stores below landed,
 on a sample of the retail image (every 37th shard plus the
 one holding `0x2dc220`: 27 shards, 507 handlers), compiled with the image's
-default switches and no debug info, homes off against on
-(`cargo test -p emit --release --test homes retail_sample -- --ignored --nocapture`):
+default switches and no debug info, homes off against on (the ignored
+`homes` test `retail_sample_code_size`, removed with the switch):
 
 | | `__text` | loads (`ldr`/`ldur`/`ldp`) | stores (`str`/`stur`/`stp`) |
 |---|---:|---:|---:|

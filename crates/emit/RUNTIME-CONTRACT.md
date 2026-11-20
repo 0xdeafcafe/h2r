@@ -511,9 +511,7 @@ Its semantics:
   direct call or tail jump spills only the locals that may differ from
   `CpuAbi` at that point (`emit::c::dirty_at_exits`: assigned since entry,
   the last inline return or the last atomic). Nothing outside the handler
-  sees a difference: at every exit `CpuAbi` is as below. `H2_REG_HOMES=0`
-  (a `Codegen` choice, in the emit cache key and dylib stamp) keeps every
-  register in a local, the older shape.
+  sees a difference: at every exit `CpuAbi` is as below.
 - **Exit.** Every return leaves `CpuAbi` canonical: GPRs, `eflags | 2`, the
   defined mask, and `eip` = the transfer target (or the faulting PC). A
   handler that never touches EFLAGS still sets its bit 1.
