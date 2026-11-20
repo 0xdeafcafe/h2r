@@ -298,7 +298,7 @@ reaction = 5
   `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
   apply when the source drives a phantom;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
-  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet)).
+  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays)).
 
 Anything left out keeps the built-in value. The bots crate takes them as
 `bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
@@ -472,7 +472,7 @@ H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc
 ```
 
 How to read it and the rule for which model stays are in
-[bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet).
+[bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays).
 
 ### Local and phantom seat swaps
 

@@ -856,7 +856,19 @@ and damage across the two legs before changing the default. Then compare
 the hand-written aim and the hand-built aim net on matched maps, lineups
 and seeds (§3.4.1).
 
-#### 3.4.1 The aim net (built, not compared in a game yet)
+#### 3.4.1 The aim net (compared: the code aim stays)
+
+**Result (2026-11-20).** `aim-net-vs-code.toml` ran all 80 matches
+(Midship and Lockout, easy to legendary, 5 seeds, both arm-swap legs,
+5-minute 2 v 2, local seats). The code aim won 60% of games to the net's
+40%, and the net lost on accuracy (13.1% against 15.8%), damage (9.8
+against 11.8 a game) and grenades (0.3 against 1.1). The net barely
+overshoots (0.03 rad against 0.17), but it settles 1.3 s slower and its
+stick jitters more. It is cautious, and it loses the first shot. The gap
+grows with skill: at heroic the code won 78% of games, at easy 50%. Both
+stay in the tree. `code` remains the default, and the net is a starting
+point if its settle time can be cut without bringing the overshoot back.
+
 
 The user asked for a small neural net with hand-written weights for aim
 and tracking, tested in simulation against the code above, the winner to
