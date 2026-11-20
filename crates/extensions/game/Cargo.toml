@@ -1,6 +1,6 @@
 [package]
 name = "game"
-description = "Our additions to the game: menus and settings screens, skulls, variants, the campaign picker, gameplay hooks and the glue to the platform crates"
+description = "Our additions to the game: menus and settings screens, skulls, variants, the campaign picker, gameplay hooks and the glue to the platform crates (docs/game/settings-menu.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
