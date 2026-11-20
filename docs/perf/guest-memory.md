@@ -725,9 +725,11 @@ the boot stamp: set them identically for `h2 build` and `h2 run`.
   stores round four pages (an alias, three bitmap words), drains, and runs
   again, with and without the switch and accounting; a deliberately wrong
   "already marked" test fails it.
-- **`H2_X87_FAST_TRANSCENDENTALS=1`** (boot, run time only, no rebuild of the
-  image). FSIN, FCOS, FSINCOS, FYL2X and F2XM1 in native f64 (`libm`)
-  instead of the correctly rounded series; see the sweep below.
+- **f64 transcendentals** (measured, not adopted). FSIN, FCOS, FSINCOS,
+  FYL2X and F2XM1 in native f64 (`libm`) instead of the correctly rounded
+  series; see the sweep below. Its boot switch,
+  `H2_X87_FAST_TRANSCENDENTALS`, was removed in the 2026-11-20 flag
+  cleanup.
 
 Proof: `held_gate_matches_the_helper_path_at_every_stop_and_fault` runs with
 each switch, both, and everything with `H2_DIRECT_GATE`/`H2_DIRECT_COUNT`
