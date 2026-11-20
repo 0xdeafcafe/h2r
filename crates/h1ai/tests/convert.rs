@@ -170,11 +170,11 @@ fn automatic_routes_keep_source_ordinals_when_native_names_are_identical() {
     let mut retained = source.clone();
     retained.encounters[0].squads.pop();
     let opts = Options::default();
-    let mut plan = convert(&retained, &opts);
+    let mut plan = convert(&retained, &opts).unwrap();
     assert_eq!(plan.ai.squads[0].name, plan.ai.squads[1].name);
     let mut controls = h1ai::control::prepare_with_indices(
         &source, &mut plan, &opts, &[], vec![vec![Some(0), Some(1), None]],
-    );
+    ).unwrap();
     h1ai::control::install_automatic_destinations(
         &source, &mut plan, &opts, &mut controls, &[(0, 0)].into_iter().collect(), None,
     ).unwrap();
@@ -192,7 +192,7 @@ fn automatic_routes_keep_source_ordinals_when_native_names_are_identical() {
 fn encounters_become_groups_zones_squads_and_orders() {
     let src = invented();
     assert!(src.check_indices().is_empty());
-    let plan = convert(&src, &Options::default());
+    let plan = convert(&src, &Options::default()).unwrap();
     let ai = &plan.ai;
     let chars: Vec<_> = plan
         .characters
@@ -307,6 +307,8 @@ fn variant_loadouts_and_compiled_bsp_survive_serialization() {
     };
     let mut src = invented();
     src.actors[1].1.kind = ActorType(7);
+    src.actor_palette[0].as_mut().unwrap().weapon.id = TagId(101);
+    src.actor_palette[2].as_mut().unwrap().weapon.id = TagId(102);
     let encounter = &mut src.encounters[0];
     encounter.squads[0].starting_locations.push(start(3.0, 1));
     encounter.manual_bsp = 0;
@@ -317,14 +319,15 @@ fn variant_loadouts_and_compiled_bsp_survive_serialization() {
     encounter.squads[0].starting_locations[1].actor = 2;
     let plan = h1ai::convert::convert_for_map(
         &src,
-        &Options::default(),
+        &Options { halo2_assets: true, ..Default::default() },
         &[mesh(0), mesh(1)],
-        &[Some(4), None, Some(9)],
-    );
+        Some(&[Some(4), None, Some(9)]),
+    ).unwrap();
     let (ai, _) = build_and_read(&plan);
     let squad = &ai.squads[0];
-    assert_eq!(squad.initial_weapon, 4);
-    assert_eq!(squad.starting_locations[0].initial_weapon, -1);
+    assert_eq!(squad.initial_weapon, -1);
+    assert_eq!(squad.starting_locations[0].initial_weapon, 4);
+    assert_eq!(squad.starting_locations[2].initial_weapon, -1);
     assert_eq!(squad.starting_locations[1].character, squad.character);
     assert_eq!(squad.starting_locations[1].initial_weapon, 9);
     assert_eq!(squad.starting_locations[1].grenade_type, grenade::COVENANT);
@@ -342,7 +345,7 @@ fn variant_loadouts_and_compiled_bsp_survive_serialization() {
 
 #[test]
 fn a_built_plan_reads_back_unchanged() {
-    let plan = convert(&invented(), &Options::default());
+    let plan = convert(&invented(), &Options::default()).unwrap();
     let (back, palette) = build_and_read(&plan);
     let mut want = plan.ai.clone();
     want.character_palette = palette;
@@ -358,7 +361,7 @@ fn a_built_plan_reads_back_unchanged() {
 fn placement_list_reads_back_as_a_command_script() {
     let mut src = invented();
     src.encounters[0].squads[0].starting_locations[0].command_list = 0;
-    let plan = convert(&src, &Options { first_command_script: Some(23), ..Default::default() });
+    let plan = convert(&src, &Options { first_command_script: Some(23), ..Default::default() }).unwrap();
     let (back, _) = build_and_read(&plan);
     let starts = &back.squads[0].starting_locations;
     assert_eq!(starts[0].placement_script, "h1_cmd_0");
@@ -370,7 +373,7 @@ fn placement_list_reads_back_as_a_command_script() {
 
 #[test]
 fn an_unresolved_character_is_an_error() {
-    let plan = convert(&invented(), &Options::default());
+    let plan = convert(&invented(), &Options::default()).unwrap();
     assert!(plan.blocks(|_| None).is_err());
 }
 
@@ -382,7 +385,7 @@ fn variants_with_different_uncover_rules_keep_separate_palette_entries() {
     let other_actor = TagId(3);
     src.actors.push((other_actor, actor));
     src.actor_palette[2].as_mut().unwrap().actor.id = other_actor;
-    let plan = convert(&src, &Options { halo2_assets: true, ..Default::default() });
+    let plan = convert(&src, &Options { halo2_assets: true, ..Default::default() }).unwrap();
     assert_eq!(plan.characters[0].h2_character, plan.characters[2].h2_character);
     assert_eq!(plan.characters[0].uncover, [0.0; 2]);
     assert_eq!(plan.characters[2].uncover, [0.5, 0.1]);
@@ -392,7 +395,7 @@ fn variants_with_different_uncover_rules_keep_separate_palette_entries() {
 fn long_names_are_cut_to_31_characters() {
     let mut src = invented();
     src.encounters[0].name = "x".repeat(40);
-    let plan = convert(&src, &Options::default());
+    let plan = convert(&src, &Options::default()).unwrap();
     assert_eq!(plan.ai.zones[0].name.len(), 31);
     assert_eq!(plan.ai.squads[0].name.len(), 31);
     assert_ne!(plan.squad_names[0], plan.squad_names[1]);
@@ -472,14 +475,14 @@ fn named_platoons_become_child_squad_groups() {
     // encounter's.
     e.squads[0].platoon = 0;
     e.squads[1].platoon = 0;
-    let named = ["first/lz_toon".to_string()].into_iter().collect();
+    let named = [(0, 0)].into_iter().collect();
     let plan = convert(
         &src,
         &Options {
             platoon_groups: named,
             ..Default::default()
         },
-    );
+    ).unwrap();
     let ai = &plan.ai;
     // The encounter's group, then the named platoon's as its child.
     assert_eq!(ai.squad_groups.len(), 2);
@@ -494,7 +497,7 @@ fn named_platoons_become_child_squad_groups() {
     assert_eq!(ai.squads[by_name("first/empty")].parent, 0);
 
     // Without the set, every squad is in the encounter's group, as before.
-    let plain = convert(&src, &Options::default());
+    let plain = convert(&src, &Options::default()).unwrap();
     assert_eq!(plain.ai.squad_groups.len(), 1);
     assert!(plain.ai.squads.iter().all(|q| q.parent == 0));
 }
@@ -533,11 +536,11 @@ fn scripted_platoon_controls_follow_source_indices_and_round_trip() {
         maneuver_targets(&source, &requests)
             .into_iter()
             .collect::<Vec<_>>(),
-        ["first/empty"]
+        [(0, 2)]
     );
     let opts = Options::default();
-    let mut plan = convert(&source, &opts);
-    let actions = prepare(&source, &mut plan, &opts, &requests);
+    let mut plan = convert(&source, &opts).unwrap();
+    let actions = prepare(&source, &mut plan, &opts, &requests).unwrap();
     let platoon = Platoon {
         encounter: 0,
         index: 0,
@@ -622,11 +625,11 @@ fn automatic_platoon_rules_retain_routes_and_use_the_selected_platoons_health() 
     encounter.squads[0].maneuver_to = 2;
     encounter.squads[0].flags = 0x18;
     encounter.squads[1].platoon = 1;
-    assert!(maneuver_targets(&source, &[]).contains("first/empty"));
+    assert!(maneuver_targets(&source, &[]).contains(&(0, 2)));
 
     let opts = Options::default();
-    let mut plan = convert(&source, &opts);
-    let control = prepare(&source, &mut plan, &opts, &[]);
+    let mut plan = convert(&source, &opts).unwrap();
+    let control = prepare(&source, &mut plan, &opts, &[]).unwrap();
     assert_eq!(control.combat_timers[&0].flags, 0x18);
     assert_eq!(control.combat_timers[&0].seconds, 2.0);
     let [rule] = control.platoon_rules.as_slice() else {
@@ -667,13 +670,13 @@ fn encounter_migration_chooses_a_destination_for_each_character() {
     target.squads.reverse();
     source.encounters.push(target);
     let opts = Options::default();
-    let mut plan = convert(&source, &opts);
+    let mut plan = convert(&source, &opts).unwrap();
     let migrate = Request {
         operation: Operation::Migrate,
         reference: 0,
         target: Some(1),
     };
-    let routes = prepare(&source, &mut plan, &opts, &[migrate]);
+    let routes = prepare(&source, &mut plan, &opts, &[migrate]).unwrap();
     assert_eq!(
         routes.actions[&migrate][0],
         Action::Migrate {
@@ -699,7 +702,7 @@ fn airborne_encounters_keep_authored_altitude_and_use_no_sector() {
     e.bsp = 3;
     e.flags |= 0x20;
     e.firing_positions[0].position[2] = 127.0;
-    let (ai, _) = build_and_read(&convert(&src, &Options::default()));
+    let (ai, _) = build_and_read(&convert(&src, &Options::default()).unwrap());
     let z = &ai.zones[0];
     assert_eq!(z.manual_bsp, 3);
     assert!(
@@ -708,4 +711,98 @@ fn airborne_encounters_keep_authored_altitude_and_use_no_sector() {
             .all(|p| p.sector == u32::MAX && p.flags == 0)
     );
     assert!(z.firing_positions.iter().any(|p| p.position[2] == 127.0));
+}
+
+#[test]
+fn explicit_missing_actor_never_inherits_a_valid_squad_actor() {
+    let mut src = invented();
+    src.actor_palette.push(None);
+    let squad = &mut src.encounters[0].squads[0];
+    squad.starting_locations = [-1, 3, 40, -2, 1].map(|i| start(0.0, i)).to_vec();
+    let plan = convert(&src, &Options::default()).unwrap();
+    let (ai, _) = build_and_read(&plan);
+    let squad = &ai.squads[0];
+    assert_eq!(squad.character, -1);
+    let actors: Vec<_> = squad.starting_locations.iter().map(|s| s.character).collect();
+    assert_eq!(actors, [0, -1, -1, -1, 1]);
+}
+
+#[test]
+fn unresolved_weapon_and_command_bindings_identify_the_source() {
+    let mut src = invented();
+    src.actor_palette[1].as_mut().unwrap().weapon.id = TagId(25);
+    let error = h1ai::convert::convert_for_map(&src, &Options::default(), &[], Some(&[None; 3]))
+        .unwrap_err().to_string();
+    assert!(error.contains("grunt minor") && error.contains("weapon"), "{error}");
+    src.encounters[0].squads[0].starting_locations[0].command_list = 1;
+    let error = convert(&src, &Options::default()).unwrap_err().to_string();
+    assert!(error.contains("first/elites start 0: command list 1"), "{error}");
+    src.encounters[0].squads[0].starting_locations[0].command_list = 0;
+    let opts = Options { first_command_script: Some(32768), ..Default::default() };
+    let error = convert(&src, &opts).unwrap_err().to_string();
+    assert!(error.contains("first/elites start 0: command script index overflow"), "{error}");
+}
+
+#[test]
+fn counted_spawn_addresses_duplicate_squad_names_by_ordinal() {
+    use h1ai::control::{Action, Operation, Request, prepare};
+    let mut src = invented();
+    src.encounters[0].squads[1].name = src.encounters[0].squads[0].name.clone();
+    let opts = Options::default();
+    let mut plan = convert(&src, &opts).unwrap();
+    let requests = [0x8000_0000, 0x8001_0000].map(|reference| Request {
+        operation: Operation::Spawn,
+        reference,
+        target: None,
+    });
+    let mut control = prepare(&src, &mut plan, &opts, &requests).unwrap();
+    control.bind_script_indices(&plan);
+    for (i, r) in requests.iter().enumerate() {
+        assert_eq!(control.actions[r], [Action::Spawn(i as u16)]);
+        assert_eq!(control.script_index(r.reference).unwrap().unwrap(), i as u32);
+    }
+    use h1ai::conversations::{Conversation, Participant, SpeakerScopes};
+    let scene = Conversation {
+        name: "guard".into(), flags: 0, trigger_distance: 0.0, run_to_player_distance: 0.0,
+        lines: Vec::new(),
+        participants: vec![Participant {
+            flags: 0, selection: 0, actor_type: 0, existing_name: None, assigned_name: None,
+            voices: [-1; 6], encounter: Some(requests[1].reference),
+        }],
+    };
+    let scopes = SpeakerScopes::from_plan(&plan, &control, &[scene]).unwrap();
+    assert_eq!(scopes.for_selector(requests[1].reference), Some(1));
+    assert_eq!(control.script_index(u32::MAX).unwrap().unwrap(), u32::MAX);
+    assert_eq!(control.script_index(0).unwrap().unwrap(), 0x4000_0000);
+    assert!(control.script_index(0x8003_0000).unwrap().is_err());
+}
+
+#[test]
+fn empty_spawn_selections_and_missing_converted_targets_are_distinct() {
+    use h1ai::control::{Operation, Request, prepare_with_indices};
+    use h1ai::h1::{Platoon, PlatoonTrigger};
+    let mut src = invented();
+    src.encounters[0].platoons = vec![Platoon {
+        name: "shared".into(),
+        flags: 0,
+        change: PlatoonTrigger::DISABLED,
+        maneuver: PlatoonTrigger::DISABLED,
+    }; 2];
+    let opts = Options { platoon_groups: [(0, 1)].into(), ..Default::default() };
+    let mut retained = src.clone();
+    retained.encounters[0].squads.pop();
+    let mut plan = convert(&retained, &opts).unwrap();
+    let rows = vec![vec![Some(0), Some(1), None]];
+    let request = |reference| Request { operation: Operation::Spawn, reference, target: None };
+    let empty = [request(0), request(0x4001_0000)];
+    let mut control = prepare_with_indices(&src, &mut plan, &opts, &empty, rows.clone()).unwrap();
+    control.bind_script_indices(&plan);
+    for r in empty {
+        assert!(control.actions[&r].is_empty());
+    }
+    assert!(control.script_index(0x4000_0000).unwrap().is_err());
+    assert_eq!(control.script_index(0x4001_0000).unwrap().unwrap(), 0x4000_0001);
+    let dropped = request(0x8002_0000);
+    let err = prepare_with_indices(&src, &mut plan, &opts, &[dropped], rows).err().unwrap();
+    assert!(err.to_string().contains("first/empty: source squad 2"), "{err}");
 }

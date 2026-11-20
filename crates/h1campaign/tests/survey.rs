@@ -45,7 +45,7 @@ fn survey_bases() {
     let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
     println!("a30 bsps: {}", h1.structure_bsps().unwrap().len());
     let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
-    let plan = h1ai::convert::convert(&ai, &Default::default());
+    let plan = h1ai::convert::convert(&ai, &Default::default()).unwrap();
     let chars: Vec<&str> = plan
         .characters
         .iter()

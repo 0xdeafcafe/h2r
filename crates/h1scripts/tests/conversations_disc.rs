@@ -121,8 +121,11 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
     with_h1(|h1, level, map| {
         let ai = H1Ai::read(map).unwrap_or_else(|e| panic!("{level}: {e}"));
         let t = Tables::read(map).unwrap();
-        let plan = h1ai::convert::convert(&ai, &Default::default());
-        let scopes = SpeakerScopes::from_plan(&plan);
+        let options = Default::default();
+        let mut plan = h1ai::convert::convert(&ai, &options).unwrap();
+        let mut controls = h1ai::control::prepare(&ai, &mut plan, &options, &[]).unwrap();
+        controls.bind_script_indices(&plan);
+        let scopes = SpeakerScopes::from_plan(&plan, &controls, &ai.conversations).unwrap();
         if level == "a30" {
             let squad = plan
                 .ai
