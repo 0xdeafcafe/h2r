@@ -6,6 +6,9 @@ license.workspace = true
 description = "Hand-written Rust replacements for Halo 2 engine functions, over guest memory"
 
 [dependencies]
+# Guest structure layouts and the globals table (src/points.rs re-exports
+# the globals; src/view.rs takes its offsets).
+guest-layout = { path = "../guest-layout" }
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
 mopp = { path = "../mopp", optional = true }
