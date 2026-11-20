@@ -14,11 +14,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod wall {
-    #[cfg(target_os = "linux")]
-    use rustix::time::Timespec;
-    use rustix::time::{ClockId, clock_gettime};
+    use rustix::time::{ClockId, Timespec, clock_gettime};
     use std::time::Duration;
 
     // Absolute time since the monotonic clock's origin. Keep the origin
@@ -35,12 +33,6 @@ mod wall {
         now
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn sleep_until(due: Instant, sample: Instant) {
-        std::thread::sleep(due - sample);
-    }
-
-    #[cfg(target_os = "linux")]
     pub(super) fn sleep_until(due: Instant, _sample: Instant) {
         let deadline = Timespec::try_from(due).expect("pacer deadline fits time_t");
         loop {
@@ -56,14 +48,25 @@ mod wall {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 mod wall {
+    use std::time::Duration;
     pub(super) use std::time::Instant;
 
     pub(super) fn now() -> Instant {
         Instant::now()
     }
 
+    // Instant exposes no shared epoch. Sample the common clock once at
+    // host-grid setup so that each pack slot gets its assigned phase.
+    #[cfg(unix)]
+    pub(super) fn clock_offset(_now: Instant) -> Duration {
+        rustix::time::clock_gettime(rustix::time::ClockId::Monotonic)
+            .try_into()
+            .expect("nonnegative monotonic clock")
+    }
+
+    #[cfg(not(unix))]
     pub(super) fn clock_offset(_now: Instant) -> Duration {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
