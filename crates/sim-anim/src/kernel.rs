@@ -216,22 +216,22 @@ impl Walk<'_, '_> {
                 let fp = &mut self.cx.fp;
                 let rec = &mut self.records[node][at..at + n];
                 for i in 0..n {
-                    let (r, s) = (rec[i], p[i]);
+                    let (r, x) = (rec[i], p[i]);
                     rec[i] = match (mode, v) {
-                        (Mode::Replace, _) => s,
+                        (Mode::Replace, _) => x,
                         (Mode::Blend, _) => {
-                            let d = fp.sub(s, r);
+                            let d = fp.sub(x, r);
                             let d = fp.mul(d, w);
                             fp.add(d, r)
                         }
-                        (Mode::Add, Vector::Translation) => fp.add(r, s),
-                        (Mode::Add, Vector::Scale) => fp.mul(r, s),
+                        (Mode::Add, Vector::Translation) => fp.add(r, x),
+                        (Mode::Add, Vector::Scale) => fp.mul(r, x),
                         (Mode::AddScaled, Vector::Translation) => {
-                            let d = fp.mul(w, s);
+                            let d = fp.mul(w, x);
                             fp.add(d, r)
                         }
                         (Mode::AddScaled, Vector::Scale) => {
-                            let d = fp.sub(s, one);
+                            let d = fp.sub(x, one);
                             let d = fp.mul(d, w);
                             let d = fp.add(d, one);
                             fp.mul(d, r)

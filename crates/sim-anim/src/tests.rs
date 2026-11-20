@@ -42,6 +42,11 @@ impl S {
     }
 }
 
+/// Flagged nodes per channel: rotation, translation, scale.
+fn lists<'a>(r: &'a [u16], t: &'a [u16], s: &'a [u16]) -> [&'a [u16]; 3] {
+    [r, t, s]
+}
+
 /// A clip from streams and their flagged nodes per channel.
 fn clip(nodes: u8, streams: [Option<(&S, [&[u16]; 3])>; 2]) -> Clip {
     let flag_bytes = ((usize::from(nodes) + 31) >> 3) & !3;
@@ -129,7 +134,7 @@ fn reference_nlerp(a: [f32; 4], b: [f32; 4], w: f32) -> [u32; 4] {
 fn static_int16_rotation_normalizes_the_track() {
     let mut s = S::new(1);
     s.i16s(0x20 + 8, &[1000, -2000, 3000, 4000]);
-    let c = clip(4, [Some((&s, [&[0, 2], &[], &[]])), None]);
+    let c = clip(4, [Some((&s, lists(&[0, 2], &[], &[]))), None]);
     let st = c.stream(Which::Static).unwrap();
     let mut cx = ctx();
     let q = RotOp::Static16
@@ -146,7 +151,7 @@ fn int16_blend_weights_the_two_frames() {
     s.u32(0x14, 32); // four frames of eight bytes per track
     s.i16s(0x20 + 32 + 8, &[100, 0, 0, 100])
         .i16s(0x20 + 32 + 16, &[0, 100, 0, 100]);
-    let c = clip(2, [None, Some((&s, [&[0, 1], &[], &[]]))]);
+    let c = clip(2, [None, Some((&s, lists(&[0, 1], &[], &[])))]);
     let st = c.stream(Which::Animated).unwrap();
     let w = 0.25f32;
     let f = Frame {
@@ -172,7 +177,7 @@ fn float_blend_needs_aligned_keys() {
         0x20,
         &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
     );
-    let c = clip(1, [Some((&s, [&[0], &[], &[]])), None]);
+    let c = clip(1, [Some((&s, lists(&[0], &[], &[]))), None]);
     let st = c.stream(Which::Static).unwrap();
     let f = Frame {
         a: 0,
@@ -191,7 +196,7 @@ fn translation_lerp_and_raw_frames() {
     let mut s = S::new(3);
     s.u32(0x0c, 0x40).u32(0x18, 36);
     s.f32s(0x40 + 36, &[1.0, 2.0, 3.0, 5.0, 7.0, 11.0, 0.0, 0.0, 0.0]);
-    let c = clip(3, [None, Some((&s, [&[], &[0, 2], &[]]))]);
+    let c = clip(3, [None, Some((&s, lists(&[], &[0, 2], &[])))]);
     let st = c.stream(Which::Animated).unwrap();
     let f = Frame {
         a: 0,
@@ -234,7 +239,7 @@ fn keyed(wide: bool) -> S {
 fn keyed_translation_finds_and_interpolates_keys() {
     for wide in [false, true] {
         let s = keyed(wide);
-        let c = clip(2, [None, Some((&s, [&[], &[0, 1], &[]]))]);
+        let c = clip(2, [None, Some((&s, lists(&[], &[0, 1], &[])))]);
         let st = c.stream(Which::Animated).unwrap();
         let mut cx = ctx();
         let int = VecOp::KeyInt { wide };
@@ -334,7 +339,7 @@ fn twelve() -> Clip {
         );
     }
     s.f32s(0x200, &[2.0, 3.0]);
-    let lists: [&[u16]; 3] = [&[1, 9, 10], &[3, 9], &[11]];
+    let lists = lists(&[1, 9, 10], &[3, 9], &[11]);
     clip(12, [None, Some((&s, lists))])
 }
 
@@ -475,7 +480,7 @@ fn flag_arrays_cross_byte_and_word_boundaries() {
     for (i, _) in nodes.iter().enumerate() {
         s.f32s(0x40 + 12 * i, &[i as f32 + 1.0, 0.0, 0.0]);
     }
-    let c = clip(41, [Some((&s, [&[], &nodes, &[]])), None]);
+    let c = clip(41, [Some((&s, lists(&[], &nodes, &[]))), None]);
     let ops = Ops {
         translation: Some(VecOp::Static),
         ..Ops::default()
