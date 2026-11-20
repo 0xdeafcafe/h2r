@@ -1887,6 +1887,7 @@ name = "emit"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "hostfault",
  "iced-x86",
  "ir",
  "libc",
@@ -2785,6 +2786,13 @@ dependencies = [
  "ureq",
  "xiso",
  "zstd",
+]
+
+[[package]]
+name = "hostfault"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
