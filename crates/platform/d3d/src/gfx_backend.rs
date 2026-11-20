@@ -192,9 +192,6 @@ pub struct GfxBackend {
     /// Reports recorded into the open encoder, told their submission when
     /// it is made ([`set_defer_side_passes`](Self::set_defer_side_passes)).
     unsubmitted_reports: Vec<PixelReport>,
-    /// Canonical scene queries recorded into the open encoder. At submit
-    /// they deliver their counts directly to the guest's feedback slots.
-    flare_reports: Vec<(PixelReport, crate::scene_sink::FlareWriter)>,
     next_ticket: u64,
     /// Presents so far plus one.
     frame: u64,
@@ -352,7 +349,6 @@ impl GfxBackend {
             counter: None,
             reports: HashMap::new(),
             unsubmitted_reports: Vec::new(),
-            flare_reports: Vec::new(),
             depth_bits: None,
             guest_words: None,
             gpu_depth_aliases: true,
@@ -804,22 +800,6 @@ impl GfxBackend {
         Ok(())
     }
 
-    /// Copies the native flare counter at this point in the frame. The
-    /// normal pass encoder counts at guest pixel spacing on a scaled
-    /// target. The copy shares the frame submission; it never waits here.
-    pub(super) fn record_flare_report(
-        &mut self,
-        report: &crate::scene_sink::FlareReport,
-    ) -> Result<(), String> {
-        let Some(feedback) = report.claim() else { return Ok(()) };
-        let (mut encoder, passes) = self.take_open()?;
-        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(&self.ctx));
-        let result = counter.report(&self.ctx, &mut encoder);
-        self.flare_reports.push((result, feedback));
-        self.open = Some((encoder, passes));
-        Ok(())
-    }
-
     /// The merge self-check ([`set_merge_check`](Self::set_merge_check)):
     /// renders `p` merged and with one render pass per draw from the same
     /// starting attachments, reports the pixels that differ, and narrows a
@@ -1058,13 +1038,6 @@ impl GfxBackend {
         }
         for r in self.unsubmitted_reports.drain(..) {
             r.submitted(index.clone());
-        }
-        for (report, feedback) in self.flare_reports.drain(..) {
-            let device = self.ctx.device.clone();
-            let submission = index.clone();
-            // Register the map before telling a deterministic reader that
-            // it can finish it by waiting for this particular submission.
-            feedback.map(report, device, submission);
         }
         self.last_submit = Some(index.clone());
         self.renderer.submitted();
