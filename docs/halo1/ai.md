@@ -834,15 +834,36 @@ out in `0xfe618`.
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.
 
-Halo 1's active Flood revival passes involuntary speech type 5 at
+**Built.** Halo 1's active Flood revival passes involuntary speech type 5 at
 `0x4508c` after the revival timer expires with positive body vitality.
 That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
 path calls `0xcaf00` to clear depletion and restore the unit. Converted
 units with that authored slot queue it there.
 
-The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
+**Built.** The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
 sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
 They appear in neither the primary or reply tables nor the hard-coded
 involuntary selectors, and no entry in the fallback table selects them.
 The converted bank preserves the original sounds and indices for explicit
 source-slot lookup.
+
+**Built.** The airborne scream at `udlg+0xb0` is separate from damage
+on landing. The Halo 1 biped update at `0x49280` checks more than one
+second airborne, then checks for ground within six units and estimates
+vertical speed on impact. The vehicle rider branch at `0x4b580`
+requires more than four seconds in an eligible seat, more than one
+second airborne, and no floor below or in the projected path. Both
+source branches gate probes at half-second intervals and suppress them
+during custom animation. The boot hook uses Halo 2's biped and vehicle
+airborne counters, the animation manager predicate at `0x11b930`, and
+the BSP ray at `0x1697c0`. It queues the original scream in the
+speaker's speech cache.
+
+**Built.** Halo 1's collision damage accumulates applied body damage in
+a byte for each collision region at `0x9512f`. It destroys that region
+after crossing the source `coll +0x28` threshold. The live unit
+notification at `0x3dd10` selects `0xd0` or `0xe0` by collision
+region flag `0x200`. The converted `hlmt` carries these source
+thresholds and flags. The Halo 2 body-damage callback reads the hit
+region that `0xd7e1d` writes and the applied normalized damage that
+`0xd8e5e` writes. Its region history is per salted object handle.

@@ -2983,6 +2983,41 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0xc00, "shotfoebdy"),       // shootingdeadenemy
 ];
 
+/// The first authored slot without a native, rebuilt, or dormant source rule.
+pub fn unbound_dialogue_line(source: &h1::Dialogue) -> Option<(usize, TagId)> {
+    let routed = dialogue_lines(source);
+    let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
+    source.lines.iter().copied().find(|(slot, _)| {
+        let native = routed.iter().any(|(_, at, _)| at == slot);
+        let kill_variant = generic_kill
+            && (map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot)
+                || map::h1_species_kill_line(*slot));
+        !native
+            && !kill_variant
+            && !map::h1_injury_line(*slot)
+            && !map::h1_friendly_kill_line(*slot)
+            && !map::h1_kill_witness_line(*slot)
+            && !map::h1_actor_notice_line(*slot)
+            && !map::h1_firing_line(*slot)
+            && !map::h1_tactical_dialogue_line(*slot)
+            && !map::h1_grenade_dialogue_line(*slot)
+            && !map::h1_postcombat_line(*slot)
+            && !map::h1_unselected_dialogue_line(*slot)
+            && !map::h1_region_dialogue_line(*slot)
+            && !map::h1_allied_reply_line(*slot)
+            && !matches!(
+                *slot,
+                map::H1_KILLING_SPREE_LINE
+                    | map::H1_KILLING_SPREE_REPLY_LINE
+                    | map::H1_DEATH_FLYING_LINE
+                    | map::H1_REVIVAL_LINE
+                    | map::H1_FREEFALL_LINE
+                    | map::H1_SEARCH_QUERY_LINE
+                    | map::H1_SEARCH_REPLY_LINE
+            )
+    })
+}
+
 /// The vocalizations a Halo 1 dialogue tag gives, each with the slot its
 /// sound is in ([`DIALOGUE`]), first slot holding a sound winning.
 pub fn dialogue_lines(d: &h1::Dialogue) -> Vec<(&'static str, usize, h1map::TagId)> {

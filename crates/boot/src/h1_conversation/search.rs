@@ -9,6 +9,7 @@ use super::{
     cast,
     dialogue::{self, Line},
     leaders::guest_fault,
+    physical,
     reactions::{Queue, Scheduled},
     replies, visibility, *,
 };
@@ -197,7 +198,11 @@ fn tick(m: &mut dyn GuestMemory, records: u32, unit: u32) -> Result<Option<Line>
     }))
 }
 
-pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildError> {
+pub(super) fn install(
+    b: &mut Builder,
+    reactions: Queue,
+    physical_history: physical::History,
+) -> Result<(), BuildError> {
     let records = b.guest_alloc(BYTES, Permissions::RW)?;
     b.raw().before(
         &points::HS_CONVERSATION_MAP_DISPOSE,
@@ -227,7 +232,12 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildErro
                 }
             };
             let Some(Scheduled { line, other }) = scheduled else {
-                return Ok(Flow::Continue);
+                let fall = physical::falling(&mut *rt.memory(), physical_history, saved.eax)
+                    .map_err(guest_fault)?;
+                return match fall {
+                    Some(fall) => physical::probe(call, fall, reactions),
+                    None => Ok(Flow::Continue),
+                };
             };
             let addr = call.addr;
             let original = rt

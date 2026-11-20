@@ -159,7 +159,7 @@ group hlmt 0xfc align 4
     0x38 f32[3] inverse_left -- V: as mode node +0x38 (halo1/models.md:315)
     0x44 f32[3] inverse_up -- V: as mode node +0x44 (halo1/models.md:315)
     0x50 f32[3] inverse_position -- V: as mode node +0x50 (halo1/models.md:315; halo1/objects.md:217)
-  0x80 unknown 0x4 seen=zero
+  0x80 u32 h1_dialogue_flags -- converted biped dialogue rules (docs/halo1/ai.md)
   0x84 block block_84 0x14 align 4 -- V: at most one element (layouts.rs:941-947)
     0x0 unknown 0x4 seen=6
     0x4 unknown 0x4 seen=many
@@ -168,7 +168,9 @@ group hlmt 0xfc align 4
     0x10 unknown 0x4 seen=many -- floats
   0x8c tagref udlg_ref_8c groups=udlg -- V: udlg tags (layouts.rs:948)
   0x94 tagref shad_ref_94 groups=shad -- V: shad tags (layouts.rs:949)
-  0x9c pad 0x8
+  0x9c block h1_dialogue_regions 0x8 align 4 -- converted collision regions in source order
+    0x0 f32 threshold
+    0x4 u32 flags
   0xa4 unknown 0x4 seen=30
   0xa8 unknown 0x4 seen=11
   0xac unknown 0x4 seen=2 -- small integers

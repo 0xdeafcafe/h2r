@@ -14,11 +14,12 @@ mod cast;
 mod combat;
 pub(crate) mod dialogue;
 mod leaders;
+mod physical;
 mod postcombat;
 mod reactions;
 mod replies;
-mod tactics;
 mod search;
+mod tactics;
 mod visibility;
 mod voices;
 
@@ -55,7 +56,8 @@ impl feature::Feature for Conversations {
         combat::install(b, reactions)?;
         tactics::install(b, reactions)?;
         postcombat::install(b, reactions)?;
-        search::install(b, reactions)?;
+        let physical = physical::install(b, reactions)?;
+        search::install(b, reactions, physical)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(
             &points::HS_UNUSED_EVALUATOR,

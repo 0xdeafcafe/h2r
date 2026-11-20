@@ -754,6 +754,13 @@ fn every_dialogue_converts() {
                 multi_voice += usize::from(selectors.len() > 1);
                 for (_, voice) in selectors {
                     assert!(voices.contains_key(&voice), "{level} {}: missing voice {voice}", unit.name);
+                    let source = h1::Dialogue::read(&m, m.tag(voice).unwrap()).unwrap();
+                    assert_eq!(
+                        h1objects::rebuild::unbound_dialogue_line(&source),
+                        None,
+                        "{level} {} has unbound dialogue",
+                        unit.name
+                    );
                 }
             }
         }
@@ -910,6 +917,13 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
                 .any(|row| { u16_at(row, 0) == index || u16_at(row, 6) == index })
         );
     }
+    assert_eq!(h1.bytes_at(0x0004_93a4, 2).unwrap(), &[0x6a, 0]);
+    assert_eq!(h1.read_u32(0x0004_6c2a).unwrap(), u32::from(slot(map::H1_FREEFALL_LINE)));
+    assert_eq!(h1.bytes_at(0x0004_b6b9, 5).unwrap(), &[0xb9, 40, 0, 0, 0]);
+    assert_eq!(u16_at(h1.bytes_at(0x001e_f818, 6).unwrap(), 4), slot(map::H1_FREEFALL_LINE));
+    assert_eq!(h1.read_u32(0x0003_dd36).unwrap(), 0x200);
+    assert_eq!(h1.read_u32(0x0004_6c77).unwrap(), u32::from(slot(0xd0)));
+    assert_eq!(h1.read_u32(0x0004_6c7e).unwrap(), u32::from(slot(0xe0)));
     assert_eq!(h1.bytes_at(0x0004_508a, 2).unwrap(), &[0x6a, 5]);
     assert_eq!(
         h1.read_u32(0x0004_6c85).unwrap(),

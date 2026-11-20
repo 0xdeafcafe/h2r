@@ -223,3 +223,14 @@ pub const H1_REVIVAL_LINE: usize = 0xb80;
 pub const fn h1_unselected_dialogue_line(offset: usize) -> bool {
     matches!(offset, 0xa90 | 0xaa0 | 0xb60)
 }
+
+/// Marker on rebuilt hlmt tags that carry Halo 1 physical speech rules.
+pub const H1_PHYSICAL_DIALOGUE: u32 = 0x4831_0000;
+pub const H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL: u32 = 1;
+pub const H1_DIALOGUE_AIRBORNE_PASSENGERS: u32 = 2;
+pub const H1_FREEFALL_LINE: usize = 0x0b0;
+
+/// Involuntary speech when damage destroys a collision region.
+pub const fn h1_region_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0x0d0 | 0x0e0)
+}

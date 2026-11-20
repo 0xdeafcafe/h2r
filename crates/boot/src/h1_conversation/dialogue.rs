@@ -17,7 +17,7 @@ pub(super) struct Line {
     pub(super) priority: u32,
 }
 
-fn tag_address(m: &dyn GuestMemory, id: u32, group: GroupTag) -> Result<Option<u32>, MemFault> {
+pub(super) fn tag_address(m: &dyn GuestMemory, id: u32, group: GroupTag) -> Result<Option<u32>, MemFault> {
     let Some(tag) = Tags.entry(m, DatumHandle(id))? else {
         return Ok(None);
     };

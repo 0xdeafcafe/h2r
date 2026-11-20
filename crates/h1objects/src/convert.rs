@@ -936,30 +936,7 @@ impl<'a> Converter<'a> {
         for (selector, id) in variants {
             let voice = self.h1_tag(id)?;
             let source = self.read_dialogue(voice)?;
-            let routed = crate::rebuild::dialogue_lines(&source);
-            let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
-            if let Some(&(slot, id)) = source.lines.iter().find(|(slot, _)| {
-                let native = routed.iter().any(|(_, at, _)| at == slot);
-                let kill_variant = generic_kill
-                    && (map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot)
-                        || map::h1_species_kill_line(*slot));
-                !native
-                    && !kill_variant
-                    && !map::h1_injury_line(*slot)
-                    && !map::h1_friendly_kill_line(*slot)
-                    && !map::h1_kill_witness_line(*slot)
-                    && !map::h1_actor_notice_line(*slot)
-                    && !map::h1_firing_line(*slot)
-                    && !map::h1_tactical_dialogue_line(*slot)
-                    && !map::h1_grenade_dialogue_line(*slot)
-                    && !map::h1_postcombat_line(*slot)
-                    && !map::h1_unselected_dialogue_line(*slot)
-                    && !map::h1_allied_reply_line(*slot)
-                    && !matches!(
-                        *slot,
-                        map::H1_KILLING_SPREE_LINE | map::H1_KILLING_SPREE_REPLY_LINE | map::H1_DEATH_FLYING_LINE | map::H1_REVIVAL_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
-                    )
-            }) {
+            if let Some((slot, id)) = crate::rebuild::unbound_dialogue_line(&source) {
                 let sound = self.h1_tag(id)?;
                 return Err(h1convert::Error::no_rebuild(
                     &self.h1.header().name,
@@ -2319,6 +2296,11 @@ impl<'a> Converter<'a> {
             },
         );
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
+        if b[0x17c] & 0x40 != 0 && let Some(h) = hlmt {
+            let bits = map::H1_PHYSICAL_DIALOGUE | map::H1_DIALOGUE_AIRBORNE_PASSENGERS;
+            let root = &mut self.tree.tags[h.0 as usize & 0xffff].1.root;
+            root.bytes[0x80..0x84].copy_from_slice(&bits.to_le_bytes());
+        }
         let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
         let kind = match scripted {
             Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
@@ -2725,10 +2707,40 @@ impl<'a> Converter<'a> {
             let mut r = defs::from_built(hd, &self.tree.tags[h.0 as usize & 0xffff].1.root)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
             let mut copied = Vec::new();
+            if !voices.is_empty() {
+                let freefall = if b[0x2f4] & 0x84 == 0 {
+                    map::H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL
+                } else {
+                    0
+                };
+                r.set("h1_dialogue_flags", Val::Int(i64::from(map::H1_PHYSICAL_DIALOGUE | freefall)))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
             if let Some(v) = native.as_ref().and_then(|c| c.at("shad_ref_94")) {
                 r.set("shad_ref_94", v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
             }
             if let Some(src) = source_damage {
+                if !voices.is_empty() {
+                    let regions = h1::elements(self.h1, src, 0x240, 0x54)?;
+                    let region_def = hd.child("h1_dialogue_regions").expect("physical dialogue");
+                    let mut physical_dialogue = Vec::new();
+                    let mut has_threshold = false;
+                    for region in regions {
+                        let threshold = f32::from_le_bytes(region[0x28..0x2c].try_into().unwrap());
+                        let flags = u32::from_le_bytes(region[0x20..0x24].try_into().unwrap());
+                        has_threshold |= threshold > 0.0;
+                        let mut out = defs::default_record(region_def);
+                        out.set("threshold", Val::Float(threshold))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        out.set("flags", Val::Int(i64::from(flags)))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        physical_dialogue.push(out);
+                    }
+                    if has_threshold {
+                        r.set("h1_dialogue_regions", Val::Block(physical_dialogue))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                    }
+                }
                 let mut damage = defs::default_record(hd.child("block_60").expect("model damage"));
                 // Native shield shaders and damage sections are coupled to the H2
                 // damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
