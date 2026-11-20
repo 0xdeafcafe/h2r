@@ -87,7 +87,11 @@ object count. `walk_part_aux_state`, `walk_part_subparts` and
 `walk_part_topology` count the parts (not objects) behind
 `walk_unsupported` by their record's cause
 (`scene_extract::layout::object_walk::Refusal`,
-[framescene.md](framescene.md), "Slice 3").
+[framescene.md](framescene.md), "Slice 3"): `aux_state` a bit-11 part
+whose toggle's inputs (`scene_extract::layout::aux_depth`) do not read,
+`subparts` a bit-6 part whose visible-subpart mask does not read or
+names more than 64 subparts or a negative first, `topology` a part
+without bit 9 whose part is not a triangle list.
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).

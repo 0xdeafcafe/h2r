@@ -5,8 +5,8 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 [sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
-Slices 0 to 2 are built, and so is slice 3's objects part; their
-sections say how. The rest is the plan. Lanes write code and tests; the coordinator builds, runs and
+Slices 0 to 3 are built; their sections say how. The rest is the
+plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -29,11 +29,11 @@ game data.
   4x, native 32.35 fps against D3D 34.34, p99 49.7 against 39.5 ms. The
   native-cost lane cut the native passes and command buffers that caused
   most of it; its numbers are not in yet.
-- Three things are still open on that path: the object walk gives back
-  the objects whose records toggle the depth scale or draw chosen
-  subparts (`walk_unsupported`, by cause `walk_part_*`, slice 3), the
-  lights stage refuses some lights, and side passes at a render scale
-  above 1 are not deferred.
+- Open on that path: the object walk gives back a part only when what
+  it reads does not read (`walk_unsupported`, by cause `walk_part_*`,
+  slice 3), the lights stage keeps a light's layers on D3D when a pass
+  is refused by name or the additional casters run, and side passes at
+  a render scale above 1 are not deferred.
 - `native-render` depends on `d3d`, reads guest memory through
   `dyn GuestRead` in about 19 of its modules, and is wrapped in about 30,000
   lines of glue in `boot` and `feature`.
@@ -274,8 +274,9 @@ with a blended camera. `Unknown` is drawn as the tick drew it.
   thread sends counters, capture results and query results on a
   `RenderFeedback` channel. Lens-flare pixel counts are the one value
   the guest reads; they are answered by polling, as
-  `GetVisibilityTestResult` is today, and under the same rule for
-  deterministic runs (`H2_D3D_VISIBILITY_POLL=0`: the answer waits).
+  `GetVisibilityTestResult` is, and under the same rule for
+  deterministic runs (`d3d::Device::set_visibility_poll(false)`, which
+  the deterministic tests set: the answer waits).
   Any later feature that needs a render result in the sim applies it at
   a tick boundary and records it in films as an input.
 
