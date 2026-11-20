@@ -161,15 +161,15 @@ flashes it.
 | `--vo-plate` | `rgba(6, 18, 36, .92)` | panel fill |
 | `--vo-line` | `rgba(111, 182, 232, .55)` | keylines |
 | `--vo-ink` | `#dfeeff` | text |
-| `--vo-dim` | `#8fb0d0` | secondary text |
-| `--vo-accent` | `#9fd8ff` | lit segments, values, the highlight bar |
+| `--vo-dim` | `#8fb0d0` | secondary text, load segments |
+| `--vo-accent` | `#9fd8ff` | values, the highlight bar |
 | `--vo-on` | `#17668a`, border `#9ad1ee` | a pressed control (as `.gv-buttons button.on`) |
 | `--vo-warn` | `#ffc857` | notices |
 | `--vo-bad` | `#f26122` | errors |
 
 **Type.** Labels and values are `var(--font-tech)` (Michroma, already in
 `web/src/styles/theme.css`), 9px/12px, uppercase, `letter-spacing: .14em`
-(`.24em` for the eyebrow). Titles are `var(--font-ui)` bold 20px/24px,
+by default. Titles are `var(--font-ui)` bold 20px/24px,
 uppercase, `letter-spacing: .02em`. Body copy is `var(--font-ui)`
 11px/15px. Numbers use `font-variant-numeric: tabular-nums`.
 
@@ -192,8 +192,10 @@ floor grid: `repeating-linear-gradient` lines of `rgba(111, 182, 232,
 perspective(600px) rotateX(62deg) scale(2)`, anchored to the bottom half,
 masked by `linear-gradient(transparent, #000 60%)`.
 
-**Loading** (`boot`, `loading`, `decoding`). The plate is centred, `width:
-min(420px, 100% - 32px)`, padding `14px 16px 12px`.
+**Loading** (`boot`, `loading`, `decoding`). The plate is centred and up to
+320px wide, with 10px by 12px padding and a subdued blue keyline. The
+eyebrow and status use 10px/13px UI type with .05em tracking, and the
+title uses 15px/19px semibold.
 
 ```
 +--------------------------------------------------------------------+
@@ -213,18 +215,15 @@ min(420px, 100% - 32px)`, padding `14px 16px 12px`.
 
 - Eyebrow `MAP UPLINK` in `--vo-dim`; the title is `GameViewer`'s
   `title`.
-- The bar: 24 segments in a flex row, `gap: 2px`, each `height: 8px;
-  transform: skewX(-18deg)`. Unlit `rgba(159, 216, 255, .14)`. Lit
-  `--vo-accent` with `box-shadow: 0 0 6px rgba(159, 216, 255, .55)`,
-  reached by `opacity .25 → 1` in 120 ms linear.
-- Chase: every segment runs `vo-chase 1400ms linear infinite` with
-  `animation-delay: calc(var(--i) * 58ms)`; the keyframes hold `.14`,
-  rise to `1` at 10% and return to `.14` at 20%.
-- Pulse (the 23rd segment in `decoding`): `opacity .35 ↔ 1`, 800 ms
-  `ease-in-out`, alternating.
-- Scan line: a 1px `--vo-accent` line with a 24px tail
-  (`linear-gradient(transparent, rgba(159, 216, 255, .18))`) crossing the
-  plate top to bottom, 2400 ms linear, infinite.
+- The bar has 24 muted blue segments, 4px high with 2px gaps and a 12°
+  skew. Inactive segments sit at .18 opacity. Lit segments reach .78
+  opacity in 120 ms.
+- When the download size is unknown, the chase runs over 1800 ms with
+  75 ms between segments and a .6 opacity peak.
+- During decoding the 23rd segment pulses between .42 and .78 opacity
+  over 1100 ms.
+- A faint scan line with a 12px tail crosses the plate once, over
+  3200 ms.
 - Status text, left: `LOADING VIEWER` (`boot`), `LOADING MAP GEOMETRY`
   (`loading`), `DECODING GEOMETRY` (`decoding`). Right: the percent, or the
   size read, or nothing.
@@ -232,8 +231,7 @@ min(420px, 100% - 32px)`, padding `14px 16px 12px`.
   `aria-valuemax="100"` and `aria-valuenow` (left off when
   indeterminate). The status text is `aria-live="polite"` and changes only
   with the state.
-- Plate entrance: `opacity 0 → 1` and `translateY(6px) → 0`, 220 ms
-  `cubic-bezier(0.2, 0.8, 0.2, 1)`.
+- The plate fades in over 180 ms with `cubic-bezier(0.2, 0.8, 0.2, 1)`.
 
 **Ready** (`reveal`, `ready`). The veil fades `opacity 1 → 0` in 420 ms
 `cubic-bezier(0.4, 0, 0.2, 1)` and is then `display: none`. The rail
