@@ -10,15 +10,15 @@
 //! [`record!`] declares a fixed-size guest structure:
 //!
 //! ```
-//! engine::record! {
+//! guest_layout::record! {
 //!     /// A thing (docs/x.md).
 //!     pub struct Thing: 0x10 {
 //!         /// Its count.
 //!         count @ 0x0: u16,
-//!         position @ 0x4: engine::view::Vec3,
+//!         position @ 0x4: guest_layout::view::Vec3,
 //!     }
 //! }
-//! # use engine::{GuestMemory, testing::FakeGuest};
+//! # use guest_layout::{GuestMemory, testing::FakeGuest};
 //! let mut g = FakeGuest::new();
 //! Thing::build().count(3).write(&mut g, 0x1000);
 //! assert_eq!(Thing::at(0x1000).count(&g), Ok(3));

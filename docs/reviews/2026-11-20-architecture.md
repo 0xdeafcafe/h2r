@@ -515,7 +515,7 @@ replacement.
 
 ### 3.1 The engine as built
 
-Points are named addresses in `crates/rewrites/engine/src/points.rs`: 331 of them,
+Points are named addresses in `crates/hooking/guest-layout/src/points.rs`: 331 of them,
 each with a signature kind, a required or optional class and a doc
 reference. A hook chain per address runs observers, `before` hooks (which
 may return early), the body or its replacement, then `after` hooks
