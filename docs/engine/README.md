@@ -12,6 +12,9 @@ evidence. No disassembly listings or game data.
 | [locale_string_id_find.md](locale_string_id_find.md) | `0x1a02d0`, `0x1a0310` | Rust + adapters |
 | [memory_pool.md](memory_pool.md) | `0x18e1f0–0x18e700` | contract notes only |
 | [sim-rewrite.md](sim-rewrite.md) | animation, collision, objects, Havok, campaign subsystems | plan: Rust subsystem rewrites with guest-layout state |
+| [sim-rewrite-havok.md](sim-rewrite-havok.md) | the Havok step `0x311100` and everything under it | design: phase 4 of the plan, bit-exact structural port |
+| [sim-rewrite-collision.md](sim-rewrite-collision.md) | BSP and MOPP queries, collision query, cluster flood, object visit | design: phase 2 collision world, entries, data layouts, slices |
+| [sim-rewrite-objects.md](sim-rewrite-objects.md) | object walks `0xb6f10`, `0xb7060`, `0xb7150`, per-object update `0xbc470`, `0xbc820`, type update trees, lights `0xc1400` | design: phase 3 of the sim rewrite |
 | [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/hs` (`hs::vm`); not yet wired into the game |
 
 ## Fault behaviour
