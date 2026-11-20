@@ -235,6 +235,9 @@ impl Drop for MemoryGuard<'_> {
         if let Some(flat) = flat {
             data.flat = flat;
             data.watching |= 1 << 31;
+            if flat.stores.is_null() && !flat.cold_stores.is_null() {
+                data.watching |= 1 << 30;
+            }
         }
         self.ready.store(!pages.is_null(), Ordering::Release);
         shared.gate.store(0, Ordering::Release);
@@ -372,8 +375,9 @@ const _: () = {
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     {
         assert!(std::mem::offset_of!(MemoryData, flat) == 2080);
-        assert!(size_of::<crate::flat::View>() == 24);
-        assert!(size_of::<MemoryData>() == 2104);
+        assert!(size_of::<crate::flat::View>() == 40);
+        assert!(std::mem::offset_of!(crate::flat::View, cold_stores) == 24);
+        assert!(size_of::<MemoryData>() == 2120);
     }
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
     assert!(size_of::<MemoryData>() == 2080);

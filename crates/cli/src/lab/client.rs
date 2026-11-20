@@ -189,6 +189,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             print(&r.connect()?.call(json!({"cmd": "status"}))?)
         }
         "run" => run_cmd(&r, args),
+        "agent" => agent_cmd(&r, args),
+        "bench" => bench_cmd(&r, args),
         "build" => build_cmd(&r, args),
         "wait" => {
             let (id, timeout) = id_and_timeout(&args)?;
@@ -404,12 +406,30 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             }
             "--fresh-data" => req.fresh_data = true,
             "--note" => req.note = Some(val()?),
+            "--serve" => req.serve = true,
             "--wait" => wait = true,
             "--to" => to = Some(PathBuf::from(val()?)),
             "--" => req.args.extend(it.by_ref()),
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    ensure!(
+        !(wait && req.serve),
+        "--serve runs until `h2 lab stop`; --wait would wait forever (h2 lab bench does the whole loop)"
+    );
+    let (mut c, v) = launch(r, req, &src)?;
+    let id = v["id"].as_str().context("no id in the answer")?.to_string();
+    if !wait {
+        print(&v)?;
+        return Ok(());
+    }
+    eprintln!("lab: job {id} started");
+    wait_and_fetch(r, &mut c, &id, to)
+}
+
+/// Validates `req`, resolves and pushes its build, and starts it. Returns
+/// the connection and the host's answer (with the job's `id`).
+fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
     if req.perf && !req.build.features.iter().any(|f| f == "perf") && !src.current {
         req.build.features.push("perf".into());
     }
@@ -427,13 +447,7 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     let mut body = serde_json::to_value(&req)?;
     body["cmd"] = "run".into();
     let v = c.call(body)?;
-    let id = v["id"].as_str().context("no id in the answer")?.to_string();
-    if !wait {
-        print(&v)?;
-        return Ok(());
-    }
-    eprintln!("lab: job {id} started");
-    wait_and_fetch(r, &mut c, &id, to)
+    Ok((c, v))
 }
 
 fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -745,4 +759,308 @@ pub fn record(args: Vec<String>) -> Result<()> {
     ensure!(st.success(), "the game exited with {st}");
     println!("{}", cfg.root.join("recordings").join(&name).display());
     Ok(())
+}
+
+/// What one forwarded `h2 agent` call answered.
+struct AgentAnswer {
+    exit: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn agent_request(
+    c: &mut Conn,
+    id: &str,
+    args: &[String],
+    timeout: Option<f64>,
+    stdin: Option<String>,
+) -> Result<AgentAnswer> {
+    let mut req = json!({"cmd": "agent", "id": id, "args": args});
+    if let Some(t) = timeout {
+        req["timeout"] = t.into();
+    }
+    if let Some(s) = stdin {
+        req["stdin"] = s.into();
+    }
+    let v = c.call(req)?;
+    Ok(AgentAnswer {
+        exit: v["exit"].as_i64().unwrap_or(1) as i32,
+        stdout: v["stdout"].as_str().unwrap_or("").to_string(),
+        stderr: v["stderr"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+/// `h2 lab agent <id> <method> [json-params] [--timeout S]`: the host runs
+/// `h2 agent ...` against run `<id>`'s game. What it printed comes out here
+/// unchanged and so does its exit code. `-` reads a script from stdin.
+fn agent_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut id = None;
+    let mut timeout = None;
+    let mut call = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--timeout" if id.is_some() => {
+                timeout = Some(
+                    it.next()
+                        .context("--timeout needs seconds")?
+                        .parse::<f64>()
+                        .context("--timeout needs seconds")?,
+                )
+            }
+            _ if id.is_none() => id = Some(a),
+            _ => call.push(a),
+        }
+    }
+    let id =
+        id.context("usage: h2 lab agent --host H <id> <method> [json-params] [--timeout S]")?;
+    ensure!(
+        !call.is_empty(),
+        "which call? h2 lab agent <id> <method> [json-params]"
+    );
+    proto::check_name("id", &id)?;
+    proto::check_agent_args(&call)?;
+    let stdin = if call == ["-"] {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s)?;
+        Some(s)
+    } else {
+        None
+    };
+    let a = agent_request(&mut r.connect()?, &id, &call, timeout, stdin)?;
+    print!("{}", a.stdout);
+    eprint!("{}", a.stderr);
+    std::io::stdout().flush()?;
+    if a.exit != 0 {
+        std::process::exit(a.exit);
+    }
+    Ok(())
+}
+
+/// `h2 lab bench`: a `--serve` run of `--level`, the agent waiting for
+/// gameplay, a capture, `render.stats` and `profile.counters`, then stop and
+/// fetch. The three answers are saved into the fetched run directory and one
+/// line summarises them, so two invocations with different `--env` are an A/B.
+fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut req = RunReq {
+        serve: true,
+        ..RunReq::default()
+    };
+    let mut src = Source::default();
+    let mut ticks = 600u64;
+    let mut gameplay_timeout = 600.0f64;
+    let mut to = None;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if src.take(&a, &mut it)? {
+            continue;
+        }
+        let mut val = || it.next().with_context(|| format!("{a} needs a value"));
+        match a.as_str() {
+            "--level" => req.level = Some(val()?),
+            "--difficulty" => req.difficulty = Some(val()?),
+            "--scale" => {
+                let n: u32 = val()?.parse().context("--scale needs a number")?;
+                req.env.insert("H2_RENDER_SCALE".into(), n.to_string());
+            }
+            "--ticks" => ticks = val()?.parse().context("--ticks needs a count")?,
+            "--timeout" => gameplay_timeout = val()?.parse().context("--timeout needs seconds")?,
+            "--env" => {
+                let (k, v) = kv(&val()?, "--env")?;
+                req.env.insert(k, v);
+            }
+            "--feature" => req.build.features.push(val()?),
+            "--build-env" => {
+                let (k, v) = kv(&val()?, "--build-env")?;
+                req.build.env.insert(k, v);
+            }
+            "--fresh-data" => req.fresh_data = true,
+            "--note" => req.note = Some(val()?),
+            "--to" => to = Some(PathBuf::from(val()?)),
+            "--" => req.args.extend(it.by_ref()),
+            _ => bail!("unexpected {a}\n\n{USAGE}"),
+        }
+    }
+    ensure!(req.level.is_some(), "h2 lab bench needs --level MAP");
+    ensure!(
+        (1..=36_000).contains(&ticks),
+        "--ticks is 1 to 36000 (profile.capture's limit)"
+    );
+    ensure!(
+        gameplay_timeout.is_finite() && gameplay_timeout > 0.0,
+        "--timeout needs positive seconds"
+    );
+    let (mut c, v) = launch(r, req.clone(), &src)?;
+    let id = v["id"].as_str().context("no id in the answer")?.to_string();
+    eprintln!("lab: bench job {id} started");
+    let measured = bench_measure(&mut c, &id, ticks, gameplay_timeout);
+    // Whatever happened, the game does not stay up.
+    let _ = c.call(json!({"cmd": "stop", "id": id}));
+    let ended = c.call(json!({"cmd": "wait", "id": id, "timeout": 60}));
+    let m = match measured {
+        Ok(m) => m,
+        Err(e) => {
+            let state = ended.ok().map(|v| v["job"]["state"].to_string());
+            bail!(
+                "bench run {id} failed: {e:#} (run state {}; h2 lab fetch {id} for its logs)",
+                state.as_deref().unwrap_or("unknown")
+            );
+        }
+    };
+    let root = status(r)?["root"]
+        .as_str()
+        .context("status names no root")?
+        .to_string();
+    let dest = fetch(r, &root, &id, to)?;
+    for (name, text) in [
+        ("capture.json", &m.capture),
+        ("render-stats.json", &m.render),
+        ("profile-counters.json", &m.counters),
+    ] {
+        std::fs::write(dest.join(name), text)
+            .with_context(|| format!("writing {}", dest.join(name).display()))?;
+    }
+    let tag = {
+        let mut t: Vec<String> = req.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        t.extend(req.build.env.iter().map(|(k, v)| format!("{k}={v}")));
+        t.join(" ")
+    };
+    let line = bench_summary(
+        &serde_json::from_str(&m.capture).unwrap_or(Value::Null),
+        req.level.as_deref().unwrap_or("?"),
+        &tag,
+    );
+    println!("{line}");
+    println!("{}", dest.display());
+    Ok(())
+}
+
+/// The three answers a bench keeps, as the JSON `h2 agent` printed.
+struct Measured {
+    capture: String,
+    render: String,
+    counters: String,
+}
+
+/// With the job started: waits for it to run, then for gameplay with
+/// `map_ticks >= 30`, then reads the capture, `render.stats` and
+/// `profile.counters`.
+fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<Measured> {
+    // The build can take a long time; the game then has to boot.
+    loop {
+        let v = c.call(json!({"cmd": "wait", "id": id, "timeout": 0}))?;
+        if v["finished"] == Value::Bool(true) {
+            bail!(
+                "the job ended before gameplay ({}{})",
+                v["job"]["state"].as_str().unwrap_or("?"),
+                v["job"]["error"]
+                    .as_str()
+                    .map_or(String::new(), |e| format!(": {e}"))
+            );
+        }
+        if v["job"]["state"] == "running" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let ms = ((gameplay_timeout * 1000.0) as u64).to_string();
+    let call = |c: &mut Conn, args: &[&str], timeout: f64| -> Result<String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let a = agent_request(c, id, &args, Some(timeout), None)?;
+        ensure!(
+            a.exit == 0,
+            "h2 agent {} exited {}: {}",
+            args.join(" "),
+            a.exit,
+            a.stderr.trim()
+        );
+        Ok(a.stdout)
+    };
+    let until = r#"{"phase":"gameplay","map_ticks":30}"#;
+    // Two minutes more than the wait itself for the game's socket to open.
+    call(c, &["wait", until, ms.as_str()], gameplay_timeout + 150.0)
+        .context("waiting for gameplay")?;
+    let capture = call(
+        c,
+        &["capture", ticks.to_string().as_str()],
+        ticks as f64 / 5.0 + 90.0,
+    )
+    .context("capturing")?;
+    let parsed: Value = serde_json::from_str(&capture)
+        .with_context(|| format!("the capture answer is not JSON: {}", capture.trim()))?;
+    ensure!(
+        parsed["frames"].as_u64().unwrap_or(0) > 0,
+        "the capture read zero frames: {}",
+        capture.trim()
+    );
+    let render = call(c, &["render"], 60.0).context("render.stats")?;
+    let counters = call(c, &["counters"], 60.0).context("profile.counters")?;
+    Ok(Measured {
+        capture,
+        render,
+        counters,
+    })
+}
+
+/// One line for a `profile.capture` answer: fps, busy-time percentiles and
+/// each phase's mean ms per frame, biggest first (pacing left out).
+pub fn bench_summary(cap: &Value, level: &str, tag: &str) -> String {
+    let n = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+    let mut phases: Vec<(&str, f64)> = cap["phases"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| k.as_str() != "pace")
+        .map(|(k, v)| (k.as_str(), n(&v["mean"])))
+        .collect();
+    phases.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let phases: Vec<String> = phases.iter().map(|(k, m)| format!("{k} {m:.2}")).collect();
+    let mut s = format!(
+        "bench {level}{}{}: {:.1} fps, busy p50 {:.2} p95 {:.2} ms over {} frames ({} over {:.1} ms); phase mean ms: {}",
+        if tag.is_empty() { "" } else { " " },
+        tag,
+        n(&cap["fps"]),
+        n(&cap["busy_ms"]["p50"]),
+        n(&cap["busy_ms"]["p95"]),
+        cap["frames"].as_u64().unwrap_or(0),
+        cap["over_budget"].as_u64().unwrap_or(0),
+        n(&cap["budget_ms"]),
+        phases.join(", ")
+    );
+    if cap["complete"] == Value::Bool(false) {
+        s += " [capture incomplete: it ran out of time]";
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bench_line_has_fps_busy_percentiles_and_phases_biggest_first() {
+        let cap = json!({
+            "frames": 600, "fps": 29.97, "budget_ms": 33.3, "over_budget": 4, "complete": true,
+            "busy_ms": {"mean": 10.0, "p50": 9.5, "p95": 14.25},
+            "phases": {
+                "cpu": {"mean": 3.0}, "render": {"mean": 5.5},
+                "pace": {"mean": 20.0}, "d3d": {"mean": 1.0}
+            }
+        });
+        let s = bench_summary(&cap, "03a_oldmombasa", "H2_RENDER_SCALE=4");
+        assert_eq!(
+            s,
+            "bench 03a_oldmombasa H2_RENDER_SCALE=4: 30.0 fps, busy p50 9.50 p95 14.25 ms over 600 frames (4 over 33.3 ms); phase mean ms: render 5.50, cpu 3.00, d3d 1.00"
+        );
+        assert!(!s.contains("pace"));
+    }
+
+    #[test]
+    fn an_incomplete_capture_says_so() {
+        let s = bench_summary(&json!({"complete": false}), "x", "");
+        assert!(
+            s.ends_with("[capture incomplete: it ran out of time]"),
+            "{s}"
+        );
+    }
 }

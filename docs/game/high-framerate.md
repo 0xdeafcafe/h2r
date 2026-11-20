@@ -493,15 +493,12 @@ Two answers, in order:
   identical to today. The replay itself is behind
   `H2_FEATURES=impl.render.interpolate` until it has been seen in game
   (section 7).
-- **Pass tags.** `engine::render_loop::scene::ScenePasses::at()` names the
-  pass in progress by its original return address (render-loop.md). With
-  `impl.render.scene_passes` on (off by default) it is the pass tag this
-  design wants: which draws are the world, which the first-person weapon,
-  which the HUD, and where E1 captures the world colour. It is not wired to
-  the device yet; the first slice tells views apart by viewport and target
-  size, and draws by their constants (section 7), and E1 finds the overlay
-  by a rule on the classified draws (section 8, which also says why the tag
-  is not wired yet).
+- **Pass tags.** A pass tag is what this design wants: which draws are the
+  world, which the first-person weapon, which the HUD, and where E1
+  captures the world colour. None is wired to the device; the first slice
+  tells views apart by viewport and target size, and draws by their
+  constants (section 7), and E1 finds the overlay by a rule on the
+  classified draws (section 8, "The pass tag").
 
 ## 4. Super bouncing
 
@@ -756,7 +753,7 @@ in the game yet.
 | `H2_FEATURES=impl.render.interpolate` | wraps the window's backend in `d3d::InterpBackend`, inside the render thread. Only this exact switch: `impl.render=on` does not turn it on |
 | Frame Rate row / `H2_FPS` / `h2 play --fps` | 30: the replay records nothing and forwards every call (the plain path). 60, 120 and uncapped: in-between frames at 60 (`interp::pacing::MAX_REPLAY_HZ`; 120 waits on measured headroom) |
 | `H2_RENDER_THREAD=0` | the replay stays off (it runs only on the render thread) |
-| `H2_PIPELINE_RENDER` (anything but `0`) | the replay stays off: the lockstep harness can't certify the combination |
+| `H2_FEATURES=impl.render.pipelined_frame=on` | the replay stays off: the lockstep harness can't certify the combination |
 
 No image rebuild: it is Rust in `d3d` and `boot`. Rebuild the `h2` binary.
 
@@ -948,7 +945,7 @@ part instead (section 8).
 | one display scheduler, alpha from measured arrivals | alpha from measured arrivals: done. The replay's 60 Hz grid decides when in-between frames are drawn, but the window's own `DisplaySchedule` (`app::fps`) still re-shows the newest publish at its rate. Folding the two into one is left |
 | hold below 30; reset on rebase, pause/load, cut, layout change | gaps over 45 ms, no camera and view-set changes reset; cuts snap. Checkpoint reverts are caught only as camera cuts |
 | snap on FOV jumps | done (5% projection change) |
-| replays must not change guest-visible answers | they draw only into private surfaces and never inside an open pixel count; queued guest work goes first. They do share the GPU: a pixel count submitted after a replay lands later, so a polled visibility test can answer `D3DERR_TESTINCOMPLETE` where it would not have. That is the timing class render-thread.md already accepts; `H2_D3D_VISIBILITY_POLL=0` makes it exact |
+| replays must not change guest-visible answers | they draw only into private surfaces and never inside an open pixel count; queued guest work goes first. They do share the GPU: a pixel count submitted after a replay lands later, so a polled visibility test can answer `D3DERR_TESTINCOMPLETE` where it would not have. That is the timing class render-thread.md already accepts; `Device::set_visibility_poll(false)` makes it exact |
 | pinned inputs | textures pinned by `Arc`; targets private; uniforms go through the backend's normal per-draw path. Surface textures of live render targets (`surface_texture`) are views, not copies: a replay samples their current contents, which may already be frame N+1's |
 | tolerance matching | done (rebuild within 1e-4 / 1e-5 relative) |
 | camera set covers eye, fog and sky | eye position done; fog and sky parameters other than the eye are not found |
@@ -1021,8 +1018,8 @@ at that scale, D's made frames have the guest's pixels exactly and E1's
 (a still camera) agree within filtering on over 98% of pixels.
 
 `cargo test -p boot --lib interpolation` checks the switch's decision
-(off by default, needs the render thread, off under
-`H2_PIPELINE_RENDER`) and `H2_FPS` parsing.
+(off by default, needs the render thread, off with
+`impl.render.pipelined_frame`) and `H2_FPS` parsing.
 
 ### Left
 
@@ -1035,7 +1032,7 @@ at that scale, D's made frames have the guest's pixels exactly and E1's
 3. Bundles or reused passes, so a replay costs uniform writes, not a
    re-encode; the exit line now measures the replay's render-thread cost
    against 16.7 and 8.3 ms.
-4. The pass tag from `ScenePasses::at()` and an object tag, replacing the
+4. A pass tag and an object tag, replacing the
    viewport key, the draw signature and E1's overlay rule (section 8 says
    what it takes).
 5. One display scheduler: let the replay drive the window's redraws.
@@ -1058,7 +1055,7 @@ game yet.
 | `H2_FEATURES=impl.render.interpolate` | D (section 7). With a reproject switch also on, E1 wins |
 
 Off by default; exact switches only (`impl.render=on` turns none of them
-on). Same rules as D: render thread only, off under `H2_PIPELINE_RENDER`,
+on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`,
 the Frame Rate row above 30 (in-between frames at 60). No image rebuild:
 Rust in `d3d`, `gfx` and `boot`. Rebuild and reinstall the `h2` binary.
 
@@ -1097,7 +1094,7 @@ h2 agent render          # "interp": frames, warps, the held split
   host has a GPU backend is `d3d_glue::interp_render_thread`. Without
   `H2_BOOT_GFX` (the recorder draws nothing) and under
   `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. The refusals
-  stand: `H2_RENDER_THREAD=0` and `H2_PIPELINE_RENDER` turn them off.
+  stand: `H2_RENDER_THREAD=0` and `impl.render.pipelined_frame` turn them off.
 - **Pacing.** No display, so no vsync: the in-between frames are paced on
   the wall clock at the frame rate, the same schedule a window uses (the
   backend's own clock, `pacing::Schedule`), a display clock of their own.
@@ -1328,14 +1325,13 @@ what they mark.
 
 ### The pass tag
 
-`ScenePasses::at()` (`engine::render_loop::scene`) is not wired here. It is
-the return address of the call in progress inside the port of
-`render_scene_passes`, on the game's thread. Getting it to the replay
-needs a per-draw tag captured at `Device` draw time (a new `ResolvedDraw`
-field, set at every place one is built, in the device code lane D is
-changing for view routing), a way for the render-loop feature to publish
-the address to the device, and then the map from return addresses to
-world, weapon and HUD passes, which needs a game run to read off. That is
+No pass tag is wired here. The pass in progress is the return address of
+the call `render_scene_passes` is making, on the game's thread (the Rust
+port that could name it, `ScenePasses::at()`, was removed unused in
+`ebaa4a0b`). Getting it to the replay needs a hook that reads it, a
+per-draw tag captured at `Device` draw time (a new `ResolvedDraw` field,
+set at every place one is built), and then the map from return addresses
+to world, weapon and HUD passes, which needs a game run to read off. That is
 a slice of its own; the overlay rule above stands in until then and gives
 the same split on the synthetic scenes.
 

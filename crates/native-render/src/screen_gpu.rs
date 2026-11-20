@@ -320,6 +320,8 @@ pub enum ScreenRefused {
     NoFrame,
     /// The blur's combiner does not compile.
     Convolution(String),
+    /// The submission's arena could not hold a pass's uniforms.
+    Uniforms,
 }
 
 /// Whether `program` would draw into `color` (recording nothing): every
@@ -441,11 +443,12 @@ pub fn screen_uniforms(
     (vertex, pixel)
 }
 
-/// What a screen pass draws into.
+/// What a screen pass draws into, and the submission's arena its
+/// uniforms and strips go in.
 pub struct ScreenTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub uploads: &'a gfx::ring::SubmissionUploads,
     pub color: &'a wgpu::TextureView,
     pub target1: Option<&'a wgpu::TextureView>,
     pub convolutions: [Option<&'a wgpu::TextureView>; 3],
@@ -497,12 +500,13 @@ impl ScreenGpu {
             label: Some("native screen pass"),
             source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
         });
+        // At dynamic offsets into the submission's arena.
         let uniform = |binding, size: usize| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
+                has_dynamic_offset: true,
                 min_binding_size: wgpu::BufferSize::new(size as u64),
             },
             count: None,
@@ -757,9 +761,9 @@ struct AlphaClear {
 }
 
 impl AlphaClear {
-    fn record(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        let format = view.texture().format();
-        let pipeline = self.pipelines.entry(format).or_insert_with(|| {
+    /// The clear's pipeline for `format`.
+    fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+        self.pipelines.entry(format).or_insert_with(|| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("native screen X8 alpha"),
                 source: wgpu::ShaderSource::Wgsl(r#"
@@ -791,17 +795,7 @@ impl AlphaClear {
                 multiview_mask: None,
                 cache: None,
             })
-        });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native screen X8 alpha"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view, resolve_target: None, depth_slice: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            ..Default::default()
-        });
-        pass.set_pipeline(pipeline);
-        pass.draw(0..3, 0..1);
+        }).clone()
     }
 }
 
@@ -824,15 +818,18 @@ impl ScreenSet {
         self.passes.clear();
     }
 
-    /// Records the call against its live destination and source views.
-    pub fn encode(
+    /// The call against its live destination and source views, prepared
+    /// ([`ScreenCommands::record`] records it): every pipeline and group
+    /// made and every uniform and strip staged in `t.uploads`. Refused
+    /// before anything is recorded.
+    pub fn prepare(
         &mut self,
         t: ScreenTarget<'_>,
         draws: &[ScreenDraw<'_>],
         frame: Option<&QuadFrame>,
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
-    ) -> Result<usize, ScreenRefused> {
-        let ScreenTarget { device, queue, encoder, color, target1, convolutions, guest_size, size, z_scale } = t;
+    ) -> Result<ScreenCommands, ScreenRefused> {
+        let ScreenTarget { device, queue, uploads, color, target1, convolutions, guest_size, size, z_scale } = t;
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
         convolution_states(frame, draws.iter().map(|d| d.convolutions))?;
         let view_of = |index| match index {
@@ -922,7 +919,7 @@ impl ScreenSet {
         }
         let texture = color.texture();
         let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
-        let mut drawn_count = 0;
+        let mut commands = ScreenCommands { steps: Vec::new(), ranges: 0 };
         let mut quads = quads.into_iter();
         let mut drawn = Drawn::default();
         for d in draws {
@@ -933,9 +930,10 @@ impl ScreenSet {
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::RENDER_ATTACHMENT;
                 let (extent, _, copy, view) = keep(&mut self.copy, device, full, texture.format(), usage, "native screen view copy");
-                encoder.copy_texture_to_texture(texture.as_image_copy(), copy.as_image_copy(), *extent);
+                commands.steps.push(Step::Copy { source: texture.clone(), dest: copy.clone(), extent: *extent });
                 if d.raster.opaque_view {
-                    self.opaque.record(device, encoder, view);
+                    let pipeline = self.opaque.pipeline(device, copy.format());
+                    commands.steps.push(Step::Opaque { pipeline, view: view.clone() });
                 }
                 Some(view.clone())
             } else {
@@ -954,51 +952,31 @@ impl ScreenSet {
             });
             let textures = g.textures(device, &engine)?;
             let (vertex, pixel) = screen_uniforms(d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), z_scale);
-            let (vertex, pixel) = (vertex.to_bytes(), pixel.to_bytes());
-            use wgpu::util::DeviceExt;
-            let buffer = |label, contents: &[u8], usage| {
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
-            };
-            let vb = buffer("native screen vertex uniforms", &vertex, wgpu::BufferUsages::UNIFORM);
-            let pb = buffer("native screen pixel uniforms", &pixel, wgpu::BufferUsages::UNIFORM);
+            let uniforms = uploads
+                .uniform_run(device, queue, &g.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE], 1, |_, v, p| {
+                    vertex.write_bytes(v);
+                    pixel.write_bytes(p);
+                })
+                .ok_or(ScreenRefused::Uniforms)?;
             let all: Vec<StripVertex> = d.strips.iter().flatten().copied().collect();
-            let vertices = buffer("native screen strips", bytemuck::cast_slice(&all), wgpu::BufferUsages::VERTEX);
-            let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native screen uniforms"),
-                layout: &g.uniforms_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: vb.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: pb.as_entire_binding() },
-                ],
-            });
+            let bytes: &[u8] = bytemuck::cast_slice(&all);
+            let (buffer, offset) = uploads.stage(device, queue, bytes);
             let Some(pipeline) = g.pipelines.get(&d.raster.pipeline(color_format, device.features())) else { return Err(ScreenRefused::NoProgram) };
-            let [x, y, w, h] = d.raster.scissor(dest_guest, dest_size)?;
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("native screen effect"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: dest_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_viewport(0.0, 0.0, dest_size.0 as f32, dest_size.1 as f32, 0.0, 1.0);
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &uniforms, &[]);
-                pass.set_bind_group(1, &textures, &[]);
-                pass.set_blend_constant(d.raster.blend_constant);
-                pass.set_scissor_rect(x, y, w, h);
-                pass.set_vertex_buffer(0, vertices.slice(..));
-                for r in strip_ranges(d.strips) {
-                    pass.draw(r, 0..1);
-                    drawn_count += 1;
-                }
-            }
+            let scissor = d.raster.scissor(dest_guest, dest_size)?;
+            let ranges = strip_ranges(d.strips);
+            commands.ranges += ranges.len();
+            commands.steps.push(Step::Strips(StripPass {
+                dest: dest_view.clone(),
+                size: dest_size,
+                pipeline: pipeline.clone(),
+                uniforms: uniforms.group.clone(),
+                offsets: uniforms.offsets(0),
+                textures,
+                blend_constant: d.raster.blend_constant,
+                scissor,
+                vertices: (buffer, offset, bytes.len() as u64),
+                ranges,
+            }));
             // A convolution samples the preceding pass's real pixels.
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
@@ -1007,20 +985,139 @@ impl ScreenSet {
                     let dest = attachment(q.dest, c.size)?;
                     let format = dest.texture().format();
                     let stages = [Some(source); 4];
-                    match (&shape, &q.grid) {
+                    let quad = match (&shape, &q.grid) {
                         (Shape::Grid(f), Some(g)) => {
-                            self.quads.draw_grid(device, encoder, &program, f, &g.strips, dest, format, None, stages)
+                            self.quads.grid(device, queue, uploads, &program, f, &g.strips, dest, format, None, stages)
                         }
-                        (Shape::Quad(quad), _) => self.quads.draw(device, encoder, &program, quad, dest, format, None, stages),
+                        (Shape::Quad(quad), _) => {
+                            self.quads.quad(device, queue, uploads, &program, quad, dest, format, None, stages)
+                        }
                         (Shape::Grid(_), None) => return Err(ScreenRefused::NoStrips),
-                    }
+                    };
+                    commands.steps.extend(quad.map_err(|_| ScreenRefused::Uniforms)?.map(Step::Quad));
                     drawn.convolved(q, c.size)?;
-                    drawn_count += q.grid.as_ref().map_or(1, |grid| grid.strips.len());
+                    commands.ranges += q.grid.as_ref().map_or(1, |grid| grid.strips.len());
                 }
                 drawn.result(n, c);
             }
         }
-        Ok(drawn_count)
+        Ok(commands)
+    }
+
+    /// [`Self::prepare`], recorded into `encoder`: the ranges drawn.
+    pub fn encode(
+        &mut self,
+        t: ScreenTarget<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        draws: &[ScreenDraw<'_>],
+        frame: Option<&QuadFrame>,
+        stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
+    ) -> Result<usize, ScreenRefused> {
+        let commands = self.prepare(t, draws, frame, stage_image)?;
+        commands.record(encoder);
+        Ok(commands.ranges())
+    }
+}
+
+/// A pass's strips into its destination ([`ScreenSet::prepare`]).
+#[derive(Clone)]
+struct StripPass {
+    dest: wgpu::TextureView,
+    /// The destination's texels.
+    size: (u32, u32),
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::BindGroup,
+    offsets: [u32; 2],
+    textures: wgpu::BindGroup,
+    blend_constant: wgpu::Color,
+    scissor: [u32; 4],
+    /// The strips in the submission's arena: buffer, offset, bytes.
+    vertices: (wgpu::Buffer, u64, u64),
+    ranges: Vec<Range<u32>>,
+}
+
+/// One command of a prepared call, in order.
+#[derive(Clone)]
+enum Step {
+    /// The bound colour into the feedback copy a pass samples.
+    Copy { source: wgpu::Texture, dest: wgpu::Texture, extent: wgpu::Extent3d },
+    /// The copy's alpha set to one (an X8 view, [`AlphaClear`]).
+    Opaque { pipeline: wgpu::RenderPipeline, view: wgpu::TextureView },
+    Strips(StripPass),
+    /// A convolution's quad or grid.
+    Quad(glow::QuadCommand),
+}
+
+/// A call's commands ([`ScreenSet::prepare`]): everything they use made
+/// and written, so recording them makes and writes nothing and records
+/// the same commands each time.
+#[derive(Clone)]
+pub struct ScreenCommands {
+    steps: Vec<Step>,
+    ranges: usize,
+}
+
+impl ScreenCommands {
+    /// The guest ranges drawn: each pass's strips and each convolution's
+    /// quad or grid strips.
+    pub fn ranges(&self) -> usize {
+        self.ranges
+    }
+
+    /// The render passes [`Self::record`] begins.
+    pub fn passes(&self) -> usize {
+        self.steps.iter().filter(|s| !matches!(s, Step::Copy { .. })).count()
+    }
+
+    /// Records the call in order.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        let load = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+        for step in &self.steps {
+            match step {
+                Step::Copy { source, dest, extent } => {
+                    encoder.copy_texture_to_texture(source.as_image_copy(), dest.as_image_copy(), *extent);
+                }
+                Step::Opaque { pipeline, view } => {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("native screen X8 alpha"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view, resolve_target: None, depth_slice: None, ops: load,
+                        })],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(pipeline);
+                    pass.draw(0..3, 0..1);
+                }
+                Step::Strips(s) => {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("native screen effect"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &s.dest,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: load,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_viewport(0.0, 0.0, s.size.0 as f32, s.size.1 as f32, 0.0, 1.0);
+                    pass.set_pipeline(&s.pipeline);
+                    pass.set_bind_group(0, &s.uniforms, &s.offsets);
+                    pass.set_bind_group(1, &s.textures, &[]);
+                    pass.set_blend_constant(s.blend_constant);
+                    let [x, y, w, h] = s.scissor;
+                    pass.set_scissor_rect(x, y, w, h);
+                    let (buffer, offset, len) = &s.vertices;
+                    pass.set_vertex_buffer(0, buffer.slice(*offset..*offset + *len));
+                    for r in &s.ranges {
+                        pass.draw(r.clone(), 0..1);
+                    }
+                }
+                Step::Quad(quad) => quad.record(encoder),
+            }
+        }
     }
 }
 
@@ -1227,13 +1324,14 @@ mod tests {
         let draw = |key, program, strips, raster| ScreenDraw {
             key, program, strips, raster, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
         };
+        let arena = gfx::ring::UploadPool::default().begin();
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         let color = main.create_view(&Default::default());
         let target1 = level.create_view(&Default::default());
         let target = ScreenTarget {
             device: &ctx.device,
             queue: &ctx.queue,
-            encoder: &mut encoder,
+            uploads: &arena,
             color: &color,
             target1: Some(&target1),
             convolutions: [None; 3],
@@ -1242,12 +1340,133 @@ mod tests {
             z_scale: 1.0,
         };
         let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
-        assert_eq!(ScreenSet::new().encode(target, &draws, None, &mut |_| None), Ok(2));
+        assert_eq!(ScreenSet::new().encode(target, &mut encoder, &draws, None, &mut |_| None), Ok(2));
+        arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
         let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
         assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
         assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
         assert_eq!(&px[28..32], [255, 102, 153, 204], "the blue write used the actual BGRA target");
+    }
+
+    /// A call prepared ([`ScreenSet::prepare`]) and recorded into a
+    /// frame's open encoder, after a dry run on a scratch encoder that is
+    /// thrown away (the backend's validation), draws what the call
+    /// recorded on an encoder of its own draws: a pass copying the view
+    /// into target 1 and convolving it into a stand-in, then a pass over
+    /// the view reading the result and an opaque copy of the view.
+    #[test]
+    fn a_prepared_call_recorded_twice_draws_what_its_own_encoder_draws() {
+        use shaders::psh::PixelShaderDef;
+        use shaders::psh::bits::{CHAN_ALPHA, REG_T0, final_efg, inputs};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let size = (8, 8);
+        let texture = |size: (u32, u32)| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screen call target"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let fill = |t: &wgpu::Texture, pixels: &[u8]| ctx.queue.write_texture(
+            t.as_image_copy(), pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * t.width()), rows_per_image: Some(t.height()) },
+            t.size(),
+        );
+        let read = |t: &wgpu::Texture| gfx::readback::read_texture(&ctx, t, wgpu::TextureAspect::All, 4, (t.width(), t.height()));
+        let view_pixels: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 255 - i * 3, i * 2 + 7, 128]).collect();
+        // Only the stages each program binds.
+        let shader = |stages: usize, fragment: &str| format!("
+            {}
+            @vertex fn vs_main(@location(0) position: vec4f) -> @builtin(position) vec4f {{
+                return position;
+            }}
+            @fragment fn fs_main(@builtin(position) p: vec4f) -> @location(0) vec4f {{
+                {fragment}
+            }}
+        ", (0..stages).map(|n| format!("@group(1) @binding({}) var t{n}: texture_2d<f32>;", 2 * n)).collect::<String>());
+        let mut copy = program([ScreenStage::Engine(5), E, E, E]);
+        copy.wgsl = shader(1, "return textureLoad(t0, vec2i(p.xy), 0).bgra;");
+        let mut back = program([ScreenStage::Engine(24), ScreenStage::Engine(5), E, E]);
+        back.wgsl = shader(2, "return 0.5 * textureLoad(t0, vec2i(p.xy) / 2, 0) + 0.5 * textureLoad(t1, vec2i(p.xy), 0);");
+        let strip: Vec<StripVertex> = [(-1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (1.0, -1.0)]
+            .map(|(x, y)| StripVertex { position: [x, y, 0.0, 1.0], texcoords: [[0.0; 4]; 4] })
+            .to_vec();
+        let strips = [strip];
+        let blur = [ScreenConvolution {
+            size: (4, 4),
+            draws: vec![ConvolutionDraw { source: 1, dest: 0x19, spread: 0.5, grid: None }],
+            result: 0x19,
+        }];
+        let combiner = {
+            let b = PixelShaderDef {
+                texture_modes: 1,
+                final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+                final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+                ..Default::default()
+            }
+            .to_bytes();
+            std::array::from_fn(|i| u32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]))
+        };
+        let frame = QuadFrame { window: [0.0, 0.0, 8.0, 8.0], signs: [-0.5, 0.5], combiner };
+        let mut opaque: StripRaster = back.state.into();
+        opaque.opaque_view = true;
+        let draws = [
+            ScreenDraw {
+                key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
+                dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
+            },
+            ScreenDraw {
+                key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
+                dest: Dest::Bound, values: [0; 4], convolutions: &[],
+            },
+        ];
+        let run = |prepared: bool| {
+            let (color, target1, stand_in) = (texture(size), texture(size), texture((4, 4)));
+            fill(&color, &view_pixels);
+            fill(&target1, &[1, 2, 3, 4].repeat(64));
+            fill(&stand_in, &[5, 6, 7, 8].repeat(16));
+            let views = [&color, &target1, &stand_in].map(|t| t.create_view(&Default::default()));
+            let arena = gfx::ring::UploadPool::default().begin();
+            let target = ScreenTarget {
+                device: &ctx.device,
+                queue: &ctx.queue,
+                uploads: &arena,
+                color: &views[0],
+                target1: Some(&views[1]),
+                convolutions: [Some(&views[2]), None, None],
+                guest_size: size,
+                size,
+                z_scale: 1.0,
+            };
+            let mut set = ScreenSet::new();
+            let mut encoder = ctx.device.create_command_encoder(&Default::default());
+            let ranges = if prepared {
+                let commands = set.prepare(target, &draws, Some(&frame), &mut |_| None).unwrap();
+                assert_eq!(commands.passes(), 4, "two passes, the quad and the opaque copy's alpha");
+                let mut scratch = ctx.device.create_command_encoder(&Default::default());
+                commands.record(&mut scratch);
+                drop(scratch.finish());
+                commands.record(&mut encoder);
+                commands.ranges()
+            } else {
+                set.encode(target, &mut encoder, &draws, Some(&frame), &mut |_| None).unwrap()
+            };
+            arena.flush(&ctx.queue);
+            ctx.queue.submit([encoder.finish()]);
+            (ranges, read(&color), read(&target1), read(&stand_in))
+        };
+        let (own, prepared) = (run(false), run(true));
+        assert_eq!(own, prepared);
+        assert_eq!(own.0, 3, "two strips and a quad");
+        assert_ne!(&own.1[..4], &view_pixels[..4], "the second pass drew over the view");
     }
 
     #[test]

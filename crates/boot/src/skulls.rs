@@ -974,7 +974,7 @@ impl feature::Feature for Skulls {
 }
 
 /// Adds the skulls feature to `registry` over `store`. Says why when it is
-/// left out: no store (a headless run), `H2_NO_SKULLS`, or switched off.
+/// left out: no store (a headless run), or switched off.
 /// Returns whether it was added; then call [`report`] after the plan is
 /// installed.
 pub fn install(
@@ -985,10 +985,6 @@ pub fn install(
         eprintln!("skulls: off: no settings store (a headless run); pickups are not kept");
         return Ok(false);
     };
-    if std::env::var_os("H2_NO_SKULLS").is_some() {
-        eprintln!("skulls: off: H2_NO_SKULLS is set");
-        return Ok(false);
-    }
     let added = registry
         .add(&Skulls {
             store,

@@ -277,7 +277,6 @@ pub(crate) fn install_headless_for_profile(
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
                 // Every shadow-map frame is compared between the views; the
@@ -342,10 +341,9 @@ pub(crate) fn install_headless_for_profile(
                     e3_shots(ctx, store, id, flags, gamma);
                 };
                 let retail = configure_gfx(
-                    "retail",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
-                let e3 = configure_gfx("e3", d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
                     eprintln!(
                         "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
@@ -376,13 +374,11 @@ pub(crate) fn install_headless_for_profile(
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
                         .on_present(shots("-1x", shadow_shots, None))
                         .on_present_replay(|_, _, _, _, _| {}),
                 );
                 let view = configure_gfx(
-                    "display",
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
@@ -402,7 +398,6 @@ pub(crate) fn install_headless_for_profile(
                 };
             }
             let mut backend = configure_gfx(
-                "reference",
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
@@ -587,16 +582,9 @@ impl BetweenShots {
 
 #[cfg(feature = "gpu")]
 /// `h2 run`'s settings for a headless `GfxBackend`.
-fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
-    crate::native_shadows_glue::configure(&mut backend, copy);
-    // Merged render passes are the default, with the fast rule
-    // (alpha-tested draws merged too; a few edge pixels can differ
-    // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
-    // gives the exact rule (read by GfxBackend::new) and =0 one
-    // render pass per draw (about 3x slower), as escape hatches.
-    if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-        backend.set_merge_passes(false);
-    }
+fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    // Merged render passes under the loose rule are the default (a few
+    // edge pixels can differ from one render pass per draw).
     // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
     // frame N and print what differs.
     backend.set_merge_check(
@@ -692,9 +680,8 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    let legacy = std::env::var(feature::pipeline_render::ENV).ok();
-    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches, legacy.as_deref());
-    if !interpolation_from(true, render_thread, pipeline.then_some("1")) {
+    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches);
+    if !interpolation_from(true, render_thread, pipeline) {
         return None;
     }
     match mode {
@@ -759,12 +746,8 @@ pub fn interp_render_thread(
 
 #[cfg(feature = "gpu")]
 /// [`interpolation`]'s decision: the switch, the render thread, and
-/// `H2_PIPELINE_RENDER` unset or `0`.
-pub fn interpolation_from(
-    switch: bool,
-    render_thread: bool,
-    pipeline_render: Option<&str>,
-) -> bool {
+/// `impl.render.pipelined_frame` off.
+pub fn interpolation_from(switch: bool, render_thread: bool, pipelined: bool) -> bool {
     if !switch {
         return false;
     }
@@ -774,7 +757,7 @@ pub fn interpolation_from(
         );
         return false;
     }
-    if pipeline_render.is_some_and(|v| v != "0") {
+    if pipelined {
         eprintln!(
             "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off with impl.render.pipelined_frame"
         );
@@ -1414,7 +1397,7 @@ pub(crate) fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     if profile == film::RenderHooks::Gpu {
         crate::native_world_layers_glue::install(rt, &device);
         crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
-        crate::native_residual_glue::install(rt, &device, &r.implemented);
+        crate::native_residual_glue::install(&device);
     }
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
@@ -1865,14 +1848,10 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true, None), "off by default");
-        assert!(interpolation_from(true, true, None));
-        assert!(interpolation_from(true, true, Some("0")));
-        assert!(!interpolation_from(true, false, None), "no render thread");
-        assert!(
-            !interpolation_from(true, true, Some("1")),
-            "pipelined render"
-        );
+        assert!(!interpolation_from(false, true, false), "off by default");
+        assert!(interpolation_from(true, true, false));
+        assert!(!interpolation_from(true, false, false), "no render thread");
+        assert!(!interpolation_from(true, true, true), "pipelined render");
     }
 
     #[cfg(feature = "gpu")]

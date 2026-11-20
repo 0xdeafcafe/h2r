@@ -138,7 +138,7 @@ elsewhere: HLE calls (thousands of D3D entries a frame, each a transfer
 in and a return out), returns that do not match an inline continuation,
 and direct calls refused at run time. A direct call is refused unless
 the runner has already resolved that target into one of 256 per-context
-slots (`H2_DIRECT_SLOTS`, direct-mapped on `pc ^ pc >> 8`), so two hot
+slots (direct-mapped on `pc ^ pc >> 8`; 4096 since feddd0402), so two hot
 callees that collide evict each other and both keep going through the
 runner. The image has 18,691 functions.
 
@@ -231,8 +231,7 @@ Status: landed after this review. `analyze` reads the two tables (and a
 third at `0x22dcd9`) past their runs of nulls (11bfe00d), `boot::trace`
 is buffered (566f6715), and generated handlers are registered as
 themselves, with the trampoline's STOP logic as the runner's stop-recovery
-hook (4ce2258a; `H2_BOOT_TRAMPOLINE=1` restores the trampoline for A/B
-runs). Not re-measured here.
+hook (4ce2258a; the trampoline's A/B switch has since been removed). Not re-measured here.
 
 - Read the two jump tables fully in `analyze` (skip zero entries the
   way `boot::fallback::unread_targets` already does at run time) so

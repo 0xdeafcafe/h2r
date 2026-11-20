@@ -1,5 +1,9 @@
 # Guarded transcendentals
 
+Status: Built. The guarded first pass is on by default.
+Code: `crates/x87/src/trans_fast.rs`, `crates/x87/src/trans.rs`. Tests: `crates/x87/src` (`fast-trans`), `crates/x87/tests`.
+Switch: the `x87/fast-trans` Cargo feature (default on); no environment variable.
+
 `x87/fast-trans` adds a 128-bit integer first pass for **FYL2X, F2XM1,
 FSIN, FCOS, FSINCOS, FPTAN and FPATAN**. It is a default feature of the
 `x87` crate (build with `--no-default-features --features abi` to drop
@@ -68,7 +72,7 @@ and 12; it reaches Knuth's rare add-back correction tens of thousands of
 times. Set `H2_X87_WIDE_CASES` to raise the count (2,000,000 per width
 passed). `benchmark_wide_ops` times each op against the original:
 
-| Op (release, arm64, ns) | Original | Now | Speedup |
+| Op (release, arm64, ns) | Reference | Guarded | Speedup |
 | --- | ---: | ---: | ---: |
 | `Wf<2>::div` | 418 | 49 | 8.6x |
 | `Wf<2>::div_u64` | 14.2 | 12.1 | 1.2x |
@@ -353,38 +357,4 @@ FPATAN exponent guard edges. The ABI test runs FSIN/FCOS/FPTAN/FSINCOS/
 FPATAN through the full state comparison across all TOPs and control
 words.
 
-## Focused measurements
-
-A paired release benchmark uses 31 batches of the same 256 synthetic
-inputs, alternating the first implementation each batch after five
-warmup pairs. FYL2X/F2XM1 inputs have multiplier exponents [-3,3] and
-fractional argument exponents [-3,-1]. Trig angles have E in [-4,3]
-(|a| < 16), and atan2 operands have E in [-3,3]. Times include guards
-and fallback, in ns per operation:
-
-| Function | Reference median (MAD) | Guarded median (MAD) | Ratio |
-| --- | ---: | ---: | ---: |
-| FYL2X | 22,014 (68) | 1,913 (12) | 11.5x |
-| F2XM1 | 15,305 (23) | 1,370 (6) | 11.2x |
-| FSIN | 16,571 (22) | 815 (2) | 20.3x |
-| FCOS | 16,553 (22) | 817 (2) | 20.3x |
-| FPTAN | 20,310 (16) | 1,964 (12) | 10.3x |
-| FSINCOS | 16,963 (228) | 1,648 (25) | 10.3x |
-| FPATAN | 92,960 (734) | 1,098 (25) | 84.6x |
-
-These measure helpers on the shared Apple Silicon host. They do not
-measure a gameplay frame saving or establish the distribution of operands
-in a level. The requested validation is entirely synthetic; no game build
-or run supplies validation data.
-
-Run the benchmark with
-`cargo test -p x87 --release --lib benchmark_hot -- --ignored --nocapture --test-threads=1`.
-The sweeps print their acceptance counts with `-- --nocapture ACCEPT`.
-Unoptimised test builds run an eighth of each new sweep. The rates above
-are from release.
-
-Final checks: the `x87` library tests pass with the
-feature on and off, plus the ABI, spec and oracle integration tests.
-Strict clippy for `x87` passes with the feature on and off, and so does
-formatting of the touched files. The MPFR fixture generator reproduces the committed synthetic
-corpus byte-for-byte, and its first 1,024 lines are unchanged.
+Measured speed-ups and the benchmark command are in [notes/x87-transcendentals.md](notes/x87-transcendentals.md).

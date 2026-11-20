@@ -28,11 +28,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          and its timed points need the after continuation",
     ),
     (
-        "render-loop",
-        "*",
-        "off by default; the Rust ports park in Rust continuations around their guest calls",
-    ),
-    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
@@ -107,6 +102,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("campaigns", "*", "reads campaign selection and updates profile saves on the game thread"),
     ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
     ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
+    ("h1-drive", "VEHICLE_CONTACT_FORCES", AFTER),
+    ("h1-flag", "*", "steps source cloth points around the guest solver on the simulation thread"),
     ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
     ("h1-conversations", "*", "uses the interpreter and tracks actor construction across guest calls"),
     ("h1-recordings", "UNIT_APPLY_CONTROL", "applies recorded input through a guest continuation"),
@@ -273,7 +270,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
+    use crate::registration::tests::{ALL_ON, Case, NATIVE_OFF, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -303,7 +300,7 @@ mod tests {
         // screen-quad and HUD-quad befores.
         for switches in [
             String::new(),
-            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
+            format!("{ALL_ON},{NATIVE_OFF}"),
             ALL_ON.to_owned(),
             format!("{ALL_ON},render-census"),
         ] {

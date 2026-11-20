@@ -1,5 +1,9 @@
 # Campaign indirect dispatch coverage
 
+Status: Built. The tool is an analyzer example; the retail result below is one measurement.
+Code: `crates/analyze/examples/dispatch_coverage.rs`, `crates/analyze/src/dispatch.rs`, `crates/analyze/src/pointer_seeds.rs`. Tests: `crates/analyze/tests/dispatch_coverage.rs`.
+Switch: `H2_XBE` (input path); no other.
+
 The `analyze` example `dispatch_coverage` measures dispatch entry coverage for
 new-map `0x137ca0`, BSP `0x11c1b0`, HaloScript `0x209310`, objects `0xb7b40`,
 AI `0x1c83c0` and Havok `0x311100`. It reads `$H2_XBE` at execution time. There
@@ -17,6 +21,10 @@ KEEP=/path/outside/the/repo     # the TSVs are derived from your disc
 cargo run -p analyze --release --example dispatch_coverage -- --unseeded > "$KEEP/dispatch-before.tsv"
 cargo run -p analyze --release --example dispatch_coverage > "$KEEP/dispatch-after.tsv"
 ```
+
+## Tests
+
+Synthetic regressions in `crates/analyze/src/pointer_seeds.rs` cover a one-slot vtable followed by pointer-shaped metadata into an unclaimed MOV immediate (`heuristic_tail_does_not_seed_metadata_inside_unclaimed_mov`), a valid trapping callback that is the final rejected speculative candidate (`final_rejected_candidate_is_still_seeded_as_a_trap_callback`), and a flat far jump whose known instruction bodies stay protected (`seeding_respects_flat_far_jump_instruction_claims`). `crates/emit/tests/far_jmp.rs` runs a far jump through analyze, lift and emit. The codec fixture (`codec_schema_keeps_null_record_and_indexes_the_whole_family`, `crates/analyze/src/dispatch.rs`) checks all nine records, null record 0 and the exclusion of metadata fields; `crates/analyze/tests/dispatch_coverage.rs` is the retail test (`H2_XBE`, ignored without it).
 
 The TSV contains:
 
@@ -140,7 +148,7 @@ behavior, but no such fallback is introduced here.
 
 ## Measured retail result
 
-Measured after rebasing onto `55d7ac5`, with pointer seeding disabled/enabled
+Measured at commit `55d7ac5`, with pointer seeding disabled/enabled
 in the same analyzer, and XBE SHA-256
 `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`.
 
@@ -154,11 +162,9 @@ in the same analyzer, and XBE SHA-256
 
 Both analyses converge in five rounds. Seeding loses no existing entry. Nine
 new functions preserve INT3 behavior; four other targets become interior entries.
-Compared with the original `a41dae4`-based report, the rebase removes two
-standalone gap-scan functions: `0x2d1e67` is now an instruction in owner
-`0x2d1e10`, and `0x2d6454` is in owner `0x2d6434`. The latter owner now
-returns through its flat far jump. These remain decoded code, not omitted
-callbacks; the new census reflects the corrected direct flow.
+Two addresses that a gap scan would make standalone functions are decoded as
+part of other owners: `0x2d1e67` is an instruction in owner `0x2d1e10`, and
+`0x2d6454` is in owner `0x2d6434`, which returns through its flat far jump.
 
 The catalog has 453 tables, with 165 in the union of root closures. The union
 contains 2,229 indirect sites; 1,423 dynamic sites have no associated table
@@ -192,16 +198,3 @@ targets were already covered. Null slots remain null. The remaining dynamic
 frontier is preserved in the site inventory; no campaign execution or success past a deliberate
 INT3 is claimed. Regenerate the emitted module and repeat the inventory after
 integrating other analyzer changes.
-
-## Review regression coverage
-
-The review fixes include synthetic regressions for a one-slot vtable followed
-by pointer-shaped metadata into an unclaimed MOV immediate, and for a valid
-trapping callback that is the final rejected speculative candidate (with and
-without later control candidates). A far-jump regression checks both the flat
-selector and an unsupported selector: known instruction bodies remain protected,
-and unknown bytes do not become heuristic tail seeds. The existing emitted-C
-far-jump test validates analyze → lift → emit execution on the rebased code.
-The codec fixture checks all nine records, null record 0 and exclusion of
-metadata fields; the ignored retail test checks slot `0x47fb50 → 0x28c4e0`
-and association of site `0x1c7428` with the family from five campaign roots.

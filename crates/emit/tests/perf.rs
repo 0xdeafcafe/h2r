@@ -605,7 +605,7 @@ fn counted_inline_ram_gives_up_its_slice_where_charged_inline_ram_does() {
     // The charging build without the passes first: every build must match it.
     let combos = [(false, Passes::NONE), (true, Passes::NONE), (false, Passes::ALL), (true, Passes::ALL)];
     let builds = combos.map(|(accounting, passes)| {
-        let built = compile_module_with("fast-accounting", vec![f()], false, true, passes, emit::Codegen { accounting, ..emit::Codegen::default() });
+        let built = compile_module_with("fast-accounting", vec![f()], false, true, passes, emit::Codegen { accounting });
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("perf-fast-accounting-false-true-{accounting}-{}", passes.spec()))
             .join("src");
@@ -883,7 +883,7 @@ fn lifted_rep_movs_reaches_the_bulk_copy() {
             let owners = emit::plan_with(vec![f], emit::opt::Passes::ALL);
             let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
                 .join(format!("rep-movs-shape-{width}-{accounting}"));
-            emit::write_module_with(&owners, &dir, emit::Codegen { accounting, ..emit::Codegen::default() }).unwrap();
+            emit::write_module_with(&owners, &dir, emit::Codegen { accounting }).unwrap();
             let mut c = String::new();
             for e in std::fs::read_dir(&dir).unwrap() {
                 let path = e.unwrap().path();
@@ -911,7 +911,7 @@ fn bulk_rep_movs_preserves_overlap_fault_progress_watch_and_accounting() {
         });
         let (_lib, dispatch) = compile_module_with(
             &format!("bulk-rep-{width}"), vec![f], false, true,
-            emit::opt::Passes::ALL, emit::Codegen { accounting: true, ..emit::Codegen::default() },
+            emit::opt::Passes::ALL, emit::Codegen { accounting: true },
         );
         let rt = Runtime::new(Guest::new(), dispatch);
         for (src, dst, count) in [
@@ -1053,12 +1053,11 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem
     };
     // The switches that change how a direct call settles the gate and the
-    // count: none, the lent gate, the view's budget with the lent count,
-    // and all three.
+    // count: none, the lent gate, the lent count, and both.
     // Then the handler's own entry and exit: the gate taken at entry, the
     // count spent in the view, both, and everything at once.
     const GATE: &str = "#define H2_DIRECT_GATE 1\n";
-    const COUNT: &str = "#define H2_VIEW_BUDGET 1\n#define H2_DIRECT_COUNT 1\n";
+    const COUNT: &str = "#define H2_DIRECT_COUNT 1\n";
     const ENTRY: &str = "#define H2_ENTRY_GATE 1\n";
     const CHARGE: &str = "#define H2_VIEW_CHARGE 1\n";
     let switches = [
@@ -1083,7 +1082,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting, ..emit::Codegen::default() },
+            emit::Codegen { accounting },
             &defines,
         );
         let rt = Runtime::new(memory(), dispatch);
@@ -1177,7 +1176,7 @@ fn run_held_gate_fixture(accounting: bool, kind: &str, defines: &str) -> libload
         false,
         true,
         emit::opt::Passes::ALL,
-        emit::Codegen { accounting, ..emit::Codegen::default() },
+        emit::Codegen { accounting },
         defines,
     );
     let mut mem = Guest::new();
@@ -1242,11 +1241,13 @@ fn cold_accesses_by_cause() {
         assert_eq!(c[2], 39, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
-        // tries the gate for that span even when this runtime cannot
-        // supply a flat mapping. Its dispatched entry and all 39 direct
-        // entries avoid a cold call. The 39 caller resumes still need it.
+        // keeps the gate for that span only when the backend is enabled.
+        // Otherwise the flat-capable image follows the paged entry policy.
         let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
-        assert_eq!(flat[..3], [2, 0, 39], "{flat:?}");
+        let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
+            && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
+        let expected = if flat_runtime { [2, 0, 39] } else { [3, 39, 39] };
+        assert_eq!(flat[..3], expected, "{flat:?}");
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
         // hold before (one in 32 trips, calls and loop headers alike).
@@ -1320,7 +1321,7 @@ fn held_gate_gives_way_to_a_waiting_memory_guard() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting, ..emit::Codegen::default() },
+            emit::Codegen { accounting },
         );
         let mut mem = Guest::new();
         mem.map(A, 4096, 0, Permissions::RX).unwrap();
@@ -1603,7 +1604,7 @@ fn inline_accesses_match_the_helper_path_at_every_width_and_edge() {
                 false,
                 true,
                 emit::opt::Passes::ALL,
-                emit::Codegen { accounting, ..emit::Codegen::default() },
+                emit::Codegen { accounting },
             );
             let rt = Runtime::new(memory().0, dispatch);
             let good_src = SRC + 0x100;
@@ -1701,7 +1702,7 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
             false,
             true,
             emit::opt::Passes::ALL,
-            emit::Codegen { accounting, ..emit::Codegen::default() },
+            emit::Codegen { accounting },
         );
         let mut mem = Guest::new();
         mem.map(A, 4096, 0, Permissions::RX).unwrap();
@@ -1776,7 +1777,7 @@ fn stores_mark_exactly_their_pages_with_and_without_dirty_inline() {
                 false,
                 true,
                 emit::opt::Passes::ALL,
-                emit::Codegen { accounting, ..emit::Codegen::default() },
+                emit::Codegen { accounting },
                 defines,
             );
             let mut mem = Guest::new();
@@ -1893,24 +1894,15 @@ fn image_dirty_inline_code_size() {
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_direct_gate_code_size() {
-    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true });
 }
 
-/// As [`image_direct_gate_code_size`], for `H2_VIEW_BUDGET=1` and
-/// `H2_DIRECT_COUNT=1` together.
+/// As [`image_direct_gate_code_size`], for `H2_DIRECT_COUNT=1`.
 /// `cargo test -p emit --release --test perf image_direct_count_code_size -- --ignored --nocapture`
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_direct_count_code_size() {
-    image_switch_code_size("H2_VIEW_BUDGET+H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
-}
-
-/// As [`image_direct_gate_code_size`], for `H2_INDIRECT_CALLS=1`.
-/// `cargo test -p emit --release --test perf image_indirect_calls_code_size -- --ignored --nocapture`
-#[test]
-#[ignore = "reads the retail XBE (H2_XBE)"]
-fn image_indirect_calls_code_size() {
-    image_switch_code_size("H2_INDIRECT_CALLS", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+    image_switch_code_size("H2_DIRECT_COUNT", emit::Codegen { accounting: true });
 }
 
 /// `switch`: the names to set, joined by `+`.
@@ -2004,7 +1996,7 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
     let owners = emit::plan(vec![f.clone()]);
     let o = &owners[0];
     let text = emit::c::function(&o.func, &emit::c::OwnerShape {
-        selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None, reg_homes: true,
+        selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None,
     });
     assert!(text.contains("H2_SPAN_ST(sp_"), "{text}");
     let (lib, dispatch) = compile_module_defines(
@@ -2080,6 +2072,44 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
         };
         assert_eq!(run(true), run(false), "address {address:#x}, backing={backing:#x}, ro={ro}, mapped={mapped}");
     }
+
+    // Drain at different rates while both VAs name the same shifted page.
+    // The generated RMW must execute once on a protection retry, and keep
+    // seeing the preceding store after the page moves to the software barrier.
+    let epochs = |fast| {
+        let mut g = Guest::new();
+        g.map(A, 16384, 0x10000, Permissions::RX).unwrap();
+        g.map(SP, 16384, 0x14000, Permissions::RW).unwrap();
+        for va in [DATA, ALIAS] { g.map(va, 8192, 4096, Permissions::RW).unwrap(); }
+        g.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
+        let frequent = g.subscribe_writes("each tick");
+        let sparse = g.subscribe_writes("every third tick");
+        for id in [frequent, sparse] { g.watch_writes(id, CONTIGUOUS_BASE + 4096, 8192).unwrap(); }
+        *rt.memory() = g;
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.enable_fast_memory(fast);
+        let mut samples = Vec::new();
+        let mut sum = 0;
+        for tick in 1..=6 {
+            let (src, dst) = if tick % 2 == 0 { (ALIAS, DATA) } else { (DATA, ALIAS) };
+            // The two stores share the last eight bytes of a page. The
+            // RMW is the first write to the next protected physical page.
+            let (src, dst) = (src + 4088, dst + 4088);
+            ctx.arm_preemption(1000);
+            let mut cpu = CpuAbi { eax: 13, ecx: tick, esi: src, edi: dst, esp: SP, ..CpuAbi::default() };
+            assert_eq!(Runner::default().run(&mut cpu, &mut ctx, A).kind, abi::STOP);
+            let mut g = rt.memory();
+            sum += tick;
+            assert_eq!(g.u32(src + 8).unwrap(), sum);
+            assert_eq!(g.u32(dst + 4).unwrap(), tick);
+            let first = g.take_dirty(frequent).unwrap();
+            assert_eq!(first, [runtime::DirtyRange { addr: CONTIGUOUS_BASE + 4096, len: 8192 }]);
+            if tick % 3 == 0 { assert_eq!(g.take_dirty(sparse).unwrap(), first); }
+            samples.push((cpu, ctx.take_slice_spent(), sum));
+        }
+        samples
+    };
+    assert_eq!(epochs(true), epochs(false));
 
     // Refresh a shifted host page at each end of the 4 GiB guest range.
     // Check the affected entry and the neighbors rebuilt outside it.

@@ -122,7 +122,6 @@ fn build_module(iso: &Path, out: &Path, gen_dir: &Path, platform: Platform) -> R
         "H2_PASSES",
         "H2_OPT",
         "H2_DEBUG",
-        "H2_REG_HOMES",
     ] {
         if std::env::var_os(k).is_some() {
             bail!("{k} is set; unset it (the app computes the module stamp with the defaults)");

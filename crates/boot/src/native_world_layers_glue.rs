@@ -8,9 +8,8 @@ use d3d::backend::{
     DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPass,
     ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
 };
-use d3d::shader::VertexProcessing;
 use engine::memory::GuestMemory as _;
-use feature::native_world_layers::{Layer, compare_on, current};
+use feature::native_world_layers::{Layer, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
@@ -29,13 +28,10 @@ impl GuestRead for Memory<'_> {
 pub(crate) struct DrawContext {
     pub(crate) layer: Layer,
     pub(crate) frame: u64,
-    compare: bool,
     pub(crate) geometry: Option<Geometry>,
     bsp: Option<u32>,
     generation: u64,
-    target: [u32; 8],
     pub(crate) index_count: Option<u32>,
-    return_address: u32,
 }
 
 thread_local! {
@@ -89,16 +85,11 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    let native = feature::native_world_layers::on(&switches);
-    let residual = feature::native_residual::on(&switches);
-    let objects = feature::native_objects::on(&switches);
-    let lights = feature::native_lights::on(&switches);
-    let frames = compare_on(&switches);
-    if !native && !residual && !objects && !lights && frames.is_empty() {
+    if !feature::native_world_layers::on(&switches) {
         return;
     }
-    if native && let Ok(mut device) = device.lock() {
-        device.add_opaque_world_admission(Arc::new(Admission::new()));
+    if let Ok(mut device) = device.lock() {
+        device.add_opaque_world_admission(Arc::new(Admission::default()));
     }
     rt.edit_dispatch(|dispatch| {
         let index = DRAW_INDEXED_VERTICES;
@@ -106,18 +97,13 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
             return;
         };
         let context_only = dispatch.is_context_only(index);
-        let device = Arc::clone(device);
         dispatch.register_override(
             index,
             "boot:native world layers indexed",
             move |cpu, ctx, selector| {
                 let context = (|| {
                     let frame = crate::d3d_diag::presents() + 1;
-                    let compare = frames.contains(&frame);
                     let current = current();
-                    if current.is_none() && !compare && !residual {
-                        return None;
-                    }
                     let guest = ctx.memory();
                     let mem = Memory(&guest);
                     let return_address = mem.read_u32(cpu.esp)?;
@@ -134,11 +120,6 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     } else {
                         current?
                     };
-                    let target = if compare {
-                        device.lock().ok()?.bound_target()
-                    } else {
-                        [0; 8]
-                    };
                     let geometry = Geometry::read(&mem, cpu.esp, layer.number);
                     if timeline::phase::enabled() && layer.site == Site::Scene && matches!(layer.number, 1 | 3 | 5 | 7 | 8)
                         && let Some(owner) = geometry.and_then(|g| match g.owner {
@@ -153,13 +134,10 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     Some(DrawContext {
                         layer,
                         frame,
-                        compare,
-                        target,
                         bsp: mem.read_u32(feature::native_world::ACTIVE_BSP),
                         generation: feature::native_map_work::bsp_generation(),
                         geometry,
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
-                        return_address,
                     })
                 })();
                 let _restore = Restore(DRAW.replace(context));
@@ -176,8 +154,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
 /// native index spans. On a render-thread continuation the current layer
 /// TLS may belong to another view, so use the layer retained by prepare.
 pub(crate) fn enter_opaque_range(
-    part: &native_render::world_ranges::SortedPart, layer: Layer, frame: u64,
-    targets: [u32; 8], count: u32,
+    part: &native_render::world_ranges::SortedPart, layer: Layer, frame: u64, count: u32,
 ) -> impl Drop {
     let geometry = Geometry {
         shader: part.shader, variant: part.variant, implementation: part.implementation,
@@ -188,12 +165,10 @@ pub(crate) fn enter_opaque_range(
         },
     };
     Restore(DRAW.replace(Some(DrawContext {
-        layer, frame, compare: feature::native_world_layers::compare_frames().contains(&frame),
-        geometry: Some(geometry), target: targets, index_count: Some(count),
+        layer, frame, geometry: Some(geometry), index_count: Some(count),
         // The sorted range has no guest memory to read the BSP from here;
         // without it the section cache is bypassed for this range.
         bsp: None, generation: feature::native_map_work::bsp_generation(),
-        return_address: native_render::skip::GEOMETRY_DRAW,
     })))
 }
 
@@ -215,55 +190,13 @@ pub(crate) fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bo
     }
 }
 
+#[derive(Default)]
 struct Admission {
     cache: Arc<Cache>,
-    owners: Owners,
-}
-
-#[derive(Clone, Copy)]
-enum Owners {
-    All,
-    World,
-    Objects,
-    None,
-}
-
-impl Owners {
-    fn get() -> Self {
-        use std::sync::OnceLock;
-        static OWNERS: OnceLock<Owners> = OnceLock::new();
-        *OWNERS.get_or_init(|| match std::env::var("H2_NATIVE_WORLD_LAYERS_OWNERS")
-            .ok()
-            .as_deref()
-        {
-            None | Some("all") => Owners::All,
-            Some("world") => Owners::World,
-            Some("objects") => Owners::Objects,
-            Some(_) => {
-                eprintln!(
-                    "native-world-layers: H2_NATIVE_WORLD_LAYERS_OWNERS wants all, world or objects"
-                );
-                Owners::None
-            }
-        })
-    }
-
-    fn admits(self, stage: timeline::native::Stage) -> bool {
-        matches!((self, stage),
-            (Self::All, _)
-            | (Self::World, timeline::native::Stage::World)
-            | (Self::Objects, timeline::native::Stage::Objects))
-    }
 }
 
 pub(crate) fn owns_scene_world(switches: &feature::Switches) -> bool {
-    feature::native_world_layers::on(switches) && Owners::get().admits(timeline::native::Stage::World)
-}
-
-impl Admission {
-    fn new() -> Self {
-        Self { cache: Arc::default(), owners: Owners::get() }
-    }
+    feature::native_world_layers::on(switches)
 }
 
 /// Layer 3 can draw a material that never reads the accumulation level.
@@ -323,9 +256,6 @@ impl DrawAdmission for Admission {
             Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
             Owner::Object { .. } => timeline::native::Stage::Objects,
         };
-        if !self.owners.admits(stage) {
-            return None;
-        }
         let pass = IndexedPass::for_section(draw, Arc::clone(&self.cache), c.frame, texaccum,
             (c.generation, c.bsp?), geometry, layer.number)?;
         Some((
@@ -335,25 +265,13 @@ impl DrawAdmission for Admission {
                 ranges: 1,
                 slots,
             },
-            Box::new(Replacement {
-                pass,
-                context: c,
-                geometry,
-                color: snapshot.color_header,
-                depth: snapshot.depth_header,
-                samples_texaccum: texaccum.is_some(),
-            }),
+            Box::new(Replacement { pass }),
         ))
     }
 }
 
 struct Replacement {
     pass: IndexedPass,
-    context: DrawContext,
-    geometry: Geometry,
-    color: u32,
-    depth: u32,
-    samples_texaccum: bool,
 }
 
 impl ExternalPass for Replacement {
@@ -380,103 +298,8 @@ impl ExternalPass for Replacement {
         target: &ExternalAttachments,
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
-        let draws = self.pass.record_draws(target, request)?;
-        let (copy, size) = (target.copy, target.size);
-        if self.context.compare && draws.is_ok() {
-            eprintln!(
-                "native-world-layers: recorded frame={} layer={} view={} geometry={:?} indices={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x} samples_texaccum={}",
-                self.context.frame,
-                self.context.layer.number,
-                self.context.layer.view,
-                self.geometry,
-                self.context.index_count,
-                self.color,
-                self.depth,
-                self.samples_texaccum,
-            );
-        }
-        Some(draws)
+        self.pass.record_draws(target, request)
     }
-}
-
-pub(crate) fn comparing() -> bool {
-    DRAW.get().is_some_and(|c| c.compare)
-}
-
-/// A sampled level resolved by D3D to the in-place colour surface, as
-/// opposed to a decoded bitmap or a snapshot.
-pub(crate) fn sample_surface(surface: impl std::fmt::Debug, texture_id: u64) {
-    if let Some(c) = DRAW.get().filter(|c| c.compare) {
-        eprintln!(
-            "native-world-layers: layer={} indexed_return={:#010x} in_place_sample texture_id={texture_id} surface={surface:?}",
-            c.layer.number, c.return_address
-        );
-    }
-}
-
-pub(crate) fn compare_draw(
-    frame: u64,
-    draw: &ResolvedDraw,
-    color: impl std::fmt::Debug,
-    depth: impl std::fmt::Debug,
-    textures: [Option<u64>; 4],
-    outcome: &Result<d3d::backend::DrawOutcome, String>,
-) {
-    let Some(c) = DRAW.get().filter(|c| c.compare) else {
-        return;
-    };
-    // The entry drains older push writes before it issues the indexed
-    // draw. Those earlier draws only belong to their original callers.
-    if draw.entry != "D3DDevice_DrawIndexedVertices" {
-        return;
-    }
-    let layer = c.layer;
-    let state = &draw.state.render;
-    let z_max = gfx::renderer::d3dz_max(draw.target.depth_format);
-    let w_clip = d3d::nv2a::w_clip_range(&draw.hw, z_max);
-    let w_buffer = d3d::nv2a::w_buffered(draw);
-    let shader = match &draw.shader.vertex {
-        VertexProcessing::Program { microcode, .. } => Some(microcode.words_hash()),
-        VertexProcessing::FixedFunction { .. } => None,
-    };
-    let texaccum = layer.texaccum.map(|t| {
-        let stages = draw.textures.map(|header| header == Some(t.texture));
-        (t, t.surface == Some(c.target[0]), stages)
-    });
-    eprintln!(
-        "native-world-layers: d3d frame={frame} layer={} view={} site={:?} layer_return={:#010x} list={:#010x} indexed_return={:#010x} geometry={:?} primitive={:?} indices={:?} vertices={} vs={shader:x?} inputs={:#06x} attachments={color:?}/{depth:?} guest={:#010x}/{:#010x} texaccum={texaccum:?} texture_ids={textures:?} clip={:?} pixels={:?} w={w_buffer} w_clip={w_clip:?} clamp={} z={:?}/{:?}/{} stencil_off={} stencil={:?} color_write={:?} cull={:?}/{:?} alpha={}/{:?}/{} {outcome:?}",
-        layer.number,
-        layer.view,
-        layer.site,
-        layer.caller_return,
-        layer.list,
-        c.return_address,
-        c.geometry,
-        draw.primitive,
-        c.index_count,
-        draw.vertex_count,
-        draw.shader.provided_inputs,
-        c.target[0],
-        c.target[1],
-        draw.clip,
-        (
-            draw.target.width,
-            draw.target.height,
-            draw.target.depth_format
-        ),
-        d3d::nv2a::draw_clamps_depth(draw),
-        state.depth_mode,
-        state.depth_func,
-        state.depth_write,
-        layer.stencil_off,
-        state.stencil,
-        state.color_write,
-        state.cull_mode,
-        state.front_face,
-        state.alpha_test_enable,
-        state.alpha_func,
-        state.alpha_ref,
-    );
 }
 
 #[cfg(test)]

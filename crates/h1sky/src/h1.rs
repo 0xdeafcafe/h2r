@@ -245,7 +245,8 @@ impl Sky {
     /// d40's space skies, c20's interior atmosphere, the menu's `sky_ui`:
     /// colour black, density 1, start and opaque 0) is no fog. V: the menu
     /// level's every cluster names `sky_ui`, and x10's space BSP's names
-    /// `space_x10`, and neither draws black (docs/formats/h1-sky.md, "Fog").
+    /// `space_x10`, and neither draws black
+    /// (docs/halo1/sky.md, "Fog A is the outdoor fog").
     pub fn outdoor_fog(&self) -> Option<Fog> {
         self.fogs()[0].filter(|f| f.opaque_distance > f.start_distance)
     }

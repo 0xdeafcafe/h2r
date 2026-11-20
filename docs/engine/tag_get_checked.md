@@ -1,6 +1,11 @@
 # `tag_get_checked` (0x122c10) and `tag_group_find` (0x122d00)
 
-Recovered 2026-11-14 from `h2 disasm` of the retail XBE
+Status: Built. Code: `crates/engine/src/tags.rs`, adapters in
+`crates/engine/src/abi.rs`. Tests: `crates/engine/tests/differential.rs`,
+`crates/engine/tests/views.rs`. Switch: `impl.engine.tags` (off by default;
+[switches.md](../runtime/switches.md)).
+
+Recovered from `h2 disasm` of the retail XBE
 (`03215919…935d`). Names are assigned. Rust: `crates/engine/src/tags.rs`,
 adapters in `crates/engine/src/abi.rs`.
 

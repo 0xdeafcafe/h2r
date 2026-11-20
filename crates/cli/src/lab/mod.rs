@@ -32,9 +32,20 @@ const USAGE: &str = "usage:
         [--replay NAME | --record NAME] [--perf] [--env KEY=VALUE]...
         [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
         [--build-env KEY=VALUE]... [--fresh-data] [--note TEXT]
-        [--wait [--to DIR]] [-- play flags]
+        [--serve] [--wait [--to DIR]] [-- play flags]
                           start a run (building its image first unless cached);
-                          prints the job id; --wait waits and fetches it
+                          prints the job id; --wait waits and fetches it;
+                          --serve: no frame limit, driven by `agent` until `stop`
+    agent <id> <method> [json-params] [--timeout S]
+                          one `h2 agent` call against that run's game, run on the
+                          host; its output and exit code come back unchanged
+                          (`-` reads a script from stdin)
+    bench --level MAP [--difficulty D] [--scale N] [--ticks N] [--env KEY=VALUE]...
+          [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
+          [--build-env KEY=VALUE]... [--timeout S] [--to DIR] [-- play flags]
+                          a --serve run: wait for gameplay, capture N ticks (600),
+                          render.stats and profile.counters, stop, fetch, and print
+                          one summary line (fps, busy p50/p95, phase means)
     build [--branch NAME | --rev REV] [--feature F]... [--build-env KEY=VALUE]... [--wait]
     wait <id> [--timeout SECONDS]
     stop <id>             SIGTERM, then SIGKILL after 5 s

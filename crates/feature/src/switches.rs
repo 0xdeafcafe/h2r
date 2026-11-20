@@ -106,20 +106,15 @@ impl Switches {
     }
 }
 
-/// The default for native stages without an explicit setting.
-pub(crate) fn native_render_default(switches: &Switches) -> bool {
-    switches.feature("impl.render.native", true)
-}
+/// The native GPU renderer's one switch: on unless `H2_FEATURES` says
+/// `impl.render.native=off`, which turns off every native stage, scene
+/// walk, scene list and the native UI together. Looked up exactly: the
+/// `impl.render` group does not reach it.
+pub const NATIVE: &str = "impl.render.native";
 
-/// Native stages use exact keys. The older `impl.render` group controls
-/// the lifted render-loop ports independently.
-pub(crate) fn native_stage_on(switches: &Switches, stage: &str) -> bool {
-    switches.feature(stage, native_render_default(switches))
-}
-
-/// Scene walks require both the master renderer and the owning stage.
-pub(crate) fn native_walk_on(switches: &Switches, stage: &str, walk: &str) -> bool {
-    native_render_default(switches) && native_stage_on(switches, stage) && switches.feature(walk, true)
+/// Whether the native renderer ([`NATIVE`]) is on.
+pub fn native_render_on(switches: &Switches) -> bool {
+    switches.feature(NATIVE, true)
 }
 
 #[cfg(test)]
@@ -127,23 +122,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scene_walks_default_on_and_require_the_owning_stage_and_master() {
+    fn the_native_master_switch_gates_every_stage_and_walk() {
         let enabled = |spec| {
             let switches = Switches::parse(spec).unwrap();
             [
-                crate::native_transparents::walk_on(&switches),
-                crate::native_decals::walk_on(&switches),
-                crate::native_particles::walk_on(&switches),
-                crate::native_particles::effects_walk_on(&switches),
-                crate::native_first_person::walk_on(&switches),
-                crate::native_hud::walk_on(&switches),
-                crate::native_post::walk_on(&switches),
+                native_render_on(&switches),
+                crate::native_world::on(&switches),
+                crate::native_transparents::on(&switches),
+                crate::native_decals::on(&switches),
+                crate::native_particles::on(&switches),
+                crate::native_first_person::on(&switches),
+                crate::native_hud::on(&switches),
+                crate::native_post::on(&switches),
             ]
         };
-        assert_eq!(enabled(""), [true; 7]);
-        assert_eq!(enabled("impl.render.native=off,impl.render.native_hud_walk=on,impl.render.native_hud=on"), [false; 7]);
-        assert_eq!(enabled("impl.render.native_particles_walk=off"), [true, true, false, true, true, true, true]);
-        assert_eq!(enabled("impl.render.native_particles=off"), [true, true, false, false, true, true, true]);
+        assert_eq!(enabled(""), [true; 8]);
+        assert_eq!(enabled("impl.render=off"), [true; 8]);
+        assert_eq!(enabled("impl.render.native=off"), [false; 8]);
     }
 
     #[test]

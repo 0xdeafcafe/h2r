@@ -234,13 +234,10 @@ where
                     // itself runs again afterwards (see
                     // `deliver_push_callback`).
                     Ok(mut d) => match {
-                        // H2_POST_TRACE: the entry and its caller, before
+                        // An armed swallow checks the entry's caller before
                         // the draws its drain executes.
-                        let ret = (d.tracing() || d.swallowing())
+                        let ret = d.swallowing()
                             .then(|| mem.read_u32(regs.esp).unwrap_or(0));
-                        if let Some(ret) = ret {
-                            d.trace_call(e.name, ret);
-                        }
                         ret.map_or(Ok(()), |ret| {
                             d.swallow_caller(&mem, regs.esp, ret, |token| {
                                 ctx.live_continuations()

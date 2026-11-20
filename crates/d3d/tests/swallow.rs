@@ -95,7 +95,6 @@ fn plan(drop: bool, pass: impl SwallowPass + 'static) -> Swallow {
         shapes: Vec::new(),
         drop,
         pass: Box::new(pass),
-        capture: None,
     }
 }
 

@@ -1333,8 +1333,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
-        if recording.stage == timeline::native::Stage::Lights
-            && matches!(&recording.commands, ExternalCommands::Bundles { .. })
+        // Appending packets, bundles or encoded commands to the worker's
+        // pass or encoder changes no surface binding, so it leaves a pinned run's attachments valid:
+        // the next reservation of the run (an adjacent object run) skips
+        // the worker round trip. A standalone command buffer stays an
+        // ordinary command.
+        if matches!(&recording.commands,
+            ExternalCommands::Bundles { .. } | ExternalCommands::Draws { .. } | ExternalCommands::Encoded(_))
         {
             if self.queue.push_external(recording).is_err() {
                 self.shared.latch("render thread: gone".into());
