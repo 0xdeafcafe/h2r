@@ -83,10 +83,18 @@ impl Uplink {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Publication {
+    #[default]
+    Missing,
+    Built,
+    Replayed,
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct GatherState {
     sample: Option<(DatumHandle, u32)>,
-    accepted: bool,
+    publication: Publication,
 }
 
 /// The arrived XInput report and the identity for one retail action build.
@@ -140,7 +148,8 @@ impl Phantoms {
             .in_flight
             .back()
             .map_or(p.uplink.arrived, |&(_, pad)| pad);
-        let accepted = p.buttons.accepted && m.u32(slot + SLOT_STAMP).ok()? == tick;
+        let accepted =
+            p.buttons.publication != Publication::Missing && m.u32(slot + SLOT_STAMP).ok()? == tick;
         let record = slot + SLOT_ACTION;
         let (action_deg, fire_primary, assist_strength, target) = if accepted {
             (
@@ -183,12 +192,15 @@ impl Phantoms {
     }
 
     /// 0x84990(slot, out), only for a slot matched by owns_action_slot.
-    pub async fn slot_action(
+    pub async fn slot_action<F>(
         &self,
         cx: Cx,
         slot: u32,
-        build: impl FnOnce(SeatInput) -> Result<[u8; ACTION_SIZE], EntryError>,
-    ) -> Result<Ret, EntryError> {
+        build: impl FnOnce(SeatInput) -> F,
+    ) -> Result<Ret, EntryError>
+    where
+        F: std::future::Future<Output = Option<[u8; ACTION_SIZE]>>,
+    {
         let out = cx.arg(1)?;
         let input = cx.read(|m| -> Result<_, MemFault> {
             let Some(tick) = guest::game_tick(m) else {
@@ -229,13 +241,9 @@ impl Phantoms {
             };
             let mut state = p.buttons;
             if state.sample == Some((unit, tick)) {
-                return Ok(
-                    (m.u32(slot + SLOT_STAMP)? == tick && state.accepted).then_some((
-                        p.info.handle,
-                        state,
-                        None,
-                    )),
-                );
+                return Ok((m.u32(slot + SLOT_STAMP)? == tick
+                    && state.publication != Publication::Missing)
+                    .then_some((p.info.handle, state, None)));
             }
             if state.sample.is_some() && state.sample != Some((unit, tick.wrapping_sub(1))) {
                 p.reset_input();
@@ -278,16 +286,31 @@ impl Phantoms {
         };
         if let Some(sample) = sample {
             let (tick, unit) = (sample.tick, sample.unit);
-            let bytes = build(sample)?;
-            cx.write(|m| m.write(out, &bytes))?;
-            state.accepted = cx.call(GuestCall::new(0x14d0a0).ecx(out)).await?.eax as u8 != 0;
-            if state.accepted {
-                cx.write(|m| -> Result<(), MemFault> {
-                    let mut bytes = [0; ACTION_SIZE];
-                    m.read(out, &mut bytes)?;
-                    m.write(slot + SLOT_ACTION, &bytes)?;
-                    m.set_u32(slot + SLOT_STAMP, tick)
-                })?;
+            let candidate = if let Some(bytes) = build(sample).await {
+                Some((bytes, Publication::Built))
+            } else if state.publication == Publication::Built
+                && cx.read(|m| m.u32(slot + SLOT_STAMP))? == tick.wrapping_sub(1)
+            {
+                // A gap or unit change cleared the state above. Bridge one
+                // missed tick without holding fire or a stale target indefinitely.
+                let mut bytes = [0; ACTION_SIZE];
+                cx.read(|m| m.read(slot + SLOT_ACTION, &mut bytes))?;
+                Some((bytes, Publication::Replayed))
+            } else {
+                None
+            };
+            state.publication = Publication::Missing;
+            if let Some((bytes, publication)) = candidate {
+                cx.write(|m| m.write(out, &bytes))?;
+                if cx.call(GuestCall::new(0x14d0a0).ecx(out)).await?.eax as u8 != 0 {
+                    cx.write(|m| -> Result<(), MemFault> {
+                        let mut bytes = [0; ACTION_SIZE];
+                        m.read(out, &mut bytes)?;
+                        m.write(slot + SLOT_ACTION, &bytes)?;
+                        m.set_u32(slot + SLOT_STAMP, tick)
+                    })?;
+                    state.publication = publication;
+                }
             }
             state.sample = Some((unit, tick));
             if let Some(p) = self
@@ -298,7 +321,7 @@ impl Phantoms {
             {
                 p.buttons = state;
             }
-            if !state.accepted {
+            if state.publication == Publication::Missing {
                 return Ok(Ret::new(0, 8));
             }
         } else {
