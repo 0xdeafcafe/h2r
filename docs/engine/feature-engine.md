@@ -272,8 +272,7 @@ pending ([theater.md](../game/theater.md) "In-memory machine forks").
   generalised to async entries (guest calls served by the interpreter).
   It needs the owner's XBE, is pinned by hash and skips without it.
 - **Call captures** for state too rich to synthesise: at the n-th call of
-  a point, dump registers and guest RAM (the mechanism behind
-  `H2_BOOT_DUMP_RAW`), then run the differential test from that state.
+  a point, dump registers and guest RAM, then run the differential test from that state.
   Captures hold game memory. They stay in the user's data directory and
   are never committed.
 - **Run-level comparison**: the same input replay with the entry on
