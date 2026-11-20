@@ -163,3 +163,108 @@ Still open:
   stream ranges or the auxiliary state toggle (`object_walk::read_part`).
   This is fallback, not drawing twice: those objects are not drawn
   natively.
+
+
+## Stage 1 and the BSP walk: A/B method
+
+### Stage 1: the live A/B
+
+The same 03a frame with and without the switch, E1 off, frame stats on.
+What passes: the `native-world:` load line names `03a_oldmombasa`; the
+views line shows every layer-3 view drawn natively; the frame shows the
+world (no holes where the BSP was, objects and transparents in front of
+and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
+by most of the world's share of the 8.26 ms, and `encode` and `submit`
+drop with the D3D draws that are gone, in proportion to the parts the
+coverage line says are native.
+A refused world reservation leaves the affected guest items in layer 3.
+Use the stage's refusal reasons, per-copy range counts and invariant
+failures to distinguish D3D fallback from native coverage.
+
+The stage 1 look (base map times lightmap, on by default until
+2026-11-19) was far from the D3D path on screen, lighting most of all:
+no detail maps, no bump, none of the material's constants. The world is
+now drawn only with each material's own translated pass, and a material
+whose pass does not translate stays on the D3D path, so with any mix the
+frame should match the D3D path's. Where it still differs, on native
+surfaces only (the D3D ones are the game's own):
+
+- **speckle or holes on world surfaces**, or objects showing through:
+  depth. Layer 1 (D3D) wrote the world's depth and the native layer 3
+  tests `LessEqual` against it, so the native W depth must be the D3D
+  path's bit for bit; one step deeper fails the test;
+- **a whole material too dark, too bright or flat**: its lightmap (the
+  P8 page through its palette, bound at stage 3), its bump map (`P8Bump`
+  through the device palette at stage 2; black walls with bright pillars
+  was the bump sampled as its index) or a constant;
+- **shimmer or blur at a distance**: sampling (the bump stage is 4x
+  anisotropic; mip chains);
+- **cut-out foliage or grates filled in or missing**: the pass's alpha
+  test (03a's alpha-tested world passes pass below 255);
+- **stencil-driven effects** after layer 3: the native pass writes the
+  device's stencil as the layer starts and mode 2's mark on marked
+  sections, and leaves views to D3D where an item switches the stencil
+  and the layer does not start in mode 1 (no engine code after layer 3
+  tests the stencil; a tag's or engine render-state list could, S);
+- **decals, lights, fire and smoke gone, walls right**: the world drawn
+  over the finished scene by a native pass in a layer 3 that is not the
+  world's (the first-person render's; `skip::has_structure_items`).
+
+
+The walk's A/B (2026-11, with a per-walk switch since removed) captured
+the same Old Mombasa replay and present numbers with `H2_FRAME_STATS=1`
+and `H2_FEATURES=render-timing`, changing only the walk. Use ordinary
+render timing. Deep timing adds guest brackets that change the cost of the control path. Compare warmed per-frame `render`,
+`scene_passes`, `d3d` and `cpu`, and count differing pixels on both target
+copies at matching presents. Include views with placements, partial
+visibility, fog, water and lights. Expected savings are in gathering,
+material preparation, sort-slot construction and redundant D3D state
+calls. The total number of late native draw admissions is not a count of
+eliminated shader builds.
+
+
+
+## Stage 2: the live A/B
+
+Old Mombasa, E1 off, frame stats and `render-timing` on, the same spot
+with the native renderer off and on . What passes:
+
+- the load lines name the map's models, most as native; the refused ones
+  give a reason (the run-time permutations: marines, some scenery);
+- the views line shows every base-layer layer-3 view drawn natively, and
+  objects and items per view in the tens;
+- the frame shows every object in place and posed: bipeds animate (a
+  T-pose or exploded limbs mean the `N · I` reading is wrong), held
+  weapons sit in hands, vehicles and their turrets turn; flat-lit bases
+  with the game's own self-illumination, specular and dynamic lights on
+  top (those layers still draw through D3D);
+- the first-person weapon and arms are unchanged (still D3D);
+- the `0x0002bed0` site (layer 3) and `cpu` drop by the objects' share of
+  layer 3's shader draws (below), `encode` and `submit` with them;
+  `external_passes_dropped` stays 0 (a growth there is an object hole).
+
+What this stage should remove: layer 3 is 8.26 ms on the census run,
+about two thirds of it per-draw guest work in `0x00016b90` and the rest
+D3D; objects are roughly a third to a half of layer 3's 1,882 D3D calls
+on a populated 03a view (S: the split between world and object draws is
+not measured; `render-census` can give it). So with the world already
+native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
+`encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
+dynamic-light passes keep their object draws in this cut.
+
+
+
+## Stage 2: object walk A/B method
+
+Use the same 03a Old Mombasa firefight with at least six visible enemies,
+the same camera, input and render scale, and a warmed map load for both
+captures. Keep the other render switches fixed. Compare `H2_FEATURES=render-timing`
+against `H2_FEATURES=render-timing,impl.render.native=off`.
+
+Enable `H2_FRAME_STATS=1` for both. Collect the same window with
+`profile.capture` through the [agent API](../runtime/agent-api.md), or
+stream it with `H2_FRAME_STATS_CSV`. Compare the `render` and `d3d`
+phases, layer-3 and shader-begin time, object walk counters, and the same
+view's images. Check biped animation, held weapons and vehicles through
+fog, and the depth, stencil and draw order against the original path.
+The `impl.render.native=off` capture is the all-D3D reference.
