@@ -39,6 +39,7 @@ async fn host_routes_require_bearers_on_a_public_server() {
         (Method::POST, REPORT, PLAYING),
         (Method::GET, DETAIL, ""),
         (Method::GET, INVENTORY, ""),
+        (Method::POST, INVENTORY, "{"),
         (Method::POST, STOP, ""),
     ] {
         assert_unauthorized(&h.call(method, uri, &[], body).await);
@@ -79,6 +80,7 @@ async fn host_admin_routes_require_the_matching_scope_and_an_admin() {
 
     for (method, uri, scope, wrong_scope) in [
         (Method::GET, INVENTORY, "admin.read", lxm::READ),
+        (Method::POST, INVENTORY, "admin.write", "admin.read"),
         (Method::POST, STOP, "admin.write", "admin.read"),
     ] {
         assert_unauthorized(
@@ -107,6 +109,29 @@ async fn host_admin_routes_require_the_matching_scope_and_an_admin() {
         .await;
     assert_eq!(inventory.status, StatusCode::OK);
     assert_eq!(inventory.headers[header::CACHE_CONTROL], "private, no-store");
+}
+
+#[tokio::test]
+async fn admin_host_start_checks_auth_before_reading_or_parsing_the_body() {
+    let h = start(
+        Arc::new(MemoryStore::new()),
+        Policy {
+            admins: vec![Gamertag::new("Boss").unwrap()],
+            ..Policy::default()
+        },
+    )
+    .await;
+    let admin = h.create("Boss").await;
+    for (body, status) in [
+        (vec![b'{'], StatusCode::BAD_REQUEST),
+        (vec![b' '; 1025], StatusCode::PAYLOAD_TOO_LARGE),
+    ] {
+        assert_unauthorized(&h.call(Method::POST, INVENTORY, &[], body.clone()).await);
+        let response = h
+            .call(Method::POST, INVENTORY, &[h.bearer(&admin, "admin.write")], body)
+            .await;
+        assert_eq!(response.status, status);
+    }
 }
 
 #[tokio::test]

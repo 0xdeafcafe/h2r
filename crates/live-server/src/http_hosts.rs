@@ -23,7 +23,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -123,14 +123,12 @@ async fn inventory(State(live): Shared, headers: HeaderMap) -> ApiResult<Respons
 
 /// `POST /v1/admin/hosts`: `201` with `{lease}` when the provider launches
 /// it, or `{lease, token}` when the admin runs the container by hand.
-async fn create(
-    State(live): Shared,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> ApiResult<Response> {
-    let request: crate::hosts::AdminHostStart = serde_json::from_slice(&body_bytes(body)?)
+async fn create(State(live): Shared, request: Request) -> ApiResult<Response> {
+    let who = live.authenticate_host_admin(bearer(request.headers()))?;
+    let body = body_bytes(Bytes::from_request(request, &live).await)?;
+    let start = serde_json::from_slice(&body)
         .map_err(|e| invalid(format!("host start: {e}")))?;
-    let (lease, token) = live.admin_start_host(bearer(&headers), request).await?;
+    let (lease, token) = live.start_authorized_host(&who, start).await?;
     let reply = match token {
         Some(token) => json!({ "lease": lease, "token": token }),
         None => json!({ "lease": lease }),

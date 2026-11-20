@@ -225,11 +225,12 @@ Server-signed events on stream `hosts`. Payloads are JSON:
 
 | type | data |
 |---|---|
-| `HostRequested` | `{ lease: HostLease }` |
+| `HostRequested` | `{ lease: HostLease, provider_ref? }`. Cloudflare's room address is known before allocation. |
 | `HostBooting` | `{ lease_id, provider_ref }` (container id or machine id or pid) |
 | `HostReady` | `{ lease_id, endpoint: HostEndpoint, boot_ms }` |
 | `HostPlaying` | `{ lease_id, players }` |
 | `HostEnded` | `{ lease_id, reason: EndReason, ran_ms, players_peak }` |
+| `HostStopped` | `{ lease_id }`. The provider confirmed shutdown for a lease with a reserved address. |
 
 Cost metering (`dh-cost`) and the admin page (`dh-web`) read only these
 events. They don't call providers.
@@ -344,22 +345,22 @@ image or committed.
 
 ### 8. Cost and budget (owned by `dh-cost`)
 
-`crates/live-server/src/host_costs.rs` folds the `Host*` events into
-per-lease cost from a price table:
+`crates/live-server/src/host_costs.rs` folds the durable `hosts` stream
+into per-lease cost estimates. The providers use the following rates.
 
 - Price config is `LIVE_HOST_PRICES` as JSON, with defaults from [dedicated-host.md](dedicated-host.md).
-- Cloudflare: $/vCPU-s, $/GiB-s and $/GB egress.
+- Cloudflare: USD per vCPU-second, GiB-second of memory, GB-second of
+  disk and GB of estimated egress, plus a flat estimate per start.
 - Fly: $/s per class.
 - Local: zero.
 
-It exposes:
-
-- `HostCosts::month_to_date()`
-- `HostCosts::lease(lease_id)`
-- `HostCosts::over_budget(now) -> bool`, against `LIVE_HOST_BUDGET_USD_MONTH`, default 5.
-
-`hosts.rs` refuses `request_host` when `over_budget` and falls back to a
-peer host.
+Before a provider start, `Live::request_host` checks accrued spend, the
+remaining commitments on open leases and the proposed lease against
+`LIVE_HOST_BUDGET_USD`. The Worker defaults to $25 per UTC month and
+native Live defaults to unlimited. A refusal lets matchmaking fall back
+to a peer host. A Worker-launched container keeps its reservation until
+the provider confirms shutdown. The admin hosts inventory exposes
+month-to-date spend and the configured cap.
 
 ### 9. Host process (owned by `dh-supervisor` and `dh-lobby`)
 

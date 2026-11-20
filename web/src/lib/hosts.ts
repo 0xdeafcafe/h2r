@@ -64,7 +64,7 @@ export interface AdminHosts {
   running: RunningHost[];
   recent: EndedHost[];
   month_to_date_usd: number;
-  budget_usd: number;
+  budget_usd: number | null;
 }
 
 /** Public game and session payloads can omit these fields for peer hosts and older records. */
