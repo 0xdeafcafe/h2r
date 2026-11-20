@@ -257,7 +257,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
-        let camera = &scene_view.camera;
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -316,6 +315,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
+        let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+        // Admit the union of both lenses. Exact readback renders the retail
+        // projection, and hardware clips a submitted part outside either copy.
+        let camera = native_render::camera::display_camera(
+            scene_view.camera, d.projection_factor_for_target(target.surface_size).min(1.),
+        );
         let frustum = GpuWorld::draw_frustum(&camera.view_projection(), true);
         let (masks, cleared, selected) = render_bridge::native_world::plan_parts(
             &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
@@ -332,7 +337,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             selected,
             selection: None,
             ready: Arc::clone(&ready),
-            camera: *camera,
+            camera: scene_view.camera,
+            admission_camera: camera,
             view: None,
             w_clip: None,
             stencil: stencil.clone(),
@@ -566,6 +572,7 @@ struct WorldPass {
     selection: Option<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
+    admission_camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     /// The device's W-buffer clip at the pass (`d3d::DepthClip`): the range
@@ -635,7 +642,7 @@ impl d3d::ExternalPass for WorldPass {
         if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
         self.configure(gpu, t.depth_format);
         if self.selection.is_none() {
-            self.selection = gpu.select_parts(&self.selected, &self.camera);
+            self.selection = gpu.select_parts(&self.selected, &self.admission_camera);
         }
         let selection = self.selection.as_ref().ok_or("world part unavailable")?;
         gpu.prepare_selection(t.device, t.color_format, t.depth_format, selection)
@@ -659,14 +666,14 @@ impl d3d::ExternalPass for WorldPass {
         let Some(constants) = self.view else { return Some(Err("world view constants unavailable")) };
         self.configure(gpu, t.depth_format);
         if self.selection.is_none() {
-            self.selection = gpu.select_parts(&self.selected, &self.camera);
+            self.selection = gpu.select_parts(&self.selected, &self.admission_camera);
         }
         let Some(selection) = self.selection.as_ref() else { return Some(Err("world part unavailable")) };
         if !gpu.prepare_selection(&t.device, t.color_format, t.depth_format, selection) {
             return Some(Err("world part or program binding unavailable"));
         }
         let view = ViewInputs {
-            constants, guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
+            constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
         Some(gpu.selection_draws(t.color_format, t.depth_format, t.size, selection, &view))
     }
@@ -679,10 +686,11 @@ impl d3d::ExternalPass for WorldPass {
         self.configure(gpu, t.depth_format);
         let Some(selection) = &self.selection else { return 0 };
         let view = self.view.map(|constants| ViewInputs {
-            constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
+            constants: t.view_constants(constants), guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
         });
         let depth = DepthRule { full_scale: t.z_scale, floor: true };
-        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &self.camera, depth) {
+        let camera = native_render::camera::display_camera(self.camera, t.projection_factor());
+        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &camera, depth) {
             return 0;
         }
         let [x, y, width, height] = t.viewport;

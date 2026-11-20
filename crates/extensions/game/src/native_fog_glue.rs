@@ -478,7 +478,7 @@ impl d3d::ExternalPass for FogViewPass {
         let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(t.copy, constants),
             guest_size: request.surface_size,
             size: t.size,
             z_scale: request.z_scale,
@@ -495,7 +495,7 @@ impl d3d::ExternalPass for FogViewPass {
             return 0;
         };
         let view = ViewInputs {
-            constants,
+            constants: t.view_constants(constants),
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,

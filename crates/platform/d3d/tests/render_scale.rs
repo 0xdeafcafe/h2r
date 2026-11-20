@@ -1082,7 +1082,7 @@ fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
     assert_eq!(answers, retail, "reads and visibility counts come from the reference");
     assert_eq!(device.backend.stats().view_errors, 0);
 
-    let request = d3d::ExternalPassRequest { rect: (1, 3, 11, 9), surface_size: (W, H), z_scale: 1.0 };
+    let request = d3d::ExternalPassRequest { rect: (1, 3, 11, 9), surface_size: (W, H), display_projection_factor: 1.0, z_scale: 1.0 };
     assert_eq!(d3d::external_viewport(&request, output), [2.0, 5.0, 26.0, 14.0]);
     for single in [false, true] {
         for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
@@ -1092,6 +1092,42 @@ fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
             let pass_pixel = PASS.to_le_bytes(); // BGRA color attachment
             assert_eq!(size, output);
             assert!(shown.chunks_exact(4).all(|p| p == pass_pixel), "{pass:?}, single={single}");
+        }
+    }
+}
+
+#[test]
+fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
+    let Some(ctx) = context() else { return };
+    let output = (149, 101);
+    let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
+    let mut backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    let frame = backend.create_surface(format, W, H, false).unwrap();
+    let desc = gfx::TextureDesc::new(format, gfx::texture::TextureKind::D2, W, H, 1, 1);
+    let cell = |x: u32, y: u32| [x as u8, y as u8, (x ^ y) as u8, 255];
+    let guest: Vec<u8> = (0..H).flat_map(|y| (0..W).flat_map(move |x| cell(x, y))).collect();
+    assert!(backend.write_surface(frame, &desc, &guest).unwrap());
+    let snapshot = backend.snapshot_surface(frame, true).unwrap().unwrap().view.unwrap().texture;
+    let readback = backend.read_surface(
+        frame, format, W, H, d3d::GuestLayoutKind::Linear { pitch: W * 4 },
+    ).unwrap();
+    assert_eq!(readback, guest);
+    backend.clear(frame, None, gfx::Clear::all([0.0; 4])).unwrap();
+    backend.view_mut().flush().unwrap();
+    assert_eq!((snapshot.width(), snapshot.height()), output);
+    let pixels = gfx::readback::read_texture(&ctx, &snapshot, wgpu::TextureAspect::All, 4, output);
+    for y in 0..H {
+        for x in 0..W {
+            let [left, top, width, height] = grid.rect(x, y, 1, 1);
+            for row in top..top + height {
+                for col in left..left + width {
+                    let at = ((row * output.0 + col) * 4) as usize;
+                    assert_eq!(&pixels[at..at + 4], &cell(x, y), "snapshot at ({col}, {row})");
+                }
+            }
         }
     }
 }
@@ -1959,6 +1995,52 @@ fn a_frame_covered_by_a_small_level_shows_no_lighting_difference() {
     let i = ((48 * 2 * W + 40) * 4) as usize;
     assert_eq!(&e3_px[i..i + 3], &retail_px[i..i + 3]);
     assert!(e3_px.chunks(4).all(|p| p == &e3_px[i..i + 4]), "one colour over the frame");
+}
+
+/// A 640×480 raster shown anamorphically still has distinct guest and
+/// display results in exact mode. A single-copy run issues the draw once.
+#[test]
+fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy() {
+    let Some(ctx) = context() else { return };
+    let wide = (1920, 1080);
+    for single in [false, true] {
+        let mut b = ScaledBackend::with_single_copy(
+            GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 1, single,
+        ).unwrap();
+        let width = Arc::new(AtomicU32::new(1440));
+        let current = width.clone();
+        b.follow_presentation(move |_| (current.load(Ordering::Relaxed), 1080));
+        let (mut d, mut m) = create(b, UploadPolicy::Tracked);
+        let bb = d.back_buffer().unwrap();
+        assert!(d.backend.view_surface(&bb).is_none());
+        width.store(wide.0, Ordering::Relaxed);
+        d.swap(&mut m, 0).unwrap();
+        let bb = d.back_buffer().unwrap();
+        assert_eq!(d.backend.stats().presentation, wide);
+        set_states(&mut d, &mut m);
+        d.clear(&mut m, 0, 0, 0xF3, 0xff00_0000, 1.0, 0).unwrap();
+        d.set_ui_fit(&mut m, d3d::backend::UiFit::about(wide, [0., 0.]));
+        flat_quad(&mut d, &mut m, (24., 8., 48., 40.), 0xffff_ffff);
+
+        let lit = |bytes: &[u8], x: u32| bytes[((20 * W + x) * 4) as usize] != 0;
+        let read = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, W, H,
+            d3d::GuestLayoutKind::Linear { pitch: W * 4 }).unwrap();
+        assert_eq!((lit(&read, 20), lit(&read, 44)), (single, !single));
+        if !single {
+            let v = d.backend.view_surface(&bb).unwrap();
+            let (px, extent) = pixels(d.backend.view_mut(), v);
+            assert_eq!(extent, (W, H));
+            assert!(lit(&px, 20) && !lit(&px, 44));
+        }
+        let stats = d.backend.stats();
+        assert_eq!((stats.reference_draws, stats.display_draws), (u64::from(!single), 1));
+        assert_eq!(stats.downsamples, 0, "both render targets are guest-sized");
+
+        width.store(1440, Ordering::Relaxed);
+        d.swap(&mut m, 0).unwrap();
+        assert_eq!(d.backend.stats().presentation, (1440, 1080));
+        assert!(d.backend.view_surface(&d.back_buffer().unwrap()).is_none());
+    }
 }
 
 #[test]

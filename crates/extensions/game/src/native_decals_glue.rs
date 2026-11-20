@@ -76,6 +76,11 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
 
 fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
     let d = snapshot.draw;
+    // This producer freezes one uniform block for both attachment copies.
+    // The ordinary D3D draw owns a pair with different lenses or UI layout.
+    if d.retail_constants.is_some() || d.ui_fit.is_some() {
+        return Err("attachment copies need distinct vertex constants");
+    }
     if d.primitive != PrimitiveType::QuadList
         || d.indices.is_some()
         || d.vertex_count == 0

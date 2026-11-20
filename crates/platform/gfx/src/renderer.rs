@@ -280,6 +280,8 @@ pub struct Draw<'a> {
     /// blocks of host pixels, as it covers whole pixels at 1x
     /// (docs/graphics/high-resolution.md). `None` is the target's size.
     pub window: Option<(u32, u32)>,
+    /// Guest window scale and translation for UI drawn on an anamorphic target.
+    pub window_transform: [f32; 4],
     /// Where vertex formats are converted. [`FetchMode::Gpu`] needs a
     /// shader that reads each register as
     /// [`RepackPlan::input_fetch`](crate::repack::RepackPlan::input_fetch)
@@ -321,6 +323,7 @@ impl<'a> Draw<'a> {
             indices: None,
             count_samples: false,
             window: None,
+            window_transform: [1.0, 1.0, 0.0, 0.0],
             vertex_fetch: FetchMode::Cpu,
             stream_ids: &[],
             index_id: None,
@@ -331,7 +334,7 @@ impl<'a> Draw<'a> {
 pub use crate::raster::{RenderScale, window_shift};
 
 /// Bytes of the built-in shader's uniform struct.
-const BUILTIN_UNIFORM_SIZE: u64 = 32;
+const BUILTIN_UNIFORM_SIZE: u64 = 48;
 /// Initial size of the vertex/index upload ring.
 const VERTEX_RING: u64 = 4 << 20;
 /// Initial size of the built-in uniform ring.
@@ -968,6 +971,8 @@ impl Renderer {
                 window_shift(ww, w),
                 window_shift(wh, h),
                 0.0,
+                d.window_transform[0], d.window_transform[1],
+                d.window_transform[2], d.window_transform[3],
             ];
             let (buf, off) = self.uniforms.push(
                 &ctx.device,

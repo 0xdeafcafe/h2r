@@ -336,7 +336,8 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
-        let draw = &self.draw;
+        let draw = self.draw.for_copy(target.copy);
+        let draw = draw.as_ref();
         let (width, height) = guest_size;
         if target.targets.0 == target.targets.1 {
             return None;
@@ -529,7 +530,7 @@ impl IndexedPass {
         };
         let clip: Vec<ScissorRect> = clip
             .iter()
-            .map(|r| scaled_scissor(r, scale, target.size))
+            .map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size))
             .collect::<Option<_>>()?;
         let streams = section.streams.clone();
         let indices = section.indices.clone();

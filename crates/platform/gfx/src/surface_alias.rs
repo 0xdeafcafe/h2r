@@ -112,7 +112,7 @@ impl AliasDecoder {
         let (w, h) = out_grid.size(desc.width, desc.height);
         // A header can describe a full mip chain. Keep every guest mip legal
         // even when the window is smaller than the guest.
-        let (width, height) = if desc.levels > 1 {
+        let (width, height) = if layout.levels.len() > 1 {
             (w.max(desc.width).min(limit), h.max(desc.height).min(limit))
         } else { (w.min(limit), h.min(limit)) };
         if volume && desc.depth > limit { return Err("alias exceeds GPU texture limits".into()); }

@@ -307,6 +307,8 @@ pub struct ScaleStats {
     pub rescales: u64,
     /// Requested physical dimensions of the 640x480 frame.
     pub output: (u32, u32),
+    /// Physical compositor viewport sampled for this frame.
+    pub presentation: (u32, u32),
     /// Nearest whole vertical factor for legacy reports.
     pub scale: u32,
     /// The factor shadow maps are made at in the view ([`shadow_scale`]; 1:
@@ -381,6 +383,7 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     remapped: bool,
     /// Where the wanted scale comes from ([`ScaledBackend::follow_scale`]).
     follow: Option<Box<dyn Fn() -> RenderScale + Send>>,
+    presentation: Option<Box<dyn Fn((u32, u32)) -> (u32, u32) + Send>>,
     /// The view has recorded work not yet submitted.
     view_pending: bool,
     /// A view call failed since the last present.
@@ -484,11 +487,13 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             scaled: Vec::new(),
             remapped: false,
             follow: None,
+            presentation: None,
             view_pending: false,
             frame_failed: false,
             stats: ScaleStats {
                 scale: scale.vertical_rounded(),
                 output: scale.size(640, 480),
+                presentation: scale.size(640, 480),
                 shadow_scale: 1,
                 ..ScaleStats::default()
             },
@@ -533,6 +538,19 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         self.follow = Some(Box::new(wanted));
     }
 
+    /// Sample the compositor's destination at each present. A forced aspect or
+    /// stretch can change the presentation while the 640×480 raster stays fixed.
+    pub fn follow_presentation(&mut self, viewport: impl Fn((u32, u32)) -> (u32, u32) + Send + 'static) {
+        self.presentation = Some(Box::new(viewport));
+        self.retarget(self.scale, self.lighting);
+    }
+
+    pub(super) fn anamorphic_guest_frame(&self) -> bool {
+        let (w, h) = self.stats.presentation;
+        self.presentation.is_some() && self.scale == RenderScale::ONE
+            && w != 0 && h != 0 && u64::from(w) * 3 != u64::from(h) * 4
+    }
+
     /// The lighting in effect.
     pub fn lighting(&self) -> Lighting {
         self.lighting
@@ -569,11 +587,13 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// shadow maps (E3 lighting, whose view runs at 1x too).
     fn awake(&self) -> bool {
         self.scale != RenderScale::ONE || self.shadow_factor() > 1
+            || (!self.single_copy && self.anamorphic_guest_frame())
     }
 
     /// Takes the wanted scale and lighting at a frame boundary.
     fn retarget(&mut self, scale: RenderScale, lighting: Lighting) {
         let was_awake = self.awake();
+        let was_single = self.single();
         // A scaled shadow can be the only up-to-date image in single-copy
         // mode. Preserve it before retiring or handing it to the exact path.
         if self.single() && (scale == RenderScale::ONE || self.shadow_factor() != shadow_scale(scale.vertical_rounded(), lighting)) {
@@ -594,9 +614,15 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         if scale != old {
             self.rescale(scale);
         }
-        // Woken by the lighting alone: the view's surfaces hold what they
-        // held when it went to sleep.
-        if self.scale == old && self.awake() && !was_awake {
+        self.stats.presentation = self.presentation.as_ref()
+            .map_or(self.stats.output, |viewport| viewport(self.stats.output));
+        if self.single() != was_single {
+            let to_display = self.single();
+            self.view.move_counter(&mut self.reference, to_display);
+        }
+        // A freshly allocated exact view or one waking from sleep starts
+        // with the reference's contents until the next draw overwrites them.
+        if self.awake() && ((!was_awake && self.scale == old) || (!self.single_copy && self.scale != old)) {
             if let Err(e) = self.view.submit_recorded() {
                 self.view_failed("submit", e);
             }
@@ -934,9 +960,6 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                     }
                 }
             }
-            if (old == RenderScale::ONE) != (scale == RenderScale::ONE) {
-                self.view.move_counter(&mut self.reference, scale != RenderScale::ONE);
-            }
         }
         self.scale = scale;
         self.stats.scale = scale.vertical_rounded();
@@ -948,11 +971,6 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             if let Err(e) = self.view.destroy_surface(old) {
                 self.view_failed("destroy", e);
             }
-        }
-        // Waking or changing: the new surfaces start as the reference's
-        // image, each guest pixel repeated, until they are drawn again.
-        if self.awake() && !self.single_copy {
-            self.fill_scaled();
         }
         eprintln!("d3d: render resolution {old} -> {scale}");
     }
@@ -1352,7 +1370,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let out = self.reference.draw(
             color.reference,
             depth.map(|d| d.reference),
-            draw,
+            &draw.for_reference(),
             textures.map(|t| t.map(|t| &t.reference)),
         )?;
         let drawn = out == DrawOutcome::Drawn;
@@ -2214,6 +2232,9 @@ impl ScaleView<GfxBackend> for GfxBackend {
     }
 
     fn move_counter(&mut self, reference: &mut GfxBackend, to_display: bool) {
+        if let Some(counter) = self.counter.as_mut() {
+            counter.clear_scratch();
+        }
         std::mem::swap(&mut self.counter, &mut reference.counter);
         self.count_samples = to_display;
     }

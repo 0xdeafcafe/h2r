@@ -393,7 +393,7 @@ impl WaterViewPass {
         self.preflight(&t.sampled, &t.color, t.color_format, &t.depth, t.size, t.device.features())?;
         let constants = self.view.ok_or("water view constants unavailable")?;
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(t.copy, constants),
             guest_size: request.surface_size,
             size: t.size,
             z_scale: request.z_scale,
@@ -486,7 +486,7 @@ impl d3d::ExternalPass for WaterViewPass {
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let Some(constants) = self.view else { return 0 };
         let view = ViewInputs {
-            constants,
+            constants: t.view_constants(constants),
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,
@@ -580,6 +580,7 @@ mod tests {
                     depth: &depth,
                     depth_format: depth.texture().format(),
                     viewport: [0.0, 0.0, 4.0, 4.0],
+                    display_projection_factor: 1.0,
                     z_scale: 1.0,
                     guest_size: size,
                     size,

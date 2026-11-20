@@ -142,7 +142,10 @@ const STORE_COLOR: &str = r#"
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
-    let c = to_bytes(textureLoad(src, min((id.xy * textureDimensions(src) + vec2u(params.width, params.height) / 2u) / vec2u(params.width, params.height), textureDimensions(src) - 1u), 0));
+    let guest = vec2u(params.width, params.height);
+    let host = vec2u(params.src_width, params.src_height);
+    let q = min((id.xy * host + guest / 2u) / guest, host - 1u);
+    let c = to_bytes(textureLoad(src, q, 0));
     mirror[word_index(params, id.x, id.y)] = pack(params, c);
 }
 "#;
@@ -157,7 +160,7 @@ const STORE_DEPTH: &str = r#"
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
     let guest = vec2u(params.width, params.height);
-    let host = textureDimensions(depth_tex);
+    let host = vec2u(params.src_width, params.src_height);
     let q = min((id.xy * host + guest / 2u) / guest, host - 1u);
     var s = 0u;
     if (params.has_stencil != 0u) { s = textureLoad(stencil_tex, q, 0).r; }
@@ -309,6 +312,9 @@ impl Params {
 /// Why a level cannot go through [`GuestWords`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WordsError {
+    /// Empty guest or source extent.
+    #[error("zero-sized word surface")]
+    EmptyExtent,
     /// Not a 32-bit permutation format ([`WordFormat::of`]).
     #[error("{0:?} is not a 32-bit word format")]
     Format(D3DFormat),
@@ -371,6 +377,7 @@ fn words_end(size: (u32, u32), layout: WordLayout) -> u64 {
 }
 
 fn check_layout(size: (u32, u32), layout: WordLayout) -> Result<(), WordsError> {
+    if size.0 == 0 || size.1 == 0 { return Err(WordsError::EmptyExtent); }
     if layout.pitch_words == 0 && !(size.0.is_power_of_two() && size.1.is_power_of_two()) {
         return Err(WordsError::NotPowerOfTwo(size.0, size.1));
     }
@@ -465,7 +472,22 @@ impl GuestWords {
         mirror: &wgpu::Buffer,
         layout: WordLayout,
     ) -> Result<(), WordsError> {
+        self.store_color_scaled(ctx, encoder, src, format, size, mirror, layout, 1u32)
+    }
 
+    /// Encode one sample for each guest pixel of the supplied logical region.
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_color_scaled(
+        &self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+        format: D3DFormat,
+        size: (u32, u32),
+        mirror: &wgpu::Buffer,
+        layout: WordLayout,
+        scale: impl Into<crate::raster::RenderScale>,
+    ) -> Result<(), WordsError> {
         let wf = WordFormat::of(format).ok_or(WordsError::Format(format))?;
         check_layout(size, layout)?;
         let have = mirror.size() / 4;
@@ -473,7 +495,10 @@ impl GuestWords {
         if need > have {
             return Err(WordsError::Bounds { need, have });
         }
+        let (src_width, src_height) = scale.into().size(size.0, size.1);
         let p = Params {
+            src_width,
+            src_height,
             perm: u32::from_le_bytes(wf.perm),
             opaque: wf.opaque as u32,
             ..Params::level(size, layout)
@@ -521,7 +546,21 @@ impl GuestWords {
         mirror: &wgpu::Buffer,
         layout: WordLayout,
     ) -> Result<(), WordsError> {
+        self.store_depth_scaled(ctx, encoder, depth, size, mirror, layout, 1u32)
+    }
 
+    /// Encode one sample for each guest pixel of the supplied logical region.
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_depth_scaled(
+        &self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::Texture,
+        size: (u32, u32),
+        mirror: &wgpu::Buffer,
+        layout: WordLayout,
+        scale: impl Into<crate::raster::RenderScale>,
+    ) -> Result<(), WordsError> {
         check_layout(size, layout)?;
         let have = mirror.size() / 4;
         let need = words_end(size, layout);
@@ -529,7 +568,10 @@ impl GuestWords {
             return Err(WordsError::Bounds { need, have });
         }
         let (depth_view, stencil_view, has_stencil) = Self::depth_views(ctx, depth)?;
+        let (src_width, src_height) = scale.into().size(size.0, size.1);
         let p = Params {
+            src_width,
+            src_height,
             has_stencil: has_stencil as u32,
             ..Params::level(size, layout)
         };
@@ -855,6 +897,16 @@ impl GuestWords {
         self.depth_alias_at_extent(ctx, encoder, depth, format, size, layout, flip, (depth.width(), depth.height()))
     }
 
+    /// Decode from an integer-sized backing, as used by the E3 shadow view.
+    #[allow(clippy::too_many_arguments)]
+    pub fn depth_alias_scaled(&self, ctx: &GfxContext, encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::Texture, format: D3DFormat, size: (u32, u32), layout: WordLayout,
+        flip: u32, scale: u32) -> Result<wgpu::Texture, WordsError> {
+        let scale = scale.max(1);
+        self.depth_alias_at_extent(ctx, encoder, depth, format, size, layout, flip,
+            (depth.width() / scale, depth.height() / scale))
+    }
+
     /// Decode guest word addresses while retaining the source texels within
     /// each word's scaled pixel block (including offset and swizzled aliases).
     #[allow(clippy::too_many_arguments)]
@@ -879,7 +931,7 @@ impl GuestWords {
         }
         let (depth_view, stencil_view, has_stencil) = Self::depth_views(ctx, depth)?;
         let max = ctx.device.limits().max_texture_dimension_2d;
-        let grid = crate::raster::RenderScale::between(guest, (depth.width(), depth.height())).expect("valid depth extent");
+        let grid = crate::raster::RenderScale::between(guest, (depth.width(), depth.height())).ok_or(WordsError::EmptyExtent)?;
         let (w, h) = grid.size(size.0, size.1);
         let (w, h) = (w.min(max), h.min(max));
         let out = ctx.device.create_texture(&wgpu::TextureDescriptor {

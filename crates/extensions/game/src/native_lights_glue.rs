@@ -1354,10 +1354,15 @@ impl RunPass {
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let guest_size = request.surface_size;
-        let scissor = scale_scissor(self.light.scissor, guest_size, t.size).ok_or("unsupported scissor scale")?;
+        let [x, y, width, height] = self.light.scissor;
+        let clip = d3d::PixelRect { x, y, width, height }.projected_x(
+            request.rect, request.projection_factor(t.copy),
+        );
+        let scissor = scale_scissor([clip.x, clip.y, clip.width, clip.height], guest_size, t.size)
+            .ok_or("unsupported scissor scale")?;
         let constants = self.view.ok_or("missing view constants")?;
         let clip = self.clip.filter(|c| c.w_buffered == Some(true)).ok_or("unknown W-buffer at issue")?;
-        let view = ViewInputs { constants, guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
+        let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
         let ready = &self.light.ready;
         let lw = ready.lights.as_ref().ok_or("world lights unavailable")?;
         let mut gpu = upload_on(ready, &t.device, &t.queue);

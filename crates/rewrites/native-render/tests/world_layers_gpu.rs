@@ -178,6 +178,8 @@ fn triangle(x: f32, color: [f32; 4], reference: u8, sample: bool) -> ResolvedDra
         clip_rects: Vec::new(),
         hw: Default::default(),
         textures: headers,
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
     }
 }
@@ -220,7 +222,7 @@ fn record_pass(
     let request = ExternalPassRequest {
         rect: (0, 0, SIZE, SIZE),
         surface_size: (SIZE, SIZE),
-        z_scale: 16_777_215.0,
+        display_projection_factor: 1.0, z_scale: 16_777_215.0,
     };
     let Some(recordings) = backend
         .prepare_external(
@@ -415,7 +417,7 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
                     request: ExternalPassRequest {
                         rect: (0, 0, SIZE, SIZE),
                         surface_size: (SIZE, SIZE),
-                        z_scale: 16_777_215.0,
+                        display_projection_factor: 1.0, z_scale: 16_777_215.0,
                     },
                     plan: ExternalPlan {
                         stage: timeline::native::Stage::World,

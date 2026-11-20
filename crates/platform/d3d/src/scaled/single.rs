@@ -4,7 +4,8 @@ use super::*;
 
 impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     pub(super) fn single(&self) -> bool {
-        self.single_copy && self.scale != RenderScale::ONE
+        self.single_copy && (self.scale != RenderScale::ONE
+            || (self.anamorphic_guest_frame() && self.lighting == Lighting::Retail))
     }
 
     pub(super) fn guest(&self, s: Surf<R, V>) -> V::Surface {

@@ -117,7 +117,8 @@ impl Range {
             defer_uploads,
             ..
         } = &mut *gpu;
-        let draw = &self.draw;
+        let draw = self.draw.for_copy(copy);
+        let draw = draw.as_ref();
         if &ctx.device != device
             || copy != d3d::TargetCopy::Reference
             || target.size != guest_size

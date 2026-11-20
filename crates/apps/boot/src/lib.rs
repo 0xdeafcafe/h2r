@@ -373,6 +373,13 @@ fn run_configured(
     } else {
         None
     };
+    #[cfg(feature = "gpu")]
+    let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    #[cfg(feature = "gpu")]
+    let mut active_size = output_size.as_ref().map(|output| {
+        let initial = output();
+        Arc::new(move || initial) as run_opts::NativeSize
+    });
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -754,6 +761,15 @@ fn run_configured(
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
+                // A failed resize keeps the previous grid. The lens follows the
+                // dimensions the render thread actually accepted at present.
+                if let Some(viewport) = display_size.take() {
+                    b.follow_presentation(move |src| viewport(src));
+                }
+                let stats = b.shared_stats();
+                active_size = Some(Arc::new(move || {
+                    stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
+                }));
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
@@ -781,6 +797,29 @@ fn run_configured(
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
     let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
+    #[cfg(feature = "gpu")]
+    if let (Some(active_size), Some(device)) = (active_size, &d3d_calls) {
+        let projected_size: run_opts::NativeSize = Arc::new(move || {
+            let size = active_size();
+            display_size.as_ref().map_or(size, |display| display(size))
+        });
+        let hud: Arc<dyn Fn() -> u32 + Send + Sync> = match &host.settings {
+            Some(store) => {
+                let setting = store.handle::<u32>(setting_defs::HUD_POSITION.key);
+                Arc::new(move || setting.get())
+            }
+            None => {
+                let def = &setting_defs::HUD_POSITION;
+                let value = match std::env::var("H2_HUD_POSITION") {
+                    Ok(raw) => def.parse_env_text(&raw).map_err(anyhow::Error::msg)?,
+                    Err(_) => def.default,
+                };
+                let position = value.as_int().expect("HUD Position is a choice") as u32;
+                Arc::new(move || position)
+            }
+        };
+        render_aspect::install(&mut features, projected_size, hud, device.ui_layout.clone())?;
+    }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {

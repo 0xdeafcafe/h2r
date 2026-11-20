@@ -142,6 +142,8 @@ fn receiver() -> ResolvedDraw {
             height: 16,
         }),
         clip_rects: vec![],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         hw: Default::default(),
     }
@@ -305,7 +307,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         let request = ExternalPassRequest {
             rect: (0, 0, 16, 16),
             surface_size: (16, 16),
-            z_scale: 16_777_215.0,
+            display_projection_factor: 1.0, z_scale: 16_777_215.0,
         };
         let mut captured = None;
         for (i, original) in [&lit, &lit, &gel, &dark, &lit].into_iter().enumerate() {

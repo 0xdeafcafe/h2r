@@ -514,7 +514,8 @@ impl Pass {
         renderer: &mut ParticleRenderer,
         device_id: u64,
     ) -> Result<ImmediateDrawSnapshot, Refused> {
-        let d = &self.draw;
+        let draw = self.draw.for_copy(t.copy);
+        let d = draw.as_ref();
         if t.guest_size != (d.target.width, d.target.height) {
             return Err(Refused::Target);
         }
@@ -539,7 +540,7 @@ impl Pass {
         primitive.strip_index_format = (primitive.topology
             == wgpu::PrimitiveTopology::TriangleStrip)
             .then_some(wgpu::IndexFormat::Uint32);
-        let clip = d.clip.ok_or(Refused::Scissor)?;
+        let clip = d.display_rect(d.clip.ok_or(Refused::Scissor)?);
         let scissor = scale.rect(clip.x, clip.y, clip.width, clip.height);
         let mut textures = [None, None, None, None];
         for (n, slot) in textures.iter_mut().enumerate() {
@@ -792,6 +793,8 @@ mod tests {
                 hw: Default::default(),
                 texture_info: [None; 4],
                 textures: [None; 4],
+                retail_constants: None,
+                ui_fit: None,
                 glyph_cache: 0,
             },
             source,
@@ -935,7 +938,7 @@ mod tests {
         draw.hw.control0 = Some(d3d::nv2a::CONTROL0_Z_PERSPECTIVE);
         draw.state.render.depth_mode = gfx::state::DepthBufferMode::Disabled;
         let p =
-            d3d::nv2a::resolved::resolve(&draw, [false; 4], gfx::translate::Capabilities::NONE, 2)
+            d3d::nv2a::resolved::resolve(&draw, [false; 4], gfx::translate::Capabilities::NONE, 2u32)
                 .unwrap();
         assert!(p.pixel.explicit_final);
         assert!(p.vertex_uniforms.w_clip.is_some());

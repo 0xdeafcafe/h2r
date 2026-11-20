@@ -1781,6 +1781,7 @@ mod tests {
         let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
         let camera = RenderCamera {
             position: [0.0; 3], forward: [1.0, 0.0, 0.0], up: [0.0, 0.0, 1.0], fov: 60f32.to_radians(),
+            projection_xy: None,
             viewport: [0, 0, SIZE as i16, SIZE as i16], near: 0.0625, far: 1024.0,
         };
         let parts = [(Owner::Cluster(0), 0), (Owner::Cluster(1), 0), (Owner::Cluster(2), 0)];

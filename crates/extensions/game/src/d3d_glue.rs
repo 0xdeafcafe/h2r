@@ -27,6 +27,8 @@ pub struct Installed {
     pub vblank: Option<kernel::periodic::Handler>,
     /// The device, for machine snapshots (`crate::snapshot_glue`).
     pub snapshot: Arc<dyn DeviceSnapshot>,
+    #[cfg(feature = "gpu")]
+    pub ui_layout: Arc<dyn crate::render_aspect::UiLayoutSink>,
 }
 
 /// The device as a machine snapshot sees it, whatever backend it was made
@@ -191,8 +193,9 @@ pub fn window_targets(
         && locked(RESOLUTION.key)
         && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
         && locked(LIGHTING.key);
-    let (main, backend) = if retail {
-        (display(), None)
+    let single = store.handle::<bool>(crate::setting_defs::SINGLE_COPY.key).get();
+    let (main, backend) = if retail && single {
+        (display().as_only_display(), None)
     } else {
         (reference(), Some(display()))
     };
@@ -1474,6 +1477,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
+    #[cfg(feature = "gpu")]
+    let ui_layout = device.clone();
     let dev = device;
     let report = Box::new(move || {
         let mut d = dev.lock().unwrap();
@@ -1508,6 +1513,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
         format!("stats {:?}; last stop {:?}{ev}\n{draws}{extra}", d.stats(), d.last_stop())
     });
     Ok(Installed {
+        #[cfg(feature = "gpu")]
+        ui_layout,
         vblank,
         snapshot,
         report,

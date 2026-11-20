@@ -132,7 +132,7 @@ impl NativeDrawProgram {
         if key.pixel_options.shadow.iter().any(Option::is_some) {
             return Err(UiProgramError::Texture);
         }
-        let scale = scale.into();
+        let scale: crate::scaled::RenderScale = scale.into();
         if scale.magnified() {
             key.pixel_options.glyph = draw.glyph_cache & 0xF;
         }
@@ -162,6 +162,7 @@ pub(super) fn uniforms(
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
         shift: scale.into().shift(),
+        ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
     match key.vertex {
@@ -335,6 +336,8 @@ mod tests {
             },
             textures: [Some(glyph.header), None, None, None],
             texture_info: [Some(glyph), None, None, None],
+            retail_constants: None,
+            ui_fit: None,
             glyph_cache: 1,
         }
     }
@@ -345,11 +348,11 @@ mod tests {
         let caps = Capabilities::ALL;
         let present = [true, false, false, false];
         assert!(matches!(
-            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1),
+            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1u32),
             Err(UiProgramError::Texture)
         ));
-        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
-        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2).unwrap();
+        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1u32).unwrap();
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2u32).unwrap();
         assert_eq!(reference.pixel.alpha_ref[0], 91.0);
         assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
@@ -372,7 +375,7 @@ mod tests {
         assert_eq!(depth.depth_write_enabled, Some(true));
         assert_eq!(depth.stencil.front.pass_op, wgpu::StencilOperation::Replace);
         assert!(draw.writes_depth_stencil());
-        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
+        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1u32).unwrap();
         assert!(!wire.key.0.pixel_options.stipple);
     }
 }

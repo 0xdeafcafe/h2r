@@ -78,11 +78,37 @@ fn draw(c: Block, mesh: u32, pretransformed: bool) -> ResolvedDraw {
             max_z: 1.0,
         },
         textures: [None; 4],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         clip: None,
         clip_rects: Vec::new(),
         hw: d3d::hw::HwState::default(),
     }
+}
+
+#[test]
+fn reference_uses_retail_lens_and_scissors_while_display_uses_its_own() {
+    let retail = world_block(&camera(3.0, 0.2));
+    let mut display = draw(retail, 3, false);
+    let guest = display.shader.constants.clone();
+    let factor = 0.5;
+    assert!(d3d::device::widen_projection_rows(
+        &mut Arc::make_mut(&mut display.shader.constants)[CAM..CAM+4], factor));
+    display.retail_constants = Some((guest.clone(), factor));
+    let scissor = d3d::PixelRect { x: 48, y: 20, width: 128, height: 44 };
+    let first = display.for_copy(d3d::TargetCopy::Reference);
+    assert!(Arc::ptr_eq(&first.shader.constants, &guest));
+    assert_eq!(first.display_rect(scissor), scissor);
+    let second = display.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(second.shader.constants[CAM], guest[CAM].map(|v| v * factor));
+    assert_eq!(second.display_rect(scissor), d3d::PixelRect { x: 184, width: 64, ..scissor });
+    assert_eq!(second.display_rect(d3d::PixelRect { x: 0, width: 640, ..scissor }).width, 640);
+
+    let mut menu = draw(block(), 4, true);
+    menu.ui_fit = d3d::backend::UiFit::about((1920,1080), [320.,240.]);
+    assert_eq!(menu.for_reference().display_rect(scissor), scissor);
+    assert_eq!(menu.display_rect(scissor), d3d::PixelRect { x: 116, width: 96, ..scissor });
 }
 
 /// A camera at `x` along the world's x axis, turned `yaw`.

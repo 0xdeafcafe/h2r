@@ -38,6 +38,7 @@ pub fn resolve(
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
         shift: scale.into().shift(),
+        ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
     match key.vertex {

@@ -421,7 +421,7 @@ impl d3d::ExternalPass for LayerViewPass {
         }
         let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
-        let view = ViewInputs { constants, guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip };
+        let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip };
         Some(gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
     }
 }

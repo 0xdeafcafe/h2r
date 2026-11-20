@@ -138,6 +138,8 @@ pub struct VertexUniforms {
     /// truncation off, so seams between draws stay closed at scale
     /// ("Subpixel snapping and cracks").
     pub shift: [f32; 2],
+    /// UI window scale (xy) and translation (zw), before raster correction.
+    pub ui_transform: [f32; 4],
 }
 
 impl Default for VertexUniforms {
@@ -150,13 +152,14 @@ impl Default for VertexUniforms {
             w_clip: None,
             w_clamp: false,
             shift: [0.0; 2],
+            ui_transform: [1.0, 1.0, 0.0, 0.0],
         }
     }
 }
 
 impl VertexUniforms {
     /// Size of the uniform buffer in bytes.
-    pub const SIZE: usize = (CONSTANT_COUNT + INPUT_COUNT + 2) * 16;
+    pub const SIZE: usize = (CONSTANT_COUNT + INPUT_COUNT + 3) * 16;
 
     /// Buffer contents matching the WGSL struct layout.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -176,7 +179,7 @@ impl VertexUniforms {
         };
         let out = common::uniform_vectors(out, &self.constants);
         let out = common::uniform_vectors(out, &self.defaults);
-        common::uniform_vectors(out, &[viewport, clip]);
+        common::uniform_vectors(out, &[viewport, clip, self.ui_transform]);
     }
 }
 
@@ -193,6 +196,7 @@ struct XvsUniforms {
     // x, y: depth clip range. z: 0 off, 1 cull, 2 clamp.
     // w: guest pixels taken off y.
     clip: vec4f,
+    ui_transform: vec4f,
 }
 @group(0) @binding(0) var<uniform> xvs: XvsUniforms;
 
@@ -301,7 +305,8 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // (docs/graphics/high-resolution.md, "Subpixel snapping and cracks").
 fn xvs_fixup(p: vec4f) -> vec4f {
     let shift = vec2f(xvs.viewport.w, xvs.clip.w);
-    let t = select(trunc(p.xy * 16.0) / 16.0, p.xy, shift > vec2f(0.0));
+    let window = p.xy * xvs.ui_transform.xy + xvs.ui_transform.zw;
+    let t = select(trunc(window * 16.0) / 16.0, window, shift > vec2f(0.0));
     let size = xvs.viewport.xy;
     let far = (shift > vec2f(0.0)) & (t > size - 0.5);
     let xy = select(t - shift, max(t - shift, size), far);

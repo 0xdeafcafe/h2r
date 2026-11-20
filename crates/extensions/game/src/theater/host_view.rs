@@ -17,22 +17,52 @@ use native_render::objects::ObjectFrame;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-const SIZE: (u32, u32) = (960, 540);
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Dimensions {
+    raster: (u32, u32),
+    display: (u32, u32),
+}
 type Present = Box<dyn FnMut(&wgpu::TextureView, (u32, u32)) -> Result<(), String> + Send>;
 
 pub struct HostView {
     gfx: gfx::GfxContext,
+    raster: crate::run_opts::NativeSize,
+    display: Box<dyn Fn((u32, u32)) -> (u32, u32) + Send>,
     present: Present,
 }
 
 impl HostView {
     pub fn new(
         gfx: gfx::GfxContext,
+        raster: crate::run_opts::NativeSize,
+        display: impl Fn((u32, u32)) -> (u32, u32) + Send + 'static,
         present: impl FnMut(&wgpu::TextureView, (u32, u32)) -> Result<(), String> + Send + 'static,
     ) -> Self {
         Self {
             gfx,
+            raster,
+            display: Box::new(display),
             present: Box::new(present),
+        }
+    }
+
+    fn dimensions(&self) -> Dimensions {
+        let (w, h) = (self.raster)();
+        let limit = self
+            .gfx
+            .device
+            .limits()
+            .max_texture_dimension_2d
+            .min(settings::Resolution::MAX_DIMENSION);
+        let longest = w.max(h).max(limit);
+        let axis = |n| {
+            ((u64::from(n) * u64::from(limit) + u64::from(longest / 2)) / u64::from(longest)).max(1)
+                as u32
+        };
+        let raster = (axis(w), axis(h));
+        Dimensions {
+            raster,
+            display: (self.display)(raster),
         }
     }
 }
@@ -43,7 +73,7 @@ pub(super) struct MountedView {
     target: OffscreenTarget,
     pool: gfx::ring::UploadPool,
     map: Option<(Bsp, Option<Scene>)>,
-    last: Option<(u64, u64)>,
+    last: Option<(u64, u64, Dimensions)>,
     error: Option<String>,
     unavailable: Vec<String>,
     blank: bool,
@@ -55,8 +85,11 @@ impl Session {
         output: HostView,
         vfs: Arc<Mutex<vfs::Vfs>>,
     ) -> anyhow::Result<()> {
-        let target =
-            OffscreenTarget::new(&output.gfx.device, SIZE, wgpu::TextureFormat::Rgba8Unorm);
+        let target = OffscreenTarget::new(
+            &output.gfx.device,
+            output.dimensions().raster,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         self.view
             .set(Mutex::new(MountedView {
                 output,
@@ -88,14 +121,15 @@ impl Session {
         };
         let revision = camera.revision();
         let mut view = view.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(last) = view.last {
-            if last == (tick, revision)
-                || (!paused && revision == last.1 && !tick.is_multiple_of(u64::from(every)))
-            {
-                return;
-            }
+        let dimensions = view.output.dimensions();
+        if let Some((last_tick, last_revision, last_size)) = view.last
+            && revision == last_revision
+            && dimensions == last_size
+            && (tick == last_tick || (!paused && !tick.is_multiple_of(u64::from(every))))
+        {
+            return;
         }
-        view.last = Some((tick, revision));
+        view.last = Some((tick, revision, dimensions));
         // Release the guest memory gate before reading files, uploading or presenting.
         let mut unavailable = Vec::new();
         let frame = Frame::read(
@@ -111,7 +145,7 @@ impl Session {
             }
             view.unavailable = unavailable;
         }
-        if let Err(e) = view.draw(frame, &camera) {
+        if let Err(e) = view.draw(frame, &camera, dimensions) {
             if view.error.as_deref() != Some(&e) {
                 eprintln!("theater: playerless observer: {e}");
                 view.error = Some(e);
@@ -261,12 +295,12 @@ impl Frame {
                 position,
                 forward,
                 up,
-                // The unit tag stores horizontal FOV. retail's observer
-                // 0x171d90 converts it for the render camera's viewport.
-                fov: 2.0 * ((fov * 0.5).tan() * SIZE.1 as f32 / SIZE.0 as f32).atan(),
+                // The unit tag gives the retail horizontal FOV of a 4:3 view.
+                fov: retail_vertical_fov(fov),
                 near: 0.03,
                 far: 4096.,
-                viewport: [0, 0, SIZE.1 as i16, SIZE.0 as i16],
+                projection_xy: None,
+                viewport: [0, 0, 480, 640],
             },
         })
     }
@@ -395,9 +429,31 @@ impl Scene {
     }
 }
 
+fn retail_vertical_fov(horizontal: f32) -> f32 {
+    2.0 * ((horizontal * 0.5).tan() * (3.0 / 4.0)).atan()
+}
+
+fn observer_lens(camera: RenderCamera, (w, h): (u32, u32)) -> RenderCamera {
+    let factor = camera.aspect() * h.max(1) as f32 / w.max(1) as f32;
+    native_render::camera::display_camera(camera, factor)
+}
+
 impl MountedView {
-    fn draw(&mut self, frame: Option<Frame>, camera: &FilmCamera) -> Result<(), String> {
+    fn draw(
+        &mut self,
+        frame: Option<Frame>,
+        camera: &FilmCamera,
+        dimensions: Dimensions,
+    ) -> Result<(), String> {
         let gfx = &self.output.gfx;
+        if self.target.target().size != dimensions.raster {
+            self.target = OffscreenTarget::new(
+                &gfx.device,
+                dimensions.raster,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            self.blank = false;
+        }
         let target = self.target.target();
         let depth = target.depth.expect("offscreen depth");
         let depth_format = gfx::presenter::DEPTH_FORMAT;
@@ -441,6 +497,7 @@ impl MountedView {
                             ..lens
                         };
                         scene.previous_view = Some(view);
+                        let view = observer_lens(view, dimensions.display);
                         scene.models(gfx, &frame.objects);
                         visible = Some((scene, view, eye.filter(|_| first_person), &frame.objects));
                     }
@@ -512,8 +569,8 @@ impl MountedView {
             let viewport = PassViewport {
                 x: 0.,
                 y: 0.,
-                width: SIZE.0 as f32,
-                height: SIZE.1 as f32,
+                width: dimensions.raster.0 as f32,
+                height: dimensions.raster.1 as f32,
             };
             scene.world.encode(
                 &gfx.device,
@@ -523,7 +580,7 @@ impl MountedView {
                 depth,
                 depth_format,
                 viewport,
-                SIZE,
+                dimensions.raster,
             );
             scene.models.encode(
                 &gfx.device,
@@ -536,10 +593,55 @@ impl MountedView {
             );
         }
         let patches = arena.upload_commands(&gfx.queue);
-        gfx.queue.submit(patches.into_iter().chain([encoder.finish()]));
+        gfx.queue
+            .submit(patches.into_iter().chain([encoder.finish()]));
         gfx.queue.on_submitted_work_done(move || drop(arena));
-        (self.output.present)(target.color, SIZE)?;
+        (self.output.present)(target.color, dimensions.raster)?;
         self.blank = blank;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use native_render::{cull::Frustum, world::Aabb};
+
+    #[test]
+    fn observer_projection_and_culling_admit_the_same_periphery_at_each_aspect() {
+        let eye = RenderCamera {
+            position: [0.; 3],
+            forward: [1., 0., 0.],
+            up: [0., 0., 1.],
+            fov: retail_vertical_fov(90f32.to_radians()),
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.03,
+            far: 4096.,
+        };
+        for ((w, h), edge) in [
+            ((640, 480), 10.),
+            ((1920, 1200), 12.),
+            ((1920, 1080), 40. / 3.),
+            ((2520, 1080), 17.5),
+            ((5120, 1440), 80. / 3.),
+        ] {
+            let vp = observer_lens(eye, (w, h)).view_projection();
+            let frustum = Frustum::from_view_projection(&vp);
+            for (side, up, visible) in [
+                (edge - 0.1, 0., true),
+                (edge + 0.1, 0., false),
+                (0., 7.4, true),
+                (0., 7.6, false),
+            ] {
+                let p = [10., -side, up];
+                let clip = frame_scene::camera::transform(&vp, [p[0], p[1], p[2], 1.]);
+                assert_eq!(
+                    clip[0].abs() <= clip[3] && clip[1].abs() <= clip[3],
+                    visible
+                );
+                assert_eq!(frustum.may_see(&Aabb { min: p, max: p }), visible);
+            }
+        }
     }
 }

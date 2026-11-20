@@ -199,6 +199,8 @@ fn quad(cam: &Mat4, z: f32, half: f32, colors: [u32; 4]) -> ResolvedDraw {
             max_z: 1.0,
         },
         textures: [None; 4],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         clip: None,
         clip_rects: Vec::new(),

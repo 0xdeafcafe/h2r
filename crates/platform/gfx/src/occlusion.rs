@@ -343,6 +343,18 @@ impl PixelCounter {
         self.sample_scale = scale;
     }
 
+    /// Release scratch textures for retired attachments. Submitted commands
+    /// own their GPU references until execution completes.
+    pub fn retire_extent(&mut self, width: u32, height: u32) {
+        self.targets.retain(|&(w, h, _), _| (w, h) != (width, height));
+        self.depths.retain(|&(w, h, _, _), _| (w, h) != (width, height));
+    }
+
+    pub fn clear_scratch(&mut self) {
+        self.targets.clear();
+        self.depths.clear();
+    }
+
     /// `CLEAR_REPORT_VALUE`: the count restarts at zero once `encoder`
     /// runs.
     pub fn clear(&mut self, encoder: &mut wgpu::CommandEncoder) {

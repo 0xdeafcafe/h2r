@@ -199,6 +199,7 @@ pub struct GfxBackend {
     resizer: Option<gfx::resize::Resizer>,
     alias_decoder: gfx::surface_alias::AliasDecoder,
     pub(crate) single_copy_aliases: bool,
+    only_display: bool,
     pub(crate) blitter: Option<gfx::blit::Blitter>,
     /// The interpolated reprojection's warp pass (made on first use).
     warper: Option<gfx::blit::Warper>,
@@ -352,6 +353,7 @@ impl GfxBackend {
             resizer: None,
             alias_decoder: Default::default(),
             single_copy_aliases: false,
+            only_display: false,
             warper: None,
             last_submit: None,
             prev_frame_end: None,
@@ -444,6 +446,13 @@ impl GfxBackend {
     /// in the frame, as `H2_BOOT_CAPTURE` does). Slow: a diagnostic.
     pub fn set_merge_check(&mut self, frame: Option<u64>) {
         self.merge_check_frame = frame;
+    }
+
+    /// Mark the directly presented backend as the sole display copy. Native
+    /// replacements use the same presentation lens as ordinary D3D draws.
+    pub fn as_only_display(mut self) -> Self {
+        self.only_display = true;
+        self
     }
 
     /// Replaces the shader translator for textured and programmable draws.
@@ -1210,7 +1219,11 @@ impl Backend for GfxBackend {
 
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<(), String> {
         self.flush()?;
-        self.scales.remove(&surface);
+        if self.scales.remove(&surface).is_some()
+            && let (Some(counter), Ok(image)) = (self.counter.as_mut(), self.store.get(surface))
+        {
+            counter.retire_extent(image.desc().width, image.desc().height);
+        }
         if self.store.remove(surface) {
             Ok(())
         } else {
@@ -1305,39 +1318,14 @@ impl Backend for GfxBackend {
         // Vertex cache snapshots keep their GPU buffers across frames.
         let stream_ids: Vec<Option<u64>> = d.streams.iter().map(|s| s.data.cache_id()).collect();
         // Window-coordinate geometry: the clip rectangle only scissors.
-        let pieces: Vec<Option<ScissorRect>> = d
-            .clip_rects
-            .iter()
-            .map(|c| {
-                Some(ScissorRect {
-                    x: c.x,
-                    y: c.y,
-                    width: c.width,
-                    height: c.height,
-                })
-            })
-            .map(|p| p.map(|r| scale_rect(r, scale)))
-            .collect();
-        let scissor = Some(scale_rect(
-            match d.clip {
-                Some(c) => ScissorRect {
-                    x: c.x,
-                    y: c.y,
-                    width: c.width,
-                    height: c.height,
-                },
-                None => {
-                    let v = d.viewport;
-                    ScissorRect::from_edges(
-                        v.x as i64,
-                        v.y as i64,
-                        v.x as i64 + v.width as i64,
-                        v.y as i64 + v.height as i64,
-                    )
-                }
-            },
-            scale,
-        ));
+        let host_scissor = |rect: crate::PixelRect| {
+            let r = d.display_rect(rect);
+            scale_rect(ScissorRect { x: r.x, y: r.y, width: r.width, height: r.height }, scale)
+        };
+        let pieces: Vec<_> = d.clip_rects.iter().map(|&r| Some(host_scissor(r))).collect();
+        let scissor = Some(host_scissor(d.clip.unwrap_or(crate::PixelRect {
+            x: d.viewport.x, y: d.viewport.y, width: d.viewport.width, height: d.viewport.height,
+        })));
         // Pre-transformed positions stay in the guest's window.
         let window = (scale != RenderScale::ONE).then_some((d.target.width, d.target.height));
         let count_samples = d.hw.zpass_count_enable && self.count_samples;
@@ -1356,6 +1344,7 @@ impl Backend for GfxBackend {
                 indices,
                 count_samples,
                 window,
+                window_transform: d.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
                 stream_ids: &stream_ids,
                 index_id,
                 ..Draw::new(
@@ -1659,7 +1648,9 @@ impl Backend for GfxBackend {
                 targets: (surfaces.color, surfaces.depth),
                 uploads,
                 device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
-                depth: dv, depth_format: df, size, sampled, slots, copy, stages, single_display: false,
+                depth: dv, depth_format: df, size, sampled, slots, stages,
+                copy: if self.only_display { crate::TargetCopy::Display } else { copy },
+                single_display: self.only_display,
             }]))
         })();
         Ok(match attachments? {
@@ -1733,12 +1724,13 @@ impl Backend for GfxBackend {
             depth: &dv,
             depth_format: df,
             viewport: crate::backend::external_viewport(&request, size),
+            display_projection_factor: request.display_projection_factor,
             z_scale: request.z_scale,
             guest_size: request.surface_size,
             size,
             sampled: &sampled,
             slots: &[],
-            copy: crate::TargetCopy::Reference,
+            copy: if self.only_display { crate::TargetCopy::Display } else { crate::TargetCopy::Reference },
             stages: [None; 4],
             on_submit: None,
         });
@@ -1884,9 +1876,10 @@ impl Backend for GfxBackend {
         let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
+        let scale = self.scales.get(&surface).copied().unwrap_or(RenderScale::ONE);
         let stored = match kind {
-            SurfaceKind::Color => words.store_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
-            SurfaceKind::DepthStencil => words.store_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
+            SurfaceKind::Color => words.store_color_scaled(ctx, &mut enc, &texture, format, (width, height), &m, layout, scale),
+            SurfaceKind::DepthStencil => words.store_depth_scaled(ctx, &mut enc, &texture, (width, height), &m, layout, scale),
         };
         self.side_done(enc, passes);
         stored.map_err(|e| format!("mirror_store: {e}"))

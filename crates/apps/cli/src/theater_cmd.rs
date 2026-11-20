@@ -297,12 +297,18 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             dir.clone(),
         )?;
         let (overlay, controller) = overlay(theater, dir.join("screenshots"));
+        let data = opts.data.unwrap_or_else(content::store::default_data_root);
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
             audio: false,
             keyboard: false,
             gamepads: true,
             theater: Some(overlay),
+            aspect: if host_view {
+                app::DisplayAspect::Source
+            } else {
+                app::DisplayAspect::Standard
+            },
             mouse_capture: false,
             keep_open_on_guest_exit: false,
             ..Default::default()
@@ -314,11 +320,21 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             let (gfx, film_view) = if host_view {
                 // The authoritative guest keeps the light host's D3D profile.
                 // Its separately presented POV must not advance retail RNG.
+                let (store, problems) = boot::setting_defs::load(&data, &[]);
+                for p in problems {
+                    eprintln!("theater: {p}");
+                }
+                let raster = boot::d3d_glue::output_size(
+                    Some(&store),
+                    std::sync::Arc::new(window.native_size()),
+                )?;
                 let mut sink = window.frame_sink();
                 (
                     None,
                     Some(boot::theater::HostView::new(
                         window.gfx_context(),
+                        raster,
+                        window.display_size(),
                         move |view, size| {
                             sink.submit_view(view, size, true)
                                 .map(|_| ())

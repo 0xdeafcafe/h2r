@@ -74,6 +74,9 @@ pub fn backend_draws() -> u64 {
 }
 
 mod admission_scope;
+mod projection;
+#[cfg(feature = "gpu")]
+pub use projection::widen_projection_rows;
 mod display;
 mod fragments;
 mod mirror;
@@ -1030,6 +1033,8 @@ pub struct Device<B: Backend> {
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
+    ui_fit: Option<crate::backend::UiFit>,
+    projection: projection::DisplayProjection,
     opaque_world_admission: Option<usize>,
     opaque_targets: Option<PreparedOpaqueTargets>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
@@ -1358,6 +1363,8 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             pending_external: Vec::new(),
             admissions: Vec::new(),
+            ui_fit: None,
+            projection: Default::default(),
             opaque_world_admission: None,
             opaque_targets: None,
             scoped_admission: None,
@@ -2722,6 +2729,7 @@ impl<B: Backend> Device<B> {
         let request = crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: target.size,
+            display_projection_factor: 1.0, // Full-frame post processing.
             z_scale,
         };
         self.swallowing.as_mut().expect("post call").last = Some((color, request));
@@ -3019,6 +3027,7 @@ impl<B: Backend> Device<B> {
         Ok(crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: (d.width, d.height),
+            display_projection_factor: self.projection_factor_for_target((d.width, d.height)),
             z_scale,
         })
     }
@@ -3032,8 +3041,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) -> bool {
-        let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
-        pass.view_constants(&constants);
+        pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         if let Some(z_max) = self.guest_z_scale(mem) {
             pass.depth_clip(self.depth_clip(mem, z_max));
         }
@@ -5398,7 +5406,8 @@ impl<B: Backend> Device<B> {
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
-        let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
+        #[allow(unused_mut)]
+        let mut shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);
         let sampled = sampled_stages(&shader, &parts.words, &state);
         let mut extras = parts.words.stage_extras();
@@ -5487,6 +5496,13 @@ impl<B: Backend> Device<B> {
             Some(p) if self.matches_opaque_targets(mem, p.targets) => (p.targets.info, false),
             _ => self.target_info(mem)?,
         };
+        #[cfg(feature = "gpu")]
+        let retail_constants = self.projection
+            .for_draw(&mut shader, self.ui_fit.is_none() && (target.width, target.height) == (640, 480))
+            .map(|constants| (constants, self.projection_factor()));
+        #[cfg(not(feature = "gpu"))]
+        let retail_constants = None;
+
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
@@ -5513,6 +5529,8 @@ impl<B: Backend> Device<B> {
             target,
             textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
+            retail_constants,
+            ui_fit: self.ui_fit.filter(|_| (target.width, target.height) == (640, 480)),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self.swallowing.as_ref().is_some_and(|s| s.plan.call.is_some()) {
@@ -6523,7 +6541,7 @@ mod depth_write_tests {
     fn queued_fallback_requires_identical_guest_writes() {
         let mut binding = ExternalBinding {
             surfaces: crate::ExternalSurfaces { color: 1, depth: 2, slots: vec![], slot_sizes: vec![], sampled: vec![] },
-            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), z_scale: 1.0 },
+            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), display_projection_factor: 1.0, z_scale: 1.0 },
             colors: vec![(11, 1)], depth_write: true,
         };
         assert!(binding.same_draw_writes(11, 1, Some(2), true));

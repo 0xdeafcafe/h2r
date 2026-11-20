@@ -31,6 +31,7 @@ fn camera() -> RenderCamera {
         forward: [1.0, 0.0, 0.0],
         up: [0.0, 0.0, 1.0],
         fov: 60f32.to_radians(),
+        projection_xy: None,
         viewport: [0, 0, SIZE as i16, SIZE as i16],
         near: 0.0625,
         far: 1024.0,

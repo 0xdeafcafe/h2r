@@ -27,6 +27,7 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
         *v = vector(i as u32 + 1);
     }
     u.surface = [-0.0, 1024.0];
+    u.ui_transform = [0.75, 1.0, 80.0, 0.0];
     u.z_max = 65535.0;
     u.shift = [0.375, 0.4375];
     let mut out = [0xa5; VertexUniforms::SIZE];
@@ -42,6 +43,7 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
                 Some([lo, hi]) => [lo, hi, if clamp { 2.0 } else { 1.0 }, u.shift[1]],
                 None => [0.0, 0.0, 0.0, u.shift[1]],
             });
+            expected.push(u.ui_transform);
             u.write_bytes(&mut out);
             assert_eq!(out.as_slice(), bytes(&expected));
             assert_eq!(out.as_slice(), u.to_bytes());

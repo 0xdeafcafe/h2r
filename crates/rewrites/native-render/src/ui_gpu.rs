@@ -85,6 +85,7 @@ impl DeviceCache {
             &draw.clip_rects
         };
         let mut clips = scissor.iter().map(|&clip| {
+            let clip = draw.display_rect(clip);
             scaled_scissor(&clip, scale, target.size)
         });
         let first = clips.next().flatten().ok_or(Refusal::Geometry)?;

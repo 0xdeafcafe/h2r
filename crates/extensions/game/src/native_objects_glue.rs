@@ -1023,13 +1023,13 @@ impl ObjectsPass {
             return Err("planned object geometry unavailable");
         }
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(t.copy, constants),
             guest_size: request.surface_size,
             size: t.size,
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, &self.draws, texaccum)
+        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)
     }
 }
 
