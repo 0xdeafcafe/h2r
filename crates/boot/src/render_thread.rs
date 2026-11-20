@@ -227,9 +227,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "EMBLEM_WIDGET_DRAW",
         "consumes the shared card refresh flag and updates the live widget",
     ),
-    // Local bots: the game thread's frame, sound and players screen. Around
-    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
-    // hidden; the render thread never meets these points.
+    // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
     (
         "bots",
@@ -237,10 +235,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "phantoms sample their pad once per simulation tick: the game thread's tick, \
          answered asynchronously",
     ),
-    ("bots", "SOUND_UPDATE", AFTER),
-    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
-    ("bots", "SOUND_OWNER_USER", AFTER),
-    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "ITEM_SET_UNIT",

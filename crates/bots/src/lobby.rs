@@ -25,12 +25,7 @@
 //!   against `+0x50`), "Waiting for ... to start the game".
 //! - 9: ready.
 //!
-//! None of them reads a local slot's Xbox Live flag or account: a bot
-//! signed in to a profile but not to Live is no reason for any of them.
-
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::GuestMemory;
-use engine::points;
 
 use crate::guest::R;
 
@@ -191,11 +186,6 @@ pub fn facts(m: &dyn GuestMemory) -> R<Facts> {
 /// hosted or joined (Split Screen's players join on the players screen
 /// whatever it has). A running game keeps the session in these states
 /// too, so a caller asks about the game itself as well.
-///
-/// The bots' join gate opens on this rather than on the screen: the
-/// lobby shares its window and slot with the screens over it, and
-/// `ui_watch` reads it as no screen (the user's run: `top none` in a Live
-/// custom game lobby).
 pub fn pregame(f: &Facts) -> bool {
     f.lobby_on
         && f.networking
@@ -384,94 +374,6 @@ pub fn blocked_by(state: u32, f: &Facts) -> String {
         8 => "the party leader check: this console does not lead the party (session +0x72d8 is not +0x50)".to_owned(),
         n => format!("the matchmaking check (state {n})"),
     }
-}
-
-/// The log line for one Start press: the game's start state, what holds
-/// it back, and each bot slot (`slots`, [`crate::guest::slot_summary`]).
-pub fn start_line(state: u32, f: &Facts, slots: &[String]) -> String {
-    let mut line = format!(
-        "bots: start state {state}, blocked by {}",
-        blocked_by(state, f)
-    );
-    if !slots.is_empty() {
-        line.push_str("; ");
-        line.push_str(&slots.join(", "));
-    }
-    line
-}
-
-/// The pregame lobby's input event (`0x250b1e`'s argument): `+0` the kind
-/// (5 a button), `+4` the controller, `+8` the button (0 A, `0xc` Start).
-pub const EVENT_KIND: u32 = 0;
-pub const EVENT_BUTTON_PRESS: u32 = 5;
-
-/// Whether the lobby event at `event` is a Start press: A or Start from a
-/// controller with a profile (the lobby's own test, `0x250b3f`), so Start
-/// or the Start Game row may act on it.
-pub fn start_press(m: &dyn GuestMemory, event: u32) -> R<Option<u32>> {
-    use crate::guest::{BUTTON_A, BUTTON_START, EVENT_BUTTON, EVENT_CONTROLLER, signed_in};
-    if m.u32(event + EVENT_KIND)? != EVENT_BUTTON_PRESS {
-        return Ok(None);
-    }
-    let port = m.u32(event + EVENT_CONTROLLER)?;
-    let button = m.u32(event + EVENT_BUTTON)?;
-    if port >= 4 || !matches!(button, BUTTON_A | BUTTON_START) || !signed_in(m, port)? {
-        return Ok(None);
-    }
-    Ok(Some(port))
-}
-
-/// The lobby list's Start Game row (`LOBBY_ROW_PRESS`'s row 0).
-pub const ROW_START_GAME: u16 = 0;
-
-/// Whether the lobby list's item press (`LOBBY_ROW_PRESS`: `item` the
-/// record whose `+0` is the input event, `row` the row word's address) is
-/// Start Game pressed from a controller with a profile, the handler's own
-/// tests (`0x250fd5`, `0x25100e`), so the start state is asked for
-/// (`0x251051`). The list takes A before the screen's handler, so this is
-/// how A on Start Game is seen.
-pub fn start_row_press(m: &dyn GuestMemory, item: u32, row: u32) -> R<Option<u32>> {
-    if m.u16(row)? != ROW_START_GAME {
-        return Ok(None);
-    }
-    let event = m.u32(item)?;
-    let port = m.u32(event + crate::guest::EVENT_CONTROLLER)?;
-    if port >= 4 || !crate::guest::signed_in(m, port)? {
-        return Ok(None);
-    }
-    Ok(Some(port))
-}
-
-/// For a Start press in the lobby: asks the game for its start state
-/// (`LOBBY_START_STATE`, no progress out; it only reads), reads what its
-/// checks read ([`facts`]) and the slots on `ports`
-/// ([`crate::guest::slot_summary`]), then calls `then` (a `fn() ret 0` the
-/// hook answers for, so its frame still runs). Returns the log line
-/// ([`start_line`]) and the frame's EAX as the answer.
-pub async fn start_state_then(
-    cx: Cx,
-    ports: Vec<u32>,
-    then: u32,
-) -> Result<(String, Ret), EntryError> {
-    let state = cx
-        .call(GuestCall::new(points::LOBBY_START_STATE.base).args([0]))
-        .await?
-        .eax;
-    let line = cx.read(|m| {
-        let slots: Vec<String> = ports
-            .iter()
-            .map(|&p| crate::guest::slot_summary(m, p))
-            .collect();
-        match facts(m) {
-            Ok(f) => start_line(state, &f, &slots),
-            Err(e) => format!(
-                "bots: start state {state} (the session read faulted at {:#x})",
-                e.addr
-            ),
-        }
-    });
-    let r = cx.call(GuestCall::new(then)).await?;
-    Ok((line, Ret::new(r.eax, 0)))
 }
 
 #[cfg(test)]

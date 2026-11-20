@@ -196,13 +196,9 @@ pub struct Playlist {
     pub frames_from_host: bool,
 }
 
-/// The Clankers a host runs (docs/game/bots.md §6, §9): every bot goes
-/// out with `bot: true`, keyed by its game slot like any player. A bot on
-/// a local slot is found by its controller port, a phantom by its machine
-/// id. Only a bot from a server roster carries an xuid (its bot account,
-/// §9.5: a phantom's rostered one, or the one a local bot is on Live as),
-/// and only while the roster is in force: the rest have no account, so
-/// the server and the web keep them off stats pages and ranks.
+/// The host's phantoms, identified by machine ID and recorded with
+/// `bot: true`. A bot carries its server-issued XUID only while its
+/// roster is in force.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bots {
     /// The Live session a server roster was given for (16 hex digits), while
@@ -214,41 +210,15 @@ pub struct Bots {
     /// (`live_proto::bots::is_local_xuid`) are never sent; a rostered one
     /// is sent only with `session_id`.
     pub machines: Vec<([u8; 6], live_proto::Xuid)>,
-    /// The controller ports (bit `p` for port `p`) Clankers play from on
-    /// local slots.
-    pub ports: u8,
-    /// Each local bot's port and its bot account's xuid, for those the
-    /// roster gave one. Sent only with `session_id`, and only a server
-    /// bot xuid (`live_proto::bots::is_server_xuid`).
-    pub accounts: Vec<(u8, live_proto::Xuid)>,
 }
 
 impl Bots {
-    /// Whether `p` is one of the bots: a local player on a bot's port, or a
-    /// remote player on a phantom's machine. A phantom made after the
-    /// game's start (not in `machines`) is still one by its machine id
-    /// (`live_proto::bots::is_phantom_machine`): the run 20261119-020015
-    /// recorded two such as humans ("6 players, 3 bots").
+    /// A phantom can join after the game starts. Its machine ID identifies
+    /// it even if it was absent from the roster at the start.
     fn plays(&self, p: &PlayerState) -> bool {
-        match p.local_user {
-            Some(_) => p
-                .controller
-                .is_some_and(|c| c < 8 && self.ports & 1 << c != 0),
-            None => {
-                live_proto::bots::is_phantom_machine(p.machine)
-                    || self.machines.iter().any(|(m, _)| *m == p.machine)
-            }
-        }
-    }
-
-    /// The bot account of the local bot on controller `port`, if the
-    /// roster in force gave it one.
-    fn account(&self, port: u8) -> Option<live_proto::Xuid> {
-        self.session_id.as_ref()?;
-        self.accounts
-            .iter()
-            .find(|(p, x)| *p == port && live_proto::bots::is_server_xuid(*x))
-            .map(|(_, x)| *x)
+        p.local_user.is_none()
+            && (live_proto::bots::is_phantom_machine(p.machine)
+                || self.machines.iter().any(|(m, _)| *m == p.machine))
     }
 
     /// The rostered xuid of a remote player on `machine`, if one of the
@@ -971,9 +941,8 @@ impl Session {
 }
 
 /// Who `p` is to the server: a bot is a bot (`bot: true`, with its
-/// rostered xuid when it has one), whichever slot it plays from; local
-/// player 0 is otherwise the signed-in account; anyone else is as the game
-/// said.
+/// rostered XUID when it has one). Local player 0 uses the signed-in
+/// account. Everyone else keeps the identity reported by the game.
 fn identity(
     signed_in: Option<live_proto::Xuid>,
     bots: Option<&Bots>,
@@ -984,11 +953,7 @@ fn identity(
         return (None, Some(true));
     }
     if let Some(b) = bots.filter(|b| b.plays(p)) {
-        let xuid = match p.local_user {
-            None => b.xuid(p.machine),
-            Some(_) => p.controller.and_then(|c| b.account(c)),
-        };
-        return (xuid, Some(true));
+        return (b.xuid(p.machine), Some(true));
     }
     if let Some(x) = signed_in.filter(|_| p.local_user == Some(0)) {
         return (Some(x), p.player.bot);
@@ -1911,7 +1876,7 @@ mod tests {
         p
     }
 
-    /// Free-for-all (a Clankers game: the host and local bots, all team 0)
+    /// Free-for-all (a Clankers game: the host and phantoms, all team 0)
     /// has no betrayals: every player kill is a kill.
     #[test]
     fn free_for_all_kills_are_never_betrayals() {
@@ -3140,11 +3105,10 @@ mod tests {
         session.set_bots(Some(Bots {
             session_id: Some("0123456789abcdef".into()),
             machines: vec![(a, bot_a), (b, live_proto::bots::local_xuid(2)), (c, bot_c)],
-            ports: 1 << 1,
-            accounts: Vec::new(),
         }));
         let mut port = player(1, 0);
         port.local_user = Some(1);
+        port.player.local = Some(true);
         port.controller = Some(1);
         port.machine = [0x00, 0x50, 0xf2, 1, 2, 3];
         let mut human = player(0, 0);
@@ -3163,8 +3127,8 @@ mod tests {
         let players = &game["players"];
         assert_eq!(players[0]["xuid"], me.to_string());
         assert!(players[0].get("bot").is_none());
-        assert!(players[1].get("xuid").is_none(), "a local-port Clanker");
-        assert_eq!(players[1]["bot"], true);
+        assert!(players[1].get("xuid").is_none(), "a second local player");
+        assert!(players[1].get("bot").is_none());
         assert_eq!(players[2]["xuid"], bot_a.to_string());
         assert_eq!(players[2]["bot"], true);
 
@@ -3213,8 +3177,6 @@ mod tests {
         session.set_bots(Some(Bots {
             session_id: Some("0123456789abcdef".into()),
             machines: vec![(listed, rostered)],
-            ports: 0,
-            accounts: Vec::new(),
         }));
         // Player 0 is this console's own in `player`; here it is a
         // remote phantom.
@@ -3258,32 +3220,21 @@ mod tests {
         );
     }
 
-    /// Clankers on local slots (docs/game/bots.md §4), without Live: each
-    /// is a player with its own name, keyed by its game slot, `bot: true`
-    /// and no xuid, from the start to the end: in the roster, the scores,
-    /// the frames' positions and the final standings. The human on port 0
-    /// keeps the signed-in account; no session is named.
+    /// Host-made phantoms carry no account. They still appear in the
+    /// roster, scores, positions and final standings under their slots.
     #[test]
-    fn local_slot_clankers_are_bots_without_an_account() {
+    fn host_made_phantoms_are_bots_without_an_account() {
         use live_proto::Xuid;
         let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
         let mut session = Session::new("test", None).with_signed_in(Some(me));
-        session.set_bots(Some(Bots {
-            session_id: None,
-            machines: Vec::new(),
-            ports: 1 << 1 | 1 << 2,
-            accounts: Vec::new(),
-        }));
-        let human = player(0, 0);
-        let mut roster = vec![human];
-        for (slot, port) in [(1u32, 1u8), (2, 2)] {
-            let mut b = player(slot, 0);
-            b.player.name = format!("Clanker {port}");
-            b.local_user = Some(port);
-            b.controller = Some(port);
-            b.player.local = Some(true);
-            b.unit = 0xe000_0000 | slot;
-            roster.push(b);
+        session.set_bots(Some(Bots::default()));
+        let mut roster = vec![player(0, 0)];
+        for slot in 1..=2 {
+            let mut bot = player(slot, 0);
+            bot.player.name = format!("Clanker {slot}");
+            bot.machine = [0xc1, 0xa4, 0, 0, 0, slot as u8];
+            bot.unit = 0xe000_0000 | slot;
+            roster.push(bot);
         }
         session.start(&info(), roster.clone());
         let outputs = session.take_output();
@@ -3371,93 +3322,6 @@ mod tests {
         assert_eq!(final_row["kills"], 2);
     }
 
-    /// The signed-in account never goes to a bot, even one on local user 0.
-    #[test]
-    fn a_clanker_on_local_user_zero_is_not_the_account() {
-        use live_proto::Xuid;
-        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
-        let mut session = Session::new("test", None).with_signed_in(Some(me));
-        session.set_bots(Some(Bots {
-            ports: 1 << 3,
-            ..Bots::default()
-        }));
-        let mut b = player(0, 0);
-        b.controller = Some(3);
-        session.start(&info(), vec![b]);
-        let outputs = session.take_output();
-        let Output::Event(started) = &outputs[0] else {
-            panic!()
-        };
-        let p = &started.data["players"][0];
-        assert!(p.get("xuid").is_none());
-        assert_eq!(p["bot"], true);
-    }
-
-    /// A local bot on Live as its bot account (docs/game/bots.md §9.5)
-    /// goes out with that xuid and `bot: true` while its roster is in
-    /// force; without the session, or with a host-made or human xuid, it
-    /// is a bot with no xuid. A human on another port is never a bot.
-    #[test]
-    fn a_local_bot_carries_its_bot_account_with_its_roster() {
-        use live_proto::Xuid;
-        let me = Xuid::parse("0009a1b2c3d4e5f6").unwrap();
-        let account = Xuid(live_proto::bots::SERVER_XUID_MARK | 0x42);
-        let run = |bots: Bots| {
-            let mut session = Session::new("test", None).with_signed_in(Some(me));
-            session.set_bots(Some(bots));
-            let mut roster = vec![player(0, 0)];
-            for (slot, port) in [(1u32, 1u8), (2, 2)] {
-                let mut b = player(slot, 0);
-                b.local_user = Some(port);
-                b.controller = Some(port);
-                roster.push(b);
-            }
-            session.start(&info(), roster);
-            let outputs = session.take_output();
-            let Output::Event(started) = &outputs[0] else {
-                panic!()
-            };
-            started.data.clone()
-        };
-        let game = run(Bots {
-            session_id: Some("0123456789abcdef".into()),
-            ports: 1 << 1 | 1 << 2,
-            accounts: vec![(1, account), (2, live_proto::bots::local_xuid(2))],
-            ..Bots::default()
-        });
-        assert_eq!(game["session_id"], "0123456789abcdef");
-        let players = &game["players"];
-        assert_eq!(players[0]["xuid"], me.to_string());
-        assert!(players[0].get("bot").is_none());
-        assert_eq!(players[1]["xuid"], account.to_string());
-        assert_eq!(players[1]["bot"], true);
-        assert!(
-            players[2].get("xuid").is_none(),
-            "a host-made xuid is never sent"
-        );
-        assert_eq!(players[2]["bot"], true);
-
-        // A human's xuid named as a bot's account is not sent either.
-        let game = run(Bots {
-            session_id: Some("0123456789abcdef".into()),
-            ports: 1 << 1,
-            accounts: vec![(1, me)],
-            ..Bots::default()
-        });
-        assert!(game["players"][1].get("xuid").is_none());
-        assert_eq!(game["players"][1]["bot"], true);
-
-        // No roster in force: no xuid.
-        let game = run(Bots {
-            session_id: None,
-            ports: 1 << 1,
-            accounts: vec![(1, account)],
-            ..Bots::default()
-        });
-        assert!(game["players"][1].get("xuid").is_none());
-        assert_eq!(game["players"][1]["bot"], true);
-    }
-
     /// A rostered phantom's xuid goes out only with its roster's session:
     /// without one the server would refuse the record.
     #[test]
@@ -3467,8 +3331,6 @@ mod tests {
         session.set_bots(Some(Bots {
             session_id: None,
             machines: vec![(m, live_proto::Xuid(live_proto::bots::SERVER_XUID_MARK | 1))],
-            ports: 0,
-            accounts: Vec::new(),
         }));
         let mut p = player(1, 0);
         p.machine = m;

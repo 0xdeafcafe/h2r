@@ -20,7 +20,7 @@ use engine::view::{Tags, objects, players};
 
 use super::{Class, Rider, Riding, Seat, SeatRole, Sight, Vehicle};
 use crate::brain::Vec3;
-use crate::guest::{BODY_DEPLETED, Who};
+use crate::guest::BODY_DEPLETED;
 
 type R<T> = Result<T, MemFault>;
 
@@ -266,18 +266,17 @@ pub fn unit_position(m: &dyn GuestMemory, body: objects::Body) -> R<Vec3> {
     }
 }
 
-/// What the bot `who` knows about vehicles: every vehicle in the world
-/// that is not wrecked, who sits in each seat, and its own seat. Outside a
-/// game, or with no objects, nothing.
-pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
+/// What a phantom sees of vehicles: working vehicles, their occupants
+/// and its own seat. Outside a game, or with no objects, the view is empty.
+pub fn sight(m: &dyn GuestMemory, machine: [u8; 6]) -> R<Sight> {
     let mut out = Sight::default();
-    sight_into(m, who, &mut out, None, &mut SeatBuffers::default())?;
+    sight_into(m, machine, &mut out, None, &mut SeatBuffers::default())?;
     Ok(out)
 }
 
 fn sight_into(
     m: &dyn GuestMemory,
-    who: Who,
+    machine: [u8; 6],
     out: &mut Sight,
     headers: Option<&[VehicleHeader]>,
     buffers: &mut SeatBuffers,
@@ -385,7 +384,7 @@ fn sight_into(
             player: u32::from(handle.index()),
             team: i16::from(p.team(m)?),
         });
-        if crate::guest::is(m, &p, who)? {
+        if crate::guest::is(m, &p, machine)? {
             out.riding = Some(Riding {
                 vehicle: v.id,
                 seat: seat as u16,
@@ -396,18 +395,18 @@ fn sight_into(
     Ok(())
 }
 
-/// [`sight`] in a multiplayer game only (as [`crate::guest::perceive_as`]
+/// [`sight`] in a multiplayer game only (as [`crate::guest::perceive`]
 /// gates it), and nothing on a fault: vehicles are extra, a bot that
 /// cannot read them plays on foot.
-pub fn sight_in_game(m: &dyn GuestMemory, who: Who) -> Sight {
+pub fn sight_in_game(m: &dyn GuestMemory, machine: [u8; 6]) -> Sight {
     let mut out = Sight::default();
-    sight_in_game_into(m, who, &mut out, None, &mut SeatBuffers::default());
+    sight_in_game_into(m, machine, &mut out, None, &mut SeatBuffers::default());
     out
 }
 
 pub(crate) fn sight_in_game_into(
     m: &dyn GuestMemory,
-    who: Who,
+    machine: [u8; 6],
     out: &mut Sight,
     headers: Option<&[VehicleHeader]>,
     buffers: &mut SeatBuffers,
@@ -418,7 +417,7 @@ pub(crate) fn sight_in_game_into(
         .filter(|&g| g != 0)
         .and_then(|g| m.u32(g + crate::guest::OPTIONS).ok())
         == Some(crate::guest::MODE_MULTIPLAYER);
-    if !multiplayer || sight_into(m, who, out, headers, buffers).is_err() {
+    if !multiplayer || sight_into(m, machine, out, headers, buffers).is_err() {
         buffers.clear_sight(out);
     }
 }

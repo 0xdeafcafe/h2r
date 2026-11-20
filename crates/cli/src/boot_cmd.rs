@@ -18,7 +18,7 @@ prebuilt game module. Use the same H2_OPT the module was built with.
 --socket sets the agent API socket (default H2_AGENT or the agent's default).
 --host-light skips steady-state world rendering, uses a silent sound clock,
 disables kernel tracing and paces to real time. Requires --system-link.
---host-bots enables bot support on a light host. H2_BOTS also enables it.";
+--host-bots enables bot support on a light host.";
 
 #[cfg(feature = "desktop")]
 const USAGE: &str = "usage:
@@ -74,7 +74,7 @@ H2_OPT the image was built with.
   Link in the normal menus. No Live account or service URL is required.
 --host-light skips steady-state world rendering, uses a silent sound clock,
   disables kernel tracing and paces to real time. Requires --system-link.
---host-bots enables bot support on a light host. H2_BOTS also enables it.";
+--host-bots enables bot support on a light host.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();

@@ -2,7 +2,7 @@
 //! Guest calls stand in for map-dependent queries (which seat, weapon, zoom).
 use super::*;
 use crate::{
-    local::{Frame, PadSource},
+    pad_source::{Frame, PadSource},
     phantom::{Identity, Phantoms, machine_id},
     tuning::PhantomLatency,
 };
@@ -154,7 +154,7 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
 #[test]
 fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let (ph, g, slot) = game(|f| HostPadState {
-        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        right_trigger: if f.tick == 100 { 1. } else { 0. },
         ..Default::default()
     });
     let mut g = gather(&ph, g, slot);
@@ -271,7 +271,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
     ];
     for (ping, delay) in [(0., 0), (80., 2)] {
         let (ph, mut g, slot) = game_with_latency(
-            move |f| pads[(f.tick.unwrap() as usize - 100) % 3],
+            move |f| pads[(f.tick as usize - 100) % 3],
             PhantomLatency {
                 ping_ms: Some(ping),
                 jitter_ms: 0.,
@@ -296,7 +296,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
 #[test]
 fn assist_tracks_the_validated_action_across_repeated_gather_and_target_loss() {
     let (ph, mut g, slot) = game(|f| HostPadState {
-        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        right_trigger: if f.tick == 100 { 1. } else { 0. },
         ..Default::default()
     });
     let handle = ph.list()[0].handle;
@@ -346,7 +346,7 @@ fn only_valid_phantom_records_are_published() {
 fn aim_view_separates_intended_arrived_and_observed_aim() {
     let (ph, mut g, slot) = game_with_latency(
         |f| {
-            if f.tick == Some(100) {
+            if f.tick == 100 {
                 HostPadState {
                     right_stick: (1., 0.),
                     right_trigger: 1.,

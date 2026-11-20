@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bots::{decisions::Personality, guest, local, mind::Skill, phantom};
+use bots::{decisions::Personality, guest, mind::Skill, phantom};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
@@ -103,29 +103,6 @@ fn known(c: &Call, s: &Selection) -> Option<(String, Option<bots::BrainView>)> {
                 || phantom::session::player_id(p.identity.xuid, p.machine) == s.id)
     }) {
         return Some((p.identity.gamertag, phantom::global().brain_view(p.handle)));
-    }
-    for b in local::list() {
-        let Some(port) = b.port.map(u32::from) else {
-            continue;
-        };
-        // An unleased Live bot can carry its human host's XUID. Only the
-        // actual bot slot's full player id (including guest number) matches.
-        let matched = {
-            let m = c.ctx.runtime().memory();
-            s.id != [0; guest::ID_LEN]
-                && guest::signed_in(&*m, port) == Ok(true)
-                && guest::saved_profile(&*m, port) == Ok(None)
-                && guest::slot_id(&*m, port).ok() == Some(s.id)
-        };
-        if matched {
-            let a = local::global()
-                .account_of(b.handle)
-                .filter(|a| a.xuid == s.xuid().0);
-            return Some((
-                a.map_or(b.name, |a| a.gamertag),
-                local::global().brain_view(b.handle),
-            ));
-        }
     }
     let m = c.ctx.runtime().memory();
     if m.u8(points::NETWORK_READY.base).ok()? == 0 {

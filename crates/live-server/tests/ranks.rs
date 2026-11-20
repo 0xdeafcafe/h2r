@@ -583,8 +583,8 @@ async fn bots_rank_with_the_humans_and_made_up_bots_answer_their_roster_level() 
         "session_id": session,
         "players": [
             {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
-            {"index": 1, "name": "Bot", "xuid": persistent, "team": 1, "local": true, "bot": true},
-            {"index": 2, "name": "Bot", "xuid": made_up, "team": 1, "local": true, "bot": true}
+            {"index": 1, "name": "Bot", "xuid": persistent, "team": 1, "local": false, "bot": true},
+            {"index": 2, "name": "Bot", "xuid": made_up, "team": 1, "local": false, "bot": true}
         ]
     });
     let id = h.start_game(&host, game).await;

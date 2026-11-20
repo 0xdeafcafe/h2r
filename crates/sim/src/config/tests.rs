@@ -61,7 +61,7 @@ fn reads_a_match_file() {
     );
     assert_eq!(m.bots.len(), 2);
     let a = &m.bots[0];
-    assert_eq!((a.port, a.name.as_str(), a.team), (Some(0), "A1", Some(0)));
+    assert_eq!((a.seat, a.name.as_str(), a.team), (0, "A1", Some(0)));
     // The bot's own skill wins over its file's.
     assert_eq!(a.skill, Skill::Legendary);
     assert_eq!(a.params.aggression, Some(0.8));
@@ -145,43 +145,33 @@ burst_on = 3
 }
 
 #[test]
-fn forcing_phantom_seats_keeps_the_logical_lineup_and_batch_arms() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/sim-examples");
-    let path = dir.join("lockout-2v2.toml");
-    let original = load_match(&path).unwrap();
-    let all = load_match_with_seating(&path, true).unwrap();
-    assert!(all.distributed() && all.playerless_host());
-    assert!(!original.playerless_host());
-    assert_eq!(all.bots.len(), original.bots.len());
-    for (mut expected, actual) in original.bots.into_iter().zip(&all.bots) {
-        expected.port = None;
-        expected.kind = SeatKind::Phantom;
-        assert_eq!(&expected, actual);
-    }
-    let path = dir.join("batch.toml");
-    let batch = load_batch(&path).unwrap();
-    let all = load_batch_with_seating(&path, true).unwrap();
-    assert_eq!(all.runs.len(), batch.runs.len());
-    for (mut expected, actual) in batch.runs.into_iter().zip(all.runs) {
-        for bot in &mut expected.config.bots {
-            bot.kind = SeatKind::Phantom;
-        }
-        assert_eq!(expected, actual);
-    }
+fn every_seat_is_a_phantom_and_kind_local_is_refused() {
+    // A match file may still name the only kind there is.
+    let c = parse_match(
+        "map = 'lockout'\n[[bot]]\nkind = 'phantom'\n[[bot]]\n",
+        false,
+    )
+    .unwrap();
+    let m = resolve(c, &no_files).unwrap();
+    assert_eq!(m.bots.len(), 2);
+    assert_eq!(m.resolved_json()["bot"][0]["kind"], "phantom");
+    assert_eq!(m.resolved_json()["bot"][1]["kind"], "phantom");
+    // `kind = "local"` is refused with a clear error.
     assert!(
-        load_batch_with_seating(&dir.join("midship-seat-swap.toml"), true)
+        parse_match("map = 'lockout'\n[[bot]]\nkind = 'local'\n", false)
             .unwrap_err()
-            .contains("H2_BOTS_ALL_PHANTOM=0")
+            .contains("local bots are gone")
     );
+    let bad = parse_match("map = 'lockout'\n[[bot]]\nkind = 'guest'\n", false);
+    assert!(bad.is_err());
 }
 
 #[test]
 fn the_host_peer_leaves_room_for_fifteen_phantoms() {
-    let mut c = parse_match(&format!("map='midship'\n{}", "[[bot]]\n".repeat(15)), false).unwrap();
-    c.force_phantom_seats(false).unwrap();
-    let m = resolve(c.clone(), &no_files).unwrap();
-    assert!(m.bots.iter().all(|b| b.port.is_none()));
-    c.bots.push(c.bots[0].clone());
+    let c = parse_match(&format!("map='midship'\n{}", "[[bot]]\n".repeat(15)), false).unwrap();
+    let m = resolve(c, &no_files).unwrap();
+    assert_eq!(m.bots.len(), 15);
+    let c = parse_match(&format!("map='midship'\n{}", "[[bot]]\n".repeat(16)), false).unwrap();
     assert!(
         resolve(c, &no_files)
             .unwrap_err()
@@ -202,11 +192,7 @@ fn bot_counts() {
         false,
     )
     .unwrap();
-    assert!(
-        resolve(five, &no_files)
-            .unwrap_err()
-            .contains("System Link")
-    );
+    assert_eq!(resolve(five, &no_files).unwrap().bots.len(), 5);
 }
 
 #[test]
@@ -314,8 +300,8 @@ fn human_input_tuning_parses_overlays_and_rejects_out_of_range_values() {
 fn bot_seeds_spread() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..50 {
-        for port in 0..4 {
-            assert!(seen.insert(bot_seed(seed, port)));
+        for seat in 0..4 {
+            assert!(seen.insert(bot_seed(seed, seat)));
         }
     }
     assert_eq!(bot_seed(3, 1), bot_seed(3, 1));
@@ -356,6 +342,17 @@ fn batch(text: &str, m: &str) -> Result<Batch, String> {
     let c: BatchConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     let mc = parse_match(m, false)?;
     plan(c, mc, &aggr_any, &no_files, Path::new("/b"))
+}
+
+#[test]
+fn phantom_batches_require_a_fresh_session_per_run() {
+    let matched = "map = 'lockout'\n[[bot]]\n[[bot]]\n";
+    assert!(batch(&format!("fork = false\n{BATCH}"), matched).is_ok());
+    assert!(
+        batch(&format!("fork = true\n{BATCH}"), matched)
+            .unwrap_err()
+            .contains("phantom bots require a fresh System Link session")
+    );
 }
 
 fn aggr_any(_: &Path) -> Result<BotParams, String> {
@@ -483,7 +480,6 @@ fn light_host_corpus_expands_all_maps_modes_and_seeds() {
     assert_eq!(batch.runs.len(), 23 * 7 * 3);
     for run in batch.runs {
         let match_ = resolve(run.config, &no_files).unwrap();
-        assert!(match_.distributed());
         assert_eq!(match_.bots.len(), 4);
         match match_.config.game_type.as_str() {
             "ctf" | "assault" => assert!(match_.team_play),
@@ -553,11 +549,11 @@ fn an_arm_swap_plays_each_arm_in_every_seat() {
             resolve(second.clone(), &no_files).unwrap(),
         );
         for (x, y) in a.bots.iter().zip(&b.bots) {
-            // The same seat, name, team, transport, skill and brain seed;
+            // The same seat, name, team, skill and brain seed;
             // only the arm and what it tunes change.
             assert_eq!(
-                (&x.name, x.seat, x.port, x.kind, x.team, x.skill, x.seed),
-                (&y.name, y.seat, y.port, y.kind, y.team, y.skill, y.seed)
+                (&x.name, x.seat, x.team, x.skill, x.seed),
+                (&y.name, y.seat, y.team, y.skill, y.seed)
             );
             assert_ne!(x.arm, y.arm);
             assert_ne!(x.params.aim_model, y.params.aim_model);
@@ -707,7 +703,6 @@ fn the_aim_model_comparison_loads() {
     for r in &b.runs {
         let m = resolve(r.config.clone(), &no_files).unwrap();
         assert_eq!(m.bots.len(), 4);
-        assert!(!m.distributed());
         for model in ["code", "net"] {
             let on: Vec<_> = m
                 .bots
@@ -744,78 +739,6 @@ fn planned_runs_write_back_as_toml() {
         assert_eq!(back, r.config, "{text}");
         resolve(back, &no_files).unwrap();
     }
-}
-
-#[test]
-fn swapping_seats_preserves_brains_teams_and_allocates_dense_local_ports() {
-    let b = batch("mode='seat_swap'\nout='o'\nmatch='m'\nseeds=[41,42]\n[a]\n",
-        "map='midship'\nteam_play=true\n[[bot]]\nkind='phantom'\nteam=1\n[[bot]]\nname='R'\nteam=0\n[[bot]]\nkind='phantom'\nteam=0\n").unwrap();
-    assert_eq!(b.runs.len(), 4);
-    for pair in b.runs.chunks_exact(2) {
-        let leg = |swapped| {
-            resolve(
-                pair.iter()
-                    .find(|r| r.config.seats_swapped == Some(swapped))
-                    .unwrap()
-                    .config
-                    .clone(),
-                &no_files,
-            )
-            .unwrap()
-        };
-        let (a, b) = (leg(false), leg(true));
-        assert!(a.distributed() && b.distributed());
-        assert_eq!(a.config.seed, b.config.seed);
-        assert_eq!(a.config.map, b.config.map);
-        assert_eq!(
-            a.bots.iter().map(|b| b.port).collect::<Vec<_>>(),
-            [None, Some(0), None]
-        );
-        assert_eq!(
-            b.bots.iter().map(|b| b.port).collect::<Vec<_>>(),
-            [Some(0), None, Some(1)]
-        );
-        for (a, b) in a.bots.iter().zip(&b.bots) {
-            assert_eq!(
-                (&a.name, a.seat, a.seed, a.team, &a.params, &a.arm),
-                (&b.name, b.seat, b.seed, b.team, &b.params, &b.arm)
-            );
-            assert_eq!(a.kind, b.kind.swapped());
-        }
-    }
-}
-
-#[test]
-fn midship_parity_example_disables_transport_delay_in_both_legs() {
-    let plan = batch(
-        include_str!("../../../../docs/runtime/sim-examples/midship-seat-swap.toml"),
-        include_str!("../../../../docs/runtime/sim-examples/midship-seats.toml"),
-    )
-    .unwrap();
-    assert_eq!(plan.runs.len(), 20);
-    for run in plan.runs {
-        let played = resolve(run.config, &no_files).unwrap();
-        for bot in played.bots {
-            assert_eq!(bot.params.phantom_ping_ms, Some(0.));
-            assert_eq!(bot.params.phantom_jitter_ms, Some(0.));
-        }
-    }
-}
-
-#[test]
-fn swapped_layout_can_be_playerless_but_still_has_at_most_four_pads() {
-    let spec = "out='o'\nmatch='m'\nmode='seat_swap'\n[a]\n";
-    let one = "map='midship'\n[[bot]]\n";
-    let runs = batch(spec, one).unwrap().runs;
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0].config.bots[0].kind, SeatKind::Local);
-    assert_eq!(runs[1].config.bots[0].kind, SeatKind::Phantom);
-    let five_remotes = format!("{one}{}", "[[bot]]\nkind='phantom'\n".repeat(5));
-    assert!(
-        batch(spec, &five_remotes)
-            .unwrap_err()
-            .contains("at most 4 controller ports")
-    );
 }
 
 #[test]

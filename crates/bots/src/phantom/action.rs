@@ -9,7 +9,7 @@ use super::{
 use crate::{
     guest,
     human_input::TICK_MS,
-    local::Frame,
+    pad_source::Frame,
     mind::feel::{Rng, reached},
     tuning::PhantomLatency,
 };
@@ -304,11 +304,9 @@ impl Phantoms {
                 let latency = p.source.phantom_latency();
                 let pad = p.source.pad(&Frame {
                     frame: p.samples,
-                    tick: Some(tick),
-                    port: 4,
-                    machine: Some(mac),
+                    tick,
+                    machine: mac,
                     guest: m,
-                    joining: false,
                 });
                 p.samples = p.samples.saturating_add(1);
                 p.uplink.sample(tick, pad, latency)

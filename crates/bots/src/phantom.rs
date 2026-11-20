@@ -22,7 +22,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::view::players;
 
 use crate::guest;
-use crate::local::PadSource;
+use crate::pad_source::PadSource;
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.

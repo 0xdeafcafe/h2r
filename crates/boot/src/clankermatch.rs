@@ -39,10 +39,9 @@
 //!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
-//! and seats its bots one at a time ([`schedule`]), all phantoms
-//! (`crate::clankers::MATCH_LOCAL`): they join the match's session as
-//! peers, never the party, so the lobby reaches the playlist's fewest
-//! players and starts, on teams [`balance`] picks.
+//! and seats its phantoms one at a time ([`schedule`]) in the match session.
+//! They fill the lobby to the playlist's minimum player count, on teams
+//! [`balance`] picks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

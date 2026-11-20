@@ -2,7 +2,7 @@
 //! driving and an enemy on the gun, a ghost nobody is in, a wreck.
 
 use super::*;
-use crate::guest::{MODE_MULTIPLAYER, OPTIONS, PLAYER_CONTROLLER, VARIANT_FLAGS};
+use crate::guest::{MODE_MULTIPLAYER, OPTIONS, PLAYER_MACHINE, VARIANT_FLAGS};
 use engine::datum::layout as dl;
 use engine::testing::FakeGuest;
 
@@ -15,6 +15,7 @@ const BODIES: u32 = 0x0063_0000;
 const TAG_INDEX: u32 = 0x0068_0000;
 const TAG_ENTRIES: u32 = 0x0068_1000;
 const TAGS: u32 = 0x0069_0000;
+const BOT_MACHINE: [u8; 6] = [0xc1, 0xa4, 0, 0, 0, 1];
 
 fn array(g: &mut FakeGuest, header: u32, data: u32, size: u32, count: u32) {
     g.map(header, 0x48)
@@ -41,7 +42,7 @@ fn vec3(g: &mut FakeGuest, at: u32, v: Vec3) {
     }
 }
 
-/// Objects: 0 the bot's biped (player 0, port 1), 1 an enemy's biped
+/// Objects: 0 the phantom's biped (player 0), 1 an enemy's biped
 /// (player 1), 2 a Warthog at (10, 20, 1) facing +Y, 3 its gun mounted
 /// 1 behind and 0.5 up, 4 an empty Ghost at (30, 0, 0), 5 a wrecked
 /// Ghost. Tags: 0 the Warthog (driver, passenger), 1 its gun (gunner),
@@ -120,17 +121,17 @@ fn world() -> FakeGuest {
     vec3(&mut g, body(4) + 0x64, [30.0, 0.0, 0.0]);
     g.put_u32(body(5), tag(2))
         .put_u16(body(5) + 0x10a, BODY_DEPLETED);
-    // Players: 0 the bot (port 1, team 0), 1 the enemy (team 1).
+    // Players: 0 the phantom (team 0), 1 the enemy (team 1).
     g.put_u32(points::PLAYERS.base, PLAYERS_HEADER);
     array(&mut g, PLAYERS_HEADER, PLAYERS_DATA, 0x21c, 2);
-    for (i, (port, team)) in (0u32..).zip([(1i32, 0u8), (-1, 1)]) {
+    for (i, team) in (0u32..).zip([0u8, 1]) {
         let p = PLAYERS_DATA + i * 0x21c;
         g.put_u16(p, 0xe000 + i as u16)
-            .put_u16(p + 0x28, if port >= 0 { 1 } else { 0xffff })
-            .put_u32(p + PLAYER_CONTROLLER, port as u32)
+            .put_u16(p + 0x28, u16::MAX)
             .put_u32(p + 0x2c, handle(i).raw())
             .put_u8(p + 0xc0, team);
     }
+    g.put(PLAYERS_DATA + PLAYER_MACHINE, &BOT_MACHINE);
     g
 }
 
@@ -141,7 +142,7 @@ fn near(a: Vec3, b: Vec3) -> bool {
 #[test]
 fn the_vehicles_their_seats_and_their_riders_are_read() {
     let g = world();
-    let s = sight(&g, Who::Port(1)).unwrap();
+    let s = sight(&g, BOT_MACHINE).unwrap();
     let ids: Vec<u32> = s.vehicles.iter().map(|v| v.id).collect();
     assert_eq!(
         ids,
@@ -196,15 +197,15 @@ fn the_vehicles_their_seats_and_their_riders_are_read() {
         s.ridden_by(1).map(|(v, r)| (v.id, r)),
         Some((hog.id, SeatRole::Gunner))
     );
-    // The other player sees the same, riding the gun.
-    let other = sight(&g, Who::Port(5)).unwrap();
+    // A machine with no player has no rider.
+    let other = sight(&g, [9; 6]).unwrap();
     assert_eq!(other.riding, None);
 }
 
 #[test]
 fn a_rider_is_where_its_vehicle_is() {
     let g = world();
-    let p = crate::guest::perceive(&g, 1).unwrap();
+    let p = crate::guest::perceive(&g, BOT_MACHINE).unwrap();
     assert_eq!(p.me.map(|m| m.position), Some([10.0, 20.0, 1.0]));
     // The enemy on the gun: the gun's world position.
     assert!(
@@ -218,11 +219,11 @@ fn a_rider_is_where_its_vehicle_is() {
 fn a_vehicle_whose_tag_is_not_a_vehicles_is_left_out() {
     let mut g = world();
     g.put_u32(TAG_ENTRIES + 0x20, u32::from_be_bytes(*b"weap"));
-    let s = sight(&g, Who::Port(1)).unwrap();
+    let s = sight(&g, BOT_MACHINE).unwrap();
     assert_eq!(s.vehicles.len(), 2);
     // Out of a multiplayer game nothing is read.
     g.put_u32(GAME + OPTIONS, 1);
-    assert_eq!(sight_in_game(&g, Who::Port(1)), Sight::default());
+    assert_eq!(sight_in_game(&g, BOT_MACHINE), Sight::default());
 }
 
 #[test]
@@ -293,7 +294,7 @@ fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
     vec3(&mut g, node + 0x10, [-1.0, 0.0, 0.0]);
     vec3(&mut g, node + 0x1c, [0.0, 0.0, 1.0]);
     vec3(&mut g, node + 0x28, [10.0, 20.0, 1.4]);
-    let sight = sight(&g, Who::Port(1)).unwrap();
+    let sight = sight(&g, BOT_MACHINE).unwrap();
     let hog = sight.get(handle(2).raw()).unwrap();
     assert_eq!(hog.spec().half_width, 0.8 + 0.12);
     let entry = hog.seats[0].entries[0];

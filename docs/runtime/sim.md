@@ -7,8 +7,8 @@ only a run can settle, and [First runs](#first-runs) gives the commands.
 
 Where it is: `crates/sim` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/bots/src/tuning.rs`,
-`crates/feature/src/sim_frame.rs`, `crates/boot/src/sim_glue.rs` (and the
-level boot's `MpSetup`), `crates/cli/src/sim_cmd.rs`, and the examples in
+`crates/feature/src/sim_frame.rs`, `crates/boot/src/sim_glue.rs` and its
+System Link lobby, `crates/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
 The goal: train and test the bots offline. Run the retail game's own
@@ -174,9 +174,8 @@ What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
    loading screen, the sim's few calls) are answered as before.
 3. **No audio output**: the logical mixer into a `NullSink`, as headless
    already is. The pipelined render is off (it implements the same point).
-4. **No keyboard pad.** The host's input manager has no keyboard, so all
-   four ports are free for bots: a sim match can be four bots and no
-   human.
+4. **No keyboard pad.** The headless host uses phantom peers for all bot
+   input and leaves the controller ports free.
 5. **Unpaced** unless the match says otherwise (above).
 6. **The agent API keeps working**, and gets `match.status`,
    `match.report` and `match.stop` (below). `session.pause` and
@@ -187,63 +186,42 @@ What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
 
 ## 5. Setting up a match by script
 
-### The direct path
+### The playerless System Link host
 
-The level boot already starts a multiplayer map in place of the main menu:
-`H2_LEVEL=ascension` builds mode 2 options for a local game, one default
-player and the game's default Slayer variant, and queues them
-([level-boot.md](level-boot.md), "Multiplayer"). That is the direct path
-into a game the user asked for, and sim mode extends it:
+The headless host opens a System Link squad and adds each bot as a
+phantom peer, with one player per peer. The host occupies one of the
+sixteen peer slots and leaves all controller ports free, so a match
+can have up to fifteen bots. File order gives the logical seat numbers
+starting at zero.
+Each phantom receives its own machine identity, marked name, appearance
+and team, because the host has no local profile to copy.
+
+In a `[[bot]]` entry, omit `kind` or set `kind = "phantom"`. A match
+file with `kind = "local"` fails validation because controller ports
+are reserved for people.
+
+The host creates a System Link squad (`0x199df9(0,0)`, `0x199a03(2)`)
+through retail's lobby setters for the map and variant (`0x19a6f2`,
+`0x19a728`), and the lobby's readiness checks and machine load request
+(`0x5a220`) stand in for the controller countdown. Each process
+reserves its own loopback XNet port block. Headless runs reach the
+regular phantom uplink and remote gather.
 
 | Match field | How it reaches the game |
 |---|---|
-| `map` | `H2_LEVEL`'s name, resolved against the disc as now |
-| `players` (bots, 1 to 4) | `OPTIONS_PLAYERS(count, options)` (`0x138640`) with the bot count in place of 1 |
-| `game_type` | `VARIANT_DEFAULTS(variant, type)` (`0x19d220`) with the type's built-in list index (`variants::GameType::ALL`: Slayer 0, Oddball 1, Juggernaut 2, King 3, CTF 4, Assault 5, Territories 6) |
-| `time_limit_s`, `score_limit`, `team_play`, more `settings` | a new `VariantEdit` step after `VARIANT_DEFAULTS`: the `0x130`-byte record read, edited with `variants::GameVariant::set` (setting 10 the time limit, the type's score setting, 91 team play, any other id), written back |
-| `teams` | written to each player's record (`+0xc0`) and unit (`+0x138`) at the first tick, as `sim.state.set` writes them |
+| `map` | the lobby's map row, resolved against the disc |
+| `game_type` | the lobby's variant built from the type's built-in list index (`VARIANT_DEFAULTS`, `0x19d220`) |
+| `time_limit_s`, `score_limit`, `team_play`, more `settings` | edits of the variant record with `variants::GameVariant::set` (setting 10 the time limit, the type's score setting, 91 team play, any other id) |
 | `seed` | written to the engine's shared random seed `[0x004e7408]+0` at the first tick, and folded into each brain's seed |
-
-All four local players are bots. Halo 2 has four local players at most,
-so **the direct path is four bots**: free-for-all, or 2 v 2 with teams.
-
-### More than four
-
-A `[[bot]]` with `kind = "phantom"` selects a distributed System Link
-match for the whole roster. `kind = "local"` is the file default. A match
-can have up to four local pads, fifteen phantom peers and sixteen players
-in total. File order gives the logical seat numbers starting at zero.
-Local seats receive controller ports in order. Each phantom receives its
-own machine identity.
-
-With `H2_BOTS_ALL_PHANTOM=1` (or `clankers.all_phantom = true` in the
-settings file) the run and batch planners convert every
-configured seat to a phantom before assigning ports. Names, teams, seeds
-and tuning follow the logical seat. A roster of only phantoms uses a
-playerless System Link host. The host occupies one peer slot and signs
-in no controller. The other fifteen peer slots are available for bots.
-Each simulated peer supplies its own marked name, appearance and team
-because the host has no local profile to copy.
-The sim uses the dedicated lobby's readiness checks and machine load
-request (`0x5a220`) when the controller countdown has no signed-in user.
-Playerless sim startup is inferred, needs a run. The lobby waits for one
-host peer plus one peer per bot. Verify that `match.status` reaches
-`playing` with every logical seat in `bound_seats` and that the match
-report lists just those players.
-
-For a mixed roster the headless host signs in the local pads (`0x18fb34`), creates a System
-Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
-variant with retail's lobby setters (`0x19a6f2`, `0x19a728`). It waits
-for the roster and retail start state 9 before requesting the countdown
-(`0x19a78e`). Each process reserves its own loopback XNet port block.
-Headless runs reach the regular phantom uplink and remote gather.
 
 `match.status` enters `binding` on map activation. Combat sampling
 starts once the distributed server has a player and a spawned unit for
-every configured controller and phantom machine. A run that cannot
-bind the roster writes its diagnostic report and exits with an error.
+every phantom machine. A run that cannot bind the roster writes its
+diagnostic report and exits with an error.
 Startup allows up to 180 wall-clock seconds, subject to a shorter
 `max_wall_s`. Distributed runs boot a fresh session for each match.
+Verify that `match.status` reaches `playing` with every logical seat in
+`bound_seats` and that the match report lists just those players.
 
 ### Match file
 
@@ -295,8 +273,7 @@ reaction = 5
   `button_sigma_ms` (0–12 ms), `stick_step` (0.1–0.6 stick radii per
   tick), and `thumb_switch_ticks` (1–6 ticks);
 - phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
-  `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
-  apply when the source drives a phantom;
+  `phantom_jitter_ms` (0–50 ms bounded one-way variation);
 - host work intervals in game ticks (1–30 each): `foot_plan_ticks`
   (default 6), `vehicle_plan_ticks` (8), `vehicle_lookahead_ticks` (3)
   and `player_los_ticks` (3). See [Bot navigation performance](#bot-navigation-performance)
@@ -347,7 +324,7 @@ ticks; and the final score. The report is one JSON file per match:
             "peak_rss_mib": 981, "footprint_mib": 143,
             "guest_written_pages": 2100, "guest_pages": 16384 },
   "players": [
-    { "index": 0, "name": "A1", "bot": true, "port": 0, "arm": "base", "team": 0,
+    { "index": 0, "name": "A1", "bot": true, "seat": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
       "shots": 820, "hits": 301, "accuracy": 0.367, "damage_dealt": 41.5, "damage_taken": 37.0,
       "alive_ticks": 8100, "vehicle_ticks": 0, "grenades": 14, "stuck_ticks": 36, "repaths": 2,
@@ -365,19 +342,14 @@ report's body plus shield numbers (**S**: read as amounts, as telemetry's
 `hits` are); a hit is a report with another player's unit as the victim
 (a shotgun's pellets each count, so accuracy can pass 1).
 
-Each bot row includes its logical `seat` and transport `kind`. Only a
-local bot has a controller `port`. `opposing_hits` counts positive body
-or shield damage reports against another player on an opposing team, or
-any other player in free-for-all. Multiple pellets, splash and melee can
-produce separate reports. The original `hits`, `accuracy`,
-`damage_dealt` and `damage_taken` fields keep their previous definitions.
-Readers can continue to load earlier `h2-sim-report/1` reports.
+Each bot row includes its logical `seat`. Readers can continue to load
+earlier `h2-sim-report/1` reports.
 
 The `wall` block carries the process's memory: `peak_rss_mib`
 (`getrusage`'s `ru_maxrss`), `footprint_mib` on macOS
 (`proc_pid_rusage`'s `ri_phys_footprint` — dirty pages, the number a
 fleet pays for), and, when the run loaded a shared copy-on-write guest
-RAM base (§6.1), `guest_written_pages` of `guest_pages`: the census of
+RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
 Measured 2026-11-20, one waterworks 2v2 sim process, macOS: peak RSS
 about 981 MiB (791 MiB of it the resident pages of the whole mmapped
@@ -424,7 +396,7 @@ the disc read-only and drops a bulk read's pages again after the copy
 out (`vfs::disc`), so a map copied to the title's cache partition
 leaves no pages behind either.
 
-### 6.2 Sharing guest RAM between games on one machine
+### 6.2 Sharing guest RAM with machine snapshots
 
 Halo copies a map's tag data into guest RAM at load, so each process
 holds its own dirty copy. `state.save` with `"cow": true` writes, beside
@@ -433,13 +405,14 @@ holes); `state.load` with `"cow": true` maps that file private
 copy-on-write in place of decoding RAM in — pages the match never
 writes stay one shared set across every process on the same image
 (including the zero pages), and only written pages become private.
-`h2 sim batch --fork` saves and loads this way. The match-end census in
-the report's `wall` block (`guest_written_pages`) says how much stayed
-shared; `vmmap` (macOS) or `/proc/<pid>/smaps` (Linux, `Private_Dirty`
-versus `Shared`) per process says what a fleet keeps. Note: machine
-snapshots need the full audio path, so `--fork` refuses the light host
-until that blocker is lifted — `H2_FEATURES=-host-light` for a full
-headless fork.
+The [agent snapshot methods](snapshots.md) support this mode. The
+match-end census in the report's `wall` block (`guest_written_pages`)
+counts pages written. `vmmap` (macOS) or `/proc/<pid>/smaps` (Linux)
+shows the private and shared memory per process.
+
+Sim batches boot a fresh System Link host for each run. Machine
+snapshots omit the phantom peers' host state and can't seed these
+batches.
 
 `ttk_kills` and `ttk_ticks` are the time to kill. A fight is a player's
 hits with damage on one opponent, none more than 150 ticks after the
@@ -548,44 +521,6 @@ H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc
 How to read it and the rule for which model stays are in
 [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays).
 
-### Local and phantom seat swaps
-
-`mode = "seat_swap"` schedules two legs per map, game type, skill and
-seed. The second leg exchanges every local and phantom seat. Both
-lineups must fit on a host. Each bot keeps its name, team, tuning, arm
-and brain seed. The Legendary Midship example plays ten seed pairs, two
-red against two blue. Its arm requests zero phantom ping and jitter so
-the action builder sees each pad on its sample tick. To measure the cost
-of network timing, rerun the same seeds in a separate output directory
-with the example's two transport overrides removed. The ordinary seeded
-40–80 ms round trip adds one or two ticks at 30 Hz to aim and fire.
-
-```sh
-H2_BOTS_ALL_PHANTOM=0 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
-```
-
-Read `compare.txt` or `compare.json` under
-`docs/runtime/sim-examples/results/midship-seat-swap/`. The
-`seat_swap` section reports `pairs`, per-seat/game `local` and `phantom`
-means, and their signed `local_minus_phantom` gap for shots, opposing
-hits, damage dealt and damage taken. Each pair of legs contributes one
-sample. Its two observations for each logical seat are matched across
-the legs. Only full rosters ending at game over or the tick limit count.
-Each excluded pair has a reason in `exclusion_reasons` and in the text
-table. A leg that ends during lineup binding has zero measured ticks.
-The reason includes the missing seats when the report names them.
-Absent reports appear in `missing`. These are counts per game, so game
-length affects the result.
-
-Keep all-phantom mode off for this comparison. The planner refuses a
-seat swap when every seat is forced to use the same transport. Compare
-opposing hits divided by shots for matched seats with shots, and check
-damage dealt across the same seeds. The sim counts positive opposing
-damage events, including melee. To compare directly with the November 19
-bullet-only baseline, filter the replay damage events to bullets.
-The default changes to all-phantom once the paired runs show matching
-local and phantom hit rates.
-
 ### Watching in Uplink
 
 ```sh
@@ -610,10 +545,11 @@ speed. Use `--pace realtime` for normal game speed.
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
 telemetry locally and take turns uploading after they finish. The batch prints
-its Live batch ID and writes it to `batch.json`. Fork seed runs stay local.
+its Live batch ID and writes it to `batch.json`.
 
 The same game stream becomes the replay at the end. Uploads use the
 game's telemetry frames, which include machine travel when sampled.
+Uploaded players have bot flags and no Live account XUIDs.
 The finished-game viewer switches to the archive when it is published.
 [Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
 
@@ -639,7 +575,7 @@ seats and inline tuning, and Live starts one ad hoc host for each admitted
 run. Each host plays unpaced with the provisioned game image and data,
 streams to the private **Clanker Training** view, uploads its report and
 exits. Use retail map file stems such as `lockout`. Supply the maps' bot nav meshes with the host's data for runs that
-need them. Snapshot forks are local only.
+need them.
 
 `--live` defaults to `H2_LIVE_SERVER` or `http://127.0.0.1:8074`. Use a
 stored admin account for that Live server, optionally selected by
@@ -668,37 +604,6 @@ uses the same comparison code as local batches for `compare.json` and
 as missing. `batch.json` carries the Live batch ID for Uplink. A failed
 host makes the command exit unsuccessfully after it writes the comparison.
 
-### Forking from spawn (snapshots)
-
-Machine snapshots (`state.save`, `load`, `fork`; [snapshots.md](snapshots.md))
-are in master as alpha: unit-tested, never run against the game. The
-batch can use them, and falls back to a fresh boot per run when they
-refuse or are not ready:
-
-1. `--fork`: one seed process per map boots the match, waits for
-   gameplay (`session.wait {"phase":"gameplay","map_ticks":30}`) and
-   saves `sim.<map>.<game type>.spawn` (`state.save`), then exits.
-2. Each run boots the same match with its agent socket on; once
-   `match.status` says `playing` the batch sends `state.load` of that
-   snapshot, and the run's own seed and teams are written again from
-   there. A `BUSY` or a failed load is logged in the batch's line for the
-   run (`own boot (...)`), and the run carries on from its own fresh boot
-   (the fallback). The seed run's data directory is `runs/seed-<name>/`;
-   the snapshots are in `<out>/snapshots` (`H2_SNAPSHOTS` for every child).
-
-Snapshots carry the machine, not the host's bots. The tally sees the load
-as a jump in the game's tick (backwards, or more than 30 ticks forwards:
-`sim::metrics::JUMP_TICKS`) and starts again there, with the speed-up's
-clock, and the seed and team writes run again. The brains keep their few
-ticks of memory from before the load (their tracks age out; the radio
-resets only when the tick goes backwards). The snapshot's build key covers the
-switches and features, so the seed process and the runs must use the
-same image, `H2_OPT` and switches (the batch passes its own environment
-to every child). Saves are refused while Live is signed in, in co-op, and
-during a Bink movie; sim runs are offline and headless, so none applies.
-**Run**: whether a level-booted multiplayer game reaches a quiescent tick
-boundary at all.
-
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
@@ -717,7 +622,6 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
 | Our own observers | read-only; the agent's tick observer adds dispatch transfers, the same in every run that has it |
-| Snapshots (`--fork`) | the RAM hash is checked at every load; replay after a load is unproven tick for tick (snapshots.md) |
 
 **How far it goes**: the same image, `H2_OPT`, switches, match file and
 bot params give the same match, tick for tick: that is the claim, and
@@ -805,7 +709,7 @@ bot glue and 2,917 in ground-vehicle pathfinding. Wall checks accounted
 for 1,866 top-of-stack samples across threads. The hash-table growth
 under those checks came from the temporary set of triangle IDs per ray.
 
-The first optimization pass added corridor, unreachable-result and portal
+The first optimisation pass added corridor, unreachable-result and portal
 clearance reuse. It also removed the temporary triangle set from wall
 rays, reused A* search records and let the sim tally take ownership of
 each tick sample. The all-local profile in the [simulation budget](../perf/sim-budget.md)
@@ -816,7 +720,7 @@ thread, so a host-side bot change alone cannot halve that workload.
 
 | Work | Before scheduling | Current frequency |
 |---|---|---|
-| Local and phantom pads | The local render hook called the source once per rendered frame, including repeat guest ticks. Phantom action gather samples once per fresh simulation tick with a bound unit, then builds and publishes the retail action. | An unchanged local live unit can reuse its report on repeated ticks. Kill events and life transitions still get sampled. The phantom action path keeps its tick cadence. |
+| Bot pads | Phantom action gather samples once per fresh simulation tick with a bound unit, then builds and publishes the retail action. | Same cadence for pads, kill events and life transitions. |
 | World perception | Per pad sample, read up to 16 players, arms, scoreboard and objective state. A living bot scanned up to 2,048 object slots for weapons, supplies and grenades, then scanned the table again for vehicles and players again for seat occupants. | Per fresh sample, reuse the ground scan's vehicle headers and read occupants when vehicles exist. Perception, vehicle seat markers, recent cues and the delayed observation queue reuse buffers. |
 | Player LOS | Per candidate in the notice cone (or near the bot), cast an eye-to-chest wall ray. The delayed mind sample repeated the opponent rays. | Check the cone every sample. Use one visibility result per observer, player slot and unit. Refresh by observer-plus-target slot at up to `player_los_ticks` age. A clear ray is reused only at identical endpoints. A blocked ray allows up to 0.1 world units of movement at each endpoint. Leaving the cone, switching bodies or collision data, and restarting the clock invalidate the result. |
 | Other visibility and wall probes | Ray-test in-cone pickups, supply sites, objective items and non-owned vehicles and eligible events. Foot steering can probe for clearance, headroom, cover and footing. Hearing, grenade arcs and danger checks add conditional probes. | Same sample or action cadence. The player cache applies to chest visibility. Aim-point, projected lead and immediate movement clearance still use current geometry for the sample. |
@@ -826,10 +730,10 @@ thread, so a host-side bot change alone cannot halve that workload.
 | Ground vehicle route | For a driver, missing routes and destination movement over three units could query the route every tick. A fresh corridor can check up to three vertical rays per uncached portal. | Active ground drivers with a destination plan immediately when the route is missing, blocked or over three units from the new destination. Refresh a usable route on the bot's `vehicle_plan_ticks` phase. Chassis portals are indexed by nav edge. Corridor and route point storage is reused. |
 | Ground vehicle clearance | Each eligible driving tick checked the span to the first point, up to three lookahead points and advancement past nearby waypoints. Each span checks ground and up to three wall rays at each 0.45-unit sample across three lanes. Splatter and reversing can check additional spans. | Full route lookahead on the `vehicle_lookahead_ticks` phase and when a new or reached carrot needs checking. Between full checks, validate the immediate span every driving tick before steering toward the last carrot. That span covers up to 1.8 units or 150 ms of travel, whichever is greater. Splatter and reversing retain live clearance. |
 | Fighter steering | Checked floor twice per pilot tick and ran a flip clearance probe even without a newly eligible hit. | Reuse the floor result. Probe flip clearance on an eligible hit. Forward clearance and steering stay tick-rate. |
-| Map and session glue | Render hooks handle local and phantom seating and refresh session state. Nav decoding or generation is tied to map loads and missing meshes, with the auto-nav worker handling background work. | Same hook cadence. Each brain only copies the map name on a change. |
+| Map and session glue | The host seats phantom peers and refreshes session state. Nav decoding or generation is tied to map loads and missing meshes, with the auto-nav worker handling background work. | Same hook cadence. Each brain only copies the map name on a change. |
 
 Refreshes of usable routes are phase-aligned to the in-game player
-slot for local and phantom bots. A lost target, new damage or a change
+slot. A lost target, new damage or a change
 in a carrier's threat can bring a refresh forward. Urgent refreshes
 split across even and odd slots, and each planner can refresh at most
 once per tick. A route needed for immediate movement bypasses the slot
@@ -844,19 +748,19 @@ and some conditional tactical or route outputs can still allocate.
 #### Matched performance and combat comparison
 
 Use `H2_BEFORE` and `H2_AFTER` for the absolute paths to the two
-release `h2` binaries. Set `H2_DISC`, `H2_IMAGE` and `H2_DATA` to
+release `h2` binaries. Both must support phantom peers. Set
+`H2_DISC`, `H2_IMAGE` and `H2_DATA` to
 absolute paths to the same disc, compatible clang image built at
 `H2_OPT=2`, and data directory with both nav meshes. From the repo root,
-create two fixtures with the same four legendary bots, teams, seed 7
-and 9,000-tick limit. Waterworks has two local and two phantom seats.
-Lockout seats all four locally.
+create two fixtures with four legendary phantoms, identical teams,
+seed 7 and a 9,000-tick limit.
 
 ```sh
 bench_dir="$RUSH_KEEP/bot-speed"
 mkdir -p "$bench_dir"
 awk '/^map = / {$0="map = \"waterworks\""} /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"} {print}' \
   docs/runtime/sim-examples/midship-seats.toml > "$bench_dir/waterworks.toml"
-sed -e 's/^map = "waterworks"/map = "lockout"/' -e 's/^kind = "phantom"/kind = "local"/' \
+sed 's/^map = "waterworks"/map = "lockout"/' \
   "$bench_dir/waterworks.toml" > "$bench_dir/lockout.toml"
 ```
 
@@ -871,7 +775,7 @@ for arm in before after; do
   esac
   for map in waterworks lockout; do
     env -u H2_PROFILE -u H2_TIMELINE -u H2_LOCKSTEP -u H2_BOOT_GFX \
-      -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 H2_BOTS_ALL_PHANTOM=0 \
+      -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 \
       H2_FEATURES=host-light,-impl.sim.arena-hash \
       "$sim_h2" sim run "$bench_dir/$map.toml" --disc "$H2_DISC" --out "$H2_IMAGE" \
       --data "$H2_DATA" --tier clang --pace unpaced --report "$bench_dir/$map-$arm.json" \
@@ -880,7 +784,7 @@ for arm in before after; do
 done
 ```
 
-Verify a loaded mesh, four bound seats of the expected kinds, 9,000
+Verify a loaded mesh, four bound phantom seats, 9,000
 ticks and a `tick_limit` exit. Compare `wall.ms_per_tick` and per-seat
 kills, shots, hits and accuracy. Vehicle ticks, stuck ticks and replans
 help explain a change in kill or accuracy results.
@@ -888,7 +792,7 @@ help explain a change in kill or accuracy results.
 ```sh
 jq '{map: .match.map, seed: .match.seed, ticks, end: .result.end, nav,
      ms_per_tick: .wall.ms_per_tick,
-     players: [.players[] | {seat, kind, name, kills, deaths, shots, hits,
+     players: [.players[] | {seat, name, kills, deaths, shots, hits,
                              accuracy, vehicle_ticks, stuck_ticks, repaths}]}' \
   "$bench_dir"/waterworks-before.json "$bench_dir"/waterworks-after.json \
   "$bench_dir"/lockout-before.json "$bench_dir"/lockout-after.json
@@ -903,7 +807,7 @@ seeds if a single pair shows a quality change.
 
 ## Host audit corpus
 
-Build the full clang image with the usual optimization setting. Prepare
+Build the full clang image with the usual optimisation setting. Prepare
 bot navigation data and install the owned Map Packs in `H2_DATA`. Set
 `H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. Run the matrix
 with the original caches so it can report all observed guest reads.
@@ -971,21 +875,18 @@ headers and blocks while those dependencies are being traced.
 
 ## What needs a run
 
-1. The skip itself: a level-booted multiplayer game runs gameplay frames
-   with the front-end skipped, ticks at one per frame, and does not stall
+1. The skip itself: the System Link host runs gameplay frames with the
+   front end skipped, ticks at one per frame, and does not stall
    (the frame wait returns; the countdowns stay at or below 0).
 2. The tick-hash comparison: does skipping change anything the tick
    reads beyond the seed? (`render_every` as the fallback.)
-3. `OPTIONS_PLAYERS` with 2 to 4: four local players, each on its own
-   controller port, each a bot's pad.
-4. `VARIANT_DEFAULTS` with types other than Slayer, and the edited
-   variant passing the game's options check (`level boot: the game's
-   options check passes`).
-5. Teams written at the first tick holding through respawns.
+3. Phantom seating on a playerless host. Check that each peer acquires
+   a player and unit before combat sampling starts.
+4. `VARIANT_DEFAULTS` with types other than Slayer. Check that the host
+   starts the requested variant.
+5. Phantom team assignments holding through respawns.
 6. The end latch at the time or score limit ending the run.
 7. The speed-up.
-8. `--fork`: a snapshot of a sim match at spawn, loaded into another
-   process.
 
 ## First runs
 
@@ -1008,7 +909,7 @@ skill = "normal"
 skill = "normal"
 EOF
 H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/sim-smoke.json
-# Look for: `sim: skipping the world render`, `level boot: options queued`,
+# Look for: `sim: skipping the world render` and `match.status` reaching `playing`,
 # `sim: match started at tick N`, `sim: match over (tick_limit) at 1800
 # ticks, N.Nx real time`, then the per-bot lines and `sim: report ...`.
 # Watch it live: add --socket /tmp/sim.sock and
@@ -1032,8 +933,6 @@ H2_OPT=2 h2 bots nav midship && H2_OPT=2 h2 bots nav ascension
 h2 sim batch docs/runtime/sim-examples/batch.toml --dry-run
 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3
 
-# 5. The same batch forked from spawn snapshots (falls back per run).
-H2_FEATURES=-host-light H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
 h2 sim compare docs/runtime/sim-examples/results/aggressive-vs-base
 ```
 
@@ -1051,9 +950,7 @@ Notes for the runs:
 
 `cargo test -p sim` (config, metrics, compare, clock, the examples
 here), `cargo test -p bots tuning` and `cargo test -p bots
-a_tuned_brain` (the overrides), `cargo test -p bots sim_mode_takes`
-(four bot ports), `cargo test -p feature sim_frame` (the skip's decision
+a_tuned_brain` (the overrides), `cargo test -p feature sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
-samples, the limits, the tuning mapping) and `cargo test -p boot
-level_boot` (the match options, the variant edit), `cargo test -p cli
+samples, limits and phantom tuning), and `cargo test -p cli
 sim_cmd` (child arguments, per-run data, the results directory).

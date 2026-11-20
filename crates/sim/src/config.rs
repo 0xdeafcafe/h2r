@@ -10,23 +10,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::Pace;
 
-/// The retail session player limit.
-pub const MAX_BOTS: usize = 16;
+/// The retail session's 16 peer slots include the playerless host.
+pub const MAX_BOTS: usize = 15;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SeatKind {
-    #[default]
-    Local,
-    Phantom,
+/// A bot's seat. Every bot is a phantom: a remote System Link peer, never
+/// a controller seat, which is for a real person. A match file may still
+/// write `kind = "phantom"` (the default); `kind = "local"` is refused
+/// with an error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhantomSeat;
+
+impl Serialize for PhantomSeat {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str("phantom")
+    }
 }
 
-impl SeatKind {
-    pub fn swapped(self) -> Self {
-        match self {
-            Self::Local => Self::Phantom,
-            Self::Phantom => Self::Local,
+impl<'de> Deserialize<'de> for PhantomSeat {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = PhantomSeat;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(r#""phantom""#)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<PhantomSeat, E> {
+                match v {
+                    "phantom" => Ok(PhantomSeat),
+                    "local" => Err(E::custom(
+                        "kind = \"local\": local bots are gone; every bot is a phantom (a \
+                         remote System Link peer), and controller seats are for people",
+                    )),
+                    other => Err(E::unknown_variant(other, &["phantom"])),
+                }
+            }
         }
+        d.deserialize_str(V)
     }
 }
 
@@ -399,9 +418,10 @@ impl BotParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotSpec {
+    /// Every bot's seat; kept so old match files that name it still read.
     #[serde(default)]
-    pub kind: SeatKind,
-    /// Shown in the report (default `Clanker <port>`).
+    pub kind: PhantomSeat,
+    /// Shown in the report (default `Clanker <seat>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Overrides the tuning's skill.
@@ -438,9 +458,6 @@ pub struct MatchConfig {
     pub map: String,
     #[serde(default = "default_game_type")]
     pub game_type: String,
-    /// Set by paired batch planning. False is the original layout.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seats_swapped: Option<bool>,
     /// Set by an `arm_swap` batch. True on the leg where every bot plays
     /// for the other arm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -473,26 +490,11 @@ pub struct MatchConfig {
     pub bots: Vec<BotSpec>,
 }
 
-impl MatchConfig {
-    fn force_phantom_seats(&mut self, seat_swap: bool) -> Result<(), String> {
-        if seat_swap || self.seats_swapped.is_some() {
-            return Err(
-                "seat_swap compares local and phantom seats; set H2_BOTS_ALL_PHANTOM=0".into(),
-            );
-        }
-        for bot in &mut self.bots {
-            bot.kind = SeatKind::Phantom;
-        }
-        Ok(())
-    }
-}
-
-/// A bot as a run uses it: everything resolved.
+/// A bot as a run uses it: everything resolved. Every bot plays as a
+/// phantom peer; there is no port or seat kind to resolve.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bot {
     pub seat: u8,
-    pub port: Option<u8>,
-    pub kind: SeatKind,
     pub name: String,
     pub skill: Skill,
     pub team: Option<u8>,
@@ -517,15 +519,6 @@ pub struct Match {
 }
 
 impl Match {
-    /// The host occupies a peer slot but has no player in the roster.
-    pub fn playerless_host(&self) -> bool {
-        self.bots.iter().all(|b| b.port.is_none())
-    }
-
-    pub fn distributed(&self) -> bool {
-        self.bots.iter().any(|b| b.kind == SeatKind::Phantom)
-    }
-
     /// The match as JSON for the report: the file with every bot's tuning
     /// resolved inline (no paths), so a report says what was played.
     pub fn resolved_json(&self) -> serde_json::Value {
@@ -536,7 +529,7 @@ impl Match {
             .bots
             .iter()
             .map(|b| BotSpec {
-                kind: b.kind,
+                kind: PhantomSeat,
                 name: Some(b.name.clone()),
                 skill: Some(b.skill.name().into()),
                 team: b.team,
@@ -583,15 +576,7 @@ pub fn parse_match(text: &str, json: bool) -> Result<MatchConfig, String> {
 
 /// Reads and checks a match file; tuning files are read relative to it.
 pub fn load_match(path: &Path) -> Result<Match, String> {
-    load_match_with_seating(path, false)
-}
-
-/// Apply the host seating policy before validating controller and peer limits.
-pub fn load_match_with_seating(path: &Path, all_phantom: bool) -> Result<Match, String> {
-    let mut config: MatchConfig = parse_file(path)?;
-    if all_phantom {
-        config.force_phantom_seats(false)?;
-    }
+    let config: MatchConfig = parse_file(path)?;
     let base = path.parent().unwrap_or(Path::new("."));
     resolve(config, &|p: &Path| BotParams::load(&base.join(p)))
 }
@@ -614,22 +599,11 @@ pub fn resolve(
         problems.push(format!("pace: {e}"));
         Pace::Unpaced
     });
-    let locals = config
-        .bots
-        .iter()
-        .filter(|b| b.kind == SeatKind::Local)
-        .count();
     if config.bots.is_empty() {
         problems.push("a match needs at least one bot".into());
     }
-    if locals > 4 {
-        problems.push(format!("{locals} local bots: at most 4 controller ports. Additional seats use System Link phantoms"));
-    }
-    if config.bots.len() - locals >= MAX_BOTS {
-        problems.push("at most 15 phantoms: the host occupies one of 16 peers".into());
-    }
     if config.bots.len() > MAX_BOTS {
-        problems.push(format!("a session supports at most {MAX_BOTS} players"));
+        problems.push("at most 15 phantoms: the host occupies one of 16 peers".into());
     }
     if config.max_ticks == Some(0) {
         problems.push("max_ticks = 0: leave it out for no limit".to_string());
@@ -663,7 +637,6 @@ pub fn resolve(
         }
     }
     let mut bots = Vec::new();
-    let mut next_port = 0;
     for (i, spec) in config.bots.iter().enumerate().take(MAX_BOTS) {
         let at = format!("bot {}", i + 1);
         let seat = i as u8;
@@ -696,12 +669,6 @@ pub fn resolve(
         };
         bots.push(Bot {
             seat,
-            kind: spec.kind,
-            port: (spec.kind == SeatKind::Local).then(|| {
-                let p = next_port;
-                next_port += 1;
-                p
-            }),
             name: spec
                 .name
                 .clone()
@@ -757,7 +724,6 @@ pub enum Mode {
     Versus,
     /// Every match twice: all bots A, then all bots B.
     Separate,
-    SeatSwap,
     /// Versus, twice: the second leg gives every bot the other arm, so
     /// each arm plays every seat, team and brain seed once.
     ArmSwap,
@@ -768,7 +734,6 @@ impl Mode {
         match self {
             Self::Versus => "versus",
             Self::Separate => "separate",
-            Self::SeatSwap => "seat_swap",
             Self::ArmSwap => "arm_swap",
         }
     }
@@ -777,10 +742,9 @@ impl Mode {
         match s.trim().to_ascii_lowercase().as_str() {
             "versus" | "vs" => Ok(Mode::Versus),
             "separate" => Ok(Mode::Separate),
-            "seat_swap" => Ok(Mode::SeatSwap),
             "arm_swap" => Ok(Mode::ArmSwap),
             _ => Err(format!(
-                "unknown mode {s:?} (versus, separate, seat_swap, arm_swap)"
+                "unknown mode {s:?} (versus, separate, arm_swap)"
             )),
         }
     }
@@ -816,9 +780,8 @@ pub struct BatchConfig {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// Fork every run from a snapshot at spawn (docs/runtime/sim.md, "Forking
-    /// from spawn"), falling back to a fresh boot.
-    #[serde(default)]
+    /// Legacy batch option. Only false is accepted.
+    #[serde(default, skip_serializing)]
     pub fork: bool,
     pub a: Arm,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -858,19 +821,10 @@ pub struct Batch {
 /// Reads a batch file, its match file and its arms' tuning files, and plans
 /// its runs.
 pub fn load_batch(path: &Path) -> Result<Batch, String> {
-    load_batch_with_seating(path, false)
-}
-
-/// Plan the effective transport for each seat before writing child match files.
-pub fn load_batch_with_seating(path: &Path, all_phantom: bool) -> Result<Batch, String> {
     let config: BatchConfig = parse_file(path)?;
     let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let match_path = base.join(&config.match_file);
-    let mut base_match: MatchConfig = parse_file(&match_path)?;
-    if all_phantom {
-        let mode = config.mode.as_deref().map(Mode::parse).transpose()?;
-        base_match.force_phantom_seats(mode == Some(Mode::SeatSwap))?;
-    }
+    let base_match: MatchConfig = parse_file(&match_path)?;
     let match_dir = match_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let read_arm = |p: &Path| BotParams::load(&base.join(p));
     let read_bot = |p: &Path| BotParams::load(&match_dir.join(p));
@@ -889,6 +843,11 @@ pub fn plan(
     base: &Path,
 ) -> Result<Batch, String> {
     let mut problems = Vec::new();
+    if config.fork {
+        problems.push(
+            "remove fork = true: phantom bots require a fresh System Link session per run".into(),
+        );
+    }
     let mode = match config.mode.as_deref() {
         Some(m) => Mode::parse(m).unwrap_or_else(|e| {
             problems.push(e);
@@ -1066,15 +1025,6 @@ pub fn plan(
                             problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
                         }
                         let swapped_run = match mode {
-                            Mode::SeatSwap => {
-                                c.seats_swapped = Some(false);
-                                let mut swapped = c.clone();
-                                swapped.seats_swapped = Some(true);
-                                for b in &mut swapped.bots {
-                                    b.kind = b.kind.swapped();
-                                }
-                                Some(swapped)
-                            }
                             Mode::ArmSwap => {
                                 c.arms_swapped = Some(false);
                                 let mut swapped = c.clone();

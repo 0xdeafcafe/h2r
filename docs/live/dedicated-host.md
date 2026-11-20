@@ -188,7 +188,7 @@ machine-only lobby and remote join lifecycle above still need a game run.
 | Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/vfs/src/disc.rs) · [Directory reads](../../crates/vfs/src/dir_disc.rs) · [Cache copy](../../crates/boot/src/map_copy.rs) · [Codec](../../crates/dsound/src/xwma.rs) |
 | Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/src/guest.rs) · [Module loading and boot](../../crates/boot/src/lib.rs) |
 | Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/kernel/src/pacer.rs) · [XNet sockets](../../crates/live-hle/src/network.rs) |
-| Bots and telemetry | `--host-bots` enables bot support for explicit adds. `H2_BOTS` also opts in and supplies the roster. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
+| Bots and telemetry | `--host-bots` enables explicit phantom adds. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
 
 For a quiet, low-population game, use **12 ms of game-thread CPU per tick**
 as the first sizing target (about **0.36 of one core** at 30 Hz) and
@@ -774,7 +774,7 @@ Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image.
 ```sh
 H2_BIN=${H2_BIN:-"$HOME/.cargo/bin/h2"}
 export H2_OPT=2 H2_UI_WATCH=1
-unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT H2_BOTS
+unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT
 "$H2_BIN" build "${H2_DISC:?set the disc path}" --out "${H2_IMAGE:?set the image directory}" --tier clang --check
 ```
 

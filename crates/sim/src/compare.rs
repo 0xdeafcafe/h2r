@@ -228,180 +228,9 @@ pub fn welch(a: Stat, b: Stat) -> Diff {
     }
 }
 
-/// Each observation is one run pair's mean per logical seat. A seat
-/// contributes once under each transport, including when its player index changes.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct SeatComparison {
-    pub pairs: usize,
-    pub excluded: Vec<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub exclusion_reasons: BTreeMap<String, String>,
-    pub local: BTreeMap<String, Stat>,
-    pub phantom: BTreeMap<String, Stat>,
-    pub local_minus_phantom: BTreeMap<String, Stat>,
-}
-
-const SEAT_METRICS: [&str; 4] = ["shots", "opposing_hits", "damage_dealt", "damage_taken"];
-
-fn seat_values(r: &Report) -> Option<BTreeMap<u8, (crate::config::SeatKind, [f64; 4])>> {
-    let specs = r.match_["bot"].as_array()?;
-    let mut seats = BTreeMap::new();
-    for p in &r.players {
-        let seat = p.seat?;
-        let kind = p.kind?;
-        let spec = specs.get(usize::from(seat))?;
-        if serde_json::to_value(kind).ok()? != spec["kind"] || !p.bot {
-            return None;
-        }
-        if seats
-            .insert(
-                seat,
-                (
-                    kind,
-                    [
-                        p.shots as f64,
-                        p.opposing_hits as f64,
-                        p.damage_dealt,
-                        p.damage_taken,
-                    ],
-                ),
-            )
-            .is_some()
-        {
-            return None;
-        }
-    }
-    (seats.len() == specs.len() && !seats.is_empty()).then_some(seats)
-}
-
-fn seat_comparison(reports: &[(String, Report)]) -> Option<SeatComparison> {
-    use crate::{config::SeatKind, metrics::End};
-    let mut pairs = BTreeMap::<(&str, u64, String), [Vec<&Report>; 2]>::new();
-    for (id, r) in reports {
-        if let (Some(leg), Some(map), Some(seed)) = (
-            r.match_["seats_swapped"].as_bool(),
-            r.match_["map"].as_str(),
-            r.match_["seed"].as_u64(),
-        ) {
-            // A planned run's ID includes any game type and skill axes.
-            // Older callers can still supply unrelated report IDs.
-            let stem = if leg {
-                id.strip_suffix("-swapped")
-            } else {
-                Some(id.as_str())
-            };
-            let seed_suffix = format!("-s{seed}");
-            let pair_id = stem
-                .filter(|stem| stem.ends_with(seed_suffix.as_str()))
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("{map}{seed_suffix}"));
-            pairs.entry((map, seed, pair_id)).or_default()[usize::from(leg)].push(r);
-        }
-    }
-    if pairs.is_empty() {
-        return None;
-    }
-    let mut result = SeatComparison::default();
-    let mut samples = Vec::new();
-    for ((_, _, id), legs) in pairs {
-        let pair = (|| {
-            let ([a], [b]) = (legs[0].as_slice(), legs[1].as_slice()) else {
-                return Err(format!(
-                    "{} original and {} swapped reports",
-                    legs[0].len(),
-                    legs[1].len()
-                ));
-            };
-            for (name, r) in [("original", a), ("swapped", b)] {
-                if r.ticks == 0 || !matches!(r.result.end, End::GameOver | End::TickLimit) {
-                    let mut why = format!(
-                        "{name} leg ended {} with {} ticks and {} players",
-                        r.result.end.name(),
-                        r.ticks,
-                        r.players.len()
-                    );
-                    if let Some(note) = r
-                        .notes
-                        .iter()
-                        .find(|n| n.starts_with("waiting for player/unit bindings"))
-                    {
-                        let _ = write!(why, " ({note})");
-                    }
-                    return Err(why);
-                }
-            }
-            // Everything except transport and the leg marker must match,
-            // including seat order, resolved tuning, teams and game limits.
-            let mut matched = b.match_.clone();
-            matched["seats_swapped"] = false.into();
-            for bot in matched["bot"]
-                .as_array_mut()
-                .ok_or("missing swapped roster")?
-            {
-                let kind: SeatKind = serde_json::from_value(bot["kind"].clone())
-                    .map_err(|_| "invalid swapped seat kind")?;
-                bot["kind"] = serde_json::to_value(kind.swapped()).map_err(|e| e.to_string())?;
-            }
-            if matched != a.match_ {
-                return Err("match settings differ after swapping seat kinds".into());
-            }
-            let original = seat_values(a).ok_or("invalid or incomplete original roster")?;
-            let swapped = seat_values(b).ok_or("invalid or incomplete swapped roster")?;
-            let mut totals = [[0.; 4]; 2];
-            let count = original.len() as f64;
-            for (seat, (kind, x)) in original {
-                let (other, y) = swapped.get(&seat).ok_or("missing logical seat")?;
-                if *other != kind.swapped() {
-                    return Err(format!("seat {seat} did not change kind"));
-                }
-                let (local, phantom) = if kind == SeatKind::Local {
-                    (x, *y)
-                } else {
-                    (*y, x)
-                };
-                for i in 0..4 {
-                    totals[0][i] += local[i] / count;
-                    totals[1][i] += phantom[i] / count;
-                }
-            }
-            Ok(totals)
-        })();
-        match pair {
-            Ok(values) => samples.push(values),
-            Err(reason) => {
-                result.exclusion_reasons.insert(id.clone(), reason);
-                result.excluded.push(id);
-            }
-        }
-    }
-    result.pairs = samples.len();
-    if result.pairs > 0 {
-        for (i, name) in SEAT_METRICS.iter().enumerate() {
-            for (out, side) in [(&mut result.local, 0), (&mut result.phantom, 1)] {
-                out.insert(
-                    (*name).into(),
-                    Stat::of(&samples.iter().map(|p| p[side][i]).collect::<Vec<_>>()),
-                );
-            }
-            result.local_minus_phantom.insert(
-                (*name).into(),
-                Stat::of(
-                    &samples
-                        .iter()
-                        .map(|p| p[0][i] - p[1][i])
-                        .collect::<Vec<_>>(),
-                ),
-            );
-        }
-    }
-    Some(result)
-}
-
 /// A batch's comparison: `compare.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Comparison {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seat_swap: Option<SeatComparison>,
     pub runs: usize,
     /// Arm names, A first.
     pub arms: Vec<String>,
@@ -506,7 +335,6 @@ pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<Strin
         }
     }
     Comparison {
-        seat_swap: seat_comparison(reports),
         runs: reports.len(),
         arms: names,
         stats,
@@ -588,28 +416,6 @@ impl Comparison {
         if self.arms.len() >= 2 {
             out.push_str("± is the sd per arm, and the 95% interval (Welch) for the difference; * leaves out 0\n");
         }
-        if let Some(pair) = &self.seat_swap {
-            let _ = writeln!(out, "Seat swap ({} complete pairs)", pair.pairs);
-            let _ = writeln!(
-                out,
-                "{:<16}{:>12}{:>12}{:>18}",
-                "per seat/game", "local", "phantom", "local - phantom"
-            );
-            for (metric, gap) in &pair.local_minus_phantom {
-                let _ = writeln!(
-                    out,
-                    "{metric:<16}{:>12.3}{:>12.3}{:>+18.3}",
-                    pair.local[metric].mean, pair.phantom[metric].mean, gap.mean
-                );
-            }
-            for id in &pair.excluded {
-                let reason = pair
-                    .exclusion_reasons
-                    .get(id)
-                    .map_or("incomplete pair", String::as_str);
-                let _ = writeln!(out, "Excluded {id}: {reason}");
-            }
-        }
         out
     }
 }
@@ -632,7 +438,6 @@ mod tests {
             index,
             name: format!("b{index}"),
             bot: true,
-            port: Some(index),
             arm: Some(arm.into()),
             team: Some(team),
             kills,
@@ -643,119 +448,6 @@ mod tests {
             stuck_ticks: 60,
             ..PlayerReport::default()
         }
-    }
-
-    #[test]
-    fn midship_reports_identify_the_zero_tick_swapped_leg() {
-        // The four-player seed 1 report and the empty swapped report from the batch.
-        let [original, swapped]: [Report; 2] =
-            serde_json::from_str(include_str!("compare/midship-pair.json")).unwrap();
-        let reports = |swapped| {
-            [
-                ("midship-s1".into(), original.clone()),
-                ("midship-s1-swapped".into(), swapped),
-            ]
-        };
-        let c = compare(&[], &reports(swapped.clone()), vec![]);
-        let pair = c.seat_swap.as_ref().unwrap();
-        assert_eq!(pair.pairs, 0);
-        assert_eq!(pair.excluded, ["midship-s1"]);
-        let reason = &pair.exclusion_reasons["midship-s1"];
-        assert!(reason.contains("swapped leg ended game_over with 0 ticks and 0 players"));
-        assert!(reason.contains("Blue 1 (Local seat 1), Blue 2 (Local seat 3)"));
-        assert!(c.table().contains(reason.as_str()));
-
-        // Model a successful return leg using the same saved match block.
-        let mut played = swapped;
-        played.ticks = 9000;
-        played.result.end = End::TickLimit;
-        played.players = original.players.clone();
-        played.players.reverse();
-        for (index, p) in played.players.iter_mut().enumerate() {
-            p.index = index as u8;
-            p.kind = p.kind.map(crate::config::SeatKind::swapped);
-            p.port =
-                (p.kind == Some(crate::config::SeatKind::Local)).then_some(p.seat.unwrap() / 2);
-            p.shots = 100;
-        }
-        let pair = compare(&[], &reports(played), vec![]).seat_swap.unwrap();
-        assert_eq!(pair.pairs, 1);
-        assert_eq!(pair.local["shots"].mean, (575. + 734. + 200.) / 4.);
-        assert_eq!(pair.phantom["shots"].mean, (532. + 610. + 200.) / 4.);
-    }
-
-    #[test]
-    fn paired_seats_use_only_complete_games_and_follow_logical_identity() {
-        use crate::config::SeatKind::{Local, Phantom};
-        let leg = |swapped, seed| {
-            let (a, b) = if swapped {
-                (Phantom, Local)
-            } else {
-                (Local, Phantom)
-            };
-            let mut r = report(vec![], None);
-            r.ticks = 1000;
-            r.match_ = serde_json::json!({"seats_swapped":swapped,"map":"midship","seed":seed,"bot":[{"kind":a},{"kind":b}]});
-            for (seat, kind, shots) in [
-                (0, a, if swapped { 9 } else { 30 }),
-                (1, b, if swapped { 10 } else { 5 }),
-            ] {
-                r.players.push(PlayerReport {
-                    seat: Some(seat),
-                    index: if swapped { 1 - seat } else { seat },
-                    kind: Some(kind),
-                    bot: true,
-                    shots,
-                    opposing_hits: shots / 2,
-                    damage_dealt: shots as f64,
-                    damage_taken: 2. * shots as f64,
-                    ..Default::default()
-                });
-            }
-            (format!("{seed}-{swapped}"), r)
-        };
-        let mut invalid = leg(false, 3);
-        invalid.1.players.pop();
-        let mut uneven = leg(true, 4);
-        uneven.1.match_["bot"][0]["team"] = 1.into();
-        let reports = [
-            uneven,
-            leg(false, 4),
-            leg(true, 1),
-            leg(false, 1),
-            leg(false, 2),
-            invalid,
-            leg(true, 3),
-        ];
-        let pair = compare(&[], &reports, vec![]).seat_swap.unwrap();
-        assert_eq!(pair.pairs, 1);
-        assert_eq!(pair.excluded, ["midship-s2", "midship-s3", "midship-s4"]);
-        assert_eq!(pair.local["shots"].mean, 20.);
-        assert_eq!(pair.phantom["shots"].mean, 7.);
-        assert_eq!(pair.local_minus_phantom["shots"].mean, 13.);
-        assert_eq!(pair.local_minus_phantom["damage_taken"].mean, 26.);
-        assert_eq!(pair.local_minus_phantom["opposing_hits"].mean, 7.);
-
-        let mut reports = Vec::new();
-        for game_type in ["ctf", "juggernaut"] {
-            for skill in ["easy", "heroic"] {
-                for swapped in [false, true] {
-                    if (game_type, skill, swapped) == ("ctf", "heroic", true) {
-                        continue;
-                    }
-                    let (_, mut report) = leg(swapped, 1);
-                    report.match_["game_type"] = game_type.into();
-                    for bot in report.match_["bot"].as_array_mut().unwrap() {
-                        bot["skill"] = skill.into();
-                    }
-                    let suffix = if swapped { "-swapped" } else { "" };
-                    reports.push((format!("midship-{game_type}-{skill}-s1{suffix}"), report));
-                }
-            }
-        }
-        let pair = compare(&[], &reports, vec![]).seat_swap.unwrap();
-        assert_eq!(pair.pairs, 3);
-        assert_eq!(pair.excluded, ["midship-ctf-heroic-s1"]);
     }
 
     fn report(players: Vec<PlayerReport>, winner: Option<Winner>) -> Report {

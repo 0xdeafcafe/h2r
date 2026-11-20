@@ -145,8 +145,7 @@ impl Game {
             .env_remove("H2_FILM_OUT")
             .env_remove("H2_SIM")
             .env_remove("H2_BOOT_INPUT")
-            .env_remove("H2_INPUT_REPLAY")
-            .env_remove("H2_BOTS");
+            .env_remove("H2_INPUT_REPLAY");
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
         #[cfg(target_os = "linux")]

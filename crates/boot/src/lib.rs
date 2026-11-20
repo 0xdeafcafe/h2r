@@ -1073,7 +1073,7 @@ fn run_configured(
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env(&opts.data_root)?, None),
+        None => (sim_glue::from_env()?, None),
     };
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
@@ -1113,11 +1113,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
-    let bots = opts.xapi
-        && (!host_light
-            || sim_mode.is_some()
-            || host.host_bots
-            || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
+    let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let slim_stamp = host_light.then(|| current_slim_stamp(xbe_bytes, dylib)).flatten();
@@ -1198,7 +1194,6 @@ fn run_configured(
         .then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
     let sim_network = sim_mode
         .as_ref()
-        .filter(|s| s.matched().distributed())
         .map(|_| sim_glue::hosted::Network::reserve())
         .transpose()?;
     let _live = if let Some(r) = &replay {
@@ -1454,7 +1449,10 @@ fn run_configured(
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     let level = match (host.level.take(), &sim_mode) {
         (Some(l), _) => Some(l),
-        (None, Some(s)) => s.level_request(&opts.disc, &opts.data_root)?,
+        (None, Some(s)) => {
+            s.select_map(&opts.disc, &opts.data_root)?;
+            None
+        }
         (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
@@ -1722,10 +1720,6 @@ fn run_configured(
             mixer.set_hrtf(features.switches().audio_hrtf());
             mixer.set_distance_reverb(features.switches().distance_reverb());
         }
-    }
-    if bots && let Some(input) = host.input.as_mut() {
-        // Local bots' pads (docs/game/bots.md): after the host's own.
-        input.add_backend(Box::new(bots::local::global().backend()));
     }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
@@ -2274,11 +2268,7 @@ fn run_configured(
                         .finish_sim(report)
                         .map_err(anyhow::Error::msg)
                 }),
-            Err(error) if uploading_sim || s.matched().distributed() => Err(error),
-            Err(error) => {
-                eprintln!("sim: {error:#}");
-                Ok(())
-            }
+            Err(error) => Err(error),
             Ok(_) => Ok(()),
         },
         None => Ok(()),

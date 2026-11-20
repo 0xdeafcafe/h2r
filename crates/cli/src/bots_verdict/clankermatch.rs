@@ -1,7 +1,7 @@
 //! The verdict of a Clankermatch run (`h2 bots test --clankermatch`,
 //! docs/game/bots.md §8 and §13, "Clankermatch"): the Xbox Live menu's
 //! Clankermatch row, a clanker playlist, the HLE's empty search, the lobby
-//! this console hosts filled by local bots and phantoms (so it reaches the
+//! this console hosts filled by phantoms (so it reaches the
 //! playlist's fewest players and starts), the game record, and the bots
 //! going once the player leaves.
 //!
@@ -11,8 +11,8 @@
 //! record as [`game_line`].
 
 use super::{
-    Check, Log, Plan, Verdict, account_line, check, gate_port, on_live_as_account, phantom_failed,
-    phantom_joined, phantom_joined_lobby, read_status, signing_port,
+    Check, Log, Plan, Verdict, check, phantom_failed, phantom_joined, phantom_joined_lobby,
+    phantom_off, read_status,
 };
 
 const PLAN: &str = "bots-test: clankermatch plan: ";
@@ -25,7 +25,7 @@ const EMPTY_LIST: &str = "clankermatch: the server named no clanker hoppers";
 const SEARCH: &str = "live: clankermatch: searching clanker playlist ";
 const HUMAN_SEARCH: &str = "live: optimatch: searching playlist ";
 const HOSTING: &str = "clankers: clankermatch: hosting clanker playlist ";
-const LOCAL_LINE: &str = "clankers: clankermatch: ";
+const FILL_PREFIX: &str = "clankers: clankermatch: ";
 const BOTS_GO: [&str; 2] = [
     "clankers: clankermatch: the game is over: the bots go",
     "clankers: clankermatch: this console hosts another game: the bots go",
@@ -49,26 +49,23 @@ pub struct CmPlan {
     pub max: u32,
     /// Teams (0: free for all).
     pub teams: u32,
-    /// Bots beside the human, and how many of them are local bots
-    /// (`boot::clankers::MATCH_LOCAL`, none: phantoms only); the rest are
-    /// phantoms.
+    /// Bots beside the human, every one a phantom.
     pub bots: usize,
-    pub local: usize,
     pub tag: String,
 }
 
 impl CmPlan {
     pub fn phantoms(&self) -> usize {
-        self.bots.saturating_sub(self.local)
+        self.bots
     }
 
     /// `bots-test: clankermatch plan: playlist slayer (Clanker Slayer),
-    /// hopper 8, row 0, players 2 to 8, teams 0, bots 7 (3 local, 4
-    /// phantoms), gamertag Tester`
+    /// hopper 8, row 0, players 2 to 8, teams 0, bots 7 (7 phantoms),
+    /// gamertag Tester`
     pub fn line(&self) -> String {
         format!(
             "{PLAN}playlist {} ({}), hopper {}, row {}, players {} to {}, teams {}, bots {} \
-             ({} local, {} phantoms), gamertag {}",
+             ({} phantoms), gamertag {}",
             self.playlist,
             self.title,
             self.hopper,
@@ -77,7 +74,6 @@ impl CmPlan {
             self.max,
             self.teams,
             self.bots,
-            self.local,
             self.phantoms(),
             self.tag
         )
@@ -94,8 +90,7 @@ impl CmPlan {
         let (max, rest) = rest.split_once(", teams ")?;
         let (teams, rest) = rest.split_once(", bots ")?;
         let (bots, rest) = rest.split_once(" (")?;
-        let (local, rest) = rest.split_once(" local, ")?;
-        let (_, tag) = rest.split_once("), gamertag ")?;
+        let (_, tag) = rest.split_once(" phantoms), gamertag ")?;
         Some(CmPlan {
             playlist: playlist.into(),
             title: title.into(),
@@ -105,7 +100,6 @@ impl CmPlan {
             max: max.parse().ok()?,
             teams: teams.parse().ok()?,
             bots: bots.parse().ok()?,
-            local: local.parse().ok()?,
             tag: tag.trim().into(),
         })
     }
@@ -178,28 +172,13 @@ fn hosting(text: &str) -> Option<(u32, &str)> {
     Some((h.parse().ok()?, s))
 }
 
-/// `clankers: clankermatch: N local bots join the lobby ...`: N.
-fn local_planned(text: &str) -> Option<usize> {
-    let rest = text.strip_prefix(LOCAL_LINE)?;
+/// `clankers: clankermatch: N phantoms join the lobby ...`: N.
+fn phantoms_planned(text: &str) -> Option<usize> {
+    let rest = text.strip_prefix(FILL_PREFIX)?;
     let (n, after) = rest.split_once(' ')?;
     after
-        .starts_with("local bots join the lobby")
+        .starts_with("phantoms join the lobby")
         .then(|| n.parse().ok())?
-}
-
-/// `clankers: Clanker P on (...)`: the port.
-fn seated_port(text: &str) -> Option<u8> {
-    let rest = text.strip_prefix("clankers: Clanker ")?;
-    let (port, after) = rest.split_once(' ')?;
-    after.starts_with("on (").then(|| port.parse().ok())?
-}
-
-/// `clankers: Clanker P off`: the port.
-fn off_port(text: &str) -> Option<u8> {
-    text.strip_prefix("clankers: Clanker ")?
-        .strip_suffix(" off")?
-        .parse()
-        .ok()
 }
 
 impl Log<'_> {
@@ -222,7 +201,6 @@ fn drive_lines(l: &Log) -> Vec<String> {
 /// The verdict of a Clankermatch log (`plan` its plan line).
 pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
     let mut checks: Vec<Check> = Vec::new();
-    let local = plan.local as u8;
 
     // 1. Signed in to Live.
     checks.push(match l.first(|t| t.starts_with("live: playing as ")) {
@@ -440,74 +418,43 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         }
     });
 
-    // 6. The fill's split: local bots in the lobby, phantoms in the game.
-    let split = l.first(|t| local_planned(t).is_some());
+    // 6. The fill's plan: phantoms in the match, never the party.
+    let split = l.first(|t| phantoms_planned(t).is_some());
     checks.push(match split {
         Some((line, t)) => {
-            let n = local_planned(t).expect("found by it");
+            let n = phantoms_planned(t).expect("found by it");
             check(
-                "local bots planned for the lobby",
-                n == plan.local,
-                if n == plan.local {
-                    t[LOCAL_LINE.len()..].to_string()
+                "phantoms planned for the lobby",
+                n == plan.bots,
+                if n == plan.bots {
+                    t[FILL_PREFIX.len()..].to_string()
                 } else {
                     format!(
-                        "{n} local bots, not the {} the plan works out (`MATCH_LOCAL`; {} bots, \
-                         {} players, {} teams)",
-                        plan.local, plan.bots, plan.max, plan.teams
+                        "{n} phantoms, not the {} the plan works out ({} players, {} teams)",
+                        plan.bots, plan.max, plan.teams
                     )
                 },
                 vec![line],
             )
         }
         None => check(
-            "local bots planned for the lobby",
+            "phantoms planned for the lobby",
             false,
-            "no `clankers: clankermatch: N local bots join the lobby`: the fill never started \
+            "no `clankers: clankermatch: N phantoms join the lobby`: the fill never started \
              (step 5)"
                 .into(),
             l.last(3, |t| t.starts_with("clankers: ")),
         ),
     });
 
-    // 7. Each local bot seated and signed in on the lobby path.
-    let from = host_at.unwrap_or(0);
-    let mut lines = Vec::new();
-    let mut missing = Vec::new();
-    let mut where_ = Vec::new();
-    for p in 1..=local {
-        let on = l.index_from(from, |t| seated_port(t) == Some(p));
-        let signs = l.index_from(from, |t| {
-            gate_port(t) == Some(p) && t.ends_with(": signs in")
-        });
-        let signed = l.index_from(from, |t| signing_port(t) == Some(p));
-        match (on, signs, signed) {
-            (Some(o), Some(g), Some(s)) => {
-                let at = if l.texts[s].contains("in the pregame lobby")
-                    || l.texts[g].contains("screen lobby")
-                {
-                    "the lobby"
-                } else {
-                    "not the lobby"
-                };
-                where_.push(format!("port {p} in {at}"));
-                lines.extend([l.raw_at(o), l.raw_at(g), l.raw_at(s)]);
-            }
-            (on, _, _) => {
-                missing.push((p, on.is_some()));
-                lines.extend(l.last(2, |t| gate_port(t) == Some(p)));
-            }
-        }
-    }
-    let not_seated: Vec<u8> = missing.iter().filter(|m| !m.1).map(|m| m.0).collect();
-    if local == 0 {
-        // Phantoms only (docs/game/bots.md §8.4): no bot signs in on a
-        // controller port, so none shows in the party.
+    // 7. No bot in the party: every bot is a phantom, so none signs in
+    // on a controller port (docs/game/bots.md §8.4).
+    {
         let signed: Vec<String> = l
             .texts
             .iter()
             .enumerate()
-            .filter(|(_, t)| signing_port(t).is_some())
+            .filter(|(_, t)| super::signing_port(t).is_some())
             .map(|(i, _)| l.raw_at(i))
             .collect();
         checks.push(check(
@@ -522,62 +469,10 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             },
             signed,
         ));
-    } else {
-        checks.push(check(
-        "local bots seated and signed in, in the lobby",
-        missing.is_empty() && local > 0,
-        if local == 0 {
-            "the plan has no local bot".into()
-        } else if missing.is_empty() {
-            where_.join(", ")
-        } else if !not_seated.is_empty() {
-            format!(
-                "no `clankers: Clanker P on` for port(s) {not_seated:?} after the fill started: \
-                 the fill seats them one at a time (0.5 to 3 s apart) once Live's roster comes \
-                 (or is refused); a port taken, or the roster never answered"
-            )
-        } else {
-            format!(
-                "port(s) {:?} seated but never signed in; their last join gate lines say what \
-                 they waited on (screen, dialog, signed_in)",
-                missing.iter().map(|m| m.0).collect::<Vec<_>>()
-            )
-        },
-        lines,
-    ));
     }
 
-    // 8. Each local bot on Live as its own bot account.
-    let mut lines = Vec::new();
-    let mut missing = Vec::new();
-    let mut names = Vec::new();
-    for p in 1..=local {
-        let account = l.first(|t| {
-            account_line(t).is_some_and(|(port, _, xuid)| {
-                port == p && xuid.to_ascii_lowercase().starts_with("000b")
-            })
-        });
-        let live = l.first(|t| on_live_as_account(t) == Some(p));
-        match (account, live) {
-            (Some((a, at)), Some((b, _))) => {
-                if let Some((_, tag, xuid)) = account_line(at) {
-                    names.push(format!("{tag} ({xuid})"));
-                }
-                lines.push(a);
-                lines.push(b);
-            }
-            _ => {
-                missing.push(p);
-                lines.extend(l.last(2, |t| {
-                    t.contains(&format!(" on port {p} "))
-                        || t.starts_with(&format!("clankers: Clanker {p} "))
-                }));
-            }
-        }
-    }
-    if local == 0 {
-        // Phantoms only: each planned phantom carries a roster bot account
-        // (`clankers: G (phantom, rostered) on (...)`).
+    // 8. The phantoms are the roster's bot accounts.
+    {
         let rostered: Vec<(String, &str)> = l
             .texts
             .iter()
@@ -600,21 +495,6 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                 )
             },
             rostered.into_iter().map(|r| r.0).collect(),
-        ));
-    } else {
-        checks.push(check(
-            "local bots on Xbox Live as bot accounts (000b...)",
-            missing.is_empty() && local > 0,
-            if missing.is_empty() {
-                names.join(", ")
-            } else {
-                format!(
-                    "port(s) {missing:?}: no bot account sign-in (`Clanker N is ... (bot account \
-                 000b...)` and `... is on Xbox Live as its own bot account`); a guest or offline \
-                 line says why"
-                )
-            },
-            lines,
         ));
     }
 
@@ -639,8 +519,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             } else {
                 format!(
                     "at most {n} players in the game's lobby of the {min} the playlist starts \
-                     at: the local bots did not count as session players (step 7 and 8 say \
-                     whether they signed in) and no phantom joined (step 12)"
+                     at: no phantom joined the lobby (step 12 says why)"
                 )
             },
             vec![l.raw_at(i)],
@@ -674,8 +553,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         ),
         None => {
             let reached = best.is_some_and(|b| b.1 >= min);
-            let mut lines = l.last(2, |t| t.starts_with("bots: start state"));
-            lines.extend(l.last(2, |t| t.starts_with("bots-test: status")));
+            let mut lines = l.last(2, |t| t.starts_with("bots-test: status"));
             lines.extend(l.last(2, |t| t.starts_with("bots-drive")));
             check(
                 "the countdown ran and the game started",
@@ -793,7 +671,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         .max_by_key(|(_, (b, _, _))| *b);
     checks.push(match record {
         Some((i, (b, kind, playlist))) => {
-            let pass = kind == "clankermatch" && b >= plan.local.max(1);
+            let pass = kind == "clankermatch" && b >= plan.bots.max(1);
             check(
                 "game record: kind clankermatch, the bots with bot: true",
                 pass,
@@ -819,27 +697,29 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
     });
 
     // 14. After the game, the bots go: the fill ends once this console
-    // hosts no clanker session (30 s after the last), and each local bot
-    // signs off.
+    // hosts no clanker session (30 s after the last), and each phantom
+    // comes off.
     let after = play.unwrap_or(l.texts.len());
     let gone = l.index_from(after, |t| BOTS_GO.contains(&t));
     checks.push(match gone {
         Some(g) => {
-            let offs: Vec<usize> = (1..=local)
-                .filter_map(|p| l.index_from(g, |t| off_port(t) == Some(p)))
+            let mut names = std::collections::BTreeSet::new();
+            let offs: Vec<usize> = (g..l.texts.len())
+                .filter(|&i| phantom_off(l.texts[i]).is_some_and(|name| names.insert(name)))
                 .collect();
-            let pass = offs.len() == local as usize;
+            let pass = offs.len() >= plan.bots;
             let mut lines = vec![l.raw_at(g)];
             lines.extend(offs.iter().map(|&i| l.raw_at(i)));
             check(
-                "after the game, the local bots leave",
+                "after the game, the phantoms leave",
                 pass,
                 if pass {
-                    format!("the fill ended; {} local bots off", offs.len())
+                    format!("the fill ended; {} phantoms off", offs.len())
                 } else {
                     format!(
-                        "the fill ended but only {} of {local} local bots said `Clanker P off`",
-                        offs.len()
+                        "the fill ended but only {} of {} phantoms said `NAME off`",
+                        offs.len(),
+                        plan.bots
                     )
                 },
                 lines,
@@ -849,7 +729,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             let mut lines = l.last(2, |t| t.starts_with("live: session "));
             lines.extend(drive_lines(l));
             check(
-                "after the game, the local bots leave",
+                "after the game, the phantoms leave",
                 false,
                 if play.is_none() {
                     "no game, so nothing to leave".into()
@@ -867,11 +747,10 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
     let trouble = l.last(8, |t| super::TROUBLE.iter().any(|k| t.contains(*k)));
     Verdict {
         title: format!(
-            "bots test: Clankermatch, {} (hopper {}): {} bots ({} local, {} phantoms) with {}",
+            "bots test: Clankermatch, {} (hopper {}): {} bots ({} phantoms) with {}",
             plan.title,
             plan.hopper,
             plan.bots,
-            plan.local,
             plan.phantoms(),
             plan.tag
         ),

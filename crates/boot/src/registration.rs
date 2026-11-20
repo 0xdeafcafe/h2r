@@ -232,14 +232,12 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
-    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
-    // signed in on the players screen, their views and listeners hidden.
-    // `H2_BOTS` adds brains at boot; idle with none.
+    // Bots (docs/game/bots.md): phantom peers in a session this console
+    // hosts. Idle with none.
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
-        bot_glue::add_from_env(i.data_root, i.settings.as_deref());
         bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {

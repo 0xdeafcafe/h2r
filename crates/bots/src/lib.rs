@@ -1,12 +1,11 @@
 //! Multiplayer bots, "Clankers" (docs/game/bots.md).
 //!
-//! One brain, two ways in. A bot is driven by a [`local::PadSource`]: the
+//! One brain, one way in. A bot is driven by a [`pad_source::PadSource`]: the
 //! brain ([`Brain`]), a script or a recording, each giving controller input
-//! and nothing else. The first way in is local slots ([`local`]): a pad on
-//! a free controller port, signed in with a profile of its own on the
-//! players screen ([`guest::sign_in`]), with its view and listener hidden
-//! ([`guest::hide`]). The second, phantom peers ([`phantom`]), is stage 6.
-//! The boot glue (`boot::bot_glue`) places the hooks.
+//! and nothing else. Every bot plays as a phantom peer ([`phantom`]): a
+//! remote console's player in a session this console hosts, never a local
+//! controller seat, which belongs to a real person. The boot glue
+//! (`boot::bot_glue`) places the hooks.
 
 pub mod aim_net;
 pub mod arms;
@@ -22,7 +21,7 @@ pub mod guest;
 mod human_input;
 mod incoming;
 pub mod lobby;
-pub mod local;
+pub mod pad_source;
 pub mod los;
 pub mod mind;
 pub mod moves;
@@ -48,29 +47,12 @@ use input::host::HostPadState;
 
 pub use sound::{clear_shots, observe_shot};
 
-/// `H2_BOTS`: how many local bots to add at boot, 0 to
-/// [`local::MAX_LOCAL`], on the ports after port 0.
-pub const ENV: &str = "H2_BOTS";
-
-/// How many bots `H2_BOTS` asks for. Unset or empty is none.
-pub fn from_env_value(v: Option<&str>) -> Result<usize, String> {
-    let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(0);
-    };
-    match v.parse::<usize>() {
-        Ok(n) if n <= local::MAX_LOCAL => Ok(n),
-        _ => Err(format!("{ENV}={v:?}: expected 0 to {}", local::MAX_LOCAL)),
-    }
-}
-
 /// The brain as a pad source: in a multiplayer game its [`mind::Mind`] with
-/// the loaded map's data ([`cache::current`]). A waiting local pad may
-/// fidget with the right stick. Sign-in keeps the pad neutral.
+/// the loaded map's data ([`cache::current`]).
 pub struct Brain {
     pub mind: mind::Mind,
     /// The last death heard from [`emote::kills`].
     kills_seen: u64,
-    fidget: mind::pad::Fidget,
     seed: u64,
     epoch: u64,
     /// The map [`Brain::mind`]'s super bounce spots are for.
@@ -126,14 +108,6 @@ impl Brain {
         }
     }
 
-    pub fn set_identity_seed(&mut self, seed: u64) {
-        if self.seed != seed {
-            self.seed = seed;
-            self.kills_seen = emote::kills().since(u64::MAX).1;
-            self.reset_mind();
-        }
-    }
-
     fn reset_mind(&mut self) {
         let taunt = self.mind.emote.taunt;
         let glitches = self.mind.glitches;
@@ -158,7 +132,6 @@ impl Brain {
             seed,
             epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
-            fidget: mind::pad::Fidget::new(seed),
             map: String::new(),
             tuning: None,
             controller: human_input::Controller::new(seed),
@@ -359,7 +332,7 @@ impl Default for Brain {
     }
 }
 
-impl local::PadSource for Brain {
+impl pad_source::PadSource for Brain {
     fn brain_view(&self) -> Option<BrainView> {
         Some(self.view())
     }
@@ -379,30 +352,19 @@ impl local::PadSource for Brain {
         self.tuning.unwrap_or_default().phantom_latency()
     }
 
-    fn pad(&mut self, f: &local::Frame<'_>) -> HostPadState {
-        if f.joining {
-            self.reset_input();
-            self.fidget.reset();
-            return HostPadState::default();
-        }
-        let who = match f.machine {
-            Some(id) => guest::Who::Machine(id),
-            None => guest::Who::Port(u32::from(f.port)),
-        };
+    fn pad(&mut self, f: &pad_source::Frame<'_>) -> HostPadState {
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         let cursor = emote::kills().since_into(self.kills_seen, &mut observation.kills);
         let name_change = autonav::loaded_change(&self.map);
         let map = cache::current();
-        // Render can poll a local pad repeatedly within one game tick.
-        // Keep processing fresh kill events and same-tick life transitions.
+        // Reuse a same-tick sample while the unit, map and kill feed agree.
         if observation.kills.is_empty()
             && name_change.is_none()
-            && f.tick
-                .is_some_and(|tick| self.sampled == Some((tick, true)))
+            && self.sampled == Some((f.tick, true))
             && self.visibility.matches_map(map.as_ref())
             && self
                 .player_unit
-                .is_some_and(|(slot, unit)| guest::same_live_unit(f.guest, who, slot, unit))
+                .is_some_and(|(slot, unit)| guest::same_live_unit(f.guest, f.machine, slot, unit))
         {
             self.kills_seen = cursor;
             self.spare_observations.push(observation);
@@ -411,7 +373,7 @@ impl local::PadSource for Brain {
         self.vehicle_headers.clear();
         if guest::perception_into(
             f.guest,
-            who,
+            f.machine,
             true,
             &mut observation.perception,
             &mut observation.grenades,
@@ -421,7 +383,6 @@ impl local::PadSource for Brain {
         {
             self.spare_observations.push(observation);
             self.reset_input();
-            self.fidget.reset();
             return HostPadState::default();
         }
         if let Some(name) = name_change {
@@ -463,7 +424,7 @@ impl local::PadSource for Brain {
                 .then_some(self.vehicle_headers.as_slice());
             vehicle::read::sight_in_game_into(
                 f.guest,
-                who,
+                f.machine,
                 &mut observation.vehicles,
                 headers,
                 &mut self.vehicle_seats,
@@ -494,35 +455,15 @@ impl local::PadSource for Brain {
             observation.sounds.clear();
             observation.grenades.clear();
         }
-        let pad = self.sample(observation, map.as_deref(), radio::host());
-        if alive {
-            self.fidget.reset();
-            return pad;
-        }
-        // Only a signed-in local pad fidgets in a pregame lobby.
-        // Outside play it sends only right-stick axes.
-        if f.machine.is_none()
-            && (guest::game_mode(f.guest) == Some(guest::MODE_MULTIPLAYER)
-                || (guest::slot_held(f.guest, u32::from(f.port)).unwrap_or(false)
-                    && lobby::in_pregame(f.guest)))
-        {
-            self.fidget.pad(f.frame)
-        } else {
-            self.fidget.reset();
-            pad
-        }
+        self.sample(observation, map.as_deref(), radio::host())
     }
 }
-
-/// `H2_BOTS_SKILL`: the `H2_BOTS` brains' skill (easy, normal, heroic,
-/// legendary; default normal).
-pub const SKILL_ENV: &str = "H2_BOTS_SKILL";
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use input::host::HostButton;
-    use local::{Frame, PadSource};
+    use pad_source::{Frame, PadSource};
 
     #[test]
     fn a_tuned_brain_keeps_its_personality_across_matches() {
@@ -561,67 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn h2_bots_is_a_count() {
-        assert_eq!(from_env_value(None), Ok(0));
-        assert_eq!(from_env_value(Some("0")), Ok(0));
-        assert_eq!(from_env_value(Some(" 2 ")), Ok(2));
-        assert!(from_env_value(Some("4")).is_err());
-        assert!(from_env_value(Some("lots")).is_err());
-    }
-
-    #[test]
-    fn the_brain_presses_nothing_while_joining_or_outside_a_game() {
+    fn the_brain_presses_nothing_outside_a_game() {
         let g = engine::testing::FakeGuest::new();
-        let mut b = Brain::default();
-        let f = |frame, joining| Frame {
-            frame,
-            tick: None,
-            port: 1,
-            machine: None,
-            guest: &g,
-            joining,
-        };
-        // Signed in by the glue: an A here would open a profile chooser.
-        for frame in 0..120 {
-            assert!(
-                !b.pad(&f(frame, true)).buttons.contains(HostButton::South),
-                "frame {frame}"
-            );
-            assert_eq!(b.pad(&f(frame, true)), HostPadState::default());
-        }
-        // Unmapped memory: no game, no pad.
-        assert_eq!(b.pad(&f(0, false)), HostPadState::default());
-    }
-
-    #[test]
-    fn a_signed_in_lobby_bot_only_fidgets_its_right_stick() {
-        let mut g = engine::testing::FakeGuest::new();
-        let session = 0x1000;
-        g.put_u32(engine::points::GAME_GLOBALS.base, 0)
-            .put_u8(lobby::LOBBY_ON, 1)
-            .put_u8(lobby::NETWORKING, 1)
-            .put_u32(lobby::SESSION_TYPE, 2)
-            .put_u32(lobby::MAP_FAILED_HERE, 0)
-            .put_u32(lobby::SESSION, session)
-            .map(session, 0x7500)
-            .put_u32(session + lobby::STATE, 5)
-            .put_u32(guest::slot(1), guest::SLOT_PROFILE);
-        let mut b = Brain::default();
-        let mut moved = false;
-        for frame in 0..160 {
-            let pad = b.pad(&Frame {
-                frame,
-                tick: None,
-                port: 1,
-                machine: None,
+        let mut brain = Brain::default();
+        assert_eq!(
+            brain.pad(&Frame {
+                frame: 0,
+                tick: 0,
+                machine: [7; 6],
                 guest: &g,
-                joining: false,
-            });
-            assert_eq!((pad.buttons.bits(), pad.left_stick), (0, (0.0, 0.0)));
-            assert_eq!((pad.left_trigger, pad.right_trigger), (0.0, 0.0));
-            moved |= pad.right_stick != (0.0, 0.0);
-        }
-        assert!(moved);
+            }),
+            HostPadState::default()
+        );
     }
 
     #[test]
