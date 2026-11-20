@@ -1822,16 +1822,52 @@ fn dialogue_takes_the_first_slot_holding_a_sound_per_vocalization() {
             ("dth_hdsht", 0x130),
         ]
     );
-    let root = dialogue(&[("dth", sound(0)), ("pain", sound(1))]).unwrap();
+    let vocabulary = ["dth".into(), "pain".into(), "look".into()];
+    let root = dialogue(
+        &vocabulary,
+        &[("pain", sound(1)), ("dth", sound(0))],
+        &[(0x70, sound(1)), (0xb0, sound(2))],
+    )
+    .unwrap();
     let def = Defs::builtin().group(FourCC(*b"udlg")).unwrap();
     let r = defs::from_built(def, &root).unwrap();
     assert_eq!(r.at("unknown_0"), Some(&Val::Bytes(b"glda".to_vec())));
     assert_eq!(r.at("unknown_4"), Some(&Val::Bytes(vec![0xff; 4])));
     let Some(Val::Block(els)) = r.at("vocalizations") else { panic!() };
-    assert_eq!(els.len(), 2);
+    assert_eq!(els.len(), 5);
     assert_eq!(els[1].at("vocalization"), Some(&Val::String(Str::Text("pain".into()))));
     assert_eq!(els[1].at("unknown_8"), Some(&Val::Bytes(b"!dns".to_vec())));
     assert_eq!(els[1].at("sound"), Some(&Val::Datum(Target::Id(sound(1)))));
+    assert_eq!(els[2].at("sound"), Some(&Val::Datum(Target::Null)));
+    assert_eq!(els[4].at("sound"), Some(&Val::Datum(Target::Id(sound(2)))));
+    assert_eq!(
+        els[4].at("unknown_0"),
+        Some(&Val::Bytes((map::H1_DIALOGUE_SLOT | 0x0a).to_le_bytes().to_vec())),
+    );
+}
+
+#[test]
+fn a_multi_voice_model_keeps_selectors_and_duplicate_generic_alternatives() {
+    use crate::rebuild::model_dialogue;
+    use tags::defs::{self, Defs, Val};
+
+    let hlmt = Defs::builtin().group(FourCC(*b"hlmt")).unwrap();
+    let mut model = defs::default_record(hlmt);
+    let voices = [(0, local(1)), (100, local(2)), (0, local(3))];
+    model_dialogue(&mut model, &voices).unwrap();
+    let block = defs::to_built(hlmt, &model, &mut |_| None).unwrap();
+    let model = defs::from_built(hlmt, &block).unwrap();
+    let Some(Val::Block(rows)) = model.at("variants") else { panic!("missing variants") };
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].at("h1_voice_selector"), Some(&Val::Int(0)));
+    for (row, (selector, voice)) in rows[1..].iter().zip(voices) {
+        let marker = i64::from(map::H1_VOICE_VARIANT | u32::from(selector as u16));
+        assert_eq!(row.at("h1_voice_selector"), Some(&Val::Int(marker)));
+        assert!(matches!(
+            row.at("udlg_ref_30"),
+            Some(Val::Ref { target: defs::Target::Id(id), .. }) if *id == voice
+        ));
+    }
 }
 
 #[test]

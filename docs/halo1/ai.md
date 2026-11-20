@@ -388,10 +388,29 @@ H2 tests seat admission at `0xc8200` and submits the entry behavior at
 `0x16a603` and `0x16b23c`. H2's landing routine tests its counterpart at
 `0xe3727` before applying the distance damage effect.
 
-Vocalize looks up the actor model's converted dialogue and plays its
-source sound on the unit. H1 indexes the dialogue tag at `0x46a40`
-and follows the executable's fallback table when the line is absent.
-None of the retail campaign lists uses this atom.
+**Built.** Voice banks keep the unit definition's selector and every
+authored alternative (`unit +0x2b4` in Halo 1). Halo 1 `0x468d0` draws
+among matching rows. The caller at `0x469ad` tries a positive selector,
+then selector zero, then all rows. The H2 speech initializer at
+`0x114ec0` accepts a model variant name and writes its dialogue datum
+and designator to the unit's speech block at `0x114ff3`. The hook
+selects the matching voice variant for that call. A unique leader
+assigned an existing unit updates the same two speech fields.
+
+**Built.** Native vocalizations use the indexed vocabulary at `adlg +0`.
+Halo 2 reads the chosen unit's indexed sound at `0x1144f4`. The rebuilt
+table keeps explicit Halo 1 slots after its native rows. A command
+atom names a slot and resolves the authored fallback chain from
+`0x1e0720` (read by Halo 1 at `0x46a55`). It plays the exact converted
+sound from the speaking unit's head and passes the sound instance to
+lip sync, using Halo 2 `0x1891d0` and `0x109220`. None of the retail
+campaign lists uses the explicit vocalize atom. In automatic chatter
+the native table also routes sniper praise (H2 `adlg` event 0,
+pattern 27) and flight after a leader dies (event 63, pattern 110).
+
+Automatic stimuli without a verified route remain conversion errors
+(see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
+
 
 #### Cinematic bindings (x50 and c40)
 

@@ -139,6 +139,7 @@ fn counter_base() -> Base {
             ),
         }),
         materials: Vec::new(),
+        dialogue_names: Vec::new(),
     }
 }
 

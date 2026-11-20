@@ -10,6 +10,7 @@ use hs::h1_conversation::{AI, BUILTINS, LONG, NONE, OBJECT, Op, REAL, SHORT, SOU
 use runtime::guest::Permissions;
 
 mod cast;
+pub(crate) mod dialogue;
 mod leaders;
 mod visibility;
 mod voices;
@@ -41,6 +42,7 @@ impl feature::Feature for Conversations {
         let data = b.guest_alloc(0x100, Permissions::RW)?;
         let pending = b.guest_alloc(voices::BOOTSTRAP_BYTES, Permissions::RW)?;
         leaders::install(b, pending);
+        dialogue::install(b, pending);
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(
             &points::HS_UNUSED_EVALUATOR,
@@ -187,33 +189,44 @@ async fn start_sound(cx: &Cx, scratch: u32, a: u32, b: u32, out: u32) -> Result<
             .await?
             .eax
     } else {
-        cx.write(|m| {
-            m.set_u32(scratch, NONE)?;
-            m.set_u32(scratch + 4, sound)?;
-            m.set_u32(scratch + 8, 1.0f32.to_bits())?;
-            m.set_u32(scratch + 12, 0)
-        })?;
-        let handle = cx
-            .call(
-                GuestCall::new(SPATIAL_START)
-                    .esi(object)
-                    .eax(HEAD_MARKER)
-                    .args([scratch]),
-            )
-            .await?
-            .eax;
-        if handle != NONE {
-            cx.call(
-                GuestCall::new(BIPED_LIP_SYNC)
-                    .ebx(object)
-                    .args([sound, handle]),
-            )
-            .await?;
-        }
-        handle
+        play_spatial(cx, scratch, object, sound).await?
     };
     cx.write(|m| m.set_u32(out, instance))?;
     Ok(())
+}
+
+/// Plays a line from the unit's head and gives the same sound instance to
+/// native lip sync. The caller supplies its own 16-byte sound parameters.
+pub(crate) async fn play_spatial(
+    cx: &Cx,
+    scratch: u32,
+    object: u32,
+    sound: u32,
+) -> Result<u32, EntryError> {
+    cx.write(|m| {
+        m.set_u32(scratch, NONE)?;
+        m.set_u32(scratch + 4, sound)?;
+        m.set_u32(scratch + 8, 1.0f32.to_bits())?;
+        m.set_u32(scratch + 12, 0)
+    })?;
+    let handle = cx
+        .call(
+            GuestCall::new(SPATIAL_START)
+                .esi(object)
+                .eax(HEAD_MARKER)
+                .args([scratch]),
+        )
+        .await?
+        .eax;
+    if handle != NONE {
+        cx.call(
+            GuestCall::new(BIPED_LIP_SYNC)
+                .ebx(object)
+                .args([sound, handle]),
+        )
+        .await?;
+    }
+    Ok(handle)
 }
 
 async fn finish_sound(cx: &Cx, global_index: u32, stop: bool) -> Result<(), EntryError> {

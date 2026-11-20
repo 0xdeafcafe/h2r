@@ -18,6 +18,8 @@ pub struct Base {
     /// The globals' material names, in order: a material's index is its
     /// position ([`global_materials`]).
     pub materials: Vec<String>,
+    /// Native indexed vocabulary for the unit dialogue lookup.
+    pub dialogue_names: Vec<String>,
 }
 
 pub use h1convert::materials::{GLOBAL_MATERIAL_SIZE, GLOBAL_MATERIALS, global_materials};
@@ -26,9 +28,11 @@ impl Base {
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
         let meta = Metadata::read(map)?;
         let materials = global_materials(map, &meta);
+        let dialogue_names = dialogue_names(map, &meta)?;
         Ok(Self {
             meta,
             materials,
+            dialogue_names,
             tags: map
                 .tags()
                 .iter()
@@ -199,6 +203,33 @@ impl Base {
         }
         out
     }
+}
+
+/// H2 0x1144f4 indexes the per-unit table using the global vocalization
+/// number. The names of those numbers are in adlg +0x00 (stride 0x60).
+fn dialogue_names<R: Read + Seek>(map: &Map<R>, meta: &Metadata) -> Result<Vec<String>> {
+    let mut globals = map.tags().iter().filter(|t| {
+        t.group == FourCC(*b"adlg") && t.name.as_deref() == Some(r"ai\ai_dialogue_globals")
+    });
+    let Some(tag) = globals.next() else {
+        return Ok(Vec::new());
+    };
+    if globals.next().is_some() {
+        return Err(Error::Invalid("ambiguous AI dialogue globals".into()));
+    }
+    let loc = tag.location.ok_or_else(|| Error::NoTemplate("AI dialogue globals".into()))?;
+    let root = meta.slice(loc.address, 8)?;
+    let count = u32_at(root, 0);
+    let rows = meta.slice(u32_at(root, 4), u64::from(count) * 0x60)?;
+    rows.chunks_exact(0x60)
+        .map(|row| {
+            let id = u32_at(row, 0);
+            map.strings()
+                .get(id as u16 as usize)
+                .and_then(|s| s.clone())
+                .ok_or_else(|| Error::Invalid(format!("AI dialogue vocabulary string {id:#x}")))
+        })
+        .collect()
 }
 
 pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {

@@ -249,6 +249,8 @@ points! { ALL;
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
+    /// Initializes the unit's speech block from its model and variant name.
+    UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

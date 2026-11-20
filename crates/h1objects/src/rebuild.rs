@@ -2946,6 +2946,7 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x360, "chr_kllfoe"),       // killedenemy
     (0x420, "chr_kllfoe_blt"),   // killedenemybullet
     (0x380, "prs_plr_kll"),      // killedenemyplayer
+    (0x550, "prs_plr_sniping"),  // playerkillsnipercm, adlg event 0 pattern 27
     (0x610, "lmnt_deadally"),    // frienddied
     (0x620, "lmnt_deadplr"),     // friendplayerdied
     (0x6a0, "betray"),           // friendbetrayed
@@ -2960,6 +2961,7 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x8e0, "newordr_retreat"),  // retreat
     (0x9b0, "tnt"),              // taunt
     (0x9d0, "flee"),             // flee
+    (0x9f0, "fear_rtrt_ldrdead"), // flee_leader_died, adlg event 63 pattern 110
     (0xa40, "entervcl"),         // vehicleentry
     (0xb20, "srprs"),            // surprise
     (0xb30, "brsrk"),            // berserk
@@ -2992,28 +2994,80 @@ const UDLG_GROUP: [u8; 4] = *b"glda";
 /// (V: every retail element).
 const UDLG_SOUND_GROUP: [u8; 4] = *b"!dns";
 
-/// The `udlg` root: one element per line, its vocalization and its
-/// sound (a datum: a converted sound's placeholder). `+8` and the
-/// trailing string are zero, as on every retail dialogue tag of the
-/// base (V, `halo2_dialogue_survey`).
-pub fn dialogue(lines: &[(&str, TagId)]) -> Result<Block> {
+/// The native prefix is indexed by Halo 2's global vocabulary. Rows
+/// after that prefix keep each authored Halo 1 slot, including lines
+/// whose source events do not have a native vocalization.
+pub fn dialogue(
+    vocabulary: &[String],
+    native: &[(&str, TagId)],
+    source: &[(usize, TagId)],
+) -> Result<Block> {
     let d = def(b"udlg")?;
     let mut r = defs::default_record(d);
     set(&mut r, "unknown_0", Val::Bytes(UDLG_GROUP.to_vec()))?;
     set(&mut r, "unknown_4", Val::Bytes(vec![0xff; 4]))?;
     let el = d.child("vocalizations").expect("udlg vocalizations");
-    let items = lines
+    let row = |name: &str, sound: TagId| -> Result<Record> {
+        let mut x = defs::default_record(el);
+        set(&mut x, "vocalization", Val::text(name))?;
+        set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
+        set(&mut x, "sound", Val::Datum(defs::Target::Id(sound)))?;
+        Ok(x)
+    };
+    let mut items = vocabulary
         .iter()
-        .map(|(voc, sound)| {
-            let mut x = defs::default_record(el);
-            set(&mut x, "vocalization", Val::text(voc))?;
-            set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
-            set(&mut x, "sound", Val::Datum(defs::Target::Id(*sound)))?;
-            Ok(x)
+        .map(|name| {
+            let sound = native
+                .iter()
+                .find(|(voc, _)| *voc == name.as_str())
+                .map_or(TagId::NULL, |l| l.1);
+            row(name, sound)
         })
         .collect::<Result<Vec<_>>>()?;
+    for &(offset, sound) in source {
+        let slot = (offset / 0x10 - 1) as u32;
+        let mut entry = row(&format!("h1_slot_{slot:03x}"), sound)?;
+        let marker = map::H1_DIALOGUE_SLOT | slot;
+        set(&mut entry, "unknown_0", Val::Bytes(marker.to_le_bytes().to_vec()))?;
+        items.push(entry);
+    }
     set(&mut r, "vocalizations", Val::Block(items))?;
     built(d, &r)
+}
+
+/// H2 speech setup (0x114ec0) honors variant dialogue at +0x34. Voice
+/// variants are selected only by the speech hook, using the marked
+/// Halo 1 selector. The default visual variant keeps its own index.
+pub(crate) fn model_dialogue(r: &mut Record, voices: &[(i16, TagId)]) -> Result<()> {
+    let udlg = FourCC(*b"udlg");
+    match voices {
+        [] => return Ok(()),
+        [(0, id)] => return set(r, crate::convert::DIALOGUE_FIELD, Val::tag(udlg, *id)),
+        _ => {}
+    }
+
+    let d = def(b"hlmt")?.child("variants").expect("hlmt variants");
+    let mut variants = match r.at("variants") {
+        Some(Val::Block(rows)) => rows.clone(),
+        _ => return Err(Error::Invalid("hlmt variants".into())),
+    };
+    let visual = |name: &str| -> Result<Record> {
+        let mut row = defs::default_record(d);
+        set(&mut row, "name", Val::text(name))?;
+        set(&mut row, "region_map", Val::List(vec![Val::Int(-1); 16]))?;
+        Ok(row)
+    };
+    if variants.is_empty() {
+        variants.push(visual("default")?);
+    }
+    for (i, &(selector, id)) in voices.iter().enumerate() {
+        let mut row = visual(&format!("h1_voice_{i}"))?;
+        let marker = map::H1_VOICE_VARIANT | u32::from(selector as u16);
+        set(&mut row, "h1_voice_selector", Val::Int(marker.into()))?;
+        set(&mut row, "udlg_ref_30", Val::tag(udlg, id))?;
+        variants.push(row);
+    }
+    set(r, "variants", Val::Block(variants))
 }
 
 /// Halo 1's foot kinds Halo 2 has at the same index (V: on every Halo 2

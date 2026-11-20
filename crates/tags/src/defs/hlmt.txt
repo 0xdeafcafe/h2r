@@ -45,7 +45,8 @@ group hlmt 0xfc align 4
       0x0 string string_0
       0x4 string string_4
       0x8 tagref object -- V: observed classes are object types (vehi, weap, scen, mach) (layouts.rs:792-798)
-    0x24 pad 0x8
+    0x24 u32 h1_voice_selector -- H1 voice variant marker and authored selector (docs/halo1/ai.md)
+    0x28 pad 0x4
     0x2c string string_2c
     0x30 tagref udlg_ref_30 groups=udlg -- V: udlg tags (layouts.rs:835)
   0x58 block block_58 0x14 align 4

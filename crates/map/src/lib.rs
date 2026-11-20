@@ -76,3 +76,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests;
 #[cfg(test)]
 mod build_tests;
+
+/// Marker in a converted hlmt voice variant's word at +0x24. Its low
+/// word is the signed Halo 1 selector. Ordinary model variants opt out.
+pub const H1_VOICE_VARIANT: u32 = 0x4831_0000;
+
+/// Marker in a converted udlg source row's word at +0x00, outside the
+/// native indexed vocabulary. Its low word is the Halo 1 slot index.
+pub const H1_DIALOGUE_SLOT: u32 = 0x4831_0000;
