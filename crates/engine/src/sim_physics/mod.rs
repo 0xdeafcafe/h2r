@@ -141,7 +141,7 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
             return false;
         }
     }
-    if [points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
+    if [points::HAVOK_SUPPORT_VERTICES.base, points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
         && cpu.x87.control & 0x3f != 0x3f { return false; }
     ![points::UNIT_AIM_UPDATE.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
       points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)

@@ -79,17 +79,24 @@ fn object_fixture(m: &mut FlatMemory, case: u32) {
 }
 
 const SUPPORT_CHILD: u32 = 0x006e_0000;
+const SUPPORT_QUERY: u32 = 0x006e_0010;
 
 fn support_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     let (shape,table,ids,matrix) = (DATA,DATA+64,DATA+256,DATA+512);
     c.gpr[1] = RECORDS;
-    for (i,p) in [shape,shape,matrix,ids,0].into_iter().enumerate() {
+    for (i,p) in [shape,shape,matrix,ids,DATA+2048].into_iter().enumerate() {
         word(m,STACK+4+4*i as u32,p);
     }
     word(m,shape,table);
     word(m,table+52,SUPPORT_CHILD);
-    m.bytes[(ids+8) as usize] = 1;
-    m.bytes[(ids+9) as usize] = (case%4) as u8;
+    word(m,table+48,SUPPORT_QUERY);
+    let (a,b)=[(1,1),(1,2),(2,2),(3,1),(1,3),(2,3)][case as usize];
+    m.bytes[(ids+8) as usize]=a;m.bytes[(ids+9) as usize]=b;
+    m.bytes[(ids+10) as usize]=a+u8::from(case==0);
+    m.bytes[(ids+11) as usize]=b+u8::from(case==1);
+    m.bytes[(RECORDS+12) as usize]=(case%2) as u8;
+    for i in 0..12 {word(m,RECORDS+32+4*i,((i as f32+1.0)/7.0).to_bits());}
+    word(m,RECORDS+288,0.75f32.to_bits());
     for i in 0..16 {
         word(m,matrix+4*i,((i as f32 - 5.0)/3.0).to_bits());
         word(m,RECORDS+224+4*i,((7.0-i as f32)/13.0).to_bits());
@@ -417,7 +424,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             0x1d3920 | 0xbab40 => 12,
             0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
-            SUPPORT_CHILD => 12,
+            SUPPORT_CHILD | 0x303360 => 12, SUPPORT_QUERY => 8,
+            0x3037a0=>24,0x308590 | 0x303540=>0,0x303dd0=>16,
             0xc7300=>20, 0xc75d0 | 0xc7750=>4, 0x30bf0 | 0x322bd8=>0,
             0x2e96a0 | WELD_REJECT => 16, 0x2f9c10 => 4,
             0x301a40 | WELD_TYPE | WELD_ACCEPT | 0x2f9e80 | 0x302c70 | 0x302eb0 | 0x2f9ca0 => 0,
@@ -484,6 +492,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         cpu.gpr[0] = match target {
             0x31c520 | 0x31c530 => cpu.gpr[1] + mem.read_u32(sp+4).unwrap()
                 * if target == 0x31c520 {32} else {48},
+            0x3037a0=>1,0x303540=>u32::MAX,0x303360=>if case==3 {0} else {7},0x308590=>if case==2 {5} else {0},
             0xc7750=>u32::from(case<2),
             WELD_SHAPE=>DATA+1024, WELD_ACCEPT=>DATA+2560, 0x301a40=>0,
             0x2fa0d0=>mem.read_u32(sp+16).unwrap(),
