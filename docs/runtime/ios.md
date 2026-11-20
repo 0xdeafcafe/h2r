@@ -1,5 +1,9 @@
 # iPhone and iPad (iOS)
 
+Status: Built. A guide to the iPhone and iPad app; touch, speed and older devices are under "Known gaps".
+Code: `platform/ios/`, `crates/apple-host`, `crates/input/src/touch.rs`. Tests: `crates/input/src/touch_tests.rs`.
+Switch: `H2_TOUCH_LOOK_ACCEL`, `H2_TOUCH_AUTO_FIRE`, `H2_ICONS`, see [switches.md](switches.md).
+
 The game runs on an iPhone or iPad as an app built from `platform/ios/`. It is
 the tvOS app's sibling ([tvos.md](tvos.md)): the same Rust runtime, game
 module build and trimmed disc, with a UIKit host for touch. It needs a real
@@ -33,14 +37,11 @@ docs/input/button-icons.md).
 
 **Touch.** With no controller connected, the app draws its own touch
 controls (`platform/ios/H2iOS/TouchControls.swift`), plain shapes in the
-layout below. They replaced Apple's `GCVirtualController`, which had no
-stick clicks (so no crouch or zoom), refused a d-pad beside the left stick
-and Menu and Options, and on an iPhone fire did not work. Our side of that
-path is tested (`map_snapshot` carries a pad's right trigger through;
-`touch_fire_reaches_player_one_as_a_full_right_trigger` now covers touch
-end to end), so the fault was in the system overlay on the phone: its
-trigger missing, covered, or never reporting. Which one was not
-established.
+layout below. They draw stick clicks (crouch and zoom), a d-pad beside the
+left stick, and Menu and Options, which Apple's `GCVirtualController` does
+not offer. Touch fire reaches player one as a full right trigger, as
+`map_snapshot` and `touch_fire_reaches_player_one_as_a_full_right_trigger`
+test.
 
 Layouts follow player one's state (below). On foot:
 

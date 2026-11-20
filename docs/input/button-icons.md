@@ -1,5 +1,9 @@
 # Button icons for the device in use
 
+Status: Built. Unit tested on synthetic fonts; the game's own text path is under "Not verified".
+Code: `crates/boot/src/icons.rs`, `crates/font/src/icons/`, `crates/input/src/active.rs`. Tests: listed under "Tests".
+Switch: `H2_ICONS` (`--icons`), see [switches.md](../runtime/switches.md).
+
 Halo 2 draws button prompts ("Press X to pick up", the menu legends, the
 on-screen keyboard's shortcuts) as glyphs in its fonts. They show the original
 Xbox pad. This page says where those glyphs are, and how the runner shows
@@ -299,16 +303,10 @@ original glyphs. Previewing requires a fixed set: `auto` needs live input.
 `--all` validates original fonts and cannot be combined with preview options.
 Output stays outside the repository, as do all visual comparisons.
 
-## Checked
+## Not verified
 
-The independent review of `0ecfacc` kept the font overlay and glyph-cache
-approach, refined the authored artwork and added regression coverage for
-alias collisions, missing glyphs, shrinking records, shared-record placement,
-headless bindings, guest argument preservation and device switching.
 The synthetic tests do not need disc data. The offline all-font audit and
 visual comparison read the user's disc at runtime and commit no pixels.
-
-The final game proof is recorded in the review report outside the repository.
 A run is needed to show that the game's own text path reaches the hooks,
 accepts the longer font files and displays the new records; CPU font renders
 and synthetic dispatch tests cannot establish that integration.

@@ -1,5 +1,9 @@
 # Linux x86-64 game module
 
+Status: Built. A reference for the Linux x86-64 module and the headless host build.
+Code: `crates/emit/src/compile.rs` (`Arch::X86_64Linux`, `linux_target_args`), `deploy/host/build.sh`.
+Switch: `H2_LINUX_SYSROOT`, `H2_OPT`, see [switches.md](switches.md).
+
 The dedicated host runs an ELF64 shared object, `libh2game.so`, built for
 `x86_64-unknown-linux-gnu`. The native handlers and the Rust host use the
 System V AMD64 C ABI. The image uses baseline x86-64 instructions. The
