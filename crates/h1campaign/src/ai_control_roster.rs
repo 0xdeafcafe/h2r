@@ -26,8 +26,16 @@ pub(crate) fn prepare(
     let fits = |count| engine::campaign_squad_pool::holds(count, group_count);
     let maneuvers = h1ai::control::maneuver_targets(source, requests);
     let mut selected = BTreeMap::new();
-    for (ei, (e, indices)) in roster.encounters.iter_mut().zip(&roster_indices.indices).enumerate() {
-        let rows = indices.iter().enumerate().filter_map(|(si, &id)| Some((si, id?)));
+    for (ei, (e, indices)) in roster
+        .encounters
+        .iter_mut()
+        .zip(&roster_indices.indices)
+        .enumerate()
+    {
+        let rows = indices
+            .iter()
+            .enumerate()
+            .filter_map(|(si, &id)| Some((si, id?)));
         for (squad, (si, id)) in e.squads.drain(..).zip(rows) {
             let generated = roster_indices.generated.contains(&usize::from(id));
             selected.insert((ei, si), (squad, generated));
@@ -48,7 +56,9 @@ pub(crate) fn prepare(
                 || existing.is_some_and(|(q, _)| !q.starting_locations.is_empty())
             {
                 keep.insert((ei, si));
-            } else if roster_indices.required_squads.contains(&(ei, si)) || maneuvers.contains(&(ei, si)) {
+            } else if roster_indices.required_squads.contains(&(ei, si))
+                || maneuvers.contains(&(ei, si))
+            {
                 optional.push((0, ei, si));
             } else if subjects.migration_destinations.contains(&(ei as u16, si as u8)) {
                 optional.push((1, ei, si));

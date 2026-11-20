@@ -867,7 +867,10 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         let requests = h1scripts::aicontrol::requests(&tables, &catalog);
         let source = h1ai::h1::H1Ai::read(map).unwrap();
         let opts = h1ai::convert::Options {
-            platoon_groups: source.encounters.iter().enumerate()
+            platoon_groups: source
+                .encounters
+                .iter()
+                .enumerate()
                 .flat_map(|(ei, e)| (0..e.platoons.len()).map(move |pi| (ei, pi)))
                 .collect(),
             ..Default::default()

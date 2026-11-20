@@ -890,7 +890,7 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   On levels over the squad cap, the converter can omit unreferenced
   squads in encounters with deferred creation when no placement call
   can reach them. Script-named migration targets retain their own
-  indices. The campaign allocator reserves 384 squad records and 100 groups.
+  indices. The campaign allocator reserves 386 squad records and 100 groups.
   Before `0x00200b30` populates them, the runtime exposes the scenario's
   required squad count, with 335 as the retail minimum. The group array
   stays at its allocated address across map loads. See ai-control.md for

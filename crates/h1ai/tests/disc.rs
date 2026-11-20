@@ -512,7 +512,14 @@ fn command_script_placement_uses_retail_indices_and_authored_points() {
         let src = H1Ai::read(&m).unwrap();
         let root = m.tag_data(m.scenario()).unwrap();
         let first = u32::from_le_bytes(root[0x49c..0x4a0].try_into().unwrap()) as u16;
-        let plan = convert(&src, &Options { first_command_script: Some(first), ..Default::default() }).unwrap();
+        let plan = convert(
+            &src,
+            &Options {
+                first_command_script: Some(first),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let (out, _) = build_and_read(&plan);
         assert_eq!(src.command_lists.len(), out.point_sets.len(), "{level}");
         for (list, set) in src.command_lists.iter().zip(&out.point_sets) {
@@ -562,55 +569,109 @@ fn retail_spawn_bindings_keep_every_actor_weapon_and_command() {
         maps += 1;
         let src = H1Ai::read(&m).unwrap();
         let root = m.tag_data(m.scenario()).unwrap();
-        let first = u16::try_from(u32::from_le_bytes(root[0x49c..0x4a0].try_into().unwrap())).unwrap();
-        let options = Options { first_command_script: Some(first), ..Default::default() };
+        let first =
+            u16::try_from(u32::from_le_bytes(root[0x49c..0x4a0].try_into().unwrap())).unwrap();
+        let options = Options {
+            first_command_script: Some(first),
+            ..Default::default()
+        };
         // Give distinct source weapons distinct slots in the test map's palette.
         let mut palette = Vec::new();
-        let weapons: Vec<_> = src.actor_palette.iter().map(|v| {
-            let weapon = v.as_ref()?.weapon.id;
-            if weapon.is_none() {
-                return None;
-            }
-            let index = palette.iter().position(|&id| id == weapon).unwrap_or_else(|| {
-                palette.push(weapon);
-                palette.len() - 1
-            });
-            Some(i16::try_from(index).unwrap())
-        }).collect();
+        let weapons: Vec<_> = src
+            .actor_palette
+            .iter()
+            .map(|v| {
+                let weapon = v.as_ref()?.weapon.id;
+                if weapon.is_none() {
+                    return None;
+                }
+                let index = palette
+                    .iter()
+                    .position(|&id| id == weapon)
+                    .unwrap_or_else(|| {
+                        palette.push(weapon);
+                        palette.len() - 1
+                    });
+                Some(i16::try_from(index).unwrap())
+            })
+            .collect();
         let plan = convert_for_map(&src, &options, &[], Some(&weapons))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let (back, _) = build_and_read(&plan);
         let squads: Vec<_> = src.encounters.iter().flat_map(|e| &e.squads).collect();
         assert_eq!(squads.len(), back.squads.len(), "{name}");
         assert_eq!(squads.len(), plan.squad_voices.len(), "{name}");
-        for ((source, output), voices) in squads.into_iter().zip(back.squads).zip(&plan.squad_voices) {
-            assert_eq!(voices.locations.len(), source.starting_locations.len(), "{name}");
-            assert_eq!(source.starting_locations.len(), output.starting_locations.len(), "{name}");
+        for ((source, output), voices) in
+            squads.into_iter().zip(back.squads).zip(&plan.squad_voices)
+        {
+            assert_eq!(
+                voices.locations.len(),
+                source.starting_locations.len(),
+                "{name}"
+            );
+            assert_eq!(
+                source.starting_locations.len(),
+                output.starting_locations.len(),
+                "{name}"
+            );
             let effective = |start, squad| if start == -1 { squad } else { start };
-            for ((a, b), voice) in source.starting_locations.iter().zip(output.starting_locations).zip(&voices.locations) {
+            for ((a, b), voice) in source
+                .starting_locations
+                .iter()
+                .zip(output.starting_locations)
+                .zip(&voices.locations)
+            {
                 starts += 1;
                 inherited += usize::from(a.actor == -1);
                 let actor = effective(a.actor, source.actor);
-                let variant = src.actor_palette.get(actor as usize).and_then(Option::as_ref);
+                let variant = src
+                    .actor_palette
+                    .get(actor as usize)
+                    .and_then(Option::as_ref);
                 empty += usize::from(variant.is_none());
-                let source_bank = variant.and_then(|v| src.voice_definitions.iter().find(|bank| bank.tag == v.unit.id));
-                assert_eq!(voice.map(|i| &plan.voice_definitions[usize::from(i)]), source_bank, "{name}");
+                let source_bank = variant.and_then(|v| {
+                    src.voice_definitions
+                        .iter()
+                        .find(|bank| bank.tag == v.unit.id)
+                });
+                assert_eq!(
+                    voice.map(|i| &plan.voice_definitions[usize::from(i)]),
+                    source_bank,
+                    "{name}"
+                );
                 let character = effective(b.character, output.character);
                 let mapped = (character != -1).then(|| &plan.characters[character as usize]);
-                assert_eq!(mapped.map(|c| &c.h2_character), variant.map(|v| &v.name), "{name}");
+                assert_eq!(
+                    mapped.map(|c| &c.h2_character),
+                    variant.map(|v| &v.name),
+                    "{name}"
+                );
                 let weapon = effective(b.initial_weapon, output.initial_weapon);
-                assert_eq!((weapon != -1).then(|| palette[weapon as usize]),
-                    variant.map(|v| v.weapon.id).filter(|id| !id.is_none()), "{name}");
+                assert_eq!(
+                    (weapon != -1).then(|| palette[weapon as usize]),
+                    variant.map(|v| v.weapon.id).filter(|id| !id.is_none()),
+                    "{name}"
+                );
                 if a.command_list == -1 {
                     assert_eq!(b.placement_script_index, -1, "{name}");
                     assert!(b.placement_script.is_empty(), "{name}");
                 } else {
                     commands += 1;
-                    assert_eq!(b.placement_script_index, first as i16 + a.command_list, "{name}");
-                    assert_eq!(b.placement_script, h1ai::h1::command_script_name(a.command_list as usize));
+                    assert_eq!(
+                        b.placement_script_index,
+                        first as i16 + a.command_list,
+                        "{name}"
+                    );
+                    assert_eq!(
+                        b.placement_script,
+                        h1ai::h1::command_script_name(a.command_list as usize)
+                    );
                 }
             }
         }
     }
-    assert_eq!((maps, starts, inherited, empty, commands), (23, 10_129, 8_206, 112, 1_614));
+    assert_eq!(
+        (maps, starts, inherited, empty, commands),
+        (23, 10_129, 8_206, 112, 1_614)
+    );
 }

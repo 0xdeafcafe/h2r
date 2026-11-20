@@ -547,7 +547,11 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
             return Ok(vec![reset, scratch.candidate.set(speaker), accept]);
         }
         let (scope, count) = if let Some(selector) = participant.encounter {
-            let Some(scope) = self.scopes.for_selector(selector) else {
+            let Some(scope) = self
+                .scopes
+                .for_selector(selector)
+                .map_err(|e| invalid(format!("{}: {e}", self.source.name)))?
+            else {
                 // An explicitly AI-free scenario supplies an empty cast roster.
                 return Ok(Vec::new());
             };

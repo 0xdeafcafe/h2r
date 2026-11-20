@@ -1,4 +1,7 @@
-use std::{collections::{BTreeMap, BTreeSet}, io::Cursor};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Cursor,
+};
 
 use super::{count_at, donors, h1_iso, h2_map, map_memory, scripting};
 use h1campaign::{Options, h2assets::Assets};
@@ -22,7 +25,9 @@ fn placement_counts(map: &H1Map) -> BTreeMap<&'static str, (usize, usize)> {
         ("machines", MACHINES, MACHINE_PALETTE),
         ("controls", CONTROLS, CONTROL_PALETTE),
         ("light fixtures", LIGHT_FIXTURES, LIGHT_FIXTURE_PALETTE),
-    ].into_iter().map(|(kind, field, palette)| {
+    ]
+    .into_iter()
+    .map(|(kind, field, palette)| {
         let palette = block(palette);
         let rows = block(field);
         let mut live = 0;
@@ -38,16 +43,39 @@ fn placement_counts(map: &H1Map) -> BTreeMap<&'static str, (usize, usize)> {
             }
         }
         (kind, (rows.len(), live))
-    }).collect()
+    })
+    .collect()
 }
 
-fn check_campaign_objects(bytes: Vec<u8>, expected: usize) {
+fn check_campaign_objects(name: &str, bytes: Vec<u8>, expected: usize) {
     let mut map = map::Map::from_reader(Cursor::new(bytes)).unwrap();
     let root = map.scenario().unwrap().location.unwrap().address;
     let mem = map_memory(&mut map);
+    if name == "a50" {
+        let (field, stride) = h1ai::h2::layout::SQUADS;
+        let count = count_at(&mem, root + field as u32);
+        assert_eq!(count, 386, "a50 needs all 386 native slots");
+        let address = count_at(&mem, root + field as u32 + 4);
+        let rows = mem.slice(address, count * stride as u32).unwrap();
+        for name in [
+            "grav_mus_hall_covenant/grav_mus_manuever",
+            "control_covenant/squad_all",
+        ] {
+            let native = &name.as_bytes()[..name.len().min(31)];
+            assert!(
+                rows.chunks_exact(stride).any(|row| {
+                    row.split(|&b| b == 0).next() == Some(native)
+                        && i16::from_le_bytes(row[0x42..0x44].try_into().unwrap()) >= 0
+                }),
+                "a50 missing maneuver destination {name}"
+            );
+        }
+    }
     let mut ids = BTreeSet::new();
     for ty in tags::object::OBJECT_TYPES {
-        let Some((field, palette, stride)) = ty.placement else { continue };
+        let Some((field, palette, stride)) = ty.placement else {
+            continue;
+        };
         let count = count_at(&mem, root + u32::from(field));
         let address = count_at(&mem, root + u32::from(field) + 4);
         for i in 0..count {
@@ -59,7 +87,10 @@ fn check_campaign_objects(bytes: Vec<u8>, expected: usize) {
                 let field = root + u32::from(palette);
                 assert!(slot < count_at(&mem, field));
                 let tag = count_at(&mem, count_at(&mem, field + 4) + slot * 0x28 + 4);
-                assert!(map.tag(map::TagId(tag)).is_ok(), "unresolved H1 object {id:08x}");
+                assert!(
+                    map.tag(map::TagId(tag)).is_ok(),
+                    "unresolved H1 object {id:08x}"
+                );
             }
         }
     }
@@ -89,7 +120,11 @@ fn both_sandboxes_rebuild_every_retail_map() {
             live += placed;
         }
         let (scenery_rows, scenery) = counts["scenery"];
-        assert_eq!(scenery_rows - scenery, usize::from(matches!(name.as_str(), "a10" | "a30" | "b40" | "c40")), "{name}");
+        assert_eq!(
+            scenery_rows - scenery,
+            usize::from(matches!(name.as_str(), "a10" | "a30" | "b40" | "c40")),
+            "{name}"
+        );
         match h1.header().cache_type {
             CacheType::Campaign => {
                 campaign += 1;
@@ -111,7 +146,11 @@ fn both_sandboxes_rebuild_every_retail_map() {
                             for &(kind, written, total, _, _) in report {
                                 assert_eq!((total, written), counts[kind], "{name} {kind}");
                             }
-                            check_campaign_objects(done.bytes, counts.values().map(|v| v.1).sum());
+                            check_campaign_objects(
+                                name,
+                                done.bytes,
+                                counts.values().map(|v| v.1).sum(),
+                            );
                         }
                         Err(e) => failed.push(format!("{name} {assets:?}: {e}")),
                     }
@@ -136,7 +175,10 @@ fn both_sandboxes_rebuild_every_retail_map() {
                         assert_eq!(objects.placements.len(), scenery, "{name}");
                         assert_eq!(objects.empty_placements, scenery_rows - scenery, "{name}");
                         assert_eq!(p.applied.vehicles, counts["vehicles"].1, "{name}");
-                        assert!(p.dropped.iter().all(|line| !line.starts_with("vehicle ")), "{name}");
+                        assert!(
+                            p.dropped.iter().all(|line| !line.starts_with("vehicle ")),
+                            "{name}"
+                        );
                         let mopp = structure_mopp(&p.collision)?;
                         p.build_fresh(&mut base, &mopp)
                     });

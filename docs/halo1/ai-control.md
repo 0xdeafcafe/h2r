@@ -128,8 +128,12 @@ remembered targets, and live sight. Older converted maps without the new
 **Built.** The converter uses `h1campaign::squad_roster::prepare`
 from `97830757` for script-created starts. The campaign storage hook
 uses the retail game-state allocator at `0x00200930`. Its squad array
-has room for 384 `0x98`-byte records and a bitmap. The group array
-keeps its 100 retail records and stays at its startup address. Before
+has room for 386 `0x98`-byte records and a bitmap. On a50, 384 squads
+have authored starts or direct script references. The maneuver destinations
+`grav_mus_hall_covenant/grav_mus_manuever` and `control_covenant/squad_all`
+require two more records. The extra records and bitmap word add 308 bytes
+to the reservation. The group array keeps its 100 retail records and stays
+at its startup address. Before
 `0x00200b30` the hook sets the squad header capacity for the loaded
 scenario, with 335 as the retail minimum. The added allocation is part
 of guest game state. A further 7 KiB after the group array holds the
