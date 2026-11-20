@@ -24,6 +24,7 @@ pub mod lobby;
 pub mod los;
 pub mod mind;
 pub mod moves;
+pub mod name_profile;
 pub mod nav;
 pub mod objective;
 pub mod pad_source;
@@ -32,6 +33,7 @@ pub mod phantom;
 pub mod places;
 pub mod roam;
 mod sound;
+pub mod stats;
 pub mod stuck;
 pub mod tactics;
 pub mod think;
@@ -56,6 +58,7 @@ pub use sound::{clear_shots, observe_shot};
 /// the loaded map's data ([`cache::current`]).
 pub struct Brain {
     pub mind: mind::Mind,
+    combat: stats::Recorder,
     /// The last death heard from [`emote::kills`].
     kills_seen: u64,
     seed: u64,
@@ -116,14 +119,22 @@ struct Observation {
 /// Read-only brain state for phantom bot views.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrainView {
+    pub profile: Option<name_profile::NameProfile>,
+    pub weights: Option<name_profile::Weights>,
     pub skill: mind::Skill,
     pub personality: decisions::Personality,
     pub mood: decisions::MoodView,
 }
 
 impl Brain {
+    pub fn combat_stats(&self) -> &stats::CombatStats {
+        &self.combat.view
+    }
+
     pub fn view(&self) -> BrainView {
         BrainView {
+            profile: self.name_profile(),
+            weights: self.mind.profile_weights(),
             skill: self.mind.skill,
             personality: self.mind.decisions.personality,
             mood: self.mind.decisions.mood(),
@@ -133,7 +144,6 @@ impl Brain {
     pub fn set_skill(&mut self, skill: mind::Skill) {
         if self.mind.skill != skill {
             self.mind.skill = skill;
-            self.mind.decisions.personality = decisions::Personality::for_skill(self.seed, skill);
             self.retune();
         }
     }
@@ -142,13 +152,16 @@ impl Brain {
         let taunt = self.mind.emote.taunt;
         let glitches = self.mind.glitches;
         let bounces = std::mem::take(&mut self.mind.bounces);
+        let profile = self.name_profile();
         self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        self.mind.name_profile = profile;
         self.mind.experience.enter(&self.map);
         self.mind.emote.taunt = taunt;
         self.mind.glitches = glitches;
         self.mind.bounces = bounces;
         self.retune();
         self.controller = human_input::Controller::new(self.seed);
+        self.combat = stats::Recorder::default();
         self.discard_observations(false);
         self.sampled = None;
         self.pending_kills.clear();
@@ -159,6 +172,7 @@ impl Brain {
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
+            combat: stats::Recorder::default(),
             seed,
             epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
@@ -191,13 +205,38 @@ impl Brain {
     /// The brain with `t` over its skill: the aim table and awareness while
     /// it thinks, and the personality now and in every new match's mind.
     pub fn with_tuning(mut self, t: tuning::Tuning) -> Self {
-        if t.is_empty() {
-            self.tuning = None;
-            return self;
-        }
-        self.tuning = Some(t);
+        self.tuning = (!t.is_empty()).then_some(t);
         self.retune();
         self
+    }
+
+    /// Names fix tendencies. The separate constructor seed still drives
+    /// the moment-to-moment choices of this seat.
+    pub fn with_name_profile(mut self, name: &str) -> Self {
+        self.mind.name_profile = Some(name_profile::NameProfile::for_name(name));
+        self.retune();
+        self
+    }
+
+    pub fn name_profile(&self) -> Option<name_profile::NameProfile> {
+        self.mind.name_profile
+    }
+
+    /// Apply the host's combat style without changing the roster's
+    /// personality, skill, or an explicit aim/input tuning.
+    pub fn set_clanker_style(&mut self, push_bias: f32, twitchy: bool) {
+        let current = self
+            .tuning
+            .as_ref()
+            .map_or((0.0, false), |t| (t.push_bias, t.twitchy));
+        if current == (push_bias, twitchy) {
+            return;
+        }
+        let mut t = self.tuning.unwrap_or_default();
+        t.push_bias = push_bias;
+        t.twitchy = twitchy;
+        self.tuning = (!t.is_empty()).then_some(t);
+        self.retune();
     }
 
     pub fn tuning(&self) -> Option<tuning::Tuning> {
@@ -205,10 +244,23 @@ impl Brain {
     }
 
     fn retune(&mut self) {
-        if let Some(t) = self.tuning {
-            let p = &mut self.mind.decisions.personality;
-            *p = t.personality(*p);
-        }
+        let tuning = self.tuning.unwrap_or_default();
+        let skill = self.mind.skill;
+        let personality = match self.name_profile() {
+            Some(profile) => {
+                let mut weights = profile.styled_weights(skill, &tuning);
+                let personality = tuning.personality(profile.personality_with(skill, weights));
+                weights.aggression = personality.aggression;
+                weights.retreat = personality.caution;
+                self.mind.profile_weights = Some(weights);
+                personality
+            }
+            None => {
+                self.mind.profile_weights = None;
+                tuning.personality(decisions::Personality::for_skill(self.seed, skill))
+            }
+        };
+        self.mind.decisions.personality = personality;
     }
 
     #[cfg(test)]
@@ -310,6 +362,10 @@ impl Brain {
             self.spare_observations.push(observation);
             return self.controller.report();
         }
+        let started = std::time::Instant::now();
+        if self.combat.view.tick.is_some_and(|last| tick < last) {
+            self.combat = stats::Recorder::default();
+        }
         if self
             .sampled
             .is_some_and(|(_, was_alive)| was_alive != alive)
@@ -347,7 +403,9 @@ impl Brain {
             } else {
                 self.step_mind(observation, map, tick)
             };
-        self.controller.step(tick, intent, limits)
+        let pad = self.controller.step(tick, intent, limits);
+        self.combat.thought(tick, started.elapsed());
+        pad
     }
 
     fn step_mind(
@@ -378,6 +436,8 @@ impl Brain {
                 observation.visible_players,
             )
         });
+        let throwing = pad.left_trigger > 0.5 && self.mind.grenade.pressing_trigger();
+        self.combat.decision(tick, p, self.mind.doing, pad, throwing);
         let reports = self.mind.decisions.supply_reports(p);
         self.outbox.tick = tick;
         self.outbox.report = self.mind.decisions.report.map(|mut call| {
@@ -433,7 +493,12 @@ impl pad_source::PadSource for Brain {
         Some(self.view())
     }
 
+    fn combat_stats(&self) -> Option<&stats::CombatStats> {
+        Some(Brain::combat_stats(self))
+    }
+
     fn reset_input(&mut self) {
+        self.combat.release();
         if let Some((tick, _)) = self.sampled.take() {
             self.mind.release(tick);
             self.discard_observations(false);
@@ -556,6 +621,7 @@ impl Brain {
             // A replacement biped can arrive without a dead sample.
             self.discard_observations(true);
             self.mind.release(p.tick);
+            self.combat.release();
             self.controller.discard_pending();
             self.sampled = None;
         }
@@ -650,6 +716,52 @@ mod tests {
     use super::*;
     use input::host::HostButton;
     use pad_source::{Frame, PadSource};
+
+    #[test]
+    fn names_fix_weights_across_seats_difficulty_changes_and_match_resets() {
+        let skill = mind::Skill::Normal;
+        let mut a = Brain::new(skill, 1).with_name_profile("Example One");
+        let b = Brain::new(skill, 92).with_name_profile("EXAMPLE ONE");
+        assert_eq!(a.view(), b.view());
+        let initial = a.view();
+        a.set_skill(mind::Skill::Legendary);
+        assert_eq!(a.name_profile(), initial.profile);
+        assert_ne!(a.mind.profile_weights(), initial.weights);
+        a.reset_mind();
+        assert_eq!(a.mind.profile_weights(), Some(a.name_profile().unwrap().weights(a.mind.skill)));
+        a.set_skill(skill);
+        assert_eq!(a.view(), initial);
+        a.set_clanker_style(0.35, true);
+        let wild = a.view();
+        assert!(wild.weights.unwrap().aggression > initial.weights.unwrap().aggression);
+        assert!(wild.weights.unwrap().reaction_jitter < initial.weights.unwrap().reaction_jitter);
+        a.reset_mind();
+        assert_eq!(a.view(), wild);
+        a.set_clanker_style(0.0, false);
+        assert_eq!(a.view(), initial);
+        let manual = a.with_tuning(tuning::Tuning {
+            aggression: Some(0.4), caution: Some(0.7), ..Default::default()
+        });
+        let weights = manual.mind.profile_weights().unwrap();
+        assert_eq!((weights.aggression, weights.retreat), (0.4, 0.7));
+    }
+
+    #[test]
+    fn custom_style_round_trip_preserves_explicit_sim_parameters() {
+        let explicit = tuning::Tuning {
+            gain: Some(3.0),
+            aggression: Some(0.8),
+            ..Default::default()
+        };
+        let mut brain = Brain::new(mind::Skill::Heroic, 91).with_tuning(explicit);
+        let identity = brain.view();
+        brain.set_clanker_style(-0.35, true);
+        brain.reset_mind();
+        assert_eq!(brain.view(), identity);
+        assert!(brain.tuning().unwrap().twitchy);
+        brain.set_clanker_style(0.0, false);
+        assert_eq!(brain.tuning(), Some(explicit));
+    }
 
     #[test]
     fn a_tuned_brain_keeps_its_personality_across_matches() {

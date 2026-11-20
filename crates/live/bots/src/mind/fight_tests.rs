@@ -166,7 +166,7 @@ fn no_grenade_into_a_teammate() {
         }
         // It turns to each throw's arc before letting go (the game's
         // turning, roughly).
-        let mut me = bot(None);
+        let mut me = bot(Some(holding(Trigger::Single, rounds(36, 108))));
         let n = (0..180 * 30u32)
             .filter(|&t| {
                 let pad = step(&mut m, me, others.clone(), true, t);
@@ -198,6 +198,7 @@ fn plasma_pistol() -> Gun {
         def: 0xa002_0002,
         ammo: Ammo::Battery(0.9),
         profile: Profile {
+            dual: Some(crate::arms::DualGun::PlasmaPistol),
             trigger: Trigger::Charge,
             pellets: 1,
             shot_speed: 60.0,
@@ -368,6 +369,33 @@ fn holding_y_requests_a_second_smg_even_when_the_primary_is_full() {
 }
 
 #[test]
+fn a_named_easy_seat_holds_y_only_for_accepted_pairs() {
+    let mut a = holding(Trigger::Automatic, rounds(36, 108));
+    let smg = a.held.as_mut().unwrap();
+    smg.profile.dual = Some(arms::DualGun::Smg);
+    let pickup = arms::Pickup { id: 9, position: [0.1, 0.0, 0.0], gun: *smg };
+    let mut p = Perception {
+        me: Some(bot(Some(a))),
+        pickups: vec![pickup],
+        ..Default::default()
+    };
+    let mut accepted = 0;
+    for seed in 1..=64 {
+        let mut brain = crate::Brain::new(Skill::Easy, seed).with_name_profile("Gunslinger");
+        p.tick = 1;
+        let first = brain.mind.step(&p, None).buttons.contains(SWITCH);
+        accepted += usize::from(first);
+        for t in 2..=8 {
+            p.tick = t;
+            let pad = brain.mind.step(&p, None);
+            assert_eq!(pad.buttons.contains(SWITCH), first);
+            assert!(!pad.buttons.contains(RELOAD));
+        }
+    }
+    assert!(accepted > 0 && accepted < 64);
+}
+
+#[test]
 fn the_dual_plasma_pistol_charges_and_releases_in_either_hand() {
     use arms::DualGun;
     let pistol = Gun {
@@ -455,4 +483,49 @@ fn juggernaut_transfer_changes_the_fight_and_the_bot_melees_as_juggernaut() {
         me.aim = turned(me.aim, &pad);
     }
     assert!(hit);
+}
+
+#[test]
+fn a_calm_bot_walks_to_visible_grenades_it_can_use() {
+    use crate::grenades::Kind;
+    let mut m = Mind::new(Skill::Normal, 7);
+    let mut a = holding(Trigger::Single, rounds(36, 108));
+    a.grenades = [2, 0];
+    let mut p = Perception {
+        me: Some(bot(Some(a))),
+        ..Default::default()
+    };
+    p.observations.ground_grenades = vec![
+        ([2.0, 0.0, 0.0], Kind::Frag),
+        ([5.0, 0.0, 0.0], Kind::Plasma),
+    ];
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Supply([5.0, 0.0, 0.0]));
+    p.tick += 1;
+    p.observations.ground_grenades.pop();
+    m.step(&p, None);
+    assert_ne!(m.doing, Doing::Supply([2.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_sword_uses_the_trigger_to_lunge_and_b_to_slash_up_close() {
+    for (dist, lunge) in [(1.8, true), (0.6, false)] {
+        let mut m = Mind::new(Skill::Normal, 1);
+        let mut a = holding(Trigger::Absent, Ammo::Battery(0.8));
+        a.held.as_mut().unwrap().profile.cone_range = 2.0;
+        let mut me = bot(Some(a));
+        let mut pressed = false;
+        for tick in 0..90 {
+            let pad = step(&mut m, me, vec![enemy(1, [dist, 0.0, 0.0])], false, tick);
+            me.aim = turned(me.aim, &pad);
+            if lunge {
+                pressed |= pad.right_trigger > 0.0;
+                assert!(!pad.buttons.contains(MELEE));
+            } else {
+                pressed |= pad.buttons.contains(MELEE);
+                assert_eq!(pad.right_trigger, 0.0);
+            }
+        }
+        assert!(pressed);
+    }
 }

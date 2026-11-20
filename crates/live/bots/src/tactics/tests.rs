@@ -41,7 +41,7 @@ fn the_skills_pace_and_sense_in_order() {
     }
     assert!(
         !s[0].by_range && s[1].by_range,
-        "Easy does not pick by range"
+        "Normal also switches instead of reloading under fire"
     );
     assert!(!s[1].head && s[2].head, "Heroic and up aim at the head");
 }
@@ -249,4 +249,30 @@ fn the_movement_signals_follow_the_gun_and_the_danger() {
     assert_eq!(t.band, crate::arms::MELEE_BAND);
     t.signal(None, Kit::Fine, false, None);
     assert_eq!(t.band, Role::Unknown.band());
+}
+
+#[test]
+fn a_melee_finisher_requires_reach_and_facing() {
+    assert!(melee_window(0.8, 0.1, Some(rifle()), false, false));
+    assert!(!melee_window(1.1, 0.1, Some(rifle()), false, false));
+    assert!(melee_window(1.1, 0.1, Some(rifle()), true, false));
+    let mut plasma = rifle();
+    plasma.profile.dual = Some(crate::arms::DualGun::PlasmaRifle);
+    assert!(melee_window(1.1, 0.1, Some(plasma), false, false));
+    assert!(!melee_window(1.1, 1.5, Some(plasma), true, false));
+    assert!(!melee_window(1.8, 0.1, Some(plasma), true, false));
+}
+
+#[test]
+fn name_jitter_biases_fresh_reactions_within_the_skill_window() {
+    let mut fast_sum = 0;
+    let mut slow_sum = 0;
+    for seed in 0..256 {
+        let fast = Tactics::new(seed).focus_with_jitter(1, 0, Skill::Normal, Some(0.26));
+        let slow = Tactics::new(seed).focus_with_jitter(1, 0, Skill::Normal, Some(0.79));
+        assert!(fast <= slow && fast >= 7 && slow <= 13);
+        fast_sum += fast;
+        slow_sum += slow;
+    }
+    assert!(fast_sum < slow_sum);
 }

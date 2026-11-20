@@ -561,3 +561,16 @@ fn temperament_scales_the_nets_error_as_it_does_the_codes() {
         }
     });
 }
+
+#[test]
+fn a_twitchy_hand_flicks_faster_with_the_selected_skill_accuracy() {
+    for skill in Skill::ALL {
+        let steady = Handling::of(skill);
+        let t = crate::tuning::Tuning { twitchy: true, ..Default::default() };
+        let twitchy = crate::tuning::with(Some(t), || Handling::of(skill));
+        assert!(twitchy.engage > steady.engage);
+        assert!(twitchy.overshoot > steady.overshoot);
+        assert_eq!(twitchy.misread, steady.misread);
+        assert_eq!(t.aim(skill.base_aim()), skill.base_aim());
+    }
+}

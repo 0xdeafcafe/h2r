@@ -41,7 +41,10 @@ fn smg() -> Gun {
 }
 fn pistol(battery: f32) -> Gun {
     gun(
-        profile(Trigger::Charge, 0, 1, 60.0, 10.0),
+        Profile {
+            dual: Some(crate::arms::DualGun::PlasmaPistol),
+            ..profile(Trigger::Charge, 0, 1, 60.0, 10.0)
+        },
         Ammo::Battery(battery),
     )
 }
@@ -104,6 +107,8 @@ fn input(tick: u32, held: Gun, other: Gun, dist: f32, firing: bool) -> ComboIn {
         dist,
         on_target: true,
         reacted: true,
+        shield_down: false,
+        combo_chance: None,
         held: Some(held),
         other: Some(other),
         firing,
@@ -161,7 +166,7 @@ fn the_noob_combo_charges_lets_go_and_switches_to_the_rifle() {
     assert!(log[s + 10].busy);
     assert!(!log[119].busy);
     assert_eq!(log[s + 10].trigger, None, "the rifle fires as usual");
-    assert!(c.hits >= k.finish_pulls, "shields popped");
+    assert_eq!(c.hits, 0, "a trigger release alone cannot confirm a hit");
 }
 
 #[test]
@@ -260,4 +265,77 @@ fn the_left_hand_charges_taps_or_holds_by_its_trigger() {
     // Empty: never.
     let mut l = LeftHand::default();
     assert!(!l.trigger(0, &pistol(0.0), true));
+}
+
+#[test]
+fn an_identified_smg_closes_distance_past_its_effective_reach() {
+    let mut gun = smg();
+    gun.profile.dual = Some(crate::arms::DualGun::Smg);
+    assert_eq!(gun.reach().fire.1, 8.0);
+    gun.profile.cone_range = 25.0;
+    assert_eq!(gun.reach().fire.1, 9.0);
+    assert_eq!(gun.reach().band.1, 9.0);
+}
+
+#[test]
+fn the_combo_roll_is_once_per_viable_encounter_and_uses_the_name_weight() {
+    let opportunities = |chance| {
+        (0..256).filter(|&seed| {
+            let mut combo = seeded(seed);
+            let mut c = input(0, pistol(0.9), smg(), 6.0, false);
+            c.combo_chance = Some(chance);
+            assert!(!combo.step(&c, Skill::Normal).busy, "SMG is not a headshot follow-up");
+            c.other = Some(br());
+            c.dist = 40.0;
+            assert!(!combo.step(&c, Skill::Normal).busy);
+            c.tick = 1;
+            c.dist = 6.0;
+            let accepted = combo.step(&c, Skill::Normal).busy;
+            if !accepted {
+                // Changing the threshold cannot reroll an existing choice,
+                // even when the same player ducks briefly around a corner.
+                c.combo_chance = Some(1.0);
+                for tick in 2..8 {
+                    c.tick = tick;
+                    assert!(!combo.step(&c, Skill::Normal).busy);
+                }
+                combo.leave_fight(8);
+                c.tick = 10;
+                assert!(!combo.step(&c, Skill::Normal).busy);
+                combo.leave_fight(10 + crate::tactics::GRACE + 1);
+                c.tick = 12 + crate::tactics::GRACE;
+                assert!(combo.step(&c, Skill::Normal).busy);
+            }
+            accepted
+        }).count()
+    };
+    let low = opportunities(0.2);
+    let high = opportunities(0.8);
+    assert!(low > 0 && low + 80 < high && high < 256, "{low} vs {high}");
+}
+
+#[test]
+fn a_broken_shield_switches_to_a_loaded_headshot_weapon_and_raises_the_aim() {
+    let mut combo = Combo::new(7);
+    let mut c = input(0, pistol(0.8), br(), 7.0, false);
+    c.combo_chance = Some(1.0);
+    assert_eq!(combo.step(&c, Skill::Normal).trigger, Some(true));
+    c.tick = 2;
+    c.shield_down = true;
+    let swap = combo.step(&c, Skill::Normal);
+    assert!(swap.switch);
+    assert_eq!(swap.trigger, Some(false));
+    std::mem::swap(&mut c.held, &mut c.other);
+    c.tick = 4;
+    assert!(combo.step(&c, Skill::Normal).busy);
+    assert!(matches!(combo.phase, Phase::Follow(_)));
+    assert_eq!(target_height(c.held, true, crate::tactics::CHEST), crate::tactics::HEAD);
+    assert_eq!(target_height(c.held, false, crate::tactics::CHEST), crate::tactics::CHEST);
+    assert_eq!(target_height(Some(smg()), true, crate::tactics::CHEST), crate::tactics::CHEST);
+
+    let mut dry = br();
+    dry.ammo = Ammo::Rounds { loaded: 0, capacity: 36, reserve: 108, reserve_max: 108 };
+    let mut c = input(0, pistol(0.8), dry, 7.0, false);
+    c.combo_chance = Some(1.0);
+    assert!(!Combo::new(9).step(&c, Skill::Normal).busy);
 }

@@ -222,77 +222,28 @@ pub(crate) fn check_players<'a>(
 
 // ---------- names and looks ----------
 
-const FIRST: [&str; 32] = [
-    "Rusty", "Bolt", "Clank", "Sprocket", "Gear", "Rivet", "Spanner", "Copper", "Chrome", "Static",
-    "Dynamo", "Piston", "Widget", "Gizmo", "Tin", "Servo", "Crank", "Flux", "Volt", "Cog",
-    "Ratchet", "Socket", "Diode", "Pixel", "Turbo", "Sparky", "Nickel", "Zinc", "Magnet", "Coil",
-    "Fuse", "Relay",
-];
-
-const SECOND: [&str; 32] = [
-    "Lugnut", "Bucket", "Gasket", "Washer", "Bearing", "Sprung", "Wrench", "Spindle", "Toaster",
-    "Kettle", "Grinder", "Hinge", "Sprog", "Bracket", "Flange", "Nozzle", "Valve", "Lever",
-    "Pulley", "Dial", "Gauge", "Bulb", "Switch", "Fender", "Axle", "Clamp", "Tube", "Rotor",
-    "Pinion", "Shim", "Stud", "Grommet",
-];
-
-/// splitmix64: the bots' looks and quirks from one seed.
-fn mix(seed: &mut u64) -> u64 {
-    *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut z = *seed;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
-fn below(seed: &mut u64, n: u64) -> u64 {
-    mix(seed) % n
-}
-
-/// 0 to 1 within `lo..hi`.
-fn between(seed: &mut u64, lo: f32, hi: f32) -> f32 {
-    lo + (hi - lo) * (below(seed, 10_001) as f32 / 10_000.0)
-}
-
 fn random_seed() -> u64 {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).expect("the OS random source failed");
     u64::from_be_bytes(b)
 }
 
-/// A name from the word lists, `Rusty Lugnut` style, at most 15
-/// characters; `attempt` past the first few adds a number.
-fn name(seed: &mut u64, attempt: u32) -> Gamertag {
-    loop {
-        let a = FIRST[below(seed, FIRST.len() as u64) as usize];
-        let b = SECOND[below(seed, SECOND.len() as u64) as usize];
-        let tag = if attempt < 4 {
-            format!("{a} {b}")
-        } else {
-            format!("{a}{b}{}", below(seed, 100))
-        };
-        if let Ok(t) = Gamertag::new(&tag) {
-            return t;
-        }
-    }
-}
-
 /// A new bot's account: a fresh xuid in the server range and looks and
 /// quirks from `seed` (a persistent bot keeps them).
 fn make(seed: u64, persistent: bool, attempt: u32) -> Issued {
-    let mut s = seed;
+    let mut names = bots::names::Draw::new(seed);
     let mut low = [0u8; 8];
     getrandom::fill(&mut low[2..]).expect("the OS random source failed");
     let xuid = Xuid(SERVER_XUID_MARK | u64::from_be_bytes(low));
-    let gamertag = name(&mut s, attempt);
+    let gamertag = names.gamertag(attempt);
     let (emblem, colors) = bots::appearance(gamertag.as_str());
     let personality = Personality {
         seed,
-        aggression: between(&mut s, 0.2, 0.8),
-        caution: between(&mut s, 0.2, 0.8),
-        objective: between(&mut s, 0.3, 0.9),
-        teamwork: between(&mut s, 0.2, 0.8),
-        taunt: between(&mut s, 0.1, 0.5),
+        aggression: names.between(0.2, 0.8),
+        caution: names.between(0.2, 0.8),
+        objective: names.between(0.3, 0.9),
+        teamwork: names.between(0.2, 0.8),
+        taunt: names.between(0.1, 0.5),
     };
     Issued {
         xuid,

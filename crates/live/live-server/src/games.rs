@@ -171,6 +171,9 @@ impl CausalStream {
 struct FrameClock {
     last_sent: Instant,
     sim_tick: Option<u64>,
+    /// Private live training samples, replaced in seat order. Never encoded
+    /// in a frame, a stream broadcast or an archive chunk.
+    sim_combat: BTreeMap<u8, game::SimCombatSample>,
     /// What throttled frames carried (shots, actions, hits, machines),
     /// handed to the next frame sent so none is lost.
     unsent: game::FrameCarry,
@@ -202,6 +205,7 @@ impl FrameClock {
         FrameClock {
             last_sent: now - FRAME_INTERVAL,
             sim_tick: None,
+            sim_combat: BTreeMap::new(),
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
             machine_positions: BTreeMap::new(),
@@ -491,10 +495,19 @@ pub fn parse_skulls(v: &str) -> Result<Vec<u8>, String> {
 impl Live {
     /// The live game `id`, if `author` may write to it.
     fn writable_game(&self, id: &str, author: &Publisher, frame: bool) -> Result<Game, ApiError> {
-        let s = self.model.read();
+        self.writable_game_in(&self.model.read(), id, author, frame).cloned()
+    }
+
+    fn writable_game_in<'a>(
+        &self,
+        s: &'a crate::model::State,
+        id: &str,
+        author: &Publisher,
+        frame: bool,
+    ) -> Result<&'a Game, ApiError> {
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
         if g.started.game.sim.is_some()
-            && author.peer().is_some_and(|a| !self.admins.is_admin(a, &s))
+            && author.peer().is_some_and(|a| !self.admins.is_admin(a, s))
         {
             return Err(forbidden("simulation recording requires an admin"));
         }
@@ -512,7 +525,7 @@ impl Live {
         if !author.may_write(g) {
             return Err(forbidden("only the game's host and players write to it"));
         }
-        Ok(g.clone())
+        Ok(g)
     }
 
     /// `POST /v1/games`: the server writes `GameStarted` with a fresh id
@@ -870,6 +883,51 @@ impl Live {
             self.write_pending(&game_id, &clock).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
+    }
+
+    pub(crate) fn ingest_sim_combat(
+        &self,
+        author: &Publisher,
+        id: &str,
+        sample: game::SimCombatSample,
+    ) -> Result<(), ApiError> {
+        if !game::valid_id(id) {
+            return Err(invalid("bad game_id"));
+        }
+        // Hold the projection read guard through the insert so the end of
+        // a run cannot drop its clock and have a late message recreate it.
+        let state = self.model.read();
+        let game = self.writable_game_in(&state, id, author, true)?;
+        if author.to_string() != game.started.host {
+            return Err(forbidden("only the run host supplies combat samples"));
+        }
+        if !game.started.game.sim.as_ref().is_some_and(|s| !s.deferred) {
+            return Err(invalid("combat samples require a live simulation"));
+        }
+        if u64::from(sample.tick).saturating_sub(game.started.game.tick.unwrap_or(0))
+            > crate::sim_runs::MAX_TICKS
+        {
+            return Err(invalid("combat sample exceeds the simulation tick limit"));
+        }
+        if !sample.valid() {
+            return Err(invalid("invalid combat sample"));
+        }
+        if !game.players.iter().any(|p| p.index == u32::from(sample.index) && p.is_bot()) {
+            return Err(invalid("unknown combat sample bot seat"));
+        }
+        let clock = self.ingest.clock(id);
+        let mut clock = clock.lock().unwrap();
+        if clock.sim_combat.get(&sample.index).is_none_or(|old| sample.tick > old.tick) {
+            clock.sim_combat.insert(sample.index, sample);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sim_combat(&self, id: &str) -> Vec<game::SimCombatSample> {
+        let clock = self.ingest.games.lock().unwrap().get(id).cloned();
+        clock.map_or_else(Vec::new, |clock| {
+            clock.lock().unwrap().sim_combat.values().cloned().collect()
+        })
     }
 
     pub(crate) fn sim_tick(&self, id: &str) -> Option<u64> {
@@ -1491,6 +1549,7 @@ impl Live {
         };
         let mut expect = Vec::new();
         let mut events = Vec::new();
+        let mut finished_games = Vec::new();
         for xuid in expired {
             events.push(self.server_event(
                 streams::presence(xuid),
@@ -1516,7 +1575,7 @@ impl Live {
                 game::GAME_ENDED,
                 serde_json::to_value(ended).expect("serializes"),
             ));
-            self.ingest.games.lock().unwrap().remove(&id);
+            finished_games.push(id);
         }
         if events.is_empty() {
             return;
@@ -1524,9 +1583,12 @@ impl Live {
         match self.store.append(events, &expect).await {
             Ok(recorded) => {
                 // Wait, so the next sweep does not write them twice.
-                let _ = self
-                    .wait_applied(recorded.last().map_or(0, |e| e.position))
-                    .await;
+                if self.wait_applied(recorded.last().map_or(0, |e| e.position)).await.is_ok() {
+                    let mut clocks = self.ingest.games.lock().unwrap();
+                    for id in finished_games {
+                        clocks.remove(&id);
+                    }
+                }
             }
             Err(e) => eprintln!("live: sweep: {e}"),
         }

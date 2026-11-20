@@ -60,6 +60,8 @@ pub(crate) struct Controller {
     report: HostPadState,
     last_look: Option<u32>,
     last_face: Option<u32>,
+    // One deliberate tap waiting for the thumb to leave the look stick.
+    pending_face: u16,
 }
 
 impl Controller {
@@ -75,6 +77,7 @@ impl Controller {
             report: HostPadState::default(),
             last_look: None,
             last_face: None,
+            pending_face: 0,
         }
     }
 
@@ -86,6 +89,7 @@ impl Controller {
         self.applied.fill(0.0);
         self.last_due.fill(None);
         self.wanted = HostPadState::default();
+        self.pending_face = 0;
     }
 
     /// Clear the pad at a stream boundary while keeping its own timing RNG.
@@ -168,7 +172,11 @@ impl Controller {
         let face = buttons & RIGHT_THUMB_BUTTONS;
         let held = face & self.report.buttons.bits();
         let choice = if held != 0 { held } else { face };
-        let face = choice & choice.wrapping_neg();
+        let face = if self.pending_face != 0 {
+            self.pending_face
+        } else {
+            choice & choice.wrapping_neg()
+        };
         buttons &= !RIGHT_THUMB_BUTTONS;
         let free = |last: Option<u32>| {
             last.is_none_or(|last| tick.wrapping_sub(last) >= limits.thumb_switch_ticks)
@@ -180,6 +188,9 @@ impl Controller {
         if face != 0 && pad.right_stick == (0.0, 0.0) && free(self.last_look) {
             buttons |= face;
             self.last_face = Some(tick);
+            self.pending_face = 0;
+        } else {
+            self.pending_face = face;
         }
         if !looking {
             buttons &= !RIGHT_CLICK;

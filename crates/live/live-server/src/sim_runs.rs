@@ -29,7 +29,7 @@ pub(crate) const REPORT_STORED: &str = "SimReportStored";
 pub(crate) const REPORT_PREFIX: &str = "sim/";
 pub(crate) const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAX_TICKS: u64 = 30 * 60 * 60;
-pub(crate) const MAX_REPORT: usize = 512 * 1024;
+pub(crate) const MAX_REPORT: usize = game::MAX_SIM_REPORT_BYTES;
 const MAX_METADATA: usize = 16 * 1024;
 const PAGE_SIZE: usize = 50;
 /// One of the retail session's peer slots belongs to the playerless host.
@@ -265,6 +265,7 @@ pub(crate) async fn list(
 struct Detail<'a> {
     run: Run<'a>,
     game: GameDetail,
+    live_combat: Vec<game::SimCombatSample>,
     report: Option<Value>,
 }
 
@@ -280,11 +281,12 @@ pub(crate) async fn detail(
     };
     let sim = game.started.game.sim.as_ref().expect("looked up a sim");
     let report = read_report(&live, &id, game.sim_report.as_ref()).await?;
-    Ok(json(
+    Ok(private_json(
         StatusCode::OK,
         &Detail {
             run: Run::new(&game, sim, live.sim_tick(&id), now()),
             game: live.game(&id)?,
+            live_combat: if game.ended.is_none() { live.sim_combat(&id) } else { Vec::new() },
             report,
         },
     ))

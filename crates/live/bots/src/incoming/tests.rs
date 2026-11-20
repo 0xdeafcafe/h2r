@@ -148,3 +148,41 @@ fn the_world_scan_only_yields_nearby_grenade_projectiles() {
     assert_eq!(grenades[0].id, DatumHandle::new(0xb401, 0).raw());
     assert_eq!(grenades[0].at, [1.5, 0.0, 0.0]);
 }
+
+#[test]
+fn loose_grenades_use_the_maps_equipment_refs_and_exclude_attached_objects() {
+    use crate::grenades::Kind;
+    use engine::{datum::layout as dl, points};
+
+    let mut g = FakeGuest::new();
+    let [matg, block, array, headers, bodies] = [0x1000, 0x2000, 0x3000, 0x4000, 0x5000];
+    let frag = DatumHandle::new(0xaa01, 12);
+    let plasma = DatumHandle::new(0xaa02, 13);
+    g.put_u32(GLOBALS_TAG, matg)
+        .put_u32(matg + GRENADES, 2)
+        .put_u32(matg + GRENADES + 4, block)
+        .put_u32(block + EQUIPMENT_DATUM, frag.raw())
+        .put_u32(block + GRENADE_STRIDE + EQUIPMENT_DATUM, plasma.raw())
+        .put_u32(points::OBJECTS.base, array)
+        .map(array, 0x48)
+        .put_u32(array + dl::ELEMENT_SIZE, 0xc)
+        .put_u32(array + dl::HIGH_WATER, 3)
+        .put_u32(array + dl::DATA, headers)
+        .map(headers, 0x24);
+    for (i, (tag, parent)) in (0..).zip([
+        (frag, u32::MAX), (plasma, u32::MAX), (plasma, 0xeedd_0002),
+    ]) {
+        let header = headers + i * 0xc;
+        let body = bodies + i * 0x100;
+        g.put_u16(header, 0xcc01)
+            .put_u8(header + 3, crate::guest::intel::EQUIPMENT)
+            .put_u32(header + 8, body)
+            .map(body, 0x100)
+            .put_u32(body, tag.raw())
+            .put_u32(body + 0x14, parent)
+            .put_f32(body + 0x64, i as f32);
+    }
+    let ground = crate::arms::ground(&g, None).unwrap();
+    assert_eq!(ground.loose_grenades, [([0.; 3], Kind::Frag), ([1., 0., 0.], Kind::Plasma)]);
+    assert!(ground.grenades.is_empty());
+}

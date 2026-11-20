@@ -6018,6 +6018,7 @@ dependencies = [
 name = "sim-bench"
 version = "0.1.0"
 dependencies = [
+ "live-proto",
  "serde",
  "serde_json",
  "toml",

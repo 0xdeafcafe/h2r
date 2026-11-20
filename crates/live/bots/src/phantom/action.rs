@@ -11,7 +11,7 @@ use crate::{
     human_input::TICK_MS,
     mind::feel::{Rng, reached},
     pad_source::Frame,
-    think::{self, lock_source},
+    think::{self, Report, lock_source},
     tuning::PhantomLatency,
 };
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
@@ -26,25 +26,20 @@ use input::host::HostPadState;
 /// a sample of its own for the retail pressure reader.
 pub(super) struct Uplink {
     rng: Rng,
-    default_ping_ms: f32,
     in_flight: VecDeque<(u32, HostPadState)>,
     trigger_changes: [VecDeque<(u32, f32)>; 2],
     sent: HostPadState,
     arrived: HostPadState,
     last_tick: Option<u32>,
     gated: bool,
-    /// Ticks the pad already spent in the brain before it was sent
-    /// (one when pipelined, `crate::think`): taken off the wire delay, so
-    /// the phantom's latency stays what its tuning says.
+    /// Time already spent waiting for this report's pipelined think.
     think_ticks: u32,
 }
 
 impl Uplink {
     pub(super) fn new(seed: u64) -> Self {
-        let mut rng = Rng::new(seed ^ 0x7068_616e_746f_6d73);
         Self {
-            default_ping_ms: 40.0 + 40.0 * rng.unit(),
-            rng,
+            rng: Rng::new(seed ^ 0x7068_616e_746f_6d73),
             in_flight: VecDeque::new(),
             trigger_changes: Default::default(),
             sent: HostPadState::default(),
@@ -96,7 +91,7 @@ impl Uplink {
         let ping = latency
             .ping_ms
             .filter(|p| p.is_finite())
-            .unwrap_or(self.default_ping_ms)
+            .unwrap_or(0.0)
             .clamp(0.0, 1000.0);
         let jitter = if latency.jitter_ms.is_finite() {
             latency.jitter_ms.clamp(0.0, 50.0)
@@ -384,17 +379,17 @@ impl Phantoms {
             let pad = if let Some(report) = books.list[i].uplink.report_at(tick) {
                 report
             } else {
-                let latency = lock_source(&books.list[i].source).phantom_latency();
                 // Keep observing and planning while the pad is gated
                 // (docs/game/bots.md §5.4).
-                let pad = if mode.batched() {
+                let report = if mode.batched() {
                     books.batch_pad(m, session, tick, slot, i)?
                 } else {
                     books.list[i].serial_pad(m, tick)
                 };
                 let p = &mut books.list[i];
-                p.uplink.think_ticks = u32::from(mode.pipelined());
-                p.uplink.sample_with_gate(tick, pad, latency, gated)
+                p.shot_range = report.shot_range;
+                p.uplink.think_ticks = report.think_ticks;
+                p.uplink.sample_with_gate(tick, report.pad, report.latency, gated)
             };
             let sample = SeatInput {
                 player,
@@ -514,15 +509,16 @@ fn seat_at(m: &dyn GuestMemory, slot: u32) -> Result<Option<SlotSeat>, MemFault>
 
 impl super::Phantom {
     /// The whole sample at this phantom's own gather ([`think::Mode::Serial`]).
-    fn serial_pad(&mut self, m: &dyn GuestMemory, tick: u32) -> input::host::HostPadState {
-        let pad = lock_source(&self.source).pad(&Frame {
+    fn serial_pad(&mut self, m: &dyn GuestMemory, tick: u32) -> Report {
+        let mut source = lock_source(&self.source);
+        let pad = source.pad(&Frame {
             frame: self.samples,
             tick,
             machine: self.info.machine,
             guest: m,
         });
         self.samples = self.samples.saturating_add(1);
-        pad
+        Report::from_source(pad, &**source)
     }
 }
 
@@ -541,7 +537,7 @@ impl Books {
         tick: u32,
         slot: u32,
         caller: usize,
-    ) -> Result<input::host::HostPadState, MemFault> {
+    ) -> Result<Report, MemFault> {
         let handle = self.list[caller].info.handle;
         let current = self
             .batch
@@ -599,12 +595,12 @@ impl Books {
                     }
                 })
                 .collect();
-            let pads = self.thinker.sample(tick, m, &seats);
+            let reports = self.thinker.sample_reports(tick, m, &seats);
             let handles = order.iter().map(|&(_, j)| self.list[j].info.handle);
             self.batch = Some(Batch {
                 session,
                 tick,
-                pads: handles.zip(pads).collect(),
+                pads: handles.zip(reports).collect(),
             });
         }
         let batched = self
@@ -688,17 +684,17 @@ mod tests {
             .collect();
         let (mut thought, mut arrived) = (Vec::new(), Vec::new());
         for tick in 0..TICKS {
-            let pads = thinker.sample(tick, &g, &fixture::seats(&w, tick));
+            let reports = thinker.sample_reports(tick, &g, &fixture::seats(&w, tick));
             arrived.push(
-                pads.iter()
+                reports.iter()
                     .zip(&mut uplinks)
-                    .map(|(pad, u)| {
-                        u.think_ticks = u32::from(mode.pipelined());
-                        u.sample_with_gate(tick, *pad, latency, tick < OPEN)
+                    .map(|(report, u)| {
+                        u.think_ticks = report.think_ticks;
+                        u.sample_with_gate(tick, report.pad, latency, tick < OPEN)
                     })
                     .collect::<Vec<_>>(),
             );
-            thought.push(pads);
+            thought.push(reports.into_iter().map(|report| report.pad).collect());
         }
         thinker.settle();
         let thinks = w
@@ -790,12 +786,5 @@ mod tests {
         );
         assert!(seen.iter().skip(1).step_by(6).any(|&down| down));
         assert!(seen.iter().skip(2).step_by(6).any(|&down| down));
-
-        let pings = (0..100)
-            .map(|i| Uplink::new(i).default_ping_ms)
-            .collect::<Vec<_>>();
-        assert!(pings.iter().all(|p| (40.0..80.0).contains(p)));
-        assert!(pings.iter().any(|&p| p < 50.0));
-        assert!(pings.iter().any(|&p| p > 70.0));
     }
 }

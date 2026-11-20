@@ -339,6 +339,9 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: u
 
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
+    agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
+        crate::sim_bots::stats(v, bots::phantom::global())
+    });
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))
@@ -591,6 +594,8 @@ mod tests {
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(agent_proto::sim::method::BOT_STATS, json!({}));
+        assert!(r["result"]["bots"].is_array(), "{r}");
         let r = call(method::RENDER_STATS, Value::Null);
         assert!(r["result"].as_object().is_some_and(|o| o.contains_key("counters")), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));

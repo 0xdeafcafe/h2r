@@ -49,6 +49,16 @@ pub fn reach(p: &Profile) -> Reach {
     let (lo, hi) = role.band();
     let (flo, fhi) = role.fire_range();
     let r = p.cone_range.max(p.pull_range);
+    // A confirmed SMG is a short-range automatic. Its magnetism can
+    // reach beyond the distance where sustained fire is worth the rounds.
+    if p.dual == Some(crate::arms::DualGun::Smg) {
+        let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
+        return Reach {
+            band: (lo, far),
+            fire: (0.0, far),
+            lunge: 0.0,
+        };
+    }
     match role {
         Role::Blade => {
             let lunge = if r > 0.0 {
@@ -125,7 +135,7 @@ pub fn class(g: &Gun) -> Class {
 
 /// A plasma pistol's overcharge takes this long held (ticks). Not read:
 /// the trigger's charging time is in the `weap` trigger block, not traced
-/// (docs/game/bots.md, "Built: weapon skill").
+/// (docs/game/bots.md, section 3.6).
 pub const CHARGE_TICKS: u32 = 24;
 /// Released by this long past [`CHARGE_TICKS`] even off target: a held
 /// overcharge drains the battery.
@@ -152,8 +162,7 @@ pub const COMBO_BATTERY: f32 = 0.15;
 /// What skill changes in combos.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComboSkill {
-    /// The chance it goes for a noob combo on a new target, when it
-    /// carries the guns for it.
+    /// Default chance at a viable opening for an unnamed bot.
     pub chance: f32,
     /// Ticks between the overcharge leaving and the switch.
     pub swap_delay: u32,
@@ -228,6 +237,10 @@ pub struct ComboIn {
     pub on_target: bool,
     /// Its reaction to the target has passed.
     pub reacted: bool,
+    /// The visible contact has a broken shield.
+    pub shield_down: bool,
+    /// Name-derived probability at a genuine combo opening.
+    pub combo_chance: Option<f32>,
     pub held: Option<Gun>,
     pub other: Option<Gun>,
     /// Whether the trigger is down this tick (the mind's own decision).
@@ -262,8 +275,8 @@ pub struct ComboOut {
 pub struct Combo {
     pub phase: Phase,
     target: Option<u32>,
-    /// It rolled to combo this target.
-    go: bool,
+    /// A roll spent on this encounter and the last tick its target was seen.
+    attempted: Option<(u32, u32)>,
     /// Pulls (or bursts) on the target so far: shots that likely landed.
     pub hits: u32,
     firing_since: Option<u32>,
@@ -285,24 +298,23 @@ pub const TRICK_COOLDOWN: u32 = 60;
 
 fn charge(g: Option<Gun>) -> bool {
     g.is_some_and(|g| {
-        g.profile.trigger == Trigger::Charge
+        g.profile.dual == Some(crate::arms::DualGun::PlasmaPistol)
+            && g.profile.trigger == Trigger::Charge
             && match g.ammo {
                 crate::arms::Ammo::Battery(b) => b >= COMBO_BATTERY,
                 a => a.ready(),
             }
     })
 }
-/// A gun to follow an overcharge with: one aimed for the head (magnum,
-/// battle rifle, carbine) or a fast automatic (SMG).
+/// A loaded precision sidearm, burst rifle, carbine or sniper rifle.
 fn follow_up(g: Option<Gun>) -> bool {
-    g.is_some_and(|g| {
-        g.ready()
-            && match g.role() {
-                Role::Precise => true,
-                Role::Spray => g.profile.trigger == Trigger::Automatic,
-                _ => false,
-            }
-    })
+    g.is_some_and(|g| g.ready() && matches!(g.role(), Role::Precise | Role::Sniper))
+}
+
+/// A visibly broken shield gives even a less precise bot a reason to aim
+/// a headshot weapon high. Sight, tracking error and lead still apply.
+pub(crate) fn target_height(held: Option<Gun>, shield_down: bool, usual: f32) -> f32 {
+    if shield_down && follow_up(held) { crate::tactics::HEAD } else { usual }
 }
 
 impl Combo {
@@ -326,6 +338,16 @@ impl Combo {
         let rng = self.rng;
         *self = Combo::default();
         self.rng = rng;
+    }
+
+    /// Losing sight releases the controls. A glance away from the same
+    /// opponent does not buy another roll when it reappears around cover.
+    pub(crate) fn leave_fight(&mut self, tick: u32) {
+        let attempted = self.attempted.filter(|&(_, seen)| {
+            tick.wrapping_sub(seen) <= crate::tactics::GRACE
+        });
+        self.reset();
+        self.attempted = attempted;
     }
 
     /// A combo or a glitch is under way.
@@ -401,25 +423,22 @@ impl Combo {
     pub fn step(&mut self, c: &ComboIn, skill: Skill) -> ComboOut {
         let k = ComboSkill::of(skill);
         let mut out = ComboOut::default();
-        // A new target: a fresh count and a fresh roll. A combo under way
-        // goes on (the overcharge is spent on whoever).
+        // A change of target cancels a planned draw or charge. Spend the
+        // roll only after the weapon pair and a viable range are observed.
         if c.target != self.target {
             self.target = c.target;
             self.hits = 0;
             self.firing_since = None;
-            self.go = c.target.is_some() && self.uniform() < k.chance;
-            if matches!(self.phase, Phase::Draw(_) | Phase::Charge(_)) {
-                self.phase = Phase::Idle;
-            }
+            self.phase = Phase::Idle;
         }
-        if c.target.is_none() {
-            if let Phase::Follow(_) = self.phase {
-                self.phase = Phase::Idle;
-            }
-            self.was_firing = false;
-            self.trick = None;
+        let Some(target) = c.target else {
+            self.leave_fight(c.tick);
             return out;
-        }
+        };
+        self.attempted = self.attempted.and_then(|(id, last)| {
+            (id == target && c.tick.wrapping_sub(last) <= crate::tactics::GRACE)
+                .then_some((id, c.tick))
+        });
         // Shots on the target: a once-per-pull gun's pulls, an automatic's
         // time on target.
         let auto = c
@@ -456,29 +475,36 @@ impl Combo {
         let in_range = (COMBO_RANGE.0..COMBO_RANGE.1).contains(&c.dist);
         match self.phase {
             Phase::Idle => {
-                if self.go && c.reacted && in_range {
-                    if charge(c.held) && follow_up(c.other) {
-                        self.phase = Phase::Charge(t);
-                        out.trigger = Some(true);
-                    } else if c.held.is_some_and(|g| g.role() == Role::Precise)
-                        && charge(c.other)
-                        && self.hits == 0
-                    {
-                        // A fresh target and the pistol in the other
-                        // hand: open with it.
-                        self.phase = Phase::Draw(t);
-                        out.switch = true;
-                        out.trigger = Some(false);
+                let pistol_held = charge(c.held) && follow_up(c.other);
+                let pistol_stowed = charge(c.other) && follow_up(c.held) && !c.shield_down;
+                if self.attempted.is_none() && c.reacted && in_range && !c.glitch.carrying
+                    && (pistol_held || pistol_stowed)
+                {
+                    self.attempted = Some((target, t));
+                    if self.uniform() < c.combo_chance.unwrap_or(k.chance) {
+                        if pistol_held && !c.shield_down {
+                            self.phase = Phase::Charge(t);
+                            out.trigger = Some(true);
+                        } else {
+                            self.phase = if pistol_stowed { Phase::Draw(t) } else { Phase::Swap(t) };
+                            out.switch = true;
+                            out.trigger = Some(false);
+                        }
                     }
                 }
             }
             Phase::Draw(since) => {
-                if charge(c.held) {
-                    self.phase = Phase::Charge(t);
-                    out.trigger = Some(true);
+                if charge(c.held) && follow_up(c.other) {
+                    if c.shield_down {
+                        self.phase = Phase::Swap(t);
+                        out.switch = true;
+                        out.trigger = Some(false);
+                    } else {
+                        self.phase = Phase::Charge(t);
+                        out.trigger = Some(true);
+                    }
                 } else if t.wrapping_sub(since) > SWAP_WAIT {
                     self.phase = Phase::Idle;
-                    self.go = false;
                 } else {
                     out.switch = t.wrapping_sub(since) < TAP;
                     out.trigger = Some(false);
@@ -486,9 +512,12 @@ impl Combo {
             }
             Phase::Charge(since) => {
                 let held = t.wrapping_sub(since);
-                if !charge(c.held) {
+                if !follow_up(c.other) || !charge(c.held) {
                     self.phase = Phase::Idle;
-                    self.go = false;
+                } else if c.shield_down {
+                    self.phase = Phase::Swap(t);
+                    out.switch = true;
+                    out.trigger = Some(false);
                 } else if held >= CHARGE_TICKS && (c.on_target || held >= CHARGE_HOLD) {
                     // Let go: the overcharge flies.
                     self.phase = Phase::Release(t);
@@ -499,25 +528,25 @@ impl Combo {
             }
             Phase::Release(at) => {
                 out.trigger = Some(false);
-                if t.wrapping_sub(at) >= k.swap_delay {
+                if !follow_up(c.other) {
+                    self.phase = Phase::Idle;
+                } else if c.shield_down || t.wrapping_sub(at) >= k.swap_delay {
                     self.phase = Phase::Swap(t);
                     out.switch = true;
                 }
             }
             Phase::Swap(since) => {
-                let switched = c.held.is_some_and(|g| g.profile.trigger != Trigger::Charge);
-                if switched || t.wrapping_sub(since) > SWAP_WAIT {
-                    self.phase = Phase::Follow(t + FOLLOW_TICKS);
-                    self.go = false;
-                    // The overcharge popped the shields: finish them.
-                    self.hits = self.hits.max(k.finish_pulls);
+                if follow_up(c.held) {
+                    self.phase = Phase::Follow(t.wrapping_add(FOLLOW_TICKS));
+                } else if !follow_up(c.other) || t.wrapping_sub(since) > SWAP_WAIT {
+                    self.phase = Phase::Idle;
                 } else {
                     out.switch = t.wrapping_sub(since) < TAP;
                     out.trigger = Some(false);
                 }
             }
             Phase::Follow(until) => {
-                if t >= until {
+                if crate::mind::feel::reached(t, until) || !follow_up(c.held) {
                     self.phase = Phase::Idle;
                 }
             }
