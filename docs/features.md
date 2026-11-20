@@ -57,7 +57,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | In the game: sign-in, matchmaking, custom games browser | Built | [matchmaking](live/live-matchmaking.md), [custom games](live/live-custom-games.md) |
 | | Co-op campaign over Live | Built | [co-op](live/live-coop.md) |
 | | Cloud saves: profiles, campaign progress, variants and settings follow the account | Built | [cloud saves](live/live-cloud-saves.md) |
-| | Web app: dashboard, stats site, live top-down map, replays, admin | Built | [web](../web/README.md), [admin](live/live-admin.md), [art](live/live-art.md) |
+| | Web app: dashboard, stats site, live top-down map, replays, admin | Built | [web](../web/README.md), [web-app](live/web-app.md), [admin](live/live-admin.md), [art](live/live-art.md) |
 | | Hosting: Docker with Cloudflare Tunnel, SQLite and R2; or Cloudflare Workers | Built | [hosting](live/live-hosting.md), [Workers](live/live-worker.md) |
 | Editor | `h2-editor`: 3D viewport, placements, tags, game variants, playlists, UI screens, Halo 1 maps, with its own socket API | Built | [guide](editor/editor-guide.md), [API](editor/agent-api.md) |
 | Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](README.md#data-formats-and-tags-formats), [perf](perf/profiling.md) |
