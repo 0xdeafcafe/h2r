@@ -32,8 +32,7 @@
 //! **In a game** the Controls tag (screen 39,
 //! `game_shell\settings_screen\player_profile\controller_settings`) is
 //! not loaded: it is in `mainmenu` only. A screen built on it there has no
-//! widgets, a blank screen (the pause menu's Video and Voice rows opened
-//! one). So while the UI's game kind ([`UI_GAME_KIND`]) is not the main
+//! widgets. While the UI's game kind ([`UI_GAME_KIND`]) is not the main
 //! menu, the loader runs the Controls constructor's own steps on screen
 //! 200's tag instead ([`construct_on`]): the in-game Controller Settings
 //! (`mp_menu\controller_settings`), in `shared`, `single_player_shared`
@@ -1101,6 +1100,17 @@ pub fn loader_of(screen: &str) -> Option<u32> {
         .copied()
 }
 
+/// The installed list class identified by a live screen's vtable.
+static CLASS_NAMES: Mutex<BTreeMap<u32, &'static str>> = Mutex::new(BTreeMap::new());
+
+pub(crate) fn class_name(screen_vtable: u32) -> Option<&'static str> {
+    CLASS_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&screen_vtable)
+        .copied()
+}
+
 /// The rows our loader is building a screen with (0: no loader of ours is
 /// running the Controls constructor).
 static BUILDING: AtomicU32 = AtomicU32::new(0);
@@ -1206,7 +1216,7 @@ impl ListClass {
             panel: Panel::default(),
         }
     }
-    /// Opened in a game too (the pause menu's Video and Voice): there its
+    /// Opened in a game too (Video and Voice under pause Settings): there its
     /// rows draw as one line each ([`Rows::line`], module docs).
     pub fn lines(mut self) -> Self {
         self.lines = true;
@@ -1589,24 +1599,39 @@ pub async fn push(cx: &Cx, chain: u32, over: u32, screen: &str) -> Result<(), En
         eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
         return Ok(());
     };
+    push_loader(cx, chain, over, loader).await
+}
+
+/// Opens a loader above `over` on the same window and slot. Used for
+/// native loaders as well as our own list classes.
+pub(crate) async fn push_loader(cx: &Cx, chain: u32, over: u32, loader: u32) -> Result<(), EntryError> {
     let Some(mask) = cx.read(|m| player_mask(m, chain))? else {
-        eprintln!("ui: no local player for the press; {screen} not opened");
+        eprintln!("ui: no local player for the press; loader {loader:#x} not opened");
         return Ok(());
     };
     if let Some(d) = crate::ui_kit::dialog_tag::by_loader(loader) {
-        eprintln!("ui: opening {screen} over the screen beneath (the dialogs' window)");
         return crate::ui_kit::dialog_tag::open_over(cx, &d, mask).await;
     }
-    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
-    let request = crate::skulls_mp::open_request(mask as u16, window, slot, loader);
-    let at = PUSH_REQUEST.load(Ordering::SeqCst);
-    if at == 0 {
-        eprintln!("ui: no request memory yet; {screen} not opened");
+    let request_at = PUSH_REQUEST.load(Ordering::SeqCst);
+    if request_at == 0 {
+        eprintln!("ui: no request memory yet; loader {loader:#x} not opened");
         return Ok(());
     }
-    eprintln!("ui: opening {screen} on window {window}, slot {slot}");
-    cx.write(|m| m.write(at, &request))?;
-    cx.call(GuestCall::new(loader).args([at])).await?;
+    push_to_stack(cx, over, mask as u16, loader, request_at).await
+}
+
+async fn push_to_stack(
+    cx: &Cx,
+    over: u32,
+    mask: u16,
+    loader: u32,
+    request_at: u32,
+) -> Result<(), EntryError> {
+    let (window, slot) = crate::ui_kit::lifecycle::window_slot(cx, over)?;
+    let request = crate::skulls_mp::open_request(mask, window, slot, loader);
+    eprintln!("ui: opening loader {loader:#x} on window {window}, slot {slot}");
+    cx.write(|m| m.write(request_at, &request))?;
+    cx.call(GuestCall::new(loader).args([request_at])).await?;
     Ok(())
 }
 
@@ -2327,6 +2352,10 @@ impl hooks::Feature for ListClass {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.screen, loader);
+        CLASS_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(e.screen_vtable, self.screen);
         b.snapshot(hooks::SnapshotPolicy::forbid_while(building_live));
         Ok(())
     }
@@ -2423,6 +2452,38 @@ mod tests {
         );
         assert_eq!(press_open("test-open-missing", 0), [], "not ours");
         assert_eq!(press_open("test-open-target", 4), [], "no local player");
+    }
+
+    #[test]
+    fn a_child_loader_receives_the_parent_window_and_slot() {
+        use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+
+        const REQUEST: u32 = 0x700000;
+        const LOADER: u32 = 0xa0f0_5000;
+        for (slot, mask) in [(4, 1), (2, 1 << 2)] {
+            let mut g = guest();
+            g.map(SCREEN, 0x100).map(REQUEST, 0x20);
+            g.put_u32(SCREEN + SCREEN_WINDOW, 5)
+                .put_u32(SCREEN + SCREEN_SLOT, slot);
+            let f = move |cx| -> EntryFuture {
+                Box::pin(async move {
+                    push_to_stack(&cx, SCREEN, mask, LOADER, REQUEST).await?;
+                    Ok(Ret::new(0, 8))
+                })
+            };
+            let run = testing::run(
+                &f,
+                g,
+                Regs { esp: STACK, ..Regs::default() },
+                |_, _| Regs::default(),
+            );
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            assert_eq!(run.calls, [Gc::new(LOADER).args([REQUEST])]);
+            assert_eq!(run.guest.u16(REQUEST + 2), Ok(mask));
+            assert_eq!(run.guest.u32(REQUEST + 4), Ok(5));
+            assert_eq!(run.guest.u32(REQUEST + 8), Ok(slot));
+            assert_eq!(run.guest.u32(REQUEST + 0x1c), Ok(LOADER));
+        }
     }
 
     #[test]
@@ -2659,17 +2720,15 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
         // While the constructor ran, the Controls rows' array was asked for
-        // our six rows (the Video screen's); any other array, and anything
+        // the screen's six rows; any other array, and anything
         // after, as asked.
         assert_eq!(*during.lock().unwrap(), Some((6, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 
-    /// The pause menu's Video and Voice opened blank in a game: the
-    /// Controls tag (screen 39) is in mainmenu only. In a game the loader
-    /// runs the Controls constructor's steps on screen 200's tag, the
-    /// in-game Controller Settings; in the main menu, the Controls
-    /// constructor as before.
+    /// The Controls tag (screen 39) is available in the main menu. In a
+    /// game the loader uses the in-game Controller Settings tag (screen
+    /// 200), so pages such as Video and Voice get their widgets.
     #[test]
     fn in_a_game_the_loader_builds_on_the_in_game_controller_settings() {
         let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());

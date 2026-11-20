@@ -1,349 +1,264 @@
 use super::*;
 
-use std::sync::Arc;
-
+use engine::entry::{Regs, testing};
 use engine::testing::FakeGuest;
 use settings::{Store, Value};
 
-use crate::list_class::ListClass;
-use crate::retail_rows;
 use crate::setting_defs::{ALL, FOV, PAD_MUTE};
 use crate::ui::RowKind;
 use crate::ui_kit::input::Input;
-use crate::ui_kit::page::{ListEffect, ListPage, Page};
+use crate::ui_kit::page::{Focus, ListEffect, ListPage, Page, StackPage};
 use crate::ui_kit::spec::ScreenSpec;
-use crate::video_screen::{self, SCREEN as VIDEO, Switches, VOICE_LIST, VOICE_SCREEN as VOICE};
+use crate::video_screen::{self, Switches, VOICE_LIST};
 use crate::voice_settings::{self, MIC_MUTED, VoiceHandles};
 
-fn model_with(store: Arc<Store>, on: Switches) -> Arc<Model> {
-    Arc::new(video_screen::model(store, on).unwrap())
-}
-
 fn model() -> Arc<Model> {
-    model_with(Arc::new(Store::defaults(ALL)), Switches::ALL)
+    Arc::new(video_screen::model(Arc::new(Store::defaults(ALL)), Switches::ALL).unwrap())
 }
 
 fn label(m: &Model, id: u32) -> String {
+    if let Some((_, text)) = TEXTS.iter().find(|(i, _)| *i == id) {
+        return (*text).into();
+    }
     m.strings()
         .iter()
         .find(|(i, _)| *i == id)
-        .map(|(_, t)| t.clone())
-        .unwrap_or_else(|| format!("{id:#x}"))
+        .unwrap_or_else(|| panic!("no string for {id:#x}"))
+        .1
+        .clone()
 }
 
-/// A page over our class for screen `id`, as the game steps it.
 fn page(m: &Arc<Model>, id: &'static str) -> ListPage {
-    let class = ListClass::new("test", id, Arc::clone(m));
+    let class = ListClass::new("test", id, Arc::clone(m)).lines();
     ListPage::new(class, move || ScreenSpec::new(id, id))
 }
 
-/// Video then Voice, below the menu's own settings row: the campaign
-/// menu's rows 4 and 5 (its row 4, Save and Quit, shows at 6), the
-/// multiplayer menu's actions 6 and 7.
 #[test]
-fn both_pause_menus_get_video_then_voice_below_their_settings_row() {
+fn both_settings_lists_show_native_options_video_and_voice() {
     let m = model();
-    for (list, retail, first) in [
-        (List::Pause, PAUSE_ROWS, PAUSE_CONTROLLER_ROW + 1),
-        (List::MpPause, MP_ACTIONS, MP_ACTIONS as i16),
+    for (mode, retail) in [
+        (Mode::Campaign, "Controller Settings"),
+        (Mode::Multiplayer, "Player Settings"),
     ] {
-        let kinds: Vec<_> = m.rows(list).iter().map(|r| r.kind.clone()).collect();
-        assert_eq!(kinds, [RowKind::Open(VIDEO), RowKind::Open(VOICE)], "{list:?}");
-        assert_eq!(m.count(list, retail), retail + 2, "{list:?}");
-        assert_eq!(m.count(list, retail + 1), retail + 1, "not the list we know");
-        assert_eq!(m.index_of(list, &RowKind::Open(VIDEO)), Some(first));
-        assert_eq!(m.index_of(list, &RowKind::Open(VOICE)), Some(first + 1));
+        let class = Settings::new(mode, &m, true, true).unwrap().class(0);
+        let behaviour = class.behaviour();
+        let rows = behaviour.rows;
+        assert_eq!(label(&m, rows.title()), "Settings");
+        assert_eq!(rows.count(), 3);
+        let rendered = [0, 1, 2].map(|i| {
+            let texts = rows.texts(i);
+            assert_eq!(texts.len(), 1);
+            assert_eq!(texts[0].0, 0);
+            label(&m, texts[0].1)
+        });
+        assert_eq!(rendered, [retail, "Video", "Voice"]);
+        assert_eq!(rows.press(0), Chosen::Act);
+        assert_eq!(rows.press(1), Chosen::Push(VIDEO));
+        assert_eq!(rows.press(2), Chosen::Push(VOICE));
+        assert_eq!(rows.press(3), Chosen::Nothing);
+        assert!(rows.texts(3).is_empty());
+        assert!(behaviour.action_buttons.is_empty());
     }
-    // The campaign menu by index: rows 0 to 3 retail's, ours, then row 4.
-    let shows: Vec<Option<i16>> = (0..8).map(|i| m.retail_index(List::Pause, i)).collect();
-    assert_eq!(shows, [Some(0), Some(1), Some(2), Some(3), None, None, Some(4), None]);
-    assert_eq!(retail_rows::moved(&m, List::Pause, 6), Some(4));
-    for i in [0i16, 3, 4, 5, 7] {
-        assert_eq!(retail_rows::moved(&m, List::Pause, i), None, "{i}");
-    }
-    assert_eq!(list_count(&m, PAUSE_LIST_NAME, 5), 7);
-    assert_eq!(list_count(&m, MP_LIST_NAME, 6), 8);
-    assert_eq!(list_count(&m, video_screen::SETTINGS_LIST_NAME, 2), 2, "not a pause list");
-    assert_eq!(mp_actions(&m), [6, 7]);
-    for a in [-1i16, 0, 5, 8] {
-        assert!(!is_ours_mp(&m, a), "{a}");
-    }
-    assert!(is_ours_mp(&m, 6) && is_ours_mp(&m, 7));
 }
 
 #[test]
-fn our_rows_draw_their_labels_and_the_retail_rows_are_left_alone() {
+fn settings_only_links_to_installed_pages() {
     let m = model();
-    let text = |list, row| {
-        retail_rows::texts(&m, list, row, true).map(|t| {
-            assert_eq!(t.len(), 1, "one text: the label");
-            label(&m, t[0].1)
+    for mode in [Mode::Campaign, Mode::Multiplayer] {
+        assert!(Settings::new(mode, &m, false, false).is_none());
+        for (video, voice, expected) in [(true, false, VIDEO), (false, true, VOICE)] {
+            let class = Settings::new(mode, &m, video, voice).unwrap().class(0);
+            let rows = class.behaviour().rows;
+            assert_eq!(rows.count(), 2);
+            assert_eq!(rows.press(1), Chosen::Push(expected));
+        }
+    }
+}
+
+#[test]
+fn back_from_video_and_voice_reveals_settings_at_the_same_row() {
+    let m = model();
+    for mode in [Mode::Campaign, Mode::Multiplayer] {
+        let id = mode.screen();
+        let class = Settings::new(mode, &m, true, true).unwrap().class(0);
+        let settings = ListPage::new(class, || ScreenSpec::new("settings", "Settings"));
+        let stack = StackPage::new(id, settings)
+            .screen(VIDEO, page(&m, VIDEO))
+            .screen(VOICE, page(&m, VOICE));
+        let mut state = stack.after(&[Input::Down, Input::A]);
+        assert_eq!(StackPage::top(&state), Some(VIDEO));
+        assert_eq!(stack.step(&mut state, Input::B), ListEffect::Close);
+        assert_eq!(state.open, [(id, Focus(1))]);
+        assert_eq!(stack.step(&mut state, Input::Down), ListEffect::Focus(2));
+        assert_eq!(stack.step(&mut state, Input::A), ListEffect::Open(VOICE));
+        assert_eq!(StackPage::top(&state), Some(VOICE));
+        assert_eq!(stack.step(&mut state, Input::Back), ListEffect::Close);
+        assert_eq!(state.open, [(id, Focus(2))]);
+    }
+}
+
+#[test]
+fn the_campaign_hook_relabels_and_redirects_only_settings() {
+    let m = model();
+    let mut g = FakeGuest::new();
+    let item = 0x1000;
+    let arg = 0x2000;
+    g.map(item, 0x100).map(arg, 4);
+    for index in [0, 1, 2, 3, 4] {
+        let handle = DatumHandle::new(0x8000, index);
+        Item::at(item).set_row(&mut g, Some(handle)).unwrap();
+        g.put_u32(arg, handle.raw());
+        let text = campaign_row_label(&g, item).map(|id| label(&m, id));
+        assert_eq!(text.as_deref(), (index == 3).then_some("Settings"));
+        assert_eq!(settings_pressed(&g, 0, arg, Mode::Campaign), index == 3);
+    }
+    g.put_u32(arg, u32::MAX);
+    assert!(!settings_pressed(&g, 0, arg, Mode::Campaign));
+}
+
+const OVER: u32 = 0x1000;
+const MP_PARENT: u32 = 0x2000;
+const MP_LIST: u32 = MP_PARENT + ui::LIST;
+const ARRAY: u32 = 0x3000;
+const NAME: u32 = 0x4000;
+const STACK: u32 = 0x5000;
+const ROW: u32 = 0x5010;
+
+fn mp_list(actions: &[u16]) -> (FakeGuest, Vec<DatumHandle>) {
+    let mut g = FakeGuest::new();
+    g.map(OVER, 0x100).map(MP_PARENT, 0x1000).map(ARRAY, 0x1000);
+    g.map(NAME, 0x20).map(STACK, 0x100);
+    g.put_u32(OVER + lifecycle::SCREEN_NEXT, MP_PARENT);
+    Screen::at(MP_PARENT).set_id(&mut g, MP_PAUSE).unwrap();
+    ListHandler::at(MP_LIST).set_rows(&mut g, ARRAY).unwrap();
+    let rows = DatumArray::at(ARRAY);
+    rows.initialize_contiguous(&mut g, NAME, MP_ROWS, 4, 0, 0)
+        .unwrap();
+    rows.make_valid(&mut g).unwrap();
+    let handles = actions
+        .iter()
+        .map(|action| {
+            let h = rows.new_datum(&mut g).unwrap().unwrap();
+            let e = rows.try_get(&g, h).unwrap().unwrap();
+            g.set_u16(e + ACTION_WORD, *action).unwrap();
+            h
+        })
+        .collect();
+    (g, handles)
+}
+
+#[test]
+fn multiplayer_uses_the_action_word_and_preserves_the_native_settings_press() {
+    let (mut g, handles) = mp_list(&[0, 2, 1, 5]);
+    for (i, handle) in handles.iter().enumerate() {
+        g.put_u32(ROW, handle.raw());
+        assert_eq!(
+            settings_pressed(&g, MP_LIST, ROW, Mode::Multiplayer),
+            i == 2
+        );
+    }
+    assert_eq!(mp_settings(&g, OVER), Some((MP_LIST, handles[2])));
+    assert_eq!(mp_settings(&mp_list(&[0, 2, 5]).0, OVER), None);
+
+    let chain = 0x6000;
+    g.put_u32(STACK + 4, chain);
+    let entry = |cx| -> EntryFuture {
+        Box::pin(async move {
+            open_retail_settings(cx, OVER, Mode::Multiplayer, ROW).await?;
+            Ok(Ret::new(0, 8))
         })
     };
-    assert_eq!(text(List::Pause, 4).as_deref(), Some("Video Settings"));
-    assert_eq!(text(List::Pause, 5).as_deref(), Some("Voice Settings"));
-    assert_eq!(text(List::MpPause, 6).as_deref(), Some("Video Settings"));
-    assert_eq!(text(List::MpPause, 7).as_deref(), Some("Voice Settings"));
-    for r in [-1i16, 0, 1, 2, 3, 6, 7] {
-        assert_eq!(text(List::Pause, r), None, "campaign row {r}");
-    }
-    for a in [0i16, 1, 2, 3, 4, 5, 8] {
-        assert_eq!(text(List::MpPause, a), None, "multiplayer action {a}");
-    }
+    let run = testing::run(
+        &entry,
+        g,
+        Regs {
+            esp: STACK,
+            ..Regs::default()
+        },
+        |_, _| Regs::default(),
+    );
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    assert_eq!(
+        run.calls,
+        [GuestCall::new(points::MP_MENU_ROW_CHOSEN.base)
+            .ecx(MP_LIST)
+            .args([chain, ROW])]
+    );
+    assert_eq!(run.guest.u32(ROW), Ok(handles[2].raw()));
 }
 
 #[test]
-fn a_press_on_our_row_opens_our_screen_and_nothing_else() {
+fn both_pause_hooks_redirect_only_the_existing_settings_row() {
     let m = model();
-    let press = |list, row| m.row(list, row).map(|r| m.press(r));
-    assert_eq!(press(List::Pause, 4), Some(Chosen::Open(VIDEO)));
-    assert_eq!(press(List::Pause, 5), Some(Chosen::Open(VOICE)));
-    assert_eq!(press(List::MpPause, 6), Some(Chosen::Open(VIDEO)));
-    assert_eq!(press(List::MpPause, 7), Some(Chosen::Open(VOICE)));
-    assert_eq!(press(List::Pause, 6), None, "retail's row 4, moved down");
-    assert_eq!(press(List::MpPause, 5), None, "action 5 is retail's");
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
+    for mode in [Mode::Campaign, Mode::Multiplayer] {
+        assert!(
+            r.add(&Settings::new(mode, &m, true, true).unwrap())
+                .unwrap()
+        );
+    }
+    let text = r.build(&hooks::Base).unwrap().text();
+    for line in [
+        "0x00231f6c PAUSE_ROW_TEXT: before [pause-rows:name the Settings row] -> original",
+        "0x00231fe3 PAUSE_ROW_CHOSEN: before [pause-rows:open Settings] -> original",
+        "0x002328b5 MP_MENU_ROW_CHOSEN: before [pause-mp-rows:open Settings] -> original",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    assert!(!text.contains("MP_MENU_LIST_CTOR"));
 }
 
 #[test]
-fn switches_take_rows_out_and_the_lists_stay_retail() {
-    let store = || Arc::new(Store::defaults(ALL));
-    let none = model_with(
-        store(),
-        Switches {
-            pause_rows: false,
-            ..Switches::ALL
-        },
-    );
-    assert!(none.rows(List::Pause).is_empty() && none.rows(List::MpPause).is_empty());
-    assert_eq!(list_count(&none, PAUSE_LIST_NAME, 5), 5);
-    assert_eq!(list_count(&none, MP_LIST_NAME, 6), 6);
-    assert!(mp_actions(&none).is_empty());
-    // No Video screen: Voice alone, at the first place after retail's.
-    let voice_only = model_with(
-        store(),
-        Switches {
-            video_screen: false,
-            ..Switches::ALL
-        },
-    );
-    assert_eq!(voice_only.count(List::Pause, 5), 6);
-    assert_eq!(mp_actions(&voice_only), [6]);
-    assert_eq!(
-        voice_only.row(List::MpPause, 6).map(|r| r.kind.clone()),
-        Some(RowKind::Open(VOICE))
-    );
-    let no_voice = model_with(
-        store(),
-        Switches {
-            voice_screen: false,
-            ..Switches::ALL
-        },
-    );
-    assert!(no_voice.rows(VOICE_LIST).is_empty());
-    assert_eq!(
-        no_voice
-            .rows(List::Pause)
-            .iter()
-            .map(|r| r.kind.clone())
-            .collect::<Vec<_>>(),
-        [RowKind::Open(VIDEO)]
-    );
-}
-
-#[test]
-fn the_voice_screen_lists_every_voice_setting_in_order() {
+fn voice_contains_mute_button_and_uses_the_live_host_settings() {
     let m = model();
     let keys: Vec<_> = m.rows(VOICE_LIST).iter().map(|r| r.kind.clone()).collect();
-    let want: Vec<_> = voice_settings::ALL
+    let mut want: Vec<_> = voice_settings::ALL
         .iter()
         .map(|d| RowKind::Setting(d.key))
         .collect();
+    want.push(RowKind::Setting(PAD_MUTE.key));
     assert_eq!(keys, want);
-    assert_eq!(label(&m, m.title_id(VOICE).unwrap()), "Voice");
-    // And none of them is on the Video screen.
-    assert!(
-        !m.rows(video_screen::LIST)
-            .iter()
-            .any(|r| matches!(r.kind, RowKind::Setting(k) if k.starts_with("voice.")))
-    );
-}
-
-/// The Voice screen as the game steps it: the focus moves, A steps a row
-/// and the handle the audio side holds sees it at once, B closes.
-#[test]
-fn the_voice_page_steps_mutes_live_and_closes_on_b() {
-    let store = Arc::new(Store::defaults(ALL));
-    let audio_side = VoiceHandles::new(&store);
-    let m = model_with(Arc::clone(&store), Switches::ALL);
-    let p = page(&m, VOICE);
-    let mut focus = p.states()[0].1;
-    // Microphone: with no host list the only choice is System default.
+    let row = m.row(VOICE_LIST, 8).unwrap();
+    let pad_mute = m.store().handle::<bool>(PAD_MUTE.key);
+    assert_eq!(m.line(row), "Mute Button: On");
     assert_eq!(
-        p.step(&mut focus, Input::A),
-        ListEffect::Stepped("voice.input_device: default".into())
+        m.press(row),
+        Chosen::Stepped("pad.mute_button: false".into())
     );
-    for _ in 0..4 {
-        p.step(&mut focus, Input::Down);
-    }
-    assert_eq!(focus.0, 4, "Mute My Mic");
+    assert_eq!(m.line(row), "Mute Button: Off");
+    assert!(!pad_mute.get());
+
+    let audio = VoiceHandles::new(m.store());
+    let p = page(&m, VOICE);
+    let mut focus = Focus(4);
     assert_eq!(
         p.step(&mut focus, Input::A),
         ListEffect::Stepped("voice.mic_muted: true".into())
     );
-    assert!(audio_side.mic_muted.get(), "live, through the one atomic cell");
-    assert_eq!(audio_side.capture_gain(), 0.0);
-    let row = m.row(VOICE_LIST, 4).unwrap();
-    assert_eq!(label(&m, m.texts(row)[1].1), "On");
-    p.step(&mut focus, Input::Down);
+    assert_eq!(m.store().get(MIC_MUTED.key), Some(Value::Bool(true)));
+    assert_eq!(audio.capture_gain(), 0.0);
+    assert_eq!(m.line(m.row(VOICE_LIST, 4).unwrap()), "Mute My Mic: On");
     assert_eq!(
-        p.step(&mut focus, Input::A),
-        ListEffect::Stepped("voice.incoming_muted: true".into())
+        p.step(&mut Focus(7), Input::A),
+        ListEffect::Stepped("voice.output_volume: 0".into())
     );
-    assert!(audio_side.incoming_muted.get());
-    // Past the last row the focus stays.
-    for _ in 0..5 {
-        p.step(&mut focus, Input::Down);
-    }
-    assert_eq!(focus.0, 7);
-    assert_eq!(
-        p.step(&mut focus, Input::A),
-        ListEffect::Stepped("voice.output_volume: 0".into()),
-        "100% wraps to 0%"
-    );
-    assert_eq!(audio_side.output_volume.get(), 0);
-    assert_eq!(p.step(&mut focus, Input::B), ListEffect::Close);
-    assert_eq!(p.step(&mut focus, Input::Back), ListEffect::Close);
-    assert_eq!(store.get(MIC_MUTED.key), Some(Value::Bool(true)));
+    assert_eq!(audio.output_volume.get(), 0);
 }
 
-/// The Video screen opened from the pause menu is the same screen: a
-/// press applies at once.
 #[test]
-fn the_video_page_from_the_pause_menu_applies_at_once() {
-    let store = Arc::new(Store::defaults(ALL));
-    let fov = store.handle::<u32>(FOV.key);
-    let mute = store.handle::<bool>(PAD_MUTE.key);
-    let m = model_with(Arc::clone(&store), Switches::ALL);
-    assert_eq!(m.press(m.row(List::Pause, 4).unwrap()), Chosen::Open(VIDEO));
+fn video_still_steps_display_settings_live() {
+    let m = model();
     let p = page(&m, VIDEO);
-    let mut focus = p.states()[0].1;
+    let mut focus = Focus(0);
     assert_eq!(
         p.step(&mut focus, Input::A),
         ListEffect::Stepped("graphics.fov: 75".into())
     );
-    assert_eq!(fov.get(), 75);
-    for _ in 0..4 {
-        p.step(&mut focus, Input::Down);
-    }
+    assert_eq!(m.store().handle::<u32>(FOV.key).get(), 75);
     assert_eq!(
-        p.step(&mut focus, Input::A),
-        ListEffect::Stepped("pad.mute_button: false".into())
+        m.line(m.row(video_screen::LIST, 0).unwrap()),
+        "Field of View: 75"
     );
-    assert!(!mute.get());
-    assert_eq!(p.step(&mut focus, Input::B), ListEffect::Close);
-}
-
-/// The pause rule (`0x1482c4`) over the screens a player opens and closes:
-/// paused while the pause menu or a screen of ours over it is up, resumed
-/// only when the last one closes. Nothing of ours writes the byte.
-#[test]
-fn a_screen_over_the_pause_menu_keeps_the_game_paused_until_the_last_closes() {
-    let m = model();
-    let mut stack: Vec<&'static str> = Vec::new();
-    fn update(stack: &[&'static str], paused: &mut bool) {
-        if resumes(*paused, !stack.is_empty()) {
-            *paused = false;
-        }
-    }
-    // Start: the campaign pause menu is made and pauses.
-    stack.push("pause");
-    let mut paused = true;
-    update(&stack, &mut paused);
-    assert!(paused);
-    for row in [4i16, 5] {
-        let Chosen::Open(id) = m.press(m.row(List::Pause, row).unwrap()) else {
-            panic!("row {row}")
-        };
-        stack.push(id);
-        update(&stack, &mut paused);
-        assert!(paused, "{id} up");
-        let p = page(&m, id);
-        let mut focus = p.states()[0].1;
-        assert_eq!(p.step(&mut focus, Input::B), ListEffect::Close);
-        stack.pop();
-        update(&stack, &mut paused);
-        assert!(paused, "back on the pause menu from {id}");
-        assert_eq!(stack, ["pause"]);
-    }
-    stack.pop();
-    update(&stack, &mut paused);
-    assert!(!paused, "resumed when the pause menu closes");
-    // Multiplayer: never paused, before, during or after.
-    assert!(!resumes(false, true) && !resumes(false, false));
-}
-
-/// A multiplayer pause list at `LIST` whose array has room for `room` rows,
-/// with `actions` added as the constructor adds them.
-fn mp_list(room: i32, actions: &[i16]) -> FakeGuest {
-    const LIST: u32 = 0x1000;
-    const ARRAY: u32 = 0x2000;
-    const NAME: u32 = 0x1800;
-    let mut g = FakeGuest::new();
-    g.map(LIST, 0x100).map(NAME, 0x20).map(ARRAY, 0x1000);
-    g.put_u32(LIST + LIST_ROWS, ARRAY);
-    let a = DatumArray::at(ARRAY);
-    a.initialize_contiguous(&mut g, NAME, room, 4, 0, 0).unwrap();
-    a.make_valid(&mut g).unwrap();
-    for &act in actions {
-        let h = a.new_datum(&mut g).unwrap().unwrap();
-        let e = a.try_get(&g, h).unwrap().unwrap();
-        g.set_u16(e + ROW_ACTION, act as u16).unwrap();
-    }
-    g
-}
-
-#[test]
-fn our_actions_are_added_once_after_the_games_and_read_back_by_handle() {
-    const LIST: u32 = 0x1000;
-    let mut g = mp_list(8, &[0, 1, 2, 4]);
-    assert_eq!(actions(&g, LIST).unwrap(), [0, 1, 2, 4]);
-    assert_eq!(add_actions(&mut g, LIST, &[6, 7]).unwrap(), [6, 7]);
-    assert_eq!(actions(&g, LIST).unwrap(), [0, 1, 2, 4, 6, 7]);
-    assert!(add_actions(&mut g, LIST, &[6, 7]).unwrap().is_empty(), "once");
-    let a = DatumArray::at(g.u32(LIST + LIST_ROWS).unwrap());
-    let h = a.handle_of(&g, 4).unwrap().unwrap();
-    assert_eq!(row_action(&g, LIST, h.0), Some(6));
-    assert_eq!(row_action(&g, LIST, u32::MAX), None, "no row");
-    // The game's six-row room, full: refused, and said.
-    let mut full = mp_list(6, &[0, 1, 2, 3, 4, 5]);
-    assert!(add_actions(&mut full, LIST, &[6]).unwrap_err().contains("full"));
-}
-
-#[test]
-fn the_hooks_are_on_the_plan_before_the_originals() {
-    let m = model();
-    let mut r = hooks::Registry::new(hooks::Switches::defaults());
-    r.add(&retail_rows::Extension {
-        id: FEATURE,
-        title: "Our rows on the campaign pause menu",
-        list: List::Pause,
-        text: &engine::points::PAUSE_ROW_TEXT,
-        chosen: &engine::points::PAUSE_ROW_CHOSEN,
-        label_only: true,
-        model: Arc::clone(&m),
-    })
-    .unwrap();
-    r.add(&MpPauseRows { model: m }).unwrap();
-    let text = r.build(&hooks::Base).unwrap().text();
-    for line in [
-        "0x00231f6c PAUSE_ROW_TEXT: before [pause-rows:our rows' text] -> original\n",
-        "0x00231fe3 PAUSE_ROW_CHOSEN: before [pause-rows:our rows' press] -> original\n",
-        "0x00232708 MP_MENU_LIST_CTOR: before [pause-mp-rows:note the pause list] -> original -> after [pause-mp-rows:add our pause rows]\n",
-        "0x0023284e MP_MENU_ROW_TEXT: before [pause-mp-rows:our pause rows' text] -> original\n",
-        "0x002328b5 MP_MENU_ROW_CHOSEN: before [pause-mp-rows:our pause rows' press] -> original\n",
-    ] {
-        assert!(text.contains(line), "{line}\n{text}");
-    }
 }
 
 /// With a host of many devices the model still has a string id for every
@@ -374,115 +289,19 @@ fn a_host_full_of_devices_fits_the_models_string_ids() {
         .collect();
     let m = video_screen::model(Arc::new(Store::defaults(&defs)), Switches::ALL)
         .expect("every text has an id");
-    assert!(m.strings().iter().all(|(i, _)| video_screen::is_model_id(*i)));
     assert!(
-        m.strings().iter().any(|(i, _)| video_screen::MORE_MODEL_IDS.contains(i)),
+        m.strings()
+            .iter()
+            .all(|(i, _)| video_screen::is_model_id(*i))
+    );
+    assert!(
+        m.strings()
+            .iter()
+            .any(|(i, _)| video_screen::MORE_MODEL_IDS.contains(i)),
         "the devices spill into the second family"
     );
     let mic = m.row(VOICE_LIST, 0).unwrap();
     assert_eq!(label(&m, m.texts(mic)[1].1), "System default");
     m.press(mic);
     assert_eq!(label(&m, m.texts(mic)[1].1), "in device number 0");
-}
-
-/// The multiplayer menu's rows go by their order in the datum array: ours
-/// are added last, then the action words are written again so they sit
-/// below Controller Settings (action 1). A menu without action 1 keeps
-/// them last.
-#[test]
-fn our_multiplayer_rows_move_below_controller_settings() {
-    assert_eq!(ordered(&[0, 1, 2, 3, 4, 5, 6, 7], &[6, 7], 1), [0, 1, 6, 7, 2, 3, 4, 5]);
-    assert_eq!(ordered(&[0, 1, 2, 6, 7], &[6, 7], 1), [0, 1, 6, 7, 2]);
-    assert_eq!(ordered(&[0, 1, 6, 7, 2], &[6, 7], 1), [0, 1, 6, 7, 2], "once");
-    assert_eq!(ordered(&[0, 2, 6, 7], &[6, 7], 1), [0, 2, 6, 7], "no action 1");
-    assert_eq!(ordered(&[0, 1, 2, 7], &[6, 7], 1), [0, 1, 7, 2], "Voice alone");
-
-    const LIST: u32 = 0x1000;
-    let mut g = mp_list(8, &[0, 1, 2, 3]);
-    assert_eq!(add_actions(&mut g, LIST, &[6, 7]).unwrap(), [6, 7]);
-    assert_eq!(actions(&g, LIST).unwrap(), [0, 1, 2, 3, 6, 7]);
-    assert_eq!(
-        order_actions(&mut g, LIST, &[6, 7], MP_SETTINGS_ACTION).unwrap(),
-        [0, 1, 6, 7, 2, 3]
-    );
-    assert_eq!(actions(&g, LIST).unwrap(), [0, 1, 6, 7, 2, 3]);
-    // Each row still answers by its action: the third row is Video's.
-    let a = DatumArray::at(g.u32(LIST + LIST_ROWS).unwrap());
-    let third = a.handle_of(&g, 2).unwrap().unwrap();
-    assert_eq!(row_action(&g, LIST, third.0), Some(6));
-}
-
-/// The campaign menu as a player reads it, top to bottom: the retail rows
-/// by their own text ids (`0x231f6c`), ours by label, Save and Quit last.
-#[test]
-fn the_campaign_menu_reads_controller_then_video_then_voice_then_save_and_quit() {
-    let m = model();
-    // The retail row texts, by row (row 4 is Save and Quit with one
-    // player, Quit with more).
-    let retail = ["Continue", "Revert to Last Checkpoint", "Restart Level", "Controller Settings", "Save and Quit"];
-    let shown: Vec<String> = (0..m.count(List::Pause, PAUSE_ROWS) as i16)
-        .map(|i| match m.retail_index(List::Pause, i) {
-            Some(r) => retail[r as usize].to_string(),
-            None => {
-                let t = retail_rows::texts(&m, List::Pause, i, true).expect("ours");
-                label(&m, t[0].1)
-            }
-        })
-        .collect();
-    assert_eq!(
-        shown,
-        [
-            "Continue",
-            "Revert to Last Checkpoint",
-            "Restart Level",
-            "Controller Settings",
-            "Video Settings",
-            "Voice Settings",
-            "Save and Quit"
-        ]
-    );
-    // Nothing of ours is left in the in-game Controller Settings dialog:
-    // that list is the controller's (and the Controller Speaker row's).
-    assert!(m.rows(List::Controls).iter().all(|r| !matches!(r.kind, RowKind::Open(_))));
-}
-
-/// The multiplayer menu as a player reads it in a custom game where the
-/// game shows every row: Leave Game, Settings, ours, then the rest.
-#[test]
-fn the_multiplayer_menu_reads_settings_then_video_then_voice() {
-    const LIST: u32 = 0x1000;
-    let m = model();
-    let names = |a: i16| match a {
-        0 => "Leave Game".to_string(),
-        1 => "Settings".to_string(),
-        2 => "Handicap".to_string(),
-        3 => "Change Teams".to_string(),
-        4 => "Party Privacy".to_string(),
-        5 => "End Game".to_string(),
-        a => {
-            let t = retail_rows::texts(&m, List::MpPause, a, true).expect("ours");
-            label(&m, t[0].1)
-        }
-    };
-    let mut g = mp_list(
-        list_count(&m, MP_LIST_NAME, MP_ACTIONS) as i32,
-        &[0, 1, 2, 3, 4, 5],
-    );
-    let ours = mp_actions(&m);
-    assert_eq!(add_actions(&mut g, LIST, &ours).unwrap(), [6, 7]);
-    order_actions(&mut g, LIST, &ours, MP_SETTINGS_ACTION).unwrap();
-    let shown: Vec<String> = actions(&g, LIST).unwrap().into_iter().map(names).collect();
-    assert_eq!(
-        shown,
-        [
-            "Leave Game",
-            "Settings",
-            "Video Settings",
-            "Voice Settings",
-            "Handicap",
-            "Change Teams",
-            "Party Privacy",
-            "End Game"
-        ]
-    );
 }

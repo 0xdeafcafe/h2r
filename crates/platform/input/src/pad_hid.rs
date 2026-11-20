@@ -12,7 +12,7 @@
 //! [`PadLink`] is the per-device state machine: what to send when the device
 //! opens, when the mute button is pressed, when the speaker is switched and
 //! when the mute button itself is turned on or off ([`MuteSwitch`], the
-//! Video screen's Mute Button row, applied at once). [`spawn`] runs it on a
+//! Voice screen's Mute Button row, applied at once). [`spawn`] runs it on a
 //! thread of its own over any [`HidPad`]: the macOS IOKit one
 //! ([`iokit_opener`]), or a fake in tests.
 
@@ -199,7 +199,7 @@ impl SpeakerSwitch {
     }
 }
 
-/// Turns the mute button on or off on a running HID thread (the Video
+/// Turns the mute button on or off on a running HID thread (the Voice
 /// screen's Mute Button row). Cheap to clone.
 #[derive(Clone)]
 pub struct MuteSwitch(Sender<Cmd>);

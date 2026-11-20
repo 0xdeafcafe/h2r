@@ -4,8 +4,9 @@ Status: Built. Tested on synthetic tags and seen working in the game.
 
 The ask: aiming with the iOS on-screen touch controls is much harder than
 with a stick, so the game's aim assist should be able to help more. The
-**Aim Assist** setting (`controls.aim_assist`, a row on our Video screen,
-`H2_AIM_ASSIST`) picks how strong it is:
+**Aim Assist** setting (`controls.aim_assist`, `H2_AIM_ASSIST`) picks
+how strong it is. On iOS, its row is in the main menu's Controls alongside
+the touch options. In-game Controller Settings shows where to change it.
 
 | Value | Name in the file and variable | What it does |
 |---|---|---|

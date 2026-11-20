@@ -1,5 +1,5 @@
 //! `H2_UI_WATCH=1`: which menu screen takes player one's input, read on
-//! every game tick and printed when it changes (`ui: screen 0x09 (window
+//! every UI update and printed when it changes (`ui: screen 0x09 (window
 //! 5, slot 4)`), and answered over the agent API as `ui.screen`. `h2 coop
 //! test --drive` sets it and presses through the menus on what it says
 //! (docs/live/live-coop.md section 12.6).
@@ -57,6 +57,7 @@ use std::time::Instant;
 use engine::points;
 
 use crate::layout_glue::Gm;
+use crate::ui_kit::lifecycle::SCREEN_NEXT;
 
 pub const FEATURE: &str = "ui-watch";
 
@@ -77,7 +78,6 @@ const ACTIVE: u32 = 8;
 const PENDING: u32 = 0xc;
 const LIST: u32 = 0x34;
 /// A screen's fields.
-const NEXT: u32 = 0x10;
 const MASK: u32 = 8;
 const ID: u32 = 0x70;
 /// Where the Xbox Live menu keeps the row it restores.
@@ -98,6 +98,8 @@ pub struct Top {
     pub window: u32,
     pub slot: u32,
     pub id: u32,
+    /// The list class name when it uses a shared retail skin.
+    pub class_name: Option<&'static str>,
     /// The screen's address (for the players' screen, its join mask at
     /// `+8`).
     pub screen: u32,
@@ -114,6 +116,9 @@ impl Top {
             "ui: screen 0x{:02x} (window {}, slot {})",
             self.id, self.window, self.slot
         );
+        if let Some(class) = self.class_name {
+            s.push_str(&format!(" {class}"));
+        }
         if let Some(r) = self.live_row {
             s.push_str(&format!(", live menu row {r}"));
         }
@@ -124,13 +129,17 @@ impl Top {
     }
 
     pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "screen": self.id,
             "window": self.window,
             "slot": self.slot,
             "live_menu_row": self.live_row,
             "mode": self.mode,
-        })
+        });
+        if let Some(class) = self.class_name {
+            json["class"] = serde_json::json!(class);
+        }
+        json
     }
 }
 
@@ -176,7 +185,7 @@ fn screen_in<M: Gm + ?Sized>(
         if (mask as i16 as i32) & (1 << controller) != 0 {
             return Some(at);
         }
-        at = m.u32(at + NEXT)?;
+        at = m.u32(at + SCREEN_NEXT)?;
     }
     None
 }
@@ -237,6 +246,7 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
                     window,
                     slot,
                     id,
+                    class_name: m.u32(screen).and_then(crate::list_class::class_name),
                     screen,
                     live_row,
                     mode,
@@ -307,7 +317,7 @@ pub fn stack<M: Gm + ?Sized>(m: &M, window: u32, slot: u32) -> Option<Stack> {
     let mut at = m.u32(ch + LIST)?;
     while at != 0 && list.len() < MAX_LIST {
         list.push((at, id_of(m, at)));
-        at = m.u32(at + NEXT).unwrap_or(0);
+        at = m.u32(at + SCREEN_NEXT).unwrap_or(0);
     }
     for s in [active, pending] {
         if s != 0 && !list.iter().any(|(at, _)| *at == s) {
@@ -472,7 +482,7 @@ impl hooks::Feature for UiWatch {
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.raw()
-            .observe_after(&points::GAME_TICK, "ui: watch the screen", |o| {
+            .observe_after(&points::UI_UPDATE, "ui: watch the screen", |o| {
                 let g = o.guest();
                 if let Some(line) = note(read(&*g)) {
                     eprintln!("{line}");
@@ -480,7 +490,7 @@ impl hooks::Feature for UiWatch {
             })
             .optional();
         // An observer: `LAST` and `SAID` are the host's log of guest
-        // memory, read again at the next tick.
+        // memory, read again at the next UI update.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
@@ -525,7 +535,7 @@ mod tests {
     fn screen(f: &mut Fake, ch: u32, at: u32, id: u32, mask: u16) {
         f.set_u32(ch + ACTIVE, at);
         let old = f.u32(ch + LIST).unwrap();
-        f.set_u32(at + NEXT, old);
+        f.set_u32(at + SCREEN_NEXT, old);
         f.set_u32(ch + LIST, at);
         f.set_u16(at + MASK, mask);
         f.set_u32(at + ID, id);
@@ -667,7 +677,7 @@ mod tests {
         // A cycle in the list stops.
         let ch = WINDOW_1 + 4 * STRIDE_13;
         screen(&mut f, ch, 0x8000_1000, 0x10, 0x2);
-        f.set_u32(0x8000_1000 + NEXT, 0x8000_1000);
+        f.set_u32(0x8000_1000 + SCREEN_NEXT, 0x8000_1000);
         f.set_u32(ch + ACTIVE, 0);
         f.set_u32(ch + PENDING, 1);
         assert_eq!(top(&f), None);
@@ -799,6 +809,7 @@ mod tests {
             window: 5,
             slot: 4,
             id: 0xba,
+            class_name: None,
             screen: 0x8000_0000,
             live_row: Some(2),
             mode: None,
@@ -809,12 +820,42 @@ mod tests {
     }
 
     #[test]
+    fn in_game_list_classes_distinguish_screens_with_the_same_retail_id() {
+        for class in ["pause-settings", "mp-pause-settings", "video", "voice"] {
+            let top = Top {
+                window: 5,
+                slot: 1,
+                id: 200,
+                class_name: Some(class),
+                screen: 0x8000_0000,
+                live_row: None,
+                mode: None,
+            };
+            let wire = screen_json(std::time::Duration::ZERO, Some(top), None);
+            assert_eq!(wire["screen"], 200);
+            assert_eq!(wire["class"], class);
+            assert_eq!(wire["slot"], 1);
+            assert_eq!(top.line(), format!("ui: screen 0xc8 (window 5, slot 1) {class}"));
+        }
+    }
+
+    #[test]
+    fn the_watch_observes_ui_updates_during_a_simulation_pause() {
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
+        assert!(r.add(&UiWatch).unwrap());
+        let plan = r.build(&hooks::Base).unwrap().text();
+        assert!(plan.contains("UI_UPDATE"), "{plan}");
+        assert!(!plan.contains("GAME_TICK"), "{plan}");
+    }
+
+    #[test]
     fn lines_only_on_change() {
         // One test owns LAST and SAID.
         let a = Top {
             window: 5,
             slot: 4,
             id: 9,
+            class_name: None,
             screen: 0x8000_0000,
             live_row: None,
             mode: None,

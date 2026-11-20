@@ -21,6 +21,8 @@ use engine::memory::MemFault;
 
 /// Retail's close of a window's top screen.
 pub const SCREEN_CLOSE: u32 = 0x0014_800c;
+/// The next screen down in the same window's list.
+pub const SCREEN_NEXT: u32 = 0x10;
 /// A screen's window and slot words.
 pub const SCREEN_WINDOW: u32 = 0x74;
 pub const SCREEN_SLOT: u32 = 0x78;

@@ -952,9 +952,16 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
-  to, read each tick (`boot::ui_watch`): `{screen, window, slot,
-  live_menu_row, mode, dialog, age_ms}`, or `UNAVAILABLE` before the first
-  read. `dialog` is the dialog up (the first screen on windows 0 to 4, any
+  to, read each UI update, including during a campaign pause
+  (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
+  dialog, age_ms}`, or `UNAVAILABLE` before the first read. `class` names
+  a Rust list screen whose numeric ID identifies its retail skin.
+  The pause Settings lists report `pause-settings` or `mp-pause-settings`.
+  Video and Voice report `video` and `voice`. All four use screen 200 in
+  a game. Press B or Back with `h2 agent press` (`input.pad`) and check
+  that the previous class returns on the same window and slot. See the
+  [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
+  `dialog` is the dialog up (the first screen on windows 0 to 4, any
   slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   tag name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)

@@ -74,6 +74,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),
     Family::new("layouts", TABLE, 0x20),
+    Family::new("pause settings", TABLE + 0x20, 4),
     Family::new("speaker", TABLE + 0x30, 2),
     Family::new("live menu rows", TABLE + 0x32, 12),
     Family::new("ui model", TABLE + 0x40, 0xbf),
