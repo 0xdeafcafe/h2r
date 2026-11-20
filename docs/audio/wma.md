@@ -1,5 +1,8 @@
 # ASF and retail WMAv2
 
+Status: Built. Code: `crates/asf`, `crates/wma`, `crates/dsound/src/xwma.rs`. Tests: `crates/wma`, `crates/asf`, `crates/dsound/tests/xwma.rs`.
+Switch: none.
+
 `crates/asf` demuxes the retail sound permutations. `crates/wma` decodes them
 natively to interleaved i16 stereo PCM. `h2 sound` exports these permutations as
 WAV, including sounds tagged Xbox ADPCM with `Encoding::Codec`.
@@ -292,22 +295,6 @@ requires the verified retail image) and shared by every stream. Tests:
 `crates/dsound/tests/xwma.rs` (through the runner, plus an ignored test
 that decodes disc streams 0 and 38 through the boundary and requires PCM
 identical to `decode_asf`).
-
-## Work record
-
-- Done: ASF milestone and 485-stream parse validation.
-- Done: native PCM and WAV export.
-- Done: internal energy, spectrum, click, and duration checks.
-- Done: oracle runner and comparison tool.
-- Done: 15 ASF/WMA synthetic tests and four CLI sound tests; formatting and
-  Clippy with warnings denied for the changed packages (`--no-deps`). The wider
-  dependency-lint run hits an existing `xbe` constant-chunk lint under Rust 1.98;
-  unrelated dependency source was left unchanged. Oracle-feature Clippy also
-  passed (build/lint only, no tests or execution with Unicorn enabled).
-- Done: oracle run on 48 streams. Found and fixed the overlap tail sign.
-  Native now matches within 1 LSB, apart from 4 samples at 2 LSB.
-- Done: runtime boundary (`wma::boundary`, `dsound::xwma`); live playback
-  through the game's own container.
 
 [spec]: https://exse.eyewated.com/fls/54b3ed95bbfb1a92.pdf
 [overview]: https://learn.microsoft.com/en-us/windows/win32/medfound/asf-file-structure

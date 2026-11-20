@@ -8,7 +8,7 @@
 
 mod common;
 
-use emit::c::{HOME_ALL, HOME_FLAGS, OwnerShape, dirty_at_exits, homes};
+use emit::c::{HOME_FLAGS, OwnerShape, dirty_at_exits, homes};
 use emit::host::{CpuAbi, Ctx, ENTRY, HARNESS_EXIT, JUMP, RETURN, TransferAbi};
 use iced_x86::code_asm::*;
 use ir::interp::FlatMemory;
@@ -30,7 +30,7 @@ fn homes_of(body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) -> u
 }
 
 /// The C of one function, planned as the image's are.
-fn c_of(reg_homes: bool, body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) -> String {
+fn c_of(body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) -> String {
     let owners = emit::plan(vec![common::function(BASE, body)]);
     let o = &owners[0];
     let shape = OwnerShape {
@@ -38,7 +38,6 @@ fn c_of(reg_homes: bool, body: impl FnOnce(&mut CodeAssembler) -> Result<(), Ice
         loops: &o.loops,
         accounting: false,
         functions: None,
-        reg_homes,
     };
     emit::c::function(&o.func, &shape)
 }
@@ -66,7 +65,7 @@ fn only_written_registers_are_homed() {
 
 #[test]
 fn sse_run_resamples_after_memory_and_control_flow() {
-    let text = c_of(true, |a| {
+    let text = c_of(|a| {
         let mut join = a.create_label();
         a.addps(xmm0, xmm1)?;
         a.mulps(xmm0, xmm2)?;
@@ -93,7 +92,7 @@ fn sse_run_resamples_after_memory_and_control_flow() {
 
 #[test]
 fn x87_agreeing_paths_specialize_but_different_depths_join_dynamically() {
-    let text = c_of(true, |a| {
+    let text = c_of(|a| {
         let mut join = a.create_label();
         a.fld(dword_ptr(esi))?;
         a.fadd(dword_ptr(esi + 4))?;
@@ -194,7 +193,7 @@ fn the_c_reads_unhomed_registers_from_cpuabi() {
         a.mov(cl, bh)?;
         a.ret()
     };
-    let text = c_of(true, body);
+    let text = c_of(body);
     assert!(
         text.contains(&format!("H2_LOCALS_HOMED({:#x}u);", EAX | ECX | ESP)),
         "{text}"
@@ -205,13 +204,6 @@ fn the_c_reads_unhomed_registers_from_cpuabi() {
         !text.contains("cpu->eax") && !text.contains("cpu->ecx"),
         "{text}"
     );
-    // With homes off, everything is a local, as before.
-    let all = c_of(false, body);
-    assert!(
-        all.contains(&format!("H2_LOCALS_HOMED({HOME_ALL:#x}u);")),
-        "{all}"
-    );
-    assert!(!all.contains("cpu->ebx"), "{all}");
 }
 
 /// The call or tail-jump instructions' PCs of `f`, in order.
@@ -329,147 +321,4 @@ fn eflags_left_alone_still_exits_canonical() {
         (cpu.gpr[0], cpu.gpr[2], cpu.gpr[3]),
         (HARNESS_EXIT, 0x1234_5678, 0x1234_5678)
     );
-}
-
-/// What register homes do to compiled code, on a sample of the retail
-/// image: every 37th 4 KiB shard plus the one holding the hottest function
-/// (`0x2dc220`), each emitted as `h2 emit` would with homes off and on,
-/// compiled at `-O1` and `-O2` (with the default `-D` switches, no debug
-/// info), and compared by `__text` size and by loads and stores. Writes
-/// only under Cargo's target directory. Needs the XBE (`H2_XBE`).
-///
-/// `cargo test -p emit --release --test homes retail_sample -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn retail_sample_code_size() {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::path::Path;
-    use std::process::Command;
-    const NAME: &str = "retail_sample_code_size";
-    let (Some(xbe_path), Some(header)) = (common::xbe_path(), common::abi_header()) else {
-        common::skip(NAME, "needs the XBE (H2_XBE) and h2abi.h (H2ABI_HEADER)");
-        return;
-    };
-    let data = std::fs::read(xbe_path).unwrap();
-    let x = xbe::Xbe::parse(&data).unwrap();
-    let analysis = analyze::analyze(&x).unwrap();
-    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
-    let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
-    let hot = 0x2dc220u32 >> emit::SHARD_SHIFT;
-    let mut shards: BTreeMap<u32, Vec<&emit::Owner>> = BTreeMap::new();
-    for o in &owners {
-        let s = o.func.entry >> emit::SHARD_SHIFT;
-        if s.is_multiple_of(37) || s == hot {
-            shards.entry(s).or_default().push(o);
-        }
-    }
-    let sampled: usize = shards.values().map(Vec::len).sum();
-    eprintln!(
-        "{} owners, sample: {} shards, {sampled} owners",
-        owners.len(),
-        shards.len()
-    );
-    let cc = emit::compile::compiler().unwrap();
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(NAME);
-    let mut rows = Vec::new();
-    for opt in ["1", "2"] {
-        let mut totals = Vec::new();
-        for reg_homes in [false, true] {
-            let dir = root.join(format!("homes-{reg_homes}"));
-            emit::write_module_with(&[], &dir, emit::Codegen::default()).unwrap();
-            emit::compile::install_header(&dir, &header).unwrap();
-            let mut flags: Vec<String> = emit::compile::CFLAGS
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            flags.extend(emit::compile::profile_flags(Some(opt), Some("none")).unwrap());
-            for d in [
-                "H2_FASTMEM",
-                "H2_X87_NATIVE",
-                "H2_SSE_NATIVE",
-                "H2_DIRECT_CALLS",
-            ] {
-                flags.push(format!("-D{d}=1"));
-            }
-            let jobs: Vec<(u32, String)> = shards
-                .iter()
-                .map(|(s, os)| {
-                    let mut text =
-                        String::from("#define H2_ACCOUNTING 1\n#include \"h2gen.h\"\n\n");
-                    for o in os {
-                        let shape = OwnerShape {
-                            selectors: &o.selectors,
-                            loops: &o.loops,
-                            accounting: true,
-                            functions: Some(&functions),
-                            reg_homes,
-                        };
-                        text.push_str(&emit::c::function(&o.func, &shape));
-                        text.push('\n');
-                    }
-                    (*s, text)
-                })
-                .collect();
-            let results = emit::par::map(&jobs, |(s, text)| {
-                let c = dir.join(format!("s_{s:05x}.c"));
-                let obj = dir.join(format!("s_{s:05x}.O{opt}.o"));
-                std::fs::write(&c, text).unwrap();
-                let st = Command::new(&cc)
-                    .args(&flags)
-                    .arg("-c")
-                    .arg(&c)
-                    .arg("-o")
-                    .arg(&obj)
-                    .status()
-                    .unwrap();
-                assert!(st.success(), "{}", c.display());
-                let size = Command::new("size").arg("-m").arg(&obj).output().unwrap();
-                let size = String::from_utf8_lossy(&size.stdout);
-                let text_bytes: u64 = size
-                    .lines()
-                    .find(|l| l.contains("(__TEXT, __text)"))
-                    .and_then(|l| l.rsplit(' ').next()?.parse().ok())
-                    .unwrap();
-                let dis = Command::new("otool").arg("-tv").arg(&obj).output().unwrap();
-                let dis = String::from_utf8_lossy(&dis.stdout);
-                let count = |ops: &[&str]| {
-                    dis.lines()
-                        .filter(|l| {
-                            l.split('\t')
-                                .nth(1)
-                                .is_some_and(|m| ops.contains(&m.trim()))
-                        })
-                        .count() as u64
-                };
-                (
-                    text_bytes,
-                    count(&["ldr", "ldur", "ldp"]),
-                    count(&["str", "stur", "stp"]),
-                )
-            });
-            let t = results
-                .iter()
-                .fold((0, 0, 0), |a, r| (a.0 + r.0, a.1 + r.1, a.2 + r.2));
-            totals.push(t);
-        }
-        let (a, b) = (totals[0], totals[1]);
-        let pct = |x: u64, y: u64| 100.0 * (y as f64 - x as f64) / x as f64;
-        rows.push(format!(
-            "-O{opt}: __text {} -> {} bytes ({:+.2}%), insns {} -> {}, loads {} -> {} ({:+.2}%), stores {} -> {} ({:+.2}%)",
-            a.0,
-            b.0,
-            pct(a.0, b.0),
-            a.0 / 4,
-            b.0 / 4,
-            a.1,
-            b.1,
-            pct(a.1, b.1),
-            a.2,
-            b.2,
-            pct(a.2, b.2)
-        ));
-    }
-    for r in rows {
-        eprintln!("{r}");
-    }
 }

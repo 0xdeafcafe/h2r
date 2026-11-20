@@ -3,7 +3,9 @@
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 pub mod bsp;
+pub mod codec;
 pub mod collision;
+pub mod evaluator;
 pub mod graph;
 mod lanes;
 pub mod marker;
@@ -11,6 +13,7 @@ pub mod mopp_query;
 pub mod object;
 pub mod object_base;
 pub mod pose;
+pub mod root;
 mod ray;
 pub mod stream;
 pub mod unit;

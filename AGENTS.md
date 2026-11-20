@@ -45,3 +45,28 @@ Use the agent API whenever it can do the job, before anything else.
   covers the Linux host's feature set without a cross build.
 - **Parallel work:** hand the code to several subagents at once, then build
   and test their branches together in one pass.
+
+## Keep the docs current
+
+Docs state the current design. Git has the history. When your change
+alters behaviour, an interface, a switch, an environment variable or a
+path that a doc names, update that doc in the same branch.
+
+- Find the docs: `git grep -n '<symbol, switch or path>' -- docs`, and the
+  `docs/...` paths in the comments of the code you changed.
+- Edit the page so it reads as if it had always been this way: present
+  tense, the code path cited, no "now", "previously" or dates, no
+  changelog, no "as built" section. Delete what is no longer true.
+- Measurements, experiment results and research records go in
+  `docs/<area>/notes/`, dated, with the commit and how to reproduce them.
+  A design page links to the note for its numbers. An experiment that
+  lost gets a row in the area's `notes/not-adopted.md`.
+- Don't rename or move a doc, or a heading that code comments cite. For a
+  new page, copy the template in `docs/meta/docs-style.md` and add one
+  line to `docs/README.md`.
+- Switches and environment variables are listed once, in
+  `docs/runtime/switches.md`.
+- A lane's contract, handoff or checklist for the coordinator goes in
+  your report, not in `docs/`.
+- Run `python3 scripts/docs-check.py <the docs you touched>`. Clear what
+  it prints, or say in your report why a finding stands.

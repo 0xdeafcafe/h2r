@@ -227,13 +227,6 @@ fn plan_append(
     Ok(out)
 }
 
-pub(super) fn compare_counters(m: &dyn GuestMemory, out: &mut Output) -> Result<()> {
-    for addr in [COUNT, MAIN_COUNT, ATTACHMENT_COUNT, GROUP_COUNT] {
-        out.compare_range(m, addr, 4)?;
-    }
-    Ok(())
-}
-
 fn put(row: &mut [u8], off: usize, value: u32) {
     row[off..off + 4].copy_from_slice(&value.to_le_bytes());
 }

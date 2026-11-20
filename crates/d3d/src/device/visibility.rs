@@ -60,7 +60,8 @@
 //!   steady state the count is back and nothing waits; when the render
 //!   thread lags, the reader keeps last frame's value as on the hardware.
 //!   Which calls answer incomplete depends on host timing.
-//! - **Waiting** (`H2_D3D_VISIBILITY_POLL=0`, [`Device::set_visibility_poll`]).
+//! - **Waiting** ([`Device::set_visibility_poll`]`(false)`, for tests and
+//!   replays).
 //!   Every call waits for the count, so `D3DERR_TESTINCOMPLETE` is never
 //!   returned and the answers do not depend on host timing. With a render
 //!   thread the wait is for everything queued before it.
@@ -242,8 +243,7 @@ impl<B: Backend> Device<B> {
         }))
     }
 
-    /// Whether `GetVisibilityTestResult` polls (on by default;
-    /// `H2_D3D_VISIBILITY_POLL=0` turns it off): a recent test whose count
+    /// Whether `GetVisibilityTestResult` polls (on by default): a recent test whose count
     /// is not back answers `D3DERR_TESTINCOMPLETE` instead of waiting for
     /// it (see the module docs). Off, every call waits, and the answers do
     /// not depend on host timing.

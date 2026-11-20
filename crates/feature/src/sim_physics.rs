@@ -39,7 +39,11 @@ impl Feature for NativePhysics {
                         reason: runtime::guest::FaultReason::Unmapped,
                     })?;
                     Ok(handler.invoke(cpu, ctx, selector))
-                }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only();
+                }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only()
+                    // Inside the light-host skips that share a point.
+                    .after_feature("sim-static-light")
+                    .after_feature("sim-observer-resources")
+                    .after_feature("sim-submix");
             }
         }
         Ok(())

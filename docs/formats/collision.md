@@ -1,5 +1,7 @@
 # Collision models (`coll`) and physics models (`phmo`)
 
+Status: Built. Code: `crates/tags/src/collision.rs`. Tests: `crates/tags/src/collision_tests.rs`. Switch: none.
+
 Implementation: `crates/tags/src/collision.rs` (hand-written codecs, not in
 `schema.rs`; synthetic tests in `collision_tests.rs`). CLI: `h2 collision`
 in `crates/cli/src/collision.rs`. Engine addresses are in
@@ -263,7 +265,7 @@ switch (byte table `0x001cf20c`) has cases for those five types only.
 Scenery, weapons, equipment, garbage, projectiles, controls and light and
 sound scenery never get a rigid body from their `phmo`. A game run on
 converted Blood Gulch agrees: `havok.bodies` shows no body for any of its
-50 scenery placements ([tag-definitions.md](tag-definitions.md), Scenery
+50 scenery placements ([rebuild.md](../halo1/rebuild.md), Scenery
 from definitions).
 
 How a body's motion and layer are chosen (E, `0x001d5940` and callers):
@@ -385,7 +387,7 @@ the `hlmt` physics model and `bipd +0x1f0` bit 11, both the same for a
 converted biped; the bodies' motion (2) and layer flags (3) were already
 retail's. Without node edges and constraints the dynamic bodies have
 nothing joining them. Converted bipeds get a ragdoll since this change
-(`h1objects::ragdoll`, docs/formats/tag-definitions.md).
+(`h1objects::ragdoll`, docs/halo1/rebuild.md, "Bipeds from definitions").
 
 ### Structural validation (`PhysicsModel::validate`)
 

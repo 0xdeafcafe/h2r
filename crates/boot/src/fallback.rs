@@ -10,9 +10,9 @@
 //! unsupported-instruction STOP. An unresolved entry can also reach the
 //! interpreter if the image's unread jump tables contain that target.
 //!
-//! Until 2026-11 every entry went through one [`trampoline`], which kept
-//! the runtime's direct calls from matching. `H2_BOOT_TRAMPOLINE=1` still
-//! registers that way for comparison.
+//! Until 2026-11 every entry went through one fallback trampoline, which
+//! kept the runtime's direct calls from matching; it was removed once
+//! registry dispatch had replaced it.
 //!
 //! The lifter lowers x87 itself now (docs/lifter/FLOAT.md), so this is a safety
 //! net, not the design: it keeps a boot or trace running through any
@@ -24,11 +24,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use iced_x86::{Decoder, DecoderOptions};
 use ir::interp::{self, Flow};
-use runtime::{CpuAbi, Event, ExecCtx, ExecCtxOpaque, GuestFn, TransferAbi, abi};
+use runtime::{CpuAbi, ExecCtx, TransferAbi, abi};
 
 struct Tables {
-    /// Selector to the real generated handler.
-    handlers: rustc_hash::FxHashMap<u32, GuestFn>,
     entries: HashSet<u32>,
     resumes: HashSet<u32>,
 }
@@ -160,39 +158,28 @@ static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 
 /// Remember the image for lazy lifting; build the selector tables.
 ///
-/// The tables, image and interpreter are process-wide and hold the first
-/// module's handler pointers, so one process loads one generated module:
-/// a second call is refused before anything is registered, and the caller
-/// must keep the first module's library loaded for as long as its runtime
-/// can reach the trampoline. Returns the count of resume selectors that
-/// map to more than one handler.
-pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, u32)]) -> Result<usize, String> {
+/// The tables, image and interpreter are process-wide, so one process
+/// loads one generated module: a second call is refused before anything
+/// is registered. Every resume's owner must be one of `entries`.
+pub fn init(xbe_bytes: &[u8], entries: &[u32], resumes: &[(u32, u32, u32)]) -> Result<(), String> {
     init_with_cold(xbe_bytes, entries, resumes, None)
 }
 
 pub(crate) fn init_with_cold(
     xbe_bytes: &[u8],
-    entries: &[(u32, GuestFn)],
+    entries: &[u32],
     resumes: &[(u32, u32, u32)],
     cold: Option<ColdRoutes<'_>>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     if CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("the boot fallback serves one generated module per process; a second load was refused".into());
     }
-    let mut handlers: rustc_hash::FxHashMap<u32, GuestFn> = entries.iter().copied().collect();
-    let owners: HashMap<u32, GuestFn> = entries.iter().copied().collect();
-    let mut conflicts = 0;
-    for &(_, owner, start) in resumes {
-        let f = *owners.get(&owner).ok_or_else(|| format!("resume owner {owner:#x} is not an entry"))?;
-        if let Some(old) = handlers.insert(start, f)
-            && old as usize != f as usize
-        {
-            conflicts += 1;
-        }
+    let owners: HashSet<u32> = entries.iter().copied().collect();
+    if let Some(&(_, owner, _)) = resumes.iter().find(|r| !owners.contains(&r.1)) {
+        return Err(format!("resume owner {owner:#x} is not an entry"));
     }
     let mut tables = Tables {
-        handlers,
-        entries: entries.iter().map(|e| e.0).collect(),
+        entries: owners,
         resumes: resumes.iter().map(|r| r.0).collect(),
     };
     if let Some(cold) = cold {
@@ -204,7 +191,7 @@ pub(crate) fn init_with_cold(
     assert!(set, "fallback tables set outside init");
     feature::shadow::SHADOW.set_source(Box::new(shadow_original));
     *STATS.lock().unwrap() = Some(Stats::default());
-    Ok(conflicts)
+    Ok(())
 }
 
 /// The lifted original for the shadow checks (`shadow.enable`,
@@ -624,31 +611,6 @@ pub fn install_stop_recovery(rt: &runtime::Runtime) {
     rt.edit_dispatch(|d| d.set_stop_recovery(recover));
 }
 
-/// One native handler for every generated entry and resume, which looks the
-/// real handler up by selector, calls it, and [`recover`]s its STOP. Only
-/// with `H2_BOOT_TRAMPOLINE=1` (see `load_module`), to compare against the
-/// old registration: the runtime's direct calls never match it, so every
-/// call between generated functions goes through the runner.
-///
-/// # Safety
-/// Called by the runtime with the live, exclusive CPU/context pair.
-pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, sel: u32) -> TransferAbi {
-    let tables = TABLES.get().unwrap();
-    let Some(&f) = tables.handlers.get(&sel) else {
-        // SAFETY: as above.
-        let ctx = unsafe { &mut *ctx.cast::<ExecCtx>() };
-        return TransferAbi::fault(ctx.emit(Event::UnrecordedFault { pc: sel }));
-    };
-    // SAFETY: the real handler has the same contract.
-    let t = unsafe { f(cpu, ctx, sel) };
-    if t.kind != abi::STOP || !RECOVERY.load(std::sync::atomic::Ordering::SeqCst) {
-        return t;
-    }
-    // SAFETY: the handler has returned; the pair is ours again.
-    let (cpu, ctx) = unsafe { (&mut *cpu, &mut *ctx.cast::<ExecCtx>()) };
-    recover(cpu, ctx, t)
-}
-
 /// Jump-table targets the analyzer did not read; see [`unread_targets`].
 pub struct Unread {
     /// `jmp` site to the targets its table holds.
@@ -839,6 +801,7 @@ pub(crate) fn log_cold_summary(stats: &Stats) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime::Event;
 
     #[test]
     fn cold_entries_and_resumes_preserve_the_dispatch_route() {
@@ -915,32 +878,11 @@ mod tests {
         assert!(s.sites_json(1)["sites_full"].as_bool().unwrap());
     }
 
-    unsafe extern "C" fn one(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
-        TransferAbi::ret(0)
-    }
-
-    unsafe extern "C" fn stops(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
-        TransferAbi::stop(7)
-    }
-
-    /// The process-wide tables, once: 0x1000 returns, 0x3000 stops.
+    /// The process-wide tables, once: entries 0x1000 and 0x3000.
     fn tables() -> &'static Tables {
         static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            init(&[], &[(0x1000, one as GuestFn), (0x3000, stops as GuestFn)], &[]).unwrap();
-        });
+        ONCE.call_once(|| init(&[], &[0x1000, 0x3000], &[]).unwrap());
         TABLES.get().unwrap()
-    }
-
-    #[test]
-    fn no_stopgaps_keeps_the_generated_stop() {
-        tables();
-        set_recovery(false);
-        let mut cpu = CpuAbi { eip: 0x3000, ..Default::default() };
-        // With recovery off the trampoline returns before it touches ctx.
-        let t = unsafe { trampoline(&mut cpu, std::ptr::null_mut(), 0x3000) };
-        assert_eq!((t.kind, t.event_id), (abi::STOP, 7));
-        assert_eq!(cpu.eip, 0x3000);
     }
 
     #[test]
@@ -999,7 +941,7 @@ mod tests {
     #[test]
     fn a_second_module_is_refused() {
         let t = tables();
-        assert!(init(&[], &[(0x2000, one as GuestFn)], &[]).is_err());
+        assert!(init(&[], &[0x2000], &[]).is_err());
         assert!(t.entries.contains(&0x1000) && !t.entries.contains(&0x2000));
     }
 }

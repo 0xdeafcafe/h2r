@@ -80,7 +80,7 @@ fn differential(
     let g = common::build(&owners, &header, name);
     // The same module counting its own accesses (h2gen.h, "Access
     // accounting"): it must end the same way and charge the same total.
-    let counting = common::build_with(&owners, &header, &format!("{name}-acc"), emit::Codegen { accounting: true, ..emit::Codegen::default() });
+    let counting = common::build_with(&owners, &header, &format!("{name}-acc"), emit::Codegen { accounting: true });
 
     let mut ends: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut failures = Vec::new();

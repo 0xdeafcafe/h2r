@@ -1,9 +1,11 @@
 # The debug menu
 
-Status: built and unit tested (the model, navigation, gestures, input
-swallowing, layout, drawing on a headless GPU, the cheats over a fake game).
-It has not yet been seen in the game; "To check in the game" lists what to
-look at.
+Status: Built. Unit tested: the model, navigation, gestures, input
+swallowing, layout, drawing on a headless GPU, the cheats over a fake game.
+Not seen in a running game; "Not verified" lists what only a run can show.
+Code: `crates/cli/src/play_cmd.rs` (the overlay is created in `h2 play` and
+`h2 run`), `crates/agent/src/hostpads.rs`.
+Switch: `H2_DEBUG_MENU` (on), listed in [switches.md](switches.md).
 
 The retail game has no debug menu, so this one is ours. It is an overlay the
 host draws over the game image, like the perf watermark, in the same 8x8 font.
@@ -52,6 +54,12 @@ keyboard can open it.
   its own step, clamped to its range. A choice cycles through its options.
   An action (reload, revert) runs on select. Greyed rows say why in the
   footer, and refuse to change.
+
+## Keyboard
+
+The keys are the Keyboard column of the table above, mapped by
+`debug_menu::Key` (`crates/debug-menu/src/lib.rs`). While the menu is open
+they go to the menu and every other key is swallowed.
 
 ## Sections
 
@@ -227,7 +235,7 @@ shows each controller three ways. Run it while the touchpad is held down:
 
 `notes` says in words where the touchpad goes missing.
 
-## To check in the game
+## Not verified
 
 - The chord opens and closes the menu on a DualSense and on a DualShock 4,
   and Options alone still pauses the game.

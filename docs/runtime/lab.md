@@ -1,10 +1,14 @@
 # The lab: runs on another Mac over SSH
 
+Status: Built. Everything but real ssh and the real game under the host
+is tested; "Not verified" lists the rest.
+Code: `crates/cli/src/lab/`. Tests: `crates/cli/tests/lab.rs`.
+Switch: none.
+
 `h2 lab` lets an agent on one Mac start levels on a second Mac (the one
 you play on), replay input recordings there, and bring back frame stats,
-profiles and logs. It is a CLI over SSH: no web page, no MCP. Code:
-`crates/cli/src/lab/`. Tests: `crates/cli/tests/lab.rs` (a fake game, a
-fake cargo and a stand-in for ssh, all on one machine).
+profiles and logs. It is a CLI over SSH: no web page, no MCP. The tests
+use a fake game, a fake cargo and a stand-in for ssh, all on one machine.
 
 ```
 this Mac (agent)                      the laptop (you play)
@@ -13,6 +17,7 @@ h2 lab run --host laptop ...  --ssh-->  h2 lab pipe  --unix socket-->  h2 lab ho
                                                                          |-- cargo build, h2 build (cached)
                                                                          `-- h2 play --level ... (a window)
 h2 lab fetch <id>  <--ssh: tar of runs/<id>--
+h2 lab agent <id> <call> --ssh--> host runs `h2 agent <call> --socket a/<id>.sock`
 ```
 
 ## Setting up the laptop
@@ -37,6 +42,7 @@ The host keeps everything under its root, by default
 | Path | What |
 |---|---|
 | `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
+| `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
 | `pgo/<name>` | PGO profiles uploaded with `h2 lab put --pgo` |
 | `src/<commit>/` | a detached git worktree of each commit built |
@@ -116,6 +122,8 @@ then `running`.
 | `--frames N` | `H2_BOOT_STOP_AT_PRESENT=N` |
 | `--stats-from N` | `H2_FRAME_STATS_FROM=N` |
 | (always, unless `--no-stats`) | `H2_FRAME_STATS=1`, `H2_FRAME_STATS_CSV=runs/<id>/frames.csv` |
+| (always) | `H2_AGENT=<root>/a/<id>.sock` (see [Driving a run](#driving-a-run-the-agent-api)) |
+| `--serve` | the same run with no frame limit (`--frames` is refused): it runs until `h2 lab stop`, for `lab agent` |
 | `--replay NAME` | `H2_INPUT_REPLAY=recordings/NAME/input.bin`; level and difficulty from its manifest unless given |
 | `--record NAME` | `H2_INPUT_RECORD=recordings/NAME/input.bin` and its manifest |
 | `--perf` | `H2_PROFILE=runs/<id>/profile`, `H2_PERF_FROM=level`, and the `perf` feature |
@@ -143,6 +151,89 @@ and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
 else `./lab`), through `tar` over the same ssh.
+
+## Driving a run: the agent API
+
+Every run's game opens its agent API socket
+([agent-api.md](agent-api.md)) at `<root>/a/<id>.sock`: the host sets
+`H2_AGENT` itself (no `--env` can), and records the path in the job's
+`meta.json` as `agent_socket`. It is not under `runs/<id>/` because a Unix
+socket path is limited to about 100 bytes (a deep root falls back to
+`/tmp/h2lab-<hash>-<id>.sock`) and because `fetch` tars that directory. The
+host removes the socket when the run ends.
+
+```
+h2 lab agent --host laptop <id> <method|short form> [json-params] [--timeout S]
+h2 lab agent --host laptop 0007 wait '{"phase":"gameplay","map_ticks":30}' 600000 --timeout 700
+h2 lab agent --host laptop 0007 capture 600 --timeout 200
+h2 lab agent --host laptop 0007 session.status
+h2 lab agent --host laptop 0007 - < script.txt        # an `h2 agent -` script
+```
+
+Everything after the id is what follows `h2 agent` on a command line, passed
+through unchanged: the host runs the run's own `h2` (its image's, so a short
+form that branch knows is understood) as `h2 agent <call> --socket <the run's
+socket> --timeout S`. What the call printed to stdout and stderr comes back
+as is, and `h2 lab agent` exits with its exit code, so scripts and `expect`
+lines behave as with a local `h2 agent`. Nothing is special-cased: any
+method, short form, input recording (`record`, `replay`, `press`, ...),
+`capture`, `render`, `counters`, `state`, `sim`. `--timeout S` (default 300,
+at most 7200) is how long the call may take, and is the call's socket
+timeout; give a `capture` or a `wait` more than it needs. The host waits up
+to two minutes for a just-started game's socket to appear. The call is
+refused while the job is still building and once the run has ended.
+
+Not forwarded: `--socket`, `--xbox` (the run's socket is the only one), and
+`flight show` and `raw-diff`, which read files on the machine they run on
+(fetch the files and run those here).
+
+### `--serve` and `bench`
+
+`h2 lab run --serve` is a run meant to be driven: no `--frames`, so it
+stays up until `h2 lab stop <id>`, and the agent decides when to measure.
+`--wait` is refused with it.
+
+**It launches `h2 play`, not `h2 serve`.** `h2 serve` is headless: no
+window, and the boot has no view backend, so it measures neither the GPU
+renderer's frame cost nor the `render` and `gpu-wait` phases a player sees
+(`H2_BOOT_GFX` there writes PNGs from a headless backend; it is not a
+window). `h2 play` opens the window and the native GPU renderer, and a game
+with `H2_AGENT` set serves the same API ([agent-api.md](agent-api.md)), so
+`--serve` gets the API on a real window and GPU. The consequence is the one
+setup rule already there: the host must run in a Terminal in the logged-in
+session, so the game gets a window.
+
+`h2 lab bench` is the loop for one measurement:
+
+```
+h2 lab bench --host laptop --branch perf-work --level 03a_oldmombasa --scale 4 \
+    --ticks 600 --env H2_FEATURES=... [--timeout 600] [--to DIR] [-- --unpaced --no-vsync]
+```
+
+It builds (or reuses) the commit like `run`, starts a `--serve` run with
+`H2_RENDER_SCALE=<scale>` and the `--env`s, waits for the run to be running
+and then `h2 agent wait '{"phase":"gameplay","map_ticks":30}'` (`--timeout`
+seconds, default 600, for the level to load), runs `capture <ticks>`
+(default 600; 1 to 36000), `render` (`render.stats`) and `counters`
+(`profile.counters`), stops the run, fetches `runs/<id>` and writes
+`capture.json`, `render-stats.json` and `profile-counters.json` into it,
+then prints:
+
+```
+bench 03a_oldmombasa H2_RENDER_SCALE=4: 29.9 fps, busy p50 12.31 p95 20.10 ms over 600 frames (4 over 33.3 ms); phase mean ms: render 5.10, cpu 3.20, ...
+<the fetched directory>
+```
+
+`busy` is frame wall time less pacing, so it is the cost of a frame whether
+or not the window is paced to 30 fps; the `fps` is the wall rate, which a
+paced run pins near 30. Add `-- --unpaced --no-vsync` to let the frame rate
+float. A failure (the job ends first, no gameplay in time, a call exits
+non-zero) stops the run and says so; its logs stay in `runs/<id>` for
+`h2 lab fetch`. Two invocations that differ in `--env` (or `--branch`, or
+`--build-env`) are an A/B: the host runs them one after the other, and the
+quiet machine is the point. A bench starts the level at its beginning, and
+two runs of one level drift apart over minutes (agent-api.md), so keep the
+window short and compare percentiles, not frames.
 
 ## Recordings
 
@@ -186,25 +277,29 @@ replay starts from a fresh boot of the level.
 - A different build of the game may read input a different number of
   times, which moves every later answer. Replays across commits are
   approximate by nature.
-- **Planned: replay from a snapshot.** The `snapshot` field is for a full
-  machine snapshot taken mid-level (agent API phase 5), which does not
-  exist. When it does, a recording will carry one and replay will start
-  from it, without changes to these commands. A host refuses to replay a
-  recording whose `snapshot` is set.
+- **Replay from a snapshot is not supported.** The recording's `snapshot`
+  field (`crates/cli/src/lab/proto.rs`) is reserved for a machine
+  snapshot; a host refuses to replay a recording whose `snapshot` is set
+  (`crates/cli/src/lab/host.rs`).
 
-## Not verified without a second Mac
+## Not verified
 
 Tested here: the protocol and its refusals, the host's job lifecycle, stop,
 the image cache, worktrees, `git push` into the host's checkout, `pipe`
-through a stand-in for ssh, and fetch and put through it. Not tested: real
+through a stand-in for ssh, and fetch and put through it; `lab agent` and
+`bench` against a fake `h2` whose `agent` answers when the run's socket
+exists (exit codes, output, scripts on stdin, the refused forms, the
+socket removed after the run, an A/B of two benches). Not tested: real
 ssh to another machine, and the real game under the host (that a game
-started from a Terminal-launched host gets a window and the GPU, and that
-`h2 play` exits on its own at `H2_BOOT_STOP_AT_PRESENT`).
+started from a Terminal-launched host gets a window and the GPU, that
+`h2 play` exits on its own at `H2_BOOT_STOP_AT_PRESENT`, that `h2 play`
+with `H2_AGENT` opens its socket early and answers `wait`, `capture`,
+`render` and `counters` as `h2 serve` does, and that SIGTERM stops it).
 
 ## Related
 
 - [agent-api.md](agent-api.md): the running game's own API (`h2 serve`,
-  `h2 agent`); snapshots are its phase 5
+  `h2 agent`)
 - [level-boot.md](level-boot.md): `--level`, `H2_PERF_FROM=level`
 - [BOOT.md](BOOT.md): the environment variables
 - [gameplay-budget.md](../perf/gameplay-budget.md): reading frame stats

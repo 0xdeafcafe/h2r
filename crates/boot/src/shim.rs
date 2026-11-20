@@ -43,18 +43,12 @@ impl Bridge {
 }
 
 pub fn bridge() -> Bridge {
-    // A measurement switch, read where the module's helpers are installed:
-    // FSIN/FCOS/FSINCOS/FYL2X/F2XM1 in native f64 instead of the correctly
-    // rounded series (x87's trans_f64.rs; tests/f64_trans.rs measures it).
-    if std::env::var("H2_X87_FAST_TRANSCENDENTALS").as_deref() == Ok("1") {
-        x87::set_f64_transcendentals(true);
-        eprintln!("boot: H2_X87_FAST_TRANSCENDENTALS=1: x87 transcendentals in f64, not the x87's 64-bit results");
-    }
-    bridge_with_fast_memory(std::env::var("H2_BOOT_FASTMEM").as_deref() != Ok("0"))
+    bridge_with_fast_memory(true)
 }
 
-/// The same image can use checked accessors for a controlled comparison.
-/// Selecting the callback once also covers new guest threads and DPCs.
+/// The bridge with inline fast memory on, or with every access through the
+/// checked accessors (tests compare the two on one image). Selecting the
+/// callback once also covers new guest threads and DPCs.
 pub fn bridge_with_fast_memory(enabled: bool) -> Bridge {
     use runtime::ffi;
     Bridge {

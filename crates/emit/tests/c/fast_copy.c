@@ -89,6 +89,23 @@ static void flat_spans(H2FastPage *pages, uint8_t *ram) {
     pages[0] = (H2FastPage){0x04000000, 3};
     assert(!h2_flat_span(&g, 16, 32, 2));
     assert(!ext.prefix.dirty[0]);
+    uint64_t software[256] = {2}; /* physical page one */
+    H2FastAccess f = {.budget = UINT64_MAX};
+    ext.prefix.watching |= UINT32_C(0x40000000);
+    ext.prefix.ram = ram;
+    ext.prefix.dirty_lo = 256;
+    ext.flat.stores = NULL;
+    ext.cold_stores = ram;
+    ext.software_pages = software;
+    pages[0] = (H2FastPage){4096, 3};
+    pages[4] = (H2FastPage){8192, 3};
+    assert(!h2_flat_span(&g, 16, 32, 3));
+    assert(!ext.prefix.dirty[0]);
+    assert(site(&f, &g, 16, 4, 1) == ram + 4096 + 16);
+    assert(ext.prefix.dirty[0] == 2 && ext.prefix.dirty_lo == 0 && ext.prefix.dirty_hi == 1);
+    assert(site(&f, &g, 4u << 12, 4, 1) == ram + 8192);
+    assert(ext.prefix.dirty[0] == 2);
+    pages[4] = (H2FastPage){0};
     g.held = 0;
     assert(!h2_flat_span(&g, 0, 4, 1));
 }

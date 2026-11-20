@@ -28,6 +28,12 @@ pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         "sim.native_transform_compose",
         sim::compose,
     ),
+    // The root transform is two or three transform compositions.
+    (
+        &points::OBJECT_ROOT_TRANSFORM,
+        "sim.native_transform_compose",
+        sim::root::transform,
+    ),
     (
         &points::OBJECT_POSE_MATRIX,
         "sim.native_pose_matrix",
@@ -37,6 +43,27 @@ pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         &points::ANIM_ROTATION_CODEC,
         "sim.native_rotation_codec",
         sim::rotation_codec,
+    ),
+    // The other hot channel codecs share the codec switch.
+    (
+        &points::ANIM_STATIC_ROTATION,
+        "sim.native_rotation_codec",
+        sim::codec::static_rotation,
+    ),
+    (
+        &points::ANIM_FRAME_ROTATION,
+        "sim.native_rotation_codec",
+        sim::codec::frame_rotation,
+    ),
+    (
+        &points::ANIM_BLEND_ROTATION,
+        "sim.native_rotation_codec",
+        sim::codec::blend_rotation,
+    ),
+    (
+        &points::ANIM_KEYED_TRANSLATION,
+        "sim.native_rotation_codec",
+        sim::codec::keyed_translation,
     ),
     (
         &points::COLLISION_POINT_TO_LEAF,
@@ -203,8 +230,12 @@ mod tests {
             let mut registry = Registry::new(switches);
             registry.add(&SimNative { ray_dispatch: true }).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert_eq!(plan.chains.len(), usize::from(enabled.is_some()));
-            if let Some((point, key, _)) = enabled {
+            // A switch installs every entry that shares it, and only those.
+            let sharing: Vec<_> = enabled
+                .map(|(_, key, _)| ENTRIES.iter().filter(|e| e.1 == *key).collect())
+                .unwrap_or_default();
+            assert_eq!(plan.chains.len(), sharing.len());
+            for (point, key, _) in sharing {
                 assert_eq!(
                     plan.chains[&point.base].implement.as_ref().unwrap().label,
                     *key

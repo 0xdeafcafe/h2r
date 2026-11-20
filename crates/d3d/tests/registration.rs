@@ -217,7 +217,6 @@ fn post_render_state_setters_keep_draws_held_until_a_real_boundary() {
             shapes: Vec::new(),
             drop: true,
             pass: Box::new(ColourPass),
-            capture: None,
         };
         assert!(d.swallow(&mut mem, plan).unwrap());
         // Seed the outer frame's return cookie. The setters below still

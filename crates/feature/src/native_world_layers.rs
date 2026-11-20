@@ -1,7 +1,6 @@
-//! Layer context for comparing the native renderer and the guest draw path.
+//! Layer context the native renderer pairs with the guest's opaque layer draws.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
 
 use engine::points;
 use native_render::camera::GuestRead;
@@ -12,31 +11,12 @@ use crate::native_world::Mem;
 use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world-layers";
-pub const SWITCH: &str = "impl.render.native_world_layers";
 
 // The scene view index set by render_game_view (render-loop.md).
 const SCENE_VIEW: u32 = 0x004b_a050;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
-}
-
-/// Present numbers are 1-based, as in the agent frame recorder.
-pub fn compare_frames() -> &'static [u64] {
-    static FRAMES: OnceLock<Vec<u64>> = OnceLock::new();
-    FRAMES.get_or_init(|| {
-        let Ok(value) = std::env::var("H2_NATIVE_WORLD_LAYERS_COMPARE") else {
-            return Vec::new();
-        };
-        let frames: Option<Vec<u64>> = value
-            .split(',')
-            .map(|s| s.trim().parse::<u64>().ok().filter(|&n| n > 0))
-            .collect();
-        frames.unwrap_or_else(|| {
-            eprintln!("native-world-layers: H2_NATIVE_WORLD_LAYERS_COMPARE wants comma-separated present numbers");
-            Vec::new()
-        })
-    })
+    crate::switches::native_render_on(switches)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,14 +44,6 @@ pub(crate) fn replace(layer: Option<Layer>) -> Option<Layer> {
     LAYER.replace(layer)
 }
 
-pub fn compare_on(switches: &crate::Switches) -> &'static [u64] {
-    if on(switches) || crate::switches::native_render_default(switches) {
-        compare_frames()
-    } else {
-        &[]
-    }
-}
-
 pub struct NativeWorldLayers;
 
 impl Feature for NativeWorldLayers {
@@ -80,22 +52,13 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let objects = crate::native_objects::on(b.switches());
-        let lights = crate::native_lights::on(b.switches());
-        let independent = on(b.switches())
-            || crate::native_residual::on(b.switches())
-            || !compare_on(b.switches()).is_empty();
-        if !independent && !objects && !lights {
+        if !on(b.switches()) {
             return Ok(());
         }
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", move |o| {
+            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", |o| {
                 use crate::native_map_work::Stage;
-                let lights = lights && !Stage::Lights.standing_down();
-                if !independent && !lights && (!objects || Stage::Objects.standing_down()) {
-                    LAYER.set(None);
-                    return;
-                }
+                let lights = !Stage::Lights.standing_down();
                 let mut guest = o.guest();
                 let mem = Mem(&mut *guest);
                 let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n) || (lights && matches!(n, 12 | 13)));

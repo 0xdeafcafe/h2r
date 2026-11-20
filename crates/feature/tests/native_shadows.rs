@@ -4,13 +4,12 @@ use feature::{
 };
 
 #[test]
-fn the_switch_off_places_nothing_and_on_shares_a_typed_sorted_hook_with_lights() {
-    let mut off = Registry::new(Switches::parse("impl.render.native_shadows=off").unwrap());
+fn the_master_switch_off_places_nothing_and_on_shares_a_typed_sorted_hook_with_lights() {
+    let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     off.add(&NativeShadows).unwrap();
     assert!(off.build(&Base).unwrap().chains.is_empty());
 
-    let switches =
-        Switches::parse("impl.render.native_shadows=on,impl.render.native_lights=on").unwrap();
+    let switches = Switches::parse("").unwrap();
     let mut r = Registry::new(switches);
     r.add(&NativeLights).unwrap();
     r.add(&NativeShadows).unwrap();

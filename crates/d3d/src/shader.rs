@@ -209,10 +209,9 @@ pub struct PreparedShader {
     pub id: ShaderId,
     /// Bind groups for `Draw::bind_groups`.
     pub bind_groups: Vec<gfx::BoundGroup>,
-    /// The fragment shader can `discard`. With merged passes such a draw
-    /// starts a render pass of its own after a partly masked draw, or
-    /// always under the exact rule (see
-    /// [`GfxBackend::set_merge_discards`](crate::GfxBackend::set_merge_discards)).
+    /// The fragment shader can `discard`. With merged passes under the
+    /// exact rule such a draw starts a render pass of its own (see
+    /// [`GfxBackend::set_merge_masks`](crate::GfxBackend::set_merge_masks)).
     pub discards: bool,
     /// The fragment shader writes the depth (W-buffering), polygon offset
     /// included: the pipeline's own depth bias must stay off.

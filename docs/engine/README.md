@@ -67,28 +67,21 @@ ending at the end of RAM so that only the first k arguments are mapped,
 for every k. The test pins the image by
 SHA-256 (`03215919…935d`) and fails if any adapter goes unexercised.
 
-The `differential` feature lists `ir` and `lift` as dependencies
-(`crates/engine/Cargo.toml`). The run below used a copy of the lift crates
-from before they landed, so it predates that wiring. Recorded on
-2026-11-15, seeds 1, 7, 99, 2026, 31337 at scale 1: 7.66 M original
-instructions interpreted, 93,291 calls, 5 matching fault outcomes,
-zero disagreements across all 22 adapters. After the argument-order
-fixes, with the unmapped-argument fixtures, the same five seeds: 7.66 M
-instructions, 93,304 calls, 17 matching fault outcomes, zero
-disagreements. Reverting `fill` to an
-all-or-nothing write makes the first fault fixture fail; reading all of
-`data_initialize`'s arguments up front, reading the contiguous variant's
-name before its allocator, reading the locale count before the loaded
-test, or storing `data_last_datum`'s slot only at the end each make an
-unmapped-argument or mid-walk fixture fail (9 disagreements together). Earlier
-injected bugs (salt wrap, grandparent acceptance, locale bound) were each
-caught by the seeded runs.
+The harness runs every call three ways (the original, the adapter, and
+`engine::runtime_glue::invoke` on a `runtime::Guest`, the body the game
+installs) and also checks the typed views `Datums` and `Tags` against the
+original's answers. Its results and the bugs it caught are in
+[notes/feature-engine.md](notes/feature-engine.md).
 
-The same feature also builds the stage 7a proofs, `render_loop_differential.rs`
-(`render_views`) and `layer_differential.rs` (the layer draw), which stub
-every callee on both sides and compare the call logs, the registers at
-return and all of memory ([render-loop.md](../graphics/render-loop.md),
-[layer-draw.md](../graphics/layer-draw.md)).
+The same feature builds the other differential tests in
+`crates/engine/tests`: `layer_differential.rs` (the layer entry loop) and
+`states_differential.rs` (the render-state list), which stub every callee
+on both sides and compare the call logs, the registers at return and all
+of memory ([render-loop.md](../graphics/render-loop.md),
+[layer-draw.md](../graphics/layer-draw.md)); and one per other port
+(`colour_pass`, `glow`, `light_constants`, `light_passes`,
+`shadow_constants`, `screen_effects`, `screen_grid`, `sim_native`,
+`sim_physics`).
 
 Agreement here tests the Rust against the lifted original. It shares the
 lifter's instruction semantics, so it is not independent evidence about the
@@ -101,7 +94,7 @@ register and clobber set. With the `runtime-glue` feature,
 `engine::runtime_glue::register_all(&mut dispatch)` registers them all
 through `Dispatch::register_override`; each handler takes one
 `ctx.memory()` guard for the whole call and returns `TransferAbi::ret`.
-The feature builds against master's `runtime`; nothing calls
-`register_all`. The game installs the same adapters through the `feature`
-crate's `engine-leaves` feature (`crates/feature/src/leaves.rs`, added in
-`crates/boot/src/lib.rs`): only the locale group is on by default.
+Nothing calls `register_all`. The game installs the same adapters
+through the `feature` crate's `engine-leaves` feature
+(`crates/feature/src/leaves.rs`): only the locale group is on by default
+([feature-engine.md](feature-engine.md)).

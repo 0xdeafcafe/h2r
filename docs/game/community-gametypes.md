@@ -1,5 +1,8 @@
 # Community game variants
 
+Status: Built. 13 community variants (`community_variants::VARIANTS`) are added after the retail built-ins; the unit tests prove the entries land in the `goof` block, and what the game then does with them is in "Not done and risks".
+Switch: none.
+
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
 hand in custom games, as extra built-ins. In the variant list they carry a
@@ -8,7 +11,6 @@ built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
 
 Code: `crates/boot/src/community_variants.rs`, installed by the boot runner.
-Set `H2_NO_COMMUNITY_VARIANTS=1` to leave the list as retail.
 
 No game data is in the repository. Addresses are guest virtual addresses of
 the retail XBE (SHA-256 `03215919…935d`), named only as hook points. The
@@ -179,7 +181,7 @@ Why these, and the sources:
   custom game; no source gives a Halo 2 recipe, so the settings are ours.
   Halo 2's editor has no unarmed start; our added choice "None" for the
   starting weapon gives one (game-options.md). Without our choices
-  (`H2_NO_VARIANT_OPTIONS=1`) the variant is left out, as any variant with
+  the variant would be left out, as any variant with
   a value the game doesn't offer is.
 
 Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt and
@@ -196,7 +198,7 @@ Dreadnaut, the CTF, Assault and Territories set
 ## What the code does
 
 All three hooks are wrappers at function entries
-(`register_override`/`resolve_original`, as in `wrappers.rs`).
+(`register_override`/`resolve_original`, as in `d3d_glue.rs`).
 
 1. **The list.** `0x149f88` is wrapped. Before the original runs, the
    wrapper reads the `sily` definitions the `goof` pages name and keeps each
@@ -240,8 +242,8 @@ being left out, and a failed read leaving the tag alone.
 
 ## Not done and risks
 
-- **Not seen in the game yet.** The work is proven by the unit tests and the
-  disassembly above; no game run was made. To check by hand: Settings, Game
+- **Not verified in a game run.** The unit tests and the disassembly above
+  prove the work. A run would check: Settings, Game
   Variants should list the thirteen after the retail ones, each ending in the
   two-players icon, with its description; Edit on one should ask for a name
   and save a copy; a custom game on one should play with its settings. The

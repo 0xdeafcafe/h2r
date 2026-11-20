@@ -190,7 +190,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<bool, D3dError> {
         const E: &str = "D3DDevice_DrawIndexedVertices";
         self.live(E)?;
-        if self.swallowing.is_some() || self.scoped_admission.is_some() || self.trace.is_some()
+        if self.swallowing.is_some() || self.scoped_admission.is_some()
             || !self.drain_admission_boundary(mem)? || self.immediate.is_open() || self.hw.zpass_count_enable
         {
             return Ok(false);

@@ -1,5 +1,8 @@
 # h2-editor
 
+Status: Built. Code: `crates/studio/src`. Tests: in-source unit tests.
+Switch: none.
+
 To *use* the editor (open a map, move a weapon, make a game variant, edit
 a playlist), read the user guide, [editor-guide.md](editor-guide.md).
 This page is for developers.

@@ -1,14 +1,14 @@
 # Native particles and effect geometry
 
-Status: particles, beam emissions, generated contrails and the researched
-four-vertex effect builder, lens reflections, volume/trail billboards and
-weather layers/lines and the two researched material strips are connected to `d3d::DrawAdmission`, behind
-`impl.render.native_particles` (off by default). The handoff commit
-`2fe68835` and subsequent contract `2a61f863` were merged, not rebased. **No cargo, build or game run was
-performed by this lane.** Source checks and synthetic tests are supplied;
-coverage, pixel parity and speedup remain coordinator checks.
+Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, lens reflections, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
+Code: `crates/feature/src/native_particles.rs`, `native_effects.rs`, `crates/boot/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/feature/tests/native_particles.rs`, `crates/native-render/tests/particles_gpu.rs`, `crates/d3d/tests/admission_scope.rs`, `external_pass.rs`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-## Particle boundary
+The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
+
+## How it works
+
+### Particle boundary
 
 Code evidence from the owner's executable, inspected with `h2 disasm`:
 
@@ -24,8 +24,8 @@ Code evidence from the owner's executable, inspected with `h2 disasm`:
   `0x0023ecd0` initializes the register assignments; we read the live
   assignments and refuse overlaps or register 0 rather than copying that
   table. `0x00470a38` gates emission.
-- The inline corner payload is eight words for four vertices. The first
-  slice admits only a *live declaration proven by the adapter* to be v0
+- The inline corner payload is eight words for four vertices. The
+  stage admits only a *live declaration proven by the adapter* to be v0
   SHORT4, no other arrays. It expands (0,0), (1,0), (1,1), (0,1), z/w both
   zero. A different declaration refuses; the payload alone is not proof
   of SHORT4. Quad triangulation uses the D3D diagonal (0,1,2), (0,2,3).
@@ -35,10 +35,11 @@ writing guest memory. The feature's context-only hook always returns
 Continue. Keeping the helper running preserves allocator failure behavior,
 push-buffer put pointer, shader state and the last attribute values that a
 later native or D3D draw inherits. The adapter replaces only the captured
-primitive after those effects have occurred. This slice saves submission
+primitive after those effects have occurred. The stage saves submission
 work only; it does not remove the per-particle property evaluation.
 
-## Contrails and other effects
+
+### Contrails and other effects
 
 - `0x00042b20` enumerates contrail records and channels. `0x00043740`
   queues a sorted entry through `0x0001e5e0`, with material setup
@@ -65,14 +66,14 @@ work only; it does not remove the per-particle property evaluation.
   `0x0015743d` uses the same `0x0023ed30` emitter as particles. They share
   the particle decoder and admission without skipping the beam parents.
 - Other effect builders and unsupported declarations remain D3D-owned.
-  The additional lens/MGS2/tdtl leaves and remaining refusals are catalogued
+  The lens, MGS2 and tdtl leaves and the remaining refusals are catalogued
   below; admission is per draw, never an entire effect-event handler.
 
-## Bound admission contract
 
-`boot::native_particles_glue::install(&device)` now installs a concrete
-`ImmediateAdmission` host and `DrawAdmission` implementation. When the
-switch is off it installs neither, avoiding extra D3D snapshot work.
+### Bound admission contract
+
+`boot::native_particles_glue::install(&device)` installs a concrete
+`ImmediateAdmission` host and `DrawAdmission` implementation. With the switch off it installs neither, which avoids extra D3D snapshot work.
 
 The original six hooks run with the walks disabled and use no Rust continuation:
 particle entry, publication (`0x0023ef77`) and epilogue (`0x0023ef79`), and
@@ -126,91 +127,10 @@ Explicit assumptions and limits:
   sampling, query-counted draws, glyph filtering, unknown shader behavior
   and missing sampled stages refuse. Integer uniform render scale and
   single-sample attachments are the handoff/backend contract here.
-- No performance claim yet: this replaces D3D's GPU recording, retaining
-  guest geometry construction and resolved-draw capture. Owned uploads
-  prioritize cancellation correctness; arena optimization needs measured
-  evidence. The feature's armed count is not replacement coverage.
-
-## Diagnostics and coordinator checks
-
-`H2_NATIVE_PARTICLES_COMPARE=N` enables read-only comparison for the first N
-particle calls and first N recognized dynamic calls (empty means eight); after the budget, every remaining call
-continues on D3D. Invalid/zero values disable comparison. The switch must
-also be on. Require paired `geometry=Ok(())` lines from the concrete
-admission adapter. Comparison consumes its scope and returns no native
-replacement, so D3D continues drawing. This verifies geometry pairing,
-not pixel parity. Native coverage comes from `H2_FRAME_STATS=1` counters:
-`native_particles_suppressed` and positive reference/display range counts
-in view bucket `other`; resource/range refusals must be understood.
-
-Coordinator commands (not run by this lane):
-
-```sh
-cargo test -p native-render --no-default-features --lib particles::
-cargo test -p native-render --no-default-features --lib effect_geometry::
-cargo test -p native-render --test particles_gpu
-cargo test -p feature --test native_particles
-cargo test -p boot native_particles
-cargo test -p d3d --test admission_scope
-cargo test -p d3d --test external_pass
-```
-
-The GPU test uses invented microcode/geometry, draws two distinguishable
-views (a canonical particle and a packed ribbon strip) into one command
-submission and checks colour readback. It also
-checks refusal of a changed attachment identity. It skips if no GPU
-adapter is available; report that as a skip. Pure tests cover dynamic
-register assignment, colour channel order, z/w reset, NaN/signed zero,
-missing memory, alias/overflow refusal, clip/depth mismatch and malformed
-geometry. The feature test requires twenty-one render-safe observer points and
-none on
-`0x00174420`.
-
-Requested level runs after coordinator build, using the coordinator's
-existing image and `h2 serve` plus `h2 agent` for control/capture:
-
-- `H2_LEVEL=03a`, `H2_OPT=2`,
-  `H2_FEATURES=impl.render.native_particles=on`,
-  `H2_NATIVE_PARTICLES_COMPARE=64`. Compare the first 4,000 presents,
-  including intro and street, collecting at presents 1,000/2,000/3,000/4,000.
-  Include a contrail-bearing projectile and the four-vertex effect builder.
-  Require positive paired coverage before switching to Native mode.
-- Same save/input, 4,000 presents, compare variable **unset**, particles
-  off/on. Keep every other feature fixed. Compare colour/depth plus
-  particle/effect evolution at those presents. Require identical guest
-  particle updates and positive native receipts. Repeat with transparent
-  native geometry enabled to exercise alternating native/D3D entries.
-- Repeat the combat/explosion section for 600 ticks at 1x and 2x and two
-  views; each target copy needs its own receipt. Include sprite blending,
-  near clipping, alpha test, additive particles and D3D-only neighbors.
-  Capture 600 ticks through `h2 agent capture 600`, with diagnostics off
-  for timings. No performance claim until warm p50/p95 and coverage exist.
-
-Agent API decision: no running game/editor inspected or driven in this
-lane (explicit no-run rule). Only static executable inspection and source
-changes; no API expansion needed. All future running-game comparisons use
-the existing agent API.
+- The stage replaces D3D's GPU recording and keeps guest geometry construction and resolved-draw capture. Uploads are owned per recording so cancellation stays correct. The feature's armed count is not replacement coverage; the stage counters are.
 
 
-## Lane integration record
-
-Shared-file edits made by this lane (apart from the handoff merge):
-`crates/native-render/src/lib.rs`, `crates/feature/src/lib.rs`,
-`crates/boot/src/lib.rs` (module entries),
-`crates/boot/src/registration.rs` (feature registration),
-`crates/boot/src/d3d_glue.rs` (one installation call),
-`crates/d3d/src/device.rs` and `crates/d3d/src/nv2a.rs` (module entries
-only). No sorted-transparent dispatcher changes. The shared native-renderer
-document changes come from the handoff merge; lane notes live here.
-
-The lane ran rustfmt checks on its new/already-formatted touched modules
-and `git diff --check`. Cargo tests and runtime comparisons above are
-unrun, for the coordinator. The two-copy transactional behavior is the
-merged handoff contract, exercised by its `external_pass` tests; this lane
-adds source-geometry pairing, raw strip upload/readback, final-latch/W-clip
-and callback-preservation tests.
-
-## Additional immediate effect leaves
+### Additional immediate effect leaves
 
 The adapter also owns narrowly scoped immediate draws. These use the same
 `DrawAdmission` and two-copy reservation as particles. On each leaf's END
@@ -247,28 +167,12 @@ still apply. Failure on either copy retains the original draw.
 This assumes the resolved immediate stream is the authoritative output of
 the guest's geometry calculation. Unlike the particle emission decoder,
 this path does not independently re-evaluate billboard/weather arithmetic.
-Compare diagnostics validate scope, declaration, primitive, count and
-resolved resources; they do **not** establish arithmetic or pixel parity.
-Each of the five sites gets its own `H2_NATIVE_PARTICLES_COMPARE=N` budget.
 
-The updated handoff contract prepares every live copy before recording
-any. Particle passes retain one prepared entry per Reference/Display copy
+The handoff prepares every live copy before recording any. Particle passes retain one prepared entry per Reference/Display copy
 and remove only the matching entry when recording. This is required at
 2x and whenever both views are awake.
 
-Synthetic coverage adds `effect_immediate::` tests for winding, caller
-allowlisting, NaN/signed-zero preservation, defaults and point/odd-line
-refusals; boot tests cover declaration and input-mask mismatches. The GPU
-suite also checks line-pair validation. These tests are written, not run:
-
-```sh
-cargo test -p native-render --no-default-features --lib effect_immediate::
-cargo test -p native-render --test particles_gpu
-cargo test -p feature --test native_particles
-cargo test -p boot native_particles
-```
-
-## Effect-handler census and remaining refusals
+### Effect-handler census and remaining refusals
 
 This census follows both calls to the common sorted-entry allocator
 `0x0001e2d0` and producers that allocate entries directly. Entries are
@@ -281,11 +185,11 @@ is unchanged; each owned leaf executes at its original position.
 | Particle `0x002243c0` | Material and particle iteration reach the existing `0x0023ed30` decoder. Parent and `0x00174420` writes remain guest-owned. |
 | Sorted beam `0x00156e10` | Producer `0x00156b60` also queues direct-layer callback `0x00156fe0`. Both call `0x00157020`. Its only geometry emission is `0x0015743d` → `0x0023ed30`; there is no separate unresolved beam draw in this helper. Property evaluation and material/program selection still run. |
 | Sorted dynamic `0x00035b00` | Producer `0x0001e5e0`, used by contrails. Exact builder `0x00042cf0` admitted; others give `UnownedDynamicBuilder` or `DynamicDeclarationOrMode`. |
-| MGS2 `0x0004f010` | Producer `0x00042850`; reached by effect parts, object attachments and lights. Evaluated volume elements feed shared billboard helper `0x0004f7e0`, now admitted per leaf. |
+| MGS2 `0x0004f010` | Producer `0x00042850`; reached by effect parts, object attachments and lights. Evaluated volume elements feed shared billboard helper `0x0004f7e0`, admitted per leaf. |
 | tdtl `0x000508d0` | Producer `0x000429a0`; reached by attachments/lights. Curve/state updates precede `0x0004f7e0`; they remain guest-owned. |
-| Geometry `0x00041020` | Producer `0x00041040`; existing transparent-geometry lane owns this handler and its `0x0004cbf0`/`0x0004d0b0` callbacks. No effect-lane hook is installed here. |
+| Geometry `0x00041020` | Producer `0x00041040`; the transparents stage owns this handler and its `0x0004cbf0`/`0x0004d0b0` callbacks. No particles-stage hook is installed here. |
 | Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760`. Multiple geometry calls and target/layer changes: `OtherLaneLayeredGeometry`. These observations never suppress a body. A single effect reservation does not establish ownership of their complete layered sequence. |
-| Material callbacks `0x00244610` / `0x002be650` | Generic producer `0x00041490`, material callback `0x000d4bc0`, geometry callbacks `0x00244470` / `0x002be5d0`. Both reach `0x0019f680`: now admit its completed triangle strip, preserving ring/outline construction, material evaluation and degenerates. |
+| Material callbacks `0x00244610` / `0x002be650` | Generic producer `0x00041490`, material callback `0x000d4bc0`, geometry callbacks `0x00244470` / `0x002be5d0`. Both reach `0x0019f680`: admits its completed triangle strip, preserving ring/outline construction, material evaluation and degenerates. |
 | Other callbacks queued by `0x00041490` | Handler pointer comes from stack +0x18 at entry; data-driven registration through `0x000d4d85` may supply others. `UnownedMaterialCallback` for a handler outside the two researched wrappers. No guessed semantic type or ownership. |
 | Wrapper `0x00048e40` | Producer `0x00047870`; sole statically found caller `0x001160b3` supplies callback `0x0024dc50`, a no-op return: `NoGeometryCallback`. The wrapper's material changes still run. A different runtime callback gives `UnownedMaterialCallback`. |
 | Four-vertex builder `0x00052020` | Called through `0x00052040` and the existing dynamic-upload adapter; covered without assigning an unsupported effect-family label. |
@@ -316,7 +220,7 @@ draws at `0x000391f0`. All updates, exclusions and cluster selection stay
 in the guest. That latter draw selects PointList or LineList from its mode
 field (+0x6c); admission uses the actual resolved primitive. Rain/snow
 names are not a reliable mode decoder: the repository's Live weather
-viewer infers those names from palette/tag labels. Thus this lane covers
+viewer infers those names from palette/tag labels. Admission therefore covers
 rain/snow **line draws**, while any rain/snow **point draws** explicitly
 refuse with `WeatherPointRasterization`. It makes no claim that all snow
 is one mode or all rain another.
@@ -328,31 +232,37 @@ Other named admission refusals are `MissingColorTarget`,
 textures and state on each copy; it never substitutes an approximate
 material. Diagnostics are bounded and are not replacement receipts.
 
-Additional coordinator acceptance cases, alongside the 03a runs above:
-exercise sorted and direct beams, a lens with changing occlusion, a light
-volume/trail, and both material-strip callbacks. On a weather-bearing BSP,
-exercise both line and point modes plus its weather layer. Compare first
-with `H2_NATIVE_PARTICLES_COMPARE=64`, then unset it and check native
-Reference **and** Display receipts at 1x/2x. Query results and weather/beam
-simulation state must match the D3D baseline. Unsupported point and layered
-geometry draws must retain D3D receipts. No pixel-parity or performance
-claim is made before those runs.
+### Walking completed emission inputs
 
-## Walking completed emission inputs
-
-`impl.render.native_particles_walk` tries the direct emitter at
+The particle walk tries the direct emitter at
 `0x0023ed5c` after the allocator succeeds. The native issue uses the live
 declaration and the same carried attributes as the inline quad. A
 successful reservation bypasses the emitter's guest packet and preserves
 the final default registers. A refused reservation restores the
 defaults and the guest emits the quad in place.
 
-`impl.render.native_effects_walk` admits the effect quad at
+The effects walk admits the effect quad at
 `0x0004b252` from the builder's source and contrails at `0x0004b28c`
 from the builder's output. The return frame and caller arguments must
 still describe the same dynamic call. The quad's known builder only
 copies the four vertices. Contrails run their original builder before
-native issue. All switches default on under native rendering.
-`H2_NATIVE_PARTICLES_COMPARE` keeps the original emitters for its geometry
-pairing. The earlier effect leaves and query paths keep their documented
+native issue. The effect leaves and query paths keep their documented
 admission and fallback boundaries.
+
+## Rules and limits
+
+- Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
+- The feature test `crates/feature/tests/native_particles.rs` requires twenty-one render-safe observer points and none on `0x00174420`.
+- `crates/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
+
+## Not verified
+
+- Pixel parity of colour, depth and particle evolution against D3D over the first 4,000 presents of the Old Mombasa level, including a contrail-bearing projectile and the four-vertex effect builder.
+- Combat and explosion sections at render scale 1 and 2 and two views, with a receipt on each copy: sprite blending, near clipping, alpha test, additive particles and D3D-only neighbours.
+- Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
+- Query results and weather and beam simulation state equal to the D3D baseline; refused point and layered-geometry draws keep their D3D receipts.
+- Timings: warm p50 and p95 with diagnostics off.
+
+## Related
+
+[native-renderer.md](native-renderer.md), [native-transparents.md](native-transparents.md), [native-decals-research.md](native-decals-research.md).

@@ -1,5 +1,9 @@
 # Shaders
 
+Status: Built. Reference for `crates/shaders`.
+Code: `crates/shaders/src/`. Tests: `crates/shaders/tests/`.
+Switch: none.
+
 `crates/shaders` turns Halo 2's Xbox shader programs into WGSL. We don't
 emulate the NV2A. D3D8 is replaced at the API level, but Halo 2's shaders are
 written for NV2A features (vertex microcode, register combiners, texture-stage
@@ -257,7 +261,9 @@ case fails on Metal. Without W-buffering the clip range is taken as `[0, Zmax]`:
 only to w when W-buffered (below), and the NV2A's clamp mode isn't applied either (`ZCLAMP_EN`), where out-of-range z is
 clamped instead of culled.
 
-**W-buffering.** With `SET_CONTROL0` bit 16 (z-perspective; D3D sets it
+### W-buffering
+
+With `SET_CONTROL0` bit 16 (z-perspective; D3D sets it
 for `D3DRS_ZENABLE = D3DZB_USEW`, and Halo enables that at boot with
 `ZEnable(2)` at `0x1267a`) the NV2A ignores the program's z: it depth-tests
 and stores the perspective-correct interpolated w, plus the polygon

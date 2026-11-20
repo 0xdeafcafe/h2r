@@ -5,7 +5,7 @@
 //! layer's items are, the layer draw's own gate, and the walk that
 //! clears their bit ([`clear_fog`]).
 //!
-//! Research points (Code, the lifted ports `engine::render_loop::scene`
+//! Research points (Code, read from the removed lifted ports `scene`
 //! and `layer`):
 //!
 //! - `render_scene_passes` calls `0x0002_5d50` between its state call and

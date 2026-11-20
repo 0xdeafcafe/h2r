@@ -104,7 +104,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     Arc::clone(&self.state),
                     palettes,
                     formats,
-                    compare().map(|c| c.definition),
                 );
                 *state = Some(MapState {
                     name: name.clone(),
@@ -208,7 +207,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_empty();
-        if ranges == 0 && plan.compare.is_none() && !pending {
+        if ranges == 0 && !pending {
             return None;
         }
         let mut drawn = vec![false; items.len()];
@@ -218,12 +217,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let pass = Box::new(FirstPersonPass {
             models: Arc::clone(&gpu),
             draws: plan.draws,
-            compare: plan.compare,
             view: Some(entry.view),
             w_clip: entry.w_clip,
         });
         if ranges == 0 {
-            // Upload new models or arm a comparison; every guest item stays live.
+            // Upload new models; every guest item stays live.
             device.request_external_pass(pass);
             return None;
         }
@@ -275,8 +273,6 @@ struct ViewPlan {
     drawn: Vec<usize>,
     /// Exact planned draws, in first-person list order.
     draws: Vec<(u32, PlannedDraw)>,
-    /// The shadow item selected for comparison: model, draw and label.
-    compare: Option<(u32, PlannedDraw, String)>,
 }
 
 /// Plans every offered item. Only a fully resolved plan is marked drawn;
@@ -291,7 +287,6 @@ fn plan_view(
 ) -> ViewPlan {
     let mut out = ViewPlan::default();
     let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-    let compared = compare();
     for (index, item) in items.iter().enumerate() {
         let frame = &objects[item.object];
         let model = record_models[&item.key.record];
@@ -310,32 +305,11 @@ fn plan_view(
             Ok(draw)
         })();
         match planned {
-            Ok(draw) if item.shadow => {
-                if out.compare.is_none()
-                    && compared.is_some_and(|compare| {
-                        compare.definition == model as u16 && compare.part == draw.part
-                    })
-                {
-                    let label = format!(
-                        "first-person object {:#010x} mode {model:#010x} part {} record {}",
-                        frame.handle, draw.part, item.key.record
-                    );
-                    out.compare = Some((model, draw, label));
-                }
-            }
             Ok(draw) => {
                 out.drawn.push(index);
                 out.draws.push((model, draw));
             }
-            Err(why) => {
-                count_refusal(&why);
-                if item.shadow && compared.is_some() {
-                    eprintln!(
-                        "native-first-person compare: mode {model:#010x} record {}: {why}",
-                        item.key.record
-                    );
-                }
-            }
+            Err(why) => count_refusal(&why),
         }
     }
     out
@@ -359,7 +333,6 @@ fn count_refusal(why: &str) {
 struct FirstPersonPass {
     models: Arc<Models>,
     draws: Vec<(u32, PlannedDraw)>,
-    compare: Option<(u32, PlannedDraw, String)>,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: ([f32; 2], bool),
 }
@@ -367,10 +340,11 @@ struct FirstPersonPass {
 impl FirstPersonPass {
     fn upload<'a>(
         &'a self,
-        target: &d3d::ExternalTarget<'_>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> MutexGuard<'a, Option<LitObjects>> {
         let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = guard.get_or_insert_with(|| LitObjects::new(target.device));
+        let lit = guard.get_or_insert_with(|| LitObjects::new(device));
         for cpu in std::mem::take(
             &mut *self
                 .models
@@ -379,25 +353,48 @@ impl FirstPersonPass {
                 .unwrap_or_else(|e| e.into_inner()),
         ) {
             if let Some(normalization) = &cpu.normalization {
-                lit.set_normalization(target.device, target.queue, normalization);
+                lit.set_normalization(device, queue, normalization);
             }
-            lit.add_model(target.device, target.queue, cpu.definition, cpu.lit);
+            lit.add_model(device, queue, cpu.definition, cpu.lit);
         }
         guard
     }
 
-    fn view_inputs(
+    /// The call's packets for the D3D render pass already open on these
+    /// attachments, after any model upload still pending.
+    fn packets(
         &self,
-        constants: [[f32; 4]; d3d::VIEW_CONSTANTS],
-        target: &d3d::ExternalTarget<'_>,
-    ) -> ViewInputs {
-        ViewInputs {
-            constants,
-            guest_size: target.guest_size,
-            size: target.size,
-            z_scale: target.z_scale,
-            w_clip: Some(self.w_clip),
+        target: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let constants = self.view.ok_or("first-person view constants unavailable")?;
+        let mut guard = self.upload(&target.device, &target.queue);
+        let lit = guard.as_mut().ok_or("planned first-person geometry unavailable")?;
+        if !self
+            .draws
+            .iter()
+            .all(|(model, draw)| lit.has(*model) && !draw.indices.is_empty())
+        {
+            return Err("planned first-person geometry unavailable");
         }
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: target.size,
+            z_scale: request.z_scale,
+            w_clip: Some(self.w_clip),
+        };
+        lit.draws(
+            &target.device,
+            &target.queue,
+            &target.uploads,
+            target.color_format,
+            target.depth_format,
+            target.size,
+            &view,
+            &self.draws,
+            None,
+        )
     }
 }
 
@@ -420,182 +417,19 @@ impl d3d::ExternalPass for FirstPersonPass {
         }
     }
 
-    fn prepare_copy(&mut self, target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() {
-            return Err("first-person view constants unavailable");
-        }
-        drop(self.upload(target));
-        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        if lit.as_ref().is_some_and(|lit| {
-            self.draws
-                .iter()
-                .all(|(model, draw)| lit.has(*model) && !draw.indices.is_empty())
-        }) {
-            Ok(())
-        } else {
-            Err("planned first-person geometry unavailable")
-        }
-    }
-
+    /// A call with nothing to draw still uploads models for the next
+    /// (`Device::request_external_pass`).
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        // Comparison-only views can upload models for the following view.
-        drop(self.upload(&target));
-        self.record_ranges(target);
+        drop(self.upload(target.device, target.queue));
     }
 
-    fn record_ranges(&mut self, target: d3d::ExternalTarget<'_>) -> usize {
-        let Some(constants) = self.view else {
-            return 0;
-        };
-        let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(lit) = guard.as_mut() else {
-            return 0;
-        };
-        let view = self.view_inputs(constants, &target);
-        if let Some((model, draw, label)) = &self.compare {
-            arm_compare(
-                lit,
-                *model,
-                draw,
-                label,
-                &view,
-                compare().map_or(0, |compare| compare.after),
-            );
-        }
-        if self.draws.is_empty() {
-            return 0;
-        }
-        lit.encode(
-            target.device,
-            target.queue,
-            target.uploads,
-            &mut *target.encoder,
-            target.color,
-            target.color_format,
-            target.depth,
-            target.depth_format,
-            target.size,
-            &view,
-            &self.draws,
-            None,
-        )
-    }
-}
-
-/// `H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]`: keep that record
-/// mode on D3D and arm its planned draw on the selected external-target
-/// encode (scaled output encodes a pass more than once).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Compare {
-    definition: u16,
-    part: usize,
-    after: u32,
-}
-
-fn compare() -> Option<Compare> {
-    static COMPARE: std::sync::OnceLock<Option<Compare>> = std::sync::OnceLock::new();
-    *COMPARE.get_or_init(|| {
-        let compare = std::env::var("H2_NATIVE_FIRST_PERSON_COMPARE")
-            .ok()
-            .and_then(|value| parse_compare(&value));
-        if let Some(compare) = compare {
-            eprintln!(
-                "native-first-person: comparing {compare:?} with D3D (its items stay on D3D)"
-            );
-        }
-        compare
-    })
-}
-
-fn parse_compare(value: &str) -> Option<Compare> {
-    let mut fields = value.trim().split(':');
-    let definition = fields.next()?.trim();
-    let definition = definition
-        .strip_prefix("0x")
-        .or_else(|| definition.strip_prefix("0X"))
-        .unwrap_or(definition);
-    let definition = u32::from_str_radix(definition, 16).ok()? as u16;
-    let part = fields
-        .next()
-        .map_or(Some(0), |part| part.trim().parse().ok())?;
-    let after = fields
-        .next()
-        .map_or(Some(0), |after| after.trim().parse().ok())?;
-    if fields.next().is_some() {
-        return None;
-    }
-    Some(Compare {
-        definition,
-        part,
-        after,
-    })
-}
-
-fn arm_compare(
-    lit: &LitObjects,
-    model: u32,
-    draw: &PlannedDraw,
-    label: &str,
-    view: &ViewInputs,
-    after: u32,
-) {
-    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) != after {
-        return;
-    }
-    match lit.part_uniforms(model, draw, view, None) {
-        Ok(uniforms) => {
-            eprintln!(
-                "native-first-person compare {label}: implementation {}, {} program words, depth {:?}, primitive {:?}, textures {:?}",
-                uniforms.implementation,
-                uniforms.words.len(),
-                uniforms.depth,
-                uniforms.primitive,
-                uniforms.textures
-            );
-            d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
-                label: label.to_owned(),
-                words: uniforms.words,
-                vertex: uniforms.vertex,
-                pixel: uniforms.pixel,
-                options: uniforms.options,
-                def: uniforms.def,
-                pixel_options: uniforms.pixel_options,
-                primitive: uniforms.primitive,
-                depth: (uniforms.depth.0, uniforms.depth.1, Default::default()),
-                textures: uniforms.textures,
-                samplers: uniforms.samplers,
-                color: None,
-                draws: 4,
-            });
-        }
-        Err(why) => eprintln!("native-first-person compare {label}: {why}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn comparison_parses_a_mode_part_and_encode() {
-        assert_eq!(
-            parse_compare("0xe92207ad:2:30"),
-            Some(Compare {
-                definition: 0x07ad,
-                part: 2,
-                after: 30,
-            })
-        );
-        assert_eq!(
-            parse_compare("e92207ad"),
-            Some(Compare {
-                definition: 0x07ad,
-                part: 0,
-                after: 0,
-            })
-        );
-        assert_eq!(parse_compare("07ad:0:1:extra"), None);
-        assert_eq!(parse_compare("not hex"), None);
+    /// The draws join the D3D render pass already open on the call's
+    /// attachments: no pass or command buffer of their own.
+    fn record_draws(
+        &mut self,
+        target: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        Some(self.packets(target, request))
     }
 }

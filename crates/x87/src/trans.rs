@@ -290,9 +290,6 @@ pub(crate) fn tan_n<const N: usize>(a: F80) -> Transcendental {
 
 /// FSIN.
 pub fn sin(a: F80) -> Transcendental {
-    if crate::trans_f64::on() && let Some(v) = crate::trans_f64::sin(a) {
-        return v;
-    }
     #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::sin(a) {
         return v;
@@ -302,9 +299,6 @@ pub fn sin(a: F80) -> Transcendental {
 
 /// FCOS.
 pub fn cos(a: F80) -> Transcendental {
-    if crate::trans_f64::on() && let Some(v) = crate::trans_f64::cos(a) {
-        return v;
-    }
     #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::cos(a) {
         return v;
@@ -327,9 +321,6 @@ pub fn tan(a: F80) -> Transcendental {
 /// out-of-range operand both values are the unchanged operand; for a NaN
 /// or invalid operand both are the NaN result.
 pub fn sincos(a: F80) -> (Transcendental, F80) {
-    if crate::trans_f64::on() && let Some(v) = crate::trans_f64::sincos(a) {
-        return v;
-    }
     #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::sincos(a) {
         return v;
@@ -455,9 +446,6 @@ fn log2_wf<const N: usize>(u: Wf<N>) -> (Wf<N>, bool) {
 
 /// FYL2X: `y * log2(x)`.
 pub fn yl2x(y: F80, x: F80) -> (F80, Flags) {
-    if crate::trans_f64::on() && let Some(v) = crate::trans_f64::yl2x(y, x) {
-        return v;
-    }
     #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::yl2x(y, x) {
         return v;
@@ -597,9 +585,6 @@ fn log2p1<const N: usize>(fx: Fin) -> (Wf<N>, bool) {
 /// (overflowing to +inf with OE for large `a`, approaching -1 with PE for
 /// very negative `a`), `-1` for `-inf` and `+inf` for `+inf`.
 pub fn x2m1(a: F80) -> (F80, Flags) {
-    if crate::trans_f64::on() && let Some(v) = crate::trans_f64::x2m1(a) {
-        return v;
-    }
     #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::x2m1(a) {
         return v;

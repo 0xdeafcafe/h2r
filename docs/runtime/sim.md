@@ -1,11 +1,12 @@
 # Sim mode: the game's simulation without rendering
 
-Status: designed and built (2026-11-19, branch `sim-engine`), unit-tested
-over pure inputs and fake guest memory. Nothing on this page has been run
-against the game yet; [What needs a run](#what-needs-a-run) lists what
-only a run can settle, and [First runs](#first-runs) gives the commands.
+Status: Built. Unit-tested over pure inputs and fake guest memory, and run
+against the game: [simulation budget](../perf/sim-budget.md) has the measured
+matches. [Not verified](#not-verified) lists what a run has not settled.
+Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
+[switches.md](switches.md).
 
-Where it is: `crates/sim` (the match, batch and tuning files, pacing, the
+Code: `crates/sim` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/bots/src/tuning.rs`,
 `crates/feature/src/sim_frame.rs`, `crates/boot/src/sim_glue.rs` and its
 System Link lobby, `crates/cli/src/sim_cmd.rs`, and the examples in
@@ -24,7 +25,7 @@ but:
 
 Labels, as elsewhere: **Code** is read from this repository (file given),
 **Doc** is stated by another page (linked), **S** is a guess or a design
-choice to check before building on it, **Run** needs a game run.
+choice to check before building on it.
 
 ## 1. What a headless run does today
 
@@ -101,8 +102,8 @@ and what sim mode does with it:
 | Object `+0xcc` render-state handle, light render fields, heap render states | (a), false sharing | Nothing to do: only the render reads them |
 | Texture, geometry and animation caches, and the async I/O pool behind them | (c), structural | **The open risk.** The render drives texture and geometry streaming, which the sim does not use (collision is in the tags). The animation cache is used by both: the tick *requests* (`0x001236f0`), the render *gets* and loads (`0x001237e0`). Whether a sim that never gets still has every animation resident is **Run**. The fallback is `render_every` (below). |
 | Particle systems (`0x00174420` updates them while drawing) | (c), cosmetic | Particles do not feed gameplay. They age only through the sim's own updates. |
-| **The shared random seed** `[0x004e7408]+0`: the render steps it (object code `0x001032a0` that the render reaches) | (c) | **Changes the random stream.** A sim run is reproducible against another sim run, never against a rendered run: the render's draws are no longer in the sequence. See [Determinism](#7-determinism). |
-| Game-time bracket (`0x00146de0` on entry to `render_views`, `0x00146b80` on exit) | (d), not identified | **Run**: the one census item that could be real sim state. The tick-hash comparison in [First runs](#first-runs) answers it. |
+| **The shared random seed** `[0x004e7408]+0`: the render steps it (object code `0x001032a0` that the render reaches) | (c) | **Changes the random stream.** A sim run is reproducible against another sim run, never against a rendered run: the render's draws are no longer in the sequence. See [Determinism](#8-determinism). |
+| Game-time bracket (`0x00146de0` on entry to `render_views`, `0x00146b80` on exit) | (d), not identified | **Not verified**: the one census item that could be real sim state. A tick-hash comparison between a skipped and a rendered run answers it ([Not verified](#not-verified)). |
 
 Outside the render front-end:
 
@@ -253,14 +254,14 @@ The co-op hooks (`SESSION_GAME_LIMITS` "peer limit 2",
 `LOBBY_START_STATE` "co-op over 2 to N consoles") act on campaign
 sessions only and leave this lobby as retail has it (tested).
 
-Needs a run: `h2 sim run` on an all-phantom match (for example four
-phantoms, Slayer, Lockout). Expect `Create -> Start`, the phantoms'
-joins, possibly `waits at Start: peer N has map status 2` while the map
-loads, then `Start -> Loading`, `sim: match started at tick N` and
+What `h2 sim run` logs on an all-phantom match (for example four
+phantoms, Slayer, Lockout): `Create -> Start`, the phantoms' joins,
+possibly `waits at Start: peer N has map status 2` while the map loads,
+then `Start -> Loading`, `sim: match started at tick N` and
 `bots: phantoms: the game's start waits for real consoles only`.
-`match.status` must reach `playing` with every logical seat in
-`bound_seats`, and the report must list just those players. A run that
-still stalls names the check in its last `waits at Start` line.
+`match.status` reaches `playing` with every logical seat in `bound_seats`,
+and the report lists just those players. A run that stalls names the check
+in its last `waits at Start` line.
 
 `match.status` enters `binding` on map activation. Combat sampling
 starts once the distributed server has a player and a spawned unit for
@@ -414,10 +415,8 @@ The `wall` block carries the process's memory: `peak_rss_mib`
 fleet pays for), and, when the run loaded a shared copy-on-write guest
 RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
-Measured 2026-11-20, one waterworks 2v2 sim process, macOS: peak RSS
-about 981 MiB (791 MiB of it the resident pages of the whole mmapped
-disc image), footprint (dirty) 143 MiB (103 MiB Malloc Large, of which
-guest RAM is 64 MiB; 35 MiB Malloc Small), shared `__TEXT` 414 MiB.
+The per-process memory of a Waterworks 2v2 sim run is in
+[notes/sim.md](notes/sim.md).
 
 ### 6.1 Sim stores: the map without the map
 
@@ -717,19 +716,14 @@ disc read-only. Verified server-map copies are picked up from
 use their ordinary paths. Sim uses the match's pace, with unpaced as the
 default. Dedicated serve waits for real-time deadlines.
 
-The prior two-bot run took about 11.9 ms/tick. Its entire kernel, XAPI and
-DirectSound bucket was 1.5–2.1 ms/tick, so removing the mixer alone could
-only save part of that bucket. Allow **10–12 ms/tick and 1 GiB RSS per
-process** as a starting point for a comparable unaudited workload.
-Guest RAM accounts for 64 MiB. Keep the module and immutable maps shared
-across processes. The guest tick, replication, telemetry and bot
-thinking remain, and the distributed configuration needs a fresh
-measurement. For 5,000 games at 1,800 ticks, that range is about 25–30
-core-hours of tick work before loading and match setup. Use the smaller
-of available effective cores and available memory divided by measured
-incremental RAM. With eight effective cores and 12 GiB available, start
-sizing from at most eight workers before allowing for headroom. Use
-`wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
+The per-process cost is the guest tick, replication, telemetry and bot
+thinking, with 64 MiB of guest RAM; the module and immutable maps are shared
+across processes. Size a batch from the smaller of the available effective
+cores and the available memory divided by the measured incremental RAM, and
+read `wall.speedup` from an ordinary batch and `host.metrics` for RSS and
+CPU. The measured ms/tick per map is in the
+[simulation budget](../perf/sim-budget.md); the earlier estimate, and the
+memory of one run, are in [notes/sim.md](notes/sim.md).
 
 ### Post-tick state hashes
 
@@ -984,80 +978,34 @@ because the render reads and advances shared state and the hash includes
 guest buffers. The light tick keeps guest cosmetic updates and all tag
 headers and blocks while those dependencies are being traced.
 
-## What needs a run
-
-1. The skip itself: the System Link host runs gameplay frames with the
-   front end skipped, ticks at one per frame, and does not stall
-   (the frame wait returns; the countdowns stay at or below 0).
-2. The tick-hash comparison: does skipping change anything the tick
-   reads beyond the seed? (`render_every` as the fallback.)
-3. Phantom seating on a playerless host. Check that each peer acquires
-   a player and unit before combat sampling starts.
-4. `VARIANT_DEFAULTS` with types other than Slayer. Check that the host
-   starts the requested variant.
-5. Phantom team assignments holding through respawns.
-6. The end latch at the time or score limit ending the run.
-7. The speed-up.
-8. The playerless start ([The playerless start](#the-playerless-start)): an
-   all-phantom match reaches `Start -> Loading` and binds every seat.
-
-## First runs
-
-On the coordinator's machine, with an image built as usual (`h2 build`;
-`H2_OPT` the same as the build):
-
-```sh
-# 0. Nav meshes for the maps (once; sim mode never builds them).
-H2_OPT=2 h2 bots nav lockout
-
-# 1. One match, two bots, short: does it start, tick and end?
-cat > /tmp/sim-smoke.toml <<'EOF'
-map = "lockout"
-game_type = "slayer"
-seed = 1
-max_ticks = 1800
-[[bot]]
-skill = "normal"
-[[bot]]
-skill = "normal"
-EOF
-H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/sim-smoke.json
-# Look for: `sim: skipping the world render` and `match.status` reaching `playing`,
-# `sim: match started at tick N`, `sim: match over (tick_limit) at 1800
-# ticks, N.Nx real time`, then the per-bot lines and `sim: report ...`.
-# Watch it live: add --socket /tmp/sim.sock and
-# `H2_AGENT=/tmp/sim.sock h2 agent match.status`.
-
-# 2. Determinism: two runs, tick hashes compared.
-H2_LOCKSTEP=/tmp/a.lock H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/a.json
-H2_LOCKSTEP=/tmp/b.lock H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/b.json
-h2 lockstep /tmp/a.lock /tmp/b.lock
-
-# 3. The skip against the render: the same match with the render kept on
-#    every frame (render_every = 1). Expect the runs to differ (the seed),
-#    and compare the reports' shape and the speed-up.
-sed 's/^seed = 1/seed = 1\nrender_every = 1/' /tmp/sim-smoke.toml > /tmp/sim-render.toml
-H2_OPT=2 h2 sim run /tmp/sim-render.toml --disc disc/halo2.iso --report /tmp/r.json
-
-# 4. Four bots, 2 v 2, then the example batch (fifteen runs on three
-#    maps: build the other two nav meshes first; --dry-run lists the runs).
-H2_OPT=2 h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --disc disc/halo2.iso
-H2_OPT=2 h2 bots nav midship && H2_OPT=2 h2 bots nav ascension
-h2 sim batch docs/runtime/sim-examples/batch.toml --dry-run
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3
-
-h2 sim compare docs/runtime/sim-examples/results/aggressive-vs-base
-```
-
-Notes for the runs:
+## Running a match
 
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
-  current for this `h2` (as `h2 serve` does).
+  current for this `h2` (`crates/cli/src/sim_cmd.rs`), as `h2 serve` does.
+- Sim mode never builds nav meshes: run `h2 bots nav <map>`
+  (`crates/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
   `bots/` linked to `--data`'s). For supported Map Pack runs the batch
   stages the selected offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
+- Example match and batch files are in [sim-examples/](sim-examples/).
+
+## Not verified
+
+- Same-build determinism: two runs of one match with the same seed give
+  equal `state_hashes_v1` series ([Post-tick state hashes](#post-tick-state-hashes),
+  `h2 sim diff`). The [simulation budget](../perf/sim-budget.md) names
+  same-build repeatability as open.
+- Whether skipping the render changes anything the tick reads beyond the
+  seed: compare a skipped run with the same match at `render_every = 1`.
+  `render_every` is the fallback if it does.
+- Cross-profile equality between the light and full profiles
+  ([Host audit corpus](#host-audit-corpus)).
+- `VARIANT_DEFAULTS` with game types other than Slayer: that the host starts
+  the requested variant.
+- Phantom team assignments holding through respawns.
+- The end latch at the time or score limit ending a run.
 
 ## Tests
 

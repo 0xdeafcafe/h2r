@@ -58,7 +58,6 @@ pub(crate) fn spawn_worker(
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
-    compare: Option<u16>,
 ) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
     std::thread::Builder::new()
@@ -90,9 +89,6 @@ pub(crate) fn spawn_worker(
                         set.parts.extend(parts.into_iter().map(|((section, part), native)| {
                             ((definition as u16, section, part), native)
                         }));
-                        if compare == Some(definition as u16) {
-                            set.shadowed.insert(definition as u16);
-                        }
                         s.set = Arc::new(set);
                         drop(st);
                         loaded += 1;

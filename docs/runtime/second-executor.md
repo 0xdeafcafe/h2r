@@ -1,9 +1,12 @@
 # A second executor
 
-Status: **runtime building block, tested on synthetic code; used by the
-pipelined-render prototype** (`H2_PIPELINE_RENDER=1`,
-docs/graphics/pipelined-render.md, "The prototype"). It is the prerequisite for pipelined rendering
-(docs/graphics/pipelined-render.md): run guest code on a second host
+Status: Built as a building block, tested on synthetic code; the
+pipelined-render prototype uses it.
+Code: `crates/runtime/src/executor.rs` (`SecondExecutor`), `crates/runtime/src/cow.rs`. Tests: `crates/emit/tests/second_executor.rs`.
+Switch: `impl.render.pipelined_frame` (off), listed in [switches.md](switches.md).
+
+It is the prerequisite for pipelined rendering
+([pipelined-render.md](../graphics/pipelined-render.md), "The prototype"): run guest code on a second host
 thread, at the same time as the game thread, against a copy-on-write
 snapshot of guest RAM.
 
@@ -228,7 +231,7 @@ per 4 KB guest page written at a 4 KB stride); dropping the copy 0.06
 ms. A snapshot takes two copies (view and base), so about 1 ms a frame,
 plus 2.8 us for every host page the sim writes while a render runs.
 
-The live path: the only change on it is `Guest`'s RAM field, now a
+The live path: the only change on it is `Guest`'s RAM field, a
 `cow::Ram` (pointer and length, `Deref` to `[u8]`) instead of a
 `Box<[u8]>`; the runner and C paths are unchanged.
 `runner_transfer_benchmark` after the change, minimum of 9 trials, ns per

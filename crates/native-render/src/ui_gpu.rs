@@ -55,7 +55,7 @@ impl UiGpu {
     ) -> Result<ExternalDraws, Refusal> {
         let cache = self.0.entry(target.device.clone()).or_insert_with(|| DeviceCache {
             frame,
-            fetch: FetchMode::from_env(),
+            fetch: FetchMode::Gpu,
             bindings: ProgramBindings::new(&target.device),
             shaders: HashMap::new(),
             pipelines: HashMap::new(),
@@ -208,7 +208,7 @@ impl DeviceCache {
         for clip in rest {
             packets.push(packets[0].clone().with_scissor(clip, target.size));
         }
-        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards })
+        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 

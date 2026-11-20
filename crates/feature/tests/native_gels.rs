@@ -15,17 +15,11 @@ fn the_switch_places_gels_and_hooks_are_render_context_only() {
         registry.build(&Base).unwrap()
     };
     assert!(
-        !plan("impl.render.native_gels=off")
+        !plan("impl.render.native=off")
             .text()
             .contains("native_gels_")
     );
-    assert!(
-        !plan("impl.render.native_gels=off,impl.render.native_lights=on")
-            .text()
-            .contains("native_gels_"),
-        "the lights do not imply the gels"
-    );
-    let on = plan("impl.render.native_gels=on");
+    let on = plan("");
     for name in ["TEMPLATE_PASS", "TEMPLATE_QUAD"] {
         let chain = on
             .chains

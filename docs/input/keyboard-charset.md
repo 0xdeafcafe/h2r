@@ -1,6 +1,8 @@
 # Extending the on-screen keyboard's character set (design)
 
-Status: research and design only. Nothing here is built.
+Status: Design. Research and design only; nothing here is built.
+Code: none. Tests: none.
+Switch: none.
 
 Halo 2's virtual keyboard types names: the player profile, game variants,
 playlists, saved films, squad and clan names, messages and gamertags. Its

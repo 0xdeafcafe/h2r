@@ -196,6 +196,11 @@ macro_rules! differential {
 differential!(transform_compose, OBJECT_TRANSFORM_COMPOSE, pose_cases);
 differential!(pose_matrix, OBJECT_POSE_MATRIX, pose_cases);
 differential!(rotation_codec, ANIM_ROTATION_CODEC, pose_cases);
+differential!(root_transform, OBJECT_ROOT_TRANSFORM, root_cases);
+differential!(static_rotation, ANIM_STATIC_ROTATION, codec_cases);
+differential!(frame_rotation, ANIM_FRAME_ROTATION, codec_cases);
+differential!(blend_rotation, ANIM_BLEND_ROTATION, codec_cases);
+differential!(keyed_translation, ANIM_KEYED_TRANSLATION, codec_cases);
 differential!(unit_pose, SIM_UNIT_POSE, animation_cases);
 differential!(animation_stream, SIM_ANIMATION_STREAM, animation_cases);
 differential!(graph_resolve, SIM_GRAPH_RESOLVE, animation_cases);
@@ -287,6 +292,102 @@ fn pose_cases(o: &mut Oracle<'_>) {
                 m.word(ROTATION_OUT, [OUT, first, first + 16][n % 3]);
             },
             |c, m| sim::rotation_codec(c, m),
+        );
+    }
+}
+
+/// Both axes, scale and parent cover unit and non-unit scales, a
+/// mirrored parent, no parent, and output over the parent.
+fn root_cases(o: &mut Oracle<'_>) {
+    for n in 0..36 {
+        o.case(
+            &points::OBJECT_ROOT_TRANSFORM,
+            n,
+            |c, m| {
+                (c.eax, c.ecx) = (A, A + 0x10);
+                c.ebx = [0x1700, 0x1701, 0x17ff][n % 3];
+                for i in 0..3 {
+                    m.word(A + 4 * i as u32, sample(n + i, 7));
+                    m.word(A + 0x10 + 4 * i as u32, sample(n + i, 19));
+                    m.word(A + 0x20 + 4 * i as u32, ((i as f32 - 1.0) * 2.5).to_bits());
+                }
+                let unit = 1.0f32.to_bits();
+                for i in 0..13 {
+                    let v = if i == 0 && n % 4 != 3 { [unit, 0.5f32.to_bits(), unit][n % 3] } else { sample(n + i, 31) };
+                    m.word(B + 4 * i as u32, v);
+                }
+                let scale = [unit, 2.0f32.to_bits(), unit, sample(n, 3)][(n / 3) % 4];
+                let parent = if n % 5 == 4 { 0 } else { B };
+                let out = [OUT, B, OUT + 4][(n / 2) % 3];
+                for (i, v) in [A + 0x20, scale, (n % 2) as u32 * 0x101, parent, out].into_iter().enumerate() {
+                    m.word(STACK + 4 + 4 * i as u32, v);
+                }
+            },
+            |c, m| sim::root::transform(c, m),
+        );
+    }
+}
+
+/// Packed int16 quaternion lanes, including both extremes and zero.
+fn half(i: usize, seed: u32) -> u16 {
+    match (i + seed as usize) % 11 {
+        0 => 0,
+        1 => 0x8000,
+        2 => 0x7fff,
+        3 => 0xffff,
+        _ => (sample(i, seed) >> 9) as u16,
+    }
+}
+
+fn codec_cases(o: &mut Oracle<'_>) {
+    use sim::pose::*;
+    const WEIGHTS: [f32; 6] = [0.0, 1.0, 0.371, -0.22, 0.5, 1.0e-30];
+    for n in 0..36 {
+        // Rotation records: a stride per track, eight bytes per frame.
+        let rotations = |m: &mut Ram<'_>| {
+            m.word(ROTATION_BLOCK, A);
+            m.word(A + 20, 48);
+            m.word(ROTATION_TRACK, (n % 3) as u32);
+            m.word(FRAME_A, (n % 4) as u32);
+            m.word(FRAME_B, ((n + 1) % 4) as u32);
+            for i in 0..80 {
+                m.store(A + 32 + 2 * i as u32, &half(i * 7 + n, 5).to_le_bytes());
+            }
+            let weight = if n % 7 == 6 { sample(n, 29) } else { WEIGHTS[n % 6].to_bits() };
+            m.word(ROTATION_WEIGHT, weight);
+            m.word(ROTATION_OUT, [OUT, OUT + 16, A + 48][n % 3]);
+        };
+        o.case(&points::ANIM_STATIC_ROTATION, n, |_, m| rotations(m), |c, m| sim::codec::static_rotation(c, m));
+        o.case(&points::ANIM_FRAME_ROTATION, n, |_, m| rotations(m), |c, m| sim::codec::frame_rotation(c, m));
+        o.case(&points::ANIM_BLEND_ROTATION, n, |_, m| rotations(m), |c, m| sim::codec::blend_rotation(c, m));
+        o.case(
+            &points::ANIM_KEYED_TRANSLATION,
+            n,
+            |_, m| {
+                // Track table at +0x40: key count | first key << 12.
+                // Frame bytes at +0x60, 12-byte keys at +0x80.
+                m.word(ROTATION_BLOCK, A);
+                m.word(A + 0xc, 0x40);
+                m.word(A + 0x18, 0x60);
+                m.word(A + 0x24, 0x80);
+                let count = [1u32, 2, 5, 6, 3, 4][n % 6];
+                let first = (n % 2) as u32;
+                m.word(sim::codec::TRANSLATION_TRACK, (n % 2) as u32);
+                m.word(A + 0x40 + 4 * first, count | first << 12);
+                for (i, f) in [0u8, 3, 7, 7, 12, 20, 31].into_iter().enumerate() {
+                    m.store(A + 0x60 + i as u32, &[f]);
+                }
+                for i in 0..21 {
+                    m.word(A + 0x80 + 4 * i as u32, sample(i + n, 13));
+                }
+                m.word(FRAME_A, [0u32, 2, 3, 7, 11, 30, 40, 255][n % 8]);
+                m.word(ROTATION_WEIGHT, WEIGHTS[n % 6].to_bits());
+                m.word(ROTATION_OUT, [OUT, A + 0x80, OUT + 4][n % 3]);
+                for i in 0..3 {
+                    m.word(OUT + 0x10 + 4 * i, sample(i as usize + n, 3));
+                }
+            },
+            |c, m| sim::codec::keyed_translation(c, m),
         );
     }
 }

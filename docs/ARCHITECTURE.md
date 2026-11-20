@@ -90,70 +90,106 @@ Live by client HLE over our own service ([live.md](live/live.md)).
 Every crate below is on master. "Done" means it does what its row says;
 "in progress" means it is there but incomplete.
 
-| crate     | purpose | status |
-|-----------|---------|--------|
-| `xiso`    | Reads the XDVDFS game partition (plain XISO or full Redump image) | done |
-| `xbe`     | Parses the XBE: header, certificate, sections, libraries, kernel thunks | done |
-| `analyze` | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export | done |
-| `symbols` | Identifies statically linked XDK library functions by OOVPA signature ([xdk-libraries.md](lifter/xdk-libraries.md)) | done |
-| `map`     | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](formats/map-format.md)) | done |
-| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](formats/sound.md)), localized text ([localization.md](formats/localization.md)) and the effects family ([effects.md](formats/effects.md)) | done |
-| `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics/graphics.md)) | done, foundation only |
-| `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](formats/bitmaps.md)) | done |
-| `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](formats/fonts.md)) | done |
-| `movies`  | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) | done |
-| `hs`      | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) | decoding done; the VM is not wired into the game yet |
-| `shaders` | Xbox vertex microcode and register-combiner translation to WGSL ([shaders.md](graphics/shaders.md)) | done |
-| `viewer`  | Render-model and structure BSP viewer and exporters, drawing with `gfx` ([structure-bsp.md](formats/structure-bsp.md)) | done |
-| `audio`   | DirectSound replacement: voices, mixer, effects, output ([audio.md](audio/audio.md)) | done |
-| `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](audio/dsound.md)) | done |
-| `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](runtime/xapi.md)) | done |
-| `asf`     | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) | done |
-| `wma`     | Native WMAv2 decoder ([wma.md](audio/wma.md)) | done |
-| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, on by default: plays the movies `h2 movies` installed (sound through the game's mixer), skips them otherwise (`--no-movies`; `h2 run --no-bink` turns it off) |
-| `input`   | XInput (XAPI) controller replacement foundation ([input.md](input/input.md)) | done, foundation only |
-| `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](runtime/app.md)) | done; `h2 play` runs the game in it |
-| `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) | done |
-| `ir`      | Backend-independent semantic IR for lifted code, with a reference interpreter | done for integer, x87, SSE1 and MMX |
-| `lift`    | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](lifter/LIFTER.md)) | done for integer, x87, SSE1 and MMX |
-| `x87`     | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](lifter/FLOAT-ABI.md)) | done |
-| `simd`    | Bit-exact SSE1 reference semantics, in Rust and C ([simd.md](lifter/simd.md)) | done |
-| `emit`    | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) | done |
-| `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](lifter/oracle.md)) | done |
-| `sse-oracle` | SSE1/MMX results from x86-64 hardware under Rosetta 2 ([sse-oracle.md](lifter/sse-oracle.md)) | done |
-| `runtime` | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/README.md)) | done |
-| `kernel`  | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md)) | in progress: covers the boot to the menu and the first level |
-| `d3d`     | Guest-facing Direct3D 8 over `gfx`, including push-buffer execution ([d3d.md](graphics/d3d.md)) | in progress: the menu and the first level render |
-| `boot`    | Builds the whole XBE into a dylib and runs it with every HLE crate registered ([BOOT.md](runtime/BOOT.md)) | done |
-| `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
-| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([profiling.md](perf/profiling.md)) | done |
-| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([profiling.md](perf/profiling.md)) | done |
-| `cli`     | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) | done |
-| `opt`     | IR-to-IR optimisation passes between lifting and emission | done |
-| `feature` | The feature registry: named points, hook chains, switches, the frame and game bridges ([feature-engine.md](engine/feature-engine.md)) | in progress |
-| `settings` | Host settings as a schema: definitions, one store, one writer for `settings.toml` ([feature-engine.md](engine/feature-engine.md), "Settings") | done |
-| `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison ([high-framerate.md](game/high-framerate.md)) | done |
-| `content` | Map packages: manifest, `MapId`, PPF/IPS/BPS patches and the resolver ([maps.md](game/maps.md)) | foundation built |
-| `studio`  | `h2-editor`, the native editor suite (Dear ImGui + wgpu): scenario, game variant and playlist tools ([editor.md](editor/editor.md)) | in progress |
-| `editor-core` | The editor's UI-free core: map sources, the undo stack, where variants come from ([editor.md](editor/editor.md)) | in progress |
-| `hopper-edit` | The playlist (`multiplayer_hopper.dat`) editor's logic and session ([editor.md](editor/editor.md)) | in progress |
-| `scenario-edit` | Sapien-style scenario placement editor writing patched `.map` files ([scenario-editor.md](editor/scenario-editor.md)) | in progress |
-| `variants` | Game variants: the 0x130-byte record, schema, saved files, editor state ([variants.md](editor/variants.md)) | in progress |
-| `live-proto` | Wire types, signing and verification shared by the Live clients and server ([live-api.md](live/live-api.md)) | in progress |
-| `live-server` | The Xbox Live replacement service: signed events on Postgres behind axum ([live.md](live/live.md)) | in progress |
-| `live-hle` | Xbox Live public-entry overrides in the game ([live-boundary.md](live/live-boundary.md)) | in progress, opt-in |
-| `live-telemetry` | Guest game-state observation and live ingest ([live-telemetry.md](live/live-telemetry.md)) | in progress |
-| `coop`    | Co-op over Live, phase 0: peer transport, pad schedule, per-tick hash exchange ([live-coop.md](live/live-coop.md)) | in progress |
-| `apple-host` | The tvOS and iOS apps' Rust half: a static library the UIKit hosts in `platform/tvos` and `platform/ios` call to boot the game ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)) | in progress |
-| `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
-| `cloud-saves` | Cloud saves on the Live service: merge an account's saves at sign-in, push changes as the game writes them ([live-cloud-saves.md](live/live-cloud-saves.md)) | in progress |
-| `h1map`   | Halo 1 Xbox cache (v5) reader ([map-format.md](halo1/map-format.md)) | done |
-| `h1bitmaps` | Halo 1 bitmaps decoded to RGBA8 and converted to Halo 2 `bitm` tags ([bitmaps.md](halo1/bitmaps.md)) | done |
-| `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([models.md](halo1/models.md)) | in progress |
-| `h1convert` | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) | in progress: all 13 disc maps convert |
-| `mopp`    | Havok MOPP code for structure BSPs: the engine's interpreter as a query model, and an offline compiler ([mopp.md](formats/mopp.md)) | done |
-| `pathfind` | AI pathfinding data: decode retail, generate from collision geometry, compare, emit `map::build` blocks ([pathfinding.md](formats/pathfinding.md)) | in progress |
-| `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
+The table is generated. `scripts/crate-table.py` writes it from each
+crate's `Cargo.toml` (`description`, and `layer`, `status` and `doc` under
+`[package.metadata.h2]`), so a new crate brings its own row; edit the
+manifest and run the script, not the table. How the crates are meant to
+fit together, and the moves that get there, are in
+[dev/crate-structure.md](dev/crate-structure.md).
+
+<!-- crate-table:begin (generated by scripts/crate-table.py from the Cargo.toml descriptions; do not edit) -->
+| crate | purpose | docs | status |
+|---|---|---|---|
+| `agent` | The agent API server: a Unix socket in the game process, answered at tick boundaries (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
+| `agent-proto` | The agent API's wire types: JSON-RPC 2.0 over a Unix socket, one JSON object per line (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
+| `analyze` | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export † |  | done |
+| `app` (bin `h2-app-demo`) | Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first) | [app.md](runtime/app.md) | done; `h2 play` runs the game in it |
+| `app-icon` | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |
+| `apple-host` (staticlib `h2host`) | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
+| `asf` | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
+| `assets` | Glue from decoded game tags (bitmaps first) to gfx texture decoding | [bitmaps.md](formats/bitmaps.md) | done |
+| `audio` | DirectSound-level audio model, Xbox ADPCM decoder and software mixer for h2recomp | [audio.md](audio/audio.md) | done |
+| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | done, on by default: plays the movies `h2 movies` installed (sound through the game's mixer), skips them otherwise (`--no-movies`; `h2 run --no-bink` turns it off) |
+| `boot` | Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE | [BOOT.md](runtime/BOOT.md) | done |
+| `bots` | Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md) | [bots.md](game/bots.md) |  |
+| `cli` (bin `h2`) | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
+| `clif` | *(no description)* † |  |  |
+| `cloud-saves` | Cloud saves on the Live service: merge an account's saved items into the local save storage at sign-in, and push changes as the game writes them (docs/live/live-cloud-saves.md) | [live-cloud-saves.md](live/live-cloud-saves.md) | in progress |
+| `content` | Map packages: the manifest, MapId, PPF/IPS/BPS patch readers and the resolver that turns a package into the bytes of maps\<name>.map (docs/game/maps.md) | [maps.md](game/maps.md) | foundation built |
+| `coop` | Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live/live-coop.md) | [live-coop.md](live/live-coop.md) | in progress |
+| `d3d` | Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx | [d3d.md](graphics/d3d.md) | in progress: the menu and the first level render |
+| `debug-menu` | Our in-game debug menu: a tree of rows over the agent API's registries, its navigation, touchpad and pad input, and the lines the host overlay draws (docs/runtime/debug-menu.md) | [debug-menu.md](runtime/debug-menu.md) |  |
+| `dsound` | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/audio out | [dsound.md](audio/dsound.md) | done |
+| `editor-core` | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
+| `emit` | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) † |  | done |
+| `engine` | Hand-written Rust replacements for Halo 2 engine functions, over guest memory | [engine/README.md](engine/README.md) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
+| `fastmem-proto` (bin `fastmem-probe`) | Isolated prototype: page-protection write watch on macOS arm64 and Linux x86-64 | [fastmem-proto.md](perf/fastmem-proto.md) | prototype, not used by the runtime |
+| `feature` | The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md) | [feature-engine.md](engine/feature-engine.md) | in progress |
+| `film` | Seekable Halo 2 engine films, presentation records and the local film library |  |  |
+| `font` | Halo 2 packed bitmap font parser and CPU text rasteriser | [fonts.md](formats/fonts.md) | done |
+| `gfx` | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
+| `h1ai` | Halo 1 AI data (actors, encounters, command lists) read and converted to Halo 2 squads, zones, orders and characters |  |  |
+| `h1bitmaps` | Halo 1 Xbox bitmaps: decode to RGBA8 with Halo 2's texture decoder, and convert to Halo 2 bitm tags | [bitmaps.md](halo1/bitmaps.md) | done |
+| `h1campaign` | *(no description)* † |  |  |
+| `h1convert` | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) † | [multiplayer.md](halo1/multiplayer.md) | in progress: all 13 disc maps convert |
+| `h1map` | Halo 1 Xbox cache (v5) reader ([map-format.md](halo1/map-format.md)) † | [map-format.md](halo1/map-format.md) | done |
+| `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([models.md](halo1/models.md)) † | [models.md](halo1/models.md) | in progress |
+| `h1objects` | *(no description)* † |  |  |
+| `h1scripts` | *(no description)* † |  |  |
+| `h1sky` | *(no description)* † |  |  |
+| `h1sounds` | Halo 1 Xbox sounds: decode to PCM with the audio crate's Xbox ADPCM decoder, and convert to Halo 2 snd! tags plus ugh! gestalt entries |  |  |
+| `h1text` | *(no description)* † |  |  |
+| `hopper-edit` | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
+| `host-data` | The dedicated host's game data: build the owner's bundle from their disc, and fetch, verify and cache it on a host (docs/live/dedicated-host.md, Game data bundle) | [dedicated-host.md](live/dedicated-host.md) |  |
+| `hot-render` | Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
+| `hot-tags` | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
+| `hs` | HaloScript scenario tables, builtin catalog, typed expression API, and a native VM ([haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md)) † | [haloscript.md](formats/haloscript.md), [engine/hs_vm.md](engine/hs_vm.md) | decoding done; the VM is not wired into the game yet |
+| `hud-edit` | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
+| `input` | Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp | [input.md](input/input.md) | done, foundation only |
+| `ir` | Backend-independent semantic IR for lifted code, with a reference interpreter † |  | done for integer, x87, SSE1 and MMX |
+| `kernel` | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md) | in progress: covers the boot to the menu and the first level |
+| `lift` | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](lifter/LIFTER.md)) † | [LIFTER.md](lifter/LIFTER.md) | done for integer, x87, SSE1 and MMX |
+| `live-hle` | Opt-in Xbox Live public API HLE for Halo 2 retail 5849 | [live-boundary.md](live/live-boundary.md) | in progress, opt-in |
+| `live-proto` | Wire types, signing and verification shared by the Xbox Live replacement's clients and server (docs/live/live-api.md, docs/live/live-security.md) | [live-api.md](live/live-api.md), [live-security.md](live/live-security.md) | in progress |
+| `live-server` (bin `h2-live-server`) | The Xbox Live replacement service: signed events on SQLite or Postgres behind axum (docs/live/live.md, docs/live/live-api.md) | [live.md](live/live.md), [live-api.md](live/live-api.md) | in progress |
+| `live-telemetry` | Non-invasive Halo 2 guest-state telemetry and live ingest | [live-telemetry.md](live/live-telemetry.md) | in progress |
+| `live-worker` (cdylib `live_worker`) | The Live server as a Cloudflare Worker: live-server's routes over D1, R2 and Durable Objects (docs/live/live-worker.md) | [live-worker.md](live/live-worker.md) |  |
+| `lockstep` | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
+| `map` | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](formats/map-format.md)) † | [map-format.md](formats/map-format.md) | done |
+| `mopp` | Havok MOPP code for Halo 2 structure BSPs: the engine's interpreter semantics as a query model, and an offline compiler over collision surfaces | [mopp.md](formats/mopp.md) | done |
+| `movies` | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) † | [movies.md](audio/movies.md) | done |
+| `native-render` | Native GPU renderer: the static world (structure BSP) loaded once from the map's tags, culled and drawn with indirect draws (docs/graphics/native-renderer.md) | [native-renderer.md](graphics/native-renderer.md) |  |
+| `opt` | IR-to-IR optimisation passes between lifting and emission † |  | done |
+| `oracle` (bin `oracle-fixtures`) | Independent x86-32 instruction oracle for synthetic differential fixtures | [oracle.md](lifter/oracle.md) | done |
+| `pathfind` | Halo 2 AI pathfinding data: decode retail sbsp pathfinding, generate it from a structure BSP's collision geometry, compare, and emit map::build blocks | [pathfinding.md](formats/pathfinding.md) | in progress |
+| `perf` | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
+| `runtime` | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/README.md)) † | [runtime README](../crates/runtime/README.md) | done |
+| `runtime-test-probe` | *(no description)* † |  |  |
+| `scenario-edit` | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
+| `settings` | Our host settings as a schema: definitions, one store, atomic handles, one writer for settings.toml | [feature-engine.md](engine/feature-engine.md) | done |
+| `shaders` | Xbox (NV2A) vertex microcode and register-combiner translation to WGSL | [shaders.md](graphics/shaders.md) | done |
+| `sim` | Sim mode's pure parts: match and batch files, bot tuning files, the paced clock and speed-up, the metrics tally and report, and the A/B comparison (docs/runtime/sim.md) | [sim.md](runtime/sim.md) |  |
+| `simd` | Bit-exact, MXCSR-exact reference semantics for the Pentium III's SSE1 floating point | [simd.md](lifter/simd.md) | done |
+| `snapshot` | Machine snapshots: the versioned container, compressed guest RAM pages and the snapshot store (docs/runtime/snapshots.md) | [snapshots.md](runtime/snapshots.md) |  |
+| `sse-oracle` (bin `sse-oracle`) | SSE1/MMX results from x86-64 hardware under Rosetta 2 ([sse-oracle.md](lifter/sse-oracle.md)) † | [sse-oracle.md](lifter/sse-oracle.md) | done |
+| `studio` (bin `h2-editor`) | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |
+| `studio-proto` | The studio agent API's names, short forms and client: JSON-RPC 2.0 over a local Unix socket, as the game's agent API (docs/editor/agent-api.md) | [agent-api.md](editor/agent-api.md) |  |
+| `symbols` | Identify statically linked Xbox SDK library functions in an XBE using OOVPA signatures | [xdk-libraries.md](lifter/xdk-libraries.md) | done |
+| `tags` | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](formats/sound.md)), localized text ([localization.md](formats/localization.md)) and the effects family ([effects.md](formats/effects.md)) † | [sound.md](formats/sound.md), [localization.md](formats/localization.md), [effects.md](formats/effects.md) | done |
+| `timeline` | Near-zero-cost timeline events (Chrome/Perfetto trace JSON) and a frame counter | [profiling.md](perf/profiling.md) | done |
+| `uwp-host` (bin `h2uwp`) | The Xbox (UWP, Dev Mode) app: a CoreApplication view that runs the game into a composition swap chain, and the Mac-side packaging helpers (AppxManifest, package identity, the app-container API check) | [xbox.md](runtime/xbox.md) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
+| `variants` | Halo 2 game variants: the 0x130-byte record, the settings schema, saved-variant files and the editor panel (docs/editor/variants.md) | [variants.md](editor/variants.md) | in progress |
+| `vfs` | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) † | [storage.md](runtime/storage.md) | done |
+| `viewer` (bin `bsp`, bin `bsp_cracks`, bin `shadowlab`, bin `viewer`) | Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx | [structure-bsp.md](formats/structure-bsp.md) | done |
+| `voice` | The communicator under the title's own voice engine: microphone and headphone media objects over host capture and playback (docs/live/live-voice.md) | [live-voice.md](live/live-voice.md) |  |
+| `wma` | Native WMAv2 decoder ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
+| `x87` | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](lifter/FLOAT-ABI.md)) † | [FLOAT-ABI.md](lifter/FLOAT-ABI.md) | done |
+| `xapi` | Guest XAPI service replacements for Halo 2 | [xapi.md](runtime/xapi.md) | done |
+| `xbe` | Parses the XBE: header, certificate, sections, libraries, kernel thunks † |  | done |
+| `xiso` | Reads the XDVDFS game partition (plain XISO or full Redump image) † |  | done |
+
+† Written here by hand. The text belongs in the crate's `Cargo.toml` `description`; `scripts/crate-table.py --strict` fails until it is there.
+<!-- crate-table:end -->
 
 ### Lifter checks
 
