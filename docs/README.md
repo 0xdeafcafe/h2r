@@ -1,40 +1,34 @@
 # Docs
 
-Every doc in this folder, grouped by area. **Start here** marks the entry
-point for each area. "Design" means the doc describes something not built
-(or only partly built); the doc's own status line says how far it got.
+Every doc in this folder, by area. **Start here** marks the entry point for
+each area. A page's own status line says whether it describes built code,
+partly built code or a design. Pages are written to the rules in
+[meta/docs-style.md](meta/docs-style.md).
 
 [ARCHITECTURE.md](ARCHITECTURE.md) is the entry point for the whole project:
-goals, the two-stage plan, the crate table and milestones.
-[architecture-review-2026-11.md](architecture-review-2026-11.md) is the
-2026-11-20 review of the whole repository and its ordered list of ten
-changes. [meta/docs-style.md](meta/docs-style.md) says how docs here are
-written and where each kind goes;
-[meta/docs-tidy-plan.md](meta/docs-tidy-plan.md) is the 2026-11-20 review of
-every page here and the plan to bring them to those rules.
+goals, targets, the pipeline and the crate table. Dated reviews of the code
+are under [Reviews](#reviews).
 
 ## Lifter: analysis, lifting and CPU semantics (`lifter/`)
 
-- [LIFTER.md](lifter/LIFTER.md) (**start here**): the lifter's original design: x86 to IR to C11, the runtime contract, the validation plan. Where it and the code differ, the code wins
+- [LIFTER.md](lifter/LIFTER.md) (**start here**): the lifter: x86 to IR to C11, the runtime contract, the validation plan. Where it and the code differ, the code wins
 - [FLOAT.md](lifter/FLOAT.md): what floating point the game uses (measured with `h2 fpstats`) and the correctness-first plan
 - [FLOAT-ABI.md](lifter/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`), #MF included; read when touching x87 lowering
 - [x87-native.md](lifter/x87-native.md): the guarded native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
-- [x87-transcendentals.md](lifter/x87-transcendentals.md): the `fast-trans` 128-bit first pass for FYL2X, F2XM1 and the trig ops, the table-driven FYL2X and F2XM1: guards and measurements
+- [x87-transcendentals.md](lifter/x87-transcendentals.md): the `fast-trans` 128-bit first pass for FYL2X, F2XM1 and the trig ops, and the table-driven FYL2X and F2XM1: guards and rules
 - [sse-native.md](lifter/sse-native.md): guarded native SSE arithmetic, on by default (`H2_SSE_NATIVE=0` disables it): eligibility and range proof
 - [simd.md](lifter/simd.md): bit-exact SSE1 reference semantics (`crates/simd`), its C twin and how it is tested
 - [oracle.md](lifter/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
 - [sse-oracle.md](lifter/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
-- [golden-trace.md](lifter/golden-trace.md): design for golden boot traces from Unicorn (the code is not on master)
 - [cranelift-tier.md](lifter/cranelift-tier.md): design for a Cranelift fast tier for the first build (`crates/clif`); the first stages are built
 - [dispatch-coverage.md](lifter/dispatch-coverage.md): indirect-dispatch coverage of the campaign's main tables, and how to reproduce it
 - [xdk-libraries.md](lifter/xdk-libraries.md): how `h2 symbols` identifies statically linked XDK library code
 - [BUILD-CACHE.md](lifter/BUILD-CACHE.md): generated-source and object caches, locking, iteration builds, `H2_EMIT_TARGET`; read before changing the build
-- [build-perf.md](lifter/build-perf.md): build-time measurements behind those caches
+- Notes: [build-perf.md](lifter/notes/build-perf.md) (build-time measurements behind the caches), [fp-census.md](lifter/notes/fp-census.md) (floating-point census of the retail image), [not-adopted.md](lifter/notes/not-adopted.md) (lifter experiments that lost), [precedents.md](lifter/notes/precedents.md) (public lifter projects read), [x87-native.md](lifter/notes/x87-native.md) (guarded native x87 measurements), [x87-transcendentals.md](lifter/notes/x87-transcendentals.md) (guarded transcendental measurements)
 
 ## Runtime: booting and running the game (`runtime/`)
 
 - [BOOT.md](runtime/BOOT.md) (**start here**): `h2 build` and `h2 run`, the boot runner's flags and environment, stopgaps, current state
-- [boot-log.md](runtime/notes/boot-log.md): the boot milestone log and the retired stopgaps, dated
 - [switches.md](runtime/switches.md): every env var and `H2_FEATURES` switch left, one line each, and the experiments still waiting for a measurement
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
@@ -42,20 +36,21 @@ every page here and the plan to bring them to those rules.
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/xapi`) and which stay generated, native saves included
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides
-- [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces; the page's status line says which phases are built
+- [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over SSH, build branches there, replay input recordings, fetch frame stats, profiles and logs
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, the quiescence rule
-- [notes/sim.md](runtime/notes/sim.md): sim mode's speed-up estimate and per-process memory
-- [notes/snapshots.md](runtime/notes/snapshots.md): the first snapshot quiescence probe run
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
 - [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)
 - [linux.md](runtime/linux.md): the Linux x86-64 game module (`libh2game.so`) the dedicated host runs, cross-built from a Mac
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
+- [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the pipelined-render prototype needs (`impl.render.pipelined_frame=on`)
+- [ios.md](runtime/ios.md): the iOS app: building, deploying and the touch controls (`platform/ios`, `input::touch`)
+- Notes: [boot-log.md](runtime/notes/boot-log.md) (the boot milestone log), [sim.md](runtime/notes/sim.md) (sim mode's speed-up estimate and per-process memory), [snapshots.md](runtime/notes/snapshots.md) (snapshot quiescence probe runs)
 
 ## Input (`input/`)
 
@@ -65,21 +60,18 @@ every page here and the plan to bring them to those rules.
 - [controller-layouts.md](input/controller-layouts.md): the retail button layouts and the extra ones we add
 - [button-icons.md](input/button-icons.md): button glyphs that follow the device in use (Xbox 360, PlayStation, keyboard; `H2_ICONS`)
 - [steam-controller.md](input/steam-controller.md): Steam Controllers over raw HID, trackpad aim and haptics (`H2_STEAM_*`)
-- [ios.md](runtime/ios.md#controls): the iOS touch controls (`input::touch`, `TouchControls.swift`) and their settings
 - [keyboard-charset.md](input/keyboard-charset.md): design for extending the on-screen keyboard's characters (not built)
 
 ## Graphics (`graphics/`)
 
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/gfx`): batching, merged passes, the pipeline cache
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/d3d`): entries, device model, push buffer, render targets, vblank
-- [render-switches.md](graphics/render-switches.md): the render switches and experiments that were removed, and why
-- [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates, and the coordinator's measurement commands
+- [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
-- [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe, measured gain
-- [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
+- [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe
+- [render-loop.md](graphics/render-loop.md): the view and pass loops of the retail renderer read, and the render-state list ported to Rust
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and Hi-Z occlusion culling against the previous frame's depth (`impl.render.occlusion`)
-- [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: design, and the `render-census` that decides it
-- [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the pipelined-render prototype needs (`impl.render.pipelined_frame=on`)
+- [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: tick ordering, hash parity and snapshot coverage
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); built, one scale for both axes
@@ -90,15 +82,14 @@ every page here and the plan to bring them to those rules.
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
 - [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
-- [notes/native-ab.md](graphics/notes/native-ab.md): the all-native A/B record behind the native renderer defaults
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
 - [native-decals-research.md](graphics/native-decals-research.md): native decals: the dynamic decal path read from the guest code and its draw admission
 - [e3-lighting.md](graphics/e3-lighting.md): E3 2003-style lighting: the Lighting row built (`H2_LIGHTING`, sharper one-tap shadow maps), observers and per-pixel lights designed; retail light-path findings
-- [notes/e3-lighting.md](graphics/notes/e3-lighting.md): shadow-prototype timings and in-level Lighting runs, dated
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
 - [pstencil-history.md](graphics/pstencil-history.md): the history of the cut E3 2003 stencil lighting from public sources: how it worked, why it was cut, where to see it, and the look to tune against (§4)
+- Notes: [e3-lighting.md](graphics/notes/e3-lighting.md) (shadow-prototype timings and in-level Lighting runs), [native-ab.md](graphics/notes/native-ab.md) (the all-native A/B record behind the native renderer defaults), [not-adopted.md](graphics/notes/not-adopted.md) (removed render switches and experiments that lost), [pipelined-render.md](graphics/notes/pipelined-render.md) (pipelined rendering: census, prototype and measurements), [render-thread.md](graphics/notes/render-thread.md) (render thread measurements), [scene-pass-timing.md](graphics/notes/scene-pass-timing.md) (scene pass timing)
 
 ## Audio and movies (`audio/`)
 
@@ -114,13 +105,9 @@ every page here and the plan to bring them to those rules.
 - [README.md](perf/README.md) (**start here**): where the frame rate stands, which doc answers which question, and the order to read them in
 - [profiling.md](perf/profiling.md): the profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`); test and bench knobs
 - [guest-memory.md](perf/guest-memory.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default), direct calls, the one exit call, the lent view and runtime counters
-- [gameplay-budget.md](perf/gameplay-budget.md): where an in-level frame's time goes, the worst frames and what a worst frame under 33 ms needs
-- [menu-budget.md](perf/menu-budget.md): the main-menu frame budget: the latest flyover numbers and the original plan to 30 fps
 - [sim-budget.md](perf/sim-budget.md): the Waterworks and Lockout simulation tick budget: where an unrendered sim's main thread spends its time
 - [sim-attribution.md](perf/sim-attribution.md): every sample of that Waterworks sim given an owner, the runtime share split, and the rewrite phase order it implies
-- [architecture-review.md](perf/architecture-review.md): a structural review of the gameplay frame-time gap, with ranked changes and their status
-- [fastmem-4k.md](perf/fastmem-4k.md): the 4 KiB guest translation experiment (branch only; slower than the inline path, not adopted)
-- [fastmem-proto.md](perf/fastmem-proto.md): the Mach exception write-watch prototype (`crates/fastmem-proto`) and its results
+- Notes: [device-cost.md](perf/notes/device-cost.md) (D3D device CPU cost), [fastmem-proto.md](perf/notes/fastmem-proto.md) (the Mach write-watch prototype), [gameplay-budget.md](perf/notes/gameplay-budget.md) (where an in-level frame goes), [guest-memory.md](perf/notes/guest-memory.md) (guest memory and runner measurements), [menu-budget.md](perf/notes/menu-budget.md) (the main-menu frame budget), [not-adopted.md](perf/notes/not-adopted.md) (performance experiments that lost)
 
 ## Data formats and tags (`formats/`)
 
@@ -148,21 +135,16 @@ every page here and the plan to bring them to those rules.
 ## Engine (`engine/`)
 
 - [engine-map.md](engine/engine-map.md) (**start here**): survey of the retail engine's subsystems and where to start overriding
-- [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; design and build log (phases 0 to 3 built, phase 4 in part)
-- [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/engine`) and their differential tests, indexing:
-  [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md),
-  [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md)
-  and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
+- [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
+- [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
-- [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs
-  [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3)
-  and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4)
-- [sim-review.md](engine/sim-review.md): the 2026-11-20 independent review of the simulation: how the tick works, why it is slow, and a critique of the rewrite plan
+- [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4)
 - [live-telemetry.md](engine/live-telemetry.md): telemetry precision and replay size measurements for the Live v8 stream (the codec is in [live/live-telemetry.md](live/live-telemetry.md))
+- Notes: [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
 
 ## Game features and enhancements (`game/`)
 
-- [settings-menu.md](game/settings-menu.md) (**start here**): the in-game settings screens (Video, Controls), FOV, the settings schema, `h2 settings` and the `H2_*` flag map
+- [settings-menu.md](game/settings-menu.md) (**start here**): the in-game settings screens (Video, Voice, pause menus), FOV, the settings schema and `h2 settings`; how Halo 2's own settings screens work
 - [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
@@ -171,15 +153,14 @@ every page here and the plan to bring them to those rules.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
-- [bots.md](game/bots.md): Clanker navigation, beliefs, personality, local and phantom seats, appearance, player options, and Clankermatch
+- [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
-- [mods-ui-review.md](game/mods-ui-review.md): offline Mods browser, pack and detail review, with integrated slot behaviour and remaining game checks
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
-- [notes/high-framerate.md](game/notes/high-framerate.md): prior art and measurements behind it
-- [theater.md](game/theater.md): design for saved films, free camera and spectating; the first slice is built on the film format below
+- [theater.md](game/theater.md): Theater: saved films, free camera and spectating; the in-game selector and host-film player are built, the real-host experiments are pending
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
+- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
 
 ## Halo 1 (`halo1/`)
 
@@ -219,7 +200,7 @@ Reading and converting Halo 1 data:
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
 - [dedicated-host.md](live/dedicated-host.md): native game hosting, zero-local trial, light host, cloud choices and Ranked telemetry design
-- [dedicated-host-build.md](live/dedicated-host-build.md): the shared contract of the 2026-11-19 parallel dedicated-host build: the slim host, contracts, lanes and file ownership
+- [dedicated-host-build.md](live/dedicated-host-build.md): the shared contract of the parallel dedicated-host build: the slim host, contracts and file ownership
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
@@ -243,4 +224,18 @@ Reading and converting Halo 1 data:
 
 ## Working on the repository (`dev/`)
 
-- [crate-structure.md](dev/crate-structure.md): the crate graph as measured, the target crate map by layer, the ordered freeze-window moves to reach it, local registration, the gate proposal (design; nothing has moved)
+- [crate-structure.md](dev/crate-structure.md) (**start here**): the crate graph as measured, the target crate map by layer, the ordered freeze-window moves to reach it, local registration, the gate proposal (design; nothing has moved)
+
+## Reviews
+
+Dated reviews of the code or a plan, frozen on their date. The design pages
+hold what was done about their findings.
+
+- [2026-11-16-frame-time.md](reviews/2026-11-16-frame-time.md): why gameplay runs at about 18 fps against a 33.3 ms budget, with ranked structural changes
+- [2026-11-20-architecture.md](reviews/2026-11-20-architecture.md): a read of the whole repository (recompiler, runtime, hooks, renderers, crate structure) and an ordered list of ten changes
+- [2026-11-20-sim.md](reviews/2026-11-20-sim.md): how the Halo 2 sim works, why it is slow, and a critique of the rewrite plan
+
+## About these docs (`meta/`)
+
+- [docs-style.md](meta/docs-style.md): how docs here are written, where each kind goes, the evidence labels and the checker
+
