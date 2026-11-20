@@ -101,3 +101,48 @@ pub const H1_WEAPON_KILL_LINES: &[(u16, usize)] = &[
     (11, 0x430), // needler
     (12, 0x4a0), // shotgun
 ];
+
+/// Speaker-independent victim classes used by Halo 1's automatic dialogue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum H1DialogueClass {
+    Other = 0,
+    Player = 1,
+    Human = 2,
+    Covenant = 4,
+    CombatForm = 8,
+    Carrier = 16,
+    InfectionForm = 32,
+    Sentinel = 64,
+}
+
+impl H1DialogueClass {
+    /// H1's actor-kind classification at 0x146089. Halo 2 preserves these
+    /// actor type values when installing the converted actor's char.
+    pub const fn actor(kind: u16) -> Self {
+        match kind {
+            0..=5 | 14 => Self::Covenant,
+            6..=8 => Self::Human,
+            9 => Self::CombatForm,
+            10 => Self::InfectionForm,
+            11 => Self::Carrier,
+            12 | 13 => Self::Sentinel,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn hostile_kill_line(self) -> Option<usize> {
+        match self {
+            Self::Covenant => Some(0x3a0),
+            Self::CombatForm => Some(0x3c0),
+            Self::Carrier => Some(0x3e0),
+            Self::Sentinel => Some(0x400),
+            _ => None,
+        }
+    }
+}
+
+/// Victim-specific attacker cheers that use the generic H2 kill candidate.
+pub const fn h1_species_kill_line(offset: usize) -> bool {
+    matches!(offset, 0x3a0 | 0x3c0 | 0x3e0 | 0x400)
+}

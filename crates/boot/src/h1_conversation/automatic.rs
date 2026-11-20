@@ -1,6 +1,8 @@
 //! Source-only lines selected by Halo 2's automatic dialogue scheduler.
 
-use super::{dialogue, leaders::guest_fault, *};
+use map::H1DialogueClass;
+
+use super::{cast, dialogue, leaders::guest_fault, *};
 
 const UNIT_SPEAK: u32 = 0x0011_4b60;
 const DAMAGE_EFFECT: GroupTag = GroupTag::from_chars(*b"jpt!");
@@ -45,7 +47,15 @@ fn source_damage(m: &dyn GuestMemory, report: u32) -> Result<Option<(u32, u16)>,
     Ok((category & 0xffff_0000 == map::H1_DAMAGE_CATEGORY).then_some((root, category as u16)))
 }
 
-fn weapon_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault> {
+fn actor_class(m: &dyn GuestMemory, unit: u32) -> Result<H1DialogueClass, MemFault> {
+    let actor = cast::actor_handle(m, unit)?.unwrap_or(NONE);
+    let Some(at) = datum(m, cast::ACTORS, actor)? else {
+        return Ok(H1DialogueClass::Other);
+    };
+    Ok(H1DialogueClass::actor(m.u16(at + 4)?))
+}
+
+fn kill_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault> {
     if m.u32(stack)? != ENQUEUE_FROM_STIMULUS || m.u16(stack + 0xc)? != 0 {
         return Ok(None);
     }
@@ -66,19 +76,22 @@ fn weapon_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault
         return Ok(None);
     }
     let report = m.u32(stimulus + SAVED_DAMAGE_REPORT)?;
-    let Some((_, category)) = source_damage(m, report)? else {
-        return Ok(None);
-    };
-    let offset = map::H1_WEAPON_KILL_LINES
-        .iter()
-        .find_map(|&(kind, offset)| (kind == category).then_some(offset));
-    let Some(offset) = offset else {
-        return Ok(None);
-    };
-    let slot = (offset / 0x10 - 1) as u16;
-    let Some((row, _)) = dialogue::source_row(m, speaker, slot)? else {
-        return Ok(None);
-    };
+    let weapon = source_damage(m, report)?.and_then(|(_, category)| {
+        map::H1_WEAPON_KILL_LINES
+            .iter()
+            .find_map(|&(kind, offset)| (kind == category).then_some(offset))
+    });
+    let row_for = |offset: usize| dialogue::source_row(m, speaker, (offset / 0x10 - 1) as u16);
+    let mut row = weapon.map(row_for).transpose()?.flatten();
+    // Keep the existing explicit grenade cheer. Otherwise, a classified
+    // victim can select a variant whenever the voice has that line.
+    if row.is_none() && vocalization != 248 {
+        let victim = m.u32(stimulus + 8)?;
+        if let Some(offset) = actor_class(m, victim)?.hostile_kill_line() {
+            row = row_for(offset)?;
+        }
+    }
+    let Some((row, _)) = row else { return Ok(None) };
     let adlg = m.u32(stack + 4)?;
     let vocabulary = m.u32(adlg + 4)?;
     let priority = u32::from(m.u16(vocabulary + u32::from(vocalization) * 0x60 + 0xa)?);
@@ -126,10 +139,10 @@ pub(super) fn install(b: &mut Builder) {
     );
     b.raw().before(
         &points::AI_DIALOGUE_ENQUEUE,
-        "queue the Halo 1 weapon-specific kill line",
+        "queue the Halo 1 weapon or victim-specific kill line",
         |call| {
             let stack = call.cpu.esp;
-            let line = weapon_line(&*call.ctx.runtime().memory(), stack).map_err(guest_fault)?;
+            let line = kill_line(&*call.ctx.runtime().memory(), stack).map_err(guest_fault)?;
             let Some(Line {
                 speaker,
                 row,
@@ -228,7 +241,7 @@ mod tests {
                 .put_u32(entry + entry_layout::ADDRESS, address);
         }
         assert_eq!(
-            weapon_line(&m, stack).unwrap(),
+            kill_line(&m, stack).unwrap(),
             Some(Line {
                 speaker: killer,
                 row: 1,
@@ -237,18 +250,48 @@ mod tests {
         );
 
         m.put_u32(candidate + 4, 0x8400_0001);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
         m.put_u32(candidate + 4, killer).put_u16(candidate, 254);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
         m.put_u16(candidate, 246).put_u16(stack + 0xc, 3);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
         m.put_u16(stack + 0xc, 0).put_u32(jpt + 0x34, 0);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
         m.put_u32(jpt + 0x34, map::H1_DAMAGE_CATEGORY | 2);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
+
+        let victim = 0x8400_0001;
+        let victim_body = 0x29000;
+        let actors = 0x2a000;
+        let actor_rows = 0x2b000;
+        let actor = 0x8500_0000;
+        m.put_u32(stimulus + 8, victim)
+            .put_u32(objects + layout::HIGH_WATER, 2)
+            .put_u16(object_rows + 12, 0x8400)
+            .put_u32(object_rows + 12 + 8, victim_body)
+            .put_u32(victim_body + cast::UNIT_ACTOR, actor)
+            .put_u32(cast::ACTORS, actors)
+            .put_u32(actors + layout::DATA, actor_rows)
+            .put_u32(actors + layout::HIGH_WATER, 1)
+            .put_u32(actors + layout::ELEMENT_SIZE, 0x888)
+            .put_u16(actor_rows, 0x8500)
+            .put_u32(actor_rows + cast::ACTOR_UNIT, victim)
+            .put_u16(actor_rows + 4, 11)
+            .put_u32(rows + 0x10, map::H1_DIALOGUE_SLOT | (0x3e0 / 0x10 - 1));
+        assert_eq!(
+            kill_line(&m, stack).unwrap(),
+            Some(Line {
+                speaker: killer,
+                row: 1,
+                priority: 7
+            })
+        );
+        m.put_u16(actor_rows + 4, 9);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
+
         m.put_u32(jpt + 0x34, map::H1_DAMAGE_CATEGORY | 5)
             .put_u32(stimulus + KILL_RETURN, 0);
-        assert_eq!(weapon_line(&m, stack).unwrap(), None);
+        assert_eq!(kill_line(&m, stack).unwrap(), None);
 
         let flying_slot = (map::H1_DEATH_FLYING_LINE / 0x10 - 1) as u32;
         m.put_u32(stack, CHECK_FROM_DAMAGE_SPEECH)

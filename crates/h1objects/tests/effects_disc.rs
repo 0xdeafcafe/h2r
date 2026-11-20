@@ -714,6 +714,11 @@ fn every_dialogue_converts() {
                         assert!(src.line(0x360).is_some(), "{context}: missing killer cheer");
                     }
                 }
+                assert!(
+                    src.line(0x360).is_some()
+                        || src.lines.iter().all(|&(offset, _)| !map::h1_species_kill_line(offset)),
+                    "{context}: species variants need a native killer cheer"
+                );
                 let record = read_back(&c.tree.tags[id.index()].1, &context);
                 let rows = block(&record, "vocalizations");
                 let (native, slots) = rows.split_at(base.dialogue_names.len());
@@ -794,6 +799,25 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     }
     assert_eq!(h1.bytes_at(0x0004_7293, 5).unwrap(), &[0xb8, 19, 0, 0, 0]);
     assert_eq!(h1.read_u32(0x001f_0b04).unwrap(), 2.0f32.to_bits());
+    for actor in 0..16u16 {
+        let record = h1.read_u32(0x0025_f2c8 + u32::from(actor) * 4).unwrap();
+        let actual = u16_at(h1.bytes_at(record + 4, 2).unwrap(), 0);
+        let class = map::H1DialogueClass::actor(actor);
+        assert_eq!(class as u16, actual, "dialogue class for actor type {actor}");
+        if let Some(offset) = class.hostile_kill_line() {
+            let slot = (offset / 0x10 - 1) as u16;
+            assert!(
+                patterns.chunks_exact(0x28).any(|row| {
+                    u16_at(row, 0) == 0
+                        && u16_at(row, 4) == slot
+                        && u16_at(row, 8) == 1
+                        && u16_at(row, 0x1c) == 3
+                        && u16_at(row, 0x20) == actual
+                }),
+                "no victim-specific kill rule for {offset:#x}"
+            );
+        }
+    }
 
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();

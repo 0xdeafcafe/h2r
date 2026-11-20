@@ -138,7 +138,7 @@ fn object_global(m: &dyn GuestMemory, index: u32) -> Result<u32, MemFault> {
     }
 }
 
-fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
+pub(super) fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
     let Some(body) = object_address(m, unit)? else {
         return Ok(None);
     };

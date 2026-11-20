@@ -424,6 +424,14 @@ speaking unit's exact source row through `0x114b60` at the candidate's
 priority. Halo 2 still selects the winning candidate, including any
 witness or player praise.
 
+**Built.** The hostile-killer candidate also picks the line for a
+Covenant victim, a Flood combat or carrier form, or a Sentinel.
+Halo 1 reads the victim's actor type at `0x146089`, then reads its
+dialogue class from the actor descriptor at `0x146095`. The event 0
+patterns match that class at `0x146842`. Halo 2 keeps the actor type
+at `actor +4` for the converted character. The hook reads that type
+on the victim and resolves the result in the killer's voice.
+
 **Built.** The victim's flying-death line is separate from falling.
 Halo 1 tests `jpt! +0x1f4` against 2.0 at `0x4721b`, with falling
 and fire categories taking precedence at `0x47275`. Converted damage

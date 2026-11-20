@@ -940,9 +940,10 @@ impl<'a> Converter<'a> {
             let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
             if let Some(&(slot, id)) = source.lines.iter().find(|(slot, _)| {
                 let native = routed.iter().any(|(_, at, _)| at == slot);
-                let weapon_kill =
-                    generic_kill && map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot);
-                !native && !weapon_kill && *slot != map::H1_DEATH_FLYING_LINE
+                let kill_variant = generic_kill
+                    && (map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot)
+                        || map::h1_species_kill_line(*slot));
+                !native && !kill_variant && *slot != map::H1_DEATH_FLYING_LINE
             }) {
                 let sound = self.h1_tag(id)?;
                 return Err(h1convert::Error::no_rebuild(
