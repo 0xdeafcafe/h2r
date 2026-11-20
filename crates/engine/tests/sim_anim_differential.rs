@@ -547,14 +547,14 @@ impl Oracle<'_> {
     }
 }
 
-#[test]
-fn animation_stream_matches_the_guest() {
+/// Load the image and the lifter, then run `f`. `None` without `H2_XBE`.
+fn with_oracle(name: &str, f: impl FnOnce(&mut Oracle<'_>, &[u8])) {
     let Some(path) = common::xbe_path() else {
         assert!(
             std::env::var_os("H2_XBE").is_none(),
             "H2_XBE does not name a readable file"
         );
-        eprintln!("SKIPPED animation sampling differential test: set H2_XBE");
+        eprintln!("SKIPPED {name}: set H2_XBE");
         return;
     };
     let bytes = std::fs::read(path).unwrap();
@@ -563,97 +563,294 @@ fn animation_stream_matches_the_guest() {
     let analysis = analyze::analyze(&xbe).unwrap();
     let lifter = lift::Lifter::new(&analysis, &xbe).unwrap();
     let image = lift::harness::load_image(&xbe).unwrap().bytes;
-    let codecs = codecs(&image);
-    let float = |a: u32| f32::from_le_bytes(image[a as usize..a as usize + 4].try_into().unwrap());
-    let cutoffs = (float(0x0045_dbdc), float(0x0045_dc78));
-    assert!(codecs.len() >= 4, "known codecs: {codecs:?}");
     let mut oracle = Oracle {
         lifter: &lifter,
         cache: BTreeMap::new(),
     };
-    static EPOCH: Epoch = Epoch::new();
+    f(&mut oracle, &image);
+}
 
-    let cases = std::env::var("SIM_ANIM_CASES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(600u32);
-    let (mut native, mut declined) = (0u32, 0u32);
-    for n in 0..cases {
-        let mut rng =
-            Rng(0x9e37_79b9_7f4a_7c15 ^ u64::from(n).wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-        let mut c = CpuAbi {
-            eax: 0x1234_5678,
-            ecx: 0x3456_789a,
-            edx: 0x2345_6789,
-            ebx: 0x4567_89ab,
-            edi: 0x6257_1918,
-            ebp: STACK - 0x80,
-            esp: STACK,
-            eip: adapter::STREAM,
-            eflags: 0x293,
-            mxcsr: if n % 16 == 15 { 0x1f80 } else { 0x1fa0 },
-            ..CpuAbi::default()
-        };
-        c.x87.control = 0x027f;
-        c.x87.status = ((n % 8) as u16) << 11;
-        let mut m = Ram {
-            image: &image,
-            overlay: BTreeMap::new(),
-        };
-        m.word(STACK, HARNESS_EXIT);
-        let expect = case(&mut rng, &codecs, cutoffs, &mut c, &mut m);
+fn entry_cpu(mxcsr: u32, status: u16) -> CpuAbi {
+    let mut c = CpuAbi {
+        eax: 0x1234_5678,
+        ecx: 0x3456_789a,
+        edx: 0x2345_6789,
+        ebx: 0x4567_89ab,
+        edi: 0x6257_1918,
+        ebp: STACK - 0x80,
+        esp: STACK,
+        eip: adapter::STREAM,
+        eflags: 0x293,
+        mxcsr,
+        ..CpuAbi::default()
+    };
+    c.x87.control = 0x027f;
+    c.x87.status = status;
+    c
+}
 
-        let store = ClipStore::new(&EPOCH);
-        let mut reference: Option<(Cpu, Ram<'_>)> = None;
-        for (simd, label) in [(true, "cold, host lanes"), (false, "warm, scalar")] {
-            let (mut nc, mut nm) = (c, m.clone());
-            let got =
-                engine::sim_native::with_simd(simd, || adapter::stream(&mut nc, &mut nm, &store))
-                    .unwrap();
-            let Some(transfer) = got else {
-                assert_eq!(nm.overlay, m.overlay, "case {n}: a declined call wrote");
-                assert_eq!(
-                    visible(&ir_cpu(&nc)),
-                    visible(&ir_cpu(&c)),
-                    "case {n}: a declined call moved registers"
-                );
-                declined += 1;
-                break;
-            };
-            assert_eq!(expect, Expect::Match, "case {n}: should have declined");
-            assert_eq!(transfer.target_pc, HARNESS_EXIT);
-            let (guest_cpu, guest_mem) = reference.get_or_insert_with(|| {
-                let mut gm = m.clone();
-                let mut gc = ir_cpu(&c);
-                oracle.run(&mut gc, &mut gm, adapter::STREAM);
-                (gc, gm)
-            });
-            let mut got_cpu = ir_cpu(&nc);
-            got_cpu.eip = transfer.target_pc;
+/// Run the native body on `(c, m)` cold on host lanes, then warm on the
+/// scalar loop with the same store, and compare each with the guest.
+/// `false` when it declined (having written nothing).
+fn check(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &Ram<'_>, store: &ClipStore, case: &str) -> bool {
+    let mut reference: Option<(Cpu, Ram<'_>)> = None;
+    for (simd, label) in [(true, "cold, host lanes"), (false, "warm, scalar")] {
+        let (mut nc, mut nm) = (*c, m.clone());
+        let got = engine::sim_native::with_simd(simd, || adapter::stream(&mut nc, &mut nm, store))
+            .unwrap();
+        let Some(transfer) = got else {
+            assert_eq!(nm.overlay, m.overlay, "{case}: a declined call wrote");
             assert_eq!(
-                visible(&got_cpu),
-                visible(guest_cpu),
-                "case {n} {label}: registers"
+                visible(&ir_cpu(&nc)),
+                visible(&ir_cpu(c)),
+                "{case}: a declined call moved registers"
             );
-            for p in nm.touched(guest_mem) {
-                assert_eq!(
-                    nm.get(p),
-                    guest_mem.get(p),
-                    "case {n} {label}: byte at {p:#x}"
-                );
-            }
-            if simd {
+            assert!(
+                simd,
+                "{case}: the warm call declined after the cold call ran"
+            );
+            return false;
+        };
+        assert_eq!(transfer.target_pc, HARNESS_EXIT);
+        let (guest_cpu, guest_mem) = reference.get_or_insert_with(|| {
+            let mut gm = m.clone();
+            let mut gc = ir_cpu(c);
+            oracle.run(&mut gc, &mut gm, adapter::STREAM);
+            (gc, gm)
+        });
+        let mut got_cpu = ir_cpu(&nc);
+        got_cpu.eip = transfer.target_pc;
+        assert_eq!(
+            visible(&got_cpu),
+            visible(guest_cpu),
+            "{case} {label}: registers"
+        );
+        for p in nm.touched(guest_mem) {
+            assert_eq!(
+                nm.get(p),
+                guest_mem.get(p),
+                "{case} {label}: byte at {p:#x}"
+            );
+        }
+    }
+    assert!(
+        store.stats().builds <= 1,
+        "{case}: the warm call rebuilt the clip"
+    );
+    true
+}
+
+static EPOCH: Epoch = Epoch::new();
+
+#[test]
+fn animation_stream_matches_the_guest() {
+    with_oracle("animation sampling differential test", |oracle, image| {
+        let codecs = codecs(image);
+        let float =
+            |a: u32| f32::from_le_bytes(image[a as usize..a as usize + 4].try_into().unwrap());
+        let cutoffs = (float(0x0045_dbdc), float(0x0045_dc78));
+        assert!(codecs.len() >= 4, "known codecs: {codecs:?}");
+        const CASES: u32 = 600;
+        let (mut native, mut declined) = (0u32, 0u32);
+        for n in 0..CASES {
+            let mut rng =
+                Rng(0x9e37_79b9_7f4a_7c15 ^ u64::from(n).wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
+            let mut c = entry_cpu(
+                if n % 16 == 15 { 0x1f80 } else { 0x1fa0 },
+                ((n % 8) as u16) << 11,
+            );
+            let mut m = Ram {
+                image,
+                overlay: BTreeMap::new(),
+            };
+            m.word(STACK, HARNESS_EXIT);
+            let expect = case(&mut rng, &codecs, cutoffs, &mut c, &mut m);
+            let store = ClipStore::new(&EPOCH);
+            if check(oracle, &c, &m, &store, &format!("case {n}")) {
+                assert_eq!(expect, Expect::Match, "case {n}: should have declined");
                 native += 1;
+            } else {
+                declined += 1;
             }
         }
+        eprintln!("animation stream: {native} native, {declined} declined of {CASES}");
         assert!(
-            store.stats().builds <= 1,
-            "case {n}: the warm call rebuilt the clip"
+            native * 2 > CASES,
+            "the native path ran for {native} of {CASES} cases"
         );
-    }
-    eprintln!("animation stream: {native} native, {declined} declined of {cases}");
-    assert!(
-        native * 2 > cases,
-        "the native path ran for {native} of {cases} cases"
-    );
+    });
+}
+
+/// Ladder step 3: every animation on the disc at frame 0, a middle frame,
+/// the last frame and a fractional frame (interpolating), full weight, all
+/// nodes, against the lifted path. Prints aggregate counts only.
+///
+/// H2_XBE=... H2_DISC=... cargo test --release -p engine --features differential --test sim_anim_differential -- --ignored --nocapture
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC) and the XBE ($H2_XBE)"]
+fn every_disc_animation_matches_the_guest() {
+    use map::{FourCC, Map, RawPointer, ResourceFile};
+    use std::fs::File;
+    use std::io::{BufReader, Read, Seek, SeekFrom};
+    use tags::anim::AnimationGraph;
+
+    let iso_path = std::env::var("H2_DISC")
+        .unwrap_or_else(|_| format!("{}/../../disc/halo2.iso", env!("CARGO_MANIFEST_DIR")));
+    with_oracle("animation disc sweep", |oracle, image| {
+        let mut iso = xiso::Xiso::open(BufReader::new(File::open(&iso_path).unwrap())).unwrap();
+        let entries = iso.entries().unwrap();
+        let part = iso.partition_offset();
+        let span = |name: &str| {
+            entries
+                .iter()
+                .find(|e| e.path.trim_start_matches('/').eq_ignore_ascii_case(name))
+                .map(|e| (part + u64::from(e.sector) * xiso::SECTOR, u64::from(e.size)))
+        };
+        let read = |spans: &[Option<(u64, u64)>; 4], p: RawPointer, size: u32| -> Option<Vec<u8>> {
+            let slot = match p.file {
+                ResourceFile::Local => 0,
+                ResourceFile::MainMenu => 1,
+                ResourceFile::Shared => 2,
+                ResourceFile::SinglePlayerShared => 3,
+            };
+            let (base, len) = spans[slot]?;
+            if u64::from(p.offset) + u64::from(size) > len {
+                return None;
+            }
+            let mut f = File::open(&iso_path).ok()?;
+            f.seek(SeekFrom::Start(base + u64::from(p.offset))).ok()?;
+            let mut v = vec![0; size as usize];
+            f.read_exact(&mut v).ok()?;
+            Some(v)
+        };
+        let (mut animations, mut calls, mut native, mut skipped) = (0u64, 0u64, 0u64, 0u64);
+        let before = adapter::stats();
+        for entry in entries
+            .iter()
+            .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+        {
+            let base = part + u64::from(entry.sector) * xiso::SECTOR;
+            let mut map = Map::from_region(
+                BufReader::new(File::open(&iso_path).unwrap()),
+                base,
+                entry.size.into(),
+            )
+            .unwrap();
+            let spans = [
+                Some((base, u64::from(entry.size))),
+                span("maps/mainmenu.map"),
+                span("maps/shared.map"),
+                span("maps/single_player_shared.map"),
+            ];
+            let ids: Vec<_> = map
+                .tags()
+                .iter()
+                .filter(|t| t.group == FourCC(*b"jmad"))
+                .map(|t| t.id)
+                .collect();
+            for id in ids {
+                let Ok(graph) = AnimationGraph::read(&mut map, id) else {
+                    continue;
+                };
+                let mut resources: BTreeMap<u32, Option<Vec<u8>>> = BTreeMap::new();
+                for a in &graph.animations {
+                    let s = &a.sizes;
+                    if !a.in_resource() || (s.static_size == 0 && s.animated_size == 0) {
+                        continue;
+                    }
+                    animations += 1;
+                    let data = resources.entry(a.resource_index).or_insert_with(|| {
+                        let r = graph.resources.get(a.resource_index as usize)?;
+                        read(&spans, r.pointer?, r.size)
+                    });
+                    let mut sizes = [0u8; 16];
+                    sizes[0] = s.static_flags;
+                    sizes[1] = s.animated_flags;
+                    sizes[2..4].copy_from_slice(&s.unknown);
+                    sizes[4..6].copy_from_slice(&s.unknown_4.to_le_bytes());
+                    sizes[6..8].copy_from_slice(&s.static_size.to_le_bytes());
+                    sizes[8..12].copy_from_slice(&s.unknown_8.to_le_bytes());
+                    sizes[12..16].copy_from_slice(&s.animated_size.to_le_bytes());
+                    let shape = ::sim_anim::Shape {
+                        sizes: ::sim_anim::Sizes(sizes),
+                        nodes: a.node_count,
+                    };
+                    let blob = ::sim_anim::Layout::new(&shape).and_then(|l| {
+                        let d = data.as_ref()?;
+                        d.get(a.data_offset as usize..a.data_offset as usize + l.len as usize)
+                    });
+                    let Some(blob) = blob else {
+                        skipped += 1;
+                        continue;
+                    };
+                    // The cache keeps resources 16-aligned; the blob keeps
+                    // its offset's alignment.
+                    let at = DATA + (a.data_offset & 15);
+                    let last = (a.frame_count.max(1) - 1) as f32;
+                    let frames = [
+                        (0.0, false),
+                        ((last / 2.0).floor(), false),
+                        (last, false),
+                        ((last * 0.37).max(0.0) + 0.25, true),
+                    ];
+                    let store = ClipStore::new(&EPOCH);
+                    for (k, (frame, interpolate)) in frames.into_iter().enumerate() {
+                        let mut c = entry_cpu(0x1fa0, 0);
+                        let mut m = Ram {
+                            image,
+                            overlay: BTreeMap::new(),
+                        };
+                        m.word(STACK, HARNESS_EXIT);
+                        m.store(at, blob);
+                        m.store(SIZES, &sizes);
+                        m.word(VIEW, at);
+                        m.word(VIEW + 4, SIZES);
+                        m.store(VIEW + 8, &[a.node_count]);
+                        m.store(ELEMENT + 0x10, &[a.anim_type.as_u8()]);
+                        m.store(ELEMENT + 0x13, &[a.node_count]);
+                        m.store(ELEMENT + 0x14, &a.frame_count.to_le_bytes());
+                        m.word(ELEMENT + 0x64, 0);
+                        c.esi = VIEW;
+                        c.xmm[1][..4].copy_from_slice(&f32::to_le_bytes(frame));
+                        c.xmm[4][..4].copy_from_slice(&1.0f32.to_le_bytes());
+                        let args = [
+                            GRAPH,
+                            ELEMENT,
+                            u32::from(a.node_count),
+                            0,
+                            0,
+                            OUT,
+                            u32::from(interpolate),
+                            0,
+                            0,
+                            0,
+                        ];
+                        for (i, v) in args.into_iter().enumerate() {
+                            m.word(STACK + 4 + 4 * i as u32, v);
+                        }
+                        for n in 0..u32::from(a.node_count) {
+                            let rec = OUT + 32 * n;
+                            m.store(rec, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f]);
+                            m.store(rec + 0x10, &[0; 12]);
+                            m.store(rec + 0x1c, &1.0f32.to_le_bytes());
+                        }
+                        calls += 1;
+                        let label = format!("animation {animations} frame {k}");
+                        if check(oracle, &c, &m, &store, &label) {
+                            native += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let after = adapter::stats();
+        let declined: Vec<u64> = (0..after.declined.len())
+            .map(|i| after.declined[i] - before.declined[i])
+            .collect();
+        eprintln!(
+            "animation disc sweep: {animations} animations, {skipped} without readable data, \
+             {calls} calls, {native} native; declined by reason {declined:?}"
+        );
+        assert!(native > 0);
+    });
 }
