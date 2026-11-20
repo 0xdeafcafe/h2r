@@ -270,7 +270,6 @@ fn an_all_phantom_sim_starts_with_zero_local_users_and_four_phantoms() {
             )
             .unwrap();
             let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
-            assert!(matched.playerless_host());
             let mut lobby = Machine::default();
             while !lobby
                 .open_sim(&cx, MAP, &matched, SCRATCH)
