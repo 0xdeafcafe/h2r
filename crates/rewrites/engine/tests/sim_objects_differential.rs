@@ -328,6 +328,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_6A_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_9_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_10_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_7A_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -431,6 +432,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     }
     answer_floats(cpu, target, n, case);
     slice_6a_answer(cpu, g, target, n, case);
+    slice_7a_answer(cpu, g, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -2752,4 +2754,239 @@ fn vehicle_update() {
 #[test]
 fn type_update_dispatch_reaches_the_vehicle() {
     dressed_with(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle);
+}
+
+
+// Slice 7a: the biped update `dd360` and the part of its tree that is
+// ported: the carrier `baf40`, the timer update `e2d80`, the seconds
+// conversion `1469f0`, the action request `e68c0`, the animation kind
+// `dd300`, the landing test `e4050`, the fall update `e45e0`, the
+// animation state update `e4c50` and the look update `de190`. Each root
+// runs over the slice 11 dressing plus a biped's fields, a parent of
+// each type and a flagged link to it ([`dress_biped`]), and compares the
+// float state at every callout like every root.
+
+/// Every guest function a slice 7a body calls that no table above lists,
+/// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 7a
+/// bodies"). `1e5af0`, `b58c0` and `b8d30` are slice 11's, `30bf0` slice
+/// 6a's, `113e40`, `e6830` and `111650` slice 10's; `ba1d0`, `cba50` and
+/// `bba20` are bodies.
+const SLICE_7A_CALLEES: &[(u32, u32)] = &[
+    // The biped update `dd360`.
+    (0xe3380, 4),
+    (0xe3700, 0),
+    (0xe01d0, 8),
+    (0xdc5c0, 8),
+    (0xe24f0, 12),
+    (0xe0ef0, 4),
+    (0xe3c90, 8),
+    (0xe40d0, 8),
+    (0xe4450, 8),
+    // The timer update `e2d80`.
+    (0xe5930, 0),
+    (0x10f430, 28),
+    (0xbfa40, 4),
+    (0x1faf30, 0),
+    // The action request `e68c0`.
+    (0xe6900, 0),
+    // The fall and animation state updates.
+    (0xe4d90, 12),
+    // The look update `de190`.
+    (0x10f820, 0),
+    (0xde080, 0),
+];
+
+std::thread_local! {
+    /// Whether a slice 7a root is running: its stubs answer as a biped's.
+    static BIPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The slice 7a stubs' effects beyond [`answer`]'s, under a biped root:
+/// the look update's target test answers yes once in three, and the
+/// marker lookup `b8d30` finds the marker by turns, writing its position
+/// where `de190` reads it (`ebx + 60`).
+fn slice_7a_answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
+    if !BIPED.with(std::cell::Cell::get) {
+        return;
+    }
+    match target {
+        0x10f820 => cpu.gpr[0] = u32::from((n as u32 + case) % 3 == 0),
+        0xb8d30 => {
+            let found = (n as u32 + case) % 2;
+            cpu.gpr[0] = found;
+            if found == 1 {
+                vec3(g, cpu.gpr[3] + 0x60, [1.0 + case as f32, -0.5, 0.25]);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The parent slot and the flagged link between it and the biped, and the
+/// biped definition's seat records (`+1cc`, `b0` bytes each).
+const BIPED_PARENT: u32 = 9;
+const BIPED_LINK: u32 = 10;
+const BIPED_SEATS: u32 = 0x0064_1c00;
+
+/// The fields the slice 7a bodies branch on, varied by `case`, over
+/// [`dress`]: the component, the parent (none, direct, or through a link
+/// flagged bit 26) and its type (vehicle, biped, other), the seat, the
+/// state `+3dc`, the counters and flags the timer, landing, fall and
+/// animation state tests read, the animation name (one the image's
+/// compares name, read from the instructions), the look's history.
+fn dress_biped(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    let slot = object(case) & 0xffff;
+    let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    // A biped, in the header and in the body.
+    byte(g, DATA + 12 * slot + 3, 0);
+    byte(g, body + 0xaa, 0);
+    word(g, body + 0xb4, if case == 0 { u32::MAX } else { 5 });
+
+    // The parent: a vehicle, a biped or another type; reached directly or
+    // through the link (body `+4` bit 26).
+    let parent = RECORDS + BODY * BIPED_PARENT;
+    let link = RECORDS + BODY * BIPED_LINK;
+    byte(g, DATA + 12 * BIPED_PARENT + 3, [1, 1, 1, 0, 1, 0, 0, 2, 1, 1, 0, 2][c % 12]);
+    word(g, link + 4, 1 << 26);
+    word(g, link + 0x14, handle(BIPED_PARENT));
+    word(g, parent + 4, 0);
+    word(g, body + 0x14, [u32::MAX, handle(BIPED_PARENT), handle(BIPED_LINK)][[0, 1, 2, 0, 1, 1, 2, 0, 1, 2, 1, 0][c % 12]]);
+    byte(g, parent + 0x34b, [3, 0, 2, 5][c % 4]);
+    g.set_u16(parent + 0x10a, [0, 4][c % 2]).unwrap();
+    g.set_u16(body + 0x1fc, [0xffff, 0, 1][c % 3]).unwrap();
+    word(g, DEFINITION + 0x1cc, BIPED_SEATS);
+    f32w(g, BIPED_SEATS + 0x20, 0.05);
+    f32w(g, BIPED_SEATS + 0xb0 + 0x20, 0.0);
+
+    // The unparented path.
+    let damage = g.u16(body + 0x10a).unwrap() & !4;
+    g.set_u16(body + 0x10a, damage | [0, 4, 0, 0, 4, 0][c % 6]).unwrap();
+    byte(g, body + 0x3dc, [0, 1, 2, 3, 1, 3, 0, 1, 2, 3, 1, 3][c % 12]);
+    word(g, DEFINITION + 0x264, [0, 8][(c / 2) % 2]);
+    word(g, DEFINITION + 0x1f0, [0, 1 << 10][(c / 3) % 2]);
+    vec3(g, body + 0x150, [0.0, 3.0, 4.0]);
+    vec3(g, body + 0x1b0, [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.001, 0.0, 0.0]][c % 3]);
+    byte(g, body + 0x348, [0, 1, 2, 3][c % 4]);
+    byte(g, body + 0x399, [0, 0x7f, 10, 3][(c + 1) % 4]);
+    byte(g, body + 0x39a, [0x7f, 0, 40, 2][c % 4]);
+    byte(g, body + 0x39b, [0, 1, 0x80, 5][c % 4]);
+    byte(g, body + 0x39d, [0, 1, 2][c % 3]);
+    byte(g, body + 0x39f, [0, 10, 0xf0][c % 3]);
+    g.set_u16(body + 0x34c, [0xffff, 1][(c / 4) % 2]).unwrap();
+    g.set_u16(body + 0x112, [0xffff, 0][c % 2]).unwrap();
+    let flags = g.u32(body + 4).unwrap();
+    word(g, body + 4, flags | if c % 3 == 1 { 1 << 29 } else { 0 });
+    word(g, body + 0xd4, if c % 2 == 1 { 0x00e9_0001 } else { u32::MAX });
+    // The animation block (`+180` from [`dress`]): its name one the
+    // animation kind and the state update compare, by the case.
+    let names = [0xdd302, 0xdd30e, 0xdd318, 0xdd320, 0xdd329, 0xdd331, 0xdd33d, 0xe4c9a, 0xe4ca2]
+        .map(|at| g.u32(at).unwrap());
+    let name = names[c % names.len()].wrapping_add([0, 1, u32::MAX][(c / 9) % 3]);
+    word(g, body + 0x180 + 0x7c, name);
+    f32w(g, body + 0x180 + 0x1c, [0.0, 1.0][c % 2]);
+    // The look: the aim, the history and whether it is set.
+    vec3(g, body + 0x168, [0.8, 0.6, 0.0]);
+    byte(g, body + 0x3c8, [0, 1][(c / 2) % 2]);
+    vec3(g, body + 0x3cc, [0.5, -2.0, 0.25]);
+}
+
+/// The arguments of a slice 7a root: the biped on the stack (`dd360`,
+/// `e2d80`, `e68c0`, with the action in `ecx`), in `eax` (`baf40`,
+/// `e4050`, `de190`), `esi` (`e45e0`) or `edi` (`e4c50`); a time in
+/// seconds on the stack (`1469f0`); a name in `ecx` (`dd300`), one the
+/// image's compares name or next to it.
+fn biped_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let biped = object(case);
+    let c = case as usize;
+    match root {
+        r if r == points::BIPED_UPDATE.base || r == points::BIPED_TIMER_UPDATE.base => word(g, STACK + 4, biped),
+        r if r == points::BIPED_ACTION.base => {
+            word(g, STACK + 4, biped);
+            cpu.gpr[1] = 0x1e;
+        }
+        r if r == points::GAME_SECONDS_TO_TICKS.base => f32w(g, STACK + 4, [0.5, 1.25, 0.0, 2.6, 0.05, 7.0][c % 6]),
+        r if r == points::BIPED_FALL_UPDATE.base => cpu.gpr[6] = biped,
+        r if r == points::BIPED_ANIMATION_STATE_UPDATE.base => cpu.gpr[7] = biped,
+        r if r == points::BIPED_ANIMATION_KIND.base => {
+            let at = [0xdd302, 0xdd30e, 0xdd318, 0xdd320, 0xdd329, 0xdd331, 0xdd33d, 0xdd34a][c % 8];
+            let delta = [0, 1, u32::MAX, 3][(c / 8) % 4];
+            cpu.gpr[1] = g.u32(at).unwrap().wrapping_add(delta);
+        }
+        _ => cpu.gpr[0] = biped,
+    }
+}
+
+/// [`transcripts`] of a slice 7a root over a [`dress_biped`]ed pool.
+fn biped_transcripts(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    BIPED.with(|b| b.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            dress(&mut g, case);
+            dress_biped(&mut g, case);
+            biped_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+    BIPED.with(|b| b.set(false));
+}
+
+#[test]
+fn biped_update() {
+    biped_transcripts(&points::BIPED_UPDATE, 24);
+}
+
+#[test]
+fn biped_update_leaves() {
+    biped_transcripts(&points::OBJECT_CARRIER, 12);
+    biped_transcripts(&points::BIPED_ANIMATION_KIND, 32);
+    biped_transcripts(&points::BIPED_AIRBORNE_TEST, 12);
+    biped_transcripts(&points::GAME_SECONDS_TO_TICKS, 6);
+}
+
+#[test]
+fn biped_update_segments() {
+    biped_transcripts(&points::BIPED_TIMER_UPDATE, 12);
+    biped_transcripts(&points::BIPED_ACTION, 2);
+    biped_transcripts(&points::BIPED_FALL_UPDATE, 12);
+    biped_transcripts(&points::BIPED_ANIMATION_STATE_UPDATE, 12);
+    biped_transcripts(&points::BIPED_LOOK_UPDATE, 12);
+}
+
+/// The dispatcher reaches the biped body by the `bipd` slot over the
+/// biped's dressing.
+#[test]
+fn type_update_dispatch_reaches_the_biped() {
+    BIPED.with(|b| b.set(true));
+    dressed_with(&points::OBJECT_TYPE_UPDATE, 12, dress_biped);
+    BIPED.with(|b| b.set(false));
 }
