@@ -181,3 +181,9 @@ pub const fn h1_kill_witness_line(offset: usize) -> bool {
 /// The original multikill trigger and the nearby reply to a player.
 pub const H1_KILLING_SPREE_LINE: usize = 0x4d0;
 pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
+
+/// Notices that lack an authored Halo 2 vocalization or have a separate
+/// source remark at the same native event.
+pub const fn h1_actor_notice_line(offset: usize) -> bool {
+    matches!(offset, 0x720 | 0xa50)
+}

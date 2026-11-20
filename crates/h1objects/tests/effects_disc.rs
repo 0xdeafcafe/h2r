@@ -884,6 +884,11 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [
+        (0x000e_ac66, 0x001b_ba20),
+        (0x0025_accf, 0x001f_b7e0),
+        (0x001c_9958, 0x0020_ba60),
+        (0x001c_831d, 0x0020_ba60),
+        (0x001c_8347, 0x0020_ba60),
         (0x000c_6b62, 0x0011_4c60),
         (0x000c_a512, 0x001c_9c80),
         (0x000c_a45d, 0x0011_47e0),

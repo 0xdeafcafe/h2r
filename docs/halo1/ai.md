@@ -520,6 +520,22 @@ player kill takes the nearby allied reply route directly. An AI
 with the generic kill remark can also draw the grenade response.
 As in Halo 1, an interrupted remark does not start a reply.
 
+**Built.** Halo 1's accepted seat exit at `0x42a5b` notifies the
+actor and selects stimulus 37. Halo 2 calls its AI from the
+corresponding accepted dismount action at `0xeac66`. The occupant
+uses its original exit remark there. Halo 1's motion check at
+`0x4b6fb` selects excitement or fright for vehicle riders. Halo 2
+also distinguishes its cheer and dangerous-driving events at
+`0x1c831d` and `0x1c8347`, and selects the converted sounds through
+its rider vocalizations.
+
+**Built.** Halo 1's perception update at `0x15725e` reports an
+alliance change using the new relationship. Halo 2 emits alliance
+break event 194 at `0x25accf` for the observer and emits alliance
+restoration event 196 at `0x1c9958`. The observer can use its exact
+alliance-break row, and the restored alliance uses the native
+forgiveness vocalization.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

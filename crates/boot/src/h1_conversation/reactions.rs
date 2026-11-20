@@ -35,7 +35,7 @@ impl Queue {
         (index < OBJECT_CAPACITY).then_some(self.0 + index * RECORD_SIZE)
     }
 
-    fn push(
+    pub(super) fn push(
         self,
         m: &mut dyn GuestMemory,
         unit: u32,
@@ -365,6 +365,24 @@ fn kill(
     witness(m, queue, victim, attacker, allied)
 }
 
+fn actor_notice(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    actor_id: u32,
+    offset: usize,
+    priority: u32,
+) -> Result<(), MemFault> {
+    if ai_vocalizes(m)?
+        && let Some(actor) = datum(m, cast::ACTORS, actor_id)?
+    {
+        let speaker = m.u32(actor + cast::ACTOR_UNIT)?;
+        if dialogue::source_offset_row(m, speaker, offset)?.is_some() {
+            queue.push(m, speaker, offset, priority)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
     let queue = Queue(b.guest_alloc(BYTES, Permissions::RW)?);
     let spree_records = b.guest_alloc(SPREE_BYTES, Permissions::RW)?;
@@ -431,6 +449,26 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
                     m.set_u32(record + 20, 0).map_err(guest_fault)?;
                 }
             }
+            Ok(Flow::Continue)
+        },
+    );
+    b.raw().before(
+        &points::AI_ACTOR_VOCALIZE,
+        "report a Halo 1 alliance break",
+        move |call| {
+            if call.cpu.eax as u16 == 194 {
+                let mut m = call.ctx.memory();
+                actor_notice(&mut *m, queue, call.cpu.ecx, 0x720, 6).map_err(guest_fault)?;
+            }
+            Ok(Flow::Continue)
+        },
+    );
+    b.raw().before(
+        &points::AI_DISMOUNT_NOTICE,
+        "report a Halo 1 actor leaving a vehicle",
+        move |call| {
+            let mut m = call.ctx.memory();
+            actor_notice(&mut *m, queue, call.cpu.eax, 0xa50, 3).map_err(guest_fault)?;
             Ok(Flow::Continue)
         },
     );

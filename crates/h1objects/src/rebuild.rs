@@ -2953,6 +2953,7 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x6f0, "foundfoe"),         // oldenemysighted
     (0x700, "seefoe_srprs"),     // unexpectedenemy
     (0x710, "chckallybdy"),      // deadfriendfound
+    (0x730, "forgive"),          // alliancereformed, event 196
     (0x740, "strk_grnd"),        // grenadethrowing
     (0x750, "warn_incmn_grnd"),  // grenadesighted
     (0x840, "srchstart"),        // searchstart
@@ -2965,6 +2966,8 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x9d0, "flee"),             // flee
     (0x9f0, "fear_rtrt_ldrdead"), // flee_leader_died, adlg event 63 pattern 110
     (0xa40, "entervcl"),         // vehicleentry
+    (0xa60, "prs_plr_vclchr"),   // vehiclewoohoo, event 85
+    (0xa70, "scld_plr_vclcrazy"), // vehiclescared, event 87
     (0xb20, "srprs"),            // surprise
     (0xb30, "brsrk"),            // berserk
     (0xb40, "melee"),            // meleeattack
