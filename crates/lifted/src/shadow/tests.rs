@@ -60,7 +60,15 @@ fn port(
 
 fn run_check(p: &mut PortFn<'_>) -> (Outcome, Guest) {
     let g = live();
-    let (outcome, _) = check(&mut increment(), &mut View::new(), &g, &entry(), 100, p);
+    let (outcome, _) = check(
+        &mut increment(),
+        &mut View::new(),
+        &g,
+        &entry(),
+        CODE,
+        100,
+        p,
+    );
     (outcome, g)
 }
 
@@ -123,7 +131,7 @@ fn the_original_reads_its_own_writes() {
         c.eax = 5;
         g.ret(c, 0)
     };
-    let (outcome, _) = check(&mut code, &mut View::new(), &g, &entry(), 100, &mut p);
+    let (outcome, _) = check(&mut code, &mut View::new(), &g, &entry(), CODE, 100, &mut p);
     assert_eq!(outcome, Outcome::Matched { steps: 3 });
 }
 
@@ -257,4 +265,24 @@ fn status_serializes() {
     assert_eq!(v["mismatched"], 1);
     assert_eq!(v["mismatches"][0]["kind"], "memory");
     assert_eq!(v["ports"][0]["name"], "test.inc");
+}
+
+#[test]
+fn the_original_starts_where_the_call_entered_whatever_eip_holds() {
+    let g = live();
+    let stale = CpuAbi {
+        eip: 0xdead_0000,
+        ..entry()
+    };
+    let mut p = port(1, 1, 0);
+    let (outcome, _) = check(
+        &mut increment(),
+        &mut View::new(),
+        &g,
+        &stale,
+        CODE,
+        100,
+        &mut p,
+    );
+    assert_eq!(outcome, Outcome::Matched { steps: 4 });
 }

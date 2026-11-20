@@ -384,13 +384,15 @@ fn compare(
 }
 
 /// Run `port` on a copy of `live` and the lifted original from the same
-/// `entry`, and compare. Also returns the port's state and transfer from
+/// `entry`, and compare. `pc` is where the call entered (the function or a
+/// resume); the original starts there whatever `entry.eip` holds. Also returns the port's state and transfer from
 /// the copy, for comparing with the same port on the live Guest.
 pub fn check(
     code: &mut (impl Code + ?Sized),
     view: &mut View,
     live: &Guest,
     entry: &CpuAbi,
+    pc: u32,
     limit: u64,
     port: &mut PortFn<'_>,
 ) -> (Outcome, Option<(CpuAbi, TransferAbi)>) {
@@ -417,6 +419,7 @@ pub fn check(
     port_cpu.eip = t.target_pc;
 
     let mut original = cpu::to_interp(entry);
+    original.eip = pc;
     let mut overlay = Overlay::new(live);
     let mut last: Option<Flow> = None;
     let mut first: Option<Diff> = None;

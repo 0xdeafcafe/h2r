@@ -5,7 +5,7 @@
 //! entries, resumes and callees alike. [`Assembled`] lowers raw x86 bytes
 //! for synthetic tests that have no image.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ir::IrInsn;
 use ir::interp::{self, Cpu, Exit, Flow, Memory};
@@ -29,7 +29,10 @@ pub struct Original {
     /// Every discovered function start, ascending.
     functions: Vec<u32>,
     cache: HashMap<u32, IrInsn>,
-    primed: std::collections::HashSet<u32>,
+    /// Functions already lifted into `cache`.
+    done: HashSet<u32>,
+    /// Addresses no nearby function holds.
+    missing: HashSet<u32>,
 }
 
 /// How many function starts at or below an address [`Original`] tries
@@ -46,7 +49,8 @@ impl Original {
             lifter,
             functions: analysis.functions.keys().copied().collect(),
             cache: HashMap::new(),
-            primed: Default::default(),
+            done: HashSet::new(),
+            missing: HashSet::new(),
         })
     }
 
@@ -55,45 +59,40 @@ impl Original {
         self.cache.len()
     }
 
-    fn take(&mut self, f: ir::IrFunction) -> bool {
-        let mut any = false;
-        for insn in f.blocks.into_values().flat_map(|b| b.insns) {
-            any = true;
-            self.cache.entry(insn.pc).or_insert(insn);
+    /// Lift the function at `entry` into the cache once. Instructions
+    /// already there (from an overlapping function) stay.
+    fn lift(&mut self, entry: u32) {
+        if !self.done.insert(entry) {
+            return;
         }
-        any
+        if let Some(f) = self.lifter.lift(entry) {
+            for insn in f.blocks.into_values().flat_map(|b| b.insns) {
+                self.cache.entry(insn.pc).or_insert(insn);
+            }
+        }
     }
 }
 
 impl Code for Original {
     fn insn(&mut self, pc: u32) -> Option<&IrInsn> {
-        if !self.cache.contains_key(&pc) {
+        if !self.cache.contains_key(&pc) && !self.missing.contains(&pc) {
             // The nearest functions at or below pc, until one holds it.
             let below = self.functions.partition_point(|&e| e <= pc);
             for i in (below.saturating_sub(NEAREST)..below).rev() {
-                let entry = self.functions[i];
-                let Some(f) = self.lifter.lift(entry) else {
-                    continue;
-                };
-                let has = f
-                    .blocks
-                    .values()
-                    .any(|b| b.insns.iter().any(|x| x.pc == pc));
-                self.take(f);
-                if has {
+                self.lift(self.functions[i]);
+                if self.cache.contains_key(&pc) {
                     break;
                 }
+            }
+            if !self.cache.contains_key(&pc) {
+                self.missing.insert(pc);
             }
         }
         self.cache.get(&pc)
     }
 
     fn prime(&mut self, entry: u32) {
-        if self.primed.insert(entry)
-            && let Some(f) = self.lifter.lift(entry)
-        {
-            self.take(f);
-        }
+        self.lift(entry);
     }
 }
 

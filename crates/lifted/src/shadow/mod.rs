@@ -387,7 +387,7 @@ impl Shadow {
             return port(cpu, guest);
         };
         code.prime(base);
-        let (mut outcome, copy) = check(code, &mut s.view, guest, &entry, limit, port);
+        let (mut outcome, copy) = check(code, &mut s.view, guest, &entry, pc, limit, port);
         // The real call: on the live Guest, as without checks.
         let live = port(cpu, guest);
         if let (Ok(t), Some((copy_cpu, copy_t))) = (&live, copy)
