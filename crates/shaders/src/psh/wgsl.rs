@@ -474,6 +474,17 @@ fn mapped(src: &str, m: DotMap, warnings: &mut Vec<String>, stage: usize) -> Str
 
 /// Translates a pixel shader definition.
 pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
+    translate_program(def, options, false)
+}
+
+/// Supply the D3D default final combiner when the definition has none.
+/// Native callers supply the fog unit and the specular-enable bit in
+/// `fog.w` without building a pipeline for each combination.
+pub fn translate_with_default_final_uniform(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
+    translate_program(def, options, true)
+}
+
+fn translate_program(def: &PixelShaderDef, options: &PixelOptions, default_final_uniform: bool) -> PixelShader {
     let c = def.decode();
     let mut g = Gen {
         c: &c,
@@ -871,6 +882,13 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
             "        color = vec4f(clamp(a * b + (1.0 - a) * c + d, vec3f(0.0), vec3f(1.0)), clamp({gg}, 0.0, 1.0));"
         );
         s.push_str("    }\n");
+    } else if default_final_uniform {
+        s.push_str(r#"    let base = clamp(r0, vec4f(0.0), vec4f(1.0));
+    let specular = clamp(v1.rgb + base.rgb, vec3f(0.0), vec3f(1.0));
+    let rgb = select(base.rgb, specular, xps.fog.w != 0.0);
+    let fogged = clamp(fogr.a * rgb + (1.0 - fogr.a) * fogr.rgb, vec3f(0.0), vec3f(1.0));
+    let color = vec4f(select(rgb, fogged, xps.fog.x != 0.0), base.a);
+"#);
     } else {
         s.push_str("    let color = clamp(r0, vec4f(0.0), vec4f(1.0));\n");
     }
@@ -966,5 +984,28 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
         flat_shading: options.flat_shading,
         discards: kills || options.stipple,
         warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uniform_fog_and_specular_apply_only_to_an_implicit_final_combiner() {
+        let options = PixelOptions::default();
+        let implicit = PixelShaderDef::default();
+        let guest = translate(&implicit, &options);
+        let native = translate_with_default_final_uniform(&implicit, &options);
+        assert!(guest.warnings.is_empty());
+        assert!(native.warnings.is_empty());
+        assert!(native.body.contains("xps.fog.w != 0.0"));
+        assert!(native.body.contains("vec4f(select(rgb, fogged, xps.fog.x != 0.0), base.a)"));
+
+        let explicit = implicit.with_default_final_combiner(true, true);
+        assert_eq!(
+            translate_with_default_final_uniform(&explicit, &options).body,
+            translate(&explicit, &options).body
+        );
     }
 }

@@ -457,6 +457,12 @@ pub(crate) struct Translated {
 /// The vertex program and pixel shader through `shaders`, and the uniforms
 /// with the instance's constants; or why the pass stays on the D3D path.
 pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
+    translate_pass_with_pixel(p, psh::translate)
+}
+
+pub(crate) fn translate_pass_with_pixel(
+    p: &PassParts<'_>, translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
+) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
     if unsupplied != 0 {
@@ -486,7 +492,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
         }
         options.alpha_kill[n] = s.alpha_kill != 0;
     }
-    let ps = psh::translate(&def, &options);
+    let ps = translate_pixel(&def, &options);
     if !ps.warnings.is_empty() {
         return Err(format!("pixel shader: {}", ps.warnings.join("; ")));
     }
