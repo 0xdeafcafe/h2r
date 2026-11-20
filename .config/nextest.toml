@@ -34,7 +34,8 @@ test-group = 'timing'
 # The profile `cargo xtask test` runs (crates/tools/xtask). A hung test is
 # killed and reported as failed instead of holding the run: after five
 # minutes, or thirty for a disc test. xtask reads the JUnit report, under
-# the target directory at nextest/xtask/junit.xml, for its per-package
+# the workspace root at target/nextest/xtask/junit.xml (nextest's store
+# ignores CARGO_TARGET_DIR), for its per-package
 # summary.
 [profile.xtask]
 slow-timeout = { period = "60s", terminate-after = 5 }

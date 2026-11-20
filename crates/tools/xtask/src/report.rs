@@ -181,10 +181,14 @@ pub fn parse_libtest(text: &str) -> Vec<LibtestBlock> {
             out.push('\n');
             continue;
         }
-        if blocks.is_empty() {
+        // Output before the first `Running` (cargo's `Compiling` lines)
+        // opens no block; a bare libtest run (no cargo header) does.
+        if blocks.is_empty() && (t.starts_with("test ") || t.starts_with("running ")) {
             blocks.push(LibtestBlock::default());
         }
-        let b = blocks.last_mut().expect("pushed above");
+        let Some(b) = blocks.last_mut() else {
+            continue;
+        };
         if let Some(name) = t.strip_prefix("test ").and_then(|r| r.strip_suffix(" ... FAILED")) {
             b.failures.push((name.to_owned(), String::new()));
         } else if let Some(r) = t.strip_prefix("test result: ") {

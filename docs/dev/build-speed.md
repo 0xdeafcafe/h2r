@@ -472,7 +472,7 @@ new key for every crate. xtask does not use it.
 The `xtask` profile in `.config/nextest.toml` sets the time limits: a
 test still running after five minutes is killed and reported as failed,
 a disc test after thirty. It also writes a JUnit report
-(`<target>/nextest/xtask/junit.xml`). xtask reads it, and
+(`target/nextest/xtask/junit.xml` under the workspace root; nextest keeps its store there whatever `CARGO_TARGET_DIR` says). xtask reads it, and
 `cargo nextest list --message-format json` for the tests the run left
 out, and prints one line per package: passed, failed, skipped and the
 slowest test. Each failed test follows with the first lines of its

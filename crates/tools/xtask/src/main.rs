@@ -380,8 +380,10 @@ struct NextestRun {
 }
 
 fn run_nextest(ws: &Workspace, packages: &BTreeSet<String>, tier: Tier, env: &BTreeMap<String, String>) -> Result<NextestRun> {
-    // The xtask profile's JUnit report (.config/nextest.toml).
-    let junit = ws.target_dir.join("nextest/xtask/junit.xml");
+    // The xtask profile's JUnit report (.config/nextest.toml). nextest's
+    // store is `target/nextest` under the workspace root whatever
+    // CARGO_TARGET_DIR says.
+    let junit = ws.root.join("target/nextest/xtask/junit.xml");
     let _ = std::fs::remove_file(&junit);
     let mut c = nextest_command(ws, packages, tier, false);
     c.envs(env);
