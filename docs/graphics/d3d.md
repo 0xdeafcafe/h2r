@@ -1699,6 +1699,16 @@ checks these branches.
   over with a kick, so the count lands at that batch's end. Its
   `read_pixel_count` answers a landed count at once and otherwise waits
   for everything queued before it, as before.
+- **Sealed game frames.** The scene sink retains each counter clear and
+  the ticket for each report alongside the counted draws. At a present
+  the frame owner matches those commands and tickets against the worker
+  queue. For a matching frame the native pass reads the GPU counter at
+  each report and the worker connects the original guest ticket to that
+  GPU result. A read that needs the original draws before the present
+  flushes them in queue order. At display scale the counter samples one
+  host pixel per guest pixel. A private capture leaves the displayed
+  frame's counter and reports untouched. The synthetic ticket and
+  display-scale cases are in `crates/platform/d3d/tests/visibility_async.rs`.
 - An index never ended, or at or above `0x4000` (`VISIBILITY_INDICES`), is
   an invalid call. Ending an index again replaces its result. Teardown
   forgets every test. Counted in `Stats::visibility_tests`.
