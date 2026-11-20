@@ -157,7 +157,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
 
     let plan = |session: &Arc<Session>, transport: TelemetryConfig| {
         let mut features = hooks::Registry::new(hooks::Switches::defaults());
-        crate::registration::register_telemetry(&mut features, &transport, Some(session))
+        crate::run_plan::register_telemetry(&mut features, &transport, Some(session))
             .unwrap()
             .expect("telemetry hook plan");
         features.build(&hooks::Base).unwrap().text()
@@ -264,7 +264,7 @@ fn host_facts() -> Facts {
         address: "127.0.0.1:3074".into(),
         live_service: false,
         telemetry_hooks: live_proto::film::TelemetryHooks::UNIFIED,
-        render_hooks: crate::registration::compiled_render_hooks(),
+        render_hooks: crate::run_plan::compiled_render_hooks(),
     }
 }
 
