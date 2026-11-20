@@ -197,6 +197,8 @@ pub mod method {
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Main-menu attract movie, idle timer and last attempt.
+    pub const UI_ATTRACT: &str = "ui.attract";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
     /// Active widget panes, resolved text and audit findings at this boundary.

@@ -1,4 +1,5 @@
 //! Where decoded frames come from, and the clock that paces them.
+use crate::MovieOpenError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,11 +50,22 @@ pub trait MovieStream: Send {
 /// (AVFoundation on Apple targets); the macOS implementation uses system codecs.
 pub trait MovieDecoder: Send + Sync {
     fn open(&self, movie: &Path) -> Option<Box<dyn MovieStream>>;
+
+    /// Open with a diagnostic error for callers that need a refusal reason.
+    fn try_open(&self, movie: &Path) -> Result<Box<dyn MovieStream>, MovieOpenError> {
+        self.open(movie)
+            .ok_or_else(|| MovieOpenError::Decoder("no readable video stream".into()))
+    }
 }
 
 /// Resolves a movie name (`intro_60`) to a stream, or `None` to skip it.
 pub trait MovieSource: Send + Sync {
     fn open(&self, name: &str) -> Option<Box<dyn MovieStream>>;
+
+    /// Resolve and open with a diagnostic error.
+    fn try_open(&self, name: &str) -> Result<Box<dyn MovieStream>, MovieOpenError> {
+        self.open(name).ok_or(MovieOpenError::Unavailable)
+    }
 }
 
 /// Looks the movie up in the `movies.json` manifest of a transcode
@@ -89,13 +101,17 @@ impl TranscodedSource {
 }
 impl MovieSource for TranscodedSource {
     fn open(&self, name: &str) -> Option<Box<dyn MovieStream>> {
+        self.try_open(name).ok()
+    }
+
+    fn try_open(&self, name: &str) -> Result<Box<dyn MovieStream>, MovieOpenError> {
         if let Some(only) = &self.only
             && !only.iter().any(|n| n.eq_ignore_ascii_case(name))
         {
-            return None;
+            return Err(MovieOpenError::Unavailable);
         }
-        let movie = movies::locate(&self.dir, name)?;
-        self.decoder.open(&movie)
+        let movie = movies::locate(&self.dir, name).ok_or(MovieOpenError::MissingOrChangedOutput)?;
+        self.decoder.try_open(&movie)
     }
 }
 

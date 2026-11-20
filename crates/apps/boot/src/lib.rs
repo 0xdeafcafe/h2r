@@ -1051,6 +1051,47 @@ fn run_configured(
             film_stamps(),
         );
     }
+    let bink = if opts.bink {
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = if host_light {
+            Some("light host".into())
+        } else {
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
+        };
+        let attract_file = if why_off.is_none() && opts.movies != movies_glue::Movies::Off {
+            k.vfs().and_then(|vfs| {
+                vfs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .host_file(movies_glue::ATTRACT_VFS_PATH)
+            })
+        } else {
+            None
+        };
+        let (mode, hle, attract) = movies_glue::install(
+            &loaded.runtime,
+            &opts.movies,
+            &opts.disc,
+            attract_file,
+            film.is_none(),
+            why_off.as_deref(),
+            #[cfg(feature = "local-io")]
+            ds.as_ref()
+                .filter(|_| !clock_only_audio)
+                .map(dsound_glue::Audio::mixer),
+            #[cfg(not(feature = "local-io"))]
+            None,
+        );
+        attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        if let Some(session) = &film {
+            session.record_movies(opts, mode);
+        }
+        Some(hle)
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
+        None
+    };
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&hooks::Base).map_err(|conflicts| {
@@ -1111,35 +1152,6 @@ fn run_configured(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    let bink = if opts.bink {
-        // A lockstep run compares schedules and movie pacing follows the
-        // wall clock, so it skips them; so, by default, do level boots and
-        // headless runs.
-        let why_off = if host_light {
-            Some("light host".into())
-        } else {
-            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
-        };
-        let (mode, hle) = movies_glue::install(
-            &loaded.runtime,
-            &opts.movies,
-            &opts.disc,
-            why_off.as_deref(),
-            #[cfg(feature = "local-io")]
-            ds.as_ref()
-                .filter(|_| !clock_only_audio)
-                .map(dsound_glue::Audio::mixer),
-            #[cfg(not(feature = "local-io"))]
-            None,
-        );
-        if let Some(session) = &film {
-            session.record_movies(opts, mode);
-        }
-        Some(hle)
-    } else {
-        eprintln!("movies: off (--no-bink: the original player runs)");
-        None
-    };
     let tr = if host_light {
         None
     } else {

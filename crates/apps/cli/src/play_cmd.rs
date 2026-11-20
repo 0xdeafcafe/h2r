@@ -55,11 +55,13 @@ A halo1.iso next to the disc is converted into --data on the way in (its
 campaign under Campaign, its multiplayer maps in the map list), again only
 when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/halo1/campaign.md).
-The intro, attract and credits movies play, with their sound, when `h2 movies`
-has installed them for this disc (in --movies DIR, by default the app data
-directory); otherwise, with --no-movies, or on a --level boot (unless --movies
-DIR is given), the game skips them. The log says which (`movies: playback
-(...)` or `movies: skip (...)`).
+The intro and credits play, with their sound, when `h2 movies` has installed
+them for this disc. An idle menu plays the attract movie from the same install.
+On a normal windowed boot with the default movie directory, a missing attract
+transcode is prepared from the disc using local ffmpeg when available.
+--movies DIR selects another install. --no-movies skips playback, as does
+a --level boot unless --movies DIR is given. An unavailable attract movie
+leaves the menu music playing.
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself

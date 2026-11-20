@@ -17,6 +17,7 @@ mod agent_spawn_view;
 mod spectator_view;
 pub mod agent_glue;
 pub mod aim_assist;
+pub mod attract;
 mod audio_loop_agent;
 mod audio_loops;
 pub mod campaign_cache;

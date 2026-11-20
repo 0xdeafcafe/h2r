@@ -7,12 +7,14 @@ Switch: `--movies`, `--no-movies`, `--no-bink` (command-line flags).
 (sections `BINK*`, `BINKDATA`). It has no Bink decoder; see
 [movies.md](movies.md) for the optional install-time MOV transcode.
 Every host (`h2 run`, `h2 serve`, `h2 play`, the apps) makes the same choice
-at startup (`crates/extensions/game/src/movies_glue.rs`): **playback** when `h2 movies`
-has installed transcodes that are current for the disc, **skip** otherwise
-and, by default, on headless runs and level boots, and logs it as one line:
+at startup (`crates/extensions/game/src/movies_glue.rs`). The decoder plays
+current transcodes, including attract clips prepared from the disc on a
+windowed menu boot. Playback is optional. Headless runs and level boots
+default to skip mode. The log records the selection:
 
 ```text
 movies: playback (3 transcoded: attract_60, credits_60, intro_60)
+movies: playback (preparing attract_60 from disc)
 movies: skip (none installed in ~/Library/Application Support/h2recomp/movies; `h2 movies <disc.iso>` installs them)
 movies: skip (stale: intro_60 was transcoded from another disc (re-run `h2 movies`))
 movies: skip (off: --no-movies)
@@ -150,11 +152,23 @@ deadline. The shared UI tag supplies that lead at `wigl +0x1c0` via
 `0x235ca9`. The menu-music controller at `0x235b9c` applies the gate subject
 to its six-second change guard. When frame limiting is active, the same
 screen check (`0x14a224`) makes frame timing at `0x12b0e0` use at least two
-vblanks per guest frame. On a movie start that leaves the wrapper
-idle, `0x223a21` resets the timer. On the next eligible update the gate
-opens and the controller can start the looping sound again. This includes
-skip mode. [`audio.loops`](../runtime/agent-api.md#audioloops) reports the
-timer, gate, movie state and looping-sound history.
+vblanks per guest frame. The start path at `0x223a21` selects
+`d:\bink\attract_60.bik` and passes the skippable movie flags to the wrapper.
+Its input skip and end-of-movie paths close Bink and reset idle time at
+`0x1565a0`. The next eligible UI update opens the music gate and the
+controller restarts the intro.
+
+The `attract` feature (`crates/extensions/game/src/attract.rs`) observes
+the gate before the timer and checks the decoder when the timer first
+closes it. `BinkHle::prepare` validates the selected transcode, decodes its
+first frame and keeps that stream for `BinkOpen`. The guest starts the
+movie and opens its audio voice at the usual deadline. If the clip is
+unavailable, the guard keeps the gate open before the music controller
+sees it. At the deadline the guard logs once and resets the idle clock.
+This gives a transcode still being prepared another full idle cycle.
+[`ui.attract`](../runtime/agent-api.md#uiattract) reports the timer, asset
+and the wrapper's last attempt. [`audio.loops`](../runtime/agent-api.md#audioloops)
+shows the accompanying music transitions.
 
 ## Behaviour
 
@@ -268,20 +282,11 @@ Read from the retail image, addresses only:
 
 ## Host integration
 
-`boot::movies_glue::install` does the whole thing. `RunOpts::movies` is a
+`boot::movies_glue::install` wires the decoder and returns the attract
+guard for the feature registry. `RunOpts::movies` is a
 `movies_glue::Movies`: `Auto` (the default: the app data directory,
 `default_dir()`), `Dir(path)` (`--movies DIR`) or `Off` (`--no-movies`).
 `movies_glue::why_off` gives the reason a run skips regardless:
-
-```rust
-let why_off = boot::movies_glue::why_off(&opts.movies, lockstep, level_name, headless);
-let selection = boot::movies_glue::choose(opts.movies.dir().as_deref(), &opts.disc, why_off);
-// movies::status::availability over the disc's .bik files (ISO or directory)
-let hle = boot::movies_glue::hle(&selection, ds.as_ref().map(dsound_glue::Audio::mixer));
-// BinkHle::new(selection.source(AvFoundationDecoder)) + set_audio_out(MixerAudio)
-runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
-eprintln!("movies: {selection}");
-```
 
 - A movie is current when the manifest has an entry for its disc path whose
   source size matches the disc file and whose output passes `movies::locate`
@@ -290,6 +295,11 @@ eprintln!("movies: {selection}");
   installer's job); the size is the cheap tell for another disc. Movies that
   are not current are left out of the source (`TranscodedSource::only`), so
   only they skip.
+- A normal windowed `Auto` boot looks up the attract movie through the same
+  VFS that serves the guest. If the disc contains it and the transcode is
+  missing or stale, a background worker prepares that one file using the
+  existing local ffmpeg installer. Film sessions use the recorded asset
+  choices. Explicit movie directories are read as supplied.
 - A lockstep run (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) is
   forced to skip (`movies: skip (off: lockstep)`): movie pacing follows the
   wall clock, which a schedule comparison must not see.
