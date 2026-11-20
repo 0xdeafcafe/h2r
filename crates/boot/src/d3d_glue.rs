@@ -1286,10 +1286,11 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
+    let watch = subscribe_write_barrier(rt)?;
     install_occlusion_capture(&device);
     #[cfg(feature = "gpu")]
     let shadow_admission = {
-        let shadows = crate::native_world_glue::install(&device);
+        let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
         crate::native_particles_glue::install(&device);
@@ -1317,7 +1318,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .chain(&r.stopping)
         .map(|e| e.0)
         .collect();
-    install_write_barrier(rt, &device, &entries)?;
+    install_write_barrier(rt, &device, &entries, watch);
     #[cfg(feature = "gpu")]
     crate::native_world_layers_glue::install(rt, &device);
     #[cfg(feature = "gpu")]
@@ -1580,15 +1581,8 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     rt: &runtime::Runtime,
     device: &Arc<Mutex<d3d::Device<B>>>,
     entries: &[u32],
-) -> anyhow::Result<()> {
-    use runtime::watch::CONTIGUOUS_BASE;
-    let id = {
-        let mut mem = rt.memory();
-        let id = mem.subscribe_writes(WATCH_OWNER);
-        mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        id
-    };
+    id: runtime::WatchId,
+) {
     rt.edit_dispatch(|d| {
         for &addr in entries {
             let Some(prev) = d.override_handler(addr) else {
@@ -1608,7 +1602,15 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
             );
         }
     });
-    Ok(())
+}
+
+/// Subscribe before installing native render hosts. Opaque section prepare,
+/// sorted emit and D3D guest entries must consume the same stream of stores.
+fn subscribe_write_barrier(rt: &runtime::Runtime) -> anyhow::Result<runtime::WatchId> {
+    let mut mem = rt.memory();
+    let id = mem.subscribe_writes(WATCH_OWNER);
+    mem.watch_writes(id, runtime::watch::CONTIGUOUS_BASE, 0x0400_0000)?;
+    Ok(id)
 }
 
 /// One entry's write barrier: drains watch `id` into `note` (when anything

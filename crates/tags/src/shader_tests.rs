@@ -410,6 +410,46 @@ fn resolves_static_implementation() {
 }
 
 #[test]
+fn selected_rebinds_preserve_unwritten_lanes_stages_and_variant_words() {
+    let mut f = fixture();
+    // Compare mode in the embedded nonvariant definition. A later variant
+    // updates its texture modes and combiners while retaining this word.
+    let first = target(&f, spas_pp(&f));
+    w32(&mut f.arena.b, first + 6 + 42 * 4, 0x1234);
+    let mut lib = library(&f);
+    let inputs = EngineInputs::for_shader(&lib.shader(SHAD_ID).unwrap());
+    let mut state = ParameterState::default();
+    state.banks[0][3] = [9., 8., 7., -0.];
+    state.banks[1][2][3] = 37.;
+    state.slot_sizes.insert(5, Some((21, 34)));
+    let inherited = StageTexture { source: TextureSource::Engine(2), size: None, stage_size: Some((8, 9)) };
+    state.stages[3] = Some(inherited);
+    let selection = PassSelection { lod: 0, layer: 2, pass: 0, implementation: 0 };
+    let bind = lib.selected_implementation(SHAD_ID, selection, Some(&inputs), Some(&mut state)).unwrap().implementation;
+    assert_eq!(state.banks[0][3].map(f32::to_bits), [1.0f32, 2., 7., -0.].map(f32::to_bits));
+    assert_eq!(state.banks[1][2][3], 37.);
+    assert_eq!(bind.textures[0].unwrap().stage_size, Some((21, 34)));
+    assert_eq!(state.stages[3], Some(inherited));
+
+    let variant = PassSelection { implementation: 1, ..selection };
+    let selected = lib.selected_implementation(SHAD_ID, variant, Some(&inputs), Some(&mut state)).unwrap();
+    let writes: Vec<_> = selected.render_writes.iter().map(|s| (s.state, s.value)).collect();
+    assert_eq!(writes, [(0x93, 0x900), (59, 1), (0x93, 0)]);
+    assert_eq!(state.fixed.render.get(&0x93), Some(&0));
+    assert_eq!(state.fixed.samplers[0], selected.implementation.stage_states.first().copied());
+    assert!(lib.selected_implementation(SHAD_ID, variant, Some(&inputs), Some(&mut state)).unwrap().render_writes.is_empty());
+    let bind = selected.implementation;
+    assert!(bind.variant);
+    assert_eq!(bind.pixel_shader[42 * 4..43 * 4], 0x1234u32.to_le_bytes());
+    assert_eq!(state.stages[3], Some(inherited));
+    assert_eq!(state.banks[1][2][3], 37.);
+    let before = state.clone();
+    let missing = PassSelection { implementation: 3, ..selection };
+    assert!(lib.selected_implementation(SHAD_ID, missing, Some(&inputs), Some(&mut state)).is_err());
+    assert_eq!(state, before);
+}
+
+#[test]
 fn builds_variant_combiners_from_engine_inputs() {
     let f = fixture();
     let mut lib = library(&f);

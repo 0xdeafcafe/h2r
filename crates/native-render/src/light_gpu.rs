@@ -195,7 +195,7 @@ pub struct LightTextures {
     pub attenuation: Option<wgpu::TextureView>,
 }
 
-fn view_dimension(d: TextureDim) -> wgpu::TextureViewDimension {
+pub(crate) fn view_dimension(d: TextureDim) -> wgpu::TextureViewDimension {
     match d {
         TextureDim::D2 => wgpu::TextureViewDimension::D2,
         TextureDim::D3 => wgpu::TextureViewDimension::D3,

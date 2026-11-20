@@ -80,6 +80,8 @@ pub enum Refusal {
     Passes(usize),
     /// No implementation samples the lightmap.
     NoLightmapImplementation,
+    /// The record selects an implementation absent from this pass.
+    MissingImplementation(usize),
     /// The implementation has no vertex program.
     NoVertexShader,
     /// A stage samples an engine texture other than the lightmap.
@@ -130,6 +132,28 @@ pub struct WorldPass {
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
     let look = layer3_look(material)?;
     let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
+    world_pass(look, imp)
+}
+
+/// The lighting selector for a BSP without a matching first lightmap
+/// group (record builder, `world_walk::Plan::lighting`). A layer mask
+/// covers all passes, so this material path requires a single pass.
+pub fn unlit_bsp_pass(pass: &tags::material::SelectedImplementation, normalization: Option<TagId>)
+    -> Result<WorldPass, Refusal>
+{
+    if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
+    let imp = &pass.implementation;
+    if imp.index != UNLIT_BSP_IMPLEMENTATION {
+        return Err(Refusal::MissingImplementation(UNLIT_BSP_IMPLEMENTATION));
+    }
+    let look = look_with_engine(pass.pass, imp, normalization)?;
+    world_pass(look, imp)
+}
+
+/// Record lighting selector when the BSP has no matching lightmap.
+pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
+
+fn world_pass(look: PassLook, imp: &ResolvedImplementation) -> Result<WorldPass, Refusal> {
     if !imp.engine_render_states.is_empty() {
         return Err(Refusal::EngineRenderStates);
     }
@@ -188,6 +212,10 @@ pub fn layer3_look(material: &Material) -> Result<PassLook, Refusal> {
 /// why it stays on the D3D path: its vertex program, stage textures and
 /// instance constants, nothing animated or computed per draw.
 pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<PassLook, Refusal> {
+    look_with_engine(pass, imp, None)
+}
+
+fn look_with_engine(pass: TagId, imp: &ResolvedImplementation, normalization: Option<TagId>) -> Result<PassLook, Refusal> {
     let vertex_shader = imp.vertex_shader.ok_or(Refusal::NoVertexShader)?;
     if !imp.animated.is_empty() {
         return Err(Refusal::Animated);
@@ -201,6 +229,9 @@ pub fn implementation_look(pass: TagId, imp: &ResolvedImplementation) -> Result<
             None | Some(TextureSource::None) => Stage::Empty,
             Some(TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
             Some(TextureSource::Lightmap) => Stage::Lightmap,
+            Some(TextureSource::Engine(1)) => Stage::Bitmap {
+                bitmap: normalization.ok_or(Refusal::EngineTexture(1))?, image: 0,
+            },
             Some(TextureSource::Engine(id)) => return Err(Refusal::EngineTexture(id)),
             Some(TextureSource::UnsetSlot(s)) => return Err(Refusal::UnsetSlot(s)),
             Some(TextureSource::Default) => return Err(Refusal::DefaultTexture),
@@ -400,6 +431,23 @@ mod tests {
         );
         assert_eq!(look.vertex_constants[0].index, 19);
         assert_eq!(look.pixel_shader, [7; PSDEF_SIZE]);
+    }
+
+    #[test]
+    fn a_bsp_without_a_lightmap_selects_the_dynamic_program_and_cube() {
+        let mut selected = tags::material::SelectedImplementation {
+            pass: TagId(13), layer_passes: 1, render_writes: Vec::new(), implementation: opaque(implementation(3, false), &[]),
+        };
+        let cube = TagId(17);
+        let pass = unlit_bsp_pass(&selected, Some(cube)).unwrap();
+        assert_eq!(pass.look.implementation, 3);
+        assert_eq!(pass.look.vertex_shader, selected.implementation.vertex_shader.unwrap());
+        assert_eq!(pass.look.textures[3], Stage::Bitmap { bitmap: cube, image: 0 });
+        assert_eq!(unlit_bsp_pass(&selected, None), Err(Refusal::EngineTexture(1)));
+        selected.implementation = opaque(implementation(0, true), &[]);
+        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::MissingImplementation(3)));
+        selected.layer_passes = 2;
+        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::Passes(2)));
     }
 
     #[test]

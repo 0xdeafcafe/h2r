@@ -175,7 +175,7 @@ impl Runtime {
         &self.dispatch_gen
     }
     /// The dispatch tables' generation (see [`edit_dispatch`](Self::edit_dispatch)).
-    pub(crate) fn dispatch_generation(&self) -> u64 {
+    pub fn dispatch_generation(&self) -> u64 {
         self.dispatch_gen.load(Ordering::Acquire)
     }
     /// Resolve a transfer to (handler, start selector, function), plus the

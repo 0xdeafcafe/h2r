@@ -837,7 +837,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     files: &mut assets::ResourceFiles,
     shaders: &[TagId],
     world: &World,
-    native: &dyn Fn(u16) -> bool,
+    native: &dyn Fn(&WorldDraw) -> bool,
     palettes: &StagePalettes,
 ) -> Option<LightsWorld> {
     let mut lib = match ShaderLibrary::read(map) {
@@ -853,6 +853,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     let mut palettized = HashSet::new();
     // Each material once, with default inputs: what any light's pass may
     // need that does not depend on the light (programs, bitmaps).
+    let native_materials: HashSet<_> = world.draws.iter().filter(|d| native(d)).map(|d| d.material).collect();
     let mut lit_of: HashMap<u16, Option<bool>> = HashMap::new();
     let mut ids: Vec<u16> = world.materials();
     ids.extend(world.transparent_materials());
@@ -874,7 +875,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
         let lit = lit_layers(&material);
         lit_of.insert(m, Some(lit));
         materials.insert(m, LitMaterial { shader, instance });
-        if !lit || !native(m) {
+        if !lit || !native_materials.contains(&m) {
             continue;
         }
         for imp in material
@@ -914,7 +915,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     let mut why = [0usize; 4];
     for d in &world.draws {
         match lit_of.get(&d.material).copied().flatten() {
-            Some(true) if native(d.material) && matches!(d.owner, Owner::Cluster(_)) => {
+            Some(true) if native(d) && matches!(d.owner, Owner::Cluster(_)) => {
                 clusters.insert((d.owner, d.part), (shaders[usize::from(d.material)], *d));
             }
             Some(false) => {}
