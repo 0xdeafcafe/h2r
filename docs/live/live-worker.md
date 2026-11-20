@@ -432,10 +432,23 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
-| `LIVE_HOST_BUDGET_USD_MONTH` | Monthly host budget in USD. Live checks the month-to-date cost before granting a lease. |
+| `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
 | `LIVE_HOST_DATA_URL` | Set as an environment-specific Worker secret containing a signed download URL for the owner's private bundle. Renew before the URL expires. |
 | `LIVE_HOST_DATA_SHA256` | SHA-256 of that bundle. Update alongside its signed URL. |
+
+To set the production cap explicitly, add `LIVE_HOST_BUDGET_USD = "25"`
+under `[env.production.vars]` in `crates/live-worker/wrangler.toml`.
+Set the variable separately for each environment that starts containers.
+Live reserves budget for the whole match before calling the room to
+start. [Cost calculation](dedicated-host.md#cost-and-budget)
+
+Before enabling hosts, create a **$20 budget alert** in the Cloudflare
+dashboard under **Manage Account > Billing > Billable Usage**. Enter the
+threshold in USD and add the operator's email address. The alert monitors
+account-wide usage-based spend over Cloudflare's billing period. Live
+enforces its own cap on estimated host spend over the UTC calendar month.
+[Cloudflare budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/)
 
 `GET /v1/hosts/{lease}/tunnel` takes a fresh `sessions.relay` account
 bearer on each WebSocket upgrade. LiveHub checks the roster and match

@@ -9,8 +9,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use live_proto::hosts::{
     DEFAULT_IDLE_TIMEOUT_S, DEFAULT_MAX_MATCH_S, EndReason, HOST_BOOTING, HOST_ENDED,
-    HOST_PLAYING, HOST_READY, HOST_REQUESTED, HostBooting, HostClass, HostEnded, HostEndpoint,
-    HostLease, HostPlaying, HostReady, HostRequested, HostState, ProviderKind, STREAM, Transport,
+    HOST_PLAYING, HOST_READY, HOST_REQUESTED, HOST_STOPPED, HostBooting, HostClass, HostEnded,
+    HostEndpoint, HostLease, HostPlaying, HostReady, HostRequested, HostState, HostStopped,
+    ProviderKind, STREAM, Transport,
 };
 use live_proto::{Author, ErrorCode, lxm, sign};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,15 @@ pub trait HostProvider: Send + Sync {
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError>;
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError>;
 
+    /// Providers with deterministic names can clean up even a lost start reply.
+    fn reserved_ref(&self, _lease: &HostLease) -> Option<String> {
+        None
+    }
+
+    fn log_budget_refusal(&self, message: &str) {
+        eprintln!("{message}");
+    }
+
     /// Connect to a local tunnel listener bound by this managed process.
     #[cfg(feature = "native")]
     fn tunnel_addr(&self, _lease_id: &str, _provider_ref: &str) -> Option<std::net::SocketAddr> {
@@ -136,10 +146,7 @@ impl HostView {
         if !self.active() {
             return None;
         }
-        let hard = self
-            .lease
-            .created_ms
-            .saturating_add(i64::from(self.lease.max_match_s) * 1000);
+        let hard = self.lease.deadline_ms();
         // The game reports the transition to Playing, then Empty/MatchOver;
         // an occupied match does not need periodic heartbeats to keep its lease.
         if self.state == HostState::Playing && self.players > 0 {
@@ -359,12 +366,12 @@ impl Subscriber for Hosts {
         let at = (at.unix_timestamp_nanos() / 1_000_000) as i64;
         let data = &e.body.data;
         if e.body.kind == HOST_REQUESTED {
-            if let Ok(HostRequested { lease }) = HostRequested::deserialize(data) {
+            if let Ok(HostRequested { lease, provider_ref }) = HostRequested::deserialize(data) {
                 registry.leases.entry(lease.id.clone()).or_insert(HostView {
                     lease,
                     state: HostState::Requested,
                     endpoint: None,
-                    provider_ref: None,
+                    provider_ref,
                     started_ms: None,
                     players: 0,
                     players_peak: 0,

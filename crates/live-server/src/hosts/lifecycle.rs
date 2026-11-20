@@ -77,17 +77,6 @@ impl Live {
         }
 
         let now = now_ms();
-        if self.hosts.costs.over_budget(now) {
-            return Err(unavailable("monthly dedicated host budget reached"));
-        }
-        let config = self.hosts.config.read().unwrap().clone();
-        let running = self.hosts.registry.read().unwrap().occupied();
-        if running >= config.max_hosts {
-            return Err(ApiError::new(
-                ErrorCode::RateLimited,
-                "all dedicated host slots are occupied",
-            ));
-        }
         if lease.assignment_id.is_empty()
             || lease.map.is_empty()
             || !(1..=16).contains(&lease.max_players)
@@ -98,6 +87,26 @@ impl Live {
             return Err(invalid("invalid host assignment, seats or duration"));
         }
         let provider = self.hosts.provider_for(&lease)?;
+        lease.created_ms = now;
+        if !self.hosts.costs.can_start(&lease) {
+            provider.log_budget_refusal(&format!(
+                "live: monthly dedicated host budget refused assignment {} (spent ${:.4}, cap ${:.2})",
+                lease.assignment_id,
+                self.hosts.costs.month_to_date(now),
+                self.hosts.costs.budget_usd_month().unwrap_or_default(),
+            ));
+            return Err(unavailable(
+                "monthly dedicated host budget cannot cover another full match",
+            ));
+        }
+        let config = self.hosts.config.read().unwrap().clone();
+        let running = self.hosts.registry.read().unwrap().occupied();
+        if running >= config.max_hosts {
+            return Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "all dedicated host slots are occupied",
+            ));
+        }
         let live_url = if config.live_url.is_empty() {
             self.policy()
                 .public
@@ -117,7 +126,11 @@ impl Live {
             return Err(unavailable("dedicated host data bundle is not configured"));
         }
         lease.id = HostLease::new_id();
-        lease.created_ms = now;
+        let provider_ref = if launch {
+            provider.reserved_ref(&lease)
+        } else {
+            None
+        };
         let boot = HostBoot {
             live_url,
             data_url: config.data_url,
@@ -129,6 +142,7 @@ impl Live {
             HOST_REQUESTED,
             HostRequested {
                 lease: lease.clone(),
+                provider_ref,
             },
         )
         .await?;
@@ -482,8 +496,20 @@ impl Live {
         bearer: Option<&str>,
         request: super::AdminHostStart,
     ) -> ApiResult<(HostLease, Option<String>)> {
-        let who = crate::invites::admin(self, bearer, crate::admin::LXM_ADMIN_WRITE)?;
-        self.rate_limit(&who, crate::admin::LXM_ADMIN_WRITE)?;
+        let who = self.authenticate_host_admin(bearer)?;
+        self.start_authorized_host(&who, request).await
+    }
+
+    pub(crate) fn authenticate_host_admin(&self, bearer: Option<&str>) -> ApiResult<Author> {
+        crate::invites::admin(self, bearer, crate::admin::LXM_ADMIN_WRITE)
+    }
+
+    pub(crate) async fn start_authorized_host(
+        &self,
+        who: &Author,
+        request: super::AdminHostStart,
+    ) -> ApiResult<(HostLease, Option<String>)> {
+        self.rate_limit(who, crate::admin::LXM_ADMIN_WRITE)?;
         request.validate()?;
         let Some(provider) = self.host_provider_kind() else {
             return Err(unavailable("no host provider"));
@@ -585,9 +611,20 @@ impl Live {
         .await
     }
 
+    async fn record_host_stop(&self, version: u64, lease_id: &str) -> ApiResult<()> {
+        self.host_event(
+            version,
+            HOST_STOPPED,
+            HostStopped {
+                lease_id: lease_id.into(),
+            },
+        )
+        .await
+    }
+
     async fn stop_host_locked(
         &self,
-        version: u64,
+        mut version: u64,
         row: &HostView,
         reason: EndReason,
         players: u8,
@@ -602,6 +639,10 @@ impl Live {
                 .stop(&row.lease.id, id)
                 .await
                 .map_err(|_| unavailable("dedicated host stop failed"))?;
+            if self.hosts.costs.stop_confirmed(&row.lease.id) == Some(false) {
+                self.record_host_stop(version, &row.lease.id).await?;
+                version = self.hosts.version();
+            }
         }
         self.record_host_end(version, row, reason, players, at)
             .await
@@ -615,6 +656,10 @@ impl Live {
         // A slow provider health check on one match must not block another
         // match's registration or a report refreshing its idle deadline.
         let observed_dead = if at < due {
+            // A reserved room address exists before the provider is called.
+            if before.state == HostState::Requested {
+                return Ok(());
+            }
             let Some(reference) = &before.provider_ref else {
                 return Ok(());
             };
@@ -762,16 +807,33 @@ impl Live {
                 .provider_ref
                 .as_deref()
                 .expect("cleanup has a provider reference");
-            let provider = self.hosts.provider_for(&row.lease)?;
-            if provider
-                .alive(id)
-                .await
-                .map_err(|_| unavailable("host exit check failed"))?
-            {
-                provider
-                    .stop(&row.lease.id, id)
-                    .await
-                    .map_err(|_| unavailable("ended host cleanup failed"))?;
+            match self.hosts.costs.stop_confirmed(&row.lease.id) {
+                Some(false) => {
+                    // Stop also fences a delayed start for this known room.
+                    // An alive check cannot tell whether a start is in flight.
+                    self.hosts
+                        .provider_for(&row.lease)?
+                        .stop(&row.lease.id, id)
+                        .await
+                        .map_err(|_| unavailable("ended host cleanup failed"))?;
+                    let _write = self.hosts.writes.lock().await;
+                    self.record_host_stop(self.hosts.version(), &row.lease.id)
+                        .await?;
+                }
+                Some(true) => {}
+                None => {
+                    let provider = self.hosts.provider_for(&row.lease)?;
+                    if provider
+                        .alive(id)
+                        .await
+                        .map_err(|_| unavailable("host exit check failed"))?
+                    {
+                        provider
+                            .stop(&row.lease.id, id)
+                            .await
+                            .map_err(|_| unavailable("ended host cleanup failed"))?;
+                    }
+                }
             }
             self.store.save_checkpoint(CLEANUP_CURSOR, position).await?;
             let mut registry = self.hosts.registry.write().unwrap();
@@ -799,7 +861,5 @@ fn elapsed(lease: &HostLease, at: i64) -> u64 {
 }
 
 fn start_deadline(lease: &HostLease) -> i64 {
-    lease
-        .created_ms
-        .saturating_add(BOOT_MS.min(i64::from(lease.max_match_s) * 1000))
+    lease.created_ms.saturating_add(BOOT_MS).min(lease.deadline_ms())
 }

@@ -295,9 +295,9 @@ impl LiveHub {
         // Title files in R2: a Durable Object's row holds at most 2 MB.
         let store = BlobsElsewhere::new(Arc::new(store), private.clone());
         // Include historical host events in the budget when the hub wakes.
-        let host_costs = live_server::host_costs::HostCosts::configured(
-            self.setting("LIVE_HOST_PRICES").as_deref(),
-            self.setting("LIVE_HOST_BUDGET_USD_MONTH").as_deref(),
+        let host_costs = live_server::host_costs::HostCosts::from_env(
+            &|name| self.setting(name),
+            Some(live_server::host_costs::DEFAULT_WORKER_BUDGET_USD),
         )
         .map_err(rust_error)?;
         let live = Live::start_with_host_costs(
