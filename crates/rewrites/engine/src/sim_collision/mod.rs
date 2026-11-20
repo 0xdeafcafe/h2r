@@ -1,5 +1,5 @@
-//! The guest side of `sim_collision` (docs/engine/collision-queries.md):
-//! the collision entries taken over under `impl.sim.native.collision`.
+//! Guest adapters for native point and location queries and the differential
+//! BSP segment kernels. See docs/engine/collision-queries.md.
 //!
 //! Each adapter reads the entry's arguments and the live guest words its
 //! query needs, runs the kernel against the decoded BSP, and only then
@@ -7,20 +7,27 @@
 //! with nothing written when the kernel bails; the installer then runs the
 //! original from the untouched entry state.
 //!
-//! Registers follow the contract's clobber rule: the result register is
-//! set as the original sets it, callee-saved registers, `esp` and the
-//! return are exact, and the rest of each entry's clobber set (scratch
-//! GPRs, XMM registers, EFLAGS, the x87 condition codes and last-
-//! instruction words, the dead stack below `esp`) is left as it was.
+//! Point and location also replay the saved stack words, scratch registers
+//! and flags. The vector entries set the result as the original does.
+//! Callee-saved registers, EFLAGS, `esp` and the return are exact. The
+//! remainder of the vector clobber set (scratch GPRs and XMM registers,
+//! x87 condition codes, last-instruction words and the dead stack below
+//! `esp`) is excluded only in the vector differential harness.
 //! The x87 precision flag the original's split divisions raise is set.
+mod cluster;
 pub mod layout;
+mod point;
+mod preflight;
+mod sources;
+pub use point::{location, point_to_leaf};
+pub use preflight::CollisionMemory;
+use preflight::Outputs;
 
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::bsp::NONE;
-use sim_collision::mem::overlaps;
 pub use sim_collision::{Bail, CollisionWorld, Entry, Stats};
-use sim_collision::{Bsp, Consts, Fault, GuestRead, Outcome, Segment};
+use sim_collision::{Consts, Fault, GuestRead, Outcome, Segment};
 use sim_core::Epoch;
 use sim_core::det::{self, Fp};
 use std::cmp::Ordering;
@@ -36,6 +43,7 @@ pub static WORLD: LazyLock<CollisionWorld> = LazyLock::new(|| CollisionWorld::ne
 /// Drop every decoded BSP.
 pub fn invalidate() {
     EPOCH.bump();
+    WORLD.clear();
 }
 
 pub fn stats() -> Stats {
@@ -43,9 +51,13 @@ pub fn stats() -> Stats {
 }
 
 /// Guest memory as the kernels read it.
-struct Read<'a, M>(&'a M);
+struct Read<'a, M>(&'a M, (u64, u64));
 
-impl<M: Memory> GuestRead for Read<'_, M> {
+impl<M: CollisionMemory> GuestRead for Read<'_, M> {
+    fn memory_revision(&self) -> (u64, u64) {
+        self.1
+    }
+
     fn read(&self, addr: u32, dst: &mut [u8]) -> Result<(), Fault> {
         self.0.read_bytes(addr, dst, 1).map_err(|_| Fault { addr })
     }
@@ -60,85 +72,18 @@ fn consts(g: &impl GuestRead) -> Result<Consts, Bail> {
     Ok(Consts { zero, projection })
 }
 
-fn finish(c: &mut CpuAbi, g: &impl Memory, pop: u32) -> Result<TransferAbi, GuestFault> {
-    let target = g.u32(c.esp)?;
+fn finish(c: &mut CpuAbi, target: u32, pop: u32) -> TransferAbi {
     c.esp = c.esp.wrapping_add(4 + pop);
-    Ok(TransferAbi::ret(target))
+    TransferAbi::ret(target)
 }
 
 fn xmm0(c: &CpuAbi) -> u32 {
     u32::from_le_bytes(c.xmm[0][..4].try_into().unwrap())
 }
 
-/// Entry A, `0x14a280`: `eax` the start node, `ecx` the BSP, `edx` the
-/// point; returns the leaf (or `-1`) in `eax`.
-pub fn point_to_leaf(
-    c: &mut CpuAbi,
-    g: &mut impl Memory,
-    world: &CollisionWorld,
-) -> Result<Option<TransferAbi>, GuestFault> {
-    let r = (|| {
-        if !det::fast_env(c.mxcsr) {
-            return Err(Bail::Env);
-        }
-        let m = Read(&*g);
-        let bsp = world.bsp(&m, c.ecx, || consts(&m))?;
-        bsp.point_to_leaf(c.eax, m.vec3(c.edx)?)
-    })();
-    world.record(Entry::PointToLeaf, &r);
-    let Ok(leaf) = r else { return Ok(None) };
-    c.eax = leaf;
-    finish(c, g, 0).map(Some)
-}
-
-/// Entry B, `0x11bed0`: `edx` the point, `esi` the 8-byte location
-/// `{leaf u32, cluster i16, bsp index i16}`. Writes `-1` forms when no
-/// structure is loaded or the point is in solid.
-pub fn location(
-    c: &mut CpuAbi,
-    g: &mut impl Memory,
-    world: &CollisionWorld,
-) -> Result<Option<TransferAbi>, GuestFault> {
-    let out = c.esi;
-    let r = (|| {
-        let m = Read(&*g);
-        let index = m.u16(layout::BSP_INDEX)?;
-        if index == 0xffff {
-            return Ok((NONE, 0xffff, index));
-        }
-        if !det::fast_env(c.mxcsr) {
-            return Err(Bail::Env);
-        }
-        let bsp = world.bsp(&m, m.u32(layout::STRUCTURE_BSP)?, || consts(&m))?;
-        let leaf = bsp.point_to_leaf(0, m.vec3(c.edx)?)?;
-        if leaf == NONE {
-            return Ok((NONE, 0xffff, index));
-        }
-        // The original stores the leaf before reading the cluster.
-        let table_at = m
-            .u32(layout::ACTIVE_STRUCTURE)?
-            .wrapping_add(layout::STRUCTURE_LEAVES);
-        let at = m.u32(table_at)?.wrapping_add(leaf.wrapping_mul(8));
-        if overlaps(out, 4, layout::ACTIVE_STRUCTURE, 4)
-            || overlaps(out, 4, table_at, 4)
-            || overlaps(out, 4, at, 2)
-        {
-            return Err(Bail::Alias);
-        }
-        Ok((leaf, m.u16(at)?, index))
-    })();
-    world.record(Entry::Location, &r);
-    let Ok((leaf, cluster, index)) = r else {
-        return Ok(None);
-    };
-    g.set_u32(out, leaf)?;
-    g.set_u16(out.wrapping_add(6), index)?;
-    g.set_u16(out.wrapping_add(4), cluster)?;
-    finish(c, g, 0).map(Some)
-}
-
 /// What a vector test writes, decided before anything is written.
 struct Plan {
+    target: u32,
     record: u32,
     /// Entry C's record initialisation: the clamped fraction, count 0.
     init: Option<u32>,
@@ -148,53 +93,30 @@ struct Plan {
     outcome: Outcome,
 }
 
-fn vector_env(c: &CpuAbi, world: &CollisionWorld) -> Result<(), Bail> {
-    world.record_precision(c.x87.control);
+fn vector_env(c: &CpuAbi) -> Result<(), Bail> {
     // Two x87 registers for the matcher's loads; the split needs one.
-    if !det::fast_env(c.mxcsr) || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2) {
+    if !det::fast_env(c.mxcsr)
+        || !det::host_fast_env()
+        || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2)
+    {
         return Err(Bail::Env);
     }
     Ok(())
 }
 
-/// Output records may not overlap what the walk reads, nor the stack the
-/// original's frames would write.
-fn check_outputs(
-    outputs: &[(u32, u32)],
-    inputs: &[(u32, u32)],
-    bsp: &Bsp,
-    sp: u32,
-) -> Result<(), Bail> {
-    let dead = sp.wrapping_sub(layout::VECTOR_DEAD_BELOW);
-    let dead_len = layout::VECTOR_DEAD_BELOW + 4 + layout::VECTOR_ARGS;
-    for (i, &(a, n)) in outputs.iter().enumerate() {
-        let clash = bsp.overlaps(a, n)
-            || overlaps(a, n, dead, dead_len)
-            || inputs.iter().any(|&(b, m)| overlaps(a, n, b, m))
-            || outputs[i + 1..].iter().any(|&(b, m)| overlaps(a, n, b, m));
-        if clash {
-            return Err(Bail::Alias);
-        }
-    }
-    Ok(())
-}
-
-fn check_mask_reads(outcome: &Outcome, outputs: &[(u32, u32)]) -> Result<(), Bail> {
-    let clash = outcome
-        .mask_reads
-        .iter()
-        .any(|&a| outputs.iter().any(|&(b, n)| overlaps(a, 4, b, n)));
-    if clash { Err(Bail::Alias) } else { Ok(()) }
-}
-
 /// Entry C, `0x1de630`: `eax` R, `ecx` the query bits, `edx` the BSP,
 /// `xmm0` the limit; stack: breakable count (`u16`), breakable mask,
 /// start, delta. `ret 0x10`, the hit in `al`.
-fn plan_vector(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<Plan, Bail> {
-    vector_env(c, world)?;
-    let m = Read(g);
+fn plan_vector(
+    c: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+) -> Result<Plan, Bail> {
+    vector_env(c)?;
     let sp = c.esp;
     let (record, flags, bsp_addr, limit) = (c.eax, c.ecx, c.edx, xmm0(c));
+    let revision = g.bsp_revision(bsp_addr)?;
+    let m = Read(&*g, revision);
     let count = m.u16(sp.wrapping_add(4))?;
     let mask = m.u32(sp.wrapping_add(8))?;
     let (start_at, delta_at) = (m.u32(sp.wrapping_add(12))?, m.u32(sp.wrapping_add(16))?);
@@ -218,13 +140,19 @@ fn plan_vector(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<Pl
         limit
     };
     let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
-    let outputs = [(record, layout::record::SIZE)];
-    check_outputs(
-        &outputs,
-        &[(start_at, 12), (delta_at, 12), (layout::ONE, 4)],
-        &bsp,
+    let outputs = Outputs::new(
+        g,
         sp,
+        layout::VECTOR_DEAD_BELOW,
+        [
+            (sp.wrapping_add(4), layout::VECTOR_ARGS),
+            (record, layout::record::SIZE),
+        ],
     )?;
+    outputs.check_bsp(g, &bsp)?;
+    outputs.separate(g, start_at, 12)?;
+    outputs.separate(g, delta_at, 12)?;
+    outputs.separate(g, layout::ONE, 4)?;
     let q = Segment {
         flags,
         breakable_count: count,
@@ -238,8 +166,11 @@ fn plan_vector(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<Pl
         plane: NONE,
     };
     let outcome = bsp.vector_test(&m, &q, 0, 0, t1)?;
-    check_mask_reads(&outcome, &outputs)?;
+    for &at in &outcome.mask_reads {
+        outputs.separate(g, at, 4)?;
+    }
     Ok(Plan {
+        target: outputs.target,
         record,
         init: Some(fraction),
         listed: 0,
@@ -250,10 +181,14 @@ fn plan_vector(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<Pl
 
 /// Entry D, `0x1de6d0`: stack: the context, the node, `t0`, `t1`.
 /// `ret 0x10`, the hit in `al`.
-fn plan_context(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<Plan, Bail> {
+fn plan_context(
+    c: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+) -> Result<Plan, Bail> {
     use layout::context as ctx;
-    vector_env(c, world)?;
-    let m = Read(g);
+    vector_env(c)?;
+    let m = Read(&*g, (0, 0));
     let sp = c.esp;
     let arg = |k: u32| m.u32(sp.wrapping_add(4 * k));
     let (context, node, t0, t1) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?);
@@ -263,9 +198,23 @@ fn plan_context(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<P
     let (start, delta) = (m.vec3(start_at)?, m.vec3(delta_at)?);
     let fraction = m.u32(record.wrapping_add(layout::record::FRACTION))?;
     let listed = m.u32(record.wrapping_add(layout::record::COUNT))?;
-    let bsp = world.bsp(&m, w(ctx::BSP), || consts(&m))?;
-    let outputs = [(record, layout::record::SIZE), (context, ctx::SIZE)];
-    check_outputs(&outputs, &[(start_at, 12), (delta_at, 12)], &bsp, sp)?;
+    let bsp_addr = w(ctx::BSP);
+    let revision = g.bsp_revision(bsp_addr)?;
+    let m = Read(&*g, revision);
+    let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
+    let outputs = Outputs::new(
+        g,
+        sp,
+        layout::CONTEXT_DEAD_BELOW,
+        [
+            (sp.wrapping_add(4), layout::VECTOR_ARGS),
+            (record, layout::record::SIZE),
+            (context, ctx::SIZE),
+        ],
+    )?;
+    outputs.check_bsp(g, &bsp)?;
+    outputs.separate(g, start_at, 12)?;
+    outputs.separate(g, delta_at, 12)?;
     let q = Segment {
         flags: w(ctx::FLAGS),
         breakable_count: w(ctx::BREAKABLE_COUNT) as u16,
@@ -279,8 +228,11 @@ fn plan_context(c: &CpuAbi, g: &impl Memory, world: &CollisionWorld) -> Result<P
         plane: w(ctx::PLANE),
     };
     let outcome = bsp.vector_test(&m, &q, node, t0, t1)?;
-    check_mask_reads(&outcome, &outputs)?;
+    for &at in &outcome.mask_reads {
+        outputs.separate(g, at, 4)?;
+    }
     Ok(Plan {
+        target: outputs.target,
         record,
         init: None,
         listed,
@@ -324,16 +276,20 @@ fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi
         c.x87.status |= 0x20;
     }
     c.eax = (c.eax & !0xff) | u32::from(o.hit.is_some());
-    finish(c, g, layout::VECTOR_ARGS)
+    // The last flag producer on every return is the epilogue's add to ESP.
+    let frame = if plan.context.is_some() { 8 } else { 0x28 };
+    let before = c.esp.wrapping_sub(frame);
+    crate::sim_native::add_flags(c, before, frame);
+    Ok(finish(c, plan.target, layout::VECTOR_ARGS))
 }
 
 /// Entry C, `0x1de630`, natively.
 pub fn vector_test(
     c: &mut CpuAbi,
-    g: &mut impl Memory,
+    g: &mut impl CollisionMemory,
     world: &CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault> {
-    let plan = plan_vector(c, &*g, world);
+    let plan = plan_vector(c, g, world);
     world.record(Entry::VectorTest, &plan);
     match plan {
         Ok(plan) => commit(c, g, plan).map(Some),
@@ -344,10 +300,10 @@ pub fn vector_test(
 /// Entry D, `0x1de6d0`, natively.
 pub fn vector_context(
     c: &mut CpuAbi,
-    g: &mut impl Memory,
+    g: &mut impl CollisionMemory,
     world: &CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault> {
-    let plan = plan_context(c, &*g, world);
+    let plan = plan_context(c, g, world);
     world.record(Entry::VectorContext, &plan);
     match plan {
         Ok(plan) => commit(c, g, plan).map(Some),

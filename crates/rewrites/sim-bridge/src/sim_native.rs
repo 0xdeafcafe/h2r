@@ -1,5 +1,6 @@
 //! Independently selectable simulation replacements for the base Xbox image.
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use engine::sim_collision::{Bail, Entry};
 use engine::{points, sim_native as sim};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
@@ -107,7 +108,10 @@ impl Feature for SimNative {
         for &(point, name, body) in ENTRIES {
             // The subsystem switch owns its entries; their per-function
             // ports stay as test oracles.
-            if collision && COLLISION_ENTRIES.iter().any(|(p, _)| p.base == point.base) {
+            if collision
+                && (COLLISION_ENTRIES.iter().any(|(p, _, _)| p.base == point.base)
+                    || point.base == points::COLLISION_BSP_SEGMENT.base)
+            {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
@@ -231,9 +235,8 @@ fn install_anim(b: &mut Builder) {
 
 /// `impl.sim.native.collision`: the collision world, phase 2 of the
 /// simulation rewrite (docs/engine/collision-queries.md). It takes over
-/// point to leaf, the structure location, and the BSP vector test with
-/// everything under it, so the per-function `native_point_to_leaf` and
-/// `native_bsp_segment` ports are test oracles while it is on.
+/// point to leaf and the structure location. Vector and instance traces
+/// execute their original bodies while we measure their float environments.
 pub const COLLISION: &str = "sim.native.collision";
 
 fn collision_on(switches: &hooks::Switches) -> bool {
@@ -246,20 +249,25 @@ type CollisionBody = fn(
     &engine::sim_collision::CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault>;
 
-const COLLISION_ENTRIES: [(&points::Point, CollisionBody); 4] = [
+const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 2] = [
     (
         &points::COLLISION_POINT_TO_LEAF,
+        Entry::PointToLeaf,
         engine::sim_collision::point_to_leaf,
     ),
-    (&points::COLLISION_LOCATION, engine::sim_collision::location),
     (
-        &points::COLLISION_VECTOR_TEST,
-        engine::sim_collision::vector_test,
+        &points::COLLISION_LOCATION,
+        Entry::Location,
+        engine::sim_collision::location,
     ),
-    (
-        &points::COLLISION_BSP_SEGMENT,
-        engine::sim_collision::vector_context,
-    ),
+];
+
+/// These entries have a contract and a precision census. The vector kernels
+/// still need transitive register liveness or exact scratch replay.
+const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 3] = [
+    (&points::COLLISION_VECTOR_TEST, Entry::VectorTest, "collision-vector-fp"),
+    (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext, "collision-walk-fp"),
+    (&points::COLLISION_INSTANCE_TRACE, Entry::InstanceTrace, "collision-instance-fp"),
 ];
 
 /// Points after which the collision BSPs in guest memory may differ from
@@ -271,20 +279,37 @@ const COLLISION_INVALIDATE: [(&points::Point, &str); 2] = [
 ];
 
 fn install_collision(b: &mut Builder) {
-    for (point, body) in COLLISION_ENTRIES {
+    for (point, entry, body) in COLLISION_ENTRIES {
         b.raw()
             .implement(point, COLLISION, move |cpu, ctx, addr| {
-                if addr == point.base && sim::supported(cpu) {
+                if addr != point.base {
+                    return original(cpu, ctx, addr);
+                }
+                let world = &engine::sim_collision::WORLD;
+                world.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
+                if sim::supported(cpu) {
                     let mut mem = ctx.memory();
-                    if let Some(transfer) =
-                        body(cpu, &mut mem, &engine::sim_collision::WORLD)?
-                    {
+                    if mem.has_trap() {
+                        world.record::<()>(entry, &Err(Bail::Trap));
+                    } else if let Some(transfer) = body(cpu, &mut mem, world)? {
                         return Ok(transfer);
                     }
+                } else {
+                    world.record::<()>(entry, &Err(Bail::Env));
                 }
                 original(cpu, ctx, addr)
+            });
+    }
+    // This family updates shared decode caches, write watches and counters.
+    // The hook registry keeps these calls on the owning executor.
+    for (point, entry, label) in COLLISION_OBSERVED {
+        b.raw()
+            .observe_before(point, label, move |o| {
+                if o.addr == point.base {
+                    engine::sim_collision::WORLD.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
+                }
             })
-            .context_only();
+            .optional();
     }
     for (point, label) in COLLISION_INVALIDATE {
         b.raw()
@@ -348,18 +373,28 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults().with(&key, true));
         registry.add(&SimNative { ray_dispatch: true }).unwrap();
         let plan = registry.build(&Base).unwrap();
-        for (point, _) in COLLISION_ENTRIES {
+        for (point, entry, _) in COLLISION_ENTRIES {
+            assert_eq!(point.base, entry.addr());
             let chain = &plan.chains[&point.base];
             assert_eq!(chain.implement.as_ref().unwrap().label, COLLISION);
+            assert!(chain.render_thread().is_err(), "shares the collision world");
         }
         for (point, label) in COLLISION_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
             assert_eq!(chain.observe_before.len(), 1, "{label}");
         }
+        for (point, entry, _) in COLLISION_OBSERVED {
+            let chain = &plan.chains[&point.base];
+            assert_eq!(chain.addr, entry.addr());
+            assert!(chain.implement.is_none());
+            assert!(chain.shadow.is_none());
+            assert_eq!(chain.observe_before.len(), 1);
+            assert!(chain.observe_before[0].optional);
+        }
         assert_eq!(
             plan.chains.len(),
-            COLLISION_ENTRIES.len() + COLLISION_INVALIDATE.len()
+            COLLISION_ENTRIES.len() + COLLISION_INVALIDATE.len() + COLLISION_OBSERVED.len()
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
@@ -373,10 +408,8 @@ mod tests {
         let mut registry = Registry::new(switches);
         registry.add(&SimNative { ray_dispatch: true }).unwrap();
         let plan = registry.build(&Base).unwrap();
-        for point in [&points::COLLISION_POINT_TO_LEAF, &points::COLLISION_BSP_SEGMENT] {
-            let chain = &plan.chains[&point.base];
-            assert_eq!(chain.implement.as_ref().unwrap().label, COLLISION);
-        }
+        assert_eq!(plan.chains[&points::COLLISION_POINT_TO_LEAF.base].implement.as_ref().unwrap().label, COLLISION);
+        assert!(plan.chains[&points::COLLISION_BSP_SEGMENT.base].implement.is_none());
         let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
         assert_eq!(
             geometry.implement.as_ref().unwrap().label,
@@ -387,6 +420,86 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative { ray_dispatch: true }).unwrap();
         assert!(registry.build(&Base).unwrap().chains.is_empty());
+    }
+
+    #[test]
+    fn collision_entries_count_the_environment_before_declining() {
+        let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let rt = runtime::Runtime::new(Guest::new(), runtime::Dispatch::default());
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let mut cpu = CpuAbi {
+            mxcsr: 0x1f3d,
+            ..CpuAbi::default()
+        };
+        cpu.x87.control = 0x017f; // Reserved PC; rejected before any memory access.
+        let before = engine::sim_collision::stats();
+        for (point, _, _) in COLLISION_ENTRIES {
+            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else {
+                unreachable!()
+            };
+            run(&mut cpu, &mut ctx, point.base).unwrap();
+        }
+        for (point, _, _) in COLLISION_OBSERVED {
+            let hook = &plan.chains[&point.base].observe_before[0];
+            let hooks::Run::ObserveBefore(observe) = &hook.run else {
+                unreachable!()
+            };
+            observe(&hooks::Obs {
+                thread_id: 1,
+                cpu: &cpu,
+                runtime: &rt,
+                addr: point.base,
+                point,
+            });
+        }
+        let after = engine::sim_collision::stats();
+        for entry in Entry::ALL {
+            let old = &before.entries[entry as usize];
+            let new = &after.entries[entry as usize];
+            assert_eq!(
+                new.mxcsr[&cpu.mxcsr],
+                old.mxcsr.get(&cpu.mxcsr).copied().unwrap_or(0) + 1
+            );
+            assert_eq!(
+                new.x87_control[&cpu.x87.control],
+                old.x87_control.get(&cpu.x87.control).copied().unwrap_or(0) + 1
+            );
+            let env = Bail::Env as usize;
+            assert_eq!(
+                new.bails[env] - old.bails[env],
+                u64::from(matches!(entry, Entry::PointToLeaf | Entry::Location))
+            );
+        }
+    }
+
+    #[test]
+    fn collision_leaves_memory_traps_to_the_lifted_instructions() {
+        let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let mut guest = Guest::new();
+        guest.install_trap(4);
+        let rt = runtime::Runtime::new(guest, runtime::Dispatch::default());
+        let mut ctx = ExecCtx::new(rt, 1);
+        let mut cpu = CpuAbi { mxcsr: 0x1fa0, ..CpuAbi::default() };
+        let before = engine::sim_collision::stats();
+        for (point, _, _) in COLLISION_ENTRIES {
+            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            let input = cpu;
+            run(&mut cpu, &mut ctx, point.base).unwrap();
+            assert_eq!(cpu, input);
+        }
+        let after = engine::sim_collision::stats();
+        for (_, entry, _) in COLLISION_ENTRIES {
+            let trap = Bail::Trap as usize;
+            assert!(after.entries[entry as usize].bails[trap] > before.entries[entry as usize].bails[trap]);
+        }
     }
 
     #[test]
