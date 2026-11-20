@@ -6,6 +6,11 @@
 //! `render.frame` needs nothing here: the draw diagnostics wrapper
 //! (`d3d_diag`) feeds `agent::render::PROBE` itself.
 
+#[cfg(feature = "gpu")]
+mod private_frame;
+#[cfg(feature = "gpu")]
+pub use private_frame::PrivateFrame;
+
 use std::sync::Mutex;
 #[cfg(feature = "gpu")]
 use std::sync::Arc;

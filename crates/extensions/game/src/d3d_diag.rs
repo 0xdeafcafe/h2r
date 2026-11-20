@@ -474,7 +474,7 @@ impl<B: Backend> DiagBackend<B> {
 }
 
 /// A draw for `render.frame`.
-fn probe_draw<S: std::fmt::Debug>(
+pub(crate) fn probe_draw<S: std::fmt::Debug>(
     color: S,
     depth: Option<S>,
     draw: &ResolvedDraw,

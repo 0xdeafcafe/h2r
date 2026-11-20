@@ -117,6 +117,9 @@ pub struct FrameTotals {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PassRecord {
+    /// Named typed stages, in execution order within the attachment run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
     /// Carried slots in execution order on this pair of private graph attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<crate::frame_graph::PassSlot>,

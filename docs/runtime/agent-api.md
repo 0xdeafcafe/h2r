@@ -666,6 +666,30 @@ the guest's as the D3D layer handed it over.
   each file or error. A pass with no draw has no known size and says so.
   This is a GPU round trip, only when asked.
 
+A private capture has its own recorder. When the private scene renderer
+is installed, arm the recorder before requesting a lighting capture,
+then read its result:
+
+```sh
+h2 agent render.frame '{"source":"private","arm":true,"draws":true,"snap":[0]}'
+h2 agent render.capture '{"lighting":"retail"}'
+h2 agent render.frame '{"source":"private"}'
+```
+
+The next completed private draw supplies the report. Each row covers
+draws and clears on the same attachments, with their view/slot pairs
+in `slots` and typed stage names in `stages`. A copy ends a row even
+when the following draw uses the same attachments. The `draws` list and
+vertex totals describe carried guest draws, and `snaps` reads the chosen
+passes before the following graph operations. `private_frame` identifies
+the source scene, present and lighting mode. Its `passes` counts logical
+attachment runs. The backend's `render_passes`, `backend_draws` and
+`submits` include work caused by requested snapshots. The private
+recorder measures wall time from graph entry to final readback.
+Omitting `source` or specifying `"display"` reads or arms the display
+recorder independently. A request for `"private"` returns `UNAVAILABLE`
+when the host has no private scene renderer.
+
 ### `render.stats`
 
 No params. `interp` is `d3d::interp::InterpStats` with every field
@@ -676,6 +700,12 @@ appear with no change here; `pipeline` is the pipelined render's totals
 snapshot coverage, and times in ms including `overlap_ms` for the worker's
 execution before the game-thread join); `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
+
+`private_frame` reports the counts and identity of the most recent
+successful private capture. It is absent before the first capture and
+after a renderer reset. `render.scene` includes the same field when its
+sealed scene matches the private capture's map epoch, frame, tick and
+summary hash.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
 serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an

@@ -165,12 +165,17 @@ fn view_carried(summary: Option<&CarriedSummary>, view: &frame_scene::View) -> B
 
 /// The summary of `scene`, with the sink's last frame when it records.
 fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&CarriedSummary>) -> SceneReply {
+    let hash = format!("{:016x}", frame_scene::summary_hash(scene));
+    let private_frame = agent::render::private_graph::last_stats().filter(|p| {
+        p.map_epoch == scene.id.map_epoch && p.frame == scene.id.frame && p.tick == scene.id.tick && p.scene_hash == hash
+    });
     SceneReply {
+        private_frame,
         sealed: true,
         map_epoch: scene.id.map_epoch as u32,
         frame: scene.id.frame,
         tick: scene.id.tick,
-        hash: format!("{:016x}", frame_scene::summary_hash(scene)),
+        hash,
         cut: scene.cut.names().into_iter().map(str::to_owned).collect(),
         views: scene
             .views

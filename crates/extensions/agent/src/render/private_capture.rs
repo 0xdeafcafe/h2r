@@ -28,6 +28,7 @@ pub type PrivateCaptureSource = fn(Option<u64>) -> Result<Option<Arc<dyn Private
 /// teardown. Registering again also discards captures from a prior map
 /// or snapshot timeline.
 pub fn set_private_capture_source(source: Option<PrivateCaptureSource>) {
+    super::private_graph::reset();
     super::CAPTURE.set_private_source(source);
 }
 
