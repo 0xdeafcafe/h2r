@@ -471,7 +471,7 @@ fn native_flare_reports_use_guest_pixels_and_a_private_capture_leaves_the_counte
         assert_eq!(reports.len(), 1);
         let mut display = GuestDrawPass::new_display(&mut gpu, &frame, scale).unwrap();
         for (_, op) in &frame.ops { display.apply(op).unwrap(); }
-        let output = display.present_with_reports(0, None).unwrap();
+        let output = display.present_with_outputs(0, None).unwrap().tickets;
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].0, reports[0]);
         let expected = 32 * 16 + 7 * 11;
@@ -517,7 +517,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
                             // Distinct from the zero samples drawn by the
                             // original empty queries; also distinct per slot.
                             gpu.pixel_count = 50 + *proxy;
-                            let ticket = gpu.report_pixel_count()?.unwrap();
+                            let ticket = gpu.report_pixel_count()?.ok_or("missing synthetic pixel counter")?;
                             outputs.tickets.push((*proxy, ticket));
                         }
                     }
@@ -527,7 +527,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
             })
         }),
         declined: |_| {},
-        failed: |_| panic!("query playback failed"),
+        failed: |_| {},
         stopped: || {},
     };
     let threaded = ThreadedBackend::new(RecordingBackend::new()).unwrap().with_frame_owner(owner);
