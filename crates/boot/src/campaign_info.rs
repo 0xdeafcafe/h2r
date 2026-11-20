@@ -227,10 +227,12 @@ mod tests {
         let a = CampaignProgress {
             finished: [0x1004, -1, -1, -1],
             last: 0x1005,
+            ..Default::default()
         };
         let c = CampaignProgress {
             finished: [-1, -1, 0x100a, -1],
             last: 0x100a,
+            ..Default::default()
         };
         let both = Info::ours(&b[0], &[a, c], Vec::new());
         assert_eq!(both.progress.unwrap().reached, 10);

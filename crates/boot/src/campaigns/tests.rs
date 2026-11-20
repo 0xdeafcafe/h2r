@@ -362,7 +362,9 @@ fn progress_rises_per_difficulty_and_profile_and_persists() {
     assert!(p.finished("Chief", "halo1", 1, 0x1003));
     assert!(!p.finished("Chief", "halo1", 1, 0x1002), "never lowered");
     assert!(p.finished("Chief", "halo1", 3, 0x1001));
-    p.started("Chief", "halo1", 0x1004);
+    let games = built(&[HALO1]);
+    p.launched("Chief", "halo1", &games[0].levels[3], 2, false);
+    p.checkpoint_saved("Chief", "halo1");
     assert!(p.finished("Arbiter", "halo1", 0, 0x1005));
     assert_eq!(p.max(&chief, "halo1"), 0x1003);
     assert_eq!(p.max(&["Chief".into(), "Arbiter".into()], "halo1"), 0x1005);
@@ -372,7 +374,10 @@ fn progress_rises_per_difficulty_and_profile_and_persists() {
         again.get("Chief", "halo1"),
         Some(CampaignProgress {
             finished: [-1, 0x1003, -1, 0x1001],
-            last: 0x1004
+            last: 0x1004,
+            last_map: Some("b30".into()),
+            difficulty: Some(2),
+            checkpoint: true,
         })
     );
     // An unreadable file is reported and never overwritten.
@@ -394,10 +399,17 @@ fn installed_lists_campaigns_with_maps_and_says_why_not() {
         "no folder: nothing, silently"
     );
     let root = dir.join("campaigns");
+    let fixture = root.join("test-only");
+    std::fs::create_dir_all(&fixture).unwrap();
+    std::fs::write(fixture.join(cl::MANIFEST_FILE), FIXTURE).unwrap();
+    assert!(!has_installed_halo1(&dir));
+    std::fs::remove_dir_all(fixture).unwrap();
     // Halo 1 with two of its maps converted.
     std::fs::create_dir_all(root.join("halo1")).unwrap();
     std::fs::write(root.join("halo1").join(cl::MANIFEST_FILE), HALO1).unwrap();
+    assert!(!has_installed_halo1(&dir), "a manifest alone is not a campaign");
     std::fs::write(root.join("halo1/a10.map"), b"x").unwrap();
+    assert!(has_installed_halo1(&dir));
     std::fs::write(root.join("halo1/a30.map"), b"x").unwrap();
     std::fs::write(
         root.join("halo1/import.stamp"),
@@ -475,16 +487,6 @@ fn the_picker_lists_halo_1_then_halo_2_then_the_rest() {
     assert_eq!(Picker::new(&built(&[&none])).rows[0].0, RETAIL_CAMPAIGN);
     assert_eq!(p.campaign(3), None);
     assert_eq!(p.campaign(-1), None);
-}
-
-#[test]
-fn selection_passes_one_request() {
-    let s = Selection::default();
-    assert_eq!(s.campaign(), 1);
-    assert!(!s.take_pass());
-    s.let_through();
-    assert!(s.take_pass());
-    assert!(!s.take_pass());
 }
 
 /// The user's disc: our records go into `mainmenu.map`'s real lists (read
@@ -762,7 +764,7 @@ fn every_lookup_caller_finds_a_halo1_level() {
 }
 
 #[test]
-fn snapshots_wait_while_the_level_select_is_built_or_a_request_passes() {
+fn snapshots_wait_while_the_level_select_is_built() {
     let s = Selection::default();
     assert_eq!(s.snapshot_live(), None);
     s.set(2);
@@ -770,9 +772,6 @@ fn snapshots_wait_while_the_level_select_is_built_or_a_request_passes() {
     s.set_building(true);
     assert!(s.snapshot_live().is_some());
     s.set_building(false);
-    s.let_through();
-    assert!(s.snapshot_live().is_some());
-    assert!(s.take_pass());
     assert_eq!(s.snapshot_live(), None);
 }
 

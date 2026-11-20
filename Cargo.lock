@@ -651,6 +651,7 @@ dependencies = [
  "font",
  "gfx",
  "h1convert",
+ "h1map",
  "h1scripts",
  "h1text",
  "hot-render",

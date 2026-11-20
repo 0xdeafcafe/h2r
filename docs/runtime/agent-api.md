@@ -800,24 +800,26 @@ How it behaves (**Code**, with tests in `crates/agent`):
   This enables XNet with no service URL or Live accounts. The coordinator
   recipe uses one native process per console. [Dedicated host experiment](../live/dedicated-host.md#mac-system-link-spike)
 
-  **Reaching a level select.** There is no campaign or level-select helper:
-  `lobby mode campaign` (`agent_proto::sim::menu`) presses A on the main
-  menu's Campaign row and expects screen `0xee`, and nothing goes further.
-  Drive the rest with `h2 agent press` and read where the input went with
-  `h2 agent ui` (`H2_UI_WATCH=1`). Which screen Campaign opens depends on
-  the profile: the main menu's Campaign press (`0x2b16ad`..`0x2b16d4`)
-  opens the level select (`0x2b130a`, the picker in its place when a
-  second campaign is installed) only when bit 21 of what `0x18fb0d`
-  returns is set (read from the generated code); otherwise it calls
-  `0x148c3e(.., 3)`, which `boot::ui_watch`'s table of seen screens gives
-  as `0xee` and then the loading screen `0xd1` (**Doc**). That the bit
-  means "a campaign was played" is a guess (**S**); if so, a fresh profile
-  reaches neither the picker nor Halo 1. Use a `--data` whose
-  profile has the level select (the one `h2 play` uses does, once a
-  campaign was played there), not `--fresh-data`. On the level select, a
-  Halo 1 level's first entry is always listed (docs/halo1/campaign-picker.md
-  "Only the first level listed"), and its difficulty opens Game Options
-  even with no skull collected.
+  **Built — campaign menu inspection.** `h2 agent ui.campaign` is a
+  read-only tick-boundary query and takes no parameters. With no installed
+  Halo 1 campaign it returns `{"installed":false}`. With one installed it
+  reports `page` (`picker`, `options`, `levels`, `difficulty`, `dialog` or
+  `other`), `game` (selected campaign key on the three game-specific
+  pages), `rows`, `focused_row` (zero-based) and `focused`. Unknown
+  selection/focus is null. On the picker, rows are installed campaign keys.
+  On Campaign Options the action keys are `resume`, `new_game`,
+  `select_level` and `co_op`. Other pages report an empty row list.
+  This query reads the guest screen and focus directly without UI watch.
+
+  From the main menu's Campaign row, `h2 agent press a` opens the picker
+  for fresh and returning profiles. Read `ui.campaign`, then press A on a
+  game and inspect again. For example, a fresh Halo 1 menu reports
+  `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
+  Choose Select Level for that game's unlocked missions, or New Game for
+  the first mission's difficulty. With UI watch on, `lobby mode campaign`
+  also recognizes the installed picker. Main menu row zero requests the
+  native campaign dialog from `0x230888`; the picker intercepts it before
+  the later profile-dependent solo branch at `0x2b16ad`.
 - **Waits.** `session.wait` settles at tick boundaries (and between
   slices for wall-clock timeouts and while loading). A condition already
   true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,

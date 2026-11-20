@@ -837,6 +837,15 @@ points! { ALL;
     /// list, sorted, into the data array (stdcall `(array, campaign id)`).
     /// 1.0 asks for campaign 1 only (`0x19c190`).
     CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTIONS_LIST @ 0x002b_14dc: [fn(list: ebx, player: stack 0) -> eax ret 4]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_TEXT @ 0x002b_1613: [fn(list: ecx, item: stack 0, arg: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_CHOSEN @ 0x002b_166d: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
+    PROFILE_LAST_MAP @ 0x0019_10d9: [fn() -> eax ret 0]; "docs/halo1/campaign-picker.md";
+    PROFILE_CHECKPOINT_SET @ 0x0019_048c: [fn(slot: stack 0) ret 4]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_CHECKPOINT_POLL @ 0x002b_178e: [fn(list: ecx) ret 0]; "docs/halo1/campaign-picker.md";
+    CAMPAIGN_OPTION_HELP @ 0x002b_18b7: [fn(list: eax) -> eax ret 0]; "docs/halo1/campaign-picker.md";
+    CHECKPOINT_QUEUE_READ @ 0x002a_da70: [fn(path: eax) -> eax ret 20]; "docs/halo1/campaign-picker.md";
+    CHECKPOINT_QUEUE_WRITE @ 0x002a_dec0: [fn(path: eax) -> eax ret 20]; "docs/halo1/campaign-picker.md";
     /// The menu's campaign start: options from the selection globals
     /// `0x54e7c0`-`0x54e7c8`, the level looked up by `(campaign, map)`.
     CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/halo1/campaign-picker.md";

@@ -5,14 +5,17 @@
 //!   before each of their readers we hook runs; the campaign the level
 //!   select shows; the campaign of the level started; our campaigns'
 //!   progress kept apart from the profile's.
-//! - The picker, our own list class ([`crate::list_class`]): Halo 2, then
-//!   each installed campaign. The main menu's Campaign path opens it in
-//!   place of the level select; a press picks the campaign, rebuilds the
-//!   level select's list for it with the game's own `0x19c6d0`, and opens
-//!   the retail level select.
+//! - The game picker uses our list class ([`crate::list_class`]).
+//!   The main menu opens the picker, then the chosen game’s
+//!   Campaign Options, with the native checkpoint and co-op handlers.
 //!
 //! [`prepare`] runs before the layouts install (which serve the picker's
 //! strings and register its class) and [`install`] after.
+
+mod options;
+mod inspect;
+pub(crate) use inspect::inspect;
+pub(crate) use options::options_capacity;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -36,9 +39,10 @@ pub const SCREEN: &str = "campaigns";
 /// The main menu's level-select loader (flag 0; the lobby's is
 /// `0x2b136d`).
 pub const LEVEL_SELECT_LOADER: u32 = 0x002b_130a;
-/// Where the main menu's Campaign path fills its request for that loader
-/// (the return address of its call to `0x149f49`).
-pub const MAIN_MENU_REQUEST_RET: u32 = 0x002b_16f3;
+/// Main menu row zero calls 0x230888. Its normal branch requests
+/// Campaign Options on window 3 before consulting the profile.
+pub const OPTIONS_LOADER: u32 = 0x0023_0616;
+pub const MAIN_MENU_REQUEST_RET: u32 = 0x0023_08d1;
 /// Our strings: the title, then one label a row.
 pub const ID_BASE: u32 = crate::ui_kit::ids::family("campaign picker").base;
 pub const TITLE_ID: u32 = ID_BASE;
@@ -54,7 +58,7 @@ pub const INFO_ROOM: usize = 384;
 
 /// The picker's layout: the level select's (`skulls_menu::LIST_LAYOUT`,
 /// its list on the left), its bracket, its picture box with the focused
-/// campaign's first level's picture, and its description text under it
+/// game's focus tile, and its description text under it
 /// with the campaign's detail. The level select's own picture bitmap
 /// (screen 11, pane 0, bitmap 0, `[177 39 -30 259]`, 220 by 207, its
 /// animation 13), copied and pointed at the campaign's picture
@@ -87,6 +91,7 @@ pub fn prepare(state: State, store: Option<Arc<settings::Store>>) -> Arc<State> 
     let state = Arc::new(state);
     let picker = Picker::new(&state.built);
     let mut strings: Vec<(u32, &'static str)> = vec![(TITLE_ID, TITLE)];
+    strings.extend(options::STRINGS);
     // Once a boot: the labels live as long as the game.
     let placeholder: &'static str = Box::leak(" ".repeat(INFO_ROOM - 1).into_boxed_str());
     for (i, (_, name)) in picker.rows.iter().enumerate().take(MAX_ROWS) {
@@ -207,7 +212,18 @@ impl Rows for PickerRows {
     }
     fn picture(&self, row: i16) -> Option<u32> {
         let id = self.picker.campaign(row)?;
-        self.state.selection.seen().pictures.get(&id).copied()
+        let tile = if id == RETAIL_CAMPAIGN {
+            Some(crate::campaign_cards::picker::TWO)
+        } else if self.state.key_of_campaign(id) == Some(campaigns::HALO1_KEY) {
+            Some(crate::campaign_cards::picker::CE)
+        } else {
+            None
+        };
+        match tile {
+            Some(key) => Some(self.state.cards.lock().unwrap_or_else(|e| e.into_inner())
+                .get(key).copied().unwrap_or(u32::MAX)),
+            None => self.state.selection.seen().pictures.get(&id).copied(),
+        }
     }
     fn live_text(&self) -> LiveText {
         let texts: Vec<String> = self.infos().iter().map(|i| i.text()).collect();
@@ -242,7 +258,7 @@ impl Rows for PickerRows {
                 CAMPAIGN_LEVEL_LIST.base,
                 vec![GuestArg::Load(LEVEL_ARRAY), GuestArg::Value(id)],
             )],
-            loader: LEVEL_SELECT_LOADER,
+            loader: OPTIONS_LOADER,
         }
     }
 }
@@ -283,7 +299,7 @@ impl crate::ui_kit::spec::Describe for PickerRows {
             ids.extend(self.description(r));
             s.rows.push(
                 RowSpec::action(&self.picker.rows[row].1)
-                    .press(Press::Open("level select".into()))
+                    .press(Press::Open("Campaign Options".into()))
                     .describe(&info.text())
                     .ids(&ids),
             );
@@ -453,15 +469,28 @@ impl feature::Feature for Campaigns {
         b.raw()
             .before(&LAST_LEVEL_SET, "our campaign's last level", move |c| {
                 let map = c.cpu.eax;
-                let Some(key) = s.key_of(map) else {
-                    return Ok(Flow::Continue);
-                };
-                let profiles = crate::skulls::profiles_or_default(&*c.ctx.runtime().memory()).0;
-                for p in &profiles {
-                    s.progress.started(p, key, map);
+                let launch = c.ctx.runtime().memory().u32(c.cpu.esp)? == 0x0018_f0b7;
+                let game = campaigns::campaign_of(&s.built, map);
+                if launch {
+                    s.selection.set(game.map_or(RETAIL_CAMPAIGN, |g| g.campaign_id));
+                }
+                let Some(game) = game else { return Ok(Flow::Continue) };
+                if launch {
+                    let level = game.levels.iter().find(|l| l.map_id == map).unwrap();
+                    // 0x18f0a0 keeps the confirmed launch options in ESI.
+                    let (profiles, difficulty, restore) = {
+                        let mem = c.ctx.runtime().memory();
+                        (crate::skulls::profiles_or_default(&*mem).0,
+                         mem.u16(c.cpu.esi + crate::level_boot::OPT_DIFFICULTY)?,
+                         mem.u8(options::RESTORE_CHECKPOINT)? != 0)
+                    };
+                    for p in profiles {
+                        s.progress.launched(&p, &game.key, level, difficulty, restore);
+                    }
                 }
                 c.ret(0).map(Flow::Return)
             });
+        options::hooks(b, st);
         let picker = Arc::clone(&self.picker);
         let s = Arc::clone(st);
         b.raw()
@@ -470,11 +499,18 @@ impl feature::Feature for Campaigns {
                     let rt = Arc::clone(c.ctx.runtime());
                     Gm::u32(&*rt.memory(), c.cpu.esp).unwrap_or(0)
                 };
-                if ret != MAIN_MENU_REQUEST_RET || stack(c, 3) != Some(LEVEL_SELECT_LOADER) {
+                // The native checkpoint completion copies the stored map id and
+                // writes campaign 1. Resolve the saved basename again, since a
+                // partial import may now have more installed missions.
+                if ret == 0x002b_180c && s.selection.campaign() != RETAIL_CAMPAIGN {
+                    options::checkpoint_selection(c, &s)?;
+                }
+                if ret != MAIN_MENU_REQUEST_RET || stack(c, 3) != Some(OPTIONS_LOADER) {
                     return Ok(Flow::Continue);
                 }
                 let loader = picker();
                 if loader != 0 {
+                    ensure(c, &s);
                     // What the picker's detail and pictures read while it
                     // is up.
                     let rt = Arc::clone(c.ctx.runtime());
@@ -484,8 +520,8 @@ impl feature::Feature for Campaigns {
                         pictures: campaigns::first_pictures(&*mem),
                     });
                 }
-                if loader != 0 && set_stack(c, 3, loader) {
-                    eprintln!("campaigns: opening the campaign picker before the level select");
+                if loader != 0 && set_stack(c, 1, 5) && set_stack(c, 3, loader) {
+                    eprintln!("campaigns: opening the game picker");
                 }
                 Ok(Flow::Continue)
             });
@@ -509,12 +545,12 @@ pub fn install(
     };
     rt.memory()
         .map_zeroed(Region::BASE, Region::LEN, Permissions::RW)?;
-    REGION.store(Region::BASE, Ordering::SeqCst);
     let picker: Arc<dyn Fn() -> u32 + Send + Sync> =
         Arc::new(|| crate::list_class::loader_of(SCREEN).unwrap_or(0));
     let added = registry
         .add(&Campaigns { state, picker })
         .map_err(|e| anyhow::anyhow!("campaigns: {e}"))?;
+    REGION.store(if added { Region::BASE } else { 0 }, Ordering::SeqCst);
     if !added {
         eprintln!("campaigns: features.campaigns is off; one campaign, as retail");
     }
@@ -527,7 +563,7 @@ mod tests {
     use crate::campaigns::{Progress, Selection};
     use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
 
-    fn state() -> State {
+    pub(super) fn state() -> State {
         let ms = [
             CampaignManifest::parse(HALO1).unwrap(),
             CampaignManifest::parse(FIXTURE).unwrap(),
@@ -541,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn a_press_picks_the_campaign_and_opens_the_level_select_for_it() {
+    fn choosing_a_game_opens_its_options_with_its_level_list() {
         let st = Arc::new(state());
         let rows = PickerRows::new(Arc::clone(&st), None);
         assert_eq!(rows.count(), 3);
@@ -555,7 +591,7 @@ mod tests {
                 loader,
                 line,
             } => {
-                assert_eq!(loader, LEVEL_SELECT_LOADER);
+                assert_eq!(loader, OPTIONS_LOADER);
                 assert_eq!(
                     calls,
                     [(
@@ -576,9 +612,7 @@ mod tests {
         assert_eq!(rows.press(9), Chosen::Nothing);
     }
 
-    /// Each row's detail is its description, rewritten in place; its
-    /// picture is its campaign's first level's, as seen when the picker
-    /// opened.
+    /// The two games display their own framed focus tiles and descriptions.
     #[test]
     fn each_row_describes_its_campaign_and_shows_its_picture() {
         let st = Arc::new(state());
@@ -587,13 +621,17 @@ mod tests {
         assert_eq!(rows.description(0), Some(INFO_IDS.id(0)));
         assert_eq!(rows.description(2), Some(INFO_IDS.id(2)));
         assert_eq!(rows.description(3), None);
-        assert_eq!(rows.picture(0), None, "nothing seen yet");
+        assert_eq!(rows.picture(0), Some(u32::MAX), "no disc artwork loaded");
+        st.cards.lock().unwrap().extend([
+            (crate::campaign_cards::picker::CE.into(), 0xe7ab_0020),
+            (crate::campaign_cards::picker::TWO.into(), 0xe7ab_0021),
+        ]);
         st.selection.set_seen(campaigns::Seen {
             profiles: vec!["Chief".into()],
             pictures: [(1, 0xe6dd_04bb), (2, 0xe7a0_0010)].into(),
         });
-        assert_eq!(rows.picture(0), Some(0xe7a0_0010), "Halo 1's");
-        assert_eq!(rows.picture(1), Some(0xe6dd_04bb), "Halo 2's");
+        assert_eq!(rows.picture(0), Some(0xe7ab_0020), "Halo 1 focus");
+        assert_eq!(rows.picture(1), Some(0xe7ab_0021), "Halo 2 focus");
         assert_eq!(rows.picture(2), None, "the test campaign's unseen");
         let infos = rows.infos();
         assert_eq!(infos[0].progress.unwrap().reached, 4, "Chief finished a50");

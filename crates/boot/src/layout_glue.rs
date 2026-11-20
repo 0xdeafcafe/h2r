@@ -750,6 +750,7 @@ pub fn install(
                     let mem = ctx.runtime().memory();
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
+                let n = if with_campaigns { crate::campaign_menu::options_capacity(name, n) } else { n };
                 let n = video_screen::list_count(&model, name, n);
                 if with_video && video_screen::settings_third_item(name, n) {
                     // Slot 19 reports a third item widget for our row.
@@ -1579,7 +1580,7 @@ pub fn install(
     if let Some(class) = crate::campaign_menu::class() {
         match registry.add(&class) {
             Ok(true) => {}
-            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; the level select opens as retail"),
+            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; Campaign uses the retail entry"),
             Err(e) => eprintln!("campaigns: {e}"),
         }
     }

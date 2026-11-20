@@ -1221,11 +1221,12 @@ fn run_configured(
             .iter()
             .flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone())))
             .collect();
-        campaign_cards::CardRewrite::new(
-            campaign_cards::read_cards(&opts.data_root, &levels),
-            s.cards.clone(),
-        )
-        .map(|r| r.with_cache(&opts.data_root))
+        let mut cards = campaign_cards::read_cards(&opts.data_root, &levels);
+        if let Err(e) = campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards) {
+            eprintln!("campaigns: game picker artwork unavailable: {e:#}");
+        }
+        campaign_cards::CardRewrite::new(cards, s.cards.clone())
+            .map(|r| r.with_cache(&opts.data_root))
     });
     // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
     // the icon sets.
@@ -1324,7 +1325,7 @@ fn run_configured(
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
     // installed under <data>/campaigns get their level lists and the
-    // picker in front of the level select. None installed: nothing is
+    // picker ahead of Campaign Options. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     let level = match (host.level.take(), &sim_mode) {
