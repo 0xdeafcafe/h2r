@@ -361,7 +361,9 @@ What replaces the gate:
   preempt bit, `PARK` (8), on the running context's word and waits for
   the state to become parked or "in Rust". Generated code reaches a safe
   point within one loop trip or one call. The runner sees `PARK`, marks
-  itself parked, waits for the guard to drop and carries on.
+  itself parked, waits for the guard to drop and carries on. On the host,
+  contenders sleep on a condition variable signalled by state transitions.
+  A runner finding a pending guard waits on the guest mutex.
 - A park is not a preemption. It does not call `preempt_decide`, does not
   end the slice and does not take a transfer from the budget. The loop
   exit and re-entry it causes are an ordinary `JUMP`/`RESUME`, with no
