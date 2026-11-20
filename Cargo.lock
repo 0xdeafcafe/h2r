@@ -1907,12 +1907,17 @@ dependencies = [
  "analyze",
  "ir",
  "lift",
+ "map",
  "mopp",
  "paste",
  "runtime",
+ "sim-anim",
+ "sim-core",
  "simd",
+ "tags",
  "x87",
  "xbe",
+ "xiso",
 ]
 
 [[package]]
@@ -5909,6 +5914,20 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "sim-anim"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-core"
+version = "0.1.0"
+dependencies = [
+ "simd",
 ]
 
 [[package]]
