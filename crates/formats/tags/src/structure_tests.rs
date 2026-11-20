@@ -140,6 +140,7 @@ fn bsp_with(res: &[Res]) -> (Vec<u8>, Raw) {
     // Cluster block at 0x200, definitions at 0x400, instances at 0x600.
     put32(&mut p, 0x9c, 1);
     put32(&mut p, 0xa0, BASE + 0x200);
+    p[0x200 + 0x6e] = 0xfe;
     put_geometry(&mut p, 0x200, 0x800, &block, &table);
     for (i, v) in [-1.0f32, 2.0, -1.0, 2.0, -1.0, 1.0].iter().enumerate() {
         put32(&mut p, 0x200 + 0x54 + 4 * i, v.to_bits());
@@ -202,6 +203,7 @@ fn decodes_and_loads_structure_geometry() {
         (1, 1, 1)
     );
     let c = &bsp.clusters[0];
+    assert_eq!(c.sky_index, -2);
     assert_eq!(c.bounds, [-1.0, 2.0, -1.0, 2.0, -1.0, 1.0]);
     let s = c.geometry.load(&mut raw, Some(8)).unwrap().unwrap();
     assert_eq!(s.indices, [0, 1, 2]);

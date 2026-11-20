@@ -36,7 +36,59 @@ The colour passes use source factor destination colour, destination factor zero,
 
 ### Object chain
 
-`0x000335e0` checks two predicates, enables the object-shadow mode, sets up target 9 at 256×256, and gathers up to 32 entries via `0x00033400`. Each entry is 20 bytes. Before accepting `0x00032350`, the observer verifies the gather caller, both mode bytes, the call's return address, the ESI cursor and EDI countdown, and both arguments against words +8 and +12 in that entry.
+`0x000335e0` requires an active, checksum-matched lightmap with a bitmap
+(`0x000226d0`) and permission from the render override (`0x000335c0`).
+It enables object-shadow mode and sets up target 9 at 256×256.
+`0x00033400` walks the view's objects. Mode 0 accepts all list flags,
+mode 1 requires bit 14 and mode 2 requires bit 15. Other modes admit
+none. It takes the first 32 eligible objects.
+
+Eligibility and projection have separate tests:
+
+- `0x0003d7f0` tests body byte +6 bit 0 (must be clear). Object
+  definition word +0x18 selects mode 0 for bipeds and vehicles, or mode
+  2 for any type. The fade comes from the scaled camera distance, the
+  model's distance thresholds (`0x0004baf0`), and for units, body
+  +0x2b0. A biped with body +0x10a bit 2 also has a tick-based fade.
+  An attached object that fails its own test can inherit the parent's
+  result.
+- The 20-byte gather row carries the object in both the history key and
+  caster slots, the eligibility fade and a projected-radius priority.
+  The per-view history (`0x0003359b`, `0x000335ad`) targets four
+  objects with a fade step of 0.005 and returns its current fade in the
+  row. Fading entries can still reach the draw. Before accepting
+  `0x00032350`, the observer verifies the gather caller, both mode
+  bytes, the return address, the ESI cursor and EDI countdown, and both
+  arguments against words +8 and +12 (caster and fade).
+- `0x00032350` tests eligibility again, requires a root object (body
+  +0x14 is the none handle) and requires shadows enabled. The visibility
+  check `0x0003d7c0` rejects a chain with object-header +2 bit 4 or
+  body +4 bit 0 set. Creature type 12 takes `0x00032ce0`, which tests
+  for a ground hit and draws separate geometry. In the main mask branch,
+  `0x00031f50` expands the caster's extents over its descendants and
+  `0x000320b0` checks the resulting transformed bounds.
+
+**Direction and strength.** `0x0003dc90` selects the default lighting
+sample at the default record's +0x1c for body +7 bit 0. Otherwise it
+follows an attachment to its root and returns render-cache entry +0x54
+when the entry is valid (byte +3 set). The mask branch requires a
+sample. Its +0x0c vector becomes the projection's **forward**, along
+the cast shadow: `0x00032493` copies it, `0x000324b1` normalizes it,
+and `0x00032905` passes that frame to the shadow setup. The receiver's
+hardware `c[41].xyz` is the opposite, toward the light
+(`0x00048f85`, `engine::shadow_constants`).
+
+The sample's +0x1c must be positive. `0x00032438` multiplies it by the
+current eligibility fade and the ranked fade, and requires the product
+to exceed 0.09. `0x00032912` publishes that product as the light
+weight. In the lighting-cache copy used by object materials the vector
+and scalar are at +0x1c and +0x2c respectively. The sample producer's
+default path sets the scalar to one (`0x000d4682`). Its tuned path
+evaluates a tag function from a clamped weighted colour at the caster
+(`0x000d3e46`, `0x000d3e92`). Neither path measures brightness at the
+receiver. `engine::render::object_shadow::{Candidate, Lighting}` reads
+the gather row and resolved sample in
+`crates/rewrites/engine/src/render/object_shadow.rs`.
 
 The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `0x000222a0` for the two filter passes through targets 10 → 11 → 10, and applies layer 11 with the filtered target 10. The native freeze is ordered at the start of 11. A native caster can therefore share its map with D3D casters and with the guest filter. The original handles the early and alternate branches, projection setup, tail at `0x0004a780`, and the outer loop's restoration of both mode bytes. Each object and each additional-caster suffix at `0x00030ed0` starts a new generation.
 
