@@ -965,8 +965,12 @@ h2 agent render.parity '{"arm": true}'
   a game view. With an installed frame owner, `scene_owned_presented`
   counts successful native presentations and `scene_owned_declined`
   counts presentations that take the ordinary backend path, including
-  frames outside game views. Both carried records are absent until the
-  sink records a frame.
+  frames outside game views. `scene_owned_flare_queries` counts
+  game-view pixel reports whose native result the owner installed.
+  The raw `scene_readback_pixel_count` includes these requests.
+  Compare raw and native counts at the same recording boundaries
+  to identify requests that still need the reference.
+  Both carried records are absent until the sink records a frame.
   Without the option the sink counters are also absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since

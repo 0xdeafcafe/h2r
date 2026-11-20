@@ -59,6 +59,7 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
     if let Some(owner) = d3d::threaded::owner::stats() {
         counts.insert("scene_owned_presented".into(), owner.presented);
         counts.insert("scene_owned_declined".into(), owner.declined);
+        counts.insert("scene_owned_flare_queries".into(), owner.flare_queries);
     }
     counts
 }
