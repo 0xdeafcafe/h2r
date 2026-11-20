@@ -85,6 +85,8 @@ pub struct Ready {
     /// The scene's layers 1, 5, 7, 8 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
     pub(crate) layers: Option<Arc<crate::native_layers_glue::LayersView>>,
+    /// The model decorators' passes of this load (`native_decorators_glue`).
+    pub(crate) decorators: Option<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` when the world has no native
     /// material).
@@ -493,6 +495,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
     crate::native_layers_glue::install(device, Arc::clone(&state));
+    crate::native_decorators_glue::install(device, Arc::clone(&state));
     let gels = crate::native_gels_glue::install(device);
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
@@ -944,6 +947,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // world, when their stage is placed.
     let layers = render_bridge::native_layers::placed()
         .then(|| crate::native_layers_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
+    // The model decorators' layer-3 passes, from the map's decorator sets.
+    let decorators = Some(crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder));
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
@@ -968,6 +973,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         fog,
         water,
         layers,
+        decorators,
         lights,
         palettes: decoder.used().clone(),
     }, bsps.len()))

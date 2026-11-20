@@ -959,9 +959,10 @@ to the guest's draws (**Code**):
     (`boot::native_layers_glue`).
 - **Layer 3.** The decorators (build `0x0004de20`) are in the scene
   (`View::decorators`, each placement's draw with its instances'
-  `v11..v15`) and their stage's plan and instanced recording are built,
-  but no loader gives the stage the sets' geometry and programs, so the
-  guest still draws them ([native-decorators.md](native-decorators.md)).
+  `v11..v15`), and the decorator stage draws a view's ready ones
+  instanced and skips their items; a draw whose material is not ready,
+  and a view the stage declines, stays the guest's
+  ([native-decorators.md](native-decorators.md)).
   The world keeps the draws of materials it does not translate and of
   parts that lack an input of their program ([native-world.md](native-world.md)),
   and the object walk the parts it refuses (`walk_unsupported`).

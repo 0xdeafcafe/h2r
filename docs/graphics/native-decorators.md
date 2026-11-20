@@ -1,8 +1,8 @@
 # Native decorators: the BSP's grass and rocks in layer 3
 
-Status: Partly built. The read, the scene types, extraction and the stage's plan and recording are built; the loader of the sets' geometry and programs and the glue that queues the stage and skips the guest's items are not, so decorators still draw on the D3D path.
-Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`encode`). Tests: the unit tests of those files.
-Switch: none (extraction runs with the frame step, `frame-scene`).
+Status: Built, not verified in a run. The read, the build's implementation lookup, extraction, the plan, the loader, the recording and the glue that reserves the pass and skips the guest's items are built and unit-tested; no frame has been compared with the D3D path.
+Code: `crates/rewrites/scene-extract/src/layout/decorators.rs` (`read`, `registers`, `implementation`, `set_geometry`), `crates/rewrites/scene-extract/src/decorators.rs` (`extract`, `clear_slots`), `crates/rewrites/frame-scene/src/decorator.rs`, `crates/rewrites/native-render/src/decorators.rs` (`plan`), `crates/rewrites/native-render/src/decorators_load.rs` (`decorator_look`, `compile`, `buffers`), `crates/rewrites/native-render/src/decorators_gpu.rs` (`MaterialGpu`, `bind`, `encode`), `crates/rewrites/render-bridge/src/native_decorators.rs` (the observer), `crates/apps/boot/src/native_decorators_glue.rs` (the host). Tests: the unit tests of those files.
+Switch: `impl.render.native` (the stage; extraction runs with the frame step, `frame-scene`).
 
 Model decorators are the structure BSP's placed scatter: each placement is
 one item of the layer list, and its draw sets five vertex registers and
@@ -34,7 +34,18 @@ same reads, in the same order.
    geometry cache (`0x0012de70`, flags 3) for the placement's geometry
    record and the set's geometry (set `+0x38`) and declines when either is
    not given, then fills the entry with the implementation the shader's
-   template gives for the layer (vertex type 1, `0x0004cbb0`).
+   template gives for the layer (vertex type 1, `0x0004cbb0`;
+   `layout::decorators::implementation`): the tag table entry of the
+   shader's index (`movsx` of the item's `+8`; a `PRTM` or `prt3` shader
+   reaches its template through a virtual call and is not read), its
+   template (shader `+0x24`), the template's postprocess (`+0x5c`), the
+   first layer of the detail level (`+4`, 10-byte records, low 9 bits),
+   the first pass of the layer (`+0xc`, 2-byte), the pass (`+0x14`,
+   10-byte records, the `spas` datum at `+4`) and the pass's
+   implementation 0 (`spas` `+0x20`, then `+4`). It declines when the
+   implementation's `vrtx` (`+0x100`) is none, has no classification 1,
+   or classification 1's program size (`+0xc` of the `0x1c`-byte record)
+   is below 16; the guest then draws nothing for the item.
 3. **The draw** `0x0004e260`, once per placement:
    `TwoSidedLighting` on; `c[53]` = (`[0x0052598c + 4·lod]`,
    `[0x00525998 + 4·lod]`, 0, 1); the set's vertex stream (set `+0x34`,
@@ -85,13 +96,45 @@ same reads, in the same order.
    run of consecutive instances with the same material, `c[53]` and index
    range is one batch. Joining only neighbours keeps the guest's order.
    `Plan::slots` are the items the guest would skip.
-7. **The recording** (`native_render::decorators_gpu::encode`). The
+7. **The loader** (`native_render::decorators_load`, called from boot's
+   glue). At the world's load (`native_world_glue`'s worker): the shaders
+   the map's decorator sets name (`DECR` root `+0`, 8-byte references,
+   the datum at `+4`), each resolved (`tags::material`), and each of its
+   layer-3 passes at each detail level as the build picks it
+   (`decorator_look`: implementation 0, its `vrtx`'s classification-1
+   program and input semantics), with its stage bitmaps decoded. At a
+   material's first sight in a view (`Host::prepare`, once per load): the
+   set's geometry from guest memory (`set_geometry`: the vertex buffer
+   descriptor at set `+0x34`, type byte `+0`, stride `+1`, offset `+8`,
+   the D3D buffer at `+0x10` whose data is at `+4`; the indices, count
+   `+0x28` and u16 pointer `+0x2c`; the vertex count the largest index
+   plus one), the stream type's format (`object_streams::StreamFormats`,
+   the table at `0x0043f408`), the pass translated for that stream with
+   `v11..v15` supplied and two-sided lighting on (`compile`), and the
+   vertices gathered as the program reads them (`buffers`).
+8. **The recording** (`native_render::decorators_gpu::encode`). The
    plan's instances staged once per copy (80 bytes each), bound as the
    last vertex buffer with instance step (`instance_layout`, locations 11
    to 15), and one `draw_indexed` per batch over the set's u16 indices.
    The program is the material's pass translated with
    `decorators::PROVIDED_INPUTS` (`v11..v15`) supplied; the batch's
-   bindings (`Bound`) carry its uniforms with `c[53]`.
+   bindings (`Bound`) carry its uniforms with `c[53]`. Each material
+   is uploaded on the device at its first draw (`MaterialGpu`: module,
+   stage textures, the set's buffers, a pipeline per target format) and
+   kept for the load. The viewport is the whole target, the view's
+   rectangle the scissor.
+9. **The glue** (`render_bridge::native_decorators`, an observer before
+   the layer draw, after the frame step's and the native world's, and
+   `native_decorators_glue`). At the scene's layer 3, the open view's
+   materials are made ready, the view is planned over the ready ones,
+   and the host reserves one external pass (stage `World`) as the fog's
+   does: the device must be W-buffered with the stencil off, layer 3's
+   bit is cleared on every planned item through a preview
+   (`clear_slots`, all or nothing: each slot an item of build
+   `0x0004de20` with the bit set), and the masks are applied and the
+   reservation committed only once the pass has recorded on every copy.
+   The next layer draw sets each bit back on the items that still hold
+   the mask it left; a map activation forgets them.
 
 ## Interfaces
 
@@ -99,30 +142,51 @@ same reads, in the same order.
   site, layer 3): the current list `[0x00467138]`, its items, the BSP
   decorator block, the scenario's decorator palette (`[0x004e0350] +
   0x37c`, `8` bytes, the set datum at `+4`), the tag table `[0x004e3b44]`,
-  the visible clusters, the set and permutation records, the constants
+  the visible clusters, the set and permutation records, the shader,
+  template, pass and `vrtx` records of the lookup, the set's vertex
+  buffer and indices, the stream format table `0x0043f408`, the constants
   (`0x0045dbb4`, `0x0045dbbc`, `0x0045dbc0`, `0x0045dbd8`, `0x0045dc10`,
   `0x0045dc18`, `0x0045dd34`, `0x0045dd38`, `0x0045dd3c`, `0x0045dd44`,
-  `0x005259b4`, `0x0043fde4`) and the detail tables. Nothing is written.
+  `0x005259b4`, `0x0043fde4`) and the detail tables.
+- Written: layer 3's bit (`1 << 3`) of the drawn items' layer mask (item
+  `+0x10`), cleared before the layer draw and set back at the next.
 - `render.scene` reports per view `decorators`, `decorator_instances` and
   `decorator_remainder`, and the counters `scene_decorator_draws`,
-  `scene_decorator_instances` and `scene_decorator_remainder`
-  ([agent-api.md](../runtime/agent-api.md)).
+  `scene_decorator_instances`, `scene_decorator_remainder`, and the
+  stage's `scene_decorator_views` (views with decorators),
+  `scene_decorator_views_native` (views the stage drew),
+  `scene_decorator_items_skipped` (items the guest skipped),
+  `scene_decorator_draws_unready` (draws left to the guest: their
+  material is not ready) and `scene_decorator_views_declined` (views the
+  host left to the D3D path) ([agent-api.md](../runtime/agent-api.md)).
+- The load prints one line (`native-decorators: … layer-3 passes load;
+  on the D3D path: …`), and each reason a material stays on the D3D path
+  is printed once.
 - What a replacement of the draw must still do: the geometry cache's
   request and stamp (`0x0012de70`) for the placement's record and the set,
   a residency write the entry census does not count.
 
 ## Rules and limits
 
-- Not built: the loader that gives a set's geometry (vertex stream and
-  index buffer) and a material's decorator program with its pipeline
-  (`Bound`), and the glue that queues the stage on the render thread and
-  clears the drawn items' layer bit as the world's skip does. Until then
-  the plan is not placed and the guest draws every decorator.
-- The pipeline must draw with two-sided lighting on, as the draw sets it.
-- Extraction does not repeat the build's implementation lookup: an item
-  whose build declines for its shader is in the scene though the guest
-  draws nothing for it. The stage's material check is where such an item
-  is refused.
+- The stage draws all of a view's planned decorators or none: a refusal
+  at the ask or on any copy leaves every item to the D3D path. Draws
+  whose material is not ready stay the guest's while the rest draw
+  natively.
+- A pass stays on the D3D path when it has engine-driven render or
+  stage states, leaves the cull to the device, samples a lightmap, has a
+  palettized stage bitmap, computes anything per draw, reads a constant
+  the stage does not set (it sets `c[0..18]`, `c[53]` and the pass's
+  own), or its set's stream supplies one of `v11..v15`.
+- The pipelines test no stencil, so a layer 3 drawn with the stencil on
+  is the D3D path's.
+- The pipeline draws with two-sided lighting on, as the draw sets it.
+- Extraction repeats the build's implementation lookup: an item whose
+  build declines is not in the scene, as the guest draws nothing for it.
+- A skipped item gets no entry, so its build does not run and the
+  geometry cache's request and stamp for its record and set are not made
+  that frame. A placement whose geometry is not resident is a remainder,
+  so the guest's build asks for it again; whether resident geometry is
+  evicted sooner without the stamp is not known.
 - Decals and quads (the other decorator types) are not typed: their
   items are in the transparent layers.
 
@@ -141,7 +205,11 @@ same reads, in the same order.
   precision control.
 - Whether `0x0012de70` ever gives a block that is not marked resident
   without loading it in the same call (a remainder here either way).
-- A frame comparison of the stage against the D3D path.
+- A frame comparison of the stage against the D3D path, and the
+  counters in a run.
+- That the shader word at item `+8` and the tags' shader index agree
+  (the load keys passes by the tag index, as the build reads the word).
+- The geometry cache's behaviour for skipped items (above).
 
 ## Related
 

@@ -755,7 +755,10 @@ h2 agent render.parity '{"arm": true}'
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
-  `scene_decorator_remainder`, `scene_light_groups`, `scene_light_groups_whole` (the
+  `scene_decorator_remainder`, and the decorator stage's
+  `scene_decorator_views`, `scene_decorator_views_native`,
+  `scene_decorator_items_skipped`, `scene_decorator_draws_unready` and
+  `scene_decorator_views_declined` (native-decorators.md), `scene_light_groups`, `scene_light_groups_whole` (the
   gathered light and shadow layers in the scene, and those with every
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
   from the scene with no handler run), `scene_light_objects_alone`
