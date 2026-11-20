@@ -267,9 +267,10 @@ fn an_unparented_update_calls_the_movement_steps_in_order() {
         out = drive(&mut cpu, &mut g, &table, site).unwrap();
     }
     assert_eq!(out, TransferAbi::ret(CALLER));
-    // `bl`: 0 from the timer, `e01d0` 2, `e24f0` 4, 1 before `b58c0`'s
-    // test, then `e6830` 8 and `111650` 16.
-    assert_eq!(cpu.eax & 0xff, 0x1f);
+    // `bl`: 0 from the timer, or'd with `e01d0`'s 2 and `e24f0`'s 4, then
+    // replaced by `mov bl, 1` before `b58c0`'s test (`dd78b`, on the woken
+    // path), then or'd with `e6830`'s 8 and `111650`'s 16.
+    assert_eq!(cpu.eax & 0xff, 0x19);
     assert_eq!(cpu.esp, STACK + 8);
     assert_eq!((cpu.ebx, cpu.ebp, cpu.esi, cpu.edi), (0x1111, 0x2222, 0x3333, 0x4444));
 }
