@@ -760,6 +760,15 @@ points! { ALL;
     /// The variant editor's category list row chosen: words 0 to 5 open a
     /// category's screen; any other word returns having done nothing.
     VARIANT_OPTIONS_ROW_CHOSEN @ 0x002b_75e8: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/skulls.md";
+    /// The Edit Profile list's row text (screen 38, `edit_profile_menu`):
+    /// switches on the item's row index, 0 to 5 (Controls, Appearance,
+    /// Voice Output, Voice Masking, Online Status, Subtitles); any other
+    /// row gets the null id.
+    EDIT_PROFILE_ROW_TEXT @ 0x002b_7990: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The Edit Profile list's row chosen: rows 0 to 5 by index (the
+    /// handle checked through `0x16bae0` first); any other row does
+    /// nothing.
+    EDIT_PROFILE_ROW_CHOSEN @ 0x002b_79f9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Game Setup dialog's list handler constructor (screen 23,
     /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
     /// the "squad setting list" rows (action word at datum `+2`) for the
