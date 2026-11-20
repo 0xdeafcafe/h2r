@@ -491,12 +491,13 @@ impl Bucket {
         let mut until = clock + ASSIGNMENT_SECONDS;
         let request = ad_hoc.and_then(|(provider, playlist)| {
             let choice = config.regions.pick(&group);
-            if let Some(measured) = &choice
-                && measured.rtt_ms.len() == group.len()
-                && let Some(worst) = measured.rtt_ms.values().max()
-                && *worst > 120
-                && assignment.rtt_ms.values().max().is_some_and(|peer| peer < worst)
-            {
+            if !rules.ranked && choice.as_ref().is_some_and(|region| {
+                let votes = assignment.members.iter().filter(|&member| {
+                    region.rtt_ms.get(member).zip(assignment.rtt_ms.get(member))
+                        .is_some_and(|(&dedicated, &peer)| dedicated > 120 && peer < dedicated)
+                }).count();
+                votes > assignment.members.len() / 2
+            }) {
                 return None;
             }
             let region = choice.as_ref().map(|c| c.region.to_owned());

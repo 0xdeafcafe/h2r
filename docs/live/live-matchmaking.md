@@ -1285,10 +1285,12 @@ Among regions measured by every cohort member, Live takes the lowest
 worst-member RTT. A region with a recent free small-class slot wins if
 its worst RTT is within 10 ms of the best. Equal scores prefer the
 configured default and then region code order. If no region has samples
-from every member, Live uses the configured default. When the chosen
-region's complete worst RTT exceeds 120 ms and the reserved peer has
-a lower worst RTT, the match starts on that peer. Regional probes
-occupy no player seats.
+from every member, Live uses the configured default. In an unranked hopper, each member whose
+chosen-region RTT exceeds 120 ms and whose route to the reserved peer
+is faster counts towards a veto. A strict majority of the entire cohort
+starts the match on the peer. Missing samples abstain, and a tie keeps
+the dedicated host. Ranked hoppers keep the dedicated placement regardless
+of these votes. Regional probes occupy no player seats.
 
 Live reserves a cohort with an eligible peer fallback and requests
 the dedicated host as soon as the cohort forms. The forming request

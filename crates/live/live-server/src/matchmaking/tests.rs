@@ -44,36 +44,46 @@ fn make_cohort(
     provider: Option<ProviderKind>,
     with_probes: bool,
 ) -> (Lease, Option<HostLease>) {
-    make_cohort_with_probe(config, provider, with_probes.then_some(70))
+    let probes = if with_probes { [Some(65), Some(70)] } else { [None, None] };
+    make_cohort_with_probes(config, provider, &probes, true, 45)
 }
 
-fn make_cohort_with_probe(
+fn make_cohort_with_probes(
     config: &DedicatedConfig,
     provider: Option<ProviderKind>,
-    worst_probe: Option<u16>,
+    probes: &[Option<u16>],
+    ranked: bool,
+    peer_rtt: u16,
 ) -> (Lease, Option<HostLease>) {
-    let with_probes = worst_probe.is_some();
-    let rules = Rules { size: 2, team_count: 2, ranked: true };
+    let rules = Rules { size: probes.len(), team_count: 2, ranked };
     let mut bucket = Bucket::default();
-    let mut first = ticket(31000);
-    let mut second = ticket(31010);
-    let a = SocketAddrV4::new("192.0.2.1".parse().unwrap(), first.port);
-    let b = SocketAddrV4::new("192.0.2.2".parse().unwrap(), second.port);
-    let regions = with_probes.then_some(&config.regions);
-    bucket.submit(&first, FIRST, a, 5, FORMED, regions).unwrap();
-    bucket.submit(&second, SECOND, b, 6, FORMED, regions).unwrap();
-    assert!(bucket.assign(HOPPER, rules, FORMED, config, provider.clone()).unwrap().is_none());
-
-    first.samples.push(sample(&bucket.waiting[&SECOND].candidate, 55));
-    second.samples.push(sample(&bucket.waiting[&FIRST].candidate, 45));
-    if with_probes {
-        let probe = config.regions.candidates().next().unwrap();
-        first.samples.push(sample(probe, 65));
-        second.samples.push(sample(probe, worst_probe.unwrap()));
+    let mut tickets: Vec<_> = (0..probes.len()).map(|n| {
+        let t = ticket(31000 + 10 * n as u16);
+        let endpoint = SocketAddrV4::new([192, 0, 2, 1 + n as u8].into(), t.port);
+        (t, Xuid(1 + n as u64), endpoint)
+    }).collect();
+    for (t, id, endpoint) in &tickets {
+        bucket.submit(t, *id, *endpoint, 4 + id.0 as u8, FORMED, Some(&config.regions)).unwrap();
     }
-    bucket.submit(&first, FIRST, a, 5, FORMED, regions).unwrap();
-    bucket.submit(&second, SECOND, b, 6, FORMED, regions).unwrap();
-    let cohort = bucket.assign(HOPPER, rules, FORMED, config, provider).unwrap().unwrap();
+    assert!(bucket.assign(HOPPER, rules, FORMED, config, provider.clone()).unwrap().is_none());
+    let peers: Vec<_> = bucket.waiting.values().map(|w| w.candidate.clone()).collect();
+    // Give the candidates fully measured routes. The first player is the
+    // reserved peer; choosing it still requires a route from everyone else.
+    for ((t, id, endpoint), region_ms) in tickets.iter_mut().zip(probes) {
+        for peer in &peers {
+            if peer.xuid != *id {
+                let ms = if peer.xuid == FIRST { peer_rtt } else { peer_rtt + 10 };
+                t.samples.push(sample(peer, ms));
+            }
+        }
+        if let Some(ms) = region_ms {
+            let probe = config.regions.candidates().next().unwrap();
+            t.samples.push(sample(probe, *ms));
+        }
+        bucket.submit(t, *id, *endpoint, 4 + id.0 as u8, FORMED, Some(&config.regions)).unwrap();
+    }
+    let clock = if peer_rtt > 90 { FORMED + 30 } else { FORMED };
+    let cohort = bucket.assign(HOPPER, rules, clock, config, provider).unwrap().unwrap();
     assert!(bucket.waiting.is_empty());
     cohort
 }
@@ -137,14 +147,54 @@ fn ad_hoc_cohort_requests_configured_lobby_in_measured_region() {
 }
 
 #[test]
-fn only_a_fully_measured_slow_region_defers_to_the_better_reserved_peer() {
+fn unranked_dedicated_rtt_veto_requires_a_majority_of_the_whole_cohort() {
     let config = config(true, HOPPER);
-    let (lease, request) = make_cohort_with_probe(&config, Some(ProviderKind::Local), Some(121));
-    assert!(request.is_none());
-    assert_eq!(lease.assignment.host, FIRST);
-    assert!(!lease.assignment.dedicated);
-    assert!(make_cohort_with_probe(&config, Some(ProviderKind::Local), Some(120)).1.is_some());
-    assert!(make_cohort_with_probe(&config, Some(ProviderKind::Local), None).1.is_some());
+    let cases: &[(&[Option<u16>], u16, bool)] = &[
+        (&[Some(80), Some(121)], 45, false),     // One vote of two.
+        (&[Some(120), Some(121)], 45, false),    // Exactly 120 does not vote.
+        (&[Some(121), Some(130)], 45, true),
+        (&[Some(121), Some(130)], 130, false),   // Second route ties the peer.
+        (&[Some(160), Some(129)], 130, false),   // The second member prefers dedicated.
+    ];
+    for &(probes, peer_rtt, veto) in cases {
+        let (lease, request) = make_cohort_with_probes(
+            &config, Some(ProviderKind::Local), probes, false, peer_rtt,
+        );
+        assert_eq!(request.is_none(), veto, "{probes:?} vs {peer_rtt}");
+        assert_eq!(lease.assignment.dedicated, !veto);
+        if veto { assert_eq!(lease.assignment.host, FIRST); }
+    }
+}
+
+#[test]
+fn missing_regional_rtts_abstain_with_the_whole_cohort_as_denominator() {
+    let config = DedicatedConfig::from_lookup(|key| match key {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(format!(r#"{{"{HOPPER}":{{"map":"lockout"}}}}"#)),
+        "LIVE_HOST_REGIONS" => Some(r#"{"lhr":"192.0.2.30:31000"}"#.into()),
+        "LIVE_HOST_DEFAULT_REGION" => Some("lhr".into()),
+        _ => None,
+    }).unwrap();
+    for (probes, veto) in [
+        ([Some(121), None, None], false),
+        ([Some(121), None, Some(122)], true),
+    ] {
+        let (_, request) = make_cohort_with_probes(
+            &config, Some(ProviderKind::Cloudflare), &probes, false, 45,
+        );
+        assert_eq!(request.is_none(), veto);
+    }
+}
+
+#[test]
+fn ranked_hopper_keeps_the_dedicated_host_even_with_unanimous_slow_routes() {
+    let config = config(true, HOPPER);
+    let (lease, request) = make_cohort_with_probes(
+        &config, Some(ProviderKind::Local), &[Some(121), Some(240)], true, 45,
+    );
+    assert!(request.is_some());
+    assert!(lease.assignment.dedicated);
+    assert!(lease.ranked);
 }
 
 #[test]

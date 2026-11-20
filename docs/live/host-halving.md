@@ -282,8 +282,10 @@ echo itself. On Cloudflare a regional pool tries an active pack's tunnel
 and otherwise answers in the room. Neither fallback starts a host. The
 matchmaker prefers the running UDP sample, then configured UDP, then the
 service echo. It selects the lowest worst-member RTT among regions sampled
-by every member. A warm slot within 10 ms wins. Above 120 ms, a better
-reserved peer wins. Incomplete coverage uses the configured default.
+by every member. A warm slot within 10 ms wins. An unranked match uses its reserved
+peer when a strict majority of the cohort measures over 120 ms to the region
+and a faster route to that peer. Ranked matches keep the dedicated placement.
+Incomplete regional coverage uses the configured default.
 
 The host agent exposes live per-peer RTT for the same-client comparison.
 A historical network median still needs a trusted association between
