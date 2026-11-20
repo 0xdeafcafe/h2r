@@ -1592,19 +1592,22 @@ fn run_program(c: &Block, v: [f32; 3]) -> ([f32; 4], [f32; 4]) {
 fn hor_plus_clip_derived_lookup_samples_the_display_texel_drawn_by_the_world() {
     // Synthetic program forwards its homogeneous clip position to the
     // projective texture coordinates before its own viewport epilogue.
-    let mut retail = world_block(&camera(0.0, 0.0));
+    let mut retail = world_block(&build::projection(1.2, 4.0 / 3.0, 0.06, 1024.0));
     retail[LOOKUP] = [0.5, 0.0, 0.0, 0.5];
     retail[LOOKUP + 1] = [0.0, -0.5, 0.0, 0.5];
     for (w, h) in [(1920, 1080), (3440, 1440), (5120, 1440)] {
         let mut view = retail;
         let factor = (4.0 / 3.0) / (w as f32 / h as f32);
         assert!(d3d::device::widen_projection_rows(&mut view[CAM..CAM + 4], factor));
-        for point in [[0.3, 0.4, -5.0], [-5.0, 1.0, -4.0]] {
+        for point in [[0.3, 0.4, -5.0], [-4.1, 1.0, -4.0]] {
             let (original, _) = run_program(&retail, point);
             let (window, tex) = run_program(&view, point);
             let same = |a: f32, b: f32| assert!((a - b).abs() < 0.001, "{a} != {b}");
             same(window[0], 320.0 + (original[0] - 320.0) * factor);
             same(window[1], original[1]);
+            if point[0] < 0.0 {
+                assert!(original[0] < 0.0 && window[0] > 0.0, "inside the wider lens");
+            }
             same(tex[0] / tex[3] * w as f32, window[0] * (w as f32 / 640.0));
             same(tex[1] / tex[3] * h as f32, window[1] * (h as f32 / 480.0));
         }
