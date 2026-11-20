@@ -3,7 +3,7 @@
 //! at the first layer 3 of a map), it compiles each material's layer-16
 //! passes at the load, reads the fog the device holds at the layer-16
 //! call, and asks the D3D device for one external pass per view
-//! (`hooks::native_fog`). Inert when `impl.render.native` is off
+//! (`render_bridge::native_fog`). Inert when `impl.render.native` is off
 //! (nothing is compiled at load and the hook is not placed).
 //!
 //! - **At load** ([`load`], on the world's worker, before the world's
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
-use hooks::native_fog::Host;
+use render_bridge::native_fog::Host;
 use map::{Map, TagId};
 use native_render::fog_gpu::{self, FogProgram, FogWords, FOG_WORD_SLOTS};
 use native_render::gpu::Image;
@@ -301,7 +301,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
             return None;
         }
-        if !masks.apply(&mut hooks::native_fog::Mem(mem)) {
+        if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
             Stage::Fog.count(Metric::RefusedMasks, ranges as u64);
             return None;
         }
@@ -312,7 +312,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
-    hooks::native_fog::set_host(Arc::new(Glue {
+    render_bridge::native_fog::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
     }));

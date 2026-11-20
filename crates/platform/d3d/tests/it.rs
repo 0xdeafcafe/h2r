@@ -35,8 +35,6 @@ mod light_tail;
 mod native_residual;
 #[path = "nv2a_conformance.rs"]
 mod nv2a_conformance;
-#[path = "occlusion_grid.rs"]
-mod occlusion_grid;
 #[path = "opaque_world.rs"]
 mod opaque_world;
 #[path = "passes.rs"]

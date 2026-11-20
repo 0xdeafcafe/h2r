@@ -98,7 +98,7 @@ pub const ORACLES: &[Port] = {
     use points::*;
     &[
         // Other codecs are guest calls that resume at the call's return.
-        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
+        port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]
 };
 

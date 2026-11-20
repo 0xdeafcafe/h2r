@@ -52,7 +52,7 @@ fn module(name: &str, body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedEr
     let owners = emit::plan(vec![common::function(CODE, body)]);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("flat-runtime-{name}"));
     let src = dir.join("src");
-    emit::write_module_split(&owners, &src, emit::Codegen { accounting: true }, emit::c::Split::DEFAULT).unwrap();
+    emit::write_module_split(&owners, &src, emit::Codegen::accesses(true), emit::c::Split::DEFAULT).unwrap();
     let fastmem = src.join("h2fastmem.h");
     let text = std::fs::read_to_string(&fastmem).unwrap();
     std::fs::write(&fastmem, format!("#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n{text}")).unwrap();

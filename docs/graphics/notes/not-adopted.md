@@ -7,7 +7,8 @@ Evidence for [native-renderer.md](../native-renderer.md) and
 Experiments and switches that were built, measured and removed, one row
 each, so that the next lane does not build them again. The native GPU
 renderer has one switch, `impl.render.native` (on; `=off` turns every
-stage off together). Naming a removed key in `H2_FEATURES` changes nothing.
+stage off together). A removed `impl.*` key in `H2_FEATURES` does not parse
+(`crates/hooking/hooks/src/switches/table.rs` lists the keys that do).
 
 ## Removed
 
@@ -28,6 +29,7 @@ numbers.
 | `ce288e75` | `H2_GFX_SUBMIT=batch\|<us>`, `GfxBackend::set_submit_after`, `set_submit_per_pass`, `SUBMIT_AFTER_PASSES` | slower in game: Old Mombasa 4x 30.2 against 33.5 fps per pass (3e8276b2); off since |
 | `2d562b08` | the lazy 1x reference at render scale (`H2_LAZY_REFERENCE`, `ScaledBackend::set_lazy_reference`), `scale_bench` | 1-10% saved on unread frames, 15-25% lost on frames with a back-buffer snapshot, which Halo's frames take (09590f5c); off since |
 | `7e4529f0` | `GfxBackend::without_shaders` | no caller |
+| `820e97945` | `impl.render.occlusion`: Hi-Z occlusion culling of object setups against the previous frame's depth (`engine::render_loop::occlusion`'s pyramid, projection and tracker, `hooks::occlusion`, `d3d::Device::request_depth_grid`, `Backend::request_depth_grid`, `gfx::depth_grid`) | off since built (2026-11-14) and never run in game; the first probe found the W scale (kept in [occlusion-culling.md](../occlusion-culling.md)) and culled nothing. Deleted under the off-for-a-cycle rule (architecture review 2026-11-20, 2.6). The read of where objects are chosen and the skip point stay in occlusion-culling.md |
 | `ff6f7d6b` | `impl.render.layer_sort` and `impl.render.transparent_sort`: `engine::render_loop::sort` and `sort_indexed`, their differential tests, the `render-loop` feature's two placements and path counters | the profile puts both sorts at about 0.01 ms a frame (30 samples over 142 s, Old Mombasa 2026-11-17), and each port cost a hooked call per sort; off since built. The points `LAYER_SORT` and `TRANSPARENT_SORT` stay in `engine::points` as research notes |
 
 ## Lost before they reached the renderer

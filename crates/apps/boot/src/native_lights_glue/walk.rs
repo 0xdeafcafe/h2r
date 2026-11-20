@@ -9,7 +9,7 @@ use d3d::backend::{
     ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams, IndexedTail,
 };
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
-use hooks::native_lights::walk::{self, Batch};
+use render_bridge::native_lights::walk::{self, Batch};
 use native_render::world_layers::DRAW_INDEXED_VERTICES;
 use native_render::world_layers_gpu::{Cache, IndexedPass};
 use timeline::native::Stage;

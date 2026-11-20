@@ -1,0 +1,29 @@
+[package]
+name = "render-bridge"
+description = "The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions, the pipelined render and the frame step's scene (docs/graphics/framescene.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["graphics/native-renderer.md", "graphics/framescene.md", "graphics/pipelined-render.md"]
+
+[features]
+default = ["native-render"]
+native-render = ["dep:native-render", "dep:frame-scene", "dep:scene-extract"]
+
+[dependencies]
+hooks = { path = "../../hooking/hooks" }
+runtime.workspace = true
+tags.workspace = true
+engine = { path = "../engine", features = ["runtime-glue"] }
+timeline = { path = "../../runtime/timeline" }
+# The world skip and camera read (pure: no GPU, no map reader).
+native-render = { path = "../native-render", default-features = false, optional = true }
+# The frame step's scene (docs/graphics/framescene.md).
+frame-scene = { path = "../frame-scene", optional = true }
+scene-extract = { path = "../scene-extract", optional = true }
+
+[dev-dependencies]
+runtime-test-probe = { path = "../../runtime/runtime/test-probe" }

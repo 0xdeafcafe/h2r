@@ -73,7 +73,7 @@ Choosing another level fails to load it.
 
 `maps=all` carries every map:
 
-- **The disc**: the packer (`crates/apps/apple-host/examples/pack.rs --maps all`)
+- **The disc**: the packer (`crates/apps/h2host/examples/pack.rs --maps all`)
   copies the whole disc into `build/disc/`, which the app serves as D:
   (`vfs::DirDiscBackend`), as the Mac serves the image itself.
 - **The map pack**: it is not disc content but hard-disk content. On the Mac,
@@ -128,7 +128,7 @@ build's artifacts, and back. Each can be moved (to another volume, say):
 
 | Variable | What it holds | Default |
 | --- | --- | --- |
-| `H2_APPLE_TARGET_DIR` | the `apple-host` runtime cross-built for tvOS or iOS (`platform/apple/build.sh`) | `target/<tvos\|ios>-cross` |
+| `H2_APPLE_TARGET_DIR` | the `h2host` runtime cross-built for tvOS or iOS (`platform/apple/build.sh`) | `target/<tvos\|ios>-cross` |
 | `H2_APPLE_HOST_TARGET_DIR` | the host-side `h2` and packer that `build.sh` runs for the disc subset and game module | `target/apple-host-pack` |
 | `H2_WINDOWS_TARGET_DIR` | the Windows cross build (`platform/windows/env.sh`, so `windows-dll` and `check-windows`) | `target/windows-cross` |
 
@@ -138,4 +138,4 @@ build's artifacts, and back. Each can be moved (to another volume, say):
 repository whose build scripts, cargo, xcodebuild and xcrun only print what
 they were asked to do, and checks the arguments each recipe passes on. The
 packer's `maps` logic (subset, seed, prune) is unit-tested in
-`crates/apps/apple-host/src/maps.rs`.
+`crates/apps/h2host/src/maps.rs`.

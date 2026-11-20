@@ -30,7 +30,7 @@ connection to hold `session.claim`.
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
-| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory` | read | [`profile`](#profile-where-a-frame-goes) |
+| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -444,6 +444,7 @@ empty manifold is still a candidate in the query box.
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
 | `profile.memory` | none | the flat RAM window's counters (below) |
+| `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
 
 ```sh
@@ -452,6 +453,7 @@ h2 agent capture 900                 # 900 game ticks, about 30 s
 h2 agent capture 10000ms sample      # h2 built --features perf
 h2 agent fallbacks 20
 h2 agent flatmem
+h2 agent faults
 ```
 
 - **`profile.capture`** keeps every frame-stats row over the window and
@@ -518,6 +520,21 @@ h2 agent flatmem
   is the physical RAM, in bytes, the congruent allocator jumped over to
   give a fresh allocation the residue of its address. A slow page shows as
   `fixups` rising or `pages_outside` above zero.
+- **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the
+  fault census (`runtime::fault_census`,
+  [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)):
+  `generated` (memory faults raised by an accessor generated code called)
+  and `runtime` (raised by the runtime or a Rust handler); `ended` (faults
+  a run returned to its caller with); `continued` (times guest execution
+  went on, on the same context, from the state a fault left) and
+  `continued_generated` (of those, generated faults);
+  `precise_exits_needed`, true when `continued_generated` is not 0; and
+  the `top` fault PCs by count, each with `source`, `count`, `continued`
+  and the first fault's `addr`, `len`, `access` and `reason`. Kept per PC,
+  at most 4096 (`sites_full`). It counts from the process's start. It also
+  names the image's choices: `clock` (`accesses` or `blocks`),
+  `imprecise_faults` (module feature 128), and `continued_imprecise`, the
+  continuations from a fault whose EFLAGS were inexact (should be 0).
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
   what `profile.sample.stop` answers: the module-relative dump
@@ -717,7 +734,7 @@ h2 agent render.parity '{"arm": true}'
   content (framescene.md 9.2).
 - **`render.scene`.** The last sealed `FrameScene`, from the source the
   frame step registers (`agent::render::set_scene_source`, in boot's
-  `scene_glue` over `hooks::scene_step`): whether
+  `scene_glue` over `render_bridge::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
   cut, its clusters, instances, parts, rows, lights, shadow maps, the

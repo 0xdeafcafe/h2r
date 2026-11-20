@@ -5,7 +5,7 @@
 #   platform/apple/build.sh tvos|ios /abs/path/to/disc/halo2.iso [--no-module]
 #       [--maps demo|all] [--mappack /abs/path/to/mappack.iso]
 #
-#   build/libh2host.a        the runtime (crates/apps/apple-host), cross-compiled
+#   build/libh2host.a        the runtime (crates/apps/h2host), cross-compiled
 #   build/h2game.framework   the game, lifted, emitted and compiled for the device
 #   build/disc/              the disc files the app ships (about 1 GB)
 #   build/bootcache/         the XBE's analysis, so the first launch skips it
@@ -73,12 +73,12 @@ host_target=${H2_APPLE_HOST_TARGET_DIR:-$root/target/apple-host-pack}
 
 echo "build.sh: runtime for $triple"
 (cd "$root" && RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR="$cross_target" \
-  cargo build -Zbuild-std=std,panic_abort --target "$triple" --release -p apple-host)
+  cargo build -Zbuild-std=std,panic_abort --target "$triple" --release -p h2host)
 cp "$cross_target/$triple/release/libh2host.a" "$out/libh2host.a"
 
 echo "build.sh: disc subset and game module"
 (cd "$root" && CARGO_TARGET_DIR="$host_target" \
-  cargo run --release -p apple-host --example pack -- "$iso" "$out" --platform "$platform" --maps "$maps" $pack_args)
+  cargo run --release -p h2host --example pack -- "$iso" "$out" --platform "$platform" --maps "$maps" $pack_args)
 
 # The map pack lives on the hard disk, not the disc: the same import as
 # `h2 play` does on the Mac, into the bundle's seed (h2host::maps).

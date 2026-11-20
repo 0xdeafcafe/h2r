@@ -10,7 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
-pub use hooks::scene_effect_instruction_entries;
+pub use render_bridge::scene_entries::scene_effect_instruction_entries;
 
 pub mod account_screen;
 mod agent_frames;
@@ -1823,6 +1823,8 @@ fn run_configured(
             })
         };
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        // profile.faults: the fault census (agent_glue.rs).
+        agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1842,7 +1844,7 @@ fn run_configured(
     }
     if sim_mode.is_some() || host_light {
         features
-            .add(&hooks::sim_native::SimNative::new(&loaded.runtime))
+            .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
             .map_err(anyhow::Error::msg)?;
     }
     registration::register_viewer_skips(&mut features, host_light)?;
@@ -1851,7 +1853,7 @@ fn run_configured(
             Some(sim) => sim.frame().clone(),
             // A playerless v2 film presents a separate viewer. Its recorded
             // guest skipped every world render, including the shared RNG draws.
-            None => hooks::sim_frame::SimFrame::new(
+            None => sim_bridge::sim_frame::SimFrame::new(
                 if film.as_ref().is_some_and(|s| s.has_engine_track()) { 0 } else { render_every }
             ).on_skip(d3d_diag::note_skipped_present),
         };
@@ -1938,7 +1940,7 @@ fn run_configured(
     {
         bail!("film event observer unavailable: {why}");
     }
-    if host_light && let Some(why) = installed.off_reason(hooks::sim_frame::ID) {
+    if host_light && let Some(why) = installed.off_reason(sim_bridge::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {
@@ -2673,12 +2675,7 @@ mod tests {
                 "{name}: {stamp}"
             );
         }
-        let accounting = format!(
-            "{:?}",
-            emit::Codegen {
-                accounting: on("H2_ACCESS_COUNT"),
-            }
-        );
+        let accounting = format!("{:?}", emit::Codegen::from_env().unwrap());
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
     }
 
@@ -2686,7 +2683,7 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!("{:?}", emit::Codegen { accounting: true });
+        let on = format!("{:?}", emit::Codegen::accesses(true));
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(
             base,

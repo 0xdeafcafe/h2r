@@ -1,5 +1,5 @@
 //! Every `impl.*` switch, in one table: name, default, owner, the date it
-//! appeared and the condition for deleting it (docs/architecture-review-2026-11.md
+//! appeared and the condition for deleting it (docs/reviews/2026-11-20-architecture.md
 //! section 2.6).
 //!
 //! A switch not in the table does not parse ([`super::Switches::parse`]
@@ -22,9 +22,6 @@
 pub enum Initial {
     On,
     Off,
-    /// The value of the named switch (the render stages follow
-    /// `impl.render.native`).
-    Follows(&'static str),
     /// A parent with no value of its own: setting it sets every child
     /// that `implementation()` reads and that has no setting of its own.
     Group,
@@ -45,9 +42,9 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 91;
+pub const BUDGET: usize = 51;
 
-use Initial::{Follows, Group, Off, On};
+use Initial::{Group, Off, On};
 
 const fn sw(
     name: &'static str,
@@ -65,10 +62,6 @@ const fn sw(
     }
 }
 
-const NATIVE: Initial = Follows("impl.render.native");
-const STAGE: &str = "the native renderer owns the frame (review 4.3): delete with the D3D path";
-const WALK: &str = "the walk's A/B shows no regression: make it unconditional";
-const RENDER_7A: &str = "stage 7a port, a dead end (review 5): delete with the port";
 const SIM_PORT: &str =
     "hand port superseded by its subsystem's rewrite (docs/engine/sim-rewrite.md): delete with it";
 const DIAGNOSTIC: &str = "a diagnostic: becomes an agent API toggle, then goes";
@@ -76,53 +69,16 @@ const EXACT: &str = "both paths are exact: make the default unconditional";
 
 pub const TABLE: &[Switch] = &[
     // Rendering.
-    sw("impl.render", Group, "render", "2026-11-16", "goes with the stage 7a ports it parents"),
-    sw("impl.render.native", On, "render", "2026-11-14", STAGE),
-    sw("impl.render.native_world", NATIVE, "render", "2026-11-18", STAGE),
-    sw("impl.render.native_world_programs", On, "render", "2026-11-18", WALK),
-    sw("impl.render.native_world_skip_build", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_world_layers", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_lights", NATIVE, "render", "2026-11-18", STAGE),
-    sw("impl.render.native_lights_split", Off, "render", "2026-11-19", "off a cycle: delete or turn on"),
-    sw("impl.render.native_light_walk", NATIVE, "render", "2026-11-20", WALK),
-    sw("impl.render.native_post", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_post_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_objects", NATIVE, "render", "2026-11-18", STAGE),
-    sw("impl.render.native_object_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_ui", On, "render", "2026-11-20", STAGE),
-    sw("impl.render.native_hud", On, "render", "2026-11-19", "the old name of native_ui: delete"),
-    sw("impl.render.native_hud_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_transparents", NATIVE, "render", "2026-11-18", STAGE),
-    sw("impl.render.native_transparents_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_particles", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_particles_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_effects_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_gels", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_fog", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_shadows", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_scene_lists", NATIVE, "render", "2026-11-20", STAGE),
-    sw("impl.render.native_first_person", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_first_person_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_decals", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_decals_walk", On, "render", "2026-11-20", WALK),
-    sw("impl.render.native_water", NATIVE, "render", "2026-11-19", STAGE),
-    sw("impl.render.native_residual", NATIVE, "render", "2026-11-19", STAGE),
+    sw("impl.render.native", On, "render", "2026-11-14",
+        "the native renderer owns the frame (review 4.3): delete with the D3D path"),
     sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
         "the pipelined COW worker in its current form is a dead end (review 5): delete"),
-    sw("impl.render.occlusion", Off, "render", "2026-11-14", "off a cycle: delete or turn on"),
     sw("impl.render.interpolate", Off, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject_ahead", Off, "render", "2026-11-18",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
-    sw("impl.render.views", Off, "render", "2026-11-16", RENDER_7A),
-    sw("impl.render.layer_draw", Off, "render", "2026-11-16", RENDER_7A),
-    sw("impl.render.layer_entries", Off, "render", "2026-11-16", RENDER_7A),
-    sw("impl.render.game_view", Off, "render", "2026-11-18", RENDER_7A),
-    sw("impl.render.scene_passes", Off, "render", "2026-11-18", RENDER_7A),
-    sw("impl.render.states", Off, "render", "2026-11-18", RENDER_7A),
-    sw("impl.render.states_skip", Off, "render", "2026-11-18", RENDER_7A),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
@@ -148,14 +104,12 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.static-light", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
-    // Simulation: hand ports (`crate::sim_native`).
+    // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_rotation_codec", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_point_to_leaf", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_geometry_test", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_pose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_animation_stream", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_graph_resolve", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_marker_transforms", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_bsp_segment", Off, "sim", "2026-11-20", SIM_PORT),
@@ -221,7 +175,6 @@ pub fn text() -> String {
             let initial = match s.initial {
                 On => "on".to_owned(),
                 Off => "off".to_owned(),
-                Follows(other) => format!("= {other}"),
                 Group => "group".to_owned(),
             };
             format!("{} [{initial}] {} {}: {}", s.name, s.owner, s.added, s.remove)

@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::memory::GuestMemory;
-use hooks::native_map_work;
-use hooks::native_objects::{Host, NativeSet, SetPart};
+use render_bridge::native_map_work;
+use render_bridge::native_objects::{Host, NativeSet, SetPart};
 use map::TagId;
 use frame_scene::{FrameScene, InstanceKey, View};
 use native_render::gpu::Image;
@@ -243,7 +243,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return Err(ObjectWalk::Inputs);
         }
         // The view needs a render camera that reads, as the layer's draws
-        // do: the frame step opened it with one (hooks::scene_step).
+        // do: the frame step opened it with one (render_bridge::scene_step).
         let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
         let read = crate::native_world_glue::ReadMemory(mem);
         let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
@@ -506,10 +506,10 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
-    if !hooks::native_objects::on(&switches) {
+    if !render_bridge::native_objects::on(&switches) {
         return;
     }
-    hooks::native_objects::set_host(Arc::new(Glue {
+    render_bridge::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
     }));

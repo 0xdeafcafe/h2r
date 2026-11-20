@@ -9,7 +9,7 @@ use crate::{
     native_shadows_scope::{Call as Scope, Gate, State},
 };
 use engine::memory::GuestMemory;
-use hooks::native_shadows::{self, Entry, Host, Layer};
+use render_bridge::native_shadows::{self, Entry, Host, Layer};
 use native_render::{
     shadow_gpu::MapKind,
     shadows::{self, Site},

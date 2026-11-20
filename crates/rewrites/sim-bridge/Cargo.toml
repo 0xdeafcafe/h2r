@@ -1,0 +1,18 @@
+[package]
+name = "sim-bridge"
+description = "The guest side of the native simulation: adapters from hook entries to the sim crates, the installs under impl.sim.native, the tick driver, the shadow checks (docs/engine/sim-rewrite.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/sim-rewrite.md", "engine/shadow-exec.md"]
+
+[dependencies]
+hooks = { path = "../../hooking/hooks" }
+runtime.workspace = true
+# The ports the installs place (engine::sim_native, engine::sim_physics).
+engine = { path = "../engine", features = ["runtime-glue"] }
+# Shadow checks of the sim ports against the lifted original (shadow.rs).
+lifted = { path = "../../runtime/lifted" }

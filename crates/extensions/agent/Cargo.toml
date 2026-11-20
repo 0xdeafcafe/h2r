@@ -10,6 +10,8 @@ default = ["render-overrides"]
 render-overrides = ["dep:hot-render"]
 
 [dependencies]
+render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
+sim-bridge = { path = "../../rewrites/sim-bridge" }
 agent-proto = { path = "../agent-proto" }
 serde.workspace = true
 serde_json.workspace = true
@@ -41,7 +43,7 @@ lifted = { path = "../../runtime/lifted" }
 live-proto.workspace = true
 # sim.hashes' rows against the sim report's (src/sim/hashes.rs); renamed
 # so it can't be mistaken for this crate's `sim` module.
-sim-report = { package = "sim", path = "../../live/sim" }
+sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
 # Synthetic tags laid out by their definitions (src/hot/tests.rs).
 tags.workspace = true
 map.workspace = true

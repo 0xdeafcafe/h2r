@@ -84,6 +84,13 @@ pub const PARK: u32 = 8;
 /// Kept only after [`Runtime::enable_leave_word`]; see the module doc.
 pub const IRQ_QUEUED: u32 = 16;
 
+/// What the runner charges for invoking a Rust handler (an HLE override, a
+/// native port) when the modules count with the block clock
+/// ([`Runtime::block_clock`]): a declared constant, in the clock's units
+/// (guest instructions of the blocks charged), the same on every backend.
+/// Under the access clock a Rust handler charges nothing.
+pub const HLE_COST: u64 = 16;
+
 /// Accesses per Machine slice by default (`kernel::Machine::preempt_slice`).
 /// A ready thread waits at most this many guest memory accesses of another
 /// thread's spinning: about 1 to 3 ms through the locked accessors.

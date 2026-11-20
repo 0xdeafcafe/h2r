@@ -37,6 +37,7 @@ fn c_of(body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) -> Strin
         selectors: &o.selectors,
         loops: &o.loops,
         accounting: false,
+        block_clock: false,
         functions: None,
     };
     emit::c::function(&o.func, &shape)

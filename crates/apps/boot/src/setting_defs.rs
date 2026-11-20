@@ -498,7 +498,7 @@ pub static AIM_ASSIST: Def = Def {
 
 /// The iOS touch controls' rows (`input::touch`, docs/runtime/ios.md). On
 /// the Controls screen on iOS, in place of the Steam Controller's
-/// (`video_screen::Switches`); read live by `apple-host`.
+/// (`video_screen::Switches`); read live by `h2host`.
 pub static TOUCH_LOOK: Def = Def {
     key: "touch.look",
     label: "Touch Look Speed",

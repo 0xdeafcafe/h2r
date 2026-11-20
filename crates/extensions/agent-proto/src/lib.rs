@@ -165,6 +165,10 @@ pub mod method {
     /// mapped pages outside the window, bytes the congruent allocator
     /// skipped; where a slow page shows.
     pub const PROFILE_MEMORY: &str = "profile.memory";
+    /// The fault census (`{"top": 20}`): every guest memory fault, who
+    /// raised it, and whether guest execution went on from its state
+    /// (`runtime::fault_census`).
+    pub const PROFILE_FAULTS: &str = "profile.faults";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row",
     /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows

@@ -53,7 +53,7 @@ Nothing on this page was established by running the game.
 
 ### Named points
 
-`engine::points` (`crates/rewrites/engine/src/points.rs`) is the one table of named
+`engine::points` (`crates/hooking/guest-layout/src/points.rs`) is the one table of named
 guest locations. A `Point` has a name, the address in the base (1.0) image,
 a `Sig`, a `Class` (`Required` or `Optional`), a `hot` flag and the page that
 records the evidence. A `Global` names a guest word or structure read by more
@@ -281,7 +281,7 @@ constant per field, and a builder that writes one on a `FakeGuest`. The grammar
 is `field @ 0xOFF: Type`; field types are the integers, `f32`, `Vec3` and
 `Option<DatumHandle>`. Nothing is read until a getter is called and nothing is
 cached, so each offset is a named research point beside the doc it came from
-(`crates/rewrites/engine/src/view.rs`). Shared game structures (objects, units,
+(`crates/hooking/guest-layout/src/view.rs`). Shared game structures (objects, units,
 players, game globals) and the globals table are in `crates/hooking/guest-layout`
 ([guest-layout.md](guest-layout.md)); `record!` takes their offsets by name.
 
@@ -413,10 +413,10 @@ the camera's field of view are still raw hooks in
 
 The render front-end is replaced by the native renderer
 ([native-renderer.md](../graphics/native-renderer.md)), whose stages are
-features in `crates/hooking/hooks/src/native_*`; its one switch is
+features in `crates/rewrites/render-bridge/src/native_*`; its one switch is
 `impl.render.native`. The reads of the retail call tree are in
 [render-loop.md](../graphics/render-loop.md). `render-timing`
-(`crates/hooking/hooks/src/render_timing.rs`, off by default) puts observers on both
+(`crates/rewrites/render-bridge/src/render_timing.rs`, off by default) puts observers on both
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage

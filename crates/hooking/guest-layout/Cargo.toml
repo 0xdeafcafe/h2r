@@ -1,11 +1,19 @@
 [package]
 name = "guest-layout"
-description = "Typed guest layouts: every Halo 2 structure offset and global address, written once (docs/engine/guest-layout.md)"
+description = "Typed guest layouts: every Halo 2 structure offset and global address, written once; the guest-memory boundary, typed views and the named points (docs/engine/guest-layout.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-# No dependencies, on purpose: bots, telemetry, the agent API, the engine
+# Few dependencies, on purpose: bots, telemetry, the agent API, the engine
 # and the native renderer all read guest structures, and none of them
-# should pull another to do it.
+# should pull another to do it. `runtime` only behind `runtime-glue`.
+[features]
+# GuestMemory::take_write_watch and the runtime's memories as GuestMemory
+# (src/memory.rs); engine's `runtime-glue` turns it on.
+runtime-glue = ["dep:runtime"]
+
 [dependencies]
+# Field names for the accessors `record!` generates (src/view.rs).
+paste = "1"
+runtime = { workspace = true, optional = true }

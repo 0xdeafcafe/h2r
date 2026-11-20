@@ -10,14 +10,14 @@
 //!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
 //! - **The render front-end** is skipped in world frames on the light
-//!   host ([`hooks::sim_frame`]). Full headless runs can opt into the
+//!   host ([`sim_bridge::sim_frame`]). Full headless runs can opt into the
 //!   render worker and collect the same tick hashes. The kernel trace
 //!   file is off and nav meshes are never built in the background
 //!   (`bots_nav_auto`).
-//! - **The pace** is the match's ([`sim::clock::Pace`]); unpaced by default.
+//! - **The pace** is the match's ([`sim_bench::clock::Pace`]); unpaced by default.
 //! - **The metrics** come from read-only observers ([`SimMetrics`]): each
 //!   tick's player snapshot, the shots, the damage reports, the kills and
-//!   the end latch, into a [`sim::metrics::Tally`].
+//!   the end latch, into a [`sim_bench::metrics::Tally`].
 //! - **The RNG seed** is written once, before the match's
 //!   first tick ([`SimMetrics`]'s one writing hook).
 //! - **The end**: the game's end latch, the match's tick limit, its wall
@@ -38,13 +38,13 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use bots::pad_source::{Frame, PadSource, Sampled};
-use hooks::sim_frame::SimFrame;
+use sim_bridge::sim_frame::SimFrame;
 
 use crate::telemetry;
 use hooks::{Flow, points};
 use input::host::HostPadState;
-use sim::config::{BotParams, Match};
-use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally, TickSample};
+use sim_bench::config::{BotParams, Match};
+use sim_bench::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally, TickSample};
 
 use crate::level_boot;
 use std::collections::BTreeMap;
@@ -183,28 +183,28 @@ pub fn use_light_host() -> Result<bool> {
 /// The match file `H2_SIM` names, read and checked; `None` when unset.
 /// `H2_BOOT_GFX` is refused: sim mode has no GPU.
 pub fn from_env() -> Result<Option<Sim>> {
-    let Some(path) = std::env::var_os(sim::ENV).filter(|v| !v.is_empty()) else {
+    let Some(path) = std::env::var_os(sim_bench::ENV).filter(|v| !v.is_empty()) else {
         return Ok(None);
     };
     if std::env::var_os("H2_BOOT_GFX").is_some() {
-        bail!("{}: sim mode renders nothing; unset H2_BOOT_GFX", sim::ENV);
+        bail!("{}: sim mode renders nothing; unset H2_BOOT_GFX", sim_bench::ENV);
     }
     let path = PathBuf::from(path);
-    let matched = sim::config::load_match(&path)
-        .map_err(|e| anyhow::anyhow!("{}: {}", sim::ENV, e.replace('\n', "; ")))?;
-    let report_path = std::env::var_os(sim::REPORT_ENV)
+    let matched = sim_bench::config::load_match(&path)
+        .map_err(|e| anyhow::anyhow!("{}: {}", sim_bench::ENV, e.replace('\n', "; ")))?;
+    let report_path = std::env::var_os(sim_bench::REPORT_ENV)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
     Ok(Some(Sim::new(path, matched, report_path)))
 }
 
-/// `sim::config::Skill` as the bots crate's.
-pub fn skill(s: sim::config::Skill) -> bots::mind::Skill {
+/// `sim_bench::config::Skill` as the bots crate's.
+pub fn skill(s: sim_bench::config::Skill) -> bots::mind::Skill {
     match s {
-        sim::config::Skill::Easy => bots::mind::Skill::Easy,
-        sim::config::Skill::Normal => bots::mind::Skill::Normal,
-        sim::config::Skill::Heroic => bots::mind::Skill::Heroic,
-        sim::config::Skill::Legendary => bots::mind::Skill::Legendary,
+        sim_bench::config::Skill::Easy => bots::mind::Skill::Easy,
+        sim_bench::config::Skill::Normal => bots::mind::Skill::Normal,
+        sim_bench::config::Skill::Heroic => bots::mind::Skill::Heroic,
+        sim_bench::config::Skill::Legendary => bots::mind::Skill::Legendary,
     }
 }
 
@@ -386,11 +386,11 @@ fn player_of_datum(d: u32) -> Option<u8> {
     (d != u32::MAX).then_some((d & 0xffff) as u8)
 }
 
-fn speed(inner: &Inner, s: &State) -> sim::clock::SpeedMeter {
+fn speed(inner: &Inner, s: &State) -> sim_bench::clock::SpeedMeter {
     let now = Instant::now();
     let first = s.first_tick.unwrap_or(now);
     let last = s.last_tick.unwrap_or(first);
-    sim::clock::SpeedMeter {
+    sim_bench::clock::SpeedMeter {
         setup_s: first.duration_since(inner.created).as_secs_f64(),
         match_s: last.duration_since(first).as_secs_f64(),
         ticks: s.tally.ticks(),
@@ -804,7 +804,7 @@ impl Metered {
                 doing: doing_name(&m.doing),
                 // The hand's last view of its target, with the stick the
                 // pad reports this tick (after the human-input limits).
-                aim: m.aim_trace().map(|a| sim::metrics::AimSample {
+                aim: m.aim_trace().map(|a| sim_bench::metrics::AimSample {
                     tick: a.tick,
                     target: a.target,
                     error: a.error,
@@ -908,7 +908,7 @@ impl hooks::Feature for SimMetrics {
                 lockstep::hash_sim_blocks(
                     &g,
                     lockstep::SimRegion::HALO2,
-                    sim::diff::ARENA_BLOCK as usize,
+                    sim_bench::diff::ARENA_BLOCK as usize,
                     &mut bytes,
                     &mut arena_blocks,
                 )
@@ -942,7 +942,7 @@ impl hooks::Feature for SimMetrics {
                         .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
                     let mut components = state_hash::components(&snap, rng);
                     components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
-                        (format!("{}{i:02}", sim::diff::ARENA_PREFIX), format!("{h:016x}"))
+                        (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
                     }));
                     s.tally.tick_components(tick, arena_base, components);
                     if arena_buffer.is_some() && arena.is_none() {
@@ -1208,8 +1208,8 @@ mod tests {
     #[test]
     fn skills_and_doings_map() {
         for (a, b) in [
-            (sim::config::Skill::Easy, bots::mind::Skill::Easy),
-            (sim::config::Skill::Legendary, bots::mind::Skill::Legendary),
+            (sim_bench::config::Skill::Easy, bots::mind::Skill::Easy),
+            (sim_bench::config::Skill::Legendary, bots::mind::Skill::Legendary),
         ] {
             assert_eq!(skill(a), b);
         }
@@ -1221,7 +1221,7 @@ mod tests {
             score: 0.75,
         };
         assert_eq!(doing_name(&bots::mind::Doing::Vantage(vantage)), "vantage");
-        for d in sim::metrics::OBJECTIVE_DOINGS {
+        for d in sim_bench::metrics::OBJECTIVE_DOINGS {
             assert!(["carry", "keep", "play"].contains(&d));
         }
     }
@@ -1406,8 +1406,8 @@ mod tests {
     }
 
     fn sim_with(text: &str) -> Sim {
-        let c = sim::config::parse_match(text, false).unwrap();
-        let m = sim::config::resolve(c, &|_| Err("no files".into())).unwrap();
+        let c = sim_bench::config::parse_match(text, false).unwrap();
+        let m = sim_bench::config::resolve(c, &|_| Err("no files".into())).unwrap();
         Sim::new(PathBuf::from("/tmp/m.toml"), m, None)
     }
 

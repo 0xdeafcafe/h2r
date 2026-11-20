@@ -22,6 +22,11 @@ pub struct Runtime {
     pub(crate) words: Arc<crate::preempt::Words>,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
+    fault_census: crate::fault_census::FaultCensus,
+    /// The registered modules' features, OR-ed
+    /// ([`Dispatch::module_features`]): kept in step with the dispatch by
+    /// `new` and `edit_dispatch`, read without its lock.
+    module_features: std::sync::atomic::AtomicU32,
     /// The entry table, once dispatch has a module with one
     /// ([`crate::direct`]).
     live: OnceLock<crate::direct::Live>,
@@ -74,6 +79,7 @@ impl LockContention {
 
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
+        let module_features = dispatch.module_features();
         let memory = crate::ffi::Memory::new(memory);
         let words = memory.words.clone();
         let rt = Arc::new(Self {
@@ -86,6 +92,8 @@ impl Runtime {
             coverage: OnceLock::new(),
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
+            fault_census: Default::default(),
+            module_features: module_features.into(),
             live: OnceLock::new(),
             flat: Default::default(),
         });
@@ -185,6 +193,24 @@ impl Runtime {
         };
         let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
         live.check_code(code, executable, &d);
+    }
+    /// The registered generated modules' features, OR-ed
+    /// (`crate::generated::FEATURE_*`).
+    #[inline]
+    pub fn module_features(&self) -> u32 {
+        self.module_features.load(Ordering::Relaxed)
+    }
+    /// Whether the registered generated modules count with the block clock
+    /// (docs/runtime/block-clock-imprecise-faults.md): then a Rust handler
+    /// the runner invokes charges [`crate::preempt::HLE_COST`].
+    #[inline]
+    pub fn block_clock(&self) -> bool {
+        self.module_features() & crate::generated::FEATURE_BLOCK_CLOCK != 0
+    }
+    /// Every memory fault and what became of its state
+    /// ([`crate::fault_census`]; the agent's `profile.faults`).
+    pub fn fault_census(&self) -> &crate::fault_census::FaultCensus {
+        &self.fault_census
     }
     /// Runtime dispatch counters, enabled when constructed with
     /// `H2_DISPATCH_STATS=1`.
@@ -304,6 +330,7 @@ impl Runtime {
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);
+        self.module_features.store(d.module_features(), Ordering::Relaxed);
         // Under the write lock: an override registered, enabled or
         // disabled reaches the entry table before the edit returns, so no
         // direct call made after it skips the override.

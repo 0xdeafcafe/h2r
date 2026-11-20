@@ -30,7 +30,6 @@ pub mod convert;
 #[cfg(feature = "gpu")]
 pub mod depth_bits;
 #[cfg(feature = "gpu")]
-pub mod depth_grid;
 #[cfg(feature = "gpu")]
 pub(crate) mod depth_fill;
 #[cfg(feature = "gpu")]

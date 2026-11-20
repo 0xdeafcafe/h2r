@@ -1,7 +1,7 @@
 # Apple TV (tvOS)
 
 Status: Partly built. A spike: the app boots to the menu and plays the bundled levels slowly ("Known gaps").
-Code: `platform/tvos/`, `crates/apps/apple-host`, `crates/platform/input/src/backend/game_controller/remote.rs`. Tests: in `remote.rs`.
+Code: `platform/tvos/`, `crates/apps/h2host`, `crates/platform/input/src/backend/game_controller/remote.rs`. Tests: in `remote.rs`.
 Switch: `H2_EMIT_TARGET=tvos` and the build variables, see [switches.md](switches.md).
 
 The game runs on an Apple TV as an app built from `platform/tvos/`. It is a
@@ -13,8 +13,8 @@ is no simulator build.
 
 | Piece | What it is | Built by |
 | --- | --- | --- |
-| `crates/apps/apple-host` | the runtime as a static library (`libh2host.a`), shared with the iOS app ([ios.md](ios.md)): `boot::run_hosted` as `h2 play` runs it, inside `app::embedded::Embedded`, the shell for a host that owns the window | `cargo build -Zbuild-std --target aarch64-apple-tvos` |
-| `h2game.framework` | the generated module (`libh2game.dylib` built for `arm64-apple-tvos17.0`), embedded and signed by Xcode, loaded with `dlopen` as on the Mac | `boot::build` with `H2_EMIT_TARGET=tvos` (`crates/apps/apple-host/examples/pack.rs --platform tvos`) |
+| `crates/apps/h2host` | the runtime as a static library (`libh2host.a`), shared with the iOS app ([ios.md](ios.md)): `boot::run_hosted` as `h2 play` runs it, inside `app::embedded::Embedded`, the shell for a host that owns the window | `cargo build -Zbuild-std --target aarch64-apple-tvos` |
+| `h2game.framework` | the generated module (`libh2game.dylib` built for `arm64-apple-tvos17.0`), embedded and signed by Xcode, loaded with `dlopen` as on the Mac | `boot::build` with `H2_EMIT_TARGET=tvos` (`crates/apps/h2host/examples/pack.rs --platform tvos`) |
 | `disc/` | the disc files the app needs, as a directory (`vfs::DirDiscBackend` serves it as D:) | `pack` (`h2host::layout::DISC_FILES`) |
 | `bootcache/` | the XBE's analysis, copied to Caches on first launch so the fallback interpreter need not redo it | `pack` |
 | `platform/tvos/H2TV` | a UIKit host: a `GCEventViewController` whose view is a `CAMetalLayer`; a 30 Hz `CADisplayLink` calls `h2host_redraw` | Xcode |

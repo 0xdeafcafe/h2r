@@ -1,7 +1,7 @@
 //! The native world's host (docs/graphics/native-world.md, stage 1):
 //! loads the active BSP's world from the loaded map's file when the BSP
 //! changes, on a worker, and asks the D3D device for the native pass at
-//! each view's layer 3 (`hooks::native_world`). Inert with
+//! each view's layer 3 (`render_bridge::native_world`). Inert with
 //! `impl.render.native=off` (nothing asks).
 //!
 //! - **Load once.** On a new (map, BSP) the worker opens the map through
@@ -32,8 +32,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use hooks::native_map_work::{self, Stage as MapStage};
-use hooks::native_world::{Host, PartSet};
+use render_bridge::native_map_work::{self, Stage as MapStage};
+use render_bridge::native_world::{Host, PartSet};
 use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassStencil, PassViewport, WorldSelection};
@@ -108,7 +108,7 @@ pub(crate) type State = Arc<Mutex<(Option<BspKey>, Load)>>;
 pub(crate) fn current_ready<'a>(state: &'a (Option<BspKey>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
     let (Some(key), Load::Ready(ready)) = state else { return None };
     (key.generation == native_map_work::generation()
-        && mem.u32(hooks::native_world::ACTIVE_BSP).ok() == Some(key.bsp)
+        && mem.u32(render_bridge::native_world::ACTIVE_BSP).ok() == Some(key.bsp)
         && active_bsp_index(mem) == Some(key.index)
         && crate::health::loaded_map_name(mem).ok().as_ref() == Some(&key.map))
         .then_some(ready)
@@ -146,7 +146,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if map.is_empty() {
             return false;
         }
-        if !hooks::native_world::on(&self.switches) {
+        if !render_bridge::native_world::on(&self.switches) {
             return true;
         }
         let key = BspKey { map, bsp, index, generation };
@@ -232,8 +232,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn opaque_view(
-        &self, mem: &dyn GuestMemory, layer: hooks::native_world_layers::Layer,
-    ) -> Result<Box<dyn hooks::native_world::OpaqueView>, &'static str> {
+        &self, mem: &dyn GuestMemory, layer: render_bridge::native_world_layers::Layer,
+    ) -> Result<Box<dyn render_bridge::native_world::OpaqueView>, &'static str> {
         if !self.ordered_scene_world {
             return Err("world programs disabled");
         }
@@ -296,7 +296,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         };
-        let drained_plan = native_render::skip::stencil_plan(&hooks::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)?;
+        let drained_plan = native_render::skip::stencil_plan(&render_bridge::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)?;
         if &drained_plan != plan { return None; }
         let Some(stencil) = pass_stencil(&stencil, plan) else {
             let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -312,8 +312,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
         let frustum = GpuWorld::draw_frustum(&camera.view_projection(), true);
-        let (masks, cleared, selected) = hooks::native_world::plan_parts(
-            &hooks::native_world::Mem(mem), &ready.parts, |owner, part| {
+        let (masks, cleared, selected) = render_bridge::native_world::plan_parts(
+            &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
                 ready.part_bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
             },
         )?;
@@ -341,7 +341,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass(selected.clone()));
             match reserved {
                 Ok(Some(reservation)) => {
-                    if !masks.apply(&mut hooks::native_world::Mem(mem)) {
+                    if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                         timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
                         return None;
                     }
@@ -356,7 +356,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         if !staged {
             let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(selected), Vec::new()).ok()??;
-            if !masks.apply(&mut hooks::native_world::Mem(mem)) {
+            if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                 timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
                 return None;
             }
@@ -390,14 +390,14 @@ struct OpaqueView<B: d3d::Backend> {
     ready: Arc<Ready>,
     generation: u64,
     bsp_index: u16,
-    layer: hooks::native_world_layers::Layer,
+    layer: render_bridge::native_world_layers::Layer,
     frame: u64,
 }
 
-impl<B: d3d::Backend + Send + 'static> hooks::native_world::OpaqueView for OpaqueView<B> {
+impl<B: d3d::Backend + Send + 'static> render_bridge::native_world::OpaqueView for OpaqueView<B> {
     fn prepare_opaque(
         &self, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
-    ) -> Result<Box<dyn hooks::native_world::OpaqueDraw>, &'static str> {
+    ) -> Result<Box<dyn render_bridge::native_world::OpaqueDraw>, &'static str> {
         if native_map_work::generation() != self.generation || active_bsp_index(mem) != Some(self.bsp_index) {
             return Err("BSP changed during sorted pass");
         }
@@ -447,20 +447,20 @@ struct OpaquePass<B: d3d::Backend> {
     ranges: Vec<d3d::device::PreparedIndexRange>,
     code: Option<d3d::shader::Microcode>,
     textures: [Option<d3d::device::PreparedStageTexture>; 4],
-    layer: hooks::native_world_layers::Layer,
+    layer: render_bridge::native_world_layers::Layer,
     targets: d3d::device::PreparedOpaqueTargets,
     frame: u64,
 }
 
-impl<B: d3d::Backend + 'static> hooks::native_world::OpaqueDraw for OpaquePass<B> {
-    fn bind_streams<'a>(&'a self, cx: &'a hooks::Cx) -> hooks::native_world::OpaqueStreams<'a> {
+impl<B: d3d::Backend + 'static> render_bridge::native_world::OpaqueDraw for OpaquePass<B> {
+    fn bind_streams<'a>(&'a self, cx: &'a hooks::Cx) -> render_bridge::native_world::OpaqueStreams<'a> {
         Box::pin(self.streams.handoff(cx))
     }
 
     fn submit(self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart)
-        -> Result<(), hooks::native_world::OpaqueSubmitError>
+        -> Result<(), render_bridge::native_world::OpaqueSubmitError>
     {
-        use hooks::native_world::OpaqueSubmitError::{BeforeDraw, Device};
+        use render_bridge::native_world::OpaqueSubmitError::{BeforeDraw, Device};
         let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame } = *self;
         let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
         let mut device = device.lock().map_err(|_| Device("opaque device mutex poisoned".into()))?;
@@ -479,7 +479,7 @@ impl<B: d3d::Backend + 'static> hooks::native_world::OpaqueDraw for OpaquePass<B
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, watch: runtime::WatchId) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     let switches = hooks::Switches::from_env().unwrap_or_default();
-    hooks::native_world::set_host(Arc::new(Glue {
+    render_bridge::native_world::set_host(Arc::new(Glue {
         watch,
         device: Arc::clone(device),
         state: Arc::clone(&state),

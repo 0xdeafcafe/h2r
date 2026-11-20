@@ -120,7 +120,7 @@ fn pattern() -> Vec<u8> {
 #[test]
 fn window_matches_null_window_at_every_width_and_edge() {
     for accounting in [false, true] {
-        let codegen = emit::Codegen { accounting };
+        let codegen = emit::Codegen::accesses(accounting);
         let Some(g) = module("widths", codegen, widths) else { return };
         let bytes = pattern();
         // Inside one page, then straddling every width across CROSS.

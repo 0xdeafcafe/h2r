@@ -24,7 +24,7 @@ packs every map, and the Multiplayer Map Pack with `--mappack`
 | Piece | What it is | Built by |
 | --- | --- | --- |
 | `crates/apps/uwp-host` (`h2uwp.exe`) | the app: a `CoreApplication` view (no XAML) whose render loop runs `h2host::start_in`, the same shell and `boot::run_hosted` the Apple apps use | `cargo build -Zbuild-std --target x86_64-pc-windows-msvc`, static CRT, `/APPCONTAINER` |
-| `h2game.dll` (+ `h2game.dll.stamp`) | the generated module, loaded with `LoadPackagedLibrary` | `boot::build` with `H2_EMIT_TARGET=windows` (`apple-host` `pack --platform xbox`) |
+| `h2game.dll` (+ `h2game.dll.stamp`) | the generated module, loaded with `LoadPackagedLibrary` | `boot::build` with `H2_EMIT_TARGET=windows` (`h2host` `pack --platform xbox`) |
 | `disc/` | the disc files the app needs (`h2host::layout::DISC_FILES`), served as D: by `vfs::DirDiscBackend` | `pack` |
 | `bootcache/` | the XBE's analysis for this build, copied to LocalState on first launch | `pack` |
 | `AppxManifest.xml`, `Assets/` | the package manifest (`uwp_host::manifest`) and the app icon's tile, logo and splash images, embedded from `platform/xbox/Assets` ([art/app-icon](../../art/app-icon/README.md)) | `uwp-host` `package` example |

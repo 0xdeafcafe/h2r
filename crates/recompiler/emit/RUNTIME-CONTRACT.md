@@ -454,6 +454,21 @@ so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
 
+#### The block clock (`H2_ACCESS_COUNT=block`, module feature 64)
+
+A module built with the block clock (it also has feature 1) uses all of
+the above, but `h2acc` counts the plan's block costs instead of accesses
+(`crates/recompiler/emit/src/clock.rs`): the guest instructions of the
+function's entry block when the handler is entered with the entry as its
+selector (nothing when the entry is a loop header, whose trip charge
+covers it), and of a loop header's block on each trip that runs the
+header, after its poll. An access, and a REP bulk copy, add nothing. The runtime
+charges `preempt::HLE_COST` for each Rust handler it invokes. Atomics
+charge as before. A handler cut into parts charges the entry only at the
+function entry's selector, never at a cut-in. The runtime refuses the bit
+without feature 1, and a module whose clock differs from one already registered
+(docs/runtime/block-clock-imprecise-faults.md).
+
 `H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules
 with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
 charge adds the count to the view's own (`accesses`), raising SLICE on the
@@ -552,7 +567,11 @@ typedef struct H2GenModule {
   section), `H2GEN_FEATURE_ENTRY_TABLE` (8, below),
   `H2GEN_FEATURE_FLAT_RAM` (16, §1.1 "Flat RAM"; needs the entry table),
   `H2GEN_FEATURE_HOST_CALLS` (32, host calls in place, §4 "Direct calls";
-  on every direct-call module), or 0. It was `reserved`, always 0.
+  on every direct-call module), `H2GEN_FEATURE_BLOCK_CLOCK` (64, §1.5 "The
+  block clock"), `H2GEN_FEATURE_IMPRECISE_FAULTS` (128: a memory fault's
+  exit leaves EFLAGS and its defined mask inexact; registers and EIP stay
+  exact; docs/runtime/block-clock-imprecise-faults.md), or 0. It was
+  `reserved`, always 0.
 - **The entry table** (feature 8, on every module `h2gen.h` builds). The
   entry rows are sorted by address, and row `r` has entry index `r + 1`;
   0 is no entry, so a module has at most 65,535 rows. `pcmap` holds, for
