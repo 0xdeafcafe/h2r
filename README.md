@@ -60,17 +60,17 @@ No game data is in the repo. More shots are in the issue threads:
 | Platforms | macOS (Metal) | Built | [building](docs/runtime/building.md) |
 | | Apple TV and iPhone/iPad apps, with touch controls on iOS | Built | [tvOS](docs/runtime/tvos.md), [iOS](docs/runtime/ios.md) |
 | | Windows: the runtime and game module cross-build from a Mac; not run yet, no host app | Built | [windows](docs/runtime/windows.md) |
-| | Xbox in Developer Mode (UWP app) | Design | [windows](docs/runtime/windows.md) |
-| Graphics | Native GPU renderer, on by default: world, objects, lights, shadows, transparents, decals, particles, fog, water, post, HUD and UI. Scene lists are built in Rust, the guest's opaque handlers are skipped, geometry is cached across frames, and anything it can't take falls back to D3D (`impl.render.native=off` turns it all off) | Built | [native renderer](docs/graphics/native-renderer.md), [switches](docs/graphics/render-switches.md) |
+| | Xbox in Developer Mode (UWP app): runs on a Series X and presents frames while the title boots; pads and levels are not verified | Partly built | [xbox](docs/runtime/xbox.md) |
+| Graphics | Native GPU renderer, on by default: world, objects, lights, shadows, transparents, decals, particles, fog, water, post, HUD and UI. Scene lists are built in Rust, the guest's opaque handlers are skipped, geometry is cached across frames, and anything it can't take falls back to D3D (`impl.render.native=off` turns it all off) | Built | [native renderer](docs/graphics/native-renderer.md), [switches](docs/graphics/notes/not-adopted.md) |
 | | Render scale 1x to 6x (Resolution row), one copy rendered at the scaled size | Built | [high-res](docs/graphics/high-resolution.md) |
 | | Pipelined frames: tick N+1 overlapping frame N (off by default, `impl.render.pipelined_frame`) | Built, off | [pipelined](docs/graphics/pipelined-render.md) |
-| | E3 2003-style lighting, phase 1: sharper shadow maps (Lighting row) | Built | [E3 lighting](docs/graphics/e3-lighting.md) |
-| | 60 and 120 fps over the 30 Hz tick (determinism harness built) | Design | [high-framerate](docs/game/high-framerate.md) |
+| | E3 2003-style lighting: the Lighting row (sharper shadow maps) | Built | [E3 lighting](docs/graphics/e3-lighting.md) |
+| | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness, interpolated replay and reprojection are built and tested on synthetic draws; not yet run in the game | Partly built | [high-framerate](docs/game/high-framerate.md) |
 | Game | Expanded settings screens: Video, Controls, FOV | Built | [settings](docs/game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
-| | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
+| | 13 community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](docs/game/aim-assist.md) |
-| | Multiplayer bots (Clankers) on free controller ports; their nav meshes build themselves in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](docs/game/bots.md) |
+| | Multiplayer bots (Clankers) join hosted matches as phantom peers, and controller ports stay for people; their nav meshes build themselves in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](docs/game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
 | | New, edited and patched maps as packages | Built | [maps](docs/game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/halo1/campaign-picker.md) |
@@ -115,9 +115,9 @@ Two of those rows are regressions. The native renderer (on by default) is still 
 submit is 1.4 ms/frame dearer, with object and light fallbacks still drawing
 through the guest), and flat guest RAM (off by default) doubles the tick
 and breaks determinism. Both are being fixed. The host numbers are one run each, and same-build repeatability on Waterworks
-is open ([sim-budget.md](docs/perf/sim-budget.md)). Native-renderer history,
+is open ([sim-budget.md](docs/perf/sim-budget.md)). The A/B record of the native renderer,
 including the rounds that were slower than D3D, is in
-[native-renderer.md](docs/graphics/native-renderer.md#the-all-native-push-2026-11-1920).
+[native-ab.md](docs/graphics/notes/native-ab.md).
 
 <p align="center">
   <img src="docs/images/readme/measured-costs.svg" alt="Bar chart of the measured costs before and after" width="100%">
@@ -158,7 +158,7 @@ No dates. Items move when they are measured, not when they are written down.
 - A locked 30 fps at 4x on an M3: the rest of the gameplay frame and the
   residual render callers
   ([native-renderer.md](docs/graphics/native-renderer.md),
-  [gameplay-budget.md](docs/perf/gameplay-budget.md)).
+  [gameplay-budget.md](docs/perf/notes/gameplay-budget.md)).
 - Measure the in-flight sim work (flat guest RAM, the native sim batches) on
   the Waterworks and Lockout cases ([sim-budget.md](docs/perf/sim-budget.md)).
 - Fidelity gaps, such as point sprites and the open items in

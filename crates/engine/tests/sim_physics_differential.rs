@@ -7,7 +7,7 @@
 #![cfg(feature = "differential")]
 
 use engine::points;
-use engine::sim_physics::{PORTS, Port};
+use engine::sim_physics::{ORACLES, PORTS, Port};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
@@ -839,7 +839,7 @@ type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
     let Some((image, ram)) = image() else { return };
-    let port = PORTS.iter().find(|p| p.point.base == point.base).unwrap();
+    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
     let mut code = original(image, point);
     for case in 0..cases {
         let mut memory = ram.clone();

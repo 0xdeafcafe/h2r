@@ -76,7 +76,7 @@ of the areas below.
 - Rewriting the network replication protocol (0.91% of guest time; it is
   the multiplayer contract).
 - Running several *guest* threads in parallel
-  ([architecture-review.md](../perf/architecture-review.md), "More game
+  ([2026-11-16-frame-time.md](../reviews/2026-11-16-frame-time.md), "More game
   threads in parallel?": no).
 - Rewriting the renderer. The native renderer is a separate lane, and it
   consumes this work's outputs.
@@ -152,7 +152,7 @@ Why this holds up:
   arena stays the checkpoint format.
 
 The scheduler clock is counted in guest memory accesses
-([architecture-review.md](../perf/architecture-review.md), change 2). Rust
+([2026-11-16-frame-time.md](../reviews/2026-11-16-frame-time.md), change 2). Rust
 code makes fewer of them, so slice ends move. That is the same for every run
 of a build, so it does not affect determinism. It does mean whole-RAM traces
 compare only within one switch set, which `exact` fingerprints already
@@ -637,7 +637,7 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
 ### After the Fable reviews (the user, 2026-11-20)
 
 5. **Both routes run.** The sim-tier experiment from
-   [sim-review.md](sim-review.md) (the tick closure recompiled under a
+   [2026-11-20-sim.md](../reviews/2026-11-20-sim.md) (the tick closure recompiled under a
    looser contract, checked by per-phase arena hashes) runs alongside the
    hand rewrites in this plan. Neither waits on the other. The experiment's
    one-week gate (four leaf families, 5x) decides how far it goes; a hand
@@ -650,6 +650,6 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
    [superbounce.md](../game/superbounce.md)). No phase may raise the tick
    rate or change `dt` for physics.
 7. **The recompiler contract changes, starting with thin transfers and
-   flat RAM.** From [architecture-review-2026-11.md](../architecture-review-2026-11.md):
+   flat RAM.** From [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
    cheaper guest/host transfers, and flat RAM as the only memory model.
    The other items in that review wait.

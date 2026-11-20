@@ -1,4 +1,4 @@
-//! What one screen effect draws: `0x0002d140` (docs/graphics/native-renderer.md,
+//! What one screen effect draws: `0x0002d140` (docs/graphics/native-post-hud.md,
 //! stage 5, "The screen effects") as a plan, a pure function over guest
 //! memory, for the native renderer to draw it in the game's place.
 //! [`crate::screen_effects::drawn`] says which effects draw and with what

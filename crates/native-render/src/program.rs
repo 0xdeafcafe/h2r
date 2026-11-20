@@ -1,7 +1,7 @@
 //! A world material drawn with its own programs: the pass's vertex program
 //! and pixel shader definition through `shaders`, the instance constants
 //! where the game puts them, and the view's constants from the device
-//! each frame (docs/graphics/native-renderer.md, "What a world pass reads").
+//! each frame (docs/graphics/native-world.md, "What a world pass reads").
 //! [`compile`] is pure (WGSL and uniform values); [`ProgramSet`] holds the
 //! GPU side for [`crate::gpu::GpuWorld`].
 

@@ -1,4 +1,4 @@
-//! `Device::light_passes_tail` (docs/graphics/native-renderer.md, stage 4):
+//! `Device::light_passes_tail` (docs/graphics/native-lights.md, stage 4):
 //! a light the native renderer draws in place of Halo's
 //! `render_light_passes` leaves the device as that function's tail does.
 //! Two devices from the same state, stencil on and a scissor set: one

@@ -14,7 +14,7 @@ its callee's, inclusive, minus the stages carved out (the per-light pass
 
 | Site | Callee | ms | guest | D3D | D3D calls | What |
 |---|---|---|---|---|---|---|
-| `0x0002bed0` | `0x00044550` | 8.26 | 5.51 | 2.75 | 1,882 | layer 3, the opaque scene ([layer-draw.md](layer-draw.md)) |
+| `0x0002bed0` | `0x00044550` | 8.26 | 5.51 | 2.75 | 1,882 | layer 3, the opaque scene ([layer-draw.md](../layer-draw.md)) |
 | `0x0002c19a` | `0x0001e370` | 2.58 | 2.29 | 0.29 | 1,010 | sorted transparents |
 | `0x0002c03e` | `0x00031c80` | 1.88 | 1.88 | 0.00 | 0 | dynamic lights, without the per-light passes |
 | `0x0002c021` | `0x000335e0` | 1.24 | 1.05 | 0.19 | 182 | |

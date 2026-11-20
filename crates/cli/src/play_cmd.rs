@@ -43,7 +43,7 @@ the background for the next start. --slices is unlimited by default.
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
 CPU, push-buffer decode, wgpu encode, submit, GPU wait and pacing over the
 last 5 s, in the window and once a second on stderr, and the worst frames at
-exit (docs/perf/gameplay-budget.md). A two-line development-build watermark (commit,
+exit (docs/perf/notes/gameplay-budget.md). A two-line development-build watermark (commit,
 branch, build time, fps, frame time, draws, map, renderer) runs along the
 bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
 it off. --input-timeline plays an

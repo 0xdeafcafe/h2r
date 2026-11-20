@@ -1,4 +1,4 @@
-//! The bot mark's glyph (docs/game/bots.md §8.2.2): a gear at U+2699 in
+//! The bot mark's glyph (docs/game/bots.md, "Clanker appearance and Live player options"): a gear at U+2699 in
 //! every font file the game opens, so a bot's name (`⚙ ` and its tag, as
 //! `bots::phantom::session` writes it) draws the mark and not a box.
 //!

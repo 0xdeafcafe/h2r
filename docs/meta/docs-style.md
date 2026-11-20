@@ -4,9 +4,6 @@ The readers are coding agents first and the owner second. A doc states the
 current design. Git has the history. An agent that reads a page should be
 able to act on every sentence without checking whether it is still true.
 
-[docs-tidy-plan.md](docs-tidy-plan.md) is the one-off plan that brings the
-existing docs to these rules. This page is the standing rule.
-
 ## Kinds of page
 
 | Kind | Where | What it states | When it changes |
@@ -19,8 +16,8 @@ existing docs to these rules. This page is the standing rule.
 | Index | `docs/README.md` | every page, one line each | when a page is added or removed |
 
 Areas are the existing folders: `lifter`, `runtime`, `perf`, `engine`,
-`formats`, `graphics`, `audio`, `input`, `game`, `halo1`, `live`, `editor`.
-`docs/meta` holds this page.
+`formats`, `graphics`, `audio`, `input`, `game`, `halo1`, `live`, `editor`,
+`dev`. `docs/reviews` holds the dated reviews and `docs/meta` holds this page.
 
 A design page never holds a logbook, and a note never states the design.
 When a page has both, split it: the design stays at the page's path and the
@@ -91,8 +88,7 @@ deleted, and git keeps it.
    to open the code from the sentence.
 4. **One home per fact.** Link to it; do not restate it. Switches and
    environment variables are listed once, in
-   `docs/runtime/switches.md` (it arrives with the `flag-cleanup` branch);
-   other pages name the switch and link there.
+   `docs/runtime/switches.md`; other pages name the switch and link there.
 5. **One status line**, directly under the title (see the template).
 6. **Evidence labels** on anything that is not plain from the code (below).
 7. **Numbers come from notes.** A measured number on a design page links
@@ -177,9 +173,8 @@ that is not built uses the same template with `Status: Design` and says in
 
 A change that alters behaviour, an interface, a switch or a path that a doc
 names updates that doc in the same branch, so that the page reads as if it
-had always been so. The wording for agents is the section "Keep the docs
-current", proposed for `AGENTS.md`; until it is added there, its text is in
-[docs-tidy-plan.md](docs-tidy-plan.md).
+had always been so. The rule for agents is the section "Keep the docs
+current" in `AGENTS.md`.
 
 ## Checking
 

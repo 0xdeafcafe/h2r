@@ -12,7 +12,7 @@ scoreboard. **The in-game selector and host-film player are implemented. The
 real-host hash and camera experiments are pending.** Playback uses the determinism
 harness from the high-frame-rate work
 ([high-framerate.md](high-framerate.md), phase 1, built) and on
-levels running at a steady 30 fps ([gameplay-budget.md](../perf/gameplay-budget.md)).
+levels running at a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 
 In short:
 
@@ -796,7 +796,7 @@ local view, not a spectator mode. [local: engine-map.md, "likely"]
    per-tick RAM hash, tick-keyed pad recording, run comparison. Theater
    reuses it directly. One naming note: that crate is called `lockstep`,
    which is easy to confuse with network lockstep in this document.
-2. **Steady 30 fps** in levels ([gameplay-budget.md](../perf/gameplay-budget.md)).
+2. **Steady 30 fps** in levels ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
    Below that, playback is slow motion and fast forward is slower than
    real time. Exact playback works at any speed; it's just slow.
 3. **Multiplayer reachable** (a local multiplayer game, then system link)

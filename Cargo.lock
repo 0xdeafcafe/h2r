@@ -58,7 +58,6 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "input",
- "lifted",
  "live-proto",
  "live-telemetry",
  "map",
@@ -665,7 +664,6 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
- "lifted",
  "live-hle",
  "live-proto",
  "live-telemetry",
@@ -1911,13 +1909,17 @@ dependencies = [
  "guest-layout",
  "ir",
  "lift",
- "lifted",
+ "map",
  "mopp",
  "paste",
  "runtime",
+ "sim-anim",
+ "sim-core",
  "simd",
+ "tags",
  "x87",
  "xbe",
+ "xiso",
 ]
 
 [[package]]
@@ -1978,7 +1980,6 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
- "lifted",
  "native-render",
  "runtime",
  "runtime-test-probe",
@@ -3478,20 +3479,6 @@ dependencies = [
  "iced-x86",
  "ir",
  "opt",
- "serde_json",
- "xbe",
-]
-
-[[package]]
-name = "lifted"
-version = "0.1.0"
-dependencies = [
- "analyze",
- "iced-x86",
- "ir",
- "lift",
- "runtime",
- "serde",
  "serde_json",
  "xbe",
 ]
@@ -5934,6 +5921,20 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "sim-anim"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-core"
+version = "0.1.0"
+dependencies = [
+ "simd",
 ]
 
 [[package]]

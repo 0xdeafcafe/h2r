@@ -1,4 +1,4 @@
-//! The native world's host (docs/graphics/native-renderer.md, stage 1):
+//! The native world's host (docs/graphics/native-world.md, stage 1):
 //! loads the active BSP's world from the loaded map's file when the BSP
 //! changes, on a worker, and asks the D3D device for the native pass at
 //! each view's layer 3 (`feature::native_world`). Inert with

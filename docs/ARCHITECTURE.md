@@ -6,96 +6,66 @@ build time and nothing derived from it is committed.
 
 ## Targets
 
-- **macOS on arm64 and x86-64, rendering through Metal.** This is the first target.
+- **macOS on arm64 and x86-64, rendering through Metal.** The first target.
 - **Apple TV and iPhone/iPad.** tvOS and iOS share the Mac's arm64 and Metal
   path; the UIKit hosts are in `platform/tvos` and `platform/ios`
   ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)).
-- **Windows, then Xbox in Developer Mode** (x86-64 and DX12). The runtime and
-  the generated module cross-compile for Windows from a Mac; there is no
-  Windows host app yet ([windows.md](runtime/windows.md)). Personal,
-  sideloaded use only.
+- **Windows and Xbox in Developer Mode** (x86-64 and DX12). The runtime and
+  the generated module cross-compile for Windows from a Mac
+  ([windows.md](runtime/windows.md)); the Xbox app is in
+  [xbox.md](runtime/xbox.md). Personal, sideloaded use only.
+- **Linux x86-64** for the dedicated host ([linux.md](runtime/linux.md)).
 - **Rendering goes through wgpu,** which covers Metal, Vulkan and DX12 with
   one renderer.
 
-The recompiled code is portable C or LLVM IR, so arm64 and x86-64 builds
-take the same path. Nothing relies on running the original x86 directly.
+The recompiled code is portable C11, so arm64 and x86-64 builds take the
+same path. Nothing relies on running the original x86 directly. Platform
+code (window, input, audio, file access) lives in its own layer, so a port
+swaps that layer.
 
-## What "done" means
+## The pipeline
 
-Stage 1 below is scaffolding. The real product is stage 2: an engine in
-readable Rust that you can extend and build editors on, using the
-recompiled code as the reference it's tested against. So rewrite order
-favours the parts that editing and modding touch:
-
-1. Tag and cache-file (`.map`) loading, as a typed Rust data model. Editors
-   build on this.
-2. The renderer, above the D3D layer: start with D3D8 replaced on wgpu to get
-   pixels, then rewrite Halo's own rendering layer natively.
-3. Objects, game state and the HaloScript runtime.
-4. Physics and AI, last. Their floating-point behaviour needs the most care.
-
-Platform code (window, input, audio, file access) lives in its own layer,
-so a tvOS, iOS or Xbox port only swaps that layer (docs/runtime/tvos.md,
-docs/runtime/ios.md; Windows in docs/runtime/windows.md, the Xbox app in
-docs/runtime/xbox.md).
-
-## The path to good Rust
-
-Going straight from x86 to idiomatic Rust is not something a tool can do. The
-game is about 3.4 MB of machine code, and a mechanical translation will always
-be ugly. So the project runs in two stages that overlap:
-
-1. **Mechanical recompile (correct, ugly).** A lifter turns every function in
-   `.text` into generated code (LLVM IR or C, compiled and linked as a library).
-   Guest memory is one flat 64 MB region, registers live in a `Cpu` struct, and
-   every function has the signature `fn(&mut Cpu, &mut Guest)`. This stage only
-   has to be right, not readable. It gets regenerated from the disc and is
-   never edited by hand.
-
-2. **Function-by-function rewrite (readable, typed).** Every guest function
-   address goes through a dispatch table. A hand-written Rust function can
-   register itself as an override for an address, and from then on calls go to
-   it instead of the generated version. This is the same approach decomp
-   projects use: the game runs at every step, and each replacement is small and
-   can be backed out.
-
-What makes stage 2 safe:
-
-- **Differential testing.** Each override is checked against the lifted
-  original on the IR interpreter: from seeded states in the differential
-  tests, and from the states the game reaches by shadow execution while it
-  runs (each call run on a copy beside the original and compared;
-  [shadow-exec.md](engine/shadow-exec.md)). It has to match before it
-  ships. For floating point the bar is matching bits, or a tolerance
-  documented per function.
-- **Switch at runtime.** Overrides are enabled per function from config, so a
-  regression can be bisected down to a single function.
-- **Work up from the leaves.** Start with leaf functions such as math, string
-  handling and the tag system. A caller is rewritten only after its callees
-  are, so typed Rust grows upward through the call graph.
-- **Typed memory in stages.** Overrides start out reading guest memory through
-  `Guest` accessors. Once a structure is understood (the Halo 2 tag and map
-  formats are well documented), it becomes a `#[repr(C)]` view type, and
-  later on Rust-owned data with the guest copy kept in sync at the boundary.
-  The `unsafe` code ends up confined to `runtime::guest`.
+The project runs in two stages that overlap. Stage 1 is scaffolding: a
+lifter turns every function of the retail XBE into C11 through a
+backend-independent IR, and Clang builds that C into a library the Rust
+runtime loads ([LIFTER.md](lifter/LIFTER.md); build and caches in
+[BUILD-CACHE.md](lifter/BUILD-CACHE.md); the fast first build in
+[cranelift-tier.md](lifter/cranelift-tier.md)). The generated code is
+regenerated from the disc and never edited by hand. Stage 2 is the product:
+an engine in readable Rust that editors and mods build on. Every guest
+function address goes through a dispatch table, and a Rust function can
+register itself as the override for an address, so the game runs at every
+step and a replacement can be backed out. Overrides are Rust features with
+hooks and switches ([feature-engine.md](engine/feature-engine.md)); the
+rewritten engine functions and their differential tests against the
+generated code are in [engine/README.md](engine/README.md), and
+shadow execution checks a port against the original on the states the
+game reaches as it runs ([shadow-exec.md](engine/shadow-exec.md)). Booting and
+running is in [BOOT.md](runtime/BOOT.md).
 
 Statically linked SDK libraries (D3D, DSOUND, XONLINE, XNET, BINK, ...) are
 not recompiled. Their functions are found by signature and replaced at the
-dispatch table with native Rust implementations: D3D on wgpu, DSound on
-cpal, Bink by a high-level player ([bink-hle.md](audio/bink-hle.md)), and Xbox
-Live by client HLE over our own service ([live.md](live/live.md)).
+dispatch table with native Rust implementations: D3D on wgpu
+([d3d.md](graphics/d3d.md)), DSound on cpal ([dsound.md](audio/dsound.md)),
+Bink by a high-level player ([bink-hle.md](audio/bink-hle.md)), and Xbox Live
+by client HLE over our own service ([live.md](live/live.md)).
+
+What is rewritten first is what editing and modding touch: tag and cache-file
+loading as a typed data model ([map-format.md](formats/map-format.md)),
+then the renderer above the D3D layer ([native-renderer.md](graphics/native-renderer.md)),
+then objects, game state and the HaloScript runtime, and physics and AI
+last, because their floating-point behaviour needs the most care
+([sim-rewrite.md](engine/sim-rewrite.md)). Where each part stands is on its
+own page.
 
 ## Crates
 
-Every crate below is on master. "Done" means it does what its row says;
-"in progress" means it is there but incomplete.
-
-The table is generated. `scripts/crate-table.py` writes it from each
-crate's `Cargo.toml` (`description`, and `layer`, `status` and `doc` under
+Every directory in `crates/` is one row. The table is generated:
+`scripts/crate-table.py` writes it from each crate's `Cargo.toml`
+(`description`, and `layer`, `status` and `doc` under
 `[package.metadata.h2]`), so a new crate brings its own row; edit the
-manifest and run the script, not the table. How the crates are meant to
-fit together, and the moves that get there, are in
-[dev/crate-structure.md](dev/crate-structure.md).
+manifest and run the script, not the table. How the crates are meant to fit
+together is in [dev/crate-structure.md](dev/crate-structure.md).
 
 <!-- crate-table:begin (generated by scripts/crate-table.py from the Cargo.toml descriptions; do not edit) -->
 | crate | purpose | docs | status |
@@ -123,7 +93,7 @@ fit together, and the moves that get there, are in
 | `editor-core` | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
 | `emit` | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) † |  | done |
 | `engine` | Hand-written Rust replacements for Halo 2 engine functions, over guest memory | [engine/README.md](engine/README.md) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
-| `fastmem-proto` (bin `fastmem-probe`) | Isolated prototype: page-protection write watch on macOS arm64 and Linux x86-64 | [fastmem-proto.md](perf/fastmem-proto.md) | prototype, not used by the runtime |
+| `fastmem-proto` (bin `fastmem-probe`) | Isolated prototype: page-protection write watch on macOS arm64 and Linux x86-64 | [fastmem-proto.md](perf/notes/fastmem-proto.md) | prototype, not used by the runtime |
 | `feature` | The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md) | [feature-engine.md](engine/feature-engine.md) | in progress |
 | `film` | Seekable Halo 2 engine films, presentation records and the local film library |  |  |
 | `font` | Halo 2 packed bitmap font parser and CPU text rasteriser | [fonts.md](formats/fonts.md) | done |
@@ -190,59 +160,3 @@ fit together, and the moves that get there, are in
 
 † Written here by hand. The text belongs in the crate's `Cargo.toml` `description`; `scripts/crate-table.py --strict` fails until it is there.
 <!-- crate-table:end -->
-
-### Lifter checks
-
-The lowering is cross-checked against the `oracle` crate's Unicorn-backed
-fixtures (synthetic encodings, no game data): `cargo test -p lift --features
-oracle-fixtures --test oracle` with `H2_ORACLE_FIXTURES` naming the `.jsonl`
-files. Registers, EIP, XMM, x87, MXCSR, memory and the stop must match, and
-so must which status flags are defined. The harness itself has
-self-contained tests (no fixture files): state import, every comparison,
-defined-flag handling and skip counting.
-
-Two documented accommodations apply. After an MMX transition, Unicorn
-(QEMU) leaves bits 64-79 of a written MMX register unchanged and reports a
-content-classified tag word, where the SDM sets those bits to ones and the
-transition marks every tag valid. `rcp*`/`rsqrt*` lanes are held to the
-architectural bound (relative error at most 1.5 * 2^-12; a denormal input
-acts as a signed zero and a tiny result flushes to zero) rather than to
-exact bits, because QEMU computes exact quotients where the Pentium III
-uses tables. Unicorn also never sets MXCSR's exception flags, so after SSE
-arithmetic only MXCSR's control bits are compared. `crates/simd` checks
-the flags against hardware with its own oracle corpus.
-
-The corpus was 37,207 fixtures when last counted: the original 21,152, plus
-16,055 covering every SSE and MMX form the image uses. It gave 36,293
-matches, 0 differences and 914 skips. These counts predate x87 lowering
-(e5c4251) and have not been redone since: the x87 skips below should now be
-matches, and the fixture files come from `oracle-fixtures`
-(docs/lifter/oracle.md), so the totals may differ too. The test prints the skip
-classes (`--nocapture`):
-
-| skipped | why |
-|--------:|-----|
-| 330 | 16-bit address-size string ops (`67` prefix, CX/SI/DI): not lowered |
-| 259 | BCD and `salc` (`aaa`, `aad`, `aam`, `aas`, `daa`, `das`, `salc`): not lowered |
-| 185 | refused by the oracle (`popfd`, `pause`) |
-| 66  | x87 arithmetic (`fld1`, `faddp`): skipped before x87 was lowered (e5c4251); expected to be matches now |
-| 37  | `cmpxchg8b`: not lowered |
-| 37  | 16-bit addressing (`lea` with `67`): not lowered |
-
-The emitter's differential test (`crates/emit/tests/differential.rs`) runs
-synthetic functions through the interpreter and through generated C from
-random states. The atomics in generated C go through the runtime's
-operation-wide accessors (`crates/emit/RUNTIME-CONTRACT.md`).
-
-## Milestones
-
-1. Parse the disc and XBE. *(done)*
-2. Discover functions until coverage of `.text` is close to 100%. *(enough
-   for the boot; a few holed jump tables still go through the fallback
-   interpreter, see [BOOT.md](runtime/BOOT.md))*
-3. Lift the code and run from the entry point to the first kernel call. *(done)*
-4. Replace the kernel imports and reach D3D device creation. *(done)*
-5. Draw the first frame (`mainmenu.map`) through the D3D replacement. *(done)*
-6. Reach and render the first campaign level. *(done: The Heretic renders
-   past 8,000 frames)*
-7. 30 fps ([menu-budget.md](perf/menu-budget.md)).
