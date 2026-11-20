@@ -56,7 +56,8 @@ mod unit_state;
 // Slice 6c: the rest of the unit update.
 mod unit_anim;
 mod unit_rest;
-// Slice 7a: the biped update.
+// Slice 7a: the biped update; slice 7b its post-physics update
+// (`biped::post`).
 mod biped;
 
 use crate::points::{self, Point};
@@ -216,6 +217,18 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::BIPED_FALL_UPDATE, sites: &biped::FALL_SITES, run: biped::fall_update },
     Body { point: &points::BIPED_ANIMATION_STATE_UPDATE, sites: &biped::STATE_SITES, run: biped::animation_state },
     Body { point: &points::BIPED_LOOK_UPDATE, sites: &biped::LOOK_SITES, run: biped::look_update },
+    // Slice 7b: the biped post-physics update (the `bipd` descriptor's slot
+    // `+44`) and the part of its tree that is ported (`biped::post`).
+    Body { point: &points::BIPED_POST_UPDATE, sites: &biped::POST_SITES, run: biped::post_update },
+    Body { point: &points::BIPED_CROUCH_STEP, sites: &biped::CROUCH_STEP_SITES, run: biped::crouch_step },
+    Body { point: &points::BIPED_CROUCH_HEIGHT, sites: &biped::CROUCH_HEIGHT_SITES, run: biped::crouch_height },
+    Body { point: &points::BIPED_CROUCH_FORCED, sites: &[], run: biped::crouch_forced },
+    Body { point: &points::BIPED_GROUND_PROBE, sites: &biped::PROBE_SITES, run: biped::ground_probe },
+    Body { point: &points::BIPED_GROUND_FLAG, sites: &[], run: biped::ground_flag },
+    Body { point: &points::BIPED_JUMP_UPDATE, sites: &biped::JUMP_SITES, run: biped::jump_update },
+    Body { point: &points::BIPED_PHYSICS_INPUT, sites: &biped::INPUT_SITES, run: biped::physics_input },
+    Body { point: &points::BIPED_LANDING_UPDATE, sites: &[], run: biped::landing_update },
+    Body { point: &points::BIPED_CONTACT_UPDATE, sites: &biped::CONTACT_SITES, run: biped::contact_update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
