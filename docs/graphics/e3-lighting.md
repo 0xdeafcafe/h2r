@@ -108,10 +108,10 @@ the look is the target and the mechanism is ours. The reasons:
 4. **The stencil buffer is taken.** Retail's marks write 0 or `0xff` over
    whole draws ("Stencil: every use, named"); counting volumes would need a
    second depth-stencil at the display scale.
-5. **The content.** Every caster and receiver material has shadow-map
-   passes (layers 10 and 11, "Pass taxonomy: the layers"), and an
-   alpha-killed caster punches holes in a map through its own material. As
-   a volume it would cast solid.
+5. **The content.** Ordinary lit templates can supply the depth and
+   receiver programs. The census below measures coverage per LOD. Where
+   a caster has an alpha-tested depth pass, its material can punch holes
+   in the map.
 6. **The sun is baked.** It is not a light in retail data, so a volume
    would end in the same multiply over baked light that a map ends in.
 
@@ -142,15 +142,17 @@ Read from the retail image and the disc ("Phase 0 findings",
   casters' depth (layer 10) and then its receivers (layer 11), which write
   the shadow term into the frame's alpha (**S**: the light passes that
   follow read it from there).
-- **Object shadows** (**R**). Up to 32 casters before layer 7, each a
-  silhouette mask filtered twice and multiplied onto what it falls on. A
-  mask has no depth, so an object cannot shadow itself.
+- **Object shadows** (**R**). Before layer 7, up to 32 candidates enter
+  a history targeting four. Ordinary caster draws use a silhouette mask
+  filtered twice and multiplied onto receivers. A mask has no depth, so
+  it cannot self-shadow. Creatures have a separate ground-shadow draw.
 - **A first-person light pass** (**R**): up to eight of the frame's lights
   drawn again over the first-person view.
-- **A hard trim.** The guest draws the few strongest of at most 128
-  candidates ("The light render path"), and 1,275 of the disc's 1,596 light
-  definitions have shadows flagged off ("Definition flags read off the
-  code").
+- **A history of selected lights** (**R**). Up to 128 eligible lights feed
+  a 32-entry view history and a fade targeting three ordinary lights.
+  Fading and exempt entries can take the draw count above three.
+  1,275 of the disc's 1,596 light definitions have shadows flagged off
+  ("The light render path", "Definition flags read off the code").
 
 What retail does not have: volumes, the sun as a light, depth in object
 shadows. So the mode is four changes to how the renderer draws one scene:
@@ -181,14 +183,22 @@ mode on and off, which is how "render-only" is checked.
 One depth map per caster, in place of retail's object-shadow masks
 (**Design**).
 
-- **Casters.** The guest's object-shadow list as the scene types it
-  (`FrameScene::shadows`, at most 32). A later slice widens it to every
-  instance near the view, including those just outside it.
-- **Direction and strength** are the ones retail gives each object shadow
-  (**S**: they come from the object's lighting record, which is why
-  retail's shadows turn indoors; slice L0 reads this from `0x00032350`'s
-  inputs). Using the object's own direction keeps the shadow on an object
-  in step with how the object is shaded, and needs no sky data.
+- **Casters.** Start with the ordinary object-mask draws in the guest's
+  shadow list. **R**. With an active lightmap and the shadow mode enabled,
+  `0x000335e0` calls `0x00033400`. The gather applies the view-mode bits
+  and `0x0003d7f0`'s object, definition, distance and fade tests. It
+  admits up to 32 objects, then ranks them with history and a target
+  of four. The draw at `0x00032350` requires a root object and a valid
+  visible hierarchy. Creature roots take a separate ground-shadow path
+  at `0x00032ce0`. **Design**. Keep that path for creatures. A later
+  slice gathers eligible casters just outside the view.
+- **Direction and strength.** **R**. The ordinary draw resolves its
+  lighting sample at `0x0003dc90` from a valid object lighting-cache
+  entry or the default lighting. It normalizes the vector at sample
+  `+0x0c`. Strength is the positive scalar at sample `+0x1c` times
+  the current object fade and the ranked entry's faded weight. The
+  product must clear the draw threshold. The renderer uses the selected
+  direction and final strength for the tile. [Object chain](native-shadows.md#object-chain).
 - **The map.** An orthographic depth tile fitted to the caster's bounding
   sphere along that direction. Its edge is the next power of two above 1.5
   times the sphere's diameter in display pixels, between 128 and 2048, so a
@@ -196,26 +206,36 @@ One depth map per caster, in place of retail's object-shadow masks
   4096-square depth atlas shared with the local lights, packed each frame
   by size; if they do not fit, the largest class halves and a counter
   says so.
-- **Drawing the caster.** Its material's own layer-10 depth pass with the
-  blended palette rows, so alpha-killed materials cast with their holes.
+- **Drawing the caster.** Select the material's layer-10 depth writer
+  at the LOD actually drawn, with the blended palette rows and its alpha
+  test. **Design**. Retain the retail shadow for a caster whose visible
+  silhouette includes a part with no supported depth writer.
 - **Receivers.** The caster itself, the instances whose spheres meet the
   tile's box swept along the direction, and the cluster parts that do.
   Each is drawn with its material's layer-11 receiver pass that samples a
   depth map and multiplies the frame (**R**: implementation 3 in
   native-shadows.md's table), at equal depth. That pass exists for retail's
-  own shadows, so depth matches exactly and nothing new is shaded. How many
-  templates have it is not counted (**S**; slice L0). A material without it
-  receives through one receiver program of ours built on its layer-1
-  vertex program.
+  own shadows. **R**. Across 165 distinct template names, 72 have a
+  layer-10 depth writer and 69 have it and the multiplying receiver in
+  the same LOD. Only 15 have the pair in every LOD. At the selected LOD,
+  a missing receiver uses an E3 receiver based on the material's depth
+  vertex path, with the same position, normal and coverage rules. Admit
+  the replacement only when it can reproduce those inputs.
+  [Counts per map](notes/e3-lighting.md).
 - **Where.** At retail's object-shadow point, before layer 7, so
   self-illumination and environment maps are added over the shadow as they
   are in retail. Retail's own mask chain is not drawn for a caster that has
   a tile.
-- **Self-shadowing** is the caster receiving its own tile. Faces turned
-  from the light are already dark in the object's shading; the receiver
-  pass's vertex gate leaves them alone (**S**: retail's layer-11 programs
-  gate on a vertex term; slice L0 confirms what it is), so they are not
-  darkened twice.
+- **Self-shadowing** is the caster receiving its own tile. **R**.
+  Implementation 3 writes the vertex normal dotted with hardware
+  `c[41]` to diffuse RGB. Its six populated vertex classifications use
+  the normal in world space, transformed by the rigid or skinning rows
+  where needed. The shadow setup at `0x00048f85` supplies the direction
+  towards the light. The pixel combiner interpolates between unity and the
+  depth comparison using that vertex colour. A triangle whose three
+  vertex terms clamp to zero preserves destination RGB. At a terminator
+  the interpolated gate can be fractional. The alpha-only receivers have
+  a different gate. [Program evidence](notes/e3-lighting.md).
 - **Not done:** the first-person model neither casts into tiles nor
   receives them; it has its own projection.
 
@@ -227,10 +247,13 @@ flashes, explosions) over the disc's 30 maps, of 1,349 sphere and 245 cone
 definitions ([effects.md](../formats/effects.md), "ligh"). At most 350 are
 live at once ("The light record").
 
-- **Candidates.** Every live light whose bounding sphere meets the view.
-- **Score.** Retail's weight (radius over distance to the view) times the
-  record's intensity; ties go to the lower datum index, so the order does
-  not depend on timing.
+- **Candidates.** Every active light reaching the view that passes its
+  owner and camera tests, before retail's ranking. In particular, the two
+  flashlight attachments are mutually exclusive for a given owner and view.
+- **Score** (**Design**). Multiply retail's projected sphere radius by
+  the light's intensity and break ties by lower datum index. Retail itself
+  stores projected size and fade weight separately
+  ([The light render path](#the-light-render-path)).
 - **Lit.** The 16 highest scores in a frame (**Design**; split screen
   shares the 16 between views). A light whose owner chain reaches the
   view's own unit (its flashlight, its weapon's flash) is placed first.
@@ -292,12 +315,20 @@ than a pixel there.
 
 ### The flashlight and the first-person pass
 
-The flashlight is an attachment light on the unit, a cone with a gel
-(**S** for which definitions; `h2 lights <map>` lists them). In E3 mode it
-is always among the lit, and it casts: the worst case of the mode, a
-shadowed cone over the whole screen. The first-person pass draws the lit
-set over the first-person parts as retail does with its recorded eight.
-The first-person model is not in any light's map.
+**R**. The Chief's `flashlight` marker carries both `flashlight_1p` and
+`flashlight_3p`. The Warthog attaches `warthog_headlights` at
+`headlights_light` and the Scorpion attaches `scorpion_headlight` at
+`headlight`. All four are frusta with bitmap gels and the no-shadow bit.
+The unsuffixed flashlight definition in two maps has no attachment.
+[Disc counts](notes/e3-lighting.md).
+
+**R**. The view test at `0x00031520` requires the local first-person
+owner for definition bit 5 (the first-person light) and excludes that
+owner for bit 6 (the third-person light). `0x0003e9c0` tests camera type
+and the root biped's player against the view user. **Design**. Reserve
+one lit and shadowed slot for the view's active flashlight. Drawing
+the lit set over first-person parts follows retail's recorded-light pass.
+The first-person model stays outside the shadow maps.
 
 ### Weapon fire, plasma and explosions
 
@@ -323,9 +354,12 @@ dynamic sun is not added over them. What that costs is target item 9, and
 a visible difference between a hard object shadow and the soft building
 shadow beside it.
 
-An object shadow that falls where the bake is already dark is the other
-half. Retail's strength term for object shadows is used as it is (**S**:
-it fades a shadow by the caster's lighting; slice L0 confirms).
+An object shadow can fall where the bake is already dark. **R**.
+The ordinary shadow's strength depends on the caster's lighting scalar
+and two fades. The sample producer can use a function of the caster's
+weighted colour or set the scalar to one (`0x000d3e92`, `0x000d4682`).
+The computation at `0x00032426` has no receiver-lightmap input. **Design**. Apply this strength to the tile shadow. A bright
+caster can still darken a receiver already in baked shade.
 
 Sharpening the baked shadows is research and not scheduled. The two
 routes are a static depth map of the level along the sun, used to steepen
@@ -343,7 +377,7 @@ slice 3 types lights and shadow maps; the E3 fields are added in slice L2.
 | Instances, model, node matrices, bounding sphere | `Instance`, `FrameScene::nodes` | Built |
 | The object's lighting record (direction, colours) | `Instance::lighting` | Built |
 | Materials per part and layer | `PartDraw::key`, the loaders' templates for layers 10 to 14 | Layer 3 built; the rest with FrameScene slice 3 |
-| Every candidate light: record frame, colours, intensity, bounds, definition shape and flags, gel, owner instance, the guest's choice and weight, constants for both shadow decisions | `FrameScene::lights` | Design |
+| Every candidate light: record frame, colours, intensity, bounds, effective volume shape and extent after placement overrides, definition flags, gel, owner instance and per-view eligibility, the guest's choice and weight, constants for both shadow decisions | `FrameScene::lights` | Design |
 | The guest's shadow lists: casters, receivers, projection, strength | `FrameScene::shadows` | Design (FrameScene slice 3) |
 | First-person parts | `View::first_person` | Design (FrameScene slice 3) |
 | Cluster parts with bounds | the renderer's loaded world (`native_render::world`, `cull`) | Built |
@@ -431,7 +465,7 @@ runs the game.
 | L2 | `frame_scene::Light` with every candidate and both sets of constants; extraction; the counts in `render.scene` | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
 | L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
 | L4 | Local-light shadows: atlas tiles for the guest's shadowed lights, the Sharp edge on layer 11 | Synthetic: a tile's shadow has the L1 edge. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, and `e3.tiles` lists one tile per shadowed light | GPU ms of `e3.tiles` and `e3.marks` at 1x and 4x; the first numbers for the budget |
-| L5 | Sun shadows from objects: tiles, receivers, self-shadowing, the tile cache | Synthetic: a box on a plane casts a hard shadow; an L-shaped caster shadows itself; faces turned away are unchanged; a still caster's tile is not redrawn; a moved one is. Game: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
+| L5 | Sun shadows from objects: tiles, receivers, self-shadowing, the tile cache | Synthetic: a box on a plane casts a hard shadow; an L-shaped caster shadows itself; a triangle with three nonpositive normal terms keeps its RGB, and mixed vertex terms interpolate; a still caster's tile is not redrawn; a moved one is. Game: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
 | L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass | Synthetic: 20 candidates draw the 16 highest in score order, the same every run. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
 | L7 | Shadows from cones the content flagged off, with the renderer's caster gather; four slots; the flashlight | Synthetic: a no-shadow cone casts in E3 and not in retail. Game: a lamp placement and the flashlight cast in the E3 capture | The flashlight frame: all of the mode's passes at 4x. This is the worst case the budget must hold |
 | L8 | Casters outside the view: extraction of instances near it | A caster behind the camera shadows the ground in view | sim-thread frame step, rise under 0.1 ms |
@@ -523,7 +557,7 @@ above suggests it.
 | Created by `0x000c0350` from the effect part switch (`0x0017ab2e` → `0x0017ac70`), either attached to an object and marker or free in the world; and by `0x000c0520` from a placement record. Both call the update `0x000c0c80` once. | call sites | R |
 | `+0x02` u16 flags: 1 live; 4 placed; `0x10` timed (definition `+0xb0` above zero); `0x20` copied from a placement bit. | `0x000c03b8`..`0x000c03f4`, `0x000c05cd`..`0x000c05ff` | R |
 | `+0x04` `ligh` datum; `+0x14` creation tick (from the game-time global at `0x00510c54`). | constructors; age in `0x000c0e5d` | R |
-| `+0x18` f32[3] and `+0x24` f32: a bounding sphere. The visible-light pass weights each light by radius over distance to the view. | `0x000319f3`..`0x00031a86` | R (centre/radius S from the formula) |
+| `+0x18` centre and `+0x24` radius form the sphere tested against the cluster clip. Projected radius supplies screen priority. Field `+0x100` supplies the separate starting weight. | `0x00132190` cluster walk, `0x000319f3` to `0x00031a86` | R |
 | `+0x4c`/`+0x50`/`+0x54`/`+0x56`: an object whose functions drive the light's intensity (`0x000bab40` into `+0xd0`). `+0x58` parent object, `+0x5c` marker; `+0x60`/`+0x6c`/`+0x78` frame relative to the marker. | `0x000c0d15`..`0x000c0dc4`, `0x000c048c`..`0x000c04e7` | R |
 | `+0x84` position, `+0xac` forward, `+0xb8` up, `+0x90` = position + forward. Attached lights are re-posed from the marker in the render pass itself (`0x00031d4b`..`0x00031dac`), not in the tick. | constructors, `0x00031d6f` | R |
 | `+0xcc` base scale; `+0xd0` intensity (fades `1 - shape(age / duration)` with definition `+0xb0` duration and `+0xb6` shape for timed lights). | `0x000c0e53`..`0x000c0ea3` | R |
@@ -543,19 +577,30 @@ equal to position plus forward) and refuses anything else.
 `0x00031c80` (`render_dynamic_lights`, called by the scene-pass function
 `0x0002bcd0` at `0x0002c03e`) does, per frame:
 
-1. `0x00031910` builds the visible-light list from the frame's candidate list
-   at `[0x00547f98]` (at most 128): per light the datum, a weight from the
-   bounding sphere, and four bytes, two of them definition flag bits 5 and 20.
-   `0x0004a7c0`/`0x0004ac30` then sort and trim it (arguments 3 and 0.01; S:
-   keep the strongest few).
+1. **R**. The view's cluster walk at `0x00132190` tests light spheres
+   against the cluster clip and stamps the accepted handles to avoid
+   duplicates. The view can also supply up to four unclustered player
+   lights. From the resulting handle list at `[0x00547f98]`,
+   `0x00031910` admits up to 128 eligible entries. Each carries the
+   light datum, root owner, projected radius (using clamped absolute view
+   depth), starting weight from light `+0x100` and four classification
+   bytes. `0x0004a7c0` merges into a 32-entry history per view.
+   `0x0004ac30` gives the local player's lights priority, handles
+   same-owner duplicates, and eases weights towards a target of three
+   with a fade increment of 0.01. Bit 20 exempts a light from fade-out.
+   The draw walks every surviving weight above threshold.
 2. For each light with weight above a threshold: re-pose attached lights,
    record up to eight per frame at `0x004c6b00` (stride `0x408`), decide
    **shadow casting** (`0x00031e02`): definition flag bit 3 clear, the global
-   at `0x004ba020` set, record `+0xf8` above zero, and a word returned by
-   `0x000c17f0` zero (S: a cluster or view test). Gather the objects it touches (`0x000c1d90`, `0x001320f0`,
+   at `0x004ba020` set, record `+0xf8` above zero, and the effective
+   light shape nonzero. **R**. `0x000c17f0` returns success in AL and
+   fills a caller-owned light volume. Its first word is the definition
+   shape with any placement override applied (`0x000c1930`, `0x000c1980`).
+   `0x000c1a80` builds its posed dimensions. A sphere (shape zero)
+   fails the test at `0x00031e25`. Gather the objects it touches (`0x000c1d90`, `0x001320f0`,
    `0x00031660`), then draw it with `0x00031170`.
 3. `0x00031170` (`render_light_passes`) computes per-light flags at
-   `0x004ba014` (bit 0 from a word in the caller's context, bit 1 when the colour
+   `0x004ba014` (bit 0 when the effective shape is a sphere, bit 1 when the colour
    at `0x00485950` is above a threshold, bit 2 shadow, bit 3 and bit 5 from
    further tests; bit 4 is cleared), then draws layers
    on the light's list (`0x004c1a60`): shadow generate (10) when bit 2,
@@ -581,10 +626,10 @@ map):
 | Bit | Engine use | Set on | Label |
 |---|---|---|---|
 | 3 | Set: no shadow (`0x00031e02`). This is the flag the MCC tools call "no stencil shadow". | 1,275 (321 can cast) | R; the tools name P (343), the match S |
-| 5 | With bit 18 clear, the frame is refreshed from the marker each frame (`0x00031d3a`); forces the shadow-apply layer (`0x000312d4`); copied to the visible list. | 98 | R; meaning S |
+| 5 | Requires a local first-person owner (`0x00031520`). With bit 18 clear, refreshes the frame from its marker (`0x00031d3a`). Forces shadow apply (`0x000312d4`) and is copied to the visible list. | 98 | R |
 | 7 | Parent fade ignored (`0x000c0fe7`). | 378 | R |
 | 18 | Suppresses the marker refresh with bit 5. | 27 | R |
-| 20 | Copied to the visible list (`0x00031ad5`); consumer not traced. | 1 | R |
+| 20 | Copied to the visible list (`0x00031ad5`), exempts the light from ordinary duplicate suppression and fade-out in the ranking pass. | 1 | R |
 | 22 | An extra per-light call (`0x00031c20`) and a wider object gather. | 217 | R |
 
 Most lights have shadows switched off by bit 3, which agrees with the
@@ -645,15 +690,10 @@ sky, transparents, fog and the rest. The view can tag every draw with
   anything; it is zero on the study tags. These are
   in `0x00031170`'s callees (`0x0004a1e0` takes 1024.0 and the light, S: the
   scissor) and the engine vector inputs ([shader-instances.md](../formats/shader-instances.md)).
-- The candidate list at `0x00547f98` and the cluster test (`0x000c17f0`).
 - Engine-driven render states (`0x00467020`).
 
 ## Not verified
 
-- Every **S** under "How it works": where retail takes an object shadow's
-  direction and strength, how many templates have a depth-map receiver,
-  what the receiver programs' vertex gate is, which definitions are the
-  flashlight's. Slice L0 reads them; none needs a game run.
 - Every number under "Budget". Only a frame on the lab laptop can give
   them.
 - That retail's layer-11 receiver pass gives an acceptable terminator when
