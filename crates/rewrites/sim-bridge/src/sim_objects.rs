@@ -113,7 +113,7 @@ mod tests {
         for body in objects::BODIES {
             let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
-            assert_eq!(implement.resume_sites, body.sites);
+            assert_eq!(implement.continuation_sites().0, body.sites);
         }
         // The bodies hold no state: no snapshot section.
         assert!(plan.save_sections().is_empty());
@@ -129,7 +129,7 @@ mod tests {
         for body in &TEST_BODIES {
             let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, OBJECTS);
-            assert_eq!(implement.resume_sites, body.sites);
+            assert_eq!(implement.continuation_sites().0, body.sites);
         }
     }
 

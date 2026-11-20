@@ -25,6 +25,11 @@ _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32
 #ifndef H2_ACCOUNTING
 #define H2_ACCOUNTING 0
 #endif
+/* Preempt word bit 16, IRQ_QUEUED (runtime preempt.rs): set while the
+ * interrupt queue is non-empty, not a wake reason. Polls mask it out; the
+ * direct-call quiet test reads the whole word (h2gen.h, module feature
+ * H2GEN_FEATURE_ENTRY_TABLE). */
+#define H2_IRQ_QUEUED 16u
 /* With access accounting (h2gen.h) the handler counts every attempted access
  * itself, fast or slow, so the fast path charges nothing and the slow path
  * takes the uncharged accessors: nothing is charged twice. */
@@ -238,7 +243,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     if (!iterations) iterations = 1u; /* the original loop polls after a trip */
     if (n > iterations) n = (uint32_t)iterations;
 #if H2_ACCOUNTING
-    if (f->preempt && __atomic_load_n(f->preempt, __ATOMIC_RELAXED)) n = 1u;
+    if (f->preempt && (__atomic_load_n(f->preempt, __ATOMIC_RELAXED) & ~H2_IRQ_QUEUED)) n = 1u;
 #endif
     H2MemoryShared *m = f->memory;
     uint32_t unlocked = 0;

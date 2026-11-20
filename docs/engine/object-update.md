@@ -28,17 +28,16 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
 - `engine::sim_objects::drive` is the one local dispatcher: a call or
   return between two enabled bodies stays in Rust; anything else returns a
   `TransferAbi` to the runtime.
-- `hooks::sim_objects` registers each body's entry and sites under
+- `sim_bridge::sim_objects` registers each body's entry and sites under
   `impl.sim.native.objects`. Where the float environment check fails, the
   original runs from the same frame. A per-function port at a point a body
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
-  switch is on (`hooks::sim_objects::owns`). The ports the slice 1 bodies
-  replaced (the two walks and the two per-object updates) and change
-  colours are in `sim_physics::ORACLES`: never installed, kept as test
-  oracles. The function value, import and base import ports
-  (`sim_native::object`, `sim_native::object_base`) are no longer
-  installed either; `tests/sim_native_differential.rs` keeps them as
-  oracles.
+  switch is on (`sim_bridge::sim_objects::owns`). The ports the slice 1
+  bodies replaced (the two walks and the two per-object updates) and
+  change colours are in `sim_physics::ORACLES`: never installed, kept as
+  test oracles. The function value, import and base import ports
+  (`sim_native::object`, `sim_native::object_base`) are not installed
+  either; `tests/sim_native_differential.rs` keeps them as oracles.
 
 ## Entries
 

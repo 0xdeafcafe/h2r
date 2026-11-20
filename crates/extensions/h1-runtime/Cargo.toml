@@ -7,15 +7,13 @@ license.workspace = true
 
 [package.metadata.h2]
 status = "in progress"
+doc = ["halo1/README.md"]
 
 [dependencies]
 hooks = { path = "../../hooking/hooks" }
 runtime.workspace = true
 tags.workspace = true
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
-timeline = { path = "../../runtime/timeline" }
-
-[dev-dependencies]
-# tests/install.rs and tests/plan.rs time the render stages (render_timing).
-render-bridge = { path = "../../rewrites/render-bridge" }
-runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+# The scope-zoom profile reads the native screen effect shares
+# (render_bridge::scope_zoom_hud).
+render-bridge = { path = "../../rewrites/render-bridge", default-features = false }

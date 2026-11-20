@@ -35,7 +35,6 @@ pub mod native_water;
 pub mod native_world;
 #[cfg(feature = "native-render")]
 pub mod native_world_layers;
-pub mod occlusion;
 pub mod pipeline_render;
 pub mod render_census;
 #[cfg(feature = "native-render")]

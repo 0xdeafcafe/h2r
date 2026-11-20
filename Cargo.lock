@@ -63,11 +63,13 @@ dependencies = [
  "live-telemetry",
  "map",
  "png",
+ "render-bridge",
  "runtime",
  "serde",
  "serde_json",
  "settings",
- "sim",
+ "sim-bench",
+ "sim-bridge",
  "sim-state",
  "snapshot",
  "tags",
@@ -276,25 +278,6 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "png",
-]
-
-[[package]]
-name = "apple-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app",
- "audio",
- "boot",
- "cloud-saves",
- "d3d",
- "input",
- "kernel",
- "live-hle",
- "live-proto",
- "settings",
- "vfs",
- "xiso",
 ]
 
 [[package]]
@@ -655,6 +638,7 @@ dependencies = [
  "frame-scene",
  "gfx",
  "h1-contract",
+ "h1-runtime",
  "hooks",
  "hot-render",
  "hot-tags",
@@ -676,6 +660,7 @@ dependencies = [
  "native-render",
  "perf",
  "png",
+ "render-bridge",
  "runtime",
  "runtime-test-probe",
  "rustc-hash 2.1.3",
@@ -683,7 +668,8 @@ dependencies = [
  "serde_json",
  "settings",
  "shaders",
- "sim",
+ "sim-bench",
+ "sim-bridge",
  "snapshot",
  "tags",
  "timeline",
@@ -1012,7 +998,7 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
- "sim",
+ "sim-bench",
  "studio-proto",
  "symbols",
  "tags",
@@ -1916,7 +1902,6 @@ dependencies = [
  "lifted",
  "map",
  "mopp",
- "paste",
  "runtime",
  "sim-anim",
  "sim-collision",
@@ -1964,13 +1949,6 @@ checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
  "parking",
  "pin-project-lite",
-]
-
-[[package]]
-name = "fastmem-proto"
-version = "0.1.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -2456,6 +2434,10 @@ dependencies = [
 [[package]]
 name = "guest-layout"
 version = "0.1.0"
+dependencies = [
+ "paste",
+ "runtime",
+]
 
 [[package]]
 name = "h1-assets"
@@ -2477,6 +2459,17 @@ name = "h1-contract"
 version = "0.1.0"
 dependencies = [
  "map",
+]
+
+[[package]]
+name = "h1-runtime"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "hooks",
+ "render-bridge",
+ "runtime",
+ "tags",
 ]
 
 [[package]]
@@ -2570,6 +2563,25 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "h2host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app",
+ "audio",
+ "boot",
+ "cloud-saves",
+ "d3d",
+ "input",
+ "kernel",
+ "live-hle",
+ "live-proto",
+ "settings",
+ "vfs",
+ "xiso",
 ]
 
 [[package]]
@@ -2695,13 +2707,9 @@ name = "hooks"
 version = "0.1.0"
 dependencies = [
  "engine",
- "frame-scene",
- "lifted",
- "native-render",
+ "render-bridge",
  "runtime",
  "runtime-test-probe",
- "scene-extract",
- "tags",
  "timeline",
 ]
 
@@ -4537,13 +4545,10 @@ dependencies = [
 name = "oracle"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "asf",
  "iced-x86",
  "serde",
  "serde_json",
  "unicorn-engine",
- "wma",
 ]
 
 [[package]]
@@ -5122,6 +5127,21 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "render-bridge"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "frame-scene",
+ "hooks",
+ "native-render",
+ "runtime",
+ "runtime-test-probe",
+ "scene-extract",
+ "tags",
+ "timeline",
+]
 
 [[package]]
 name = "renderdoc-sys"
@@ -5885,7 +5905,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim"
+name = "sim-anim"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-bench"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -5894,10 +5921,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-anim"
+name = "sim-bridge"
 version = "0.1.0"
 dependencies = [
- "sim-core",
+ "engine",
+ "hooks",
+ "lifted",
+ "runtime",
 ]
 
 [[package]]
@@ -7113,8 +7143,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app",
- "apple-host",
  "d3d",
+ "h2host",
  "png",
  "sha2 0.10.9",
  "vfs",
@@ -8040,10 +8070,12 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "wma"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "asf",
  "sha2 0.10.9",
  "snapshot",
  "thiserror 2.0.21",
+ "unicorn-engine",
  "xbe",
 ]
 

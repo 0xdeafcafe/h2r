@@ -158,6 +158,7 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Per-context: continuations | `ExecCtx::continuations` | Quiesce | Rust closures. Rebuildable ones are saved: the whole pool's slot generations and reuse order too, since the tokens are on the guest stack. |
 | Per-context: slice | `ExecCtx::slice` | Save  | Budget counters. Likely re-armed per slice, so empty at a boundary; check. |
 | Per-context: direct-call block, resolve cache, fast memory view | `direct.rs`, `ExecCtx::resolved`, `fast_memory` | Rebuild | Caches keyed by dispatch generation. A load makes fresh contexts. |
+| Entry table (`live`) | `Runtime::live` | Rebuild | Follows overrides and `Guest::code_id`, which `adopt` moves, so a restore re-reads every entry's execute bit. |
 | Per-context: shadow call stack, events | `frames.rs`, `events.rs` | Ignore | Diagnostics; "never affects control flow". |
 
 ### kernel
@@ -652,7 +653,7 @@ Boot registers the render features in every run, with their
 `impl.render.*` switches off by default. Each declares its policy before
 any early return for a switch that is off, so a run with all of them off
 is not `Unaudited` and `state.save` is not refused. The other `native-*`
-features (`crates/hooking/hooks/src/native_*.rs`) are `Stateless`.
+features (`crates/rewrites/render-bridge/src/native_*.rs`) are `Stateless`.
 
 None of them changes simulation state. A save runs between slices, with
 the D3D render thread drained and the pipelined render not in flight

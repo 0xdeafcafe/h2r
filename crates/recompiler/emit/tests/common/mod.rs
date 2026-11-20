@@ -42,9 +42,15 @@ pub fn build(owners: &[Owner], header: &Path, name: &str) -> Generated {
 /// [`build`] with the given code generation choices.
 #[allow(dead_code)]
 pub fn build_with(owners: &[Owner], header: &Path, name: &str, codegen: emit::Codegen) -> Generated {
+    build_split(owners, header, name, codegen, emit::c::Split::DEFAULT)
+}
+
+/// [`build_with`], cutting handlers into parts by `split`.
+#[allow(dead_code)]
+pub fn build_split(owners: &[Owner], header: &Path, name: &str, codegen: emit::Codegen, split: emit::c::Split) -> Generated {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let src = dir.join("src");
-    emit::write_module_with(owners, &src, codegen).unwrap();
+    emit::write_module_split(owners, &src, codegen, split).unwrap();
     compile::install_header(&src, header).unwrap();
     let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let b = compile::build(&src, &dir, Arch::host(), jobs).unwrap_or_else(|e| panic!("{e}"));

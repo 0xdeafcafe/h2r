@@ -262,7 +262,7 @@ def host_class(frames):
         return "audio clock advance"
     if "sync_input" in j or "service_input" in j or "InputManager" in j:
         return "XAPI input sync"
-    if "sim_glue" in j or "sim::" in j or "telemetry" in j:
+    if "sim_glue" in j or "sim::" in j or "sim_bench::" in j or "telemetry" in j:
         return "sim metrics and telemetry"
     if "file_call" in j or "vfs::" in j:
         return "kernel file I/O"
@@ -270,7 +270,7 @@ def host_class(frames):
         return "DirectSound HLE calls"
     if "xapi::" in j or "d3d::" in j:
         return "other HLE calls"
-    if "hooks::" in j:
+    if any(c in j for c in ("hooks::", "sim_bridge::", "render_bridge::", "h1_runtime::")):
         return "other feature hooks"
     if "kernel::Kernel" in j or "kernel::Core" in j or "install_inner" in j:
         return "kernel export calls"

@@ -1,0 +1,75 @@
+# The default hot list for optimisation tiers (crates/recompiler/emit/src/compile/tiers.rs).
+# Guest function entries of the retail image, from the game-thread profiles
+# recorded in docs/perf/sim-budget.md (the guest function table, its chain
+# roots, animation evaluators and codecs) and docs/perf/notes/menu-budget.md
+# and gameplay-budget.md (the inclusive guest leaders). Addresses only: no
+# bytes of the image. A source holding the code of any of these compiles at
+# H2_OPT; the rest at the cold level.
+#
+# To replace it with a full profile, record one (docs/perf/profiling.md) and
+# keep its guest frames, one address per line, for example
+#   rg -o 'guest 0x[0-9a-f]{8}' profile.folded | sort -u
+# or point H2_HOT at the profile's folded stacks for one build.
+# Comments must not hold an address: every hex literal in this file counts.
+0x00016b90
+0x00030bf0
+0x000682e0
+0x000b6f10
+0x000b7060
+0x000b89b0
+0x000b8d30
+0x000bab40
+0x000bb050
+0x000bcc20
+0x000bd090
+0x000bdc40
+0x000c0c80
+0x000c7840
+0x00104150
+0x00108d90
+0x00112070
+0x0011e5e0
+0x001236f0
+0x00125b40
+0x00128ca0
+0x00129380
+0x00137fe0
+0x0013b390
+0x001421f0
+0x00142a60
+0x0014a280
+0x0014a370
+0x00159ac0
+0x00166d75
+0x0016760c
+0x001697c0
+0x00171d90
+0x00173ba0
+0x001c3d30
+0x001dd9d0
+0x001de630
+0x001de6d0
+0x002195f0
+0x00221a70
+0x00224550
+0x00246cd0
+0x00249170
+0x002798a0
+0x0027ace0
+0x0027d420
+0x00280ac0
+0x00281370
+0x002818e0
+0x0028c470
+0x0028c530
+0x0028c790
+0x0028c960
+0x0028c9e0
+0x0028cb70
+0x002fa2f0
+0x002ff8b0
+0x003009e0
+0x003048a0
+0x0031c940
+0x00327f84
+0x00372d6c

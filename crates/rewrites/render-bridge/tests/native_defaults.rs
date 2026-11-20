@@ -150,19 +150,28 @@ fn the_native_master_switch_removes_every_native_hook() {
     );
 }
 
-/// The old per-stage keys are gone: naming one changes nothing, so no
-/// stage can be turned on alone with the master off, or off alone with
-/// it on.
+/// The old per-stage keys are gone: `H2_FEATURES` refuses them, and set
+/// directly they change nothing, so no stage can be turned on alone with
+/// the master off, or off alone with it on.
 #[test]
 fn the_old_stage_keys_reach_nothing() {
     for spec in [
-        "impl.render.native=off,impl.render.native_world=on,impl.render.native_lights=on",
-        "impl.render.native_world=off,impl.render.native_ui=off,impl.render.native_lights_split=on",
+        "impl.render.native_world=on",
+        "impl.render.native_ui=off",
+        "impl.render.native_lights_split=on",
     ] {
-        let switches = Switches::parse(spec).unwrap();
-        let master = switches.feature("impl.render.native", true);
+        assert!(Switches::parse(spec).is_err(), "{spec} parses");
+    }
+    for (master, stage_keys) in [
+        (false, [("impl.render.native_world", true), ("impl.render.native_lights", true)]),
+        (true, [("impl.render.native_world", false), ("impl.render.native_ui", false)]),
+    ] {
+        let mut switches = Switches::defaults().with("impl.render.native", master);
+        for (key, on) in stage_keys {
+            switches = switches.with(key, on);
+        }
         for stage in stages() {
-            assert_eq!((stage.on)(&switches), master, "{spec}: {}", stage.name);
+            assert_eq!((stage.on)(&switches), master, "{stage_keys:?}: {}", stage.name);
         }
     }
 }
