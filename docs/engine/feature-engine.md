@@ -1068,7 +1068,7 @@ pub static FOV: Def = Def {
 
 impl Feature for Fov {
     fn manifest(&self) -> Manifest { Manifest::new("fov", "Field of view", Sim::View)
-        .legacy_off("H2_NO_FOV_ROW").doc("docs/game/settings-menu.md") }
+        .doc("docs/game/settings-menu.md") }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let fov: Setting<u32> = b.setting(&FOV);
         b.camera().modifier(move |cam: &mut FirstPerson, _| {

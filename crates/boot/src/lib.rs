@@ -1392,7 +1392,7 @@ fn run_configured(
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::from_env())
+            video_screen::model(store, video_screen::Switches::PLATFORM)
                 .map_err(anyhow::Error::msg)?,
         )),
         None => None,
