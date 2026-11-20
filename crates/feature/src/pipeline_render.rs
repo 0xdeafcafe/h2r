@@ -1,33 +1,16 @@
-//! `pipeline-render`: the render front-end one frame behind the simulation,
-//! on a second host thread (docs/graphics/pipelined-render.md, "The
-//! prototype"). Enable with `impl.render.pipelined_frame=on`.
+//! Run the end of a world frame on a second executor while simulation
+//! advances. Enable with `impl.render.pipelined_frame=on`.
 //!
-//! At `render_frame_and_present` (`0x00223240`) on the game thread:
+//! The game thread joins the previous frame at the next render or at a
+//! device dependency. It runs every view up to [`Addrs::draw_boundary`]
+//! against live memory, including culling, RNG draws and resource gets.
+//! The worker inherits the nested guest stack in a COW snapshot and
+//! returns through the original frame-end and present code. The frame
+//! wait runs once on the game thread. See docs/graphics/pipelined-render.md.
 //!
-//! 1. **Join** the render launched at the previous entry, if any: wait for
-//!    the render thread, then hand its writes back to live RAM (the
-//!    [`Addrs`] policy: the render stack dropped, the visit marks kept
-//!    render-private, the present and render-frame counters by delta, the
-//!    host's vblank words left alone, every other changed byte merged).
-//!    The render's guest accesses are charged to the game thread's clock.
-//! 2. If the render stopped at a call the render thread may not make (a
-//!    kernel call, an HLE override nobody audited), it is a **fallback**:
-//!    every write is handed back, the stack included, and the game thread
-//!    makes that call itself and runs the rest of the render serially,
-//!    from where it stopped, before carrying on. Draws already made are
-//!    not made again. Fallbacks are counted by the call's name.
-//! 3. **Decide**: frames outside gameplay (the world path of `0x00223240`
-//!    not taken, resource-cache countdowns running, a quiesce request) run
-//!    the original serially.
-//! 4. Otherwise run the **frame wait** `0x0012b2e0` here, **snapshot** guest
-//!    RAM, apply the launch-time remedies to live RAM (the present counter
-//!    ahead by the predicted present, the one-shot flag `0x004e6098`
-//!    cleared), **launch** `0x00223240` on the render thread against the
-//!    snapshot (its frame wait a no-op there), and return to the game.
-//!
-//! The sim's own D3D calls on the game thread join the render first, so the
-//! device sees them after the render's. Snapshots join first: the policy
-//! reports a render in flight and asks for the next frame to be serial.
+//! Serial guards cover menu/loading frames, outstanding I/O, quiescence
+//! and snapshot coverage. A refused worker call resumes from its current
+//! guest CPU and stack on the game thread.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -219,16 +202,26 @@ pub struct Addrs {
     /// Record caches both sides allocate in ([`SharedCache`]): a game-thread
     /// call that would allocate joins the render first.
     pub shared_caches: &'static [SharedCache],
-    /// Guest functions the game thread joins the render in flight before
-    /// entering (`sim_joins`): the sim code that reads state the render
-    /// writes. Serially, tick `k + 1` runs after render `k` and sees what it
-    /// wrote; pipelined, the render's writes reach live RAM only at the
-    /// join, and the hand-back keeps the sim's word where both wrote. So
-    /// the sim must not read such state before the join, and these entries
-    /// are where it starts to (the game tick, until the subsystems the
-    /// render writes are ported: docs/graphics/pipelined-render.md, "Two
-    /// writers").
-    pub sim_joins: &'static [u32],
+    /// Last render-only phase. The original reaches this call after all
+    /// game and alternate views, including HUD and UI, have issued their
+    /// particle visits and animation requests. A synthetic renderer with
+    /// no preparation can start at frame entry.
+    pub draw_boundary: Option<DrawBoundary>,
+}
+
+/// The call to the draw tail, identified by its callee and caller's return PC.
+#[derive(Clone, Copy, Debug)]
+pub struct DrawBoundary {
+    pub entry: u32,
+    pub return_pc: u32,
+    /// Position of this direct call below the prepared frame's stack top.
+    /// An identically named call in a nested view cannot seal the frame.
+    pub depth: u32,
+    /// The view context cleared by render_views' epilogue, also needed
+    /// on live RAM while the worker finishes that epilogue on its view.
+    pub view_context: Option<u32>,
+    /// A debug bracket open across this call must close on the same thread.
+    pub debug_flag_from_esp: Option<u32>,
 }
 
 /// A record cache the render and the sim both allocate in, through one
@@ -384,30 +377,17 @@ impl Addrs {
         // which the render reaches), +4 the effects seed (the render's
         // `0x00027be0` and the particles' `0x00174089`).
         random: Some((0x004e_7408, &[0, 4])),
-        // The object render-state cache (`0x0003ddd0`): the render takes a
-        // record per drawn object (its lights, its lighting, stamped with the
-        // frame counter); the effect updates in the tick (`0x001794e0`,
-        // `0x0017b5d0`) take one for an effect's object to read its
-        // lighting. Objects at `[0x004e0300]` (12-byte records, the body at
-        // +8), the record handle at body +0xcc, the cache at `[0x00509434]`
-        // (0x100-byte records, the owner at +4).
-        shared_caches: &[SharedCache {
-            entry: 0x0003_ddd0,
-            objects: 0x004e_0300,
-            object_stride: 12,
-            body_at: 8,
-            field: 0xcc,
-            cache: 0x0050_9434,
-            record_len: 0x100,
-            owner: 4,
-        }],
-        // `game_tick` (`0x00137fe0`, the `GAME_TICK` point): its updates
-        // read what the render writes in place (the particle systems
-        // `0x00174420` updates as it draws them, the animation cache's use
-        // stamps from `animation_resource_get` `0x001237e0`, and the
-        // render's object and effect state), so the first tick after a
-        // launch joins first.
-        sim_joins: &[0x0013_7fe0],
+        // Object lighting records are allocated during the live view pass.
+        shared_caches: &[],
+        draw_boundary: Some(DrawBoundary {
+            entry: engine::render_loop::views::END_A,
+            // render_views has exhausted its per-view loop.
+            return_pc: 0x0002_b6f7,
+            // Frame -> render_game_views -> render_views -> END_A.
+            depth: 0x5c,
+            view_context: Some(0x004b_a030),
+            debug_flag_from_esp: Some(0x13),
+        }),
     };
 }
 
@@ -487,8 +467,7 @@ pub struct Stats {
     /// Joins a game-thread call that would allocate in a
     /// [`SharedCache`] made.
     pub cache_joins: u64,
-    /// Joins a game-thread call of an [`Addrs::sim_joins`] entry made (the
-    /// render still in flight).
+    /// Historical telemetry field. There is no tick-entry join.
     pub sim_joins: u64,
     /// D3D calls from another guest thread while a render was in flight
     /// (not ordered).
@@ -687,10 +666,22 @@ struct Done {
 struct Job {
     exec: Box<SecondExecutor>,
     cpu: CpuAbi,
-    /// `Some(entry)`: call it; `None`: carry on from `cpu.eip` after a
-    /// serviced call.
-    entry: Option<u32>,
+    start: JobStart,
     reply: SyncSender<Done>,
+}
+
+enum JobStart {
+    Frame(u32),
+    Prepared,
+    Resume,
+}
+
+/// The live render is running on the dedicated render stack. The outer
+/// token unwinds to the game caller. Only guest frames may cross the cut.
+struct Preparing {
+    token: u32,
+    continuations: usize,
+    tail: Option<CpuAbi>,
 }
 
 /// A render launched and not yet joined.
@@ -714,6 +705,7 @@ struct Inner {
     exec: Option<Box<SecondExecutor>>,
     setup: Option<Setup>,
     flight: Option<Flight>,
+    preparing: Option<Preparing>,
     stats: Stats,
     coverage: snapshot::Coverage,
     printed: Stats,
@@ -902,6 +894,7 @@ impl PipelineRender {
                     exec: None,
                     setup: None,
                     flight: None,
+                    preparing: None,
                     stats: Stats::default(),
                     coverage: snapshot::Coverage::default(),
                     printed: Stats::default(),
@@ -1065,8 +1058,7 @@ impl PipelineRender {
 
 impl Feature for PipelineRender {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Pipelined render front-end (prototype)")
-            .doc("docs/graphics/pipelined-render.md")
+        Manifest::new(ID, "Pipelined frame-end rendering").doc("docs/graphics/pipelined-render.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -1131,6 +1123,14 @@ fn frame(
     ctx: &mut ExecCtx,
     addr: u32,
 ) -> Result<TransferAbi, GuestFault> {
+    let nested = {
+        let inner = me.lock();
+        (inner.preparing.is_some() || me.resuming.load(Ordering::Acquire))
+            .then(|| Arc::clone(&inner.setup.as_ref().expect("active frame").original))
+    };
+    if let Some(original) = nested {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
     me.game_thread.store(ctx.thread_id, Ordering::Relaxed);
     if let Err(e) = setup(me, ctx, addr) {
         if !me.setup_failed.swap(true, Ordering::Relaxed) {
@@ -1286,11 +1286,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .iter()
         .map(|c| rt.resolve_original(c.entry))
         .collect();
-    let generated_sim_joins: Vec<_> = a
-        .sim_joins
-        .iter()
-        .map(|&e| rt.resolve_original(e))
-        .collect();
+    let boundary = a.draw_boundary.map(|b| (b, rt.resolve_original(b.entry)));
     rt.edit_dispatch(|d| {
         // A pool wait on the game thread while a render that has used the
         // pool is in flight joins it first: the render's deferred pool
@@ -1425,33 +1421,30 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 )
             });
         }
-        // The sim code that reads what the render writes: joins first, so
-        // it reads the render's words as serially (`Addrs::sim_joins`).
-        for (&entry, generated) in a.sim_joins.iter().zip(generated_sim_joins) {
-            let Some(prev) = d.override_handler(entry).or(generated) else {
-                continue;
-            };
-            let name = format!(
-                "{} (pipeline: reads the render's state, joins first)",
-                d.override_name(entry).unwrap_or("sim")
-            );
+        if let Some((b, generated)) = boundary
+            && let Some(original) = d.override_handler(b.entry).or(generated)
+        {
             let me = Arc::clone(me);
-            let prev = Arc::new(prev);
-            d.register_override(entry, name, move |cpu, ctx, sel| {
-                if !me.in_flight.load(Ordering::Acquire)
-                    || ctx.thread_id != me.game_thread.load(Ordering::Relaxed)
-                {
-                    return Ok(prev.invoke(cpu, ctx, sel));
-                }
-                me.lock().stats.sim_joins += 1;
-                let prev = Arc::clone(&prev);
-                join_then(
-                    &me,
-                    cpu,
-                    ctx,
-                    Box::new(move |cpu, ctx| Ok(prev.invoke(cpu, ctx, sel))),
-                )
-            });
+            d.register_override(
+                b.entry,
+                "pipeline: prepared draw tail",
+                move |cpu, ctx, sel| {
+                    let at_boundary = ctx.thread_id == me.game_thread.load(Ordering::Relaxed)
+                        && cpu.esp.checked_add(b.depth)
+                            == Some(me.stack_top.load(Ordering::Relaxed))
+                        && {
+                            let m = ctx.memory();
+                            m.u32(cpu.esp)? == b.return_pc
+                                && b.debug_flag_from_esp.is_none_or(|offset| {
+                                    m.u8(cpu.esp.wrapping_add(offset)).ok() == Some(0)
+                                })
+                        };
+                    if at_boundary && let Some(ret) = prepared_tail(&me, cpu, ctx, b.entry) {
+                        return Ok(ret);
+                    }
+                    Ok(original.invoke(cpu, ctx, sel))
+                },
+            );
         }
         if let Some(prev) = d.override_handler(a.frame_wait) {
             let name = format!(
@@ -1507,9 +1500,10 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                     snapshot::arm(&mut job.exec.runtime().memory());
                 }
                 let started = Instant::now();
-                let result = match job.entry {
-                    Some(entry) => job.exec.call(&mut job.cpu, entry, &[]),
-                    None => job.exec.resume(&mut job.cpu),
+                let result = match job.start {
+                    JobStart::Frame(entry) => job.exec.call(&mut job.cpu, entry, &[]),
+                    JobStart::Prepared => job.exec.enter(&mut job.cpu),
+                    JobStart::Resume => job.exec.resume(&mut job.cpu),
                 };
                 let stopped = Instant::now();
                 me_t.lock().stopped = Some(stopped);
@@ -1668,6 +1662,15 @@ fn settle(
         .as_ref()
         .map(|s| s.stack_pages.clone())
         .unwrap_or_default();
+    let fallback_context = if matches!(&result, Err(ExecutorError::Refused(_))) {
+        me.addrs
+            .draw_boundary
+            .and_then(|b| b.view_context)
+            .map(|va| exec.runtime().memory().u32(va).map(|value| (va, value)))
+            .transpose()?
+    } else {
+        None
+    };
     let outcome = match result {
         Ok(out) => {
             inner.stats.completed += 1;
@@ -1761,7 +1764,16 @@ fn settle(
     // stack exactly. A byte merge against the snapshot is wrong there once
     // a serviced call has copied the stack to live RAM (a return address
     // equal to the snapshot's would keep live RAM's stale bytes).
+    let mut restore_context = None;
     if let Some(Ok(at)) = &outcome {
+        if let Some((va, render_context)) = fallback_context {
+            let mut live = rt.memory();
+            let saved = live.u32(va)?;
+            // hand_back excluded the epilogue's clear. At a refusal the
+            // callee may still need the pre-clear context from the view.
+            live.set_u32(va, render_context)?;
+            restore_context = Some((va, saved));
+        }
         let top = me.stack_top.load(Ordering::Relaxed);
         copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
     }
@@ -1770,7 +1782,18 @@ fn settle(
     drop(inner);
     match outcome {
         None => k(cpu, ctx),
-        Some(Ok(at)) => resume(me, cpu, ctx, at, k),
+        Some(Ok(at)) => resume(
+            me,
+            cpu,
+            ctx,
+            at,
+            Box::new(move |cpu, ctx| {
+                if let Some((va, value)) = restore_context {
+                    ctx.memory().set_u32(va, value)?;
+                }
+                k(cpu, ctx)
+            }),
+        ),
         Some(Err(detail)) => Ok(TransferAbi::fault(ctx.emit(Event::Unsupported {
             pc: cpu.eip,
             mnemonic: "pipeline".into(),
@@ -1826,6 +1849,9 @@ impl LiveSync {
         skip.extend(pieces(&g, (a.present_counter, a.present_counter + 8)));
         skip.extend(pieces(&g, (a.frame_counter, a.frame_counter + 4)));
         skip.extend(pieces(&g, (a.launch_clear, a.launch_clear + 1)));
+        if let Some(va) = a.draw_boundary.and_then(|b| b.view_context) {
+            skip.extend(pieces(&g, (va, va + 4)));
+        }
         for va in random_words(a, &g) {
             skip.extend(pieces(&g, (va, va + 4)));
         }
@@ -2152,7 +2178,7 @@ fn carry_on(
         j.send(Job {
             exec,
             cpu: r,
-            entry: None,
+            start: JobStart::Resume,
             reply: tx,
         })
         .is_ok()
@@ -2306,6 +2332,9 @@ fn hand_back(
             ex.extend(pieces(&g, *r));
         }
         ex.extend(pieces(&g, (a.launch_clear, a.launch_clear + 1)));
+        if let Some(va) = a.draw_boundary.and_then(|b| b.view_context) {
+            ex.extend(pieces(&g, (va, va + 4)));
+        }
         if !fallback {
             for r in a.mark_bytes {
                 ex.extend(pieces(&g, *r));
@@ -2435,7 +2464,7 @@ fn hand_back(
     // The render's random steps on top of the sim's: no draw replayed, and
     // the steps add up to the serial run's.
     for (va, _, view, base) in seeds {
-        if view == base {
+        if a.draw_boundary.is_some() || view == base {
             continue;
         }
         let Ok(live) = g.u32(va) else { continue };
@@ -2470,6 +2499,20 @@ fn hand_back(
     }
 }
 
+fn coverage_reason(me: &Shared, guest: &Guest) -> Option<Serial> {
+    match me.lock().coverage.check(guest) {
+        Err(snapshot::Gap::Mapping(page)) => {
+            eprintln!("pipeline: serial snapshot_mapping page={page:#010x}");
+            Some(Serial::SnapshotMapping)
+        }
+        Err(snapshot::Gap::Trace) => {
+            eprintln!("pipeline: serial snapshot_trace (access log overflow)");
+            Some(Serial::SnapshotTrace)
+        }
+        Ok(()) => None,
+    }
+}
+
 /// After the join: serial, or frame wait, snapshot and launch.
 fn decide(
     me: &Arc<Shared>,
@@ -2484,19 +2527,7 @@ fn decide(
         serial_reason(&me.addrs, &rt.memory())
     };
     let reason = guard(me, reason, &rt.memory());
-    let reason = reason.or_else(|| {
-        match me.lock().coverage.check(&rt.memory()) {
-            Err(snapshot::Gap::Mapping(page)) => {
-                eprintln!("pipeline: serial snapshot_mapping page={page:#010x}");
-                Some(Serial::SnapshotMapping)
-            }
-            Err(snapshot::Gap::Trace) => {
-                eprintln!("pipeline: serial snapshot_trace (access log overflow)");
-                Some(Serial::SnapshotTrace)
-            }
-            Ok(()) => None,
-        }
-    });
+    let reason = reason.or_else(|| coverage_reason(me, &rt.memory()));
     watch_now(me, &rt, "the game thread ran (at a frame)");
     if me.print {
         // A line at each switch between serial and pipelined frames, so the
@@ -2527,7 +2558,96 @@ fn decide(
         let original = original.expect("set up before the first decision");
         return Ok(original.invoke(cpu, ctx, addr));
     }
+    if me.addrs.draw_boundary.is_some() {
+        return prepare_frame(me, cpu, ctx, addr);
+    }
+    wait_and_launch(me, cpu, ctx, addr, None)
+}
+
+/// Run the actual view traversal in order, on live memory. The only
+/// difference in the render stack is its outer return token. This stack
+/// stays at the same guest addresses across the handoff, including any
+/// pointers to locals carried through registers or guest memory.
+fn prepare_frame(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    addr: u32,
+) -> Result<TransferAbi, GuestFault> {
+    let game_cpu = *cpu;
+    let rt = Arc::clone(ctx.runtime());
+    let original = Arc::clone(&me.lock().setup.as_ref().expect("set up").original);
+    let top = me.stack_top.load(Ordering::Relaxed);
+    cpu.esp = top;
+    let me2 = Arc::clone(me);
+    let call = ctx.call_guest_named(
+        cpu,
+        &mut rt.memory(),
+        addr,
+        "pipeline: serial frame preparation",
+        move |cpu, ctx| {
+            // Keep the dedicated stack reserved if the frame wait yields.
+            let tail = me2
+                .lock()
+                .preparing
+                .as_ref()
+                .expect("started frame preparation")
+                .tail;
+            if let Some(tail) = tail {
+                *cpu = game_cpu;
+                wait_and_launch(&me2, cpu, ctx, addr, Some(tail))
+            } else {
+                // A different frame path, or a Rust continuation across
+                // the boundary. The original finished, including its wait.
+                let mut inner = me2.lock();
+                inner.preparing = None;
+                *inner.stats.serial.entry("unsplit_frame").or_default() += 1;
+                drop(inner);
+                cpu.esp = game_cpu.esp;
+                ctx.memory().ret(cpu, 0)
+            }
+        },
+    );
+    let call = match call {
+        Ok(call) if call.kind == abi::CALL => call,
+        other => {
+            *cpu = game_cpu;
+            return other;
+        }
+    };
+    me.lock().preparing = Some(Preparing {
+        token: call.resume_pc,
+        continuations: ctx.live_continuations().len(),
+        tail: None,
+    });
+    Ok(original.invoke(cpu, ctx, addr))
+}
+
+fn prepared_tail(
+    me: &Shared,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    entry: u32,
+) -> Option<TransferAbi> {
+    let mut inner = me.lock();
+    let preparing = inner.preparing.as_mut()?;
+    if preparing.tail.is_some() || preparing.continuations != ctx.live_continuations().len() {
+        return None;
+    }
+    preparing.tail = Some(CpuAbi { eip: entry, ..*cpu });
+    cpu.esp = me.stack_top.load(Ordering::Relaxed);
+    Some(TransferAbi::ret(preparing.token))
+}
+
+fn wait_and_launch(
+    me: &Arc<Shared>,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    addr: u32,
+    tail: Option<CpuAbi>,
+) -> Result<TransferAbi, GuestFault> {
     let saved = *cpu;
+    let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
     let me2 = Arc::clone(me);
@@ -2536,7 +2656,7 @@ fn decide(
         &mut mem,
         me.addrs.frame_wait,
         "pipeline: frame wait before the launch",
-        move |cpu, ctx| launch(&me2, cpu, ctx, saved, ret_pc, addr),
+        move |cpu, ctx| launch(&me2, cpu, ctx, saved, ret_pc, addr, tail),
     )
 }
 
@@ -2563,6 +2683,11 @@ fn guard(me: &Shared, reason: Option<Serial>, g: &Guest) -> Option<Serial> {
         me.serial_left.store(left - 1, Ordering::Relaxed);
         return Some(Serial::AfterFallback);
     }
+    pool_reason(me, g)
+}
+
+fn pool_reason(me: &Shared, g: &Guest) -> Option<Serial> {
+    let a = &me.addrs;
     if a.io_queue != 0 && !matches!(g.u32(a.io_queue), Ok(0)) {
         return Some(Serial::IoBusy);
     }
@@ -2634,11 +2759,39 @@ fn launch(
     saved: CpuAbi,
     ret_pc: u32,
     addr: u32,
+    tail: Option<CpuAbi>,
 ) -> Result<TransferAbi, GuestFault> {
     let eax = cpu.eax;
     *cpu = saved;
     cpu.eax = eax;
     let rt = Arc::clone(ctx.runtime());
+    if let Some(at) = tail {
+        me.lock().preparing = None;
+        // Cache misses in the live traversal can start I/O or remap a
+        // page. Check at the actual snapshot, without repeating the
+        // visits, loads, or frame wait if this candidate became serial.
+        let reason = if me.drain.swap(false, Ordering::AcqRel) {
+            Some(Serial::Quiesce)
+        } else {
+            let g = rt.memory();
+            pool_reason(me, &g)
+                .or_else(|| coverage_reason(me, &g))
+                .or_else(|| serial_reason(&me.addrs, &g))
+        };
+        if let Some(reason) = reason {
+            let mut inner = me.lock();
+            inner.coverage.reset();
+            *inner.stats.serial.entry(reason.name()).or_default() += 1;
+            drop(inner);
+            return resume(
+                me,
+                cpu,
+                ctx,
+                at,
+                Box::new(|cpu, ctx| ctx.memory().ret(cpu, 0)),
+            );
+        }
+    }
     let mut inner = me.lock();
     let Some(mut exec) = inner.exec.take() else {
         drop(inner);
@@ -2664,18 +2817,32 @@ fn launch(
         // tick reads the frame counter (the particles, `0x0017469d`) and
         // must see the serial run's value.
         let frames = me.frames_next.load(Ordering::Relaxed);
-        if me.predict_frames
+        if tail.is_none()
+            && me.predict_frames
             && let Ok(v) = g.u32(a.frame_counter)
         {
             g.set_u32(a.frame_counter, v.wrapping_add(frames))?;
             me.frames_predicted.store(frames, Ordering::Relaxed);
         }
-        g.set_u8(a.launch_clear, 0)?;
+        if tail.is_none() {
+            g.set_u8(a.launch_clear, 0)?;
+        } else if let Some(context) = a.draw_boundary.and_then(|b| b.view_context) {
+            g.set_u32(context, 0)?;
+        }
     }
     watch_now(me, &rt, "the frame wait and the launch");
     let (tx, rx) = sync_channel(1);
-    let mut render_cpu = saved;
-    render_cpu.esp = me.stack_top.load(Ordering::Relaxed);
+    let top = me.stack_top.load(Ordering::Relaxed);
+    let (render_cpu, start) = if let Some(at) = tail {
+        // The game context consumed this continuation. The copied stack
+        // returns to the executor harness at exactly the same depth.
+        exec.runtime()
+            .memory()
+            .set_u32(top - 4, runtime::exec::HARNESS_EXIT)?;
+        (at, JobStart::Prepared)
+    } else {
+        (CpuAbi { esp: top, ..saved }, JobStart::Frame(addr))
+    };
     let mut inner = me.lock();
     inner.coverage.begin();
     inner.stats.snapshot += snap;
@@ -2693,7 +2860,7 @@ fn launch(
         .send(Job {
             exec,
             cpu: render_cpu,
-            entry: Some(addr),
+            start,
             reply: tx,
         })
         .is_err()

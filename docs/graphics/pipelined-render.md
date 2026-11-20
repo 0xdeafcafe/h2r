@@ -1,77 +1,69 @@
 # Pipelined rendering
 
-The render worker is available with `H2_FEATURES=impl.render.pipelined_frame=on`.
-It retains the game-tick join described under [Two writers](#two-writers-the-tick-joins-first).
-The worker is opt-in and its switch is independent of `impl.render.native`.
-`H2_PIPELINE_RENDER=1` supplies the default when the exact switch is unset.
-
-## Snapshot coverage
-
-At `render_frame_and_present`, after simulation and per-frame preparation, the
-worker receives the CPU state, guest address map and a copy-on-write view of
-64 MiB of guest RAM. The census identifies the working set across XBE globals,
-the game-state block and datum arrays, the world and resource pools, the render
-stack and D3D allocations. Together these include object state, animation
-poses and caches, camera and view state, lights, effects and HUD data. Keeping
-the full COW view lets render code follow pointers to newly reached data
-without reading the simulation's current RAM.
-
-The worker uses the census access trap on its own memory. Its previous
-completed frame supplies the pages to check at the next world frame's entry.
-A change to an observed page's virtual mapping, backing offset or permissions
-runs that candidate through the original serial path before the worker starts.
-`snapshot_mapping` logs the first affected page. A truncated trace gives
-`snapshot_trace`. The following eligible frame can collect a fresh footprint.
-A newly observed page that is already in the COW view is counted in
-`new_snapshot_pages`. An unmapped or protected access on the worker increments
-`snapshot_faults` and logs the page through the existing fault path.
-
-The access trap covers checked guest and HLE accessors. It cannot certify
-the absence of future render writes or see raw physical readers. The current
-tick reads particle state and animation-cache bookkeeping that the render also
-updates. Those stores must reach live RAM before the tick reads them, so the
-tick joins the render. The legacy HLE refusal path can resume against live RAM
-and retains the ordering limitation described under
-[The prototype](#the-prototype). Native post-processing also has game-thread
-return hooks listed in boot's `render_thread::REFUSED` audit.
-
-`render.stats.pipeline` reports launch and completion counts, serial reasons,
-fallbacks by call and `overlap_ms`, the cumulative wall time the worker executed
-before the game thread entered the join. The periodic `pipeline:` line reports
-mean overlap per launch. This measures work before the join, which can include
-non-tick work and time while the game thread is descheduled.
-
-At 14 ms of simulation and 28–37 ms of render CPU work, fully overlapping the
-tick would ideally move the CPU limit from 42–51 ms to 28–37 ms, or about
-20–24 fps to 27–36 fps. This assumes the GPU and frame cap can keep up and
-excludes snapshot and merge cost. The guarded prototype retains the tick join.
+Enable the worker with `H2_FEATURES=impl.render.pipelined_frame=on`. It is
+off by default. `H2_PIPELINE_RENDER=1` supplies the default when the exact
+switch is unset. The switch is independent of `impl.render.native`.
 
 ## Tick ordering and hash parity
 
-The guest writes required by tick N+1 must be published before that tick.
-A buffer handed back before tick N+2 only works for state that N+1 can ignore.
-The following boundaries describe the required split. The current worker still
-joins before the tick.
+For an eligible world frame, the game thread runs the original view loop
+on live RAM. This includes the scene draws, first-person effects, HUD and
+alternate views. At the call to `render_loop::views::END_A`, the last view
+has returned. The game thread runs the frame wait once and snapshots the
+nested guest stack and RAM. The render worker enters that callee and
+finishes the frame-end effects, device work and present. The game thread
+can enter tick N+1 while this suffix of frame N is executing.
 
-| State | Evidence and boundary |
+| Tick-visible state | Publication before tick N+1 |
 |---|---|
-| Particle system, emitter, particle location and effect location | Render update `0x00174420` sets or clears the visibility bit in the system's flags and stamps the location with the current render frame. The effect and particle tick paths read and update those records. The tick-visible update belongs in a serial pass at the render-entry boundary, before the snapshot. It needs the same per-view visits, including culling and creation/deletion order. A draw-only worker can keep its own temporary particle data. |
-| Animation cache | `animation_resource_get` writes the use stamp at `0x0012387a`. Each slot is 24 bytes and the stamp is at `+0x14`. `animation_resource_request` reads that same field at `0x0012378c` and uses it for its age decision. On a miss the get can evict (`0x001234a0`), allocate a handle, and start a read (`0x001235b0`). A pending get can wait for completion (`0x001237a0`). Completed animation payloads can be read from the COW view. Residency, eviction, I/O and use-stamp updates need one writer before the tick reads them. Recomputing the payload alone leaves these effects out. |
-| Random streams | The render path at `0x00027be0` and the tick's emitter initialisation at `0x002491c4` both advance the effects word at `[0x004e7408] + 4`. The serial boundary pass needs to reserve the draws in guest order and pass the results to the renderer. The ordinary gameplay digest hashes the first word of the RNG record. Replaying a step after a digest has been captured cannot repair that digest if a hashed word or a hashed output used the old value. |
-| Texture/geometry caches and async I/O | The census also lists tick reads of render-side cache bookkeeping. The existing I/O replay orders the host calls at join time. A single owner must publish request and residency decisions at the serial boundary before the tick can use them. |
-| Timing, view state and object/light bookkeeping | Frame wait already runs before launch. Predicted counters need to match what that frame will do. The census's false-sharing fields can stay in the worker view and merge where the tick does not use them. The game-time bracket and director/view dependencies still need an audit before removing the join. |
+| Particles and effects | The original per-view update at `0x00174420` writes system visibility and location frame stamps on live RAM. Split-screen, culling and repeated visits retain their guest order. |
+| RNG | Particle draws advance the effects word and object updates advance the game word in the live traversal. The tick starts with both seeds left by the last view. |
+| Animation cache | Each `animation_resource_get` runs on the game thread, including the slot use stamp at `+0x14`, eviction, handle allocation, read submission and any wait for a pending payload. A later view or the next tick sees the resulting residency and ages immediately. The worker has the completed bytes in its COW snapshot. |
+| View and object state | View frame counters, visit marks and per-object lighting allocations occur during traversal. The live current-view context is cleared before the tick. |
 
-The synthetic boot hash tests use the production `state_hashes_v1` gameplay
-digest. They model stale particle and cache reads separately and show why a
-late RNG replay can leave a different tick digest even when the final seed
-matches. They do not measure gameplay parity.
+This boundary preserves late animation requests made during HUD and UI
+draws. It leaves the scene front-end on the game thread. There is no
+worker-side animation request queue in this implementation. Moving scene
+draws to the worker would require collecting their animation uses before
+launch and binding each draw to its resolved payload.
 
-Full headless sim runs can exercise this worker while collecting
-`state_hashes_v1`. Use `-host-light` in both arms and set
-`impl.render.pipelined_frame=off` or `=on` explicitly. Keep the image,
-scenario, seeds, inputs and tick limit matched. Compare the complete tick
-series. This exercises guest rendering and the headless D3D path. The GPU
-performance comparison is a separate run.
+The boot test `ordered_frame_owners_match_the_serial_tick_hash_while_drawing`
+holds a worker draw open while a synthetic tick consumes particle state,
+advances both RNGs and evicts both animation slots. It compares the slot and
+stamp bytes, the ordered I/O digest, the drawn payload and the production
+`state_hashes_v1` gameplay digest with the serial sequence. The feature rig
+also covers consecutive prepared frames and a serial fallback.
+
+## Snapshot coverage
+
+The worker has a COW view of the 64 MiB guest address space, including the
+dedicated guest stack on which the game thread ran the view loop. The
+handoff checks the caller's return PC, stack depth and outstanding Rust
+continuations. A different frame path or an open view debug bracket finishes
+serially. This avoids moving thread-local cleanup or borrowing the simulation
+stack while a tick is using it.
+
+The worker's access trap records which pages it used. A change in virtual
+mapping, backing offset or permissions selects the original serial path
+(`snapshot_mapping`). An incomplete trace selects `snapshot_trace`.
+The game thread rechecks coverage and outstanding I/O after frame preparation,
+at the snapshot boundary. If eligibility changed, it finishes the pending
+callee on live memory. Preparation, requests and the wait each run once.
+
+`render.stats.pipeline` reports serial reasons, launches, completions and
+`overlap_ms`, the cumulative worker time before the game thread joins.
+`sim_joins` is retained for telemetry compatibility and stays zero. A
+game-thread device call or the next frame still joins when required.
+Overlap can include time when the game thread is descheduled. The current
+split has no measured speedup. For gameplay parity, compare the complete
+`state_hashes_v1` tick series from matched headless runs with `-host-light`
+and the switch explicitly off and on.
+
+## Earlier whole-frame design and measurements
+
+The remaining sections record the whole-frame prototype, its census and
+the bounds estimated for moving the entire front-end to a worker. The tick
+join and its measurements below belong to that prototype.
 
 ## What it would buy
 
@@ -1477,7 +1469,7 @@ the render. With the tick joining first, the overlap is the frame's work
 outside the tick. The next real win has to come from a cheaper render
 (docs/perf/gameplay-budget.md), not from more pipelining.
 
-### Where it stands (2026-11-18)
+### Whole-frame prototype measurements (2026-11-18)
 
 Measured live with the tick joining first (03a, headless GPU backend,
 `H2_OPT=2` with PGO, gameplay around present 38,000; totals over 38,107

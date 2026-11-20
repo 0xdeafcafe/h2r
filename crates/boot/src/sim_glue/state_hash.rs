@@ -178,3 +178,7 @@ mod tests {
         assert_eq!(gameplay(&Snapshot::default(), None), 0x8ac123d6f7dce585);
     }
 }
+
+#[cfg(test)]
+#[path = "state_hash_pipeline_test.rs"]
+mod pipeline;

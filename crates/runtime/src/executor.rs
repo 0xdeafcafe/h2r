@@ -278,6 +278,16 @@ impl SecondExecutor {
         self.run_from(cpu, TransferAbi::jump(entry))
     }
 
+    /// Enter a callee whose caller and return address are already in the
+    /// COW stack. The outer frame returns to `HARNESS_EXIT` as in `call`.
+    pub fn enter(&mut self, cpu: &mut CpuAbi) -> Result<CallOutcome, ExecutorError> {
+        if self.base.is_none() {
+            return Err(ExecutorError::NoSnapshot);
+        }
+        let entry = cpu.eip;
+        self.run_from(cpu, TransferAbi::jump(entry))
+    }
+
     /// Carry a run on by returning to `cpu.eip` with `cpu` as it is (nothing
     /// pushed; generated code's resume points take it):
     /// after an [`ExecutorError::Refused`] whose call someone else made, with
