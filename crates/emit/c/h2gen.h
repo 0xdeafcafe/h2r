@@ -659,6 +659,16 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_FAULT_EVENT(pc, st) H2_EXIT_(H2_FAULT, H2_ENTRY, 0u, 0u, (st), (pc))
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
+/* Distinct host virtual addresses can name the same physical bytes, even
+ * when clang proves their C pointer ranges disjoint. Keep copies through
+ * alias views ordered against ordinary page-table copies and each other.
+ * Empty asm with a memory clobber emits no host instruction. */
+#if H2_FLAT_RAM && H2_FASTMEM
+#define H2_ALIAS_FENCE() __asm__ __volatile__("" ::: "memory")
+#else
+#define H2_ALIAS_FENCE() ((void)0)
+#endif
+
 /* A load or store: under the held gate the inline path (h2fastmem.h,
  * H2_HELD_TRY) gives a host address and the access is one memcpy of the
  * constant width, a single load or store. Otherwise one cold call
@@ -676,7 +686,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
         H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
-        memcpy(&dst, p_, (n));                                                  \
+        H2_ALIAS_FENCE(); memcpy(&dst, p_, (n)); H2_ALIAS_FENCE();              \
         goto done_;                                                             \
     slow_:                                                                      \
         H2_COLD_NOTE(h2g_);                                                     \
@@ -716,7 +726,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
         H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
-        memcpy(p_, &v_, (n));                                                   \
+        H2_ALIAS_FENCE(); memcpy(p_, &v_, (n)); H2_ALIAS_FENCE();               \
         goto done_;                                                             \
     slow_:                                                                      \
         memcpy(b_, &v_, (n));                                                   \
@@ -729,6 +739,33 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
     } while (0)
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)
 #define H2_STR(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (fl = rfl_, fd = rfd_))
+
+/* The emitter proved each member uses the same base plus its literal
+ * displacement. No selector, gate drop or host call occurs inside a
+ * successful group. On rejection, each site runs in order with its own
+ * PC, MMIO and fault semantics. Taking the gate alone has no guest effect. */
+#if H2_FLAT_RAM && H2_FASTMEM
+#define H2_SPAN(name, addr, n, rw)                                              \
+    if (!h2g_.held && h2_mem_) h2_gate_adopt(&h2g_, h2_gate_try(h2_mem_));       \
+    uint8_t *const name = h2_flat_span(&h2g_, (addr), (n), (rw))
+#define H2_SPAN_LD(span, off, T, n, dst, pc, addr)                              \
+    T dst = 0;                                                                  \
+    if (span) {                                                                 \
+        H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);                                  \
+        H2_ALIAS_FENCE(); memcpy(&dst, (span) + (off), n); H2_ALIAS_FENCE();    \
+    } else { H2_LD(T, n, slow_value_, pc, addr); dst = slow_value_; }
+#define H2_SPAN_ST(span, off, T, n, pc, addr, value)                            \
+    do {                                                                        \
+        if (span) {                                                             \
+            T v_ = (value); H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);              \
+            H2_ALIAS_FENCE(); memcpy((span) + (off), &v_, n); H2_ALIAS_FENCE(); \
+        } else { H2_ST(T, n, pc, addr, value); }                                \
+    } while (0)
+#else
+#define H2_SPAN(name, addr, n, rw) ((void)0)
+#define H2_SPAN_LD(span, off, T, n, dst, pc, addr) H2_LD(T, n, dst, pc, addr)
+#define H2_SPAN_ST(span, off, T, n, pc, addr, value) H2_ST(T, n, pc, addr, value)
+#endif
 
 /* Locals to CpuAbi and back, around a runtime call that reads and writes
  * architectural state (the atomics, a direct call). Only the homed

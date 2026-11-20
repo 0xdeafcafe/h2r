@@ -213,6 +213,21 @@ H2_EXPORT uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint3
 "#;
     let mut extras = vec![("bridge.c", emit::host::BRIDGE)];
     if kind == "fast-semantics" { extras.push(("probe.c", probe)); }
+    if kind == "flat-store-order" {
+        extras.push(("flat-probe.c", r#"#include "h2gen.h"
+H2_EXPORT uint32_t h2probe_flat(ExecCtxOpaque *ctx, uint32_t addr) {
+    H2FastAccess *f = h2abi_v1_fast_acquire(ctx);
+    if (!f) return 0;
+    H2Gate gate = {0};
+    h2_gate_adopt(&gate, h2_gate_try(f));
+    uint32_t mask = (h2_flat_span(&gate, addr, 4u, 1u) != NULL) |
+        ((uint32_t)(h2_flat_span(&gate, addr, 4u, 2u) != NULL) << 1);
+    h2_gate_drop(f, &gate);
+    h2abi_v1_fast_release(ctx);
+    return mask;
+}
+"#));
+    }
     emit::compile::host_dylib(&b, &src, &extras, &dylib).unwrap();
     // Initialize x87's helper bridge, then replace the memory/event callbacks
     // with the production runtime. Both bridges implement h2abi.h exactly.
@@ -1933,4 +1948,97 @@ fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
         100.0 * (sizes[1] as f64 - sizes[0] as f64) / sizes[0] as f64
     );
     assert!(sizes[0] > 0);
+}
+
+/// Two adjacent stores can share a span even if a later instruction uses
+/// another virtual alias. A rejected span must preserve the first store and
+/// fault at the second instruction, including its exact guest PC and charge.
+#[test]
+fn flat_span_matches_checked_stores_aliases_and_fault_order() {
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    if std::env::var("H2_FLAT_RAM").as_deref() != Ok("1") {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "flat_span_matches_checked_stores_aliases_and_fault_order", "--nocapture"])
+            .env("H2_FLAT_RAM", "1").status().unwrap();
+        assert!(status.success());
+        return;
+    }
+    use runtime::{Event, abi, watch::CONTIGUOUS_BASE};
+    const ALIAS: u32 = 0x0200_0000;
+    const SP: u32 = 0x0300_0000;
+    let f = function(A, |a| {
+        a.mov(dword_ptr(esi), eax)?;
+        a.mov(dword_ptr(esi + 4), ecx)?;
+        a.mov(edx, dword_ptr(edi + 4))?;
+        a.add(dword_ptr(edi + 8), edx)?;
+        a.ret()
+    });
+    let owners = emit::plan(vec![f.clone()]);
+    let o = &owners[0];
+    let text = emit::c::function(&o.func, &emit::c::OwnerShape {
+        selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None, reg_homes: true,
+    });
+    assert!(text.contains("H2_SPAN_ST(sp_"), "{text}");
+    let (lib, dispatch) = compile_module_defines(
+        "flat-store-order", vec![f], false, true, emit::opt::Passes::ALL, emit::Codegen::default(),
+        "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n",
+    );
+    type Probe = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32) -> u32;
+    // SAFETY: the extra C source above exports this signature.
+    let probe: libloading::Symbol<Probe> = unsafe { lib.get(b"h2probe_flat") }.unwrap();
+    let rt = Runtime::new(Guest::new(), dispatch);
+    for (address, ro, mapped, fault, trap) in [
+        (DATA, false, true, false, false),
+        (DATA, false, true, false, true),
+        (DATA + 4092, true, true, true, false),
+        (DATA + 4092, false, false, true, false),
+        (0xfd00_0000, false, true, true, false),
+        (0xffff_ffff, false, true, true, false),
+    ] {
+        let run = |fast| {
+            let mut g = Guest::new();
+            g.map(A, 16384, 0x10000, Permissions::RX).unwrap();
+            g.map(SP, 16384, 0x14000, Permissions::RW).unwrap();
+            g.map(DATA, 16384, 0, Permissions::RW).unwrap();
+            g.map(ALIAS, 16384, 0, Permissions::RW).unwrap();
+            if ro { g.protect_range(DATA + 4096, 4096, Permissions::READ).unwrap(); }
+            if !mapped { g.unmap(DATA + 4096, 4096).unwrap(); }
+            g.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
+            let w = g.subscribe_writes("compare");
+            g.watch_writes(w, CONTIGUOUS_BASE, 16384).unwrap();
+            if trap {
+                g.install_trap(64);
+                g.arm_all(true, true);
+            }
+            *rt.memory() = g;
+            let mut ctx = ExecCtx::new(rt.clone(), 1);
+            ctx.enable_fast_memory(fast);
+            let experimental = fast && !trap && cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")));
+            let watch = std::env::var("H2_FLAT_WRITE_WATCH").as_deref() != Ok("0");
+            let mask = unsafe { probe((&mut ctx as *mut ExecCtx).cast(), DATA) };
+            assert_eq!(mask, if experimental { 1 | (u32::from(watch) << 1) } else { 0 });
+            ctx.arm_preemption(1000);
+            let mut cpu = CpuAbi { eax: 13, ecx: 29, esi: address, edi: ALIAS, esp: SP, ..CpuAbi::default() };
+            let status = Runner::default().run(&mut cpu, &mut ctx, A);
+            let error = ctx.events().iter().find_map(|e| match e {
+                Event::MemoryFault { pc, fault } => Some((*pc, fault.clone())),
+                _ => None,
+            });
+            assert_eq!(status.kind, if fault { abi::FAULT } else { abi::STOP });
+            let mut g = rt.memory();
+            let hits: Vec<_> = g.take_trap_hits().hits.into_iter().filter(|h| h.pc != 0)
+                .map(|h| (h.pc, h.addr, h.len, h.write)).collect();
+            assert_eq!(!hits.is_empty(), trap);
+            if !fault {
+                assert_eq!(cpu.edx, 29);
+                assert_eq!(g.u32(DATA + 8).unwrap(), 29);
+            } else if address == DATA + 4092 {
+                assert_eq!(g.u32(ALIAS + 4092).unwrap(), 13);
+                assert_eq!(g.u32(ALIAS + 4096).unwrap(), 0);
+                assert_eq!(error.as_ref().unwrap().1.addr, DATA + 4096);
+            }
+            (cpu, ctx.take_slice_spent(), error, hits, g.take_dirty(w).unwrap(), g.physical_ram()[..16384].to_vec())
+        };
+        assert_eq!(run(true), run(false), "address {address:#x}, ro={ro}, mapped={mapped}");
+    }
 }
