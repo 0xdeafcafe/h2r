@@ -202,14 +202,18 @@ in a window where each present is dearer.
 default, `H2_FEATURES=-map-copy` turns it off). When the copy machine is
 called from the loading-screen loop (return address `0x1639c2`), a
 `before` hook answers with an async body that runs the step the loop
-asked for, then up to 15 more, each once the job before it is done,
+asked for, then up to 15 more (127 more when the batch starts in payload
+state 11 or 12 for one of the shared or menu slots 0–2), each once the
+job before it is done,
 yielding with `SwitchToThread` as the loop does (at most 8 yields a job;
 a job still running is left to the next frame). It stops when the machine
 is idle (`0x55bd04` is 0). The machine sees the same calls in the same
 order with the same job results, only with fewer frames drawn between
 them; the game's own flush loop `0x213fa0` steps it back to back with
 nothing drawn. The main loop's call (`0x12b571`) and the flush loop's are
-left alone.
+left alone. `H2_FEATURES=-map-copy.boot` uses the 16-step budget for all
+slots. The title still owns reads, checksums, invalidation, flushes and header
+publication in either mode.
 
 Tests (`map_copy::tests`, a synthetic copy machine and worker): the same
 bytes, checksum and step sequence in 3 frames instead of 42 for 21
