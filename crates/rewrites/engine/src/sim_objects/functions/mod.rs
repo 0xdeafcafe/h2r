@@ -158,7 +158,8 @@ pub(super) fn ss(c: &mut CpuAbi, op: Ss, d: usize, b: u32) -> Result<u32> {
 
 /// `cvtsi2ss xmm[d], i`.
 pub(super) fn cvtsi2ss(c: &mut CpuAbi, d: usize, i: u32) -> Result<u32> {
-    let r = simd::cvtsi2ss(&mut c.mxcsr, full(c, d), i).map_err(simd_fault)?;
+    let old = full(c, d);
+    let r = simd::cvtsi2ss(&mut c.mxcsr, old, i).map_err(simd_fault)?;
     set_full(c, d, r);
     Ok(r as u32)
 }
