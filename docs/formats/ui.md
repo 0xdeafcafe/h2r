@@ -396,8 +396,9 @@ builds a 0x20-byte request and calls the loader (stdcall, the request,
    base screen constructor `0x230451` with screen id 39, stores the screen
    vtable `0x45be30`, then the list handler constructor `0x2c84b8` with
    ESI = `screen + 0x614`;
-3. sets byte `screen + 0x6c` to 1 and pushes the screen with `0x147f6d`
-   (EDI = the screen, EBX = the request), which calls screen slot 21.
+3. sets byte `screen + 0x6c` to 1 and pushes the screen with
+   `SCREEN_PUSH` (EDI = the screen, EBX = the request, plain `ret`).
+   The push calls screen slot 21.
 
 **Screen vtable** (`0x45be30`, 28 slots, the next table starts at
 `0x45bea0`). Two slots matter to a class of ours:

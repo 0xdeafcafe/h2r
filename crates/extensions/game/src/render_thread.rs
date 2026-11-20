@@ -207,6 +207,26 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup screen's per-frame update (picture and description), UI on the game thread",
     ),
     (
+        "ui-back",
+        "SCREEN_PUSH",
+        "records the replaced dialog in host navigation state on the game thread",
+    ),
+    (
+        "ui-back",
+        "SCREEN_BACK_EVENT",
+        "reopens the parent with guest calls from the game thread's menu input handler",
+    ),
+    (
+        "ui-back",
+        "UI_CHANNEL_FREE",
+        "removes the freed dialog from host navigation state on the game thread",
+    ),
+    (
+        "lobby-options",
+        "LOBBY_VARIANT_PANEL",
+        "updates lobby widgets through guest calls and uses a game-thread reentry guard",
+    ),
+    (
         "clankermatch",
         "*",
         "the OptiMatch playlist list's rows and press, and the Live menu's Quickmatch press: \

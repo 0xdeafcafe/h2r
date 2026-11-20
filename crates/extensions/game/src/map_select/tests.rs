@@ -435,6 +435,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
         "0x002bb384 MAP_SCREEN_FREE: observe_before [map-select:forget the freed map list] -> original",
         "0x002300ea SCREEN_BACK_EVENT: before [map-select:return from maps to their folders",
+        "0x00147f6d SCREEN_PUSH: observe_before [ui-back:remember the replaced Game Setup] -> before [map-select:restore the opened folder's focus] -> original",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
