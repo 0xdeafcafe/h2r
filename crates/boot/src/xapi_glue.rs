@@ -23,6 +23,7 @@ impl xapi::Events for KernelEvents {
 
 /// After `k.set_vfs`, with no guard held. Also returns the keyboard pad, for
 /// scripted input ([`InputScript`]).
+#[cfg(feature = "desktop-runtime")]
 pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Result<(Shared, input::backend::keyboard::KeyboardMouse)> {
     let (input, keyboard) = input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())
         .map_err(|e| anyhow::anyhow!("input: {e:?}"))?;
@@ -63,14 +64,17 @@ pub fn register_with(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>, input: inpu
 /// An endpoint past `u64::MAX` is a parse error.
 ///
 /// Minimal on purpose: the input-full lane's scripted source replaces it.
+#[cfg(feature = "desktop-runtime")]
 pub struct InputScript(Vec<Entry>, Mutex<Vec<input::bindings::Input>>);
 
+#[cfg(feature = "desktop-runtime")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum When {
     Slice(u64),
     Frame(u64),
 }
 
+#[cfg(feature = "desktop-runtime")]
 impl When {
     fn reached(self, slice: u64, frame: u64) -> bool {
         match self {
@@ -80,6 +84,7 @@ impl When {
     }
 }
 
+#[cfg(feature = "desktop-runtime")]
 #[derive(Debug)]
 struct Entry {
     text: String,
@@ -89,12 +94,14 @@ struct Entry {
     state: std::sync::atomic::AtomicU8,
 }
 
+#[cfg(feature = "desktop-runtime")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Hold {
     Control(input::bindings::Control),
     Key(String),
 }
 
+#[cfg(feature = "desktop-runtime")]
 fn control(name: &str) -> Option<input::bindings::Control> {
     use input::bindings::Control::*;
     Some(match name.to_ascii_uppercase().as_str() {
@@ -122,6 +129,7 @@ fn control(name: &str) -> Option<input::bindings::Control> {
     })
 }
 
+#[cfg(feature = "desktop-runtime")]
 fn parse_when(t: &str, frame_default: bool) -> Option<When> {
     let t = t.trim();
     match t.strip_prefix('f') {
@@ -131,6 +139,7 @@ fn parse_when(t: &str, frame_default: bool) -> Option<When> {
     }
 }
 
+#[cfg(feature = "desktop-runtime")]
 fn parse_entry(item: &str) -> Option<Entry> {
     let (buttons, when) = item.trim().split_once('@')?;
     let controls = buttons.split('|').map(|b| control(b.trim()).map_or_else(|| Hold::Key(b.trim().to_string()), Hold::Control)).collect();
@@ -151,6 +160,7 @@ fn parse_entry(item: &str) -> Option<Entry> {
     Some(Entry { text: item.trim().to_string(), controls, down, up, state: Default::default() })
 }
 
+#[cfg(feature = "desktop-runtime")]
 impl InputScript {
     /// Parse a timeline; entries separated by `,` or newlines, `#` starts
     /// a comment. Unparseable entries are reported and skipped.
@@ -284,7 +294,7 @@ pub fn install_no_xapi_mount(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>, uti
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop-runtime"))]
 mod tests {
     use super::*;
 

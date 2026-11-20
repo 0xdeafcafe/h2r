@@ -48,6 +48,11 @@ pub enum StateRefusal {
 
 /// The pipeline state of an implementation with `states` applied on entry.
 pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+    pass_state_with_fog(states, false)
+}
+
+/// Objects carry the fog unit in their program uniforms.
+pub(crate) fn pass_state_with_fog(states: &[RenderStateValue], fog: bool) -> Result<PassState, StateRefusal> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
     let mut set = Vec::with_capacity(states.len());
@@ -75,7 +80,7 @@ pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal
     if !has(RenderStateType::ZWriteEnable) && !depth_off {
         return Err(StateRefusal::Unset("ZWRITEENABLE"));
     }
-    if rs.fog_enable {
+    if rs.fog_enable && !fog {
         return Err(StateRefusal::Fog);
     }
     if rs.stencil.enable {

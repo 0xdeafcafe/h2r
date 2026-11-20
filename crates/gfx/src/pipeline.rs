@@ -201,7 +201,7 @@ pub fn create_render_pipeline(
     let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> =
         key.vertex_buffers.iter().map(|b| Some(b.as_wgpu())).collect();
     let targets = [Some(key.color_target.clone())];
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    crate::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&program.layout),
         vertex: wgpu::VertexState {

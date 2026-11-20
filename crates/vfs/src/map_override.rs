@@ -34,7 +34,7 @@ struct Override {
     file: File,
     path: PathBuf,
     len: u64,
-    mapping: Option<memmap2::Mmap>,
+    mapping: Option<crate::disc::MappedDisc>,
     /// Its identity, hashed on first ask.
     id: Option<content::MapId>,
 }
@@ -128,13 +128,20 @@ impl<B: Backend> MapOverrideBackend<B> {
                             let mut header = [0; 0x800];
                             let n = self.inner.read_at(path, 0, &mut header).ok();
                             if n != Some(header.len())
-                                || !matching_server_copy(&mut o.file, o.len, disc.end_of_file, &header)
+                                || !matching_server_copy(
+                                    &mut o.file,
+                                    o.len,
+                                    disc.end_of_file,
+                                    &header,
+                                )
                             {
-                                (self.notice)(&format!("warning: {name}: server copy header or length differs"));
+                                (self.notice)(&format!(
+                                    "warning: {name}: server copy header or length differs"
+                                ));
                                 self.files.insert(key, None);
                                 return None;
                             }
-                            o.mapping = crate::disc::map_read_only(&o.file);
+                            o.mapping = crate::disc::MappedDisc::new(&o.file);
                         }
                         (self.notice)(&format!(
                             "maps\\{name} from {} ({} bytes; disc {} bytes)",
@@ -341,7 +348,7 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
             return Ok(0);
         }
         if let Some(map) = &o.mapping {
-            crate::disc::copy_mapped(map, offset, &mut buffer[..n])?;
+            map.read(offset, &mut buffer[..n])?;
             return Ok(n);
         }
         o.file.seek(SeekFrom::Start(offset))?;

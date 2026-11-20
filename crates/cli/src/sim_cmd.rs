@@ -3,10 +3,8 @@
 //! - `run <match>`: one match in this process (`H2_SIM`), its report
 //!   written at the end.
 //! - `batch <batch>`: many matches on local child processes or dedicated
-//!   hosts, a few at a time; then
-//!   the A/B comparison (`compare.json`, `compare.txt`). With `--fork`, one
-//!   seed run per map saves a snapshot at spawn and every run loads it,
-//!   falling back to its own boot when the snapshot is refused.
+//!   hosts, a few at a time, then the A/B comparison (`compare.json`,
+//!   `compare.txt`).
 //! - `compare <dir>`: the comparison of a batch's results again.
 
 use std::fs::{File, OpenOptions, TryLockError};
@@ -14,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -25,7 +23,8 @@ const USAGE: &str = "usage:
   h2 sim run <match.toml> [--disc ISO] [--out DIR] [--data DIR] [--report FILE]
                           [--socket PATH] [--tier auto|fast|clang] [--pace PACE]
                           [--upload [--as GAMERTAG] [--server URL]]
-  h2 sim batch <batch.toml> [--provider local] [--dry-run] [--fork] [--keep-data]
+  h2 sim store build <map|all> --disc ISO --out DIR --reads FILE
+  h2 sim batch <batch.toml> [--provider local] [--dry-run] [--keep-data]
                           [--max-parallel N | --parallel N] [--budget-usd X]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
                           [--upload [--as GAMERTAG] [--server URL]]
@@ -33,9 +32,11 @@ const USAGE: &str = "usage:
                           [--max-parallel N] [--budget-usd X] [--dry-run]
   h2 sim compare <results dir>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
+  h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
 
-A match file names the map, the game type, the limits, the seed and up to 16
-bots (up to four local pads and fifteen phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
+A match file names the map, the game type, the limits, the seed and up to 15
+phantom bots with their skill, team and tuning. The host occupies the sixteenth
+peer slot (docs/runtime/sim.md, \"Match file\").
 `run` boots headless with no rendering, no keyboard and the match's bots,
 and writes a JSON report (--report, default $TMPDIR/h2sim/<match>.report.json).
 It never builds: build the image first with `h2 build` (same H2_OPT).
@@ -49,28 +50,38 @@ Choose a stored admin account with --as, or leave it off if there is only one.
 child processes, --parallel at once (default: half the cores), each with its own
 data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
-compare.txt. With mode = \"seat_swap\" each combination plays twice, once
-with each seat layout, and compare.json includes their paired differences.
-With mode = \"arm_swap\" each plays twice with the arms exchanged, so both
+compare.txt. With mode = \"arm_swap\" each plays twice with the arms exchanged, so both
 arms play every seat. skills = [...] adds a run per skill with every bot
 at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
 --provider cloud runs unpaced on dedicated hosts through Live.
---dry-run lists the runs. For all-local rosters, --fork boots each map once, saves a
-snapshot at spawn (state.save), and has every run load it, or boot on its
-own when the snapshot is refused (docs/runtime/sim.md, \"Forking from spawn\").";
+--dry-run lists the runs.";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut it = args.into_iter();
     match it.next().as_deref() {
         Some("run") => run_one(it.collect()),
         Some("host-run") => run_host_child(it.collect()),
+        Some("store") => crate::sim_store_cmd::run(it.collect()),
         Some("batch") => batch(it.collect()),
         Some("compare") => {
             let dir = it.next().context(USAGE)?;
             let c = compare_dir(Path::new(&dir))?;
             print!("{}", c.table());
             Ok(())
+        }
+        Some("audit-coverage") => {
+            let output = it.next().context(USAGE)?;
+            let mut report = boot::host_audit::Report::default();
+            for input in it {
+                let file = File::open(&input).with_context(|| format!("opening {input}"))?;
+                let run: boot::host_audit::Report =
+                    serde_json::from_reader(std::io::BufReader::new(file))
+                        .with_context(|| format!("reading {input}"))?;
+                run.coverage().with_context(|| format!("checking {input}"))?;
+                report.merge(run)?;
+            }
+            report.coverage()?.write(Path::new(&output))
         }
         Some("audit-merge") => {
             let output = it.next().context(USAGE)?;
@@ -219,6 +230,14 @@ fn live_slot(dir: &Path) -> Result<Option<File>> {
     Ok(None)
 }
 
+fn plan_sim_module(xbe: &[u8], out: &Path, choice: boot::tier::Choice) -> Result<boot::tier::Plan> {
+    Ok(if boot::sim_glue::use_light_host()? {
+        boot::tier::plan_light(xbe, out, choice)
+    } else {
+        boot::tier::plan(xbe, out, choice)
+    })
+}
+
 /// `h2 sim run`.
 fn run_one(args: Vec<String>) -> Result<()> {
     let mut common = Common::default();
@@ -242,11 +261,8 @@ fn run_one(args: Vec<String>) -> Result<()> {
     let file = file.context(USAGE)?;
     let file = std::path::absolute(&file)?;
     // Checked here, with every problem listed, before anything boots.
-    let mut m = sim::config::load_match_with_seating(
-        &file,
-        boot::setting_defs::bots_all_phantom_at(&common.data()),
-    )
-    .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let mut m = sim::config::load_match(&file)
+        .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     if let Some(pace) = common.pace {
         m.pace = pace;
         m.config.pace = pace.label();
@@ -269,7 +285,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
         None if std::env::var_os("H2_TIER").is_none() => Choice::Clang,
         None => Choice::from_env()?,
     };
-    let plan = boot::tier::plan(&xbe, &out, choice);
+    let plan = plan_sim_module(&xbe, &out, choice)?;
     if plan.build {
         bail!(
             "h2 sim: {} isn't built for this image and this h2; `h2 build{}` first (sim never builds)",
@@ -281,7 +297,8 @@ fn run_one(args: Vec<String>) -> Result<()> {
             }
         );
     }
-    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, 1, false)?.dylib;
+    let slim = plan.tier == boot::tier::Tier::Host;
+    let lib = plan.dylib;
     let mut slot = None;
     let upload = if let Some((base_url, account)) = account {
         use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
@@ -323,7 +340,6 @@ fn run_one(args: Vec<String>) -> Result<()> {
     // SAFETY: set before the run starts any thread; boot reads them once.
     unsafe {
         std::env::set_var("H2_BOTS_NAV_AUTO", "0");
-        std::env::remove_var(bots::ENV);
         std::env::remove_var("H2_LEVEL");
         if let Some(s) = &socket {
             std::env::set_var(agent_proto::ENV, s);
@@ -356,7 +372,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
         );
     }
     println!("report: {}", report.display());
-    if std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
+    if slim || std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
         let report: sim::metrics::Report =
             serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(report)?))?;
         anyhow::ensure!(matches!(report.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver),
@@ -450,30 +466,6 @@ fn default_report(file: &Path) -> PathBuf {
         .join(format!("{}.report.json", sim::config::safe(stem)))
 }
 
-/// A short socket path for run `n` (Unix sockets allow about 100 bytes).
-fn socket_for(n: usize) -> PathBuf {
-    PathBuf::from(format!("/tmp/h2sim-{}-{n}.sock", std::process::id()))
-}
-
-/// The snapshot a map's runs fork from: `a-z 0-9 . _ -`, at most 64.
-fn snapshot_name(map: &str, game_type: &str) -> String {
-    let clean = |s: &str| -> String {
-        s.to_ascii_lowercase()
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    };
-    let mut n = format!("sim.{}.{}.spawn", clean(map), clean(game_type));
-    n.truncate(64);
-    n
-}
-
 /// One run's files.
 struct RunDir {
     dir: PathBuf,
@@ -535,7 +527,7 @@ fn stage_map_pack(run: &RunDir, shared: &Path, map: &str) -> Result<()> {
 }
 
 /// The child's arguments for one `h2 sim run`.
-fn child_args(common: &Common, run: &RunDir, socket: Option<&Path>) -> Vec<String> {
+fn child_args(common: &Common, run: &RunDir) -> Vec<String> {
     let mut v = vec![
         "sim".to_string(),
         "run".into(),
@@ -546,18 +538,12 @@ fn child_args(common: &Common, run: &RunDir, socket: Option<&Path>) -> Vec<Strin
         run.data().display().to_string(),
     ];
     v.extend(common.args());
-    if let Some(s) = socket {
-        v.push("--socket".into());
-        v.push(s.display().to_string());
-    }
     v
 }
 
 fn spawn(
     common: &Common,
     run: &RunDir,
-    socket: Option<&Path>,
-    snapshots: &Path,
     batch: Option<(&str, &Path)>,
     audit: bool,
 ) -> Result<Child> {
@@ -565,10 +551,9 @@ fn spawn(
     let err = log.try_clone()?;
     let mut child = Command::new(std::env::current_exe()?);
     child
-        .args(child_args(common, run, socket))
+        .args(child_args(common, run))
         .env_remove(BATCH_ID_ENV)
-        .env_remove(BATCH_LOCKS_ENV)
-        .env(snapshot::store::ENV, snapshots);
+        .env_remove(BATCH_LOCKS_ENV);
     child.env_remove(boot::host_audit::ENV);
     if audit {
         child.env(boot::host_audit::ENV, run.audit());
@@ -592,125 +577,11 @@ fn spawn(
         .context("starting h2 sim run")
 }
 
-/// Connects to a child's agent socket once it is up (or the child is gone).
-fn connect(child: &mut Child, socket: &Path, within: Duration) -> Result<agent_proto::Client> {
-    let t = Instant::now();
-    loop {
-        if let Ok(c) = agent_proto::Client::connect(socket) {
-            c.set_timeout(Some(Duration::from_secs(300)))?;
-            return Ok(c);
-        }
-        if child.try_wait()?.is_some() {
-            bail!("the run exited before its agent socket was up");
-        }
-        if t.elapsed() > within {
-            bail!("no agent socket at {} after {:?}", socket.display(), within);
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-/// Waits until `match.status` says the match plays, with at least `ticks`.
-fn wait_playing(
-    c: &mut agent_proto::Client,
-    child: &mut Child,
-    ticks: u64,
-    within: Duration,
-) -> Result<()> {
-    let t = Instant::now();
-    loop {
-        let s = c.call(agent_proto::method::MATCH_STATUS, Value::Null)?;
-        match s["phase"].as_str() {
-            Some("playing") if s["ticks"].as_u64().unwrap_or(0) >= ticks => return Ok(()),
-            Some("over") => bail!("the match ended before it could be forked ({})", s["end"]),
-            _ => {}
-        }
-        if child.try_wait()?.is_some() {
-            bail!("the run exited while waiting for the match");
-        }
-        if t.elapsed() > within {
-            bail!("the match did not start within {within:?}");
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
-/// The seed run of `--fork`: boot the map's first run, wait for the match,
-/// save it, stop. `Err`: no snapshot (the runs boot on their own).
-fn seed_snapshot(
-    common: &Common,
-    run: &RunDir,
-    name: &str,
-    snapshots: &Path,
-    n: usize,
-) -> Result<()> {
-    let socket = socket_for(n);
-    let mut child = spawn(common, run, Some(&socket), snapshots, None, false)?;
-    let r = (|| -> Result<()> {
-        let mut c = connect(&mut child, &socket, Duration::from_secs(600))?;
-        wait_playing(&mut c, &mut child, 30, Duration::from_secs(900))?;
-        c.call(
-            agent_proto::state::method::SAVE,
-            json!({ "name": name, "replace": true, "max_ticks": 300 }),
-        )
-        .map_err(|e| anyhow::anyhow!("state.save: {e}"))?;
-        let _ = c.call(agent_proto::method::MATCH_STOP, Value::Null);
-        Ok(())
-    })();
-    if r.is_err() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
-    let _ = std::fs::remove_file(&socket);
-    r
-}
-
-/// One batch run: the child, and with a snapshot, its load once the match
-/// plays. A refused load is logged; the run goes on from its own boot.
-fn run_child(
-    common: &Common,
-    run: &RunDir,
-    fork: Option<&str>,
-    snapshots: &Path,
-    n: usize,
-    batch: Option<(&str, &Path)>,
-    audit: bool,
-) -> Result<String> {
-    let socket = fork.map(|_| socket_for(n));
-    let mut child = spawn(common, run, socket.as_deref(), snapshots, batch, audit)?;
-    let mut how = "boot".to_string();
-    if let (Some(name), Some(socket)) = (fork, socket.as_deref()) {
-        let loaded = (|| -> Result<()> {
-            let mut c = connect(&mut child, socket, Duration::from_secs(600))?;
-            wait_playing(&mut c, &mut child, 1, Duration::from_secs(900))?;
-            c.call(
-                agent_proto::state::method::LOAD,
-                json!({ "name": name, "max_ticks": 300 }),
-            )
-            .map_err(|e| anyhow::anyhow!("state.load: {e}"))?;
-            Ok(())
-        })();
-        how = match loaded {
-            Ok(()) => format!("forked from {name}"),
-            Err(e) => format!("own boot ({e:#})"),
-        };
-    }
-    let status = child.wait()?;
-    if let Some(s) = socket {
-        let _ = std::fs::remove_file(s);
-    }
-    if !status.success() {
-        bail!("sim child exited {status}; see {}", run.log().display());
-    }
-    Ok(how)
-}
-
 /// `h2 sim batch`.
 fn batch(args: Vec<String>) -> Result<()> {
     let mut common = Common::default();
     let mut file = None;
     let mut dry = false;
-    let mut fork = false;
     let mut keep = false;
     let mut parallel = None;
     let mut max_parallel = None;
@@ -726,7 +597,9 @@ fn batch(args: Vec<String>) -> Result<()> {
         }
         match a.as_str() {
             "--dry-run" => dry = true,
-            "--fork" => fork = true,
+            "--fork" => {
+                bail!("phantom bots require a fresh System Link session per run. Remove --fork")
+            }
             "--keep-data" => keep = true,
             "--parallel" => parallel = Some(val()?.parse::<usize>()?),
             "--max-parallel" => {
@@ -752,25 +625,14 @@ fn batch(args: Vec<String>) -> Result<()> {
         }
     }
     let file = std::path::absolute(file.context(USAGE)?)?;
-    let mut b = sim::config::load_batch_with_seating(
-        &file,
-        boot::setting_defs::bots_all_phantom_at(&common.data()),
-    )
-    .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
-    let fork = fork || b.config.fork;
+    let mut b = sim::config::load_batch(&file)
+        .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     let audit = b.config.audit;
-    if fork && boot::sim_glue::use_light_host()? {
-        bail!("light audio snapshots are unavailable; set H2_FEATURES=-host-light for a full headless fork");
-    }
-    if audit && fork {
-        bail!("audit requires a fresh boot per run");
-    }
     if cloud_provider {
         if audit {
             bail!("audit requires local sim batches");
         }
-        if fork
-            || keep
+        if keep
             || common.disc.is_some()
             || common.out.is_some()
             || common.data.is_some()
@@ -789,18 +651,6 @@ fn batch(args: Vec<String>) -> Result<()> {
     } else if live.is_some() || token.is_some() {
         bail!("--live and --token require --provider cloud");
     }
-    if fork
-        && b.runs.iter().any(|r| {
-            r.config
-                .bots
-                .iter()
-                .any(|b| b.kind == sim::config::SeatKind::Phantom)
-        })
-    {
-        bail!(
-            "distributed runs need a fresh System Link session per game; remove --fork or fork = true"
-        );
-    }
     let parallel = max_parallel
         .or(parallel)
         .or(b.config.parallel)
@@ -814,12 +664,11 @@ fn batch(args: Vec<String>) -> Result<()> {
         .max(1);
     let arms: Vec<String> = b.arms.iter().map(|a| a.name.clone()).collect();
     println!(
-        "{} runs, {} at a time, arms {}, into {}{}",
+        "{} runs, {} at a time, arms {}, into {}",
         b.runs.len(),
         parallel,
         arms.join(" vs "),
         b.out.display(),
-        if fork { ", forked from spawn" } else { "" }
     );
     for r in &b.runs {
         let bots: Vec<String> = r
@@ -828,9 +677,8 @@ fn batch(args: Vec<String>) -> Result<()> {
             .iter()
             .map(|x| {
                 format!(
-                    "{}:{:?}:{}",
+                    "{}:{}",
                     x.name.as_deref().unwrap_or("bot"),
-                    x.kind,
                     x.arm.as_deref().unwrap_or("-")
                 )
             })
@@ -848,7 +696,7 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     if cloud_provider {
         let client = cloud::Client::open(live, token, common.as_tag.as_deref())?;
-        prepare_output(&b, &file, &arms, false, Some(client.batch_id()))?;
+        prepare_output(&b, &file, &arms, Some(client.batch_id()))?;
         println!("Live batch {}", client.batch_id());
         let started = Instant::now();
         let failed = client.run(&b, parallel, budget);
@@ -862,12 +710,14 @@ fn batch(args: Vec<String>) -> Result<()> {
         Some(t) => boot::tier::Choice::parse(t)?,
         None => boot::tier::Choice::Clang,
     };
-    if boot::tier::plan(&xbe, &common.out(), choice).build {
+    let plan = plan_sim_module(&xbe, &common.out(), choice)?;
+    if plan.build {
         bail!("h2 sim batch: the image isn't built; `h2 build` first (sim never builds)");
     }
+    anyhow::ensure!(!audit || plan.tier != boot::tier::Tier::Host,
+        "sim batch audit requires a full generated module");
     let shared = common.data();
     std::fs::create_dir_all(&b.out)?;
-    let snapshots = b.out.join("snapshots");
     let batch_id = upload.then(live_proto::sign::random_id);
     let locks = b.out.join(".live-locks");
     if let Some(id) = &batch_id {
@@ -875,32 +725,8 @@ fn batch(args: Vec<String>) -> Result<()> {
         println!("Live batch {id}");
     }
     let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
-    prepare_output(&b, &file, &arms, fork, batch_id.as_deref())?;
+    prepare_output(&b, &file, &arms, batch_id.as_deref())?;
     common.disc = Some(disc);
-    // --fork: one seed run per map and game type, first.
-    let mut forks = std::collections::BTreeMap::new();
-    if fork {
-        for (n, r) in b.runs.iter().enumerate() {
-            let name = snapshot_name(&r.map, &r.config.game_type);
-            if forks.contains_key(&name) {
-                continue;
-            }
-            let seed = RunDir::new(&b.out, &format!("seed-{}", sim::config::safe(&name)));
-            std::fs::create_dir_all(&seed.dir)?;
-            std::fs::write(seed.matched(), toml::to_string(&r.config)?)?;
-            make_data(&seed, &shared)?;
-            stage_map_pack(&seed, &shared, &r.map)?;
-            let got = seed_snapshot(&common, &seed, &name, &snapshots, 10_000 + n);
-            match &got {
-                Ok(()) => println!("fork: {name} saved"),
-                Err(e) => println!("fork: {name}: {e:#}; its runs boot on their own"),
-            }
-            if !keep {
-                let _ = std::fs::remove_dir_all(seed.data());
-            }
-            forks.insert(name, got.is_ok());
-        }
-    }
     let next = AtomicUsize::new(0);
     let lines = Mutex::new(Vec::new());
     let failed = AtomicUsize::new(0);
@@ -912,15 +738,22 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let n = next.fetch_add(1, Ordering::Relaxed);
                     let Some(r) = b.runs.get(n) else { break };
                     let rd = RunDir::new(&b.out, &r.id);
-                    let name = snapshot_name(&r.map, &r.config.game_type);
-                    let from = (fork && forks.get(&name) == Some(&true)).then_some(name.as_str());
-                    let how = make_data(&rd, &shared)
+                    let result = make_data(&rd, &shared)
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
-                        .and_then(|()| run_child(&common, &rd, from, &snapshots, n, batch, audit))
-                        .unwrap_or_else(|e| {
+                        .and_then(|()| {
+                            let status = spawn(&common, &rd, batch, audit)?.wait()?;
+                            if !status.success() {
+                                bail!("sim child exited {status}. See {}", rd.log().display());
+                            }
+                            Ok(())
+                        });
+                    let how = match result {
+                        Ok(()) => "boot".into(),
+                        Err(e) => {
                             failed.fetch_add(1, Ordering::Relaxed);
                             format!("failed: {e:#}")
-                        });
+                        }
+                    };
                     if !keep {
                         let _ = std::fs::remove_dir_all(rd.data());
                     }
@@ -974,7 +807,6 @@ fn prepare_output(
     b: &sim::config::Batch,
     file: &Path,
     arms: &[String],
-    fork: bool,
     batch_id: Option<&str>,
 ) -> Result<()> {
     std::fs::create_dir_all(&b.out)?;
@@ -985,7 +817,6 @@ fn prepare_output(
             "live_batch_id": batch_id,
             "arms": arms,
             "mode": b.mode.name(),
-            "fork": fork,
             "runs": b.runs.iter().map(|r| &r.id).collect::<Vec<_>>(),
         }))?,
     )?;
@@ -1020,11 +851,6 @@ fn finish_batch(b: &sim::config::Batch, failed: usize, started: Instant) -> Resu
     );
     print!("{table}");
     println!("\n{}", b.out.join("compare.json").display());
-    if b.mode == sim::config::Mode::SeatSwap
-        && c.seat_swap.as_ref().map_or(0, |s| s.pairs) * 2 != b.runs.len()
-    {
-        bail!("seat comparison is incomplete; see compare.json and the run logs");
-    }
     if failed > 0 {
         bail!("{failed} sim runs failed; see the run logs");
     }
@@ -1071,21 +897,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_names_are_store_names() {
-        assert_eq!(
-            snapshot_name("lockout", "slayer"),
-            "sim.lockout.slayer.spawn"
-        );
-        assert_eq!(snapshot_name("My Map", "CTF"), "sim.my_map.ctf.spawn");
-        assert!(snapshot_name(&"x".repeat(100), "slayer").len() <= 64);
-    }
-
-    #[test]
-    fn sockets_are_short() {
-        assert!(socket_for(99_999).display().to_string().len() < 100);
-    }
-
-    #[test]
     fn a_child_gets_its_own_files() {
         let common = Common {
             disc: Some("/d/halo2.iso".into()),
@@ -1095,7 +906,7 @@ mod tests {
             ..Default::default()
         };
         let rd = RunDir::new(Path::new("/res"), "lockout-s1");
-        let a = child_args(&common, &rd, Some(Path::new("/tmp/s.sock")));
+        let a = child_args(&common, &rd);
         assert_eq!(
             a,
             [
@@ -1111,9 +922,7 @@ mod tests {
                 "--out",
                 "/o",
                 "--tier",
-                "fast",
-                "--socket",
-                "/tmp/s.sock"
+                "fast"
             ]
         );
         // The shared data directory is never the child's.
@@ -1142,7 +951,7 @@ mod tests {
             index,
             name: format!("b{index}"),
             bot: true,
-            port: Some(index),
+            seat: Some(index),
             arm: Some(arm.into()),
             kills,
             ..Default::default()
@@ -1162,6 +971,7 @@ mod tests {
             players: vec![p(0, arm_a, 1), p(1, arm_b, kills_b)],
             kills: vec![],
             nav: "loaded".into(),
+            dispatch_per_tick: None,
             notes: vec![],
         }
     }

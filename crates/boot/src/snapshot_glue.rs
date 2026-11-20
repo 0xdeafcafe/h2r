@@ -45,6 +45,13 @@ pub trait Part {
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String>;
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String>;
+    /// [`Part::load`] with guest RAM mapped copy-on-write over `ram`, an
+    /// uncompressed RAM image the save wrote beside the snapshot. The
+    /// default loads normally; the guest part is the one that can do this.
+    fn load_cow(&mut self, snapshot: &Snapshot<'_>, ram: &Path) -> Result<(), String> {
+        let _ = ram;
+        self.load(snapshot)
+    }
 }
 
 /// The device first: its save writes guest memory. Guest RAM after every
@@ -87,16 +94,27 @@ pub fn save_parts(
 }
 
 /// Loads every part in [`LOAD_ORDER`]; the names of the parts loaded. A
-/// failure part way leaves the machine part loaded, and says so.
+/// failure part way leaves the machine part loaded, and says so. `cow`:
+/// the guest part loads its RAM copy-on-write over that image instead of
+/// decoding the snapshot's RAM in.
 pub fn load_parts(
     parts: &mut [Box<dyn Part + '_>],
     snapshot: &Snapshot<'_>,
+    cow: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     check_names(parts)?;
     let mut applied = Vec::new();
     for name in LOAD_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
-            p.load(snapshot).map_err(|e| {
+            let loaded = if name == "guest" {
+                match cow {
+                    Some(ram) => p.load_cow(snapshot, ram),
+                    None => p.load(snapshot),
+                }
+            } else {
+                p.load(snapshot)
+            };
+            loaded.map_err(|e| {
                 let done = if applied.is_empty() {
                     "nothing was loaded".to_owned()
                 } else {
@@ -352,6 +370,7 @@ impl Host<'_> {
             shelf: shelf.clone(),
             hash: Box::new(move || lockstep::hash_guest(&rt.memory())),
             presents,
+            rt: Some(rt),
         }
     }
 }
@@ -364,6 +383,9 @@ pub struct BootMachine<'a> {
     pub shelf: Shelf,
     pub hash: Box<dyn Fn() -> lockstep::RamHash + 'a>,
     pub presents: u64,
+    /// The runtime, for the raw RAM image a cow save writes and a cow
+    /// load maps. `None` in tests, which exercise no cow path.
+    pub rt: Option<&'a runtime::Runtime>,
 }
 
 impl BootMachine<'_> {
@@ -407,7 +429,7 @@ impl agent::SnapshotMachine for BootMachine<'_> {
         out
     }
 
-    fn save(&mut self, name: &str, replace: bool, at: &At) -> Result<Saved, RpcError> {
+    fn save(&mut self, name: &str, replace: bool, at: &At, cow: bool) -> Result<Saved, RpcError> {
         let mut shelf = self.shelf.clone();
         if !replace && agent::Snapshots::exists(&mut shelf, name) {
             return Err(RpcError::new(
@@ -435,6 +457,15 @@ impl agent::SnapshotMachine for BootMachine<'_> {
             ));
         }
         let path = self.shelf.store().save(name, &bytes).map_err(unavailable)?;
+        if cow {
+            let rt = self.rt.ok_or_else(|| {
+                unavailable("this machine has no runtime for a RAM image")
+            })?;
+            let sidecar = ram_image_path(&path);
+            write_ram_image(&sidecar, rt.memory().physical_ram())
+                .map_err(|e| unavailable(format!("{}: {e}", sidecar.display())))?;
+            eprintln!("snapshots: RAM image {}", sidecar.display());
+        }
         let sections: Vec<String> = Snapshot::open(&bytes, &self.shelf.build)
             .map(|s| s.tags().iter().map(ToString::to_string).collect())
             .unwrap_or_default();
@@ -447,7 +478,7 @@ impl agent::SnapshotMachine for BootMachine<'_> {
         })
     }
 
-    fn load(&mut self, name: &str) -> Result<Loaded, RpcError> {
+    fn load(&mut self, name: &str, cow: bool) -> Result<Loaded, RpcError> {
         let bytes = self.shelf.store().load(name).map_err(|e| match e {
             snapshot::Error::NoSuchSnapshot(_) | snapshot::Error::BadName(_) => {
                 RpcError::new(code::INVALID_PARAMS, e.to_string())
@@ -455,7 +486,29 @@ impl agent::SnapshotMachine for BootMachine<'_> {
             e => unavailable(e),
         })?;
         let snap = Snapshot::open(&bytes, &self.shelf.build).map_err(unavailable)?;
-        let applied = load_parts(&mut self.parts, &snap).map_err(unavailable)?;
+        let cow_path = cow
+            .then(|| {
+                let image = ram_image_path(
+                    &self
+                        .shelf
+                        .store()
+                        .dir()
+                        .join(format!("{name}.{}", snapshot::store::EXTENSION)),
+                );
+                if !image.is_file() {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        format!(
+                            "{} has no RAM image; save it again with \"cow\": true",
+                            image.display()
+                        ),
+                    ));
+                }
+                Ok(image)
+            })
+            .transpose()?;
+        let applied =
+            load_parts(&mut self.parts, &snap, cow_path.as_deref()).map_err(unavailable)?;
         let hash = check_hash(&snap, &(self.hash)());
         let notes: BTreeMap<String, String> = snap.header.notes.iter().cloned().collect();
         Ok(Loaded {
@@ -468,6 +521,34 @@ impl agent::SnapshotMachine for BootMachine<'_> {
             ..Default::default()
         })
     }
+}
+
+/// The raw RAM image a cow save writes beside the snapshot file.
+fn ram_image_path(snapshot: &Path) -> PathBuf {
+    snapshot.with_extension("ram")
+}
+
+/// Write `ram` to `path` as a sparse image: zero pages are holes, so every
+/// process mapping the file shares one zero page for them, and the file's
+/// length is the whole of RAM.
+fn write_ram_image(path: &Path, ram: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    const PAGE: usize = 4096;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut out = std::fs::File::create(&tmp)?;
+    let mut at = 0usize;
+    while at < ram.len() {
+        let page = &ram[at..(at + PAGE).min(ram.len())];
+        if page.iter().any(|&b| b != 0) {
+            out.seek(SeekFrom::Start(at as u64))?;
+            out.write_all(page)?;
+        }
+        at += page.len();
+    }
+    out.set_len(ram.len() as u64)?;
+    out.flush()?;
+    drop(out);
+    std::fs::rename(&tmp, path)
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -487,6 +568,11 @@ impl Part for GuestPart<'_> {
     }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
         snapshot::guest::load_guest(snapshot, &mut self.0.memory(), None).map_err(err)?;
+        snapshot::guest::load_tsc(snapshot, self.0).map_err(err)
+    }
+    fn load_cow(&mut self, snapshot: &Snapshot<'_>, ram: &Path) -> Result<(), String> {
+        let layout = snapshot::guest::load_layout(snapshot).map_err(err)?;
+        self.0.memory().restore_cow(&layout, ram).map_err(err)?;
         snapshot::guest::load_tsc(snapshot, self.0).map_err(err)
     }
 }

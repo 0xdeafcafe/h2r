@@ -500,10 +500,8 @@ impl Live {
         policy: Policy,
         timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
-        let costs = crate::host_costs::HostCosts::configured(
-            std::env::var("LIVE_HOST_PRICES").ok().as_deref(),
-            std::env::var("LIVE_HOST_BUDGET_USD_MONTH").ok().as_deref(),
-        )?;
+        let costs =
+            crate::host_costs::HostCosts::from_env(&|name| std::env::var(name).ok(), None)?;
         Self::start_with_host_costs(store, identity, policy, timers, costs).await
     }
 

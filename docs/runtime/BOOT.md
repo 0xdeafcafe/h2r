@@ -44,8 +44,10 @@ copies. Nothing is ever written next to it.
 | `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
 | `H2_BOOT_TRAMPOLINE=1` | register every generated entry through the old fallback trampoline instead of as itself; this also keeps every direct call from matching, as before 2026-11. For A/B comparisons |
-| `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
+| `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics, each sampled bot join gate, and repeat messages while Mods has no in-game Live session. Also enables `H2_FEATURE_PLAN` detail. |
+| `H2_FEATURE_PLAN=1` | list features, hooks, entries, locale sources, and hot-point warnings. Also log the first time each hook runs and show the skull and health install reports. The default prints a one-line installation summary and any problems. |
 | `H2_FEATURES=impl.render.native=off` | disable the native GPU render stages. An explicit stage switch wins in either order. For example, `impl.render.native=off,impl.render.native_world=on` enables the world and its material programs. The `impl.render` switch still controls the lifted render-loop ports independently. |
+| `H2_NATIVE_LISTS_COMPARE=1` | compare the Rust scene list builders with the original guest output and log the first mismatch at each seam. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders). |
 | `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines and comparison dumps. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
@@ -74,7 +76,7 @@ copies. Nothing is ever written next to it.
 | `H2_AGENT=<socket>` | listen on a Unix socket for the agent API (JSON-RPC: status, waits, pause and step, world reads, frame counters; [agent-api.md](agent-api.md)). `h2 serve` is `h2 run` with this on and no building. Adds the `agent` feature, a tick observer, so compare runs that all have it on or all off |
 | `H2_PERF_FROM=N` or `level` | with an `h2` built with `--features perf`: open `perf::Session::from_env()` (`H2_PROFILE`, `H2_TIMELINE`) at present N, finished at the end of the run (docs/perf/profiling.md "Boot hook"). `level`: at the first present after the level loaded (`H2_LEVEL`'s, else the first game that is not the main menu); the run prints `perf: session from present N, the first after <map> loaded` |
 | `H2_LEVEL=<map>`, `H2_DIFFICULTY=easy\|normal\|heroic\|legendary` | start that level (a map file name) in place of the main menu with one default player: no title, profile or menus. A campaign level (`03a_oldmombasa`) at that difficulty (default normal); a multiplayer map (`ascension`) as a local Slayer game with the default variant. A name the disc lacks stops the run with the list. `h2 play --level`/`--difficulty` are the same ([level-boot.md](level-boot.md)) |
-| `H2_SIM=<match file>`, `H2_SIM_REPORT=<file>` | sim mode: the match file's multiplayer map and 1 to 4 bots through the level boot, no keyboard pad, the world render skipped (`sim-frame`), no kernel trace file, no background nav builds, the match's pace (unpaced by default, over `H2_BOOT_REALTIME`); the run ends at the game's end, `max_ticks`, `max_wall_s` or `match.stop`, and writes the JSON report to `H2_SIM_REPORT`. Refuses `H2_BOOT_GFX` and `H2_BOTS`. `h2 sim run` sets these ([sim.md](sim.md)) |
+| `H2_SIM=<match file>`, `H2_SIM_REPORT=<file>` | sim mode: a headless System Link host with the match file's multiplayer map and 1 to 15 phantom peers, no keyboard pad, the world render skipped (`sim-frame`), no kernel trace file, no background nav builds, the match's pace (unpaced by default, over `H2_BOOT_REALTIME`); the run ends at the game's end, `max_ticks`, `max_wall_s` or `match.stop`, and writes the JSON report to `H2_SIM_REPORT`. Refuses `H2_BOOT_GFX`. `h2 sim run` sets these ([sim.md](sim.md)) |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
 | `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
 | `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, `Cargo.lock`, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
@@ -91,6 +93,12 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 | `H2_BOOT_DUMP=addr:len,...` | print guest words at the end of the run (hex) |
 | `H2_BOOT_DUMP_RAW=addr:len:file;...` | save raw guest bytes at the end of the run (hex address and length) |
+
+The startup log shows the selected Live account before the game signs
+in. The Mods list uses the in-game Xbox Live session and reports once
+when that session is unavailable. The controller-speaker indexer skips
+empty cache slots, including slots whose headers the game has zeroed
+while replacing a map.
 
 The run prints a report when it ends. It covers:
 
@@ -307,19 +315,13 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   presents the run prints `present N: last 100 at X fps`.
 - `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs; drop
   it for a screenshot every N.
-- The fallback reads the image's analysis from the boot cache, where
-  `h2 build` left it, so a run after a build doesn't analyze again. Only a
-  run whose analyzer has no cached analysis yet (a run with
-  `H2_BOOT_CACHE=off`, or a dylib built elsewhere) analyzes the image for
-  the fallback (15-20 s alone); later runs read the unread-target cache
-  and analyze in the background, so compare second runs. When only the
-  unread-target file is missing (the analyzer or `fallback.rs` changed),
-  the newest one the same image left under other sources stands in and
-  the run starts at once: the analysis checks it in the background,
-  saves this build's file and registers any target it adds
-  (`fallback: unread jump-table targets checked: the same`). Only a cache
-  with no unread-target file for the image at all waits for the analysis
-  before the first frame.
+- The fallback loads or computes the image analysis on a background
+  thread. It reuses the cache from `h2 build` when available, and reads
+  the unread-target cache for the current image and analyzer. Boot
+  continues on a cache miss. An unsupported instruction or a transfer
+  that needs the fallback can still wait for the analysis. The run
+  reports waits over 100 ms, and `H2_BOOT_VERBOSE=1` shows when analysis
+  finishes. Compare warm runs to avoid competition from cold analysis.
 - Numbers are only meaningful on a quiet machine: with heavy builds
   running alongside (load average 170-430) the same run fell to a
   fraction of its quiet-machine rate, and the analysis went from 15 s to
@@ -375,7 +377,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1): remove |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `start_analysis` | analyze (#1): remove |
 | Interpreting past instructions the lifter doesn't lower | fallback.rs `recover` (the runtime's stop-recovery hook), `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 

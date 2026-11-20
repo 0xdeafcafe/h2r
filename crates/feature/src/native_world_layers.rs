@@ -58,6 +58,12 @@ pub fn current() -> Option<Layer> {
     LAYER.get()
 }
 
+/// The pipelined executor stopped inside this layer. Its remaining
+/// handlers will run on the thread that takes the suspended render stack.
+pub(crate) fn replace(layer: Option<Layer>) -> Option<Layer> {
+    LAYER.replace(layer)
+}
+
 pub fn compare_on(switches: &crate::Switches) -> &'static [u64] {
     if on(switches) || crate::switches::native_render_default(switches) {
         compare_frames()

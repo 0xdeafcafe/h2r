@@ -226,6 +226,15 @@ impl State {
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
         self.accounts = accounts;
     }
+    pub(crate) fn signed_in_account(&self, controller: u32) -> Option<(live_proto::Xuid, String)> {
+        let xuid = *self.user_ids.get(controller as usize)?;
+        let account = self
+            .accounts
+            .iter()
+            .find(|account| account.xuid == xuid && account.key.is_some())?;
+        Some((live_proto::Xuid(xuid), account.gamertag.clone()))
+    }
+
     /// The sign-in prompt now, if a sign-in is waiting for one.
     pub fn signin(&mut self) -> Option<crate::signin::Prompt> {
         self.signin.as_mut().map(|s| s.prompt())
@@ -1045,6 +1054,19 @@ impl State {
             );
         }
     }
+    fn mod_list_session(&self) -> std::result::Result<(&Service, Session), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        if !self.connected() || !(0..4).any(|c| self.service_user(c) != 0) {
+            return Err(ModsError::NotSignedIn);
+        }
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        Ok((service, session))
+    }
+    /// Whether a player can ask for the mod repository, without making a request.
+    pub fn check_mod_list(&self) -> std::result::Result<(), crate::mods::ModsError> {
+        self.mod_list_session().map(|_| ())
+    }
     /// A page of the mod repository ([`crate::Hle::mod_list`]).
     pub fn mod_list(
         &self,
@@ -1053,8 +1075,7 @@ impl State {
         done: crate::mods::ListDone,
     ) -> std::result::Result<(), crate::mods::ModsError> {
         use crate::mods::ModsError;
-        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
-        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        let (service, session) = self.mod_list_session()?;
         service
             .mods(
                 &session,

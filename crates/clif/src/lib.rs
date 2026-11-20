@@ -42,15 +42,7 @@ pub fn stem(entry: u32) -> String {
     format!("shard_{:05x}", entry >> emit::SHARD_SHIFT)
 }
 
-/// Cranelift's optimisation level for the fast tier: `H2_CLIF_OPT`
-/// (`none`, `speed`), default `speed`.
-pub fn opt_level() -> Result<&'static str, String> {
-    match std::env::var("H2_CLIF_OPT").ok().as_deref() {
-        None | Some("") | Some("speed") => Ok("speed"),
-        Some("none") => Ok("none"),
-        Some(v) => Err(format!("H2_CLIF_OPT={v}: expected none or speed")),
-    }
-}
+pub use emit::compile::clif_opt_level as opt_level;
 
 /// The host target, set up for objects linked into a dylib.
 pub fn isa() -> Result<OwnedTargetIsa, String> {

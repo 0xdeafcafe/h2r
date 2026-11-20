@@ -14,8 +14,22 @@ type SafeFn =
 
 #[derive(Clone)]
 pub(crate) enum Handler {
+    /// A generated registry entry eligible for a direct transfer.
     Native(GuestFn),
+    /// A standalone ABI handler or override. It always uses the runner.
+    NativeAdapter(GuestFn),
     Rust(Arc<SafeFn>),
+}
+
+/// A resume always runs its registered original, which cannot be replaced.
+/// Store it alongside the selector so a lookup does not probe both maps.
+#[derive(Clone)]
+struct Resume {
+    handler: Handler,
+    selector: u32,
+    owner: u32,
+    // None on the normal generated path, which needs no override lookup.
+    native_owner: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -23,9 +37,10 @@ pub struct Override {
     pub name: String,
     handler: Handler,
     pub enabled: bool,
+    resume_body: Option<(&'static [u32], Handler)>,
     /// The handler acts only on the context it runs on (its registers,
-    /// stack and the memory that context sees) and returns without a Rust
-    /// continuation, so a second executor may run it as it is
+    /// stack and the memory that context sees). Any suspended state must
+    /// be portable with the guest stack so a second executor can run it
     /// ([`Dispatch::mark_context_only`]).
     pub context_only: bool,
 }
@@ -33,12 +48,15 @@ pub struct Override {
 /// See [`Dispatch::set_stop_recovery`].
 pub type StopRecovery = dyn Fn(&mut CpuAbi, &mut ExecCtx, TransferAbi) -> TransferAbi + Send + Sync;
 
+pub(crate) type EntryFallback = dyn Fn(u32) -> Option<Handler> + Send + Sync;
+
 #[derive(Default)]
 pub struct Dispatch {
     generated: HashMap<u32, Handler>,
     overrides: HashMap<u32, Override>,
-    resumes: HashMap<u32, (u32, u32)>,
+    resumes: HashMap<u32, Resume>,
     stop_recovery: Option<Arc<StopRecovery>>,
+    entry_fallback: Option<Arc<EntryFallback>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -139,6 +157,7 @@ impl Dispatch {
                 name,
                 handler,
                 enabled: true,
+                resume_body: None,
                 context_only: false,
             },
         )
@@ -214,15 +233,42 @@ impl Dispatch {
         owner: u32,
         start_pc: u32,
     ) -> Result<(), RegistrationError> {
-        if !self.generated.contains_key(&owner) {
-            return Err(RegistrationError::MissingOwner(owner));
+        let handler = self
+            .resolve_original(owner)
+            .ok_or(RegistrationError::MissingOwner(owner))?;
+        match self.resumes.entry(pc) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(RegistrationError::DuplicateResume(pc))
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Resume {
+                    handler,
+                    selector: start_pc,
+                    owner,
+                    native_owner: None,
+                });
+                Ok(())
+            }
         }
-        if self.resumes.contains_key(&pc) {
-            return Err(RegistrationError::DuplicateResume(pc));
-        }
-        self.resumes.insert(pc, (owner, start_pc));
-        Ok(())
     }
+    /// Let a stack-resident implementation receive returns at the original
+    /// call sites. Entry observers must run only at entry, so these invoke
+    /// the body directly. A disabled or replaced override uses the original
+    /// resume. Never create a selector the generated image did not export.
+    pub fn implement_resumes<F>(&mut self, owner: u32, sites: &'static [u32], body: F)
+    where
+        F: Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send + Sync + 'static,
+    {
+        let Some(entry) = self.overrides.get_mut(&owner) else { return };
+        entry.resume_body = Some((sites, Handler::Rust(Arc::new(body))));
+        for pc in sites {
+            if let Some(r) = self.resumes.get_mut(pc) {
+                r.native_owner = Some(owner);
+            }
+        }
+    }
+
     pub fn set_enabled(&mut self, addr: u32, enabled: bool) -> bool {
         self.overrides
             .get_mut(&addr)
@@ -270,6 +316,27 @@ impl Dispatch {
     pub(crate) fn stop_recovery(&self) -> Option<Arc<StopRecovery>> {
         self.stop_recovery.clone()
     }
+    /// Supply a handler for known targets with no entry or return resume.
+    /// The runtime calls `matches` outside the dispatch lock, and checks
+    /// execute permissions before calling the handler as for any other entry.
+    /// A true result must stay valid until the dispatch generation changes.
+    /// Isolated executors do not inherit this last-resort handler.
+    pub fn set_entry_fallback(
+        &mut self,
+        matches: impl Fn(u32) -> bool + Send + Sync + 'static,
+        run: impl Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        let handler = Handler::Rust(Arc::new(run));
+        self.entry_fallback = Some(Arc::new(move |pc| matches(pc).then(|| handler.clone())));
+    }
+
+    pub(crate) fn entry_fallback(&self) -> Option<Arc<EntryFallback>> {
+        self.entry_fallback.clone()
+    }
+
     /// A copy for a second executor ([`crate::executor`]): the generated
     /// handlers, resumes and stop recovery hook as they are, and each
     /// override, enabled or not, kept where it is
@@ -277,6 +344,7 @@ impl Dispatch {
     /// and otherwise replaced by `refuse(addr, name)` (enabled).
     pub(crate) fn fork(
         &self,
+        context_only: bool,
         keep: impl Fn(u32, &str) -> bool,
         refuse: impl Fn(u32, &str) -> Handler,
     ) -> Dispatch {
@@ -284,13 +352,14 @@ impl Dispatch {
             .overrides
             .iter()
             .map(|(&addr, o)| {
-                let o = if o.context_only || keep(addr, &o.name) {
+                let o = if (context_only && o.context_only) || keep(addr, &o.name) {
                     o.clone()
                 } else {
                     Override {
                         name: o.name.clone(),
                         handler: refuse(addr, &o.name),
                         enabled: true,
+                        resume_body: None,
                         context_only: false,
                     }
                 };
@@ -302,6 +371,7 @@ impl Dispatch {
             overrides,
             resumes: self.resumes.clone(),
             stop_recovery: self.stop_recovery.clone(),
+            entry_fallback: None,
         }
     }
     /// Use the title's generated functions in an isolated executor. HLE-only
@@ -324,9 +394,20 @@ impl Dispatch {
     pub(crate) fn resolve_original(&self, addr: u32) -> Option<Handler> {
         self.generated.get(&addr).cloned()
     }
-    /// The owner's original handler, its selector and the owner address.
+    /// The canonical generated handler and its image selector.
+    pub(crate) fn original_resume(&self, pc: u32) -> Option<(Handler,u32)> {
+        let r = self.resumes.get(&pc)?;
+        Some((self.resolve_original(r.owner)?, r.selector))
+    }
     pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32, u32)> {
-        let &(owner, selector) = self.resumes.get(&pc)?;
-        Some((self.resolve_original(owner)?, selector, owner))
+        let entry = self.resumes.get(&pc)?;
+        if let Some(owner) = entry.native_owner
+            && let Some(o) = self.overrides.get(&owner).filter(|o| o.enabled)
+            && let Some((sites, body)) = &o.resume_body
+            && sites.contains(&pc)
+        {
+            return Some((body.clone(), pc, owner));
+        }
+        Some((entry.handler.clone(), entry.selector, entry.owner))
     }
 }

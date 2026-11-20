@@ -65,7 +65,7 @@ impl SnapshotMachine for Machine {
             Vec::new()
         }
     }
-    fn save(&mut self, name: &str, _replace: bool, at: &At) -> Result<Saved, RpcError> {
+    fn save(&mut self, name: &str, _replace: bool, at: &At, _cow: bool) -> Result<Saved, RpcError> {
         self.calls.push(format!("save {name}"));
         let tick = at.tick.unwrap_or(0);
         self.shelf.lock().unwrap().insert(name.into(), tick);
@@ -77,7 +77,7 @@ impl SnapshotMachine for Machine {
             ..Default::default()
         })
     }
-    fn load(&mut self, name: &str) -> Result<Loaded, RpcError> {
+    fn load(&mut self, name: &str, _cow: bool) -> Result<Loaded, RpcError> {
         self.calls.push(format!("load {name}"));
         let tick = self.shelf.lock().unwrap()[name];
         Ok(Loaded {

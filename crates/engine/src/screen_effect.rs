@@ -367,6 +367,19 @@ fn vertex(
     Ok(Vertex { texcoords, position: [x, y] })
 }
 
+/// Build one strip from the screen effect's live pass and corner rows.
+pub fn strip_vertices(
+    mem: &dyn GuestMemory,
+    pass: u32,
+    bounds: [u32; 4],
+    rows: &[[[u32; 4]; 2]],
+    mxcsr: u32,
+) -> Result<Vec<Vertex>, Error> {
+    let kind = mem.u16(pass.checked_add(0x60).ok_or(Error::Data)?)?;
+    let mut sse = Sse { mxcsr };
+    rows.iter().flatten().map(|&corner| vertex(mem, &mut sse, pass, corner, bounds, kind)).collect()
+}
+
 /// The most passes and convolutions a plan takes.
 pub const MAX_PASSES: u32 = 64;
 

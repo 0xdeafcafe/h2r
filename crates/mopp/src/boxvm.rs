@@ -112,10 +112,9 @@ fn be(code: &[u8], at: usize, n: usize) -> Result<i64, Fault> {
     Ok(v)
 }
 
-/// Lower and upper projections of the box for a diagonal split, and the
-/// thresholds' multiplier and constant (E `0x002ff8de..0x002ffa4f`).
-fn diagonal(st: &State, op: u8) -> (i64, i64, i64, i64) {
-    let (s, m, k): ([i64; 3], i64, i64) = match op {
+/// Axis signs, threshold multiplier and bias of a diagonal split.
+pub fn diagonal_plane(op: u8) -> ([i64; 3], i64, i64) {
+    match op {
         0x13 => ([0, 1, 1], 2, 0),
         0x14 => ([0, 1, -1], 2, 0xff),
         0x15 => ([1, 0, 1], 2, 0),
@@ -126,17 +125,23 @@ fn diagonal(st: &State, op: u8) -> (i64, i64, i64, i64) {
         0x1a => ([1, 1, -1], 3, 0xff),
         0x1b => ([1, -1, 1], 3, 0xff),
         _ => ([1, -1, -1], 3, 0x1fe),
-    };
+    }
+}
+
+/// Lower and upper projections of the box for a diagonal split, and the
+/// thresholds' multiplier and constant (E `0x002ff8de..0x002ffa4f`).
+pub fn diagonal(lo: [i64; 3], hi: [i64; 3], op: u8) -> (i64, i64, i64, i64) {
+    let (s, m, k) = diagonal_plane(op);
     let (mut lower, mut upper) = (0, 0);
     for (a, &sign) in s.iter().enumerate() {
         match sign {
             1 => {
-                lower += st.l[a];
-                upper += st.h[a];
+                lower += lo[a];
+                upper += hi[a];
             }
             -1 => {
-                lower -= st.h[a];
-                upper -= st.l[a];
+                lower -= hi[a];
+                upper -= lo[a];
             }
             _ => {}
         }
@@ -156,13 +161,13 @@ pub fn query_box(code: &Code, aabb: &Aabb) -> Result<Vec<u32>, Fault> {
 
 /// A two-plane split: low child when `lower < low_max`, high child when
 /// `upper > high_min` (E `0x002ffa52`, `0x002ffa85`, `0x002ffafe`).
-enum Visit {
+pub enum Visit {
     None,
     Low,
     High,
     Both,
 }
-fn two_plane(lower: i64, upper: i64, low_max: i64, high_min: i64) -> Visit {
+pub fn two_plane(lower: i64, upper: i64, low_max: i64, high_min: i64) -> Visit {
     match (lower < low_max, upper > high_min) {
         (false, false) => Visit::None,
         (true, false) => Visit::Low,
@@ -215,7 +220,7 @@ fn walk(
                     let a = usize::from(op - 0x10);
                     (st.l[a], st.h[a], 1, 0)
                 } else {
-                    diagonal(&st, op)
+                    diagonal(st.l, st.h, op)
                 };
                 let low_max = byte(code, pc + 1)? * m - k;
                 let high_min = byte(code, pc + 2)? * m - k;
@@ -284,14 +289,8 @@ fn walk(
                 pc += 7;
             }
             0x30..=0x53 => {
-                let key = match op {
-                    0x30..=0x4f => i64::from(op - 0x30),
-                    0x50 => byte(code, pc + 1)?,
-                    0x51 => be(code, pc + 1, 2)?,
-                    0x52 => be(code, pc + 1, 3)?,
-                    _ => be(code, pc + 1, 4)?,
-                };
-                out.push(st.key_offset.wrapping_add(key as u32));
+                let key = crate::code::terminal_key(op, |n| be(code, pc + 1, n).map(|v| v as u32))?;
+                out.push(st.key_offset.wrapping_add(key));
                 return Ok(());
             }
             0x60 => {

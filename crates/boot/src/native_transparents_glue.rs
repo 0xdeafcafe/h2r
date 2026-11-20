@@ -4,7 +4,7 @@
 //! texture residency. The backend still owns ordering and attachments.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use d3d::device::IndexedGeometry;
 use d3d::{CachedBytes, ResolvedDraw, StreamBytes, StreamData};
@@ -17,9 +17,53 @@ use native_render::transparent::{Entry, Source};
 use native_render::transparent_streams;
 
 use crate::native_world_glue::parse_probe;
+use native_render::world_layers_gpu::{Cache as IndexedCache, IndexedPass};
+use timeline::native::Stage;
+
+struct Walk<B: d3d::Backend> {
+    device: d3d::abi::SharedDevice<B>,
+    cache: Arc<IndexedCache>,
+}
+
+struct IndexedRange<'a> {
+    stage: Stage,
+    frame: u64,
+    view: u32,
+    cache: &'a Arc<IndexedCache>,
+}
+
+impl d3d::DrawAdmission for IndexedRange<'_> {
+    fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let pass = IndexedPass::new(snapshot.draw, Arc::clone(self.cache), self.frame, None)?;
+        Some((d3d::ExternalPlan {
+            stage: self.stage,
+            view: self.view,
+            ranges: 1,
+            slots: Vec::new(),
+        }, Box::new(pass)))
+    }
+}
+
+impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B> {
+    fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange) -> bool {
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let candidate = IndexedRange { stage, view, frame: crate::d3d_diag::presents() + 1, cache: &self.cache };
+        let primitive = if range.strip { PrimitiveType::TriangleStrip } else { PrimitiveType::TriangleList };
+        self.device.lock().is_ok_and(|mut device| {
+            device.try_native_indexed_draw(
+                &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,
+            ).ok() == Some(true)
+        })
+    }
+}
+
 
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    if !feature::Switches::from_env().is_ok_and(|s| native_transparents::on(&s)) {
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    if native_transparents::walk_on(&switches) || feature::native_first_person::walk_on(&switches) {
+        native_transparents::set_walk_host(Arc::new(Walk { device: device.clone(), cache: Arc::default() }));
+    }
+    if !native_transparents::on(&switches) {
         return;
     }
     if let Ok(mut device) = device.lock() {

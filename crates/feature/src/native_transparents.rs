@@ -5,15 +5,127 @@
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use engine::{memory::GuestMemory, points};
 use native_render::camera::GuestRead;
 use native_render::transparent::{self, Entry, Source};
 
-use crate::{BuildError, Builder, Feature, Manifest};
+use crate::{BuildError, Builder, Feature, Flow, Manifest};
+use runtime::abi::TransferAbi;
+use timeline::native::{Metric, Stage};
 
 pub const ID: &str = "native-transparents";
 pub const SWITCH: &str = "impl.render.native_transparents";
+pub const WALK_SWITCH: &str = "impl.render.native_transparents_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+}
+
+// The contiguous-range branch of the standard geometry emitter, after
+// state commit. EDI holds the index array, ESI its count, BL its topology.
+pub(crate) const GEOMETRY_RANGE_READY: points::Point = points::Point::new(
+    "SCENE_GEOMETRY_RANGE_READY", 0x0004_dad0, points::Sig::Site, "docs/graphics/native-renderer.md",
+);
+// All exits from the sorted loop join here, before the guest view cleanup.
+pub(crate) const SCENE_TRANSPARENTS_END: points::Point = points::Point::new(
+    "SCENE_TRANSPARENTS_END", 0x0001_e406, points::Sig::Site, "docs/graphics/native-renderer.md",
+);
+const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
+const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
+const TRANSPARENT_DRAW_CALLER: u32 = 0x0004_1010;
+const LAYER_DRAW_CALLER: u32 = 0x0003_bc90;
+const FIRST_PERSON_LAYER_FRAME: u32 = 0xf0a4;
+const SORTED_HANDLER_RETURN: u32 = 0x0001_e3f3;
+const LIST_COUNT: u32 = 0x004b_6280;
+const LIST_FIRST: u32 = 0x004b_6284;
+const LIST_ENTRIES: u32 = 0x004b_6288;
+const LIST_ORDER: u32 = 0x004b_628c;
+const ENTRY_BYTES: u32 = 0x70;
+const MAX_SORTED: u32 = 0x400;
+
+pub struct IndexRange {
+    pub indices: u32,
+    pub count: u32,
+    pub strip: bool,
+}
+
+pub trait WalkHost: Send + Sync {
+    fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool;
+}
+
+static WALK: Mutex<Option<Arc<dyn WalkHost>>> = Mutex::new(None);
+
+pub fn set_walk_host(host: Arc<dyn WalkHost>) {
+    *WALK.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+fn sorted_data(mem: &dyn GuestMemory, ordinal: u32) -> Option<u32> {
+    let first = mem.u32(LIST_FIRST).ok()?;
+    let end = mem.u32(LIST_COUNT).ok()?;
+    if end > MAX_SORTED || ordinal >= end.checked_sub(first)? {
+        return None;
+    }
+    let order = mem.u32(LIST_ORDER).ok()?;
+    let entries = mem.u32(LIST_ENTRIES).ok()?;
+    if order == 0 || entries == 0 {
+        return None;
+    }
+    let index = u32::from(mem.u16(order.checked_add(2 * ordinal)?).ok()?);
+    if !(first..end).contains(&index) {
+        return None;
+    }
+    entries.checked_add(index * ENTRY_BYTES + transparent::DATA_OFFSET)
+}
+
+thread_local! {
+    static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+fn walk_stage(mem: &dyn GuestRead, esp: u32, transparents: bool, first_person: bool) -> Option<Stage> {
+    let word = |offset| mem.read_u32(esp.checked_add(offset)?);
+    if word(0x18)? != GEOMETRY_EMITTER_CALLER {
+        return None;
+    }
+    let layer = word(0x78)?;
+    match word(0x68)? {
+        TRANSPARENT_DRAW_CALLER if transparents && layer == 15 => {
+            indexed_entry(mem, esp)?;
+            let frame_data = SCOPE.with(|slot| {
+                let scope = slot.take();
+                let data = scope.handler.map(|h| h.data);
+                slot.set(scope);
+                data
+            })?;
+            (WALK_DATA.get() == Some(frame_data)).then_some(Stage::Transparents)
+        }
+        LAYER_DRAW_CALLER if first_person => {
+            use native_render::world_layers::{Site, layer_site};
+            let caller = word(FIRST_PERSON_LAYER_FRAME)?;
+            let first_person_layer = layer_site(layer, caller) == Site::FirstPerson
+                || (layer == 20 && caller == 0x0004_020b);
+            let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
+            (first_person_layer && list != 0
+                && mem.read_u32(list.checked_add(0x14)?)? == crate::native_first_person::FIRST_PERSON_ITEMS)
+                .then_some(Stage::FirstPerson)
+        }
+        _ => None,
+    }
+}
+
+fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool {
+    stage.count(Metric::WalkExamined, 1);
+    if range.count < 3 || range.indices == 0 || (!range.strip && range.count % 3 != 0) {
+        stage.count(Metric::WalkRefusedInputs, 1);
+        return false;
+    }
+    let host = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let drawn = host.is_some_and(|host| host.draw(mem, stage, range));
+    let metric = if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation };
+    stage.count(metric, 1);
+    drawn
+}
 
 pub fn on(switches: &crate::Switches) -> bool {
     crate::switches::native_stage_on(switches, SWITCH)
@@ -94,8 +206,8 @@ impl Scope {
             && scene.frame.is_none()
             && esp < scene.esp
         {
-            // The return observer's continuation replaces the original
-            // return slot after begin_view, before the body starts.
+            // Capture the live scene frame only once the dispatcher enters
+            // its first geometry handler.
             scene.frame = Frame::read(mem, scene.esp);
         }
         self.handler = self.read_handler(mem, esp, objects);
@@ -180,13 +292,33 @@ impl Feature for NativeTransparents {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // Stateless, on or off: what it holds (`OPEN`, the run entries
-        // join, and `OBJECTS_DRAWN`) lasts one view and every view's
-        // first observer forgets it ([`new_view`]); a save comes between
-        // renders, with the pipelined render drained. It changes no guest
-        // memory, and the host's materials are native-objects' models,
-        // keyed by map name.
+        // Both dispatch scopes last one view. A save occurs after the
+        // render has drained, and the next view starts with fresh scopes.
         b.snapshot(crate::SnapshotPolicy::Stateless);
+        let transparents = walk_on(b.switches())
+            && std::env::var_os("H2_NATIVE_TRANSPARENTS_COMPARE").is_none()
+            && std::env::var_os("H2_NATIVE_TRANSPARENTS_PROBE").is_none();
+        let first_person = crate::native_first_person::walk_on(b.switches())
+            && std::env::var_os("H2_NATIVE_FIRST_PERSON_COMPARE").is_none();
+        if transparents || first_person {
+            b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if !rt.read_dispatch(|dispatch| dispatch.has_resume(GEOMETRY_RANGE_TAIL)) {
+                    return Ok(Flow::Continue);
+                }
+                let mut mem = rt.memory();
+                let Some(stage) = walk_stage(&ReadMemory(&*mem), c.cpu.esp, transparents, first_person) else {
+                    return Ok(Flow::Continue);
+                };
+                let strip = c.cpu.ebx as u8 != 0;
+                let range = IndexRange { indices: c.cpu.edi, count: c.cpu.esi, strip };
+                if !walk_range(&mut *mem, stage, range) {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.edx = 5 + u32::from(strip);
+                Ok(Flow::Return(TransferAbi::resume(GEOMETRY_RANGE_TAIL)))
+            }).context_only().optional();
+        }
         if !on(b.switches()) {
             return Ok(());
         }
@@ -198,6 +330,7 @@ impl Feature for NativeTransparents {
             .context_only();
         b.raw()
             .observe_before(&points::SCENE_TRANSPARENTS, "native_transparents_view", |c| {
+                WALK_DATA.set(None);
                 let mem = c.guest();
                 let mut scope = Scope::default();
                 scope.begin_view(&ReadMemory(&*mem), c.cpu.esp);
@@ -205,13 +338,19 @@ impl Feature for NativeTransparents {
             })
             .context_only();
         b.raw()
-            .observe_after(&points::SCENE_TRANSPARENTS, "native_transparents_end", |_| {
+            .observe_before(&SCENE_TRANSPARENTS_END, "native_transparents_end", |_| {
+                WALK_DATA.set(None);
                 SCOPE.with(|slot| slot.set(Scope::default()));
             })
             .context_only();
         b.raw()
             .observe_before(&points::TRANSPARENT_GEOMETRY, "native_transparents_entry", move |c| {
                 let mem = c.guest();
+                if transparents {
+                    let data = (mem.u32(c.cpu.esp).ok() == Some(SORTED_HANDLER_RETURN))
+                        .then(|| sorted_data(&*mem, c.cpu.esi)).flatten();
+                    WALK_DATA.set(data);
+                }
                 SCOPE.with(|slot| {
                     let mut scope = slot.take();
                     scope.begin_entry(&ReadMemory(&*mem), c.cpu.esp, objects);
@@ -220,5 +359,47 @@ impl Feature for NativeTransparents {
             })
             .context_only();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+    use native_render::skip::CURRENT_LIST;
+
+    #[test]
+    fn sorted_data_uses_live_indices_and_refuses_stale_entries() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x001e_0000);
+        let (entries, order) = (0x005a_1000, 0x005a_0000);
+        for (at, value) in [(LIST_FIRST, 2), (LIST_COUNT, 4), (LIST_ENTRIES, entries), (LIST_ORDER, order)] {
+            mem.set_u32(at, value).unwrap();
+        }
+        mem.set_u16(order, 3).unwrap();
+        mem.set_u16(order + 2, 2).unwrap();
+        assert_eq!(sorted_data(&mem, 0), Some(entries + 3 * ENTRY_BYTES + transparent::DATA_OFFSET));
+        assert_eq!(sorted_data(&mem, 1), Some(entries + 2 * ENTRY_BYTES + transparent::DATA_OFFSET));
+        assert_eq!(sorted_data(&mem, 2), None);
+        mem.set_u16(order + 2, 1).unwrap();
+        assert_eq!(sorted_data(&mem, 1), None);
+    }
+
+    #[test]
+    fn an_index_range_requires_the_first_person_stack_and_owned_list() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x001e_0000);
+        let (stack, list) = (0x005a_0000, 0x004a_0000);
+        mem.set_u32(stack + 0x18, GEOMETRY_EMITTER_CALLER).unwrap();
+        mem.set_u32(stack + 0x68, LAYER_DRAW_CALLER).unwrap();
+        mem.set_u32(stack + 0x78, 7).unwrap();
+        mem.set_u32(stack + FIRST_PERSON_LAYER_FRAME, 0x0004_0271).unwrap();
+        mem.set_u32(CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
+        let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack, true, true);
+        assert_eq!(classify(&mem), Some(Stage::FirstPerson));
+        mem.set_u32(list + 0x14, 0x0050_0000).unwrap();
+        assert_eq!(classify(&mem), None);
+        mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
+        mem.set_u32(stack + FIRST_PERSON_LAYER_FRAME, 0x0002_c039).unwrap();
+        assert_eq!(classify(&mem), None);
     }
 }

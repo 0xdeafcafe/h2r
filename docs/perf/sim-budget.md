@@ -1,6 +1,6 @@
 # Waterworks simulation tick budget
 
-The 2026-11-20 five-minute, four-local-bot comparison at the same seed measured **14.96 → 14.12 ms/tick on Waterworks** and **9.07 → 8.49 ms/tick on Lockout** after commit `36b417561`. Lockout kills matched. One Waterworks bot scored four kills in one run and one in the other. Same-build Waterworks repeatability is open. The earlier 62% bot-glue sample was a different roster with two phantom seats. It cannot predict the speedup for four local seats.
+The 2026-11-20 five-minute, four-local-bot comparison at the same seed measured **14.96 → 14.12 ms/tick on Waterworks** and **9.07 → 8.49 ms/tick on Lockout** after commit `36b417561`. Lockout kills matched. One Waterworks bot scored four kills in one run and one in the other. Same-build Waterworks repeatability is open. An earlier 62% bot-glue sample came from a different roster with two phantom seats. These are historical measurements. Use the phantom-only fixtures below for current comparisons.
 
 ## Where the main thread spent its time
 
@@ -38,7 +38,7 @@ Caller chains are static paths through the retail image identified in the engine
 | `0x0031c940` | 0.55 | 0.63 | 0.62 | Tick → world physics → 311100 → 30fef0 → 316a20 → 31c100 → 31c940 | Havok world step. The specific solver operation is unresolved. | Yes |
 | `0x0014a280` | 0.54 | 0.55 | 0.55 | Sound service → 127400 → 11bed0 → 14a280 | BSP point-to-leaf. Shared with observer 16f280 and collision query 1697c0. | Yes |
 | `0x000bd090` | 0.53 | 1.81 | 0.58 | Tick → post → bc820 → bd090 | Object transform/animation update. Also called from the object creation path b7b40 → bd020. | Yes |
-| `0x000c0c80` | 0.49 | 1.02 | 0.51 | Tick → c1400 → c0c80 | Light record update. Reads object function outputs and writes the light datum. | Unknown |
+| `0x000c0c80` | 0.49 | 1.02 | 0.51 | Tick → c1400 → c0c80 | Light record update. Reads object function outputs and writes the light datum. | Yes, except the fixed point below |
 | `0x002ff8b0` | 0.48 | 0.49 | 0.49 | Structure collision → 1eea50 → 2df640 → 300150 → 2ff8b0 | Integer MOPP box traversal for contact candidates. Recursive. | Yes |
 | `0x003048a0` | 0.48 | 0.64 | 0.56 | Convex collision agent → 2daf70 → 2ee610 → 3048a0 | Reconstructs support vertices from cached feature IDs. Also reachable through agent method table slot 412c68. | Yes |
 | `0x001697c0` | 0.47 | 1.35 | 0.52 | Weapon fire → 1a4c00 → 1697c0 | Collision query shared with observer 16f280 → 170fd0 → 171830 and decal placement 17e670. | Yes |
@@ -48,15 +48,15 @@ Caller chains are static paths through the retail image identified in the engine
 | `0x00112070` | 0.34 | 0.69 | 0.43 | Object pose bd090 → bdb60 → 109050 ⇢ 112070 | Unit pose evaluation. Unit descriptor 4679b0 + 6c, indirect call at 1090a5, then animation manager calls from the leaf. | Yes |
 | `0x001dd9d0` | 0.33 | 0.66 | 0.37 | Object pose bd090 → 1c6440 → 1daea0 → 1dd9d0 | Animation graph resolution/preload. Resource residency can affect which pose is available. | Yes |
 | `0x00108d90` | 0.32 | 0.38 | 0.38 | Tick → pre → bc470 → be8e0 → bab40 → 108d90 | Lookup of an object function import through its type descriptors. Also used by lights. | Yes |
-| `0x0016760c` | 0.32 | 0.62 | 0.33 | Tick → 165dc1 → 166d75 → 16760c | First-person animation evaluation, inferred. Uses per-player 20cc-byte records shared with weapon render 165f16, calls 1c6f60. | Unknown |
+| `0x0016760c` | 0.32 | 0.62 | 0.33 | Tick → 165dc1 → 166d75 → 16760c | First-person animation evaluation, inferred. Uses per-player 20cc-byte records shared with weapon render 165f16, calls 1c6f60. | Yes |
 | `0x000bab40` | 0.31 | 0.50 | 0.33 | Tick → pre → bc470 → be8e0 → bab40 | Object function evaluator. Also serves light updates and sound attachment volumes. | Yes |
 | `0x000b8d30` | 0.30 | 0.63 | 0.31 | First-person camera 23c110 → 23bd70 → cafc0 → b8d30 | Object marker transform. Weapon fire also directly calls it. | Yes |
 | `0x000bb050` | 0.30 | 0.56 | 0.30 | Tick → pre → 109580 → bb050 | Spatial object visit marks. Also called on the players-after path 14d8b0 → 1508e0. | Yes |
 | `0x0028c530` | 0.29 | 0.29 | 0.29 | Animation evaluation → per-node evaluator ⇢ codec 8 [47fc70] ⇢ 28c530 | Interpolated blend-screen rotation. Node evaluators in 27a6e0–28c090 call the selected rotation slot. | Yes |
 | `0x0011e5e0` | 0.29 | 0.29 | 0.29 | Weapon fire → 1a4c00 → 1697c0 → 11e5e0 | Collision geometry test using squared distance, radius and direction. | Yes |
 | `0x000bcc20` | 0.28 | 0.34 | 0.30 | Object function bab40 → 108d90 ⇢ bcc20 | Base object import handler. Type ancestry dispatches descriptor slot +4c. | Yes |
-| `0x00166d75` | 0.28 | 0.45 | 0.30 | Tick → 165dc1 → 166d75 | Per-local-player first-person update, inferred from shared weapon-view records. Can reach sound via 166992 → 126360. | Unknown |
-| `0x00171d90` | 0.25 | 0.48 | 0.48 | Observer 16f280 → 170fd0 → 171d90 | Observer camera result, including derived vertical FOV. Consumers beyond drawing need a dependency trace. | Unknown |
+| `0x00166d75` | 0.28 | 0.45 | 0.30 | Tick → 165dc1 → 166d75 | Per-local-player first-person update, inferred from shared weapon-view records. Can reach sound via 166992 → 126360. | Yes |
+| `0x00171d90` | 0.25 | 0.48 | 0.48 | Observer 16f280 → 170fd0 → 171d90 | Observer camera result, including derived vertical FOV. Particle inputs and camera collision consume its result. | Yes |
 | `0x000c7840` | 0.26 | 0.42 | 0.39 | Tick → pre → bc470 → 108c60 ⇢ c6b30 → c60c0 → c7840 | Unit update, vector math. Unit descriptor +40 selects c6b30. Exact meaning of the computed vector is unresolved. | Yes |
 | `0x002195f0` | 0.08 | 0.38 | 0.38 | Sound service → 1293f0 → 12a810 → 2195f0 | Sound gain conversion, inferred from the clamp and x87 exponential. 1251e0 is the most visible immediate caller. | Unknown |
 | `0x00030bf0` | 0.23 | 0.37 | 0.37 | Weapon fire → cafc0 → 30bf0 | Three-vector length. Used by damage, camera, unit and light code. | Yes |
@@ -77,6 +77,18 @@ The instruction list identifies 11 more owners. Their hottest instruction can ra
 | `0x001236f0` | 0.25 | 0.26 | 0.26 | Animation resolve 1daea0 → 1dd9d0 → 1236f0 | Animation cache load/prediction request. | Yes |
 | `0x00159ac0` | 0.08 | 0.15 | 0.09 | Tick → game-engine update 15c150 → 159ac0 | Game-mode update reading game and engine globals. Precise operation unresolved. | Unknown |
 | `0x000b89b0` | 0.25 | 0.27 | 0.27 | Weapon fire → 1a4c00 → 1697c0 → b89b0 | Datum walk inside the object collision query. | Yes |
+
+### Headless guest dependencies
+
+- **First person.** At `1380a0` the tick calls `165dc1`. Its four slot checks at `165de2` already bypass `166d75` and `16760c` for unmapped local users. A signed-in local player has a mapped slot. Sim hosts leave all four slots unmapped. In that case `166d75` advances the second engine RNG word (`[4e7408]+4`, writes at `1674f9` and `167539`). The pose path through `16760c → bd970 → 1cb410 → 1cb3b0 → 1dd630` can select either RNG word, including the hashed seed at `1dd6e1`. Evaluation also requests shared animation resources (`1678d7 → 1c6f60 → 1dd9d0 → 1236f0`). Effect update `176e40 → 1792b0 → 179fb0 → 17aec0 → 1664da` reads the resulting hand node matrices, and the observer reads the transform at slot `+2098` through `16ebf0`. Keep the weapon and animation update for every mapped seat.
+- **Lights.** `c1400` owns the datum walk, expiry and spatial links. `c0c80` can evaluate an attached object's functions at `c0dc4` and change light-list membership through `c2d00` or `c3220`. The light profile's `impl.sim.static-light` bypasses only a repeated update from `c1484` when the unowned, untimed, already active light and its current tag agree on every value the guest would write. With no parent, function or timer, `c0f05` copies intensity from datum `+cc` and the two RGB triples and brightness from the tag. Zero counts at tag `+c4/+cc/+d4` make `c0b00` discard its phase calculation. At unit intensity the radius calculation at `c11d7` returns the upper radius. The hook compares all output bits, including the doubled brightness, and admits in-range finite values only. With positive radius and a nonblack colour, the already-set active bit takes the exit at `c125c` without relinking. The comparisons use live memory on every invocation. All other records run the guest body. The enclosing walk always runs.
+- **Observer.** `171d90` rewrites the per-seat basis at `+20..+37`, FOV at `+4c` and scale at `+50`. After its call at `171291`, `170fd0` uses the basis to place the camera and calls `171830` for collision. Particle input at `248a31` uses that same scale. The observer also reaches the shared resource cache through `3f450 → 3bcb0 → 12ce00`. Keep camera derivation, collision and resource requests. [Render and simulation dependencies](../graphics/pipelined-render.md)
+- **Sound.** `127805` passes a listener point to `11bed0`, which calls `14a280` and returns the leaf, cluster and BSP. The listener stores the result at `127b04..127b0d`. Code at `221dd6..221e14` uses the cluster for a transmission threshold. The verdict at `127d9e` affects nearest-listener selection. Substituting a constant can change which voices play and when their packets complete, even on the silent clock. Keep the listener update, BSP queries, sound service and voice scheduling. Weapon collision shares `14a280`. [Listener ownership](../game/bots.md#43-hiding-the-views-traced) · [Clock-only host](../live/dedicated-host.md#light-host)
+
+- `impl.sim.observer-resources` shortens the current cluster's prediction list at `3f549 → 16e5e0`. In mode 1, types 0, 7 and 8 branch at `16e61c`, `16e6d6` and `16e6e8` straight to the common loop tail. Those cases issue no calls, touch no persistent state and leave accumulated success unchanged. The hook checks up to 64 trailing entries and passes a shortened block header in two unused caller stack words. The guest still executes the prefix over the same loaded BSP metadata and handles every cache request. The cluster's neighbour scan and its separate call at `3f619` run as before. Counting each retail cluster once, 298 of 616 entries qualify on Lockout (16 clusters) and 864 of 1,495 on Waterworks (56 clusters). Tick cost depends on which clusters the cameras visit. [Cluster resource layout](../formats/structure-bsp.md)
+- `impl.sim.submix-fx` skips conversion of obstruction and room levels into reverb and filter coefficients at `2211e0`. Its caller at `220fbd` updates the submix state, calls the leaf, then marks the record valid. The leaf builds two stack descriptors. The silent path supplies neutral descriptors to the same `SetI3DL2Source` and `SetFilter` calls, in order, reloading the buffer handle between calls and returning the final HRESULT. Either setter can deliver a pending stream callback. These parameters shape PCM on a mix-in. The clock-only mixer advances voice cursors and completion events without using the mix-in filter or room gains. The guest's sound admission, pitch, DSP submission points and callback processing still run. [DirectSound setters](../../crates/dsound/src/state.rs) · [Callback delivery](../../crates/dsound/src/register.rs) · [Audio clock](../../crates/audio/src/mixer.rs)
+
+All three switches default on only in the light profile. Normal play and a sim with `-host-light` install none of the hooks. Static analysis used the retail image and map data offline. The coordinator can use the existing sim report for both state hashes and timing.
 
 ## Subsystem boundaries
 
@@ -119,4 +131,76 @@ The guest entries above are lower bounds on an unwound main-thread stack, with o
 - **Sim observation.** The sim skips the optional Havok body and character-contact diagnostics in its private player snapshot. Those reads supply the inspector and never feed the pads, scoring or seat binding. The old snapshot path is 118 samples (0.14%) inclusive. Only part of that time can be saved. A fixture compares both snapshots and takes another full read from the same guest memory.
 - **Runtime and other host work.** Dispatch execute and run loop self shares are 6.25% and 4.54%, guest reads 1.36%, exit/charge 0.84%/0.69%, resume/resolve 0.78%/0.53%, context creation 0.73%, fast acquisition 0.52%, x87 small division/compare 0.56%/0.44%. The runtime lane owns these. XAPI input sync accounts for 0.82% self and services controller state. Kernel file dispatch accounts for 0.67% self, 572 visible samples including children. The profile carries neither filenames nor per-call phase information. Animation and sound have resource-request paths, but a static path cannot identify the sampled file operations.
 
-For the coordinator's comparison, use the same image, map, seed, roster and profile. With `H2_FEATURES=impl.sim.arena-hash,-impl.audio.packet-clock,-impl.sim.metrics-projection`, establish same-build A/A repeatability first. Then enable one optimization at a time, with arena hashing enabled in both runs. Compare every `state_hashes_v1` tick, gameplay digest and arena digest, including the number and range of ticks. A gap, missing arena, or early end leaves parity unverified. Use both Waterworks seat configurations and a Lockout control. For throughput, disable arena verification and the profiler in both arms. The new default gameplay digest runs in each arm. The current evidence establishes neither a 2× speedup nor Waterworks parity. [Sim report and controls](../runtime/sim.md#post-tick-state-hashes)
+For the coordinator's comparison, use the same image, map, seed, roster and profile. With `H2_FEATURES=impl.sim.arena-hash,-impl.audio.packet-clock,-impl.sim.metrics-projection`, establish same-build A/A repeatability first. Then enable one optimisation at a time, with arena hashing enabled in both runs. Compare every `state_hashes_v1` tick, gameplay digest and arena digest, including the number and range of ticks. A gap, missing arena, or early end leaves parity unverified. Use the phantom-only Waterworks and Lockout fixtures below. For throughput, disable arena verification and the profiler in both arms. The new default gameplay digest runs in each arm. The current evidence establishes neither a 2× speedup nor Waterworks parity. [Sim report and controls](../runtime/sim.md#post-tick-state-hashes)
+
+### Matched light-profile A/B
+
+Use one optimised coordinator-built CLI and its full clang image for every arm. Set `H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. The input data directory needs bot navigation meshes for both maps. Run the following in Bash with jq installed. Both cases use seed 7, team Slayer, a 1,800-tick limit and four legendary phantoms. Each process starts with fresh writable data and the same navigation files.
+
+```bash
+set -euo pipefail
+out=$(mktemp -d "${RUSH_KEEP:?}/guest-skips.XXXXXX")
+unset H2_PROFILE H2_TIMELINE H2_HOST_AUDIT H2_LOCKSTEP H2_HOST_MODULE H2_SERVER_MAP_DIR
+off='-impl.sim.static-light,-impl.sim.observer-resources,-impl.sim.submix-fx'
+on='impl.sim.static-light,impl.sim.observer-resources,impl.sim.submix-fx'
+
+run_arm() (
+    arm=$1; pass=$2; arena=$3
+    case $arm in
+        off|repeat) flags="$off" ;;
+        all)        flags="$on" ;;
+        *)          flags="$off,impl.sim.$arm" ;;
+    esac
+    scratch=$(mktemp -d "${TMPDIR:?}/h2-guest-skip.XXXXXX")
+    trap 'rm -rf -- "$scratch"' EXIT
+    ln -s "${H2_DATA:?}/bots" "$scratch/bots"
+    report="$out/$case_id.$pass.$arm.json"
+    H2_OPT=2 H2_FEATURES="host-light,$flags,impl.sim.arena-hash=$arena" \
+        h2 sim run "$out/$case_id.json" --disc "${H2_DISC:?}" --out "${H2_IMAGE:?}" \
+        --tier clang --data "$scratch" --pace unpaced --report "$report" >"$report.log" 2>&1
+    jq -e --arg arena "$arena" '
+        .result.end == "tick_limit" and .nav == "loaded" and .ticks == 1800 and
+        (.state_hashes_v1 | length == 1800 and
+            ([.[].tick] == [range(.[0].tick; .[0].tick + 1800)]) and
+            all(.[]; (.gameplay | test("^[0-9a-f]{16}$")) and
+                ($arena == "off" or (.arena | test("^[0-9a-f]{16}$")))))' "$report" >/dev/null
+)
+
+for case_id in lockout waterworks; do
+    jq -n --arg map "$case_id" '{
+        map: $map, game_type: "slayer", seed: 7, team_play: true, time_limit_s: 0,
+        score_limit: 250, max_ticks: 1800, max_wall_s: 900, render_every: 0, pace: "unpaced",
+        bot: [range(4) as $i | {name: (["Red 1","Blue 1","Red 2","Blue 2"][$i]),
+            skill: "legendary", team: ($i % 2)}]
+    }' > "$out/$case_id.json"
+    for arm in off repeat static-light observer-resources submix-fx all; do
+        run_arm "$arm" parity on
+        diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.off.json") \
+                <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.$arm.json")
+    done
+    for pass in 1 2 3; do
+        arms=(off static-light observer-resources submix-fx all)
+        if [[ $pass == 2 ]]; then arms=(all submix-fx observer-resources static-light off); fi
+        for arm in "${arms[@]}"; do run_arm "$arm" "$pass" off; done
+    done
+    for arm in off static-light observer-resources submix-fx all; do
+        for pass in 1 2 3; do
+            diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.1.off.json") \
+                    <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.$pass.$arm.json")
+        done
+        jq -s --arg arm "$arm" --arg id "$case_id" \
+            '{case: $id, arm: $arm, median_ms_per_tick: (map(.wall.ms_per_tick) | sort | .[1])}' \
+            "$out/$case_id".{1,2,3}."$arm.json"
+    done
+done
+```
+
+The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The 1.02% inclusive light sample covers all light records; only qualifying records can contribute. The profile gives no isolated savings estimate for observer prediction or submix coefficients.
+
+```bash
+case_id=waterworks
+for arm in off all; do
+    H2_PERF_FROM=level H2_PROFILE_HZ=1000 H2_PROFILE_CPU=1 \
+        H2_PROFILE="$out/profile-$arm" run_arm "$arm" profile off
+done
+```

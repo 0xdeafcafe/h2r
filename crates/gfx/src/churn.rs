@@ -135,3 +135,9 @@ pub fn create_render_pipeline(device: &wgpu::Device, desc: &wgpu::RenderPipeline
 pub fn upload_bytes(n: usize) {
     timeline::native::resource(timeline::native::Metric::UploadBytes, n as u64);
 }
+
+/// Result of looking up resident geometry and material resources for a native draw.
+pub fn native_cache(hit: bool) {
+    use timeline::native::Metric;
+    timeline::native::resource(if hit { Metric::CacheHits } else { Metric::CacheMisses }, 1);
+}

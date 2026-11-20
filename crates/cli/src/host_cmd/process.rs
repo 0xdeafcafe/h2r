@@ -84,6 +84,8 @@ impl Game {
                 .arg(data)
                 .arg("--socket")
                 .arg(socket)
+                .arg("--film")
+                .arg(film_path(opts.film.as_deref(), socket))
                 .env("H2_HOST_LEASE_JSON", serde_json::to_string(lease)?)
                 .env("H2_HOST_LOBBY", "1")
                 .env("H2_XNET_ADDR", address.to_string());
@@ -106,7 +108,14 @@ impl Game {
         disc: &Path,
     ) -> Result<Self> {
         Self::spawn_with(opts, live, lease, |cmd, data, socket| {
-            sim_run::configure(cmd, lease, disc, &opts.out, data, socket)
+            sim_run::configure(cmd, lease, disc, &opts.out, data, socket)?;
+            if let Some(path) = &opts.film {
+                cmd.env("H2_FILM_OUT", path);
+                if std::env::var_os("H2_FILM_GAME_ID").is_none() {
+                    cmd.env("H2_FILM_GAME_ID", &lease.assignment_id);
+                }
+            }
+            Ok(())
         })
     }
 
@@ -133,10 +142,10 @@ impl Game {
             .env_remove("H2_DATA_SHA")
             .env_remove("H2_BOOT_GFX")
             .env_remove("H2_LEVEL")
+            .env_remove("H2_FILM_OUT")
             .env_remove("H2_SIM")
             .env_remove("H2_BOOT_INPUT")
-            .env_remove("H2_INPUT_REPLAY")
-            .env_remove("H2_BOTS");
+            .env_remove("H2_INPUT_REPLAY");
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
         #[cfg(target_os = "linux")]
@@ -161,6 +170,10 @@ impl Game {
     }
 }
 
+fn film_path(explicit: Option<&Path>, socket: &Path) -> PathBuf {
+    explicit.map_or_else(|| socket.with_file_name("match.h2film"), Path::to_owned)
+}
+
 fn configure_agent_tcp(cmd: &mut Command, inherited: Option<&OsStr>) -> Result<()> {
     cmd.env_remove(HOST_TCP_ENV);
     if let Some(endpoint) = inherited
@@ -173,14 +186,14 @@ fn configure_agent_tcp(cmd: &mut Command, inherited: Option<&OsStr>) -> Result<(
     Ok(())
 }
 
-impl Drop for Game {
-    fn drop(&mut self) {
+impl Game {
+    pub fn shutdown(&mut self, grace: Duration) {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
             return;
         }
         // SAFETY: the child hasn't been reaped, so its pid cannot be reused.
         unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
@@ -188,8 +201,18 @@ impl Drop for Game {
                 Err(_) => break,
             }
         }
+        eprintln!(
+            "h2 host: game did not exit within {}s, stopping it",
+            grace.as_secs()
+        );
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Game {
+    fn drop(&mut self) {
+        self.shutdown(Duration::from_secs(2));
     }
 }
 
@@ -289,6 +312,17 @@ fn route_ip() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leased_games_record_in_their_private_directory_by_default() {
+        let socket = Path::new("private-lease/a.sock");
+        assert_eq!(
+            film_path(None, socket),
+            Path::new("private-lease/match.h2film")
+        );
+        let explicit = Path::new("retained.h2film");
+        assert_eq!(film_path(Some(explicit), socket), explicit);
+    }
 
     #[test]
     fn supervisor_forwards_only_tcp_agent_addresses_to_the_child() {

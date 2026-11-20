@@ -13,11 +13,10 @@
 //! - **Per frame.** The camera and one external pass; the device records it
 //!   after the next drain, in order with the draws.
 //! - **Material programs** (`impl.render.native_world_programs`, on with
-//!   the world). A material is native only when its layer-3 pass
-//!   translates (`native_render::look::layer3_pass`,
-//!   `native_render::program::compile_world`) and every part of it can be
-//!   drawn with it (`program::world_fit`, its stage bitmaps decode); it
-//!   then draws with its own vertex program, pixel shader, stage textures,
+//!   the world). Each part needs a translated layer-3 pass with decoded
+//!   stage bitmaps, the inputs of its vertex classification, and any
+//!   sampled lightmap page (`program::part_fit`). The part draws with
+//!   its own vertex program, pixel shader, stage textures,
 //!   constants and render states, and the device's view constants each
 //!   frame. Every other material is left out of the world and keeps its
 //!   D3D draws (the skip clears only the items of the parts the world
@@ -42,11 +41,17 @@ use feature::native_world::{Host, PartSet};
 use map::{Map, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport, WorldSelection};
+use native_render::light_gpu::{LayeredImage, TextureDim};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
+
+#[path = "native_world_materials.rs"]
+mod opaque_materials;
+
+type LayeredImages = HashMap<(TagId, u32), LayeredImage>;
 
 /// What the worker hands the render thread: the world and its images.
 pub struct CpuWorld {
@@ -59,11 +64,13 @@ pub struct CpuWorld {
     /// stage 1's program.
     pub programs_on: bool,
     pub stage_images: StageImages,
+    layered_images: LayeredImages,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
 #[cfg_attr(test, derive(Default))]
 pub struct Ready {
+    opaque: opaque_materials::Library,
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
     /// The parts the native pass draws, with their shaders: what the skip
@@ -126,6 +133,7 @@ pub(crate) enum Load {
 
 /// The host: the device and the current world.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
+    watch: runtime::WatchId,
     device: d3d::abi::SharedDevice<B>,
     state: State,
     switches: feature::Switches,
@@ -133,6 +141,14 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn try_opaque_simple(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        self.device.lock().is_ok_and(|mut d| {
+            drain_opaque_writes(mem, &mut d, self.watch).is_ok()
+                && d.try_opaque_simple(&crate::native_lights_glue::DeviceMemory(mem), header, value)
+        })
+    }
+
     fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
         let generation = native_map_work::generation();
         let Ok(map) = crate::health::loaded_map_name(mem) else { return false };
@@ -204,7 +220,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                         );
                         }
                         let empty = [
-                            (feature::native_world::on(&switches) && r.parts.is_empty()).then_some(MapStage::World),
+                            (feature::native_world::on(&switches) && r.parts.is_empty() && r.opaque.is_empty()).then_some(MapStage::World),
                             (feature::native_lights::on(&switches) && r.lights.is_none()).then_some(MapStage::Lights),
                             r.fog.as_ref().filter(|fog| fog.part_set.is_empty()).map(|_| MapStage::Fog),
                             r.water.as_ref().filter(|water| water.part_set.is_empty()).map(|_| MapStage::Water),
@@ -231,7 +247,26 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.ordered_scene_world && !Diagnostics::get().requires_mask_pass()
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, _bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn opaque_view(
+        &self, mem: &dyn GuestMemory, layer: feature::native_world_layers::Layer,
+    ) -> Result<Box<dyn feature::native_world::OpaqueView>, &'static str> {
+        if !self.ordered_scene_world || !feature::native_world::programs_on(&self.switches)
+            || Diagnostics::get().requires_mask_pass() { return Err("world programs disabled"); }
+        let state = self.state.lock().map_err(|_| "BSP loader unavailable")?;
+        let ready = Arc::clone(current_ready(&state, mem).ok_or("BSP load pending")?);
+        let key = state.0.as_ref().ok_or("BSP load pending")?;
+        Ok(Box::new(OpaqueView {
+            watch: self.watch,
+            device: Arc::clone(&self.device),
+            ready,
+            generation: key.generation,
+            bsp_index: key.index,
+            layer,
+            frame: crate::d3d_diag::presents() + 1,
+        }))
+    }
+
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -294,6 +329,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if ranges == 0 { return None; }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
+        let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let pass = Box::new(WorldPass {
             selected,
             selection: None,
@@ -315,15 +351,123 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         reservation.commit();
+        if let Some(owners) = counted {
+            crate::native_world_layers_glue::count_frontend(crate::d3d_diag::presents() + 1, view, bsp,
+                timeline::native::WorldOpaque::Prereserved, owners);
+        }
         Some(cleared)
     }
 }
 
+/// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
+/// that wrapper on both resource preparation and submission. A shader call
+/// in between can stream a new bitmap or rewrite a vertex/index buffer.
+fn drain_opaque_writes<B: d3d::Backend>(
+    mem: &mut dyn GuestMemory, device: &mut d3d::Device<B>, watch: runtime::WatchId,
+) -> Result<(), &'static str> {
+    for range in mem.take_write_watch(watch).map_err(|_| "render memory missing D3D write watch")? {
+        device.note_written_pages(range.addr, range.len);
+    }
+    Ok(())
+}
+
+struct OpaqueView<B: d3d::Backend> {
+    watch: runtime::WatchId,
+    device: d3d::abi::SharedDevice<B>,
+    ready: Arc<Ready>,
+    generation: u64,
+    bsp_index: u16,
+    layer: feature::native_world_layers::Layer,
+    frame: u64,
+}
+
+impl<B: d3d::Backend + Send + 'static> feature::native_world::OpaqueView for OpaqueView<B> {
+    fn prepare_opaque(
+        &self, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
+    ) -> Result<Box<dyn feature::native_world::OpaqueDraw>, &'static str> {
+        if native_map_work::generation() != self.generation || active_bsp_index(mem) != Some(self.bsp_index) {
+            return Err("BSP changed during sorted pass");
+        }
+        let material = self.ready.opaque.get(part)?;
+        let layer = self.layer;
+        let shader = engine::tags::tag_entry_checked(mem, engine::handle::DatumHandle(part.shader))
+            .ok().flatten().and_then(|entry| mem.u32(entry.checked_add(8)?).ok())
+            .filter(|&data| data != 0).ok_or("shader tag entry")?;
+        let flags = shader.checked_add(0x16).and_then(|at| mem.u16(at).ok()).ok_or("shader flags")?;
+        let streams = crate::opaque_streams::Plan::read(mem, part.section, part.geometry,
+            part.part_addr, part.program, part.record_addr, part.layer, flags)?;
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        let mut device = self.device.lock().map_err(|_| "device unavailable")?;
+        drain_opaque_writes(mem, &mut device, self.watch)?;
+        let accumulation = if layer.number == 3 && material.samples_texaccum() {
+            let t = layer.texaccum.ok_or("accumulation level unavailable")?;
+            Some((t.surface.ok_or("accumulation surface unavailable")?, t.texture, t.size))
+        } else { None };
+        let targets = device.prepare_opaque_targets(&ReadMemory(mem), accumulation)
+            .ok_or("view attachments unavailable")?;
+        if layer.number == 1 && layer.texaccum.and_then(|t| t.surface) != Some(targets.bound[0]) {
+            return Err("layer 1 accumulation target");
+        }
+        let mut ranges = Vec::with_capacity(part.indices.len());
+        for r in &part.indices {
+            let addr = r.start.checked_mul(2).and_then(|n| part.index_buffer.checked_add(n))
+                .ok_or("world index offset")?;
+            ranges.push(device.prepare_index_range(&ReadMemory(mem), addr, r.end - r.start)
+                .map_err(|_| "world index range")?);
+        }
+        let owner = match part.owner { Owner::Cluster(n) => n, Owner::Instance(n) => n | (1 << 31) };
+        let vertex_key = [part.part_addr, part.program, owner];
+        let vertices = device.prepare_section_vertices(&ReadMemory(mem), vertex_key, &ranges, || streams.vertex_inputs(mem))
+            .map_err(|_| "world vertex windows")?;
+        let textures = material.textures(mem, &mut device, streams.lightmap());
+        Ok(Box::new(OpaquePass { watch: self.watch, device: Arc::clone(&self.device), streams, vertices,
+            ranges, code: material.code.clone(), textures, layer, targets,
+            frame: self.frame }))
+    }
+}
+
+struct OpaquePass<B: d3d::Backend> {
+    watch: runtime::WatchId,
+    device: d3d::abi::SharedDevice<B>,
+    streams: crate::opaque_streams::Plan,
+    vertices: d3d::device::PreparedWorldVertices,
+    ranges: Vec<d3d::device::PreparedIndexRange>,
+    code: Option<d3d::shader::Microcode>,
+    textures: [Option<d3d::device::PreparedStageTexture>; 4],
+    layer: feature::native_world_layers::Layer,
+    targets: d3d::device::PreparedOpaqueTargets,
+    frame: u64,
+}
+
+impl<B: d3d::Backend + 'static> feature::native_world::OpaqueDraw for OpaquePass<B> {
+    fn bind_streams<'a>(&'a self, cx: &'a feature::Cx) -> feature::native_world::OpaqueStreams<'a> {
+        Box::pin(self.streams.handoff(cx))
+    }
+
+    fn submit(self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart)
+        -> Result<(), feature::native_world::OpaqueSubmitError>
+    {
+        use feature::native_world::OpaqueSubmitError::{BeforeDraw, Device};
+        let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame } = *self;
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        let mut device = device.lock().map_err(|_| Device("opaque device mutex poisoned".into()))?;
+        drain_opaque_writes(mem, &mut device, watch).map_err(BeforeDraw)?;
+        let primitive = if part.strip { gfx::vertex::PrimitiveType::TriangleStrip }
+            else { gfx::vertex::PrimitiveType::TriangleList };
+        let sent = device.emit_world_ranges(&mut crate::native_lights_glue::DeviceMemory(mem),
+            primitive, ranges, vertices, code.as_ref(), &targets, &textures, part.shader,
+            |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, targets.bound, count))
+            .map_err(|e| Device(e.to_string()))?;
+        if sent { Ok(()) } else { Err(BeforeDraw("view changed, callback or capture boundary")) }
+    }
+}
+
 /// Installs the world host and the other native stages on the device.
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, watch: runtime::WatchId) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     let switches = feature::Switches::from_env().unwrap_or_default();
     feature::native_world::set_host(Arc::new(Glue {
+        watch,
         device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
@@ -336,8 +480,9 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
-    crate::native_shadows_glue::install(device);
+    let shadows = crate::native_shadows_glue::install(device);
     crate::native_hud_glue::install(device);
+    shadows
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that
@@ -359,6 +504,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         programs,
         programs_on,
         stage_images,
+        layered_images,
     } = cpu;
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
@@ -367,7 +513,8 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
     let mut g = if programs_on {
         // Set even when empty: with programs on, a batch without one is
         // never drawn with stage 1's program.
-        let set = ProgramSet::new(device, queue, &world, programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+        let set = ProgramSet::with_layered(device, queue, &world, programs, &mut stage,
+            &mut |k| lightmaps.get(&k).cloned(), &layered_images);
         eprintln!(
             "native-world: {} materials draw with their own programs, {} of them their placements with their rigid programs",
             set.len(),
@@ -921,7 +1068,7 @@ const DEFAULT_SCENE_PALETTE: u32 = 0x0048_4dbc;
 
 /// A loading/UI boundary may not have the scene's palette bound yet.
 /// The scene reset binds this palette; each native draw still checks its bindings.
-fn scene_load_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
+pub(crate) fn scene_load_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
     let mut bound = stage_palettes(d, mem);
     supply_scene_palette(&mut bound, || d.palette_entries(&ReadMemory(mem), mem.u32(DEFAULT_SCENE_PALETTE).ok()?));
     bound
@@ -1008,6 +1155,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         world,
         shaders,
         lightmap_bitmap,
+        lightmap_error,
         palettes: lightmap_palettes,
         failed_sections,
         ..
@@ -1056,9 +1204,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         }
     };
     // What draws natively. With material programs (the default) a
-    // material is native only when its own layer-3 pass translates and
-    // every part of it can be drawn with it: the rest keep their D3D
-    // draws, never stage 1's look. Without them (the A/B against stage 1:
+    // part draws when its layer-3 program translates and its streams
+    // and images supply that program. Without them (the A/B against stage 1:
     // `impl.render.native_world_programs=off`), every material whose base
     // map decodes, drawn as base map times lightmap.
     let mut base_maps = HashMap::new();
@@ -1066,9 +1213,19 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
     let mut rigid_refused = Refused::new();
+    let mut layered_images = LayeredImages::new();
+    let mut prepared_parts = HashSet::new();
     let (programs, mut stage_images, refused) = if programs_on {
-        let out = material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder);
+        let out = match lightmap_error {
+            Some(reason) => Programs {
+                refused: BTreeMap::from([(format!("lightmap group does not decode ({reason})"), world.materials())]),
+                ..Default::default()
+            },
+            None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
+                lightmap_bitmap.is_none(), &mut layered_images),
+        };
         native.extend(out.programs.keys().copied());
+        prepared_parts = out.parts;
         palettized = out.palettized;
         rigid_refused = out.rigid_refused;
         (out.programs, out.images, out.refused)
@@ -1100,10 +1257,17 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
         (HashMap::new(), StageImages::new(), Refused::new())
     };
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
+    let accepts = |d: &WorldDraw| {
+        if programs_on {
+            prepared_parts.contains(&(d.owner, d.part))
+        } else {
+            native.contains(&d.material) && drawn_natively(d, &rigid)
+        }
+    };
     if feature::native_verbose() && programs_on {
-        log_coverage(&mut map, &world, &shaders, &native, &refused);
+        log_coverage(&mut map, &world, &shaders, &native, &refused, prepared_parts.len());
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
-        let (with, without) = placed.fold((0, 0), |(w, wo), d| if rigid.contains(&d.material) { (w + 1, wo) } else { (w, wo + 1) });
+        let (with, without) = placed.fold((0, 0), |(w, wo), d| if accepts(d) { (w + 1, wo) } else { (w, wo + 1) });
         eprintln!(
             "native-world: {with} instanced-geometry parts draw natively with their rigid programs (the placement's rows in c[50..52] per draw, as 0x0004d830 uploads them); D3D keeps {without} of native materials without one"
         );
@@ -1125,7 +1289,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     // The sorted geometry entries identify individual cluster parts and their full shader datums.
     let lights_on = feature::native_lights::on(switches);
     let lights = if lights_on && !native.is_empty() {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m), &decoder.palettes)
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &accepts, &decoder.palettes)
             .map(Arc::new)
     } else {
         None
@@ -1156,12 +1320,15 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
+    let opaque = if programs_on { opaque_materials::Library::load(&mut map, &shaders) } else {
+        opaque_materials::Library::default()
+    };
     let coverage = (native.len(), world.materials().len());
-    let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
+    let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok((Ready {
-        part_bounds, programs_on, coverage,
+        opaque, part_bounds, programs_on, coverage,
         rejection_summary: top_rejections(&refused),
         failed_sections,
         declared_materials: shaders.len(),
@@ -1172,6 +1339,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
             programs,
             programs_on,
             stage_images,
+            layered_images,
         })),
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
@@ -1245,6 +1413,7 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     shaders: &[TagId],
     native: &HashSet<u16>,
     refused: &Refused,
+    drawn_parts: usize,
 ) {
     let mut parts: HashMap<u16, usize> = HashMap::new();
     for d in &world.draws {
@@ -1252,12 +1421,11 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     }
     let count = |ms: &[u16]| ms.iter().map(|m| parts.get(m).copied().unwrap_or(0)).sum::<usize>();
     let materials = world.materials();
-    let drawn: Vec<u16> = native.iter().copied().collect();
     eprintln!(
         "native-world: {} of {} materials draw natively with their own programs ({} of {} parts); {} stay on the D3D path for {} reasons",
         native.len(),
         materials.len(),
-        count(&drawn),
+        drawn_parts,
         world.draws.len(),
         materials.len().saturating_sub(native.len()),
         refused.len()
@@ -1319,6 +1487,7 @@ pub type StageImages = HashMap<(TagId, u32), Image>;
 /// What [`material_programs`] gives.
 #[derive(Default)]
 struct Programs {
+    parts: HashSet<(Owner, u8)>,
     programs: HashMap<u16, MaterialProgram>,
     images: StageImages,
     refused: Refused,
@@ -1329,9 +1498,8 @@ struct Programs {
     palettized: Vec<u16>,
 }
 
-/// The world's materials whose layer-3 pass translates and whose every
-/// part the native pass can draw with it (`program::compile_world`,
-/// `program::world_fit`), with the images their stages sample; and the
+/// The world's layer-3 programs, the parts that supply their inputs
+/// (`program::part_fit`), the images their stages sample, and the
 /// others by the reason they stay on the D3D path. Stage images go
 /// through `decoder` (a palettized one expanded through its stage's
 /// palette, [`StageDecoder`]).
@@ -1342,9 +1510,12 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     world: &World,
     page_ready: &dyn Fn(LightmapKey) -> Result<(), String>,
     decoder: &mut StageDecoder,
+    no_lightmap_group: bool,
+    layered: &mut LayeredImages,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
+        parts,
         programs,
         images,
         refused,
@@ -1365,26 +1536,46 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             return out;
         }
     };
+    let normalization = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
+        .and_then(|tag| tag.location.as_ref())
+        .and_then(|loc| crate::native_lights_glue::matg_light_bitmaps(lib.metadata(), loc.address).0);
+    let mut dimensions = HashMap::new();
     for m in materials {
         let mut uses_palette = false;
         let Some(&shader) = shaders.get(usize::from(m)) else {
             refused.entry("no shader".into()).or_default().push(m);
             continue;
         };
-        let compiled = lib
-            .material(shader, None)
-            .map_err(|e| format!("material: {e}"))
-            .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
+        let pass = if no_lightmap_group {
+            let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
+                implementation: look::UNLIT_BSP_IMPLEMENTATION };
+            lib.selected_implementation(shader, selection, None, None).map_err(|e| format!("material: {e}"))
+                .and_then(|pass| look::unlit_bsp_pass(&pass, normalization).map_err(|r| format!("layer 3: {r:?}")))
+        } else {
+            lib.material(shader, None).map_err(|e| format!("material: {e}"))
+                .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
+        };
+        let compiled = pass
             .and_then(|pass| {
                 let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
-                let mut p = program::compile_world(&pass, &code)?;
+                let mut dims = [None; 4];
+                for (slot, stage) in dims.iter_mut().zip(pass.look.textures) {
+                    *slot = match stage {
+                        Stage::Bitmap { bitmap, image } => Some(*dimensions.entry((bitmap, image))
+                            .or_insert_with(|| bitmap_dimension(map, files, bitmap, image, layered))
+                            .as_ref().map_err(Clone::clone)?),
+                        Stage::Lightmap => Some(TextureDim::D2),
+                        Stage::Empty => None,
+                        Stage::Engine(id) => return Err(format!("unbound engine texture {id}")),
+                    };
+                }
+                let mut p = program::compile_section(&pass, &code, dims)?;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
                     // classification, or they stay on the D3D path.
                     let rigid = look::rigid_program(map, lib.metadata(), pass.look.vertex_shader)
                         .ok_or_else(|| "no rigid vertex program".to_string())
-                        .and_then(|code| program::compile_rigid(&pass, &code))
-                        .and_then(|r| program::rigid_fit(world, m, &r).map(|()| r));
+                        .and_then(|code| program::compile_section_rigid(&pass.look, pass.state.alpha_test, &code, dims));
                     match rigid {
                         Ok(r) => p.rigid = Some(r),
                         Err(why) => rigid_refused.entry(why).or_default().push(m),
@@ -1393,10 +1584,9 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                 Ok(p)
             })
             .and_then(|p| {
-                program::world_fit(world, m, &p, page_ready)?;
                 for (n, s) in p.stages.iter().enumerate() {
                     let Stage::Bitmap { bitmap, image } = *s else { continue };
-                    if p.dims[n].is_none() {
+                    if p.dims[n].is_none() || layered.contains_key(&(bitmap, image)) {
                         continue;
                     }
                     // A linear texture is addressed in texels on the D3D
@@ -1408,6 +1598,31 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             });
         match compiled {
             Ok(p) => {
+                let mut any = false;
+                let mut reasons = BTreeMap::<String, usize>::new();
+                for d in world.draws.iter().filter(|d| d.material == m) {
+                    let inputs = match d.owner {
+                        Owner::Cluster(_) => Ok(p.inputs),
+                        Owner::Instance(i) if world.rows(i).is_none() => Err("placement rows unavailable".to_owned()),
+                        Owner::Instance(_) => p.rigid.as_ref().map(|r| r.inputs)
+                            .ok_or_else(|| "rigid vertex program unavailable".to_owned()),
+                    };
+                    match inputs.and_then(|inputs| program::part_fit(d, inputs, &p, page_ready)) {
+                        Ok(()) => { parts.insert((d.owner, d.part)); any = true; }
+                        Err(why) => *reasons.entry(why).or_default() += 1,
+                    }
+                }
+                if !any {
+                    for why in reasons.into_keys() {
+                        refused.entry(why).or_default().push(m);
+                    }
+                    continue;
+                }
+                if feature::native_verbose() {
+                    for (why, count) in reasons {
+                        eprintln!("native-world: material {m} leaves {count} parts to D3D: {why}");
+                    }
+                }
                 programs.insert(m, p);
                 if uses_palette {
                     palettized.push(m);
@@ -1418,6 +1633,35 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     }
     palettized.sort_unstable();
     out
+}
+
+/// Keep cube faces and volume slices together. Passing face zero to the
+/// two-dimensional image decoder changes both the fetch and its coordinates.
+fn bitmap_dimension<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>, files: &mut assets::ResourceFiles, bitmap: TagId, index: u32,
+    images: &mut LayeredImages,
+) -> Result<TextureDim, String> {
+    let tags::TagData::Bitmap(tag) = tags::DecodedTag::read(map, bitmap).map_err(|e| e.to_string())?.data else {
+        return Err("stage datum is not a bitmap".into());
+    };
+    let image = tag.images.get(index as usize).ok_or("bitmap has no such image")?;
+    let dim = match image.kind {
+        tags::TextureKind::D2 => return Ok(TextureDim::D2),
+        tags::TextureKind::D3 => TextureDim::D3,
+        tags::TextureKind::Cube => TextureDim::Cube,
+        tags::TextureKind::Unknown(kind) => return Err(format!("unknown bitmap shape {kind}")),
+    };
+    if matches!(image.format, tags::PixelFormat::P8 | tags::PixelFormat::P8Bump) {
+        return Err("layered bitmap requires a stage palette".into());
+    }
+    let decoded = assets::bitmap::decode_image(image, files).map_err(|e| e.to_string())?;
+    if decoded.desc.format.layout() == gfx::format::Layout::Linear {
+        return Err("layered bitmap uses linear addressing".into());
+    }
+    let pixels = crate::native_lights_glue::layered(decoded.levels, dim)
+        .ok_or("incomplete layered bitmap")?;
+    images.insert((bitmap, index), pixels);
+    Ok(dim)
 }
 
 /// Stage images as their stages sample them, for every native pass that
@@ -1680,6 +1924,41 @@ pub(crate) fn decode_image<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    #[test]
+    fn opaque_resource_boundaries_drain_the_same_runtime_watch_as_d3d() {
+        use d3d::device::{DeviceConfig, GuestRange};
+        use runtime::guest::Permissions;
+        use runtime::watch::CONTIGUOUS_BASE;
+
+        let mut mem = runtime::Guest::new();
+        let va = 0x10000;
+        let pa = 0x40000;
+        let folded = CONTIGUOUS_BASE | pa;
+        mem.map(va, 0x2000, pa, Permissions::RW).unwrap();
+        let watch = mem.subscribe_writes(crate::d3d_glue::WATCH_OWNER);
+        let foreign = mem.subscribe_writes("other observer");
+        for id in [watch, foreign] { mem.watch_writes(id, folded, 0x2000).unwrap(); }
+
+        let range = GuestRange { addr: 0x60000, len: 0x10000 };
+        let mut device = d3d::Device::new(DeviceConfig::halo2(range, range), d3d::RecordingBackend::new());
+        device.tracker.watch(folded, 0x2000);
+        let initial = device.tracker.generation();
+        mem.set_u32(va, 42).unwrap();
+        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
+        assert!(device.tracker.dirty_since(folded, 4, initial));
+        assert!(!mem.has_dirty(watch));
+
+        // A material or resource-destroy callback writes another page after
+        // prepare. Its store must be visible to the later ordered emit.
+        let prepared = device.tracker.generation();
+        mem.set_u32(va + 0x1004, 81).unwrap();
+        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
+        assert!(!device.tracker.dirty_since(folded, 4, prepared));
+        assert!(device.tracker.dirty_since(folded + 0x1004, 4, prepared));
+        assert!(!mem.has_dirty(watch));
+        assert_eq!(mem.take_dirty(foreign).unwrap(), [runtime::DirtyRange { addr: folded, len: 0x2000 }]);
+    }
 
     #[test]
     fn material_rejection_summary_counts_and_ranks_the_top_reasons() {

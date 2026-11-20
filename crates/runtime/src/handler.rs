@@ -26,8 +26,19 @@ pub(crate) fn execute(
     if !cpu.valid_abi() {
         return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
     }
+    execute_dispatched(invocation, cpu, ctx, selector)
+}
+
+/// The runner already checked the incoming CPU ABI and latched fault before
+/// routing this transfer. Validate the handler's output in both paths.
+pub(crate) fn execute_dispatched(
+    invocation: Invocation,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    selector: u32,
+) -> TransferAbi {
     let result = match invocation {
-        Invocation::Handler(Handler::Native(f)) => {
+        Invocation::Handler(Handler::Native(f) | Handler::NativeAdapter(f)) => {
             if let Some(coverage) = ctx.runtime().coverage.get() {
                 coverage.record(f, selector);
             }

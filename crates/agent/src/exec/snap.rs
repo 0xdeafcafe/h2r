@@ -41,10 +41,13 @@ pub trait SnapshotMachine {
     /// `owner: why`; empty when nothing does.
     fn blockers(&mut self) -> Vec<String>;
     /// Saves the machine as `name`. `at` is the boundary it is taken at.
-    fn save(&mut self, name: &str, replace: bool, at: &At) -> Result<Saved, RpcError>;
+    /// `cow` also writes the raw RAM image later loads may map
+    /// copy-on-write.
+    fn save(&mut self, name: &str, replace: bool, at: &At, cow: bool) -> Result<Saved, RpcError>;
     /// Loads `name` into the machine, in the documented order, and checks
-    /// the RAM hash.
-    fn load(&mut self, name: &str) -> Result<Loaded, RpcError>;
+    /// the RAM hash. `cow` maps the saved RAM image copy-on-write in place
+    /// of decoding it in.
+    fn load(&mut self, name: &str, cow: bool) -> Result<Loaded, RpcError>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,9 +55,11 @@ enum Op {
     Save {
         name: String,
         replace: bool,
+        cow: bool,
     },
     Load {
         name: String,
+        cow: bool,
     },
     Fork {
         from: String,
@@ -202,14 +207,14 @@ fn run(machine: &mut dyn SnapshotMachine, job: &Job, at: &At) -> Result<Value, R
     let t = Instant::now();
     let ms = |t: Instant| (t.elapsed().as_secs_f64() * 1e4).round() / 10.0;
     match &job.op {
-        Op::Save { name, replace } => {
-            let mut saved = machine.save(name, *replace, at)?;
+        Op::Save { name, replace, cow } => {
+            let mut saved = machine.save(name, *replace, at, *cow)?;
             saved.retries = job.tries;
             saved.ms = ms(t);
             Ok(to_value(saved))
         }
-        Op::Load { name } => {
-            let mut loaded = machine.load(name)?;
+        Op::Load { name, cow } => {
+            let mut loaded = machine.load(name, *cow)?;
             loaded.retries = job.tries;
             loaded.ms = ms(t);
             Ok(to_value(loaded))
@@ -219,11 +224,11 @@ fn run(machine: &mut dyn SnapshotMachine, job: &Job, at: &At) -> Result<Value, R
             name,
             replace,
         } => {
-            let mut loaded = machine.load(from)?;
+            let mut loaded = machine.load(from, false)?;
             loaded.retries = job.tries;
             loaded.ms = ms(t);
             let t = Instant::now();
-            let mut saved = machine.save(name, *replace, at).map_err(|mut e| {
+            let mut saved = machine.save(name, *replace, at, false).map_err(|mut e| {
                 e.message = format!("loaded {from}, but saving it as {name}: {}", e.message);
                 e
             })?;
@@ -267,12 +272,20 @@ impl State {
                     Op::Save {
                         name: sp.name,
                         replace: sp.replace,
+                        cow: sp.cow,
                     },
                     max_ticks(sp.max_ticks)?,
                 ))
             }),
-            proto::method::LOAD => params::<LoadParams>(p)
-                .and_then(|lp| Ok((Op::Load { name: lp.name }, max_ticks(lp.max_ticks)?))),
+            proto::method::LOAD => params::<LoadParams>(p).and_then(|lp| {
+                Ok((
+                    Op::Load {
+                        name: lp.name,
+                        cow: lp.cow,
+                    },
+                    max_ticks(lp.max_ticks)?,
+                ))
+            }),
             _ => params::<ForkParams>(p).and_then(|fp| {
                 Ok((
                     Op::Fork {
@@ -289,8 +302,8 @@ impl State {
             Err(e) => return Some(Err(e)),
         };
         let (load, save) = match &op {
-            Op::Save { name, replace } => (None, Some((name, *replace))),
-            Op::Load { name } => (Some(name), None),
+            Op::Save { name, replace, .. } => (None, Some((name, *replace))),
+            Op::Load { name, .. } => (Some(name), None),
             Op::Fork {
                 from,
                 name,

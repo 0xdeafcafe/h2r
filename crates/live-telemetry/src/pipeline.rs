@@ -189,6 +189,7 @@ pub(crate) fn fold(queued: &mut Box<Snapshot>, mut newer: Box<Snapshot>) -> Box<
 
 pub struct Pipeline {
     shared: Arc<Shared>,
+    #[cfg(test)]
     session: Arc<Mutex<Session>>,
     logged: AtomicBool,
     worker: Option<JoinHandle<()>>,
@@ -216,6 +217,7 @@ impl Pipeline {
         };
         Self {
             shared,
+            #[cfg(test)]
             session,
             logged: AtomicBool::new(false),
             worker: Some(worker),
@@ -297,6 +299,7 @@ impl Pipeline {
     }
 
     /// The session, once the worker has done everything queued.
+    #[cfg(test)]
     pub(crate) fn session(&self) -> std::sync::MutexGuard<'_, Session> {
         self.settle();
         self.session.lock().unwrap()

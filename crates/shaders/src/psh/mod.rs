@@ -25,7 +25,7 @@ mod wgsl;
 
 pub use disasm::disassemble;
 pub use interp::Uniforms as PixelUniforms;
-pub use wgsl::{AlphaFunc, COUNT_DEPTH_ENTRY, PixelOptions, PixelShader, translate};
+pub use wgsl::{AlphaFunc, COUNT_DEPTH_ENTRY, PixelOptions, PixelShader, translate, translate_with_default_final_uniform};
 
 /// Size of a `D3DPIXELSHADERDEF`.
 pub const PSDEF_SIZE: usize = 0xF0;

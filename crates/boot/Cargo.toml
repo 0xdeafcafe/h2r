@@ -14,7 +14,7 @@ analyze.workspace = true
 lift.workspace = true
 emit.workspace = true
 # The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
-clif.workspace = true
+clif = { workspace = true, optional = true }
 ir.workspace = true
 runtime.workspace = true
 kernel.workspace = true
@@ -32,7 +32,7 @@ h1convert = { path = "../h1convert" }
 h1map = { path = "../h1map" }
 # Our settings (setting_defs, the ui model).
 settings = { path = "../settings" }
-feature = { path = "../feature" }
+feature = { path = "../feature", default-features = false }
 engine = { path = "../engine", features = ["runtime-glue"] }
 toml = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
@@ -52,7 +52,7 @@ native-render = { path = "../native-render", optional = true }
 shaders = { path = "../shaders", optional = true }
 serde.workspace = true
 x87 = { path = "../x87" }
-dsound = { path = "../dsound" }
+dsound = { path = "../dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
 voice = { workspace = true, optional = true }
 audio = { path = "../audio", default-features = false }
@@ -64,7 +64,7 @@ live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
 live-proto.workspace = true
 input = { path = "../input", default-features = false }
-# Local bots (docs/game/bots.md).
+# Phantom bots (docs/game/bots.md).
 bots = { path = "../bots" }
 # Sim mode's match, tuning and report files (docs/runtime/sim.md).
 sim = { path = "../sim" }
@@ -89,9 +89,10 @@ perf = { path = "../perf", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io"]
-gpu = ["gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
-movie-playback = ["bink-hle/playback", "dep:movies"]
-local-io = ["dep:voice"]
+desktop-runtime = ["dep:clif", "feature/native-render"]
+gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
+movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
+local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
 perf = ["dep:perf"]
 
 [dev-dependencies]
@@ -108,3 +109,7 @@ required-features = ["gpu"]
 [[test]]
 name = "headless_interp"
 required-features = ["gpu"]
+
+[[test]]
+name = "fast_tier"
+required-features = ["desktop-runtime"]

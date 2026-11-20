@@ -100,7 +100,7 @@ fn stages() -> Vec<Stage> {
         Stage {
             switch: feature::native_particles::SWITCH,
             on: feature::native_particles::on,
-            label: "native_particles_emit",
+            label: "native_particles_walk_emit",
             feature: Some(&feature::native_particles::NativeParticles),
             off_with: &[],
             compare_env: None,
@@ -138,9 +138,13 @@ fn stages() -> Vec<Stage> {
             compare_env: None,
         },
         Stage {
-            switch: feature::native_hud::SWITCH,
+            switch: feature::native_hud::UI_SWITCH,
             on: feature::native_hud::on,
-            label: "native_hud_quad",
+            label: if feature::native_hud::compare_spec().is_some() {
+                "native_hud_quad"
+            } else {
+                "native_ui_screen_fan"
+            },
             feature: Some(&feature::native_hud::NativeHud),
             off_with: &[],
             compare_env: Some("H2_NATIVE_HUD_COMPARE"),

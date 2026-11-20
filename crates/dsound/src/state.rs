@@ -472,8 +472,9 @@ impl DirectSound {
         self.clock_only = true;
     }
 
+    #[inline]
     pub(crate) fn clock_only(&self) -> bool {
-        self.clock_only
+        !cfg!(feature = "playback") || self.clock_only
     }
 
     /// Installs (or with `None` removes) the controller-speaker router. Voices
@@ -1086,7 +1087,7 @@ impl DirectSound {
             h.write_u32(at(base, 0x10)?, flags)?;
         }
         let raw = h.read_vec(at(base, dest_off)?, dest_len)?;
-        if !self.clock_only && ty == EFFECT_TYPE_I3DL2 && self.reverb_index == Some(index) {
+        if !self.clock_only() && ty == EFFECT_TYPE_I3DL2 && self.reverb_index == Some(index) {
             // The game's environment for the I3DL2 send (Halo: effect 9).
             let mut w = [0u32; 12];
             w.copy_from_slice(&words);
@@ -1205,7 +1206,7 @@ impl DirectSound {
                 h.free(p);
                 return Err(e.into());
             }
-            let buffer = if self.clock_only {
+            let buffer = if self.clock_only() {
                 SoundBuffer::for_clock(fmt, d.buffer_bytes as usize)
             } else {
                 SoundBuffer::new(fmt, d.buffer_bytes as usize)
@@ -1307,7 +1308,7 @@ impl DirectSound {
         } else {
             default_mix_bins(d.flags, format.channels() as usize)
         };
-        let mut stream = if self.clock_only {
+        let mut stream = if self.clock_only() {
             Stream::for_clock(format)
         } else {
             Stream::new(format).map_err(|_| unimpl("stream format"))?
@@ -1505,7 +1506,7 @@ impl DirectSound {
         {
             return Ok(S_OK);
         }
-        let (buffer, output) = if self.clock_only {
+        let (buffer, output) = if self.clock_only() {
             h.check_samples(pv, bytes)?;
             (SoundBuffer::for_clock(fmt, bytes as usize), VoiceOutput::Main)
         } else {
@@ -1548,7 +1549,7 @@ impl DirectSound {
     /// Re-reads the guest bytes into the audio buffer.
     fn resync(&mut self, h: &dyn crate::host::GuestMemory, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
-        let clock_only = self.clock_only;
+        let clock_only = self.clock_only();
         let b = self.buf(ptr)?;
         let (Some(d), Some(id)) = (&b.data, b.audio) else {
             return Ok(());
@@ -1918,7 +1919,7 @@ impl DirectSound {
         if at_capacity {
             return Ok(DSERR_INVALIDCALL);
         }
-        let bytes = if self.clock_only {
+        let bytes = if self.clock_only() {
             h.check_samples(pkt.buffer, pkt.max_size)?;
             None
         } else {
@@ -2535,15 +2536,17 @@ impl DirectSound {
             return Err(Stop::Consumer(self.conflict(lease.who)));
         }
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        if self.clock_only {
-            out.fill(0.0);
-            if let Some(side) = side {
-                side.fill(0.0);
-            }
-            mixer.advance_clock(out.len() / 2);
-        } else {
+        #[cfg(feature = "playback")]
+        if !self.clock_only() {
             mixer.render_split(out, side);
+            drop(mixer);
+            return self.service_all(h).map(|_| ());
         }
+        out.fill(0.0);
+        if let Some(side) = side {
+            side.fill(0.0);
+        }
+        mixer.advance_clock(out.len() / 2);
         drop(mixer);
         self.service_all(h).map(|_| ())
     }
@@ -2625,21 +2628,19 @@ impl DirectSound {
 
     fn render_discard(&mut self, frames: u64) {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        if self.clock_only {
-            let mut left = frames;
-            while left > 0 {
-                let n = left.min(RENDER_CHUNK);
-                mixer.advance_clock(n as usize);
-                left -= n;
+        #[cfg(feature = "playback")]
+        let mut scratch = (!self.clock_only()).then(|| vec![0.0f32; 2 * RENDER_CHUNK as usize]);
+        let mut left = frames;
+        while left > 0 {
+            let count = left.min(RENDER_CHUNK);
+            #[cfg(feature = "playback")]
+            if let Some(out) = &mut scratch {
+                mixer.render(&mut out[..2 * count as usize]);
+                left -= count;
+                continue;
             }
-        } else {
-            let mut scratch = vec![0.0f32; 2 * RENDER_CHUNK as usize];
-            let mut left = frames;
-            while left > 0 {
-                let n = left.min(RENDER_CHUNK);
-                mixer.render(&mut scratch[..2 * n as usize]);
-                left -= n;
-            }
+            mixer.advance_clock(count as usize);
+            left -= count;
         }
         self.frames_rendered += frames;
     }

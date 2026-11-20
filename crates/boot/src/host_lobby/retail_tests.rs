@@ -127,11 +127,11 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
 }
 
 #[test]
-fn all_phantom_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
+fn a_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let config = sim::config::parse_match(
-                "map='midship'\nscore_limit=17\n[[bot]]\nkind='phantom'\n[[bot]]\nkind='phantom'\n",
+                "map='midship'\nscore_limit=17\n[[bot]]\n[[bot]]\n",
                 false,
             )
             .unwrap();

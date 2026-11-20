@@ -62,7 +62,7 @@ pub struct Player {
     pub appearance: Option<Appearance>,
     /// A bot (docs/game/bots.md §6, §9.2). With an `xuid`, the server
     /// accepts it only for an xuid in the session's roster. Without one it
-    /// is a host's own Clanker (a local slot, or a phantom it made): no
+    /// is a host's own phantom Clanker: no
     /// account, so no stats page, career stats or rank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<bool>,

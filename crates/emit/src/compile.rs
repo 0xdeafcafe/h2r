@@ -29,6 +29,16 @@ mod tiers;
 pub use pgo::Pgo;
 pub use tiers::{Tiers, hot_addresses};
 
+/// Cranelift's optimisation level for the fast tier: `H2_CLIF_OPT`
+/// (`none`, `speed`), default `speed`.
+pub fn clif_opt_level() -> Result<&'static str, String> {
+    match std::env::var("H2_CLIF_OPT").ok().as_deref() {
+        None | Some("") | Some("speed") => Ok("speed"),
+        Some("none") => Ok("none"),
+        Some(v) => Err(format!("H2_CLIF_OPT={v}: expected none or speed")),
+    }
+}
+
 /// Flags for every generated object that do not depend on the build
 /// profile (LIFTER.md §1): no fast-math or FP contraction, no
 /// strict-aliasing assumptions. The optimisation level and debug-info
@@ -86,14 +96,12 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
 /// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), reading
 /// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
-/// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
-/// pointers invoking the handler in the target's direct slot
-/// (`H2_INDIRECT_CALLS`), taking the RAM gate at a handler's start
-/// (`H2_ENTRY_GATE`, `h2fastmem.h`) and spending a counting handler's
-/// accesses in the RAM view instead of calling the runtime to charge them
-/// (`H2_VIEW_CHARGE`). Profile-guided optimisation (`H2_PGO`) and the
-/// target CPU (`H2_CPU`, arm64 only: see [`pgo::for_arch`]) are off unless
-/// set ([`pgo`]).
+/// access count across direct calls (`H2_DIRECT_COUNT`) and taking the RAM
+/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Indirect calls
+/// and jumps through the target's direct slot (`H2_INDIRECT_CALLS`) and
+/// charging accesses in the RAM view (`H2_VIEW_CHARGE`) default on.
+/// Profile-guided optimisation (`H2_PGO`) and the target CPU (`H2_CPU`,
+/// arm64 only: see [`pgo::for_arch`]) are off unless set ([`pgo`]).
 ///
 /// These are the flags for `arch`: [`Arch::codegen_flags`] after
 /// [`CFLAGS`], and its default level ([`Arch::default_opt`]) when `H2_OPT`
@@ -101,6 +109,13 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// targets had flags of their own. The stamp ([`boot`'s `build_stamp`])
 /// takes them for the target it builds for, so a module cross-built for
 /// Windows matches what the app computes on the device.
+///
+/// H2_XMM_LOCALS, H2_SSE_STICKY_PE, H2_SSE_HOST_RUN, H2_SSE_PACKED_X86
+/// and H2_X87_STORE_BITS enable the local vector bank, precision-flag
+/// shortcut, host control reuse, SSE2 packed path and ext80 store rounding.
+/// Each defaults on. H2_FLAT_RAM, H2_RAM_PAGE_CACHE and H2_X87_TOP are opt-in until
+/// measured in full images: both trade fewer hot operations for more
+/// live state or larger generated code.
 pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -112,20 +127,33 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
         ("H2_X87_NATIVE", true),
+        ("H2_X87_STORE_BITS", true),
+        ("H2_X87_TOP", false),
         ("H2_SSE_NATIVE", true),
+        ("H2_SSE_STICKY_PE", true),
+        ("H2_SSE_PACKED_X86", true),
+        ("H2_SSE_HOST_RUN", true),
+        ("H2_XMM_LOCALS", true),
+        ("H2_RAM_PAGE_CACHE", false),
+        ("H2_FLAT_RAM", false),
         ("H2_DIRECT_CALLS", true),
         ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),
         ("H2_DIRECT_GATE", false),
         ("H2_VIEW_BUDGET", false),
         ("H2_DIRECT_COUNT", false),
-        ("H2_INDIRECT_CALLS", false),
+        ("H2_INDIRECT_CALLS", true),
         ("H2_ENTRY_GATE", false),
-        ("H2_VIEW_CHARGE", false),
+        ("H2_VIEW_CHARGE", true),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
         }
+    }
+    if let Some(owner) = env("H2_FLAT_STATS_OWNER").filter(|s| !s.is_empty()) {
+        let pc = u32::from_str_radix(owner.strip_prefix("0x").unwrap_or(&owner), 16)
+            .map_err(|_| err(format!("H2_FLAT_STATS_OWNER={owner}: expected a hexadecimal guest owner address")))?;
+        v.push(format!("-DH2_FLAT_STATS_OWNER=0x{pc:08x}u"));
     }
     Ok(pgo::for_arch(v, arch))
 }
@@ -1458,7 +1486,14 @@ mod tests {
         assert!(flag("H2_PERF", Some("1"), false).unwrap());
         assert!(flag("H2_X87_NATIVE", Some("yes"), true).is_err());
         let flags = cflags().unwrap();
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
+        for name in [
+            "H2_FASTMEM",
+            "H2_X87_NATIVE",
+            "H2_SSE_NATIVE",
+            "H2_DIRECT_CALLS",
+            "H2_INDIRECT_CALLS",
+            "H2_VIEW_CHARGE",
+        ] {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }
@@ -1468,7 +1503,7 @@ mod tests {
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
         let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
-        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_INDIRECT_CALLS", "H2_ENTRY_GATE", "H2_VIEW_CHARGE"] {
+        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_ENTRY_GATE"] {
             let on = std::env::var(name).as_deref() == Ok("1");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }

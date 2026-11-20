@@ -11,14 +11,16 @@ pub fn clear() {
     LAST.lock().unwrap_or_else(|e| e.into_inner()).fill(None);
 }
 
-pub(super) fn recent(tick: u32) -> Vec<Take> {
-    LAST.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .flatten()
-        .copied()
-        .filter(|e| tick.wrapping_sub(e.tick) <= 30)
-        .collect()
+pub(super) fn recent_into(tick: u32, out: &mut Vec<Take>) {
+    out.clear();
+    out.extend(
+        LAST.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|e| tick.wrapping_sub(e.tick) <= 30),
+    );
 }
 
 /// Item attachment at 0x10ca80 also handles detachment (no unit).

@@ -1,51 +1,27 @@
-//! `native-objects`: objects' render models drawn by the native renderer
-//! instead of their layer-3 entries (docs/graphics/native-renderer.md,
-//! "Stage 2: objects and skinning"). On by default (since 2026-11-20);
-//! `H2_FEATURES=impl.render.native_objects=off` turns it off for the
-//! comparison against the D3D path (exactly that key: `impl.render=off`
-//! does not, since this one changes what draws the objects).
+//! Scene objects drawn through resident render models and the game's pose
+//! and material inputs. The default walk reads the sorted layer-3 entries
+//! before the guest prepares their draws. A complete span of objects
+//! can return directly from the geometry handler after GPU reservation.
 //!
-//! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
-//! opaque point, so nothing here replaces guest code:
-//!
-//! - first it sets back the bits it cleared at the last base-layer layer 3
-//!   (the layers after 3, 5 and up, come next in the same view), each only
-//!   if the item still holds the mask it left ([`restore_pending`]);
-//! - then, when the current layer is 3 and the call is the base layers'
-//!   (`[esp] == 0x0002bed5`): ask the [`Host`] which object definitions and
-//!   shaders it draws, clear layer 3's bit on those objects' items
-//!   ([`native_render::objects::clear_objects`]: by item, the part and
-//!   implementation its record picked, `objects::ItemKey`), copy each
-//!   cleared object's node matrices, sphere and lighting and each item's
-//!   node rows out of guest memory, and hand them, in the list's order,
-//!   with the view's camera to the host, which plans every item's draw
-//!   before the hook returns and says which it draws ([`Host::draw`]).
-//!   Exactly those keep their bits cleared: an item whose object, rows or
-//!   texture accumulation target do not read, or whose draw the host could
-//!   not resolve, gets its bit back before the layer draws.
-//!
-//! Nothing runs after the body, and the observer is context-only, so the
-//! pipelined render runs it on its own thread
-//! (docs/graphics/pipelined-render.md, "Render-safe hooks"). There the
-//! memory it reads is the render's snapshot of the frame: the node
-//! matrices are copied out of the same frame the rest of the render draws,
-//! whatever the next tick does to the bodies or the pool meanwhile, and
-//! the pass carries the copies (nothing reads guest memory after the
-//! hook). The host's pass request goes to the D3D device in render order.
-//!
-//! It sits inside `render-timing`'s observers and the world's
-//! (`after_feature`).
+//! With `impl.render.native_object_walk=off`, the layer observer plans
+//! individual native items for the host's resolved-draw admission instead.
+//! The mask interface also permits a host to install a native pass first and
+//! restore only its skipped items at the next layer boundary. Both paths use
+//! the render context's snapshot of guest memory, including on the
+//! pipelined render thread.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
+use native_render::object_walk::{self, Entry, Run, SortedObjects};
 use native_render::objects::{self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER, MaskPlan, MaskPreview};
-use timeline::native::{Metric, Stage, Timer};
+use timeline::native::{Metric, ObjectWalk, Stage, Timer};
 
 use crate::native_world::Mem;
 use crate::{BuildError, Builder, Feature, Manifest};
@@ -53,6 +29,14 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-objects";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_objects";
+
+pub const WALK_SWITCH: &str = "impl.render.native_object_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    on(switches)
+        && crate::switches::native_render_default(switches)
+        && switches.feature(WALK_SWITCH, true)
+}
 
 pub fn on(switches: &crate::Switches) -> bool {
     crate::switches::native_stage_on(switches, SWITCH)
@@ -178,8 +162,22 @@ pub trait Host: Send + Sync {
     /// Drain work preceding the base layers' layer 3. Return the set drawn
     /// natively now, or `None` to leave every object to the D3D path.
     fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>>;
-    /// A definition met in layer 3 that the set does not hold: load its
-    /// model if it has not been tried (cheap to call again).
+    /// Start the tag-index load on map activation or a snapshot's first view.
+    fn preload(&self, _mem: &dyn GuestMemory) {}
+
+    /// Reserve and commit all of a sorted run. `consume` updates the guest
+    /// loop only after all resources and both target copies are ready.
+    fn draw_walk(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _run: &[Entry],
+        _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
+    ) -> Result<(), ObjectWalk> {
+        Err(ObjectWalk::Reservation)
+    }
+
+    /// A definition the resolved-draw path met outside the published set.
+    /// A host that preloads all definitions can ignore the notification.
     fn want(&self, definition: u32);
     /// Plans the view's pass over `items` (in the list's order, each with
     /// its object's frame in `objects`) against the set of `generation`,
@@ -194,6 +192,124 @@ pub trait Host: Send + Sync {
         &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
         objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
     ) -> Option<Drawn>;
+}
+
+struct WalkLayer {
+    list: u32,
+    base: u32,
+    counter: u32,
+    initialized: bool,
+    entries: Vec<Entry>,
+    runs: VecDeque<Run>,
+}
+
+thread_local! {
+    static WALK_LAYER: RefCell<Option<WalkLayer>> = const { RefCell::new(None) };
+}
+
+fn host() -> Option<Arc<dyn Host>> {
+    HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
+    WALK_LAYER.with(|state| *state.borrow_mut() = None);
+    if ret != SCENE_LAYER3_RETURN {
+        return;
+    }
+    let Some(host) = host() else { return };
+    // Use the same map generation check as activation on snapshot loads.
+    host.preload(mem);
+    let Some(list) = Mem(mem).read_u32(native_render::skip::CURRENT_LIST) else {
+        return;
+    };
+    WALK_LAYER.with(|state| {
+        *state.borrow_mut() = Some(WalkLayer {
+            list,
+            base: 0,
+            counter: 0,
+            initialized: false,
+            entries: Vec::new(),
+            runs: VecDeque::new(),
+        })
+    });
+}
+
+fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, esi: u32) {
+    let _planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+    layer.initialized = true;
+    let Some(SortedObjects { base, current, counter, entries }) = object_walk::read(&Mem(mem), layer.list, esp, esi) else {
+        ObjectWalk::Unreadable.count(1);
+        return;
+    };
+    let decision = object_walk::decide(&entries, current);
+    ObjectWalk::Unsupported.fallback(decision.unsupported);
+    ObjectWalk::Order.fallback(decision.interleaved);
+    layer.base = base;
+    layer.counter = counter;
+    layer.entries = entries;
+    layer.runs = decision.runs.into();
+}
+
+fn walk_geometry(c: &mut crate::Call) -> Result<crate::Flow, runtime::GuestFault> {
+    use crate::Flow;
+    if WALK_LAYER.with(|state| state.borrow().is_none()) {
+        return Ok(Flow::Continue);
+    }
+    let rt = Arc::clone(c.ctx.runtime());
+    let mut mem = rt.memory();
+    let esp = c.cpu.esp;
+    let esi = c.cpu.esi;
+    let Ok(caller) = mem.u32(esp) else { return Ok(Flow::Continue) };
+    if caller != native_render::light_list::HANDLER_RETURN
+        && !c.ctx.live_continuations().iter().any(|k| {
+            k.token == caller && k.target == points::LIGHT_GEOMETRY_DRAW.base
+                && k.origin == crate::render_loop::SORTED_HANDLER
+        })
+    {
+        return Ok(Flow::Continue);
+    }
+    // Move the plan out while interacting with the device. No RefCell
+    // borrow survives an external boundary.
+    let Some(mut layer) = WALK_LAYER.with(|state| state.borrow_mut().take()) else {
+        return Ok(Flow::Continue);
+    };
+    if !layer.initialized {
+        initialize_walk(&mut layer, &mut *mem, esp, esi);
+    }
+    let mut consumed = false;
+    if let Some(run) = layer.runs.front() {
+        let stride = native_render::skip::ITEM_SIZE;
+        if layer.base.checked_add(run.slots.start as u32 * stride) == Some(esi) {
+            let run = layer.runs.pop_front().expect("matched the front");
+            let skipped = (run.slots.len() - 1) as u32;
+            let counter = layer.counter;
+            let remaining = (layer.entries.len() - run.slots.start) as u32;
+            let last = esi + skipped * stride;
+            let mut consume = |mem: &mut dyn GuestMemory| {
+                mem.u32(counter) == Ok(remaining)
+                    && mem.u32(esp) == Ok(caller)
+                    && mem.set_u32(counter, remaining - skipped).is_ok()
+            };
+            let result = host().ok_or(ObjectWalk::Reservation).and_then(|host| {
+                host.draw_walk(&mut *mem, &layer.entries[run.slots], &mut consume)
+            });
+            match result {
+                Ok(()) => {
+                    c.cpu.esi = last;
+                    ObjectWalk::Native.count(run.objects);
+                    consumed = true;
+                }
+                Err(reason) => reason.fallback(run.objects),
+            }
+        }
+    }
+    WALK_LAYER.with(|state| *state.borrow_mut() = Some(layer));
+    if consumed {
+        drop(mem);
+        c.ret(engine::render_loop::layer::HANDLER_CLEANUP).map(Flow::Return)
+    } else {
+        Ok(Flow::Continue)
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -556,6 +672,7 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 /// The loaded item lists are the loaded render's, built again each frame.
 pub fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    WALK_LAYER.with(|state| *state.borrow_mut() = None);
 }
 
 pub struct NativeObjects;
@@ -581,18 +698,56 @@ impl Feature for NativeObjects {
             forget_pending();
             Ok(())
         }));
+        let walk = walk_on(b.switches());
+        b.game()
+            .on_start("native_objects_preload", |o| {
+                if let Some(host) = host() {
+                    host.preload(&*o.guest());
+                }
+            })
+            .after_feature(crate::native_map_work::ID);
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_objects_skip", |o| {
+            .observe_before(&points::LAYER_DRAW, "native_objects_skip", move |o| {
                 if crate::native_map_work::Stage::Objects.standing_down() {
                     return;
                 }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
-                before_layer(&mut *g, ret);
+                if walk {
+                    begin_walk(&mut *g, ret);
+                } else {
+                    before_layer(&mut *g, ret);
+                }
             })
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)
             .context_only();
+        if walk {
+            b.raw()
+                .before(&points::LIGHT_GEOMETRY_DRAW, "native_object_walk", walk_geometry)
+                .after_feature(crate::native_lights::ID)
+                .context_only();
+            b.raw()
+                .observe_before(&points::LAYER_END, "native_object_walk_end", |_| {
+                    WALK_LAYER.with(|state| *state.borrow_mut() = None);
+                })
+                .context_only();
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+
+    #[test]
+    fn the_object_walk_has_a_default_on_switch_and_honors_both_parents() {
+        let enabled = |spec| walk_on(&crate::Switches::parse(spec).unwrap());
+        assert!(enabled(""));
+        assert!(enabled("impl.render=off"));
+        assert!(!enabled("impl.render.native_object_walk=off"));
+        assert!(!enabled("impl.render.native_objects=off,impl.render.native_object_walk=on"));
+        assert!(!enabled("impl.render.native=off,impl.render.native_objects=on,impl.render.native_object_walk=on"));
     }
 }

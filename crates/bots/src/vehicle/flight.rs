@@ -60,9 +60,17 @@ pub fn floor(map: &MapData, at: Vec3) -> Option<f32> {
 
 impl Flight {
     pub fn step(&mut self, i: &FlightIn, map: Option<&MapData>) -> Pilot {
+        self.step_with_floor(i, map, map.and_then(|m| floor(m, i.at)))
+    }
+
+    pub(crate) fn step_with_floor(
+        &mut self,
+        i: &FlightIn,
+        map: Option<&MapData>,
+        floor: Option<f32>,
+    ) -> Pilot {
         let [x, y, z] = i.at;
         let f = super::flat(i.forward);
-        let floor = map.and_then(|m| floor(m, i.at));
         let height = floor.map_or(
             if map.is_some() {
                 10.0
@@ -98,16 +106,15 @@ impl Flight {
             ));
         }
         let clear = |to| map.is_none_or(|m| flight_clear(&m.walls, i.at, to, f));
-        let can_flip = clear([
-            x + 5.0 * f[0] - side * 2.5 * f[1],
-            y + 5.0 * f[1] + side * 2.5 * f[0],
-            z,
-        ]);
         if !i.land
             && hit
             && height > 2.5
-            && can_flip
             && self.last_evade.is_none_or(|t| !fresh(t, 105))
+            && clear([
+                x + 5.0 * f[0] - side * 2.5 * f[1],
+                y + 5.0 * f[1] + side * 2.5 * f[0],
+                z,
+            ])
         {
             self.evade = Some((side, i.tick));
             self.last_evade = Some(i.tick);

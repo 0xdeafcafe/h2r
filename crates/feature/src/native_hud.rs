@@ -1,50 +1,87 @@
-//! `native-hud`: the HUD's and the UI's screen draws met by the native
-//! renderer (docs/graphics/native-renderer.md, "Stage 5: post and HUD",
-//! "The UI and HUD"). On by default (since 2026-11-20);
-//! `H2_FEATURES=impl.render.native_hud=off` turns it off for the
-//! comparison against the D3D path (exactly that key).
-//!
-//! Four hooks, all context-only with nothing after a body, so the
-//! pipelined render runs them on its own thread:
-//!
-//! - `SCREEN_QUADS_BEGIN` (`0x00035b90`): a batch of screen quads begins
-//!   with its record (text: `0x0001f070` over the glyph cache). The
-//!   [`Host`] plans the batch (`native_render::hud::Batch`) or says why it
-//!   stays on D3D. The begin always runs: it sets the state the game
-//!   expects after it.
-//! - `SCREEN_QUAD` (`0x000363a0`): one quad of the batch. When the host
-//!   answers it ([`Host::screen_quad`] `true`), the hook returns `ret 4`
-//!   in its place and the quad's words are never pushed. The host answers
-//!   a quad of a planned text batch once a native pass holding it is
-//!   reserved on the device (docs/graphics/native-renderer.md, "Native
-//!   text"); every other quad keeps its D3D draw.
-//! - `SCREEN_QUADS_END` (`0x00036560`): the batch ends.
-//! - `HUD_SHADER_QUAD` (`0x0022a664`): one HUD shader quad (ECX the
-//!   corners, EAX the coordinate rectangle, stack the bitmap datum, its
-//!   index and the shader). The host notes the corners; the quad's own
-//!   draw is claimed, or not, where D3D resolves it (a draw admission).
-//!
-//! `H2_NATIVE_HUD_COMPARE` ([`compare_spec`]): the host queues the first
-//! quads' corners and pairs each with the draw the D3D path resolves for
-//! it, through a draw admission on the device that claims nothing.
+//! Native UI and HUD hooks, plus the optional screen-quad comparison.
+//! Producers may skip emission after a complete native reservation. The UI
+//! walk keeps the game's order, state setup and layout callbacks.
+
+mod backdrop;
+mod model;
+mod outline;
+mod ui;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use engine::points;
+use runtime::abi::TransferAbi;
+use timeline::native::{Metric, Stage};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-hud";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_hud";
+pub const UI_SWITCH: &str = "impl.render.native_ui";
 
-/// Whether the native HUD is on (on by default since 2026-11-20;
-/// `impl.render.native_hud=off` turns it off for the comparison against
-/// the D3D path).
+pub(crate) use ui::instruction_entries;
+pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
+pub use ui::UiScope;
+
+/// Both names select the same UI renderer. The old HUD key remains an
+/// exact opt-out and cannot override a disabled native renderer.
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
+    crate::switches::native_render_default(switches)
+        && switches.feature(UI_SWITCH, true)
+        && switches.feature(SWITCH, true)
+}
+
+pub const WALK_SWITCH: &str = "impl.render.native_hud_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    on(switches) && switches.feature(WALK_SWITCH, true)
+}
+
+pub(crate) const HUD_QUAD_READY: points::Point = points::Point::new(
+    "HUD_QUAD_READY", 0x0022_a7f6, points::Sig::Site, "docs/graphics/native-renderer.md",
+);
+const HUD_QUAD_TAIL: u32 = 0x0022_a854;
+const HUD_QUAD_LOCAL_BYTES: u32 = 0x70;
+const HUD_QUAD_VERTEX_BYTES: u32 = 0x1c;
+
+/// The four vertices after the guest resolves the engine bitmap and
+/// multiplies the texture coordinates by its live dimensions.
+pub type HudVertices = [[(u8, [f32; 4]); 3]; 4];
+
+fn vertices(mem: &dyn GuestMemory, frame: u32, colour: u32) -> Option<HudVertices> {
+    // The helper writes white to register 9 before the vertex loop.
+    if colour != u32::MAX {
+        return None;
+    }
+    let base = frame.checked_sub(HUD_QUAD_LOCAL_BYTES)?;
+    let mut vertices = [[(0, [0.0; 4]); 3]; 4];
+    for (i, vertex) in vertices.iter_mut().enumerate() {
+        let at = base.checked_add(i as u32 * HUD_QUAD_VERTEX_BYTES)?;
+        let read = |o| {
+            let v = f32::from_bits(mem.u32(at.checked_add(o)?).ok()?);
+            (v == 0.0 || v.is_normal()).then_some(v)
+        };
+        *vertex = [
+            (9, [1.0; 4]),
+            (3, [read(16)?, read(20)?, 0.0, 1.0]),
+            (0, [read(0)?, read(4)?, read(8)?, read(12)?]),
+        ];
+    }
+    Some(vertices)
+}
+
+fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
+    Stage::Ui.count(Metric::WalkExamined, 1);
+    let Some(vertices) = vertices(mem, frame, colour) else {
+        Stage::Ui.count(Metric::WalkRefusedInputs, 1);
+        return false;
+    };
+    let drawn = host().is_some_and(|host| host.draw_quad(mem, &vertices));
+    ui::record(drawn);
+    drawn
 }
 
 /// One call of `0x0022a664`.
@@ -60,6 +97,50 @@ pub struct HudQuadCall {
 
 /// What the screen draws become: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
+    fn draw_quad(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn screen_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn fade_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
+        false
+    }
+
+    fn loading_bitmap_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
+        false
+    }
+
+    fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn backdrop_composite(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _vertices: &engine::ui_backdrop::Fan<2>,
+    ) -> bool {
+        false
+    }
+
+    fn model_ranges(&self, _mem: &mut dyn GuestMemory, _ranges: &[engine::ui_model::Range]) -> bool {
+        false
+    }
+
+    fn outline(&self, _mem: &mut dyn GuestMemory, _vertices: &OutlineVertices) -> bool {
+        false
+    }
+
+    fn inline_ui_quad(&self, _mem: &mut dyn GuestMemory, _primitive: u32, _bytes: Vec<u8>) -> bool {
+        false
+    }
+
+    fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
+
+    fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
+
     /// A batch begins with the record at `record`.
     fn begin(&self, mem: &mut dyn GuestMemory, record: u32);
     /// One quad of the open batch, its four corners at `corners`. `true`:
@@ -193,7 +274,7 @@ pub fn on_hud_quad(mem: &mut dyn GuestMemory, ecx: u32, eax: u32, esp: u32) {
 }
 
 pub fn compare_on(switches: &crate::Switches) -> Option<u64> {
-    if on(switches) || crate::switches::native_render_default(switches) {
+    if crate::switches::native_render_default(switches) {
         compare_spec()
     } else {
         None
@@ -212,48 +293,101 @@ impl Feature for NativeHud {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) && compare_on(b.switches()).is_none() {
+        let compare = compare_on(b.switches()).is_some();
+        if !on(b.switches()) && !compare {
             return Ok(());
         }
-        b.raw()
-            .before(&points::SCREEN_QUADS_BEGIN, "native_hud_begin", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_begin(&mut *mem, c.cpu.esp);
-                Ok(Flow::Continue)
-            })
-            .context_only();
-        b.raw()
-            .before(&points::SCREEN_QUAD, "native_hud_quad", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let answered = {
+        if compare {
+            b.raw()
+                .before(&points::SCREEN_QUADS_BEGIN, "native_hud_begin", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
                     let mut mem = rt.memory();
-                    on_screen_quad(&mut *mem, c.cpu.esp)
-                };
-                if answered {
-                    c.ret(4).map(Flow::Return)
-                } else {
+                    on_begin(&mut *mem, c.cpu.esp);
                     Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::SCREEN_QUAD, "native_hud_quad", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let answered = {
+                        let mut mem = rt.memory();
+                        on_screen_quad(&mut *mem, c.cpu.esp)
+                    };
+                    if answered {
+                        c.ret(4).map(Flow::Return)
+                    } else {
+                        Ok(Flow::Continue)
+                    }
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::SCREEN_QUADS_END, "native_hud_end", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut mem = rt.memory();
+                    on_end(&mut *mem);
+                    Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
+            b.raw()
+                .before(&points::HUD_SHADER_QUAD, "native_hud_shader_quad", |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut mem = rt.memory();
+                    on_hud_quad(&mut *mem, c.cpu.ecx, c.cpu.eax, c.cpu.esp);
+                    Ok(Flow::Continue)
+                })
+                .context_only()
+                .optional();
+        } else {
+            ui::place(b);
+        }
+        if walk_on(b.switches()) && !compare {
+            b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
+                    return Ok(Flow::Continue);
                 }
-            })
-            .context_only();
-        b.raw()
-            .before(&points::SCREEN_QUADS_END, "native_hud_end", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
+                let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
                 let mut mem = rt.memory();
-                on_end(&mut *mem);
-                Ok(Flow::Continue)
-            })
-            .context_only();
-        b.raw()
-            .before(&points::HUD_SHADER_QUAD, "native_hud_shader_quad", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_hud_quad(&mut *mem, c.cpu.ecx, c.cpu.eax, c.cpu.esp);
-                Ok(Flow::Continue)
-            })
-            .context_only();
+                if mem.u32(c.cpu.esp).ok() != Some(7)
+                    || !walk_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx)
+                {
+                    return Ok(Flow::Continue);
+                }
+                // The fan primitive word is already on the stack.
+                c.cpu.esp = esp;
+                Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
+            }).context_only().optional();
+        }
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+
+    #[test]
+    fn the_hud_walk_uses_the_live_corner_order_and_separate_uv_register() {
+        let mut mem = FlatMemory::new(0x1000, 0x1000);
+        let frame = 0x1800;
+        for i in 0..4 {
+            let at = frame - HUD_QUAD_LOCAL_BYTES + i * HUD_QUAD_VERTEX_BYTES;
+            for (j, word) in [i as f32, -0.0, 0.5, 2.0, 10.0 + i as f32, 20.0].into_iter().enumerate() {
+                mem.set_u32(at + 4 * j as u32, word.to_bits()).unwrap();
+            }
+        }
+        let quad = vertices(&mem, frame, u32::MAX).unwrap();
+        assert_eq!(quad[2][0], (9, [1.0; 4]));
+        assert_eq!(quad[2][1], (3, [12.0, 20.0, 0.0, 1.0]));
+        assert_eq!(quad[2][2].0, 0);
+        assert_eq!(quad[2][2].1.map(f32::to_bits), [2.0, -0.0, 0.5, 2.0].map(f32::to_bits));
+        assert!(vertices(&mem, frame, 0).is_none());
+        mem.set_u32(frame - HUD_QUAD_LOCAL_BYTES, f32::NAN.to_bits()).unwrap();
+        assert!(vertices(&mem, frame, u32::MAX).is_none());
     }
 }

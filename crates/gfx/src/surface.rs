@@ -253,6 +253,7 @@ pub struct CopyRect {
 }
 
 /// One surface and its GPU resources.
+#[derive(Clone)]
 pub struct Surface {
     desc: SurfaceDesc,
     kind: SurfaceKind,
@@ -271,6 +272,7 @@ pub struct Surface {
     levels: Vec<wgpu::TextureView>,
 }
 
+#[derive(Clone)]
 struct Padded {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -474,6 +476,15 @@ impl SurfaceStore {
             None => (None, None),
         };
         Ok(RenderTarget { color: view, color_format: c.wgpu_format, depth: depth_view, depth_format, size, samples: 1 })
+    }
+
+    /// Import handles from a store on the same GPU device. Pixels and views
+    /// stay shared. Each store owns its own padded-attachment bookkeeping.
+    pub fn import(&mut self, source: &Surface) -> SurfaceId {
+        let id = SurfaceId(self.next);
+        self.next += 1;
+        self.surfaces.insert(id, Surface { padded: None, ..source.clone() });
+        id
     }
 
     /// Looks up a surface.

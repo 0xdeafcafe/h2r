@@ -1,8 +1,10 @@
 # Bots: Clankers and Clankermatch
 
-This document records the original design, implementation traces and
-outstanding game checks. The player-options checks are below. Section 11
-lists the original multiplayer checks.
+Clankers join hosted System Link and Xbox Live matches as phantom peers.
+Controller ports are reserved for people. This document covers the
+phantom path, the retail traces behind it and game checks in §11. The
+retired local-slot design is recorded in §4 and the development history
+in §10.
 
 Navigation generator 5 routes through lifts and teleporters, including
 converted Halo 1 one-way exits. Bots build pickup beliefs from sight and
@@ -25,9 +27,9 @@ only.
 
 ## Clanker appearance and Live player options
 
-A Clanker's full gamertag determines its emblem and armour colours across
-local slots, System Link, simulated players and Live rosters. Switching
-controller, host or account XUID keeps the same look for the same name.
+A Clanker's full gamertag determines its emblem and armour colours in
+System Link, simulations and Live rosters. Changing hosts or account
+XUIDs keeps the same look for the same name.
 The profile model still comes from the host. Team games can override the
 visible armour colour.
 
@@ -67,9 +69,8 @@ that tag alone does not establish a loader for it.
 - `0x148893` writes the selected-player record at `0x54dc6c`.
   For kinds 1 and 2, +4 holds the eight-byte XUID, +12 the flags and
   +16 the ASCII gamertag. Kind 3 has only a name. The hooks leave
-  name-only rows and human accounts on the retail path. A local guest
-  sharing a human XUID must match the bot slot's full 12-byte player id.
-  A guest on another console needs a matching, gear-marked session slot.
+  name-only rows and human accounts on the retail path. A remote
+  phantom needs a matching, gear-marked session slot.
 - The card opens on the kit's large dialog and offers Back. Skin 6 of
   the current interface contains the Y menu's player table. Its nested
   skin's first shader bitmap uses the medium emblem material in the
@@ -93,52 +94,27 @@ Select a bot and a human from each available surface, including a
 recent bot that has left the session. Check `h2 agent ui` for
 `dialog.name = clanker_player_options`, the rendered emblem, difficulty
 and style, and return to the invoking list with B or Back. Repeat with a
-remote client, a human guest next to an unleased local bot and two
-controllers. Check the same name after restart and in a non-team System
-Link game against its Live card and web emblem. Use a legacy friends
+remote client and with a human guest signed in on a second controller.
+Check the same name after restart and in a non-team System Link game
+against its Live card and web emblem. Use a legacy friends
 entry if available, since new friend requests to bots cannot create one.
 
 ## 1. Decision
 
-**One brain, two ways in.** A bot is a brain that outputs controller input
-and nothing else: two sticks, triggers and buttons, one frame at a time. It
-uses no cheats and does not write game state. The game applies its own rules
-to that input: movement, aim assist, weapon switching, grenades, melee,
-crouch, vehicles.
+A Clanker's brain emits sticks, triggers and buttons. The host puts the
+Clanker in the session as a phantom machine with one player. Each
+simulation tick, the retail input reader and action builder turn its
+arrived pad into an action for the remote gather. The game applies its
+usual movement, aim assist and combat rules.
 
-The brain's output reaches the game in one of two ways:
+Custom games on System Link or Xbox Live, Clankermatch and headless sims
+all use phantom peers. A match has up to 16 players, subject to the
+session and playlist limits. A playerless sim has room for 15 bots
+because its host occupies one peer slot. See [the phantom path](#5-way-in-2-phantom-peers).
 
-1. **Local slot (stage 1).** The brain drives an unused local player's pad.
-   That gives up to 3 bots per machine. Their views are not drawn.
-2. **Phantom peer (stage 6).** The brain drives a remote player who does not
-   exist. The host makes up a machine for it and stores that player's actions
-   each tick, as if they had arrived over the network. That gives up to 16
-   players in total.
-
-Both ways run on the host. Custom games currently fill free local ports
-first. Set `H2_BOTS_ALL_PHANTOM=1` before launch to keep every local port
-available for humans in a hosted System Link or Live game. Clankermatch
-already seats its whole roster as phantoms. The default stays at 0 until
-a paired sim batch shows that phantom hit rates match local hit rates (§3.4).
-
-**Option (c) is rejected:** AI actors on MP maps are not players. An `actr`
-(the game's AI actor) with a biped is not in the players array. It has no
-scoreboard row and no team score, it cannot carry the flag or ball, and kills
-of it are not kills in the carnage report. MP maps also have no characters,
-squads or pathfinding (§5.3). What we keep from that work is
-`crates/pathfind`, used to build the nav mesh (§3.2).
-
-### 1.1 The three options, compared
-
-| | (a) local slots | (b) phantom peers | (c) AI actors |
-|---|---|---|---|
-| Is a player (scoreboard, objectives, carnage) | yes | yes | no |
-| Most bots | 3 per machine (4 users per machine, one human) | 16 minus humans | memory-bound |
-| Engine work | hide the bot views; sign a guest in | fake a machine and player; store its actions; quiet the network for it | load chars and squads into MP; place actors; teams |
-| Live/System Link with humans | allowed only if guests are (Run) | yes; the remote humans see a normal player (§6) | clients see bipeds that are not players |
-| CPU per bot | one extra local player's simulation; views skipped | the same as one remote player | an actor update |
-| Nav | ours (§3.2) | ours | needs pathfinding data, which MP maps lack |
-| Fits "only controller input" | yes, natively | yes, through the action conversion | no |
+AI actors are a different retail feature. An `actr` with a biped
+doesn't participate in scoring, objectives or the carnage report. The
+navigation mesh uses the project's pathfinding code (§3.2).
 
 ## 2. What we traced
 
@@ -174,13 +150,13 @@ squads or pathfinding (§5.3). What we keep from that work is
   | `+0x30` | 16 machine identifiers × 6 bytes |
   | `+0x98` | local machine index |
 
-  One machine has at most 4 users. More than 3 bots on one host therefore
-  needs extra machines, which is a second reason for phantom peers.
+  One machine has at most four local users. Each phantom occupies a
+  separate peer slot.
 - **Local slots.** 4 entries of `0xc70` bytes at `0x54e8e0`. Flag `0x10`
   (bit 4) means a profile is loaded, and `0x20` (bit 5) means signed in to
   Live (§4.2). The profile block is at `+0x18`.
 
-### 2.2 The action path, shared by both ways in (traced)
+### 2.2 The retail action path (traced)
 
 Each tick, `0x1870a0` does this:
 
@@ -213,13 +189,10 @@ none, local, sync-client, sync-server, dist-client and dist-server. In
 multiplayer the host is distributed server (5) and clients are distributed
 client (4).
 
-What this means for bots:
-
-- A **local-slot bot** feeds the pad. Steps 1 to 3 then run for it as for a
-  human, so nothing else is needed.
-- A **phantom bot** supplies its brain's pad when the host gathers the
-  remote slot for simulation. After uplink delivery the same retail reader, layout mapper and action
-  builder run against a private local-user view of that seat. See §5.1, “The action from a pad”, for the fields and timing.
+A phantom supplies its pad when the host gathers the remote slot for
+simulation. After uplink delivery the same retail reader, layout mapper
+and action builder run in the phantom's private local-user view. See
+§5.1, “The action from a pad”, for the fields and timing.
 
 ### 2.3 Views (traced)
 
@@ -229,12 +202,8 @@ clamped to 1..4. The split layout comes from `[0x4e6948]` and `[0x485ac2]`
 whose map entry is not -1, and calls
 `0x223080(view i of n, layout, …, 0x4e9c8c + u*0x358)`.
 
-**Design:** hide bot views with a window around `0x2234e0`. On entry,
-lower the count and set the bot users' map entries to -1; restore both on
-exit. The human then gets a full-screen view. Aim assist uses the same kind
-of observe window. The HUD, sound listeners and the per-local-player
-director (`0x4e8c44`, stride `0x140`) read the same map and may also need
-the window. That is checked offline next (§10), and confirmed in a run.
+Phantom players have no host local-user entry. The host's views, HUD
+and sound listeners use the humans' local-user mappings.
 
 ### 2.4 AI (traced)
 
@@ -262,8 +231,8 @@ layer before its bots could even stand still.
 `0x25286d`.
 
 - Joining at `0x25290f` adds the controller's bit to the screen mask and
-  picks a profile (`0x18fc44`, `0x24b779`, `0x24b6ea`). Extra local players
-  join this way, so bot local slots do too.
+  picks a profile (`0x18fc44`, `0x24b779`, `0x24b6ea`). Extra human
+  players join this way.
 
 **Live menu.**
 
@@ -328,9 +297,8 @@ another legitimate input once a reader for the game's displayed blips exists.
 Each brain keeps a short, tick-stamped history of world samples, vehicle
 sight, nearby grenades, sound, deaths and teammate callouts. It thinks
 from the newest sample at least `perception_ticks` old. A repeated poll
-in the same tick reuses the previous pad. Local slots sample through the
-host's ordinary input path. If the host skips a sample, the brain can use
-an older observation. The first live sample after a respawn starts a
+in the same tick reuses the previous pad. If the host skips a sample, the
+brain can use an older observation. The first live sample after a respawn starts a
 fresh history.
 
 ### 3.2 Navigation
@@ -471,7 +439,7 @@ landing with a player-sized biped. There is no separate ladder action.
 
 #### Belief and map knowledge
 
-**What can reach a decision.** The local and phantom pads both pass host
+**What can reach a decision.** The phantom pad source passes host
 candidates through `perceive::observe` before combat, movement, radio or
 memory. The paired-world harness in `perceive::honesty` runs seeded brains
 with separate radios, comparing projected inputs, controller output,
@@ -641,8 +609,16 @@ fight, apart from the aim:
 chase, a bot goes to likely places: each candidate is scored, the best
 it can reach and has not been blacklisted wins.
 
-- a place it saw an enemy in the last 60 s (4.5, fading to 0.5);
+- a place it saw an enemy in the last 60 s (4.5, fading to 0.5). A
+  teammate's contact call is kept as a sighting the moment it is heard,
+  and so is the bot's own guess at where a killed opponent respawned
+  (the kill feed retires the target, §3.3). On a large map these are
+  what bring phantoms to a fight across maps like Waterworks. A
+  support walk answers a call only within tens of units. Roaming
+  scores the sighting from wherever the phantom stands;
 - a weapon lying in the world worth taking (1.5);
+- the map's spawn points (1.0): on a large map with no sighting for a
+  while, the likeliest place to find anyone is where players come from;
 - six polygons picked at random (0.5), so it still explores;
 - less 2.5 for a place within 5 it was at in the last 40 s (fading), and
   2 for one under 4 away;
@@ -704,7 +680,7 @@ throw it has already lined up, then waits for the hand to be free.
 
 A Clanker's identity seed fixes its trait draws and favorite weapon family.
 Offline bots use a seat seed. Live roster bots use the server's personality
-seed in both local and phantom seats. A difficulty change maps the same
+seed. A difficulty change maps the same
 draws into the new bands. At the same difficulty, a persistent bot starts
 every match with the same traits and a fresh mood.
 
@@ -846,26 +822,22 @@ The host now runs the retail local builder on each arrived phantom pad.
 Its private copy of user zero has the phantom's unit, camera origin,
 profile binding and control history, including on a host with no local
 profile. The host validates the full action at `0x14d0a0` (§5.1).
-The first ten-seed Midship batch measured four players for 9,000 ticks
-in each original leg. Red locals averaged 0.165 opposing hits per shot
-and Blue phantoms 0.155. Every swapped report had zero measured ticks
-and named the two Blue locals as unbound. These observations leave team
-and transport confounded. **Same-view assist parity is inferred, needs
-a run.** Compare matched Midship seats with `H2_BOTS_ALL_PHANTOM=0`
-using the ten-seed
-[seat-swap batch](../runtime/sim.md#local-and-phantom-seat-swaps).
-Check `sim.player.list` for `aim.assist_player` and `aim.assist_strength`
-as a target enters and leaves the reticle. Compare opposing hits per shot
-and damage across the two legs before changing the default. Then compare
-the hand-written aim and the hand-built aim net on matched maps, lineups
-and seeds (§3.4.1).
+A historical ten-seed Midship batch measured four players for 9,000 ticks
+per original leg. Red locals averaged 0.165 opposing hits per shot and
+Blue phantoms 0.155. The swapped legs never bound all four players, so
+team and transport were confounded.
+
+For a phantom in a hosted match, check `sim.player.list` for
+`aim.assist_player` and `aim.assist_strength` as a target enters and
+leaves the reticle. For aim comparisons, run matched phantom rosters
+with the same maps and seeds (§3.4.1).
 
 #### 3.4.1 The aim net (compared: the code aim stays)
 
 **Result (2026-11-20).** `aim-net-vs-code.toml` ran all 80 matches
 (Midship and Lockout, easy to legendary, 5 seeds, both arm-swap legs,
-5-minute 2 v 2, local seats). The code aim won 60% of games to the net's
-40%, and the net lost on accuracy (13.1% against 15.8%), damage (9.8
+5-minute 2 v 2, using the local seats available at the time). The code
+aim won 60% of games to the net's 40%, and the net lost on accuracy (13.1% against 15.8%), damage (9.8
 against 11.8 a game) and grenades (0.3 against 1.1). The net barely
 overshoots (0.03 rad against 0.17), but it settles 1.3 s slower and its
 stick jitters more. It is cautious, and it loses the first shot. The gap
@@ -1270,7 +1242,7 @@ names the gametype by `V+0x44` and the weapons by tag name.
 | Juggernaut identity | `J=[0x510c9c]=E+0xfc`, `J+0` | u16 player-slot mask | confirmed | Engine 7 initializes J at `0x1921d0`. `0x1922db..0x192339` tests the victim and transfers the role to the killer through `0x192970`. |
 | the flag, ball, bomb tags | globals tag (`[0x4e034c]`) `+0x16c` the multiplayer block: `+0xc` → `+4` flag, `+0xc` ball, `+0x3c` bomb | `u32` tag datum | confirmed | `0x242261` (bomb, engine 9) and `0x24228b` (flag) create the object from it; Oddball `0x2bc231` the ball |
 
-**How the bot reads them** (`objective::read`, from `perceive_as` once
+**How the bot reads them** (`objective::read`, from `guest::perceive` once
 it has found itself):
 
 - the gametype is `E+0xc14`; Slayer and unsupported engines read as no objective;
@@ -1368,8 +1340,7 @@ The fight tricks run in the noob combo's scheduler
 (`weapons::Combo::step`, its `ComboIn::glitch` gate); the show-offs run
 in the mind's roaming (`Mind::step`, `Stunt`). The setting follows the
 Taunts path: store, `clankers::Want::read`, the driver's shared
-`AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
-phantoms alike.
+`AtomicU8`, then `Mind::glitches` at the phantom's next pad sample.
 
 **The tricks.** Nominal requested presses at 30 ticks a second:
 
@@ -1554,7 +1525,7 @@ the bot on foot, never blind. It is kept apart from `brain::Perception`
 (the mind is handed it with `Mind::see_vehicles`), so every other test
 and caller plays as before.
 
-`guest::perceive_as` now puts a rider where its vehicle is (its own
+`guest::perceive` puts a rider where its vehicle is (its own
 `+0x64` is relative to it): a Warthog's driver and an enemy on its gun are
 seen at the Warthog and at the gun, not near the world's origin.
 
@@ -1610,11 +1581,14 @@ and holds X while in range of the seat. The stand-point offsets and the
 0.6 world-unit eye height used in this check are **[guess]**. A retry
 uses a closer point covered by the same entry data.
 
-**Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
-(no enemy in view for 1.5 s), not carrying, not going for a weapon, and
-in an objective game only when the objective's point is more than 20
-away. The nearest vehicle by distance (plus 3 per unit of height) within
-the skill's range that:
+**Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). A phantom
+can choose a vehicle after 1.5 s with no enemy in view if it carries no
+objective and seeks no weapon within 20 units. A weapon farther away
+can become a vehicle errand. The phantom drives to within 3 units of it
+and finishes on foot. In an objective game it chooses a vehicle only
+when the objective point is more than 20 units away. It takes the
+nearest vehicle by distance (plus 3 per unit of height) within the
+skill's range that:
 
 - is a class it drives, whole (over 0.4), upright, standing still (under
   0.5 a second);
@@ -1655,12 +1629,19 @@ Warthog by the camera: the left stick says where to go relative to where
 the player looks. The driver:
 
 - goes to the objective's point, else the enemy it fights, else where an
-  enemy was last seen, else a roaming goal (§3.2);
+  enemy was last seen, else the weapon it seeks (the errand it mounted
+  for), else a roaming goal (§3.2);
 - plans over walk edges whose portals fit the vehicle and routes through
   their clear spans. Centre and wheel-line probes check floor, overhead
   room and walls before steering, cutting a corner, reversing or trying
-  to splatter someone. With an objective on an unreachable road it
-  dismounts to finish on foot;
+  to splatter someone. After drifting off the mesh it keeps its goal and
+  looks for nearby ground it can steer back onto. With an objective on
+  an unreachable road it dismounts to finish on foot. If the chassis
+  cannot reach a roaming goal, the phantom blacklists it for 10 s. A
+  driver that goes 4 s without usable steering or a fight gets out and
+  continues on foot. A failed roam plan counts as 16 ticks towards that
+  limit, and a fight or usable steering clears the count. While it
+  waits for a route, the driver sweeps the view;
 - looks at the carrot (or the enemy it fights) and pushes the stick that
   way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
   radians or more;
@@ -1693,21 +1674,26 @@ passenger shoots its own gun as on foot. With nothing to shoot they look
 where the enemy was last seen, else ahead.
 
 **Getting out** (`drive::leave`): the vehicle under 0.2, lying flipped
-for 1 s, stuck for good (driver), nobody driving for 4 s (gunner,
-passenger), or within 3 of an objective point it must reach on foot (the
-flag or ball it is going for). It holds X 15 ticks in every 20, so a press
-and a hold both work, and stops driving. The vehicle it left is left alone
-for 10 s, so it does not get straight back in.
+for 1 s, stuck for good (driver), nowhere to drive for 4 s (driver; see
+above), nobody driving for 4 s (gunner, passenger), or within 3 of an
+objective point it must reach on foot (the flag or ball it is going
+for). It holds X 15 ticks in every 20, so a press and a hold both work,
+and stops driving. It avoids the vehicle it left for 10 s. When it
+leaves because it has nowhere to drive, it avoids the vehicle for 30 s
+and roams on foot.
 
 **Seeing it in a game.** Two or three Clankers on a map with vehicles
 (Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
-Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
+Legendary. §11.4 is the checklist.
 
-**Open** (§12): local and phantom observations of each seat's entry and
+**Open** (§12): phantom observations of each seat's entry and
 exit, the lock time and zoom requirement, and measured lift and flight
-behavior. A Warthog driver waiting for its gunner remains open.
+behaviour. A Warthog driver waiting for its gunner remains open.
 
 ## 4. Way in 1: local slots
+
+This section records the retired local-slot design and its retail
+controller, render and audio traces. Current bots use §5.
 
 ### 4.1 The bot's pad (traced, Repo)
 
@@ -2641,9 +2627,9 @@ clears the previous user's target and strengths before retail binds the
 unit at `0x1872d0`. The private profile slot has the profile bit and
 local-user index zero even if the host has nobody signed in. `0x1557c0`
 supplies the unit or vehicle camera origin for the observer at `0x4e9c8c`.
-Only the validated action crosses back to the host. A repeated gather in one tick reuses that action. Local bots keep
-their normal retail controller polling. A phantom samples once per game
-tick and advances the button clock by elapsed simulation milliseconds.
+Only the validated action crosses back to the host. A repeated gather
+in one tick reuses that action. A phantom samples once per game tick
+and advances the button clock by elapsed simulation milliseconds.
 
 The first 12 sims with a phantom seat stopped between ticks 91 and 1945. In the
 Lockout log, `0x2d6307` is the return from kernel ordinal 234 inside
@@ -2724,24 +2710,18 @@ at tick 1284 to −26° at 1300 while the human's bearing stayed within
 6° of level. Using the local response removes this excess gain from the
 delayed control loop. Post-change hit rates require another hosted match.
 
-**Training coverage.** A sim match with a `kind = "phantom"` seat hosts
-a private System Link game. Its brain, uplink, remote gather and retail
-action builder run as they do on a normal host. Training waits for every
+**Training coverage.** A sim match hosts a private System Link game.
+Each phantom's brain, uplink, remote gather and retail action builder
+run as they do in a hosted custom game. Training waits for every
 configured seat to bind to a player and unit before counting combat.
-The paired Midship example switches transport for each named bot while
-keeping its team, tuning, map and seed. The report compares shots,
-opposing hits and damage dealt and taken per seat.
-[Headless simulation](../runtime/sim.md#more-than-four)
+[Headless simulation](../runtime/sim.md#the-playerless-system-link-host)
 
 ### 5.2 Why phantoms are needed
 
-- More than 3 bots, and up to the playlist's size (16).
-- Bots that are separate accounts with their own name, emblem and rank
-  (Clankermatch, persistent bots).
-- A host whose own humans fill all 4 local ports. With all-phantom
-  seating the first bot joins through the same remote gather as the last.
-  A playerless sim host still takes one of the 16 machine slots, leaving
-  room for 15 single-player phantom machines.
+A phantom joins as its own machine and player. It can carry a bot
+account with a gamertag, emblem and rank, with all host controller
+ports available for people. A playerless sim host still occupies one of
+the 16 machine slots, leaving 15 slots for single-player phantoms.
 
 ### 5.3 CPU per bot
 
@@ -2755,45 +2735,47 @@ Per bot, per tick:
 
 Our estimate is under 0.1 ms per bot per tick on the host's CPU. The game's
 own cost for the bot's player is the same as for a human: one more biped
-simulated. A local-slot bot also costs the per-user control update and the
-director; its view is skipped. A phantom costs one more remote player's
-distributed updates to each client. That is the real ceiling, and it is the
-same as a full human lobby. Measure in a run (§11).
+simulated. A phantom adds a remote player's distributed updates to
+each client. A real lobby of the same size has the same update count.
+Measure in a run (§11).
 
-## 6. Shared and different
+### 5.4 Waiting for the black screen
 
-| | Local slot | Phantom peer |
-|---|---|---|
-| Brain (perception, nav, decision, aim, emotes) | shared | shared |
-| Nav mesh tool and cache | shared | shared |
-| Pad output | to the port's pad merge | one remote-slot action per simulation tick (§5.1) |
-| Signing in | guest profile in a local slot | player configuration on a made-up peer |
-| Views | hidden by the render window | none: not a local user |
-| Network | none | the drop and keep-alive for phantom addresses |
-| Most per host | 3 | 16 minus humans |
-| Own identity and rank | a bot account with a roster (§9.5); else a guest of the host | yes (§8) |
-| Works with remote humans | if the mode allows guests (Run) | yes: clients see a normal remote player |
+Phantoms send a neutral pad while the opening screen fades in and each
+time they respawn. Their brains still observe and plan on every gathered
+tick. The gather drops queued input while the fade is active and publishes
+the current pad on the first clear tick. Configured ping and jitter resume
+on the following tick.
 
-**Real remote players** (System Link or Live custom games): bots run only on
-the host. Clients see local-slot bots as the host's guests and phantoms as
-players of a machine they never talk to directly. Both are normal to them,
-because a distributed client takes every remote player from the host
-anyway. Joining clients need no change at all. Our clients do know a bot
-by the bot flag in its player configuration's name (§8.2), but nothing
-depends on that.
+At match opening, the host reads the black overlay's opacity for each
+mapped human player from `[GAME_ENGINE] + 0xe4 + 4 * user`. Map
+activation sets it to 1 (`0x1585a4`), and the renderer draws the overlay
+while it is positive (`0x1599b0`). The opening gate clears once all
+those views are clear. Later spawns use each phantom's own clock.
 
-If the host leaves, the bots go with it. Host migration is not a concern:
-retail Halo 2 ends the game when the host leaves.
+Retail keeps opacity for local users. A phantom uses its own spawn age
+from the player record at `+0x194`, which starts at the guest tick rate
+(`0x14f68e`) and counts down by one per player update (`0x15bb4f`).
+It models the black fade retail starts at 1 on a local spawn
+(`0x1584e6`) and reduces by `3 / tick_rate` per simulation tick, down
+to zero (`0x15c4d6..0x15c4f9`). At 30 Hz this takes ten updates.
+A playerless System Link or dedicated host has no local views. Its
+opening gate applies the retail hold through `round(1.5 * tick_rate)`
+(`0x15c4c6`). Since action gather precedes the update, the gate opens
+at tick 56 at 30 Hz if the phantom's own fade has cleared.
 
-**Scoreboard and stats.** Bots are players, so the scoreboard, the carnage
-report and the post-game stats treat them like anyone else. Telemetry
-(`crates/live-telemetry`) records them as players, keyed by their game slot
-like anyone, with `bot: true` on their roster entries (`game::Player::bot`):
-a local-slot Clanker found by its controller port, a phantom by its machine
-id (`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`). Only a
-bot from a server roster in force has an `xuid` (§9): a phantom's
-rostered one, or the bot account a local bot is on Live as
-(`Bots::accounts`, by port); the rest have no account at all.
+## 6. Phantom players in the game record
+
+Bots run on the host. Clients see them as remote players, with their
+state distributed by the host. Recomp clients recognise the gear mark
+in the player configuration's name (§8.2). The bots leave when the host
+ends the game.
+
+**Scoreboard and stats.** Bots participate in the scoreboard, the
+carnage report and post-game stats. Telemetry identifies phantoms by
+machine id and records them by game slot with `bot: true`
+(`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`).
+A phantom on the active server roster carries its rostered XUID (§9).
 
 The web shows a small BOT mark beside a bot's name (the live scoreboard,
 the carnage report, the map legend, the map and 3D viewer labels, the
@@ -2847,15 +2829,11 @@ ui-builder agent, which owns `ui_kit`, through the coordinator. As far as
 read, `OptionRow`'s two-choice rows need a many-choice sibling for Count
 and Difficulty; that is the one kit ask expected.
 
-**Joining the lobby.** When the host's pre-game lobby opens with
-`clankers.enabled`, the bot driver adds the bots one by one: as local slots
-up to 3 (stages 1 to 4), and the rest as phantoms, which join the lobby
-this console hosts as peers (§5.1, "Phantoms in the pregame lobby"), up to
-Count 15 (the session's most players permitting). With
-`H2_BOTS_ALL_PHANTOM=1` the driver starts with the first phantom and
-claims no ports. The host and clients see each bot's name and team colour
-in the lobby roster. Changing the page in the lobby adds or removes
-bots.
+**Joining the lobby.** When the host's System Link or Xbox Live custom
+game lobby opens with `clankers.enabled`, the driver adds phantoms as
+peers (§5.1). The count is capped by the available session slots. The
+host and clients see each bot's name and team colour in the roster.
+Changing the page in the lobby adds or removes phantoms.
 
 ## 8. Clankermatch
 
@@ -2873,8 +2851,8 @@ exactly like OptiMatch:
    playlists and variants, and the same carnage report.
 5. Leaving ends the game.
 
-The player's own console is the host. The bots are phantom peers, up to the
-playlist's size, so Clankermatch needs stage 6.
+The player's own console hosts. The bots join as phantom peers up to
+the playlist's player limit.
 
 ### 8.2 Decided by the user
 
@@ -2896,18 +2874,9 @@ playlist's size, so Clankermatch needs stage 6.
    and single spaces, 1 to 15 characters, as `live_proto::Gamertag` checks.
    The glyph is not part of the account name. It is drawn before the name
    wherever a bot's name appears:
-   - in the game, the host writes `⚙ ` + tag into the player configuration's
-     UTF-16 name (player `+0x44`), which is what the lobby, scoreboard and
-     carnage report draw. A phantom gets it in its configuration; a local
-     bot (whose name comes from its profile) gets it in its session
-     player's effective configuration, on the session's host, each frame
-     a bot port's player lacks it (`session::mark_local_bots`, from the
-     bot glue: `bots: the bot mark on local bots' names (session players
-     [1, 2, 3])`). Only the effective name is written: the host's pass
-     (`0x65cb0`) keeps an effective name once set and takes the rest from
-     the requested configuration, so the profile cannot undo it, and the
-     clients and the game's player take the effective one. Before this
-     (the user's run, 2026-11-19) local Clankers had no mark;
+   - in the game, the host writes `⚙ ` plus the tag into the phantom's
+     player configuration. The lobby, scoreboard and carnage report
+     draw that name.
    - on the site, it is drawn from the server's bot flag.
 
    The server knows which accounts are bots (§9). Every client patches the
@@ -3084,16 +3053,10 @@ For a clanker hopper (`live_hle::clankermatch`):
    §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
    time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
    seeded by the session id), up to the playlist's most players less one
-   human. **Phantoms only** (since 2026-11-19, below): every bot is a
-   phantom with the roster's bot account and skill, joining the match's
-   target session as a peer (§5.1, "Phantoms in the pregame lobby"; with
-   `H2_PHANTOM_LOBBY=0`, once the game runs), as the players a search
-   finds are. `clankers::MATCH_LOCAL` is 0: no bot takes a controller
-   port. (Phase 2 put the first three on ports 1 to 3 as local players;
-   they showed in the human's party and failed the matchmade start's
-   controller check.) Nobody is seated before the roster
-   comes (no host-made bot for it to replace, no local bot on Live as the
-   human's guest first); if Live refuses it, host-made bots.
+   human. Each bot joins the match's target session as a phantom peer
+   with its rostered account and skill (§5.1, "Phantoms in the pregame
+   lobby"). The driver waits for the roster before seating any bot.
+   If Live refuses the roster, the host supplies the identities.
    In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
    (`clankermatch::balance`), around the human: the host's first
@@ -3104,14 +3067,12 @@ For a clanker hopper (`live_hle::clankermatch`):
    playlist's teams. The frame hook now runs this with no bot in (it used
    to return first, so a Clankermatch with the Clankers page off never
    started its fill).
-3. The match starts on the hopper's normal countdown, now that the local
-   bots make the lobby's player count (below, "Tracing the matchmaking
-   lobby"). A handoff (the lobby's session deleted and the game's
+3. The match starts on the hopper's normal countdown once the phantoms
+   bring it to the required player count (below, "Tracing the
+   matchmaking lobby"). A handoff (the lobby's session deleted and the game's
    advertised) keeps the bots and carries the roster (§9.5); with no
    hosted session for 30 s, or another kind of session hosted, the fill
-   ends and the bots go: the phantoms at once, the local bots signed out
-   by the bot glue's `SLOT_SIGN_OUT` once no game runs, as Clankers Off
-   does.
+   ends and the phantoms leave.
 4. The game record says `kind: "clankermatch"` with the playlist and
    session (`telemetry::Playlist::clankers`), and the server keeps it as
    its own kind (live-matchmaking.md §6.8).
@@ -3119,40 +3080,11 @@ For a clanker hopper (`live_hle::clankermatch`):
 The lobby's "searching for players" state is the game's own: it stays until
 the session is full.
 
-**Why no bots show (the user's run, 2026-11-19: "no bots on Clanker
-Slayer").** Read from the code, not a log yet. The fill seats its bots on
-the phantom books (`bots::phantom::Phantoms::add`), and a phantom enters
-the session only once a multiplayer game runs: `bots::phantom::session::
-host_session` answers `NotNow::Wait` while there is no game tick, and
-§5.1's recipe runs only in a running game ("phantoms leave the session
-when the game ends, so they are not in the lobby yet"). In a custom game
-that is fine: the human presses Start and the phantoms join the game. A
-matchmaking lobby has no Start: the game starts it on the hopper's
-countdown once it has its players, and with one human and no phantom in
-the session it never does (Clanker Slayer's fewest players is 2). So the
-fill runs, its `(phantom, rostered) on` lines come, and the lobby still
-shows the human alone. **Fixed (phase 2):** the fill seats local bots
-first (item 2 above), which sign in to the lobby as session players, so
-the lobby reaches the playlist's fewest players and the game starts it;
-the phantoms join once it runs. The fill's first line says how many of
-each (`clankermatch: 3 local bots join the lobby on free controller
-ports; 4 phantoms join when the game starts`).
-
-Nothing else on the path is gated on what the user might have set:
-
-- `clankers.enabled` off does not stop it: `clankers::frame` runs
-  `tick_match` every 15 frames from the bots' `RENDER_FRAME` hook whatever
-  the page says, and the fill seats `Fill::bots` with `Want::OFF`.
-- The hopper ids are descriptor indices 0..15 everywhere (the marks, the
-  `HOPPER_LISTED` filter, the session's attribute 1, the search's hopper),
-  so the admin list's 1-based 9, 10, 11 are hoppers 8, 9, 10. A
-  published file that moved a clanker playlist loses its mark
-  (`ClankerHoppers::of_defaults`), which would empty the Clankermatch
-  list rather than misfile it; the user saw the list, so the marks hold.
-- A refused roster seats host-made bots; it never blocks the fill.
-- The Clankers Off fix (`SLOT_SIGN_OUT`) touches local bots only, which
-  a Clankermatch never seats; the Live menu's row move keeps
-  `custom_games::Row::Clankermatch` at row 2.
+The initial implementation joined phantoms only during gameplay.
+That left the lobby below the playlist minimum and kept the countdown
+from starting. The current lobby join path adds the phantoms to the
+target session before the countdown. It also runs with the Clankers
+page disabled.
 
 **Tracing the matchmaking lobby (2026-11-19, from the disassembly; no
 run yet).**
@@ -3163,11 +3095,9 @@ run yet).**
   `0x63fb0`. The start state (`0x19a2ce`) tests "a pregame session"
   (`0x19a279` gives 3 for life-cycle types 1 and 2) **before** its
   matchmaking branch (`0x199971`: lobby kind 6, session `+0x49a4` 2), so
-  a matchmaking lobby passes it: `bots::lobby::pregame` holds there and
-  the bot glue's lobby gate signs local bots in, as in a custom game.
-  **Wrong for the lobby the bots fill** (cm-run2, below): that holds for
-  the party's lobby before the search; once the search hosts, the life
-  cycle is 6 and the lobby is the target session.
+  the party's lobby passes it before the search. Once the search hosts,
+  the life cycle is 6 and the lobby is the target session (cm-run2,
+  below).
 - **What the start counts.** The matchmaking branch's state comes from
   `0x66050(session, hopper)` (through `0x63e90`, hopper `+0x49c8` via
   `0x641f0`), mapped to the status texts by `0x19a5fd`. It reads, per
@@ -3182,9 +3112,8 @@ run yet).**
   `+0x5f0`; at most `0x193250`), 6 when short. The match check
   (`0x7e2df`, in the lobby summary `0x7e210`) compares the lobby's player
   count with the hopper's fewest (`0x1932c0`) and most (`0x193300`), as
-  `0x7067a` and `0x724a6` do for the matchmaking states. So **session
-  players are what count**: local bots (on Live as bot accounts, never an
-  offline id) count, phantoms (absent until the game runs) do not.
+  `0x7067a` and `0x724a6` do for the matchmaking states. Phantoms
+  count once they have joined the target session.
 - **`S+0x4980` is the squad's matchmaking state**, set only through
   `0x5a220(state)`: 1, 2, 4, 5 around the lobby and the game (`0x6e596`
   and `0x727e1` set 4 as a game starts), 6 to `0x12` in matchmaking
@@ -3204,10 +3133,8 @@ run yet).**
   not read for the lobby join (it matters only to the in-game player
   diff, and is 4 once the game runs). The fill's first line now says `N
   phantoms join the lobby as peers`.
-- **To see in a run:** whether a local bot signing in while this console
-  hosts restarts the search (the party changed) or just fills the lobby;
-  whether the game balances a matchmade team game itself at the start
-  (then the phantoms' teams are its, not `clankermatch::balance`'s).
+- **To see in a run:** whether the game changes team assignments when
+  a matchmade team game starts.
 
 **The matchmaking host's lobby (traced 2026-11-19 from the user's
 Clankermatch, cm-run2; built, no run yet).** The search hosted (`session
@@ -3281,42 +3208,16 @@ lobby never started.
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
 
-**Phantoms only (2026-11-19, the user's run on f5d3010c; built, no run
-yet).** The user saw the Clankers in their own party before the search,
-and once the match was made the game said "Player 2's controller is not
-plugged in" and went back to the lobby.
+**Phantoms only.** In the 2026-11-19 run on `f5d3010c`, the retired
+controller-backed bots appeared in the player's party. The local-player
+pass (`0x63d80` → `0x65770`) put those signed-in users into both sessions.
+The matchmade start then refused to proceed because their controller
+ports had no device.
 
-- **Why in the party.** A local bot is a local user, and the local-player
-  pass (`0x63d80` → `0x65770`) adds a signed-in local user to every
-  session with a state: the party's squad session as well as the match's
-  target session. A bot cannot be in the match alone that way.
-- **Why the controller.** The matchmade start checks each local player's
-  controller, and a bot's port has no device. Which function reads it
-  (an `XGetDevices`/`XInputGetCapabilities` mask or the game's own pad
-  flags) is not traced: phantoms have no local player, so nothing reaches
-  the check.
-- **The choice: phantoms only.** A matched player is a remote peer, and
-  so is a phantom: it is listed in the match's lobby only (the target
-  session), never in the party, has no controller, and carries a roster
-  bot account (its gamertag, emblem, rank) as a local bot did. Hiding the
-  bots from the squad pass would mean hooking the pass per session and
-  the controller check besides, and would still leave the bots this
-  console's own party in the game's eyes (one team in a team playlist,
-  the host's guests on the scoreboard). The phantom action adapter carries
-  the brain's button presses, holds and releases (§5.1), including the
-  sequences used by emotes (§3.5) and glitches (§3.8).
-- **Built.** `clankers::MATCH_LOCAL` = 0: the fill seats every bot as a
-  phantom (`clankermatch: 0 local bots join the lobby on free controller
-  ports; 7 phantoms join the lobby as peers (...), in the match only`).
-  While a fill runs, `Phantoms::set_match_only(true)`: its phantoms join
-  only a session of the matchmaking life cycle (types 6 to 9,
-  `lobby::matchmaking_cycle`), wait in the party's lobby (`bots: phantom
-  G waits: not a lobby it can join (the party's lobby: a Clankermatch's
-  bots join the match the search hosted, never the party)`) and leave it
-  if they were in one; the flag clears once the fill's bots are gone.
-  The bot glue's join gate opens in a pregame lobby only again, never a
-  matchmaking one, so the Clankers page's local bots never sign in there
-  either.
+Clankermatch sets `Phantoms::set_match_only(true)` so its phantoms
+join matchmaking life-cycle types 6 to 9 and wait while the party's
+lobby is up. They appear in the target session with their rostered
+gamertags, emblems and ranks. The flag clears when the fill ends.
 
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
@@ -3339,14 +3240,10 @@ plugged in" and went back to the lobby.
 6. `clankers: asking Live for 7 bots for session <id>`, then `clankers:
    Live rostered bots for session <id>` (or `no roster from Live (...):
    host-made bots`).
-7. `clankers: Clanker N on (...)` and `clankers: Clanker N is <gamertag>
-   on Xbox Live (bot account ...)` for the local bots, then `bots: lobby
-   facts: ... session type 6, session state 5, match session state 5
-   (this console hosts it): a matchmaking lobby this console hosts` and
-   `bots:` gate and sign-in lines for ports 1 to 3 in the `lobby`
-   (`screen lobby`), then `bots: lobby players: N in the game's session`
-   rising; `clankers:
-   <gamertag> (phantom, rostered) on (...)` for the rest: on the books.
+7. `clankers: <gamertag> (phantom, rostered) on (...)` for each rostered
+   phantom. The lobby facts should identify the matchmaking target
+   session this console hosts. `bots: lobby players: N in the game's
+   session` reports its growing player count.
 8. `bots: phantom <gamertag> joins (peer N, in the pregame lobby)` in
    the lobby, before the countdown. `bots: phantom ... waits: not a lobby
    it can join (...)` names why a lobby refused one, `... waits: this
@@ -3372,8 +3269,8 @@ team; `phantom::session::tests::lobby`: the lobby this console hosts, the
 reservations, the peer properties, the configuration, the teams, the
 switch, and a phantom joining the lobby, staying for the game, leaving,
 rejoining and waiting; `phantom::session::tests::in_game`: the start's
-wait without phantom machines, a phantom standing in the game, the bot
-mark on local bots; `lobby::a_clankermatch_...`: the target session),
+wait without phantom machines and a phantom standing in the game;
+`lobby::a_clankermatch_...`: the target session),
 `-p bots --lib lobby` (the game session by life cycle, the matchmaking
 host's lobby, its player count), `-p live-hle --lib players_tests` (the
 bots told to their roster's session only), `-p live-hle --lib clankermatch` (the delay and the run),
@@ -3507,10 +3404,8 @@ with these additions:
 
 - `kind: "clankermatch"`, `"custom"` or `"matchmade"` on the game;
 - `bot: true` on each bot's player entry, keyed by its `xuid` when it has
-  one. A local-slot Clanker on Live as its bot account carries that
-  account's xuid (§9.5). A host's own Clanker with no account (a local
-  slot without a roster, or a phantom with a host-made xuid) has `bot:
-  true` and no `xuid` (§6).
+  one. A rostered phantom carries its account's XUID (§9.5). A
+  host-made phantom has `bot: true` and no `xuid` (§6).
 
 Per-player stats are the same as a human's. Persistent bots are ranked
 from these by the server's normal per-playlist rank update, which treats
@@ -3590,7 +3485,7 @@ mean level.
 
 "Bots should not be guests but fake Xbox Live users marked as bots": every
 bot the server rosters is a **bot account**, shown like an account with a
-BOT mark, for matchmaking and for local games alike.
+BOT mark, for matchmaking and for Live custom games.
 
 **What a bot account is** (server, both homes, shared router and read
 model, `live_server::bots`):
@@ -3609,37 +3504,29 @@ model, `live_server::bots`):
   web keeps them out of the Players list and the account count.
 - **Never a person**: it has no keys (`/keys` 404s), so it cannot sign in
   or post anything; recovery is by an account's gamertag and a bot is not
-  one; nobody else may write `bot-*` or `bots-*`. No presence (the HLE
-  sends none for it, §4.2).
+  one; nobody else may write `bot-*` or `bots-*`. The HLE sends no
+  presence for it.
 - **Leases.** A roster (`POST /v1/games/bots`, `BotsRostered` on
   `bots-<session>`) is the lease: its bots are the host's for that session.
-  The console takes a bot account's xuid in a user change only if a roster
-  answered this logon named it (§4.2). A game record's `bot: true` entry
-  with an xuid is taken only for the session's roster in force at the
-  start, made by the record's host (§9.3), local slot or phantom alike; an
-  issued bot recorded as a human, or a human as a bot, is refused.
+  The server accepts a game record's `bot: true` entry with an XUID
+  only from the session host and for a bot on the roster in force at
+  the start (§9.3). It rejects both a bot recorded as a human and a
+  human recorded as a bot.
 
-**Where the bots come from.** With Live and a hosted session, the Clankers
-driver asks for a roster of the **whole count** (it used to ask for the
-phantoms only): the local bots take its first bot accounts, the phantoms
-the rest. A matchmade session asks with its playlist (`Rosters::playlist`,
-the hopper descriptor index from `Hle::matchmade`), so the server fills it
-with the persistent bots nearest the humans' level (§9.4); a custom game
-asks without, for made-up bots at the page's difficulty. Each count,
-difficulty or session change asks again, and a new roster's accounts
-replace the old (the local bots are re-signed as the new ones). Until an
-answer, or with none (refused, System Link, offline), local bots are the
-human's guests on Live and phantoms are host-made, as before. Local bots
-keep the page's skill; only phantoms take the roster's.
+**Where the bots come from.** The driver asks Live for a roster covering
+every requested bot. A matchmade session includes its playlist so the
+server can select persistent bots near the humans' level (§9.4). A
+custom game requests made-up bots at the page's difficulty. Changes in
+count, difficulty or session can fetch a new roster. System Link and
+Live sessions without a roster use host-made phantom identities.
 
 **The session's players.** Retail Halo 2 fills no slot counts in its
 advertisement (`XOnlineMatchSessionCreate`/`Update`, `0x8fcc0`/`0x8fe20`,
 slots at ad `+0x3c..+0x48`, filled by a virtual call): run 20261119-005001
 showed 0 filled with six players in the game. So the host says who plays.
 Every second (`clankers::frame`) while a roster is in force, the driver
-hands the HLE the bot accounts in the game (`Driver::session_bots`: the
-local bots' accounts and the rostered phantoms the game made players for);
-`Hle::set_session_players` tells the session the roster is for
+hands the HLE the rostered phantoms that have joined the game
+(`Driver::session_bots`). `Hle::set_session_players` tells the session the roster is for
 (`Driver::roster_in_force`) of them, and each session the console hosts of
 its signed-in users, as `PlayerJoined` and `PlayerLeft` on `session-<id>`
 for only what changed (`sessions::session_players`, `players_diff`; zero
@@ -3659,7 +3546,7 @@ the code (`live-worker` `rostered_bots_read_as_bot_accounts`).
 new Live session as a game starts (and again as it ends): the HLE deletes
 the lobby's session and advertises another (run 20261119-020015:
 `8894d40b...` deleted, `83d9415d...` advertised a few seconds later).
-The bots keep who they are through it, local bots and phantoms alike:
+The phantoms keep their identities through the handoff.
 
 - **Server** (`live_server::bots::may_carry`, both homes: the worker runs
   the same code). A roster request may name `carry_from`, the host's
@@ -3713,58 +3600,32 @@ sbmm-ranked's.
 2. Bot presence ("Playing Slayer on Lockout" while its host's game runs):
    would need the server to derive it from the host's presence and the
    roster, not a bot's own signed event.
-3. Keeping a local bot's account across roster changes (ask for only the
-   new bots), so a count change does not rename the bots on the ports.
-4. Made-up bot accounts pile up: one per bot per roster. A sweep (or
+3. Made-up bot accounts pile up: one per bot per roster. A sweep (or
    reusing a session's made-up bots) when that matters; their pages stay.
-5. Bots in the web's search lists and finder: kept for now (bots have
+4. Bots in the web's search lists and finder: kept for now (bots have
    pages), filter them there if the user prefers.
 
-**Tests:** `cargo test -p live-server --test bots
-a_rostered_bot_is_an_account` and
-`a_host_reports_the_bots_it_leased_as_its_sessions_players` and
-`a_hosts_next_session_carries_its_bots`, `-p live-hle
---lib players_tests`, `-p live-worker
-rostered_bots_read_as_bot_accounts`, `-p live-hle --test server
-a_leased_bot_account`, `-p bots guest` (the bot-account record and
-writes, guest numbers left free, moving from guest to account, leaving),
-`-p boot --lib clankers` (rosters for every bot, locals first, playlist)
-and `bot_glue` (switching and leaving), `-p live-telemetry --lib
-a_local_bot_carries_its_bot_account`, `bun test test/bots.test.ts` in
-`web/`.
+**Tests.** Coverage lives in `live-server`'s `bots` integration tests,
+`live-hle`'s `players_tests`, `live-worker`'s
+`rostered_bots_read_as_bot_accounts`, `boot`'s `clankers` tests and the
+web's `test/bots.test.ts`.
 
-**Game run (the user):** `h2 play --live-local` (or a Live server), sign
-in on port 0, host a Live custom game, Clankers On, Count 3.
-
-`h2 bots test` (§13) runs steps 1, 4 and 5 with no one at the controller
-and prints a verdict.
-
-1. The log says `clankers: asking Live for 3 bots for session …`, then
-   `Clanker 1 is <gamertag> on Xbox Live (bot account 000b…)` for each
-   port, then `bots: <gamertag> on port 1 is on Xbox Live as its own bot
-   account, beside port 0's` (maybe a guest line first, then the move).
-2. The lobby shows the bots by their gamertags, not "Clanker N" and not
-   "afr(1)". No duplicate-account dialog.
-3. Plug in a second controller and sign in a guest of your account: it is
-   "afr(1)" (guest 1), alongside the three bots. (With 3 bots all ports
-   are taken; try Count 2.) The server log shows no refused user change.
-4. Start Slayer: does the start state reach 9 (`bots: start state …`)?
-   Play; after the game the web game page shows each bot with BOT, linked
-   to a page with the BOT mark; the server log shows no refused record.
-5. Count 5: two phantoms with bot accounts as well (6c's run).
-6. Sign out of Live (or let the host logon fail): `bots: … leaves Xbox
-   Live: no one is on it`; the bots are offline Clankers again.
-7. System Link and split screen: as before, "Clanker N", no Live.
+**Game run.** Sign into Live and host a custom game with Clankers On
+and Count 3. The lobby should show the three rostered gamertags.
+Sign in a second human on a free controller, start Slayer and check
+the game page for three BOT marks linking to the bot accounts. A
+System Link game uses host-made Clanker names. The Live custom game
+can also be checked with `h2 bots test` (§13).
 
 ## 10. Stages
 
-Each stage ends in tests that can be run without the game, plus a short
-list for the user to play (§11).
+This is the development history, including the retired local-slot
+implementation and its original checks. Use §11 and §13 for current
+game checks.
 
 1. **Minimal bot (local slot).** Built: `crates/bots` (the brain, the pads,
    the guest memory work) and `boot::bot_glue` (the hooks).
-   - Bots live in `bots::local` (the library surface below). Its input
-     backend is added after the host's own pads. Each bot pad asks for its
+   - The retired local bot backend was added after the host's own pads. Each bot pad asks for its
      port (`HostBackend::preferred_port`), and gets the lowest free one if a
      real pad holds it. `HostBackend::placed` reports where it went.
      `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
@@ -4135,8 +3996,7 @@ list for the user to play (§11).
        machine id in the player records (`Joined`, with the index), and
        sends it back to `Pending` when the player goes; `Failed` keeps its
        reason.
-     - `Frame::machine` and `guest::perceive_as(Who::Machine(id))`: the
-       brain finds a phantom's own player by machine id.
+     - `Frame::machine` identifies the phantom's player in the brain's perception.
      - `sim`'s `phantom_player` reads `bots::phantom::player`.
      - `live_proto::bots`: the roster (§9.1) and its request, checked by
        §9.1's rules, and `local_xuid` for host-made identities (high bits
@@ -4147,8 +4007,7 @@ list for the user to play (§11).
        slot, the action record and the action from a pad.
      - In the original game-only configuration, `Phantoms::tick` maintains
        membership before each `RENDER_FRAME`. In play the server's action
-       gather samples each joined source (`Frame { port: 4, machine:
-       Some(id) }`). A removed phantom's peer comes out. With the pregame
+       gather samples each joined source with its machine ID. A removed phantom's peer comes out. With the pregame
        join disabled, **phantoms join only once the game runs**. When
        it ends they leave the session and wait for the next game, so the lobby never holds one. On a client, or a
        local game, or before this console is the game's host (the first
@@ -4422,7 +4281,7 @@ list for the user to play (§11).
        frame runs): off Xbox Live, its local user freed, its profile out,
        so a lobby's session drops its player. Once the slot holds no
        profile and no Live (`guest::slot_held`) it unplugs the pad
-       (`bots::local::leave_step`). During a game nothing is removed: the
+       through its leave step. During a game nothing is removed: the
        bot stands idle until the game ends. Turning Clankers on again
        before then gives the new bot the leaving bot's pad back.
 
@@ -4458,9 +4317,8 @@ list for the user to play (§11).
      popping up "pick a profile": the pregame lobby's handler (`0x250b1e`)
      sends A or START from a controller with no profile to the chooser
      (`0x250cc3`, Live sessions), and B or Back from a profile that is not
-     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). Now a
-     joining bot's pad is idle (`Frame::joining`), the brain's and a sim
-     script's alike.
+     on Live to the profile UI (`0x2511b6`, `0x251242`, `0x24b779`). At that
+     stage, the brain and sim scripts returned neutral input during sign-in.
    - **Their own look.** The bot's block is the human's with the bot's
      name, controls and look: the 16 bytes at block `+0x118` are the
      appearance (`0x18fd94` copies them, from slot `+0x130`, into the
@@ -5144,86 +5002,38 @@ list for the user to play (§11).
 
 ## 10.1 Library surface (for the agent API)
 
-`crates/bots` gives other code, such as the agent API's `sim.*` calls, a
-small surface. Everything in it is controller input.
-
-- `bots::local::add(port, Box<dyn PadSource>) -> Result<BotHandle, Error>`
-  puts a bot on controller port `port` (0 to 3), named "Clanker <port>".
-  - Errors: `NoSuchPort`, `PortTaken` (another bot asked for it), and
-    `Full` (3 bots already).
-  - If a real pad holds the port, the bot goes to the lowest free one.
-- `bots::local::remove(handle)` takes the bot off the books (`list` no
-  longer has it); its pad stays plugged and idle. The boot glue signs its
-  slot out once no game runs, then unplugs the pad
-  (`Local::leaving`, `leave_step`, `Local::unplug`). Adding a bot on that
-  port before then takes the pad back.
-- `bots::local::list() -> Vec<BotInfo>` gives each bot's handle, name, the
-  port it asked for, and the port it got (`None` until the input manager
-  has placed it).
-- `trait PadSource: Send { fn pad(&mut self, f: &Frame) -> HostPadState }`
-  - A placed local bot is sampled once per rendered frame on the game
-    thread, before `RENDER_FRAME`. A spawned phantom is sampled when
-    the hosted simulation gathers its slot for a new game tick (§5.1).
-    Its `Frame.frame` counts pad samples so a recording or script advances
-    once, even if two ticks fall in the same render or a tick is read twice.
-  - `Frame` carries the frame count, the game's tick (`tick`, 30 a
-    second, `None` in the menus), the port, the guest memory and
-    `joining`: the players screen is on top and the bot's slot has no
-    profile, so A signs it in. For a local bot, a slow render can cover
-    several simulation ticks and a fast one none. Time by `tick` to
-    match the simulation.
-  - A source must not call `add` or `remove` from inside `pad`.
-  - Closures `FnMut(&Frame) -> HostPadState` are sources.
-  - Three sources come with the crate:
-    - `Scripted`: timed steps, optionally looping;
-    - `Recorded`: one pad per frame, played once;
-    - `bots::Brain`: the brain. It presses A while `joining`, uses its
-      `mind::Mind` (with the loaded map's nav mesh and walls) in a
-      multiplayer game, and is idle elsewhere.
 - `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
-  puts a phantom on the books; it joins once a multiplayer game this
-  console hosts runs (§5.1). `Identity` carries the roster's XUID and full gamertag.
-  The phantom applies that name's look to its player configuration.
-- `bots::phantom::remove(handle)`, `list() -> Vec<PhantomInfo>` (handle,
-  identity, team, machine id, `player: Option<u32>`, `state: Pending |
-  Joined | Failed(reason)`) and `player(handle) -> Option<u32>` work on the
-  process-wide `Phantoms` (`phantom::global()`). Errors: `Full` (15), `Duplicate(xuid)`, `BadIdentity`, `NoSuchPhantom`.
-- `Frame::machine` is a phantom's machine id (`None` for a local bot; a
-  phantom's `port` is 4). A source finds its own player with
-  `guest::perceive_as(Who::Machine(id))`.
-- `bots::local::Local` is the same API on an instance. The free functions
-  use the process-wide one (`local::global()`), which the boot glue drives
-  and whose backend boot adds to the input manager. Tests make their own.
+  registers a phantom. It joins a System Link or Xbox Live session this
+  console hosts (§5.1). `Identity` holds the XUID and full gamertag,
+  which determines the phantom's appearance.
+- `bots::phantom::remove(handle)`, `list()` and `player(handle)` use the
+  process-wide registry. `list()` returns each `PhantomInfo` with its
+  handle, identity, team, machine id, optional player index and
+  pending, joined or failed state.
+- `bots::pad_source::PadSource` produces one `HostPadState` from a
+  `Frame`. Phantom gather samples a spawned player's source once per
+  fresh simulation tick. `Frame.frame` counts samples and `Frame.tick`
+  carries the simulation tick. The source can find its player through
+  the phantom's machine id with `bots::guest::perceive`. A source must
+  keep registry operations out
+  of its `pad` callback.
+- `bots::pad_source::Scripted` holds pads for timed steps and can loop.
+  `bots::pad_source::Recorded` plays each supplied pad for one sample,
+  then idles. `bots::Brain` uses the loaded map's nav mesh and collision
+  data. A closure taking `&Frame` can also implement `PadSource`.
 
-Known limits, for the agent API's `sim.*` docs (agent-api.md):
-
-1. The embedded `live_server` does not yet issue bot identities or check
-   `bot: true` against them. That comes with stage 6 (§9.1, §10 stage 6);
-   until then agent-api.md should say "will".
-2. Script `ticks` count bot frames, not game ticks. A source that wants
-   game time inside a game can use `f.tick` (for example
-   `f.tick.map(u64::from).unwrap_or(f.frame)`).
-3. `Recorded` plays one pad per successful read, once a frame. The game can
-   call XInputGetState more than once a frame, so playback can drift from
-   the recording's timing.
-4. A local bot signs in by pressing A only while the players screen is on
-   top. One added in a lobby or mid-game does not join until that screen
-   shows.
-5. `remove` on a local bot in a game leaves it standing idle until the
-   game ends; it is signed out and unplugged in the menus.
+See [the agent API](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+for script, recording and brain sources.
 
 ## 11. What needs a game run
 
 Each item is for the user to play, or for a coordinator run.
 
-1. A bot port signing in through the players screen with an injected guest
-   profile (§4.2), on Split Screen only; and in a System Link or Live
-   pregame lobby (§4.2, "Joining in the pregame lobby"). The players
-   screen shows no bot in any mode (§4.3, "The players screen").
-2. The view window: the human gets a full screen, and the HUD, sound and
-   camera are right with 1 to 3 bots.
-3. Whether Live matchmaking accepts guests (§4.4), and how our Live names
-   them.
+1. All configured phantoms join the hosted System Link or Xbox Live
+   pregame lobby. The controller sign-in screen lists human controllers.
+2. A second human signs in on a free port while the phantoms are in
+   the lobby. Check the human views, HUD and audio during play.
+3. Rostered Live phantoms appear under their own bot accounts.
 4. Bot movement on real maps: the nav mesh and stuck recovery on every
    shipped MP map, jumps and lifts included.
 5. Aim and combat feel per difficulty against a human; tuning of the §3.4
@@ -5323,7 +5133,7 @@ on Lockout and Midship with a human:
 26. A magnum bot backs off to its rifle at a shorter range than before;
     a bot with an SMG stops spraying at you across the map.
 
-Natural feel ("Built: natural feel (sol)" in §10), local virtual pads:
+Natural feel ("Built: natural feel (sol)" in §10):
 
 27. Compare Easy and Legendary on the same map. Peek from the edge of a
     doorway, then cut sideways across the bot's view. Watch for a pause
@@ -5340,7 +5150,7 @@ Natural feel ("Built: natural feel (sol)" in §10), local virtual pads:
     one quick escape movement and, up close, a single jump when the
     route is clear. In an ordinary gunfight, hits lead mostly to strafes
     or crouches. At a genuine gap the bot takes a run-up.
-31. Watch a local bot in a quiet CTF or Hill approach, near an empty
+31. Watch a phantom in a quiet CTF or Hill approach, near an empty
     magazine and during a close melee encounter. Look for a slower
     crouch-walk, a brief delay before X or Y, and spaced melee swings.
     Leave it waiting and check the lobby selection and respawn remain
@@ -5504,7 +5314,7 @@ or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
    choose a goal with a pedestrian shortcut and a wide detour. Check
    the bot follows the wide route and clears the turns.
 7. Repeat traversal jumps, Banshee button actions and vehicle entry and
-   exit in both local slots and Clankermatch. Inspect playback through
+   exit in a hosted custom game and Clankermatch. Inspect playback through
    `h2 agent` and the existing `sim.*` and world methods (§10.1).
 8. On H1 Blood Gulch verify both outbound portals from their bases. On
    Sidewinder exercise both directions between the paired pads and each
@@ -5526,12 +5336,9 @@ Still open:
 - For phantoms (§5.1, "Open"): the lobby's ready check `0x5f970`, the
   join room check `0x62e30` and the veto object, `0x5fe20` on a peer with
   no channel, and `0x14c090`'s body.
-- How the players screen's mask becomes the game's local users when the
-  game starts. A run answers it for stage 1 (stage 1 run, step 1); a trace
-  is needed only if that fails.
-- Compare the phantom's per-tick hold transition, zoom release and grenade
-  throw after dropping a dual weapon with a local bot in play (§5.1 and
-  §8.5). The button masks and selection fields have static traces.
+- Verify the phantom's per-tick hold transition, zoom release and
+  grenade throw after dropping a dual weapon (§5.1 and §8.5). The button
+  masks and selection fields have static traces.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
 - For objectives, the traced fields and their writers are in §3.7. The
@@ -5543,8 +5350,8 @@ Still open:
   larger margin on tight turns. For lifts (§3.2), measure the launch
   trajectory and ride time on the retail maps.
 - For weapons (§3.6), trace plasma heat and compare the predicted service
-  phase with a witnessed pickup and actual return on local and phantom
-  pads, including alternate H1 sandboxes and multiplayer variants.
+  phase with a witnessed pickup and actual return on phantom pads,
+  including alternate H1 sandboxes and multiplayer variants.
 
 ## 13. Testing (`h2 bots test`)
 
@@ -5561,7 +5368,7 @@ h2 bots verdict <bots.log>   # the verdict of a log again
 
 **What it does.**
 
-1. Starts a Live server in its own process on `127.0.0.1:8077`
+1. Starts a Live server in the harness process on `127.0.0.1:8077`
    (`--server-port`), with a throwaway store under
    `$TMPDIR/h2-bots-test/run-<time>/` (`--root`), and makes the account
    **Tester** there.
@@ -5569,8 +5376,8 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    data and Live directory, `--no-mappack --no-halo1`), with
    `--set clankers.enabled=true --set clankers.count=N`. So Clankers is On
    at Count N for this run with no menu work (the page's rows show it
-   locked). N is `--count`, 5 by default: 3 local bots on ports 1 to 3 and
-   2 phantoms. The window builds the game into `--out` first when `--out`
+   locked). `--count` defaults to five phantom peers. The window builds
+   the game into `--out` first when `--out`
    has none, as `h2 play` does. `--wait-clang` passes `--tier clang`, so
    the run uses clang's full build and never the Cranelift fast tier; it
    first waits while a background clang build of `--out` is still writing
@@ -5589,47 +5396,11 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    Split Screen, 3 System Link, 4 Settings). From there: to row 1, A. Not
    signed in, that opens the game's account picker (`dialog_live_signin`,
    dialog `0x14`, loader `0x24b4a9`), as a new profile's boot does. Its
-   row 0 (item `0x1023`, `0x24af1a`) is the no-account row: A there closes
-   it signed out, which is how the second run (20261119-001305) went round
-   the main menu four times. Then one row per account `XOnlineGetUsers`
-   lists (the run's `live/accounts.json`: Tester), then New Account. A on
-   an account row copies it into the profile and logs on (`0x24b2ea`,
-   `0x24b664`). So the drive knows the picker by the game's `ui: screen
-   none` line, which names the dialog up (`, dialog 0x14
-   dialog_live_signin (window 3, slot 4)`; `ui.screen` answers it as
-   `dialog`), or by the bots' join gate line (`dialog 0x14 (window 3,
-   ...)`). The gate line alone was not enough: a Clankermatch run places
-   no local bot before the roster, so it prints none, and run
-   20261119-115144 took the picker for any dialog and pressed A on its
-   no-account row at boot and on each of four Xbox Live tries. It presses
-   DOWN off row 0 and A on the account (A anyway when the cursor shows no
-   move), once per opening, and gives up after 3 picks that did not sign
-   in, or a picker still up 30 s after A. Another dialog on the way gets
-   A, its press naming the dialog (`dialog 0x21 confirmation_dialog
-   (window 3, slot 4) on the way to Xbox Live`), and a request for the
-   account's 6-digit code stops the drive. Then A on the players' screen in
-   Xbox Live mode (any other mode is backed out of; the local bots no
-   longer join there, but in the lobby: §4.3, "The players screen"),
-   then the Xbox Live menu. That is a window 5 `none` screen too, and
-   it comes while the lobby mode is still the main menu's, so the drive
-   tells them apart by the list mask (`list [0xf/...]` on the Live menu,
-   `[0x1/...]` on the main menu) and by the screen address: the main menu
-   is the window 5 screen the game was on, or bringing in (`pending`),
-   when it set lobby mode -1. The third run (20261119-003044) took the
-   Live menu for the main menu, pressed DOWN, A (OptiMatch, row 1), then
-   DOWN, A on a playlist, and landed in OptiMatch's lobby (lobby mode 3,
-   a session advertised). The Live menu's rows, ours included
-   (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Clankermatch, 3
-   Co-op Campaign, 4 Custom Game, 5 Custom Game Browser, 6 Content
-   Download. The drive moves one row at a time, reading the row back off
-   the list value, and presses A on row 4. The pregame lobby counts as the Live custom game
-   only once a session is advertised (and not deleted) while the lobby
-   mode is 2: `coop-live: lobby mode 2` alone is any custom game lobby,
-   Split Screen's too, and other Live lobbies advertise as well. A lobby
-   in another mode gets B, back to the Live menu and Custom Game again. Once
-   every local bot is on Xbox Live, or after 90 s, it presses A on Start
-   Game, and again (UP, A) if the phase has not left `menu` within 40 s.
-   Each press is a `bots-drive:` line.
+   row 0 is the no-account row. The driver selects Tester and opens
+   the Xbox Live menu. It moves to Custom Game on row 4 and checks
+   that the game advertises a session in lobby mode 2. Once the
+   phantoms have joined the lobby, or after 90 seconds, it presses A
+   on Start Game. Each press is a `bots-drive:` line.
 4. Watches the game's `bots:`, `clankers:` and Live lines, the agent API's
    `session.status` (phase, mode, map), the server's session for Tester
    (`GET /v1/sessions?host=Tester`: filled slots) and, once in gameplay,
@@ -5663,7 +5434,7 @@ temporary file, so a poll never reads half of it):
                 "detail": "..." } ] }
 ```
 
-`checks` is the 12 checks of the list below; `state` is `pending` while
+`checks` contains the nine checks below. `state` is `pending` while
 the run goes and `fail` for what did not pass once it has ended. `next`
 is the first check not passed. An outside driver loops: read
 `progress.json` (stop on `finished`), `h2 agent --socket <sock> ui` and
@@ -5678,28 +5449,18 @@ failure:
 | # | Check | Passes on |
 |---|---|---|
 | 1 | Signed in to Xbox Live | `live: playing as Tester` |
-| 2 | Clankers on | `clankers: Clanker P on (...)` for each local port |
-| 3 | On Xbox Live | the players' screen in mode 3 or the Xbox Live menu (`0xba`); a run that ended on the players' screen in Split Screen or System Link fails `not on Xbox Live: ended in Split Screen` |
-| 4 | Hosting a Live custom game | `live: session ... advertised` (not since `deleted`) while the lobby mode is 2 (`coop-live: lobby mode 2`); a lobby without it says so, and so does an advertisement from another lobby mode (OptiMatch's 3) |
+| 2 | Clankers on | `clankers: G (phantom...) on` for each bot |
+| 3 | On Xbox Live | the Xbox Live players screen or menu |
+| 4 | Hosting a Live custom game | the game advertises a session in lobby mode 2 |
 | 5 | Live roster of bot accounts | `clankers: asking Live for N bots for session S`, then `clankers: Live rostered bots for session S` |
-| 6 | Local bots signed in (join gate) | per port, `bots: join gate port P: screen ... : signs in` and `bots: signing ... on port P ...`; it says whether on the players screen or in the lobby |
-| 7 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |
-| 8 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
-| 9 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
-| 10 | Phantoms joined the pregame lobby | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom, and no phantom failure; one that joined only once the game ran fails, saying so |
-| 11 | The Live session holds 1 + N players | the session's filled slots, or the players the host reported joining (§9.5), reach 1 + N |
-| 12 | The game record has the bots | at least N players with `bot: true` on the server's game record |
+| 6 | Gameplay on a map | `session.status` reports multiplayer gameplay, on the requested map if given |
+| 7 | Phantoms joined the pregame lobby | `bots: phantom G joins (peer K, in the pregame lobby)` for each bot |
+| 8 | The Live session holds 1 + N players | the greater of the filled-slot count and the number of players the host reported |
+| 9 | The game record has the bots | at least N players with `bot: true` in the server's game record |
 
-A failed check says what is missing and why, as far as the log does: for
-step 6 each missing port's last join gate lines (screen, dialog,
-`signed_in`); for 3 the mode it ended in, how often the account picker
-opened without a sign-in, or the last presses and screen;
-for 4 whether a lobby opened without a Live session; for 5 whether the
-roster was asked for at all; for 7 the port's guest or offline line; for
-8 the start state's blocking check, or that Start was never pressed; for
-10 the phantoms' `waits` lines. Lines that look like trouble anywhere (a panic,
-the guest thread exiting, a fault, a stuck driver, a refusal, a timeout)
-are listed under `trouble:`.
+A failed check includes the relevant lines, such as the phantoms'
+`waits` messages if they never joined. The verdict also lists panics,
+guest faults, refusals, stuck drives and timeouts under `trouble:`.
 
 **Where things go.** The merged log is
 `<root>/logs/<time>/bots.log` and the game's whole stderr
@@ -5711,9 +5472,9 @@ non-zero on a failure).
 
 - `--map` only checks the map played. The menus are not driven through
   Game Setup's Change Map, so the game plays the lobby's default map; a
-  `--map` other than that fails step 9, saying which map was played.
+  `--map` other than that fails the gameplay check and names the map played.
 - The phantoms join the pregame lobby (§5.1, "Phantoms in the pregame
-  lobby"); step 11 counts the most filled slots, and the most joined
+  lobby"). Step 8 counts the most filled slots and the most joined
   players, the server saw over the whole run. Retail Halo 2 fills no slots (0 in run
   20261119-005001), so on a Live run the joined players are what counts.
 - `h2 play` builds the game into `--out` when `--out` has none, or has one
@@ -5750,14 +5511,13 @@ the game, checks the playlist asked for is marked and on the row the plan
 expects (the Clankermatch list shows only the clanker hoppers, in index
 order: rows 0, 1, 2), and stops at once if not. The game runs with
 `--set clankers.enabled=false`: the page's Clankers stay off and only the
-fill seats bots. The plan, from the lineup and `MATCH_LOCAL` (phantoms
-only, §8.4):
+fill seats bots.
 
-| `--playlist` | Hopper | Row | Players | Bots | Local | Phantoms |
-|---|---|---|---|---|---|---|
-| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 0 | 7 |
-| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 0 | 7 |
-| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 0 | 3 |
+| `--playlist` | Hopper | Row | Players | Phantoms |
+|---|---|---|---|---|
+| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 |
+| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 |
+| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 |
 
 **The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
@@ -5785,30 +5545,18 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
 | 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
 | 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |
-| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N (0 now: phantoms only) |
-| 7 | With no local bot planned: no bot in the party | no `bots: signing ...` line anywhere (a bot signed in on a controller port shows in the party and fails the matchmade start's controller check) |
-| 7 (with local bots) | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
-| 8 | With no local bot planned: the phantoms are the roster's bot accounts | a `clankers: G (phantom, rostered) on (...)` line per planned phantom; fewer says Live's roster was refused (host-made bots) |
-| 8 (with local bots) | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
+| 6 | Phantoms planned for the lobby | `clankers: clankermatch: N phantoms join the lobby` with the expected count |
+| 7 | No bot in the party | no `bots: signing ...` line for a controller port |
+| 8 | The phantoms have rostered accounts | one `clankers: G (phantom, rostered) on (...)` line per planned phantom |
 | 9 | The lobby reached the playlist's fewest players | the most players the game's own session had (`bots: lobby players: N in the game's session`, the game session's `+0x1118`) between the hosting line and the start; the Live server's count (`bots-test: session ...`) is what the host told it and no longer counts (cm-run2 listed "4 joined" with no bot in the lobby) |
 | 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` on a multiplayer map after the hosting line: not `map mainmenu` or mode `main_menu` (cm-run2's `loading` was the main menu coming back) |
 | 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
 | 12 | Phantoms joined the lobby before the start | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom before the start, and no phantom failure |
-| 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |
-| 14 | After the game, the local bots leave | `clankers: clankermatch: the game is over: the bots go` (or `this console hosts another game`) after gameplay, then `clankers: Clanker P off` for each local port |
+| 13 | Game record: kind clankermatch | a game record from this console has kind `clankermatch` and at least as many `bot: true` entries as planned phantoms |
+| 14 | After the game, the phantoms leave | the fill ends and each phantom has a `clankers: G off` line |
 
-A failed check says what the log shows instead and the likely cause: for
-2 which side lacks the hopper and the HLE's own line (`no clanker hoppers
-from the server`, `not asked for`); for 3 an empty list or a row never
-pressed; for 4 a human playlist's search or another clanker hopper; for 5
-whether a session was advertised at all (the game kept searching) or only
-the fill missed it (the HLE did not read the advertisement's hopper as a
-clanker one); for 7 the ports never seated (the roster) or seated but not
-signed in (their last join gate lines); for 9 and 10 whether the lobby was
-short of players or full and still not started (the game's matchmaking
-start); for 12 phantoms that joined only once the game ran (the lobby
-join off, or the lobby not seen as this console's) or not at all; for 13 the kind recorded; for 14 that the console
-still hosts the session, or which bots did not sign off.
+A failed check includes the relevant server, game or driver lines. The
+join check includes any phantom wait or failure reasons.
 
 **Tests:** `cargo test -p cli bots_` (the verdict from log lines, the
 driver's presses, the arguments; Clankermatch's under `bots_drive::clankermatch`,

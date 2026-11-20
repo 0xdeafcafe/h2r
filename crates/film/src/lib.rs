@@ -22,6 +22,7 @@ pub const KEYF: Tag = *b"KEYF";
 pub const INDX: Tag = *b"INDX";
 const MAX_CHUNK: usize = 80 << 20;
 pub const MAX_UPLOAD: u64 = 64 << 20;
+pub const UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
@@ -224,7 +225,7 @@ pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>
     let size = file.metadata()?.len();
     ensure!(size <= MAX_UPLOAD, "film exceeds 64 MiB");
     ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(UPLOAD_TIMEOUT)
         .redirects(0)
         .build()
         .post(url.as_str())

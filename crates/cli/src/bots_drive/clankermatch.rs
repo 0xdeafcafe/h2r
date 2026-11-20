@@ -15,7 +15,7 @@
 //!   drive;
 //! * nothing more to press: after 4 to 20 s the game hosts
 //!   (`clankers: clankermatch: hosting clanker playlist H ...`), the fill
-//!   seats the local bots in the lobby and the lobby's countdown starts
+//!   seats the phantoms in the lobby and the lobby's countdown starts
 //!   the game once it has the playlist's fewest players;
 //! * the game: wait for phase `gameplay`, then for the menus again (the
 //!   game over);
@@ -53,12 +53,12 @@ pub const LEFT_QUIET_MS: u64 = 5_000;
 pub const LEAVE_PRESSES: u32 = 12;
 
 impl Driver {
-    /// A driver for Clankermatch: `local` local bots planned, the clanker
-    /// playlist on `row` of the list.
-    pub fn clankermatch(local: usize, row: u32) -> Self {
+    /// A driver for Clankermatch: the clanker playlist on `row` of the
+    /// list (every bot a phantom, none to wait for in the party's lobby).
+    pub fn clankermatch(row: u32) -> Self {
         Driver {
             target: Target::Clankermatch { row },
-            ..Driver::new(local)
+            ..Driver::new(0)
         }
     }
 
@@ -216,10 +216,9 @@ impl Driver {
     pub(super) fn match_lobby(&mut self, now: u64, since: u64) {
         if now.saturating_sub(since) > MATCH_START_MS {
             self.give_up(format!(
-                "the Clankermatch lobby did not start in {} s ({} of {} local bots on Xbox Live)",
+                "the Clankermatch lobby did not start in {} s ({} phantoms joined)",
                 MATCH_START_MS / 1000,
-                self.on_live.len(),
-                self.local
+                self.in_lobby.len(),
             ));
         }
     }

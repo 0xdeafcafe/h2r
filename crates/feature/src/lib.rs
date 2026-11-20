@@ -22,30 +22,55 @@ pub mod h1_scope_zoom;
 pub mod install;
 pub mod leaves;
 pub mod locale;
+#[cfg(feature = "native-render")]
 pub mod native_decals;
+#[cfg(feature = "native-render")]
 pub mod native_first_person;
+#[cfg(feature = "native-render")]
 pub mod native_fog;
+#[cfg(feature = "native-render")]
 pub mod native_gels;
+#[cfg(feature = "native-render")]
 pub mod native_hud;
+#[cfg(feature = "native-render")]
 pub mod native_lights;
+#[cfg(feature = "native-render")]
 pub mod native_map_work;
+#[cfg(feature = "native-render")]
 pub mod native_objects;
+#[cfg(feature = "native-render")]
 pub mod native_particles;
+#[cfg(feature = "native-render")]
 mod native_effects;
+#[cfg(feature = "native-render")]
 pub mod native_post;
+#[cfg(feature = "native-render")]
 pub mod native_residual;
+#[cfg(feature = "native-render")]
+pub mod native_scene_lists;
+#[cfg(feature = "native-render")]
 pub mod native_shadows;
+#[cfg(feature = "native-render")]
 pub mod native_transparents;
+#[cfg(feature = "native-render")]
 pub mod native_water;
+#[cfg(feature = "native-render")]
 pub mod native_world;
+#[cfg(feature = "native-render")]
 pub mod native_world_layers;
 pub mod occlusion;
 pub mod plan;
 pub mod pipeline_render;
 pub mod render_census;
+#[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;
 pub mod sim_frame;
+pub mod sim_native;
+pub mod sim_physics;
+pub mod sim_observer;
+pub mod sim_static_light;
+pub mod sim_submix;
 pub mod snapshot;
 pub mod switches;
 
@@ -64,6 +89,46 @@ pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
+
+/// Retail instruction boundaries that the emitter must route through entry
+/// dispatch. Hook bodies keep working on images with only a subset present.
+#[cfg(not(feature = "native-render"))]
+pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
+    std::iter::empty()
+}
+
+/// Retail instruction boundaries that the emitter must route through entry
+/// dispatch. Hook bodies keep working on images with only a subset present.
+#[cfg(feature = "native-render")]
+pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
+    let mut seen = std::collections::HashSet::new();
+    [
+        native_decals::DECAL_ITEM_GEOMETRY.base,
+        native_decals::DECAL_RENDER_END.base,
+        native_transparents::GEOMETRY_RANGE_READY.base,
+        native_transparents::SCENE_TRANSPARENTS_END.base,
+        native_hud::HUD_QUAD_READY.base,
+        native_post::SCREEN_STRIP_READY.base,
+        native_particles::EMIT_READY.base,
+        native_particles::EMIT_PUBLISH.base,
+        native_particles::EMIT_END.base,
+        native_particles::DYNAMIC_QUAD_READY.base,
+        native_particles::DYNAMIC_PUBLISH.base,
+        native_particles::DYNAMIC_END.base,
+    ].into_iter().chain(native_effects::instruction_entries())
+        .chain(native_scene_lists::instruction_entries())
+        .chain(native_hud::instruction_entries())
+        .filter(move |&address| seen.insert(address))
+}
+
+/// Log the full startup plan and first use of each hook. Read once.
+pub fn plan_verbose() -> bool {
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        std::env::var("H2_FEATURE_PLAN").as_deref() == Ok("1")
+            || std::env::var_os("H2_BOOT_VERBOSE").is_some()
+    })
+}
 
 /// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
 /// and per-material load lines, and its comparison dumps, print. Without
@@ -189,6 +254,26 @@ impl Call<'_> {
     ) -> Result<Flow, GuestFault> {
         entry::start_with(self.cpu, self.ctx, self.addr, make).map(Flow::Return)
     }
+    /// Answer with an owned render operation. The body reads guest RAM
+    /// through its Cx on each poll. It may carry immutable prepared
+    /// resources and the shared rendering device across guest calls.
+    /// It must not capture a runtime, memory guard, thread-local state
+    /// or resources tied to the executor on which it was started.
+    pub fn answer_render_async(
+        &mut self,
+        make: impl FnOnce(Cx) -> EntryFuture,
+    ) -> Result<Flow, GuestFault> {
+        entry::start_render(self.cpu, self.ctx, self.addr, make).map(Flow::Return)
+    }
+    /// As `answer_render_async`, with an in-process register setter for
+    /// the renderer's ordinary no-callback case.
+    pub fn answer_render_async_with(
+        &mut self,
+        setter: entry::RegisterSetter,
+        make: impl FnOnce(Cx) -> EntryFuture,
+    ) -> Result<Flow, GuestFault> {
+        entry::start_render_with(self.cpu, self.ctx, self.addr, Some(setter), make).map(Flow::Return)
+    }
     pub fn arg_u32(&mut self, name: &str) -> Option<u32> {
         let rt = Arc::clone(self.ctx.runtime());
         let mem = rt.memory();
@@ -287,6 +372,8 @@ pub struct Hook {
     /// body, may run on the pipelined render thread
     /// ([`HookRef::context_only`], [`Chain::render_thread`](crate::plan::Chain::render_thread)).
     pub context_only: bool,
+    pub(crate) resume_sites: &'static [u32],
+    pub(crate) generated_sites: &'static [u32],
 }
 
 impl Hook {
@@ -299,6 +386,17 @@ impl Hook {
 pub struct HookRef<'a>(&'a mut Hook);
 
 impl HookRef<'_> {
+    /// Re-enter this implementation at these base-image return PCs. All
+    /// state across guest calls must be in guest registers and memory.
+    pub fn resumes(self, sites: &'static [u32]) -> Self {
+        self.0.resume_sites = sites;
+        self
+    }
+    /// Interior selectors at which this implementation hands back to the image.
+    pub fn generated_resumes(self, sites: &'static [u32]) -> Self {
+        self.0.generated_sites = sites;
+        self
+    }
     pub fn first(self) -> Self {
         self.0.order = Order::First;
         self
@@ -320,8 +418,8 @@ impl HookRef<'_> {
     /// writes the registers, the guest stack and memory through its
     /// `Call`/`Obs` (or `ExecCtx`), never live RAM through the runtime,
     /// never host state it shares with the game thread except to read it,
-    /// and returns without a Rust continuation (no guest call it waits
-    /// on). The pipelined render runs such a chain on its own thread
+    /// and either returns synchronously or uses [`Call::answer_render_async`]
+    /// for an owned render operation. The pipelined render runs such a chain on its own thread
     /// against its view instead of falling back
     /// (docs/graphics/pipelined-render.md).
     pub fn context_only(self) -> Self {
@@ -556,6 +654,8 @@ impl<'r> Builder<'r> {
             optional: false,
             label,
             context_only: false,
+            resume_sites: &[],
+            generated_sites: &[],
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }

@@ -4,24 +4,44 @@ use crate::brain::{Me, Perception, Vec3};
 use crate::cache::MapData;
 use crate::emote::Kill;
 use crate::mind::{CHEST, EYE, NOTICE_CONE, NOTICE_NEAR};
-use crate::vehicle::Sight;
+use crate::vehicle::{Sight, read::SeatBuffers};
 
-pub(crate) fn in_view(me: Me, at: Vec3, height: f32, map: Option<&MapData>) -> bool {
-    let Some(map) = map else { return false };
+pub(crate) fn player_bit(id: u32) -> u16 {
+    1u16.checked_shl(id).unwrap_or(0)
+}
+
+fn sight_line(me: Me, at: Vec3, height: f32) -> Option<(Vec3, Vec3)> {
     let eye = [me.position[0], me.position[1], me.position[2] + EYE];
     let target = [at[0], at[1], at[2] + height];
     let delta: Vec3 = std::array::from_fn(|i| target[i] - eye[i]);
     let distance = crate::decisions::distance(target, eye);
     let dot: f32 = (0..3).map(|i| me.aim[i] * delta[i]).sum();
-    (distance < NOTICE_NEAR || dot > NOTICE_CONE.cos() * distance) && map.walls.clear(eye, target)
+    (distance < NOTICE_NEAR || dot > NOTICE_CONE.cos() * distance).then_some((eye, target))
 }
 
+pub(crate) fn in_view(me: Me, at: Vec3, height: f32, map: Option<&MapData>) -> bool {
+    map.is_some_and(|m| sight_line(me, at, height).is_some_and(|(a, b)| m.walls.clear(a, b)))
+}
+
+#[cfg(test)]
 pub(crate) fn observe(
     p: &mut Perception,
     vehicles: &mut Sight,
     kills: &mut [Kill],
     map: Option<&MapData>,
 ) {
+    observe_for_brain(p, vehicles, kills, map, &mut SeatBuffers::default());
+}
+
+/// Filter a single observation and return the players with an unobstructed
+/// view in that sample. The mind can reuse the result with those positions.
+pub(crate) fn observe_for_brain(
+    p: &mut Perception,
+    vehicles: &mut Sight,
+    kills: &mut [Kill],
+    map: Option<&MapData>,
+    seats: &mut SeatBuffers,
+) -> u16 {
     let own = p.observations.player.map(|(id, _)| id);
     let visible = |at, h| p.me.is_some_and(|me| in_view(me, at, h, map));
     for kill in kills {
@@ -33,15 +53,15 @@ pub(crate) fn observe(
     }
     // Allies have teammate HUD markers. Their aim and carried weapon
     // still require personal sight.
-    let seen: Vec<_> = p
+    let seen = p
         .others
         .iter()
         .filter(|o| visible(o.position, CHEST))
-        .map(|o| o.id)
-        .collect();
+        .fold(0, |mask, o| mask | player_bit(o.id));
+    let seen_player = |id| seen & player_bit(id) != 0;
     p.observations
         .supply_players
-        .retain(|player| Some(player.id) == own || seen.contains(&player.id));
+        .retain(|player| Some(player.id) == own || seen_player(player.id));
     let players = &p.observations.supply_players;
     p.observations.held_power.retain(|object| {
         players
@@ -55,9 +75,9 @@ pub(crate) fn observe(
                     .iter()
                     .any(|player| player.id == e.player && player.unit == e.unit))
     });
-    p.observations.contacts.retain(|c| seen.contains(&c.id));
+    p.observations.contacts.retain(|c| seen_player(c.id));
     p.others
-        .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen.contains(&o.id));
+        .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen_player(o.id));
     p.pickups.retain(|pk| visible(pk.position, 0.2));
     for pk in &mut p.pickups {
         // Someone looking at a dropped gun knows its model, not its rounds.
@@ -101,21 +121,24 @@ pub(crate) fn observe(
         .riding
         .and_then(|r| vehicles.get(r.vehicle))
         .map(|v| vehicles.root(v).id);
-    vehicles.vehicles.retain_mut(|v| {
+    for hidden in vehicles.vehicles.extract_if(.., |v| {
         if Some(v.on.unwrap_or(v.id)) == riding {
-            return true;
+            return false;
         }
         if !visible(v.position, CHEST) {
-            return false;
+            return true;
         }
         // Seeing a hull doesn't reveal its vitality or identify a rider
         // whose body is occluded. An attempted entry can still fail.
         v.health = 1.0;
         for seat in &mut v.seats {
-            seat.rider = seat.rider.filter(|r| seen.contains(&r.player));
+            seat.rider = seat.rider.filter(|r| seen_player(r.player));
         }
-        true
-    });
+        false
+    }) {
+        seats.save(hidden.seats);
+    }
+    seen
 }
 
 #[cfg(test)]

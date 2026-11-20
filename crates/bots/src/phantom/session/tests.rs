@@ -55,8 +55,10 @@ fn hosted() -> FakeGuest {
     g.map(points::GAME_TIME.base & !0xfff, 0x1000)
         .put_u32(points::GAME_TIME.base, TIME)
         .map(TIME, 0x10)
+        .put_u16(TIME + guest::GAME_TIME_RATE, 30)
         .put_f32(TIME + 4, 1.0 / 30.0)
         .put_u32(TIME + guest::GAME_TIME_TICK, 100);
+    g.put_u32(points::GAME_ENGINE.base, 0);
     // Players: the host at 0; room for phantoms.
     g.map(points::PLAYERS.base & !0xfff, 0x1000)
         .put_u32(points::PLAYERS.base, PLAYERS_HEADER)
@@ -604,10 +606,9 @@ mod books {
     use super::*;
     use crate::phantom::{Identity, Phantoms, State, machine_id};
 
-    fn firing() -> Box<dyn crate::local::PadSource> {
-        Box::new(|f: &crate::local::Frame<'_>| {
-            assert_eq!(f.port, 4);
-            assert!(f.machine.is_some());
+    fn firing() -> Box<dyn crate::pad_source::PadSource> {
+        Box::new(|f: &crate::pad_source::Frame<'_>| {
+            assert_ne!(f.machine, [0; 6]);
             HostPadState {
                 right_trigger: 1.0,
                 ..Default::default()
@@ -807,8 +808,8 @@ mod lobby {
         g.put_u32(S + VARIANT + VARIANT_FLAGS, 1);
     }
 
-    fn idle() -> Box<dyn crate::local::PadSource> {
-        Box::new(|_: &crate::local::Frame<'_>| HostPadState {
+    fn idle() -> Box<dyn crate::pad_source::PadSource> {
+        Box::new(|_: &crate::pad_source::Frame<'_>| HostPadState {
             right_trigger: 1.0,
             ..Default::default()
         })
@@ -1612,8 +1613,7 @@ mod lobby {
     }
 }
 
-/// Phantoms in the game: spawning, the start's wait, the bot mark on
-/// local bots (docs/game/bots.md §5.1, "Phantoms in the game").
+/// Phantom spawning and the start's wait (docs/game/bots.md §5.1).
 mod in_game {
     use super::*;
     use crate::phantom::{Identity, Phantoms, machine_id};
@@ -1673,7 +1673,7 @@ mod in_game {
                     gamertag: "A".into(),
                 },
                 None,
-                Box::new(|_: &crate::local::Frame<'_>| HostPadState::default()),
+                Box::new(|_: &crate::pad_source::Frame<'_>| HostPadState::default()),
             )
             .unwrap();
         let mut g = starting([machine_id(h), REAL]);
@@ -1697,8 +1697,8 @@ mod in_game {
             xuid: x,
             gamertag: format!("B{x}"),
         };
-        let idle = || -> Box<dyn crate::local::PadSource> {
-            Box::new(|_: &crate::local::Frame<'_>| HostPadState::default())
+        let idle = || -> Box<dyn crate::pad_source::PadSource> {
+            Box::new(|_: &crate::pad_source::Frame<'_>| HostPadState::default())
         };
         let a = ph.add(who(1), None, idle()).unwrap();
         assert!(
@@ -1714,107 +1714,6 @@ mod in_game {
         assert!(!ph.stands_for(machine_id(a)));
     }
 
-    /// [`hosted`]'s session with a local bot on controller 1 in slot 1
-    /// (effective name "Clanker 1", requested "Profile") and the human on
-    /// controller 0 in slot 0.
-    fn with_local_bot() -> FakeGuest {
-        let mut g = hosted();
-        g.put_u32(S + PLAYER_MASK, 0b11)
-            .put_u32(S + PLAYER_COUNT, 2)
-            .put_u32(S + PEERS + PEER_SLOTS + 4, 1)
-            .put_u32(S + PEERS + PEER_PLAYERS, 2);
-        let name = |g: &mut FakeGuest, at: u32, s: &str| {
-            for (i, u) in s.encode_utf16().enumerate() {
-                g.put_u16(at + 2 * i as u32, u);
-            }
-        };
-        let human = S + PLAYERS;
-        name(&mut g, human + P_EFFECTIVE, "Tester");
-        let bot = S + PLAYERS + PLAYER_SIZE;
-        g.put_u32(bot + P_PEER, 0)
-            .put_u32(bot + P_USER, 1)
-            .put_u32(bot + P_CONTROLLER, 1);
-        name(&mut g, bot + P_EFFECTIVE, "Clanker 1");
-        name(&mut g, bot + P_REQUESTED, "Profile");
-        g
-    }
-
-    fn name_at(g: &FakeGuest, at: u32) -> Vec<u16> {
-        (0..CONFIG_NAME_UNITS as u32)
-            .map(|i| g.u16(at + 2 * i).unwrap())
-            .take_while(|&u| u != 0)
-            .collect()
-    }
-
-    #[test]
-    fn clanker_appearance_follows_a_local_guest_onto_its_rostered_account() {
-        let mut g = with_local_bot();
-        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
-        mark_local_bots(&mut g, 0b10).unwrap();
-        let src = guest::slot(1) + guest::SLOT_BLOCK + guest::BLOCK_PROFILE_NAME as u32;
-        g.map(src, 64)
-            .put(src, &guest::profile_name_bytes("Rusty Lugnut"));
-        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
-        assert_eq!(name_at(&g, bot), marked_name("Rusty Lugnut"));
-        assert_eq!(
-            g.bytes(bot - P_EFFECTIVE + P_REQUESTED + CONFIG_LOOK as u32, 8)
-                .unwrap(),
-            guest::bot_look("Rusty Lugnut")
-        );
-        assert_eq!(
-            g.bytes(bot + CONFIG_LOOK as u32, 8).unwrap(),
-            guest::bot_look("Rusty Lugnut")
-        );
-        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_local_bot_gets_the_bot_mark_on_the_host() {
-        let mut g = with_local_bot();
-        let before = counters(&g);
-        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
-        let bot = S + PLAYERS + PLAYER_SIZE;
-        assert_eq!(name_at(&g, bot + P_EFFECTIVE), marked_name("Clanker 1"));
-        assert_eq!(
-            name_at(&g, bot + P_REQUESTED),
-            "Profile".encode_utf16().collect::<Vec<_>>(),
-            "the requested name is the profile's"
-        );
-        assert_eq!(
-            name_at(&g, S + PLAYERS + P_EFFECTIVE),
-            "Tester".encode_utf16().collect::<Vec<_>>(),
-            "the human is no bot"
-        );
-        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
-        // Marked once.
-        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
-    }
-
-    #[test]
-    fn the_bot_mark_waits_for_the_host_and_a_bots_port() {
-        // Not this console's session: its host's configurations win.
-        let mut g = with_local_bot();
-        g.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
-        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-        // Port 1 is no bot's.
-        let mut g = with_local_bot();
-        assert!(mark_local_bots(&mut g, 0b100).unwrap().is_empty());
-        // No live session.
-        let mut g = with_local_bot();
-        g.put_u32(S + STATE, 6);
-        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-        // The entire 15-character tag fits after the mark and space.
-        let mut g = with_local_bot();
-        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
-        for (i, u) in "Fifteen Chars!!".encode_utf16().enumerate() {
-            g.put_u16(bot + 2 * i as u32, u);
-        }
-        mark_local_bots(&mut g, 0b10).unwrap();
-        let n = name_at(&g, bot);
-        assert_eq!(n, marked_name("Fifteen Chars!!"));
-        assert_eq!(n[0], MARK as u16);
-    }
 }
 
 mod buttons;

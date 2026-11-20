@@ -53,6 +53,13 @@ pub fn note_skipped_present() {
     PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A descriptor-only lobby swap still advances host frame timing.
+#[cfg(not(feature = "desktop-runtime"))]
+pub(crate) fn note_descriptor_present() {
+    let present = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    crate::host_perf::on_present(present);
+}
+
 /// Wall-clock time of every present, for the frame-rate report.
 static KEEP_PRESENT_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
@@ -670,6 +677,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.inner.mirror_read(offset, len)
     }
+    fn handles_surface_aliases(&self) -> bool { self.inner.handles_surface_aliases() }
+
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }

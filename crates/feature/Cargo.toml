@@ -5,13 +5,17 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["native-render"]
+native-render = ["dep:native-render"]
+
 [dependencies]
 runtime.workspace = true
 tags.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
 timeline = { path = "../timeline" }
 # The world skip and camera read (pure: no GPU, no map reader).
-native-render = { path = "../native-render", default-features = false }
+native-render = { path = "../native-render", default-features = false, optional = true }
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }

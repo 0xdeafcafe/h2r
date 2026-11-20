@@ -666,6 +666,7 @@ impl<B: Backend> Device<B> {
             stream_inputs,
             // Caches and scratch (drop_host_caches).
             vertex_memo: _,
+            world_vertex_plans: _,
             translated: _,
             stream_pool: _,
             stream_pool_bytes: _,
@@ -711,6 +712,8 @@ impl<B: Backend> Device<B> {
             pending_grid: _,
             pending_external: _,
             admissions: _, // Host services, retained across guest loads.
+            opaque_world_admission: _,
+            opaque_targets: _,
             scoped_admission: _, // Quiesce the call before saving.
             residual: _,
             indexed_geometry: _,
@@ -954,6 +957,8 @@ impl<B: Backend> Device<B> {
     /// are lost; [`Device::save_snapshot`] writes the targets back first.
     pub fn drop_host_caches(&mut self) -> Result<(), D3dError> {
         self.vertex_memo = None;
+        self.world_vertex_plans = Default::default();
+        self.opaque_targets = None;
         self.translated = Default::default();
         self.stream_pool.clear();
         self.stream_pool_bytes = 0;

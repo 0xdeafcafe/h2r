@@ -3,8 +3,8 @@
 //! Rust stores reach [`Guest::write_bytes`]. Optional inline C stores hold
 //! the shared memory gate and accumulate physical dirty-page bits; the next
 //! Runtime memory guard publishes them through this same watch before HLE
-//! can observe or change subscriptions. This is a software barrier, not host
-//! page protection.
+//! can observe or change subscriptions. The optional flat alias instead
+//! publishes the same physical pages from first-write protection faults.
 //! Pages are physical, so every virtual alias of a page dirties the same bit;
 //! ranges are reported in the contiguous view `0x80000000 | pa`.
 use crate::Guest;
@@ -59,6 +59,9 @@ struct Subscriber {
 
 /// The watch state inside one [`Guest`].
 pub(crate) struct WriteWatch {
+    // A published physical page can stay writable until someone changes
+    // subscriptions or consumes dirt. Compared only with this Guest's mirror.
+    pub(crate) epoch: u64,
     subscribers: Vec<Subscriber>,
     /// Union of every subscriber's watched pages.
     union: Bits,
@@ -70,6 +73,7 @@ pub(crate) struct WriteWatch {
 impl Default for WriteWatch {
     fn default() -> Self {
         Self {
+            epoch: 1,
             subscribers: Vec::new(),
             union: bits(),
             active: false,
@@ -124,6 +128,7 @@ impl WriteWatch {
     /// Forget every subscriber's dirty pages (a copy-on-write view starting
     /// over, `Guest::cow_refresh`).
     pub(crate) fn clear_dirty(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
         for s in &mut self.subscribers {
             s.dirty.fill(0);
             s.any_dirty = false;
@@ -143,7 +148,18 @@ impl WriteWatch {
     }
     /// Recompute `active` after muting changed. O(subscribers).
     fn refresh_active(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
         self.active = self.subscribers.iter().any(|s| s.watches_any && !s.muted);
+    }
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn awaiting_writes(&self, word: usize) -> u64 {
+        if self.union[word] == 0 {
+            return 0;
+        }
+        self.subscribers
+            .iter()
+            .filter(|s| !s.muted)
+            .fold(0, |bits, s| bits | (s.watched[word] & !s.dirty[word]))
     }
     fn get(&mut self, id: WatchId) -> Result<&mut Subscriber, WatchError> {
         self.subscribers
@@ -289,6 +305,7 @@ impl Guest {
             }
         }
         out.extend(run.map(range));
+        self.watch.epoch = self.watch.epoch.wrapping_add(1);
         Ok(out)
     }
     /// Run `f` with `id` muted: its writes, and any other write made through
@@ -361,6 +378,7 @@ impl Guest {
             }
         }
         self.watch.refresh();
+        source.watch.epoch = source.watch.epoch.wrapping_add(1);
         n
     }
     /// The folded address (`0x80000000 | pa`) of mapped virtual `va`, or None

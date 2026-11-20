@@ -75,7 +75,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("theater", 0x20ff_d200, 0x100),
     Family::new("layouts", TABLE, 0x20),
     Family::new("speaker", TABLE + 0x30, 2),
-    Family::new("live menu rows", TABLE + 0x32, 10),
+    Family::new("live menu rows", TABLE + 0x32, 12),
     Family::new("ui model", TABLE + 0x40, 0xbf),
     Family::new("skulls", TABLE + 0x0100_0000, 0x100),
     Family::new("campaign picker", TABLE + 0x0200_0000, 65),
@@ -89,7 +89,6 @@ pub const FAMILIES: &[Family] = &[
     Family::new("variant page", TABLE + 0x0a00_0000, 0x40),
     Family::new("ui lines", TABLE + 0x0b00_0000, 0x100),
     Family::new("clanker card", TABLE + 0x0c00_0000, 0x40),
-    Family::new("theater menu", TABLE + 0x0d00_0000, 1),
     Family::new("campaign actions", TABLE + 0x0e00_0000, 3),
 ];
 

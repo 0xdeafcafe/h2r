@@ -19,8 +19,6 @@ pub struct PlayerSample {
     pub index: u8,
     pub name: String,
     pub team: Option<i32>,
-    /// The controller port of a local player.
-    pub controller: Option<u8>,
     /// The unit they are in, if any (the datum).
     pub unit: Option<u32>,
     /// Their unit is alive.
@@ -327,6 +325,34 @@ pub struct Wall {
     pub speedup: f64,
     pub process_speedup: f64,
     pub ms_per_tick: f64,
+    /// The process's peak resident set, in MiB (`getrusage`'s `ru_maxrss`
+    /// while the report is built; reports before the field carry none).
+    #[serde(default)]
+    pub peak_rss_mib: u64,
+    /// The process's physical footprint on macOS, in MiB
+    /// (`proc_pid_rusage`'s `ri_phys_footprint`): everything the process
+    /// is charged for, clean pages included. `None` elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footprint_mib: Option<u64>,
+    /// Guest RAM pages the match wrote over a shared copy-on-write base
+    /// (`state.load` with `"cow": true`): the pages that stopped being
+    /// shared. `None` without a base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_written_pages: Option<u64>,
+    /// The base's guest RAM pages, `guest_written_pages`'s denominator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_pages: Option<u64>,
+}
+
+/// The process's memory, sampled while a report is built: [`Wall`]'s
+/// memory fields. Peak RSS everywhere; the footprint where the host
+/// has one (macOS); the guest census when a shared base was loaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MemoryUsage {
+    pub peak_rss_mib: u64,
+    pub footprint_mib: Option<u64>,
+    pub guest_written_pages: Option<u64>,
+    pub guest_pages: Option<u64>,
 }
 
 /// One player's line in the report.
@@ -334,16 +360,10 @@ pub struct Wall {
 pub struct PlayerReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<crate::config::SeatKind>,
-    #[serde(default)]
-    pub opposing_hits: u64,
     pub index: u8,
     pub name: String,
     /// A bot of ours.
     pub bot: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u8>,
     /// The batch arm the bot played for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm: Option<String>,
@@ -414,6 +434,9 @@ pub struct Report {
     pub kills: Vec<KillEvent>,
     /// The bots' nav mesh: `loaded` or `missing`.
     pub nav: String,
+    /// Runner dispatch and preemption census when enabled for this match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_per_tick: Option<BTreeMap<String, f64>>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -424,20 +447,18 @@ impl Report {
     }
 }
 
-/// A bot as the tally knows it.
+/// A bot as the tally knows it: a phantom peer, found in the game by the
+/// player it became.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BotInfo {
     pub seat: u8,
-    pub kind: crate::config::SeatKind,
     pub player: Option<u8>,
-    pub port: Option<u8>,
     pub name: String,
     pub arm: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct Acc {
-    opposing_hits: u64,
     shots: u64,
     hits: u64,
     damage_dealt: f64,
@@ -475,6 +496,8 @@ pub struct Finish<'a> {
     pub end: End,
     /// Its `ticks` are ignored: the tally's count is used.
     pub speed: SpeedMeter,
+    /// The process's memory, as the report's `wall` block carries it.
+    pub memory: MemoryUsage,
     /// `loaded` or `missing`.
     pub nav: &'a str,
     pub notes: Vec<String>,
@@ -489,6 +512,7 @@ impl Finish<'_> {
             bots: &[],
             end,
             speed: SpeedMeter::default(),
+            memory: MemoryUsage::default(),
             nav: "loaded",
             notes: Vec::new(),
         }
@@ -505,8 +529,6 @@ pub struct Tally {
     kills: Vec<KillEvent>,
     last: Option<TickSample>,
     hashes: Vec<(u32, u64, Option<u64>)>,
-    /// Bot port → player index, from the snapshots.
-    ports: BTreeMap<u8, u8>,
     resets: u32,
     /// `(attacker, victim)` → the first and the latest tick of the fight's
     /// hits, for the time to kill.
@@ -573,9 +595,6 @@ impl Tally {
         self.ticks += 1;
         self.last_tick = Some(s.tick);
         for p in &s.players {
-            if let Some(c) = p.controller {
-                self.ports.insert(c, p.index);
-            }
             let a = self.acc.entry(p.index).or_default();
             if p.alive {
                 a.alive_ticks += 1;
@@ -612,11 +631,6 @@ impl Tally {
         } else {
             self.hashes.push(entry);
         }
-    }
-
-    /// The player on this port, from the snapshots so far.
-    pub fn player_of_port(&self, port: u8) -> Option<u8> {
-        self.ports.get(&port).copied()
     }
 
     /// A shot by `player`.
@@ -662,9 +676,6 @@ impl Tally {
                 fight.1 = now;
             }
             let acc = self.acc.entry(a).or_default();
-            if opposing && damage > 0.0 {
-                acc.opposing_hits += 1;
-            }
             acc.hits += 1;
             acc.damage_dealt += damage;
         }
@@ -704,15 +715,7 @@ impl Tally {
         });
     }
 
-    /// One game tick of the brain on `port`. Ignored until the snapshots
-    /// have shown which player that port is.
-    pub fn brain(&mut self, port: u8, b: BrainTick) {
-        let Some(player) = self.player_of_port(port) else {
-            return;
-        };
-        self.brain_for_player(player, b);
-    }
-
+    /// One game tick of the brain of the bot that became `player`.
     pub fn brain_for_player(&mut self, player: u8, b: BrainTick) {
         let a = self.acc.entry(player).or_default();
         if b.stuck {
@@ -769,6 +772,7 @@ impl Tally {
             bots,
             end,
             speed,
+            memory,
             nav,
             notes,
         } = f;
@@ -785,15 +789,10 @@ impl Tally {
         for i in indices {
             let sample = last.players.iter().find(|p| p.index == i);
             let a = self.acc.get(&i).cloned().unwrap_or_default();
-            let port = sample.and_then(|p| p.controller);
-            let bot = bots.iter().find(|b| {
-                b.player == Some(i) || (b.player.is_none() && b.port.is_some() && b.port == port)
-            });
+            let bot = bots.iter().find(|b| b.player == Some(i));
             let shots = a.shots;
             players.push(PlayerReport {
                 seat: bot.map(|b| b.seat),
-                kind: bot.map(|b| b.kind),
-                opposing_hits: a.opposing_hits,
                 index: i,
                 name: sample
                     .map(|p| p.name.clone())
@@ -801,7 +800,6 @@ impl Tally {
                     .or_else(|| bot.map(|b| b.name.clone()))
                     .unwrap_or_else(|| format!("player {i}")),
                 bot: bot.is_some(),
-                port,
                 arm: bot.and_then(|b| b.arm.clone()),
                 team: sample.and_then(|p| p.team),
                 score: sample.map_or(0, |p| p.score),
@@ -875,10 +873,15 @@ impl Tally {
                 speedup: speed.speedup(),
                 process_speedup: speed.process_speedup(),
                 ms_per_tick: speed.ms_per_tick(),
+                peak_rss_mib: memory.peak_rss_mib,
+                footprint_mib: memory.footprint_mib,
+                guest_written_pages: memory.guest_written_pages,
+                guest_pages: memory.guest_pages,
             },
             players,
             kills: self.kills.clone(),
             nav: nav.into(),
+            dispatch_per_tick: None,
             notes,
         }
     }
@@ -888,12 +891,11 @@ impl Tally {
 mod tests {
     use super::*;
 
-    fn p(index: u8, controller: Option<u8>, score: i32) -> PlayerSample {
+    fn p(index: u8, score: i32) -> PlayerSample {
         PlayerSample {
             index,
             name: format!("P{index}"),
             team: Some(i32::from(index % 2)),
-            controller,
             unit: Some(0x1000 + u32::from(index)),
             alive: true,
             grenades: Some(2),
@@ -959,14 +961,14 @@ mod tests {
         let mut t = Tally::new();
         t.start(10);
         for tick in 10..20 {
-            let mut a = p(0, Some(0), 0);
+            let mut a = p(0, 0);
             a.in_vehicle = tick >= 15;
-            let mut b = p(1, Some(1), 0);
+            let mut b = p(1, 0);
             b.alive = tick < 12;
             t.tick(&sample(tick, vec![a, b]));
         }
         // The same tick twice counts once.
-        t.tick(&sample(19, vec![p(0, Some(0), 0)]));
+        t.tick(&sample(19, vec![p(0, 0)]));
         assert_eq!(t.ticks(), 10);
         let r = t.report(Finish {
             team_play: false,
@@ -983,7 +985,7 @@ mod tests {
         let mut t = Tally::new();
         t.start(0);
         let with = |tick, unit, g| {
-            let mut a = p(0, Some(0), 0);
+            let mut a = p(0, 0);
             a.unit = Some(unit);
             a.grenades = Some(g);
             sample(tick, vec![a])
@@ -1005,7 +1007,7 @@ mod tests {
     fn shots_hits_and_damage() {
         let mut t = Tally::new();
         t.start(0);
-        t.tick(&sample(0, vec![p(0, Some(0), 0), p(1, Some(1), 0)]));
+        t.tick(&sample(0, vec![p(0, 0), p(1, 0)]));
         for _ in 0..4 {
             t.shot(0);
         }
@@ -1021,16 +1023,15 @@ mod tests {
         let a = r.player(0).unwrap();
         assert_eq!((a.shots, a.hits), (4, 2));
         assert_eq!(a.accuracy, 0.5);
-        assert_eq!(a.opposing_hits, 1);
         assert_eq!(a.damage_dealt, 0.25);
         assert_eq!(a.damage_taken, 0.5);
         assert_eq!(r.player(1).unwrap().damage_taken, 1.25);
     }
 
     #[test]
-    fn opposing_hits_exclude_friendly_self_and_zero_damage() {
+    fn fights_exclude_friendly_self_and_zero_damage() {
         let mut t = Tally::new();
-        let mut players = vec![p(0, Some(0), 0), p(1, None, 0), p(2, None, 0)];
+        let mut players = vec![p(0, 0), p(1, 0), p(2, 0)];
         for (p, team) in players.iter_mut().zip([0, 0, 1]) {
             p.team = Some(team);
         }
@@ -1039,7 +1040,7 @@ mod tests {
             t.hit(Some(0), Some(v), dmg, true);
         }
         let r = t.report(Finish::bare(End::GameOver));
-        assert_eq!(r.player(0).unwrap().opposing_hits, 1);
+        assert_eq!(t.fights.keys().copied().collect::<Vec<_>>(), [(0, 2)]);
         assert_eq!(r.player(0).unwrap().damage_dealt, 5.);
         assert_eq!(r.player(2).unwrap().damage_taken, 3.);
     }
@@ -1070,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn brains_count_by_port_once_known() {
+    fn brain_ticks_count_by_the_player_the_bot_became() {
         let mut t = Tally::new();
         t.start(0);
         let busy = |stuck, repaths, doing| BrainTick {
@@ -1079,18 +1080,14 @@ mod tests {
             doing,
             aim: None,
         };
-        // Before any snapshot the port is unknown: dropped.
-        t.brain(2, busy(true, 0, "fight"));
-        t.tick(&sample(0, vec![p(5, Some(2), 0)]));
-        t.brain(2, busy(true, 1, "fight"));
-        t.brain(2, busy(false, 1, "carry"));
-        t.brain(2, busy(false, 0, "roam")); // new life: count restarts
-        t.brain(2, busy(false, 2, "roam"));
+        t.tick(&sample(0, vec![p(5, 0)]));
+        t.brain_for_player(5, busy(true, 1, "fight"));
+        t.brain_for_player(5, busy(false, 1, "carry"));
+        t.brain_for_player(5, busy(false, 0, "roam")); // new life: count restarts
+        t.brain_for_player(5, busy(false, 2, "roam"));
         let bots = [BotInfo {
             seat: 2,
-            kind: crate::config::SeatKind::Local,
-            player: None,
-            port: Some(2),
+            player: Some(5),
             name: "Clanker 2".into(),
             arm: Some("b".into()),
         }];
@@ -1100,7 +1097,7 @@ mod tests {
         });
         let b = r.player(5).unwrap();
         assert!(b.bot);
-        assert_eq!(b.port, Some(2));
+        assert_eq!(b.seat, Some(2));
         assert_eq!(b.arm.as_deref(), Some("b"));
         assert_eq!(b.stuck_ticks, 1);
         assert_eq!(b.repaths, 3);
@@ -1113,10 +1110,10 @@ mod tests {
     fn going_back_in_time_restarts() {
         let mut t = Tally::new();
         t.start(100);
-        t.tick(&sample(100, vec![p(0, Some(0), 0)]));
+        t.tick(&sample(100, vec![p(0, 0)]));
         t.shot(0);
-        t.tick(&sample(101, vec![p(0, Some(0), 0)]));
-        t.tick(&sample(50, vec![p(0, Some(0), 0)]));
+        t.tick(&sample(101, vec![p(0, 0)]));
+        t.tick(&sample(50, vec![p(0, 0)]));
         assert_eq!(t.resets(), 1);
         assert_eq!(t.ticks(), 1);
         let r = t.report(Finish {
@@ -1137,7 +1134,7 @@ mod tests {
     fn time_to_kill_runs_from_the_fights_first_hit() {
         let mut t = Tally::new();
         t.start(0);
-        let both = || vec![p(0, Some(0), 0), p(1, Some(1), 0)];
+        let both = || vec![p(0, 0), p(1, 0)];
         // Player 0 first hurts 1 on tick 11, again on 31, and kills on 41.
         for tick in 0..=40 {
             t.tick(&sample(tick, both()));
@@ -1191,7 +1188,7 @@ mod tests {
     fn aim_motion_measures_overshoot_settle_and_jitter() {
         let mut t = Tally::new();
         t.start(0);
-        t.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        t.tick(&sample(0, vec![p(0, 0)]));
         // A flick from 0.8: ten views closing, four past the target (0.12
         // at the worst), then on it.
         let mut tick = 100;
@@ -1238,7 +1235,7 @@ mod tests {
     fn aim_motion_splits_engagements_and_leaves_out_what_never_settles() {
         let mut t = Tally::new();
         t.start(0);
-        t.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        t.tick(&sample(0, vec![p(0, 0)]));
         // Never inside 0.05 for six views: a flick that does not settle.
         for i in 0..40 {
             aim(&mut t, i, 3, if i % 4 == 1 { 0.02 } else { 0.5 }, -1.0);
@@ -1270,7 +1267,7 @@ mod tests {
         assert_eq!(a.reversals_per_s, 0.0);
         // A player with no tracked view has no aim section at all.
         let mut none = Tally::new();
-        none.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        none.tick(&sample(0, vec![p(0, 0)]));
         none.brain_for_player(0, BrainTick::default());
         let r = none.report(Finish::bare(End::GameOver));
         assert_eq!(r.player(0).unwrap().aim, None);
@@ -1314,14 +1311,28 @@ mod tests {
     }
 
     #[test]
+    fn a_report_from_before_the_memory_fields_still_parses() {
+        let old = serde_json::json!({
+            "setup_s": 1.0, "match_s": 2.0, "process_s": 3.0,
+            "speedup": 4.0, "process_speedup": 5.0, "ms_per_tick": 6.0
+        });
+        let wall: Wall = serde_json::from_value(old).unwrap();
+        assert_eq!(wall.peak_rss_mib, 0);
+        assert_eq!(wall.footprint_mib, None);
+        // A report without a footprint is not serialized with one.
+        let v = serde_json::to_value(&wall).unwrap();
+        assert!(v.get("footprint_mib").is_none());
+    }
+
+    #[test]
     fn winners() {
         let mut t = Tally::new();
         t.start(0);
-        t.tick(&sample(0, vec![p(0, None, 3), p(1, None, 5)]));
+        t.tick(&sample(0, vec![p(0, 3), p(1, 5)]));
         assert_eq!(t.leader(false), Some(Winner::Player(1)));
-        t.tick(&sample(1, vec![p(0, None, 5), p(1, None, 5)]));
+        t.tick(&sample(1, vec![p(0, 5), p(1, 5)]));
         assert_eq!(t.leader(false), None);
-        let mut s = sample(2, vec![p(0, None, 5), p(1, None, 5)]);
+        let mut s = sample(2, vec![p(0, 5), p(1, 5)]);
         s.teams = vec![(0, 7), (1, 9)];
         t.tick(&s);
         assert_eq!(t.leader(true), Some(Winner::Team(1)));
@@ -1332,7 +1343,7 @@ mod tests {
     fn report_round_trips_as_json() {
         let mut t = Tally::new();
         t.start(0);
-        let mut s = sample(0, vec![p(0, Some(0), 1)]);
+        let mut s = sample(0, vec![p(0, 1)]);
         s.teams = vec![(0, 1)];
         t.tick(&s);
         t.kill(0, Some(0), 0, false);
@@ -1344,17 +1355,26 @@ mod tests {
         let r = t.report(Finish {
             match_: serde_json::json!({"map": "lockout"}),
             speed,
+            memory: MemoryUsage {
+                peak_rss_mib: 981,
+                footprint_mib: Some(143),
+                ..MemoryUsage::default()
+            },
             ..Finish::bare(End::GameOver)
         });
         // The meter's ticks are the tally's.
         assert_eq!(r.ticks, 1);
         assert_eq!(r.wall.process_s, 1.5);
+        assert_eq!(r.wall.peak_rss_mib, 981);
+        assert_eq!(r.wall.footprint_mib, Some(143));
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["format"], FORMAT);
         assert_eq!(v["match"]["map"], "lockout");
         assert_eq!(v["result"]["end"], "game_over");
         assert_eq!(v["result"]["winner"], serde_json::json!({"player": 0}));
         assert_eq!(v["kills"][0]["kind"], "suicide");
+        assert_eq!(v["wall"]["peak_rss_mib"], 981);
+        assert_eq!(v["wall"]["footprint_mib"], 143);
         let back: Report = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
     }

@@ -338,6 +338,10 @@ pub struct Going {
     pub holding: Option<u32>,
 }
 
+/// A vehicle the bot got out of for having nowhere to drive is left alone
+/// this long, so it roams and fights on foot rather than re-parking.
+pub const NOWHERE_SHUN_TICKS: u32 = 3 * plan::SHUN_TICKS;
+
 /// What the mind keeps about vehicles from tick to tick.
 #[derive(Clone, Debug, Default)]
 pub struct Memory {
@@ -346,11 +350,28 @@ pub struct Memory {
     /// Each vehicle's last position, the tick, and its speed (world units
     /// a second) from the one before.
     tracks: Vec<(u32, Vec3, u32, f32)>,
+    next_tracks: Vec<(u32, Vec3, u32, f32)>,
     /// Vehicles left alone until a tick: given up on, or just left.
     shunned: Vec<(u32, u32)>,
     pub going: Option<Going>,
+    /// Where this vehicle is being taken for an errand that needs feet at
+    /// the end (the weapon it seeks, §3.6): set on foot each tick the
+    /// weapons plan still seeks it, held while it drives so the far ones
+    /// are ridden to and finished on foot.
+    pub errand: Option<Vec3>,
     pub lock: lock::Lock,
     pub route: Option<drive::Route>,
+    pub(crate) route_points: Vec<Vec3>,
+    pub(crate) route_plan: crate::work::PlanSchedule,
+    pub(crate) route_refresh: bool,
+    pub(crate) route_blocked: bool,
+    /// Budget spent without usable steering or a fight, including the
+    /// cost of failed roam plans ([`drive::NOWHERE_TICKS`] gets it out).
+    pub(crate) planless: u32,
+    /// It is getting out for having nowhere to drive: the vehicle is left
+    /// alone for [`NOWHERE_SHUN_TICKS`], not [`plan::SHUN_TICKS`].
+    nowhere_left: bool,
+    was_driver: bool,
     pub(crate) paths: crate::nav::VehiclePaths,
     pub unstick: drive::Unstick,
     pub flight: flight::Flight,
@@ -370,7 +391,7 @@ impl Memory {
     pub fn update(&mut self, tick: u32) {
         let dt = self.last_tick.map_or(1, |t| tick.wrapping_sub(t).max(1));
         self.last_tick = Some(tick);
-        let mut tracks = Vec::with_capacity(self.sight.vehicles.len());
+        self.next_tracks.clear();
         for v in &self.sight.vehicles {
             let speed = match self.tracks.iter().find(|t| t.0 == v.id) {
                 Some(&(_, at, t, _)) if tick > t => {
@@ -383,11 +404,19 @@ impl Memory {
                 Some(&(_, _, _, s)) => s,
                 None => 0.0,
             };
-            tracks.push((v.id, v.position, tick, speed));
+            self.next_tracks.push((v.id, v.position, tick, speed));
         }
-        self.tracks = tracks;
+        std::mem::swap(&mut self.tracks, &mut self.next_tracks);
         self.shunned.retain(|&(_, until)| tick < until);
         let mine = self.sight.mine().map(|v| (v.id, v.upright()));
+        let driver = self
+            .sight
+            .riding
+            .is_some_and(|r| r.role == SeatRole::Driver);
+        if driver != self.was_driver || mine.map(|(id, _)| id) != self.was_in {
+            self.clear_route();
+        }
+        self.was_driver = driver;
         let driven = mine.is_some_and(|(id, _)| {
             self.sight
                 .crew(id)
@@ -398,23 +427,34 @@ impl Memory {
                 if self.was_in != Some(id) {
                     // In: whatever it was going for is done.
                     self.going = None;
-                    self.route = None;
                     self.unstick.reset();
                     self.flight = flight::Flight::default();
                     self.leaving = None;
                     self.flipped = 0;
                     self.driverless = 0;
+                    self.planless = 0;
                 }
+                self.nowhere_left |= self.leaving == Some(drive::Leave::Nowhere);
                 self.flipped = if upright { 0 } else { self.flipped + dt };
                 self.driverless = if driven { 0 } else { self.driverless + dt };
             }
             None => {
                 if let Some(left) = self.was_in {
                     // Out: that one is left alone a while, so it does not
-                    // get straight back in.
-                    self.shun(left, tick);
+                    // get straight back in; one it could not plan from
+                    // longer, so it plays on foot instead of re-parking.
+                    let for_nowhere = std::mem::take(&mut self.nowhere_left);
+                    self.shun_for(
+                        left,
+                        tick,
+                        if for_nowhere {
+                            NOWHERE_SHUN_TICKS
+                        } else {
+                            plan::SHUN_TICKS
+                        },
+                    );
                     self.leaving = None;
-                    self.route = None;
+                    self.planless = 0;
                 }
             }
         }
@@ -428,8 +468,13 @@ impl Memory {
 
     /// Leaves vehicle `id` alone for [`plan::SHUN_TICKS`].
     pub fn shun(&mut self, id: u32, tick: u32) {
+        self.shun_for(id, tick, plan::SHUN_TICKS);
+    }
+
+    /// Leaves vehicle `id` alone for `ticks`.
+    pub fn shun_for(&mut self, id: u32, tick: u32, ticks: u32) {
         self.shunned.retain(|s| s.0 != id);
-        self.shunned.push((id, tick + plan::SHUN_TICKS));
+        self.shunned.push((id, tick.wrapping_add(ticks)));
     }
 
     pub fn shunned(&self, id: u32, tick: u32) -> bool {
@@ -438,16 +483,34 @@ impl Memory {
             .any(|&(v, until)| v == id && tick < until)
     }
 
+    pub(crate) fn recycle_route(&mut self) {
+        if let Some(route) = self.route.take() {
+            self.route_points = route.into_points();
+            self.route_points.clear();
+        }
+    }
+
+    pub(crate) fn clear_route(&mut self) {
+        self.recycle_route();
+        self.route_plan = Default::default();
+        self.route_refresh = false;
+        self.route_blocked = false;
+    }
+
     /// A new life: nothing it was doing with vehicles carries on.
     pub fn reset(&mut self) {
         self.going = None;
+        self.errand = None;
         self.lock.reset();
-        self.route = None;
+        self.clear_route();
         self.unstick.reset();
         self.leaving = None;
         self.flipped = 0;
         self.driverless = 0;
+        self.planless = 0;
+        self.nowhere_left = false;
         self.was_in = None;
+        self.was_driver = false;
     }
 }
 

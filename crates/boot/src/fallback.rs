@@ -7,10 +7,12 @@
 //! Every generated entry is registered with the runtime as itself; the
 //! runtime hands each STOP a generated handler returns to [`recover`]
 //! (`Dispatch::set_stop_recovery`), which runs the fallback on an
-//! unsupported-instruction STOP. The kernel and Machine see nothing
-//! different. (Until 2026-11 every entry went through one [`trampoline`]
-//! instead, which also kept the runtime's direct calls from ever matching;
-//! `H2_BOOT_TRAMPOLINE=1` still registers that way, for comparison.)
+//! unsupported-instruction STOP. An unresolved entry can also reach the
+//! interpreter if the image's unread jump tables contain that target.
+//!
+//! Until 2026-11 every entry went through one [`trampoline`], which kept
+//! the runtime's direct calls from matching. `H2_BOOT_TRAMPOLINE=1` still
+//! registers that way for comparison.
 //!
 //! The lifter lowers x87 itself now (docs/lifter/FLOAT.md), so this is a safety
 //! net, not the design: it keeps a boot or trace running through any
@@ -31,6 +33,30 @@ struct Tables {
     resumes: HashSet<u32>,
 }
 
+/// Registry routes for owners whose bodies were left out of a slim module.
+/// Pairs are (selector, owner), with a separate table for each route.
+#[derive(Clone, Copy)]
+pub(crate) struct ColdRoutes<'a> {
+    pub entries: &'a [[u32; 2]],
+    pub resumes: &'a [[u32; 2]],
+}
+
+pub(crate) fn register_cold(
+    dispatch: &mut runtime::Dispatch,
+    routes: ColdRoutes<'_>,
+    interpret: fn(&mut CpuAbi, &mut ExecCtx, u32, u32) -> TransferAbi,
+) -> Result<(), runtime::dispatch::RegistrationError> {
+    for &[pc, owner] in routes.entries {
+        dispatch.register_generated_rust(pc, move |cpu, ctx, selector| {
+            Ok(interpret(cpu, ctx, owner, selector))
+        })?;
+    }
+    for &[pc, owner] in routes.resumes {
+        dispatch.register_resume(pc, owner, pc)?;
+    }
+    Ok(())
+}
+
 static TABLES: OnceLock<Tables> = OnceLock::new();
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static XBE: OnceLock<&'static [u8]> = OnceLock::new();
@@ -46,6 +72,8 @@ pub struct Stats {
     /// Each address the interpreter was entered at (the STOP's), at most
     /// [`MAX_SITES`] of them: for the agent's `profile.fallbacks`.
     pub by_site: std::collections::BTreeMap<u32, Site>,
+    /// Coverage misses, keyed by (owner, selector) without the safety net's site cap.
+    pub cold: std::collections::BTreeMap<(u32, u32), u64>,
 }
 
 /// One fallback entry address: how often, how much it interpreted, and
@@ -95,6 +123,8 @@ impl Stats {
             .collect();
         serde_json::json!({
             "fallbacks": self.fallbacks,
+            "cold_entries": self.cold.values().sum::<u64>(),
+            "cold_sites": self.cold.len(),
             "interpreted": self.interpreted,
             "x87": self.x87,
             "x87_mnemonics": self.x87_mnemonics,
@@ -112,6 +142,7 @@ struct State {
     lifter: lift::Lifter<'static>,
     functions: Vec<u32>,
     cache: HashMap<u32, ir::IrInsn>,
+    cold: HashMap<u32, rustc_hash::FxHashMap<u32, ir::IrInsn>>,
 }
 
 /// Whether an unsupported-instruction STOP from generated code is
@@ -136,6 +167,15 @@ static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// can reach the trampoline. Returns the count of resume selectors that
 /// map to more than one handler.
 pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, u32)]) -> Result<usize, String> {
+    init_with_cold(xbe_bytes, entries, resumes, None)
+}
+
+pub(crate) fn init_with_cold(
+    xbe_bytes: &[u8],
+    entries: &[(u32, GuestFn)],
+    resumes: &[(u32, u32, u32)],
+    cold: Option<ColdRoutes<'_>>,
+) -> Result<usize, String> {
     if CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("the boot fallback serves one generated module per process; a second load was refused".into());
     }
@@ -150,11 +190,15 @@ pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, 
             conflicts += 1;
         }
     }
-    let tables = Tables {
+    let mut tables = Tables {
         handlers,
         entries: entries.iter().map(|e| e.0).collect(),
         resumes: resumes.iter().map(|r| r.0).collect(),
     };
+    if let Some(cold) = cold {
+        tables.entries.extend(cold.entries.iter().map(|r| r[0]));
+        tables.resumes.extend(cold.resumes.iter().map(|r| r[0]));
+    }
     // CLAIMED guarantees these are unset.
     let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
     assert!(set, "fallback tables set outside init");
@@ -169,7 +213,7 @@ fn state() -> &'static Mutex<State> {
     let t = std::time::Instant::now();
     let s = build_state();
     let waited = t.elapsed().as_secs_f64();
-    if std::thread::current().name() != Some(ANALYSIS_THREAD) && waited > 0.1 {
+    if waited > 0.1 {
         eprintln!("fallback: waited {waited:.1}s for the interpreter's analysis");
     }
     s
@@ -184,18 +228,12 @@ fn build_state() -> &'static Mutex<State> {
         let x: &'static xbe::Xbe<'static> = Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
         // The build left this image's analysis in the cache, if it ran
         // since the analyzer last changed.
-        let (mut analysis, _) = crate::analyze_cached(x, crate::analysis_cache(bytes).as_deref()).unwrap();
+        let (mut analysis, cached) =
+            crate::analyze_cached(x, crate::analysis_cache(bytes).as_deref()).unwrap();
         // The interpreter's own copy: with the stopgap, unread jump-table
         // targets become entries so the lazy lifter can reach them.
-        // A provisional set (another build's, see `install_unread_targets`)
-        // is checked here: this build's own set is worked out and kept.
-        let unread = UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst).then(|| {
-            if PROVISIONAL.load(std::sync::atomic::Ordering::SeqCst) {
-                FRESH.get_or_init(|| unread_targets(bytes, &analysis))
-            } else {
-                UNREAD.get_or_init(|| unread_targets(bytes, &analysis))
-            }
-        });
+        let unread = UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+            .then(|| UNREAD.get_or_init(|| unread_targets(bytes, &analysis)));
         for &addr in unread.map_or(&[][..], |u| u.all.as_slice()) {
             analysis.functions.entry(addr).or_insert(analyze::Function {
                 start: addr,
@@ -207,18 +245,42 @@ fn build_state() -> &'static Mutex<State> {
         let a: &'static analyze::Analysis = Box::leak(Box::new(analysis));
         let lifter = lift::Lifter::new(a, x).unwrap();
         let functions = a.functions.keys().copied().collect();
-        // Built whether or not anything is ever interpreted: the safety
-        // net is ready, not in use. The exit line ("fallback: N entries")
-        // and `H2_HOST_PERF` ("fallback N/frame") count what ran.
-        eprintln!(
-            "fallback: interpreter safety net ready (image analysed in {:.1}s); nothing runs on it unless generated code stops, counted at exit",
-            t.elapsed().as_secs_f64()
-        );
-        Mutex::new(State { lifter, functions, cache: HashMap::new() })
+        if crate::log::verbose() {
+            let source = if cached { "analysis cache hit" } else { "image analysed" };
+            let targets = unread.map_or(0, |u| u.all.len());
+            eprintln!(
+                "fallback: interpreter safety net ready ({source} in {:.1}s, {targets} unread jump-table targets)",
+                t.elapsed().as_secs_f64()
+            );
+        }
+        Mutex::new(State { lifter, functions, cache: HashMap::new(), cold: HashMap::new() })
     })
 }
 
 impl State {
+    fn cold_insn(&mut self, owner: u32, pc: u32) -> Option<&ir::IrInsn> {
+        // Overlapping owners can disagree about which edges leave the
+        // function. Use the same owner as the full module's registry.
+        let body = self.cold.entry(owner).or_insert_with(|| {
+            self.lifter.lift(owner).into_iter()
+                .flat_map(|func| func.blocks.into_values())
+                .flat_map(|block| block.insns)
+                .map(|insn| (insn.pc, insn))
+                .collect()
+        });
+        // The interpreter's discovery adds proven unread jump-table
+        // targets. A published resume can be inside one of those new
+        // functions, outside its original owner's widened CFG.
+        let tables = TABLES.get().unwrap();
+        if !body.contains_key(&pc)
+            && UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+            && (tables.resumes.contains(&pc) || tables.entries.contains(&pc))
+        {
+            return self.insn(pc);
+        }
+        self.cold.get(&owner)?.get(&pc)
+    }
+
     fn insn(&mut self, pc: u32) -> Option<&ir::IrInsn> {
         if !self.cache.contains_key(&pc) {
             // Lift the nearest functions at or below pc until one holds it.
@@ -282,16 +344,18 @@ fn from_interp(i: &interp::Cpu, c: &mut CpuAbi) {
     c.mxcsr = i.mxcsr;
 }
 
-struct GuestMem<'a>(&'a mut runtime::Guest, Option<runtime::GuestFault>);
+struct GuestMem<'a>(&'a mut runtime::Guest, Option<runtime::GuestFault>, u64);
 
 impl interp::Memory for GuestMem<'_> {
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), interp::MemFault> {
+        self.2 += 1;
         self.0.read_bytes(addr, buf, 1).map_err(|f| {
             self.1 = Some(f);
             interp::MemFault { addr, write: false }
         })
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), interp::MemFault> {
+        self.2 += 1;
         self.0.write_bytes(addr, data, 1).map_err(|f| {
             self.1 = Some(f);
             interp::MemFault { addr, write: true }
@@ -301,12 +365,14 @@ impl interp::Memory for GuestMem<'_> {
 
 impl crate::x87::Mem for GuestMem<'_> {
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), u32> {
+        self.2 += 1;
         self.0.read_bytes(addr, buf, 1).map_err(|f| {
             self.1 = Some(f);
             addr
         })
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), u32> {
+        self.2 += 1;
         self.0.write_bytes(addr, data, 1).map_err(|f| {
             self.1 = Some(f);
             addr
@@ -337,6 +403,23 @@ fn publish_tsc(reads: u64, mut read: impl FnMut() -> u64) {
 
 /// Interpret from `cpu.eip`.
 fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
+    run_from(cpu, ctx, None)
+}
+
+pub(crate) fn interpret_cold(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
+    {
+        let mut stats = STATS.lock().unwrap();
+        let hits = stats.get_or_insert_default().cold.entry((owner, selector)).or_default();
+        *hits += 1;
+        if hits.is_power_of_two() {
+            eprintln!("fallback: slim host h2fn_{owner:08x} at {selector:#010x}, hits={hits}");
+        }
+    }
+    cpu.eip = selector;
+    ctx.measure(runtime::perf::Scope::Fallback, |ctx| run_from(cpu, ctx, Some(owner)))
+}
+
+fn run_from(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: Option<u32>) -> TransferAbi {
     let tables = TABLES.get().unwrap();
     let mut st = state().lock().unwrap();
     let rt = Arc::clone(ctx.runtime());
@@ -347,12 +430,16 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     icpu.tsc = seed;
     let mut steps = 0u64;
     let (mut x87n, mut mn): (u64, HashMap<String, u64>) = (0, HashMap::new());
+    let mut memory_fault = None;
+    let mut exception = false;
     let result = {
         let mut guard = rt.memory();
-        let mut mem = GuestMem(&mut guard, None);
-        loop {
+        let mut mem = GuestMem(&mut guard, None, 0);
+        let outcome = loop {
             let pc = icpu.eip;
-            if steps > 0 {
+            if owner.is_some() {
+                ctx.charge_accesses(std::mem::take(&mut mem.2));
+            } else if steps > 0 {
                 if tables.resumes.contains(&pc) {
                     break Ok(resume_jump(pc));
                 }
@@ -364,21 +451,55 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
                 break Err(format!("fallback step limit at {pc:#x}"));
             }
             steps += 1;
-            let Some(insn) = st.insn(pc).cloned() else {
+            let insn = match owner {
+                Some(owner) => st.cold_insn(owner, pc),
+                None => st.insn(pc),
+            };
+            let Some(insn) = insn else {
                 break Err(format!("fallback: no lifted instruction at {pc:#x}"));
             };
             if insn.is_supported() {
-                match interp::step(&mut icpu, &mut mem, &insn) {
+                match interp::step(&mut icpu, &mut mem, insn) {
                     Ok(Flow::Call { target, continuation }) => break Ok(TransferAbi::call(target, continuation)),
                     Ok(Flow::Return { target }) => break Ok(TransferAbi::ret(target)),
                     Ok(Flow::Jump { target, tail: true }) => break Ok(TransferAbi::jump(target)),
-                    Ok(_) => continue,
+                    Ok(flow) => {
+                        if owner.is_some() {
+                            let tail = match (&insn.control, flow) {
+                                (ir::Control::Branch { taken, fallthrough, .. }, Flow::Branch { taken: side, .. }) =>
+                                    if side { taken.tail } else { fallthrough.tail },
+                                (ir::Control::Switch { cases, .. }, Flow::Switch { case, .. }) => cases[case].tail,
+                                _ => false,
+                            };
+                            let dest = flow.target();
+                            if tail {
+                                break Ok(TransferAbi::jump(dest));
+                            }
+                            if tables.resumes.contains(&dest) && ctx.preempt_pending() != 0 {
+                                break Ok(resume_jump(dest));
+                            }
+                        }
+                        continue;
+                    }
                     Err(interp::Exit::Memory { pc, .. }) => {
-                        let f = mem.1.take();
-                        break Err(format!("memory fault at {pc:#x}: {f:x?}"));
+                        memory_fault = mem.1.take();
+                        break Err(format!("memory fault at {pc:#x}: {memory_fault:x?}"));
+                    }
+                    Err(interp::Exit::Fault { pc, fault, next }) if owner.is_some() => {
+                        exception = true;
+                        let saved = next.unwrap_or(pc);
+                        break Err(format!("fallback: {fault:?} at {pc:#x} (saved eip {saved:#x})"));
                     }
                     Err(interp::Exit::UnknownTarget { pc, target }) if unread_allowed(pc, target) => {
                         icpu.eip = target;
+                        if owner.is_some() {
+                            let transfer = if !tables.entries.contains(&target) && tables.resumes.contains(&target) {
+                                resume_jump(target)
+                            } else {
+                                TransferAbi::jump(target)
+                            };
+                            break Ok(transfer);
+                        }
                         continue;
                     }
                     Err(e) => break Err(format!("fallback stop: {e:x?}")),
@@ -404,17 +525,21 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
                     icpu.eip = next;
                 }
                 Err(crate::x87::Error::Memory(a)) => {
-                    let f = mem.1.take();
-                    break Err(format!("x87 memory fault at {pc:#x} addr {a:#x}: {f:x?}"));
+                    memory_fault = mem.1.take();
+                    break Err(format!("x87 memory fault at {pc:#x} addr {a:#x}: {memory_fault:x?}"));
                 }
                 Err(crate::x87::Error::Unsupported(s)) => break Err(format!("at {pc:#x}: {s}")),
             }
+        };
+        if owner.is_some() {
+            ctx.charge_accesses(mem.2);
         }
+        outcome
     };
-    let function = {
+    let function = owner.or_else(|| {
         let i = st.functions.partition_point(|&e| e <= cpu.eip);
         i.checked_sub(1).map(|i| st.functions[i])
-    };
+    });
     drop(st);
     // Hand the interpreted reads back (the memory lock is released, so the
     // clock may be read): the next generated rdtsc must not repeat or go
@@ -438,8 +563,15 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     match result {
         Ok(t) => t,
         Err(msg) => {
+            if owner.is_some() && let Some(fault) = memory_fault {
+                return ctx.fault(cpu.eip, fault);
+            }
             let id = crate::shim::record_ctx(ctx, cpu.eip, msg);
-            TransferAbi::stop(id)
+            if owner.is_some() && exception {
+                TransferAbi::fault(id)
+            } else {
+                TransferAbi::stop(id)
+            }
         }
     }
 }
@@ -511,12 +643,8 @@ pub struct Unread {
 }
 
 static UNREAD: OnceLock<Unread> = OnceLock::new();
-/// [`UNREAD`] came from another build's cache file and is being checked
-/// in the background; [`FRESH`] is this build's own set once worked out.
-static PROVISIONAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static FRESH: OnceLock<Unread> = OnceLock::new();
-/// Set by [`install_unread_targets`] (the stopgap) before the interpreter's
-/// analysis is built.
+/// Set by [`start_analysis`] (the stopgap) before the interpreter's analysis
+/// is built.
 static UNREAD_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The table of a `jmp [index*4+disp32]` (FF /4, SIB scale 4, no base).
@@ -563,125 +691,65 @@ pub fn unread_targets(xbe_bytes: &[u8], analysis: &analyze::Analysis) -> Unread 
     Unread { by_site, all }
 }
 
+/// The current image's unread targets. Only a transfer that needs the
+/// safety net waits for discovery when the cache is cold.
+fn unread() -> Option<&'static Unread> {
+    if UNREAD.get().is_none() && UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
+        let _ = state();
+    }
+    UNREAD.get()
+}
+
 /// Whether the switch at `site` may continue at `target` (a target its
 /// table holds; never an arbitrary address).
 fn unread_allowed(site: u32, target: u32) -> bool {
-    let allowed = |u: Option<&Unread>| u.and_then(|u| u.by_site.get(&site)).is_some_and(|t| t.contains(&target));
-    if allowed(FRESH.get().or(UNREAD.get())) {
-        return true;
-    }
-    // A provisional set may lack a site this build reads short: settle it
-    // (waiting for the analysis, as the first interpreted entry would).
-    if PROVISIONAL.load(std::sync::atomic::Ordering::SeqCst) && FRESH.get().is_none() {
-        let _ = state();
-        return allowed(FRESH.get());
-    }
-    false
+    unread()
+        .and_then(|u| u.by_site.get(&site))
+        .is_some_and(|targets| targets.contains(&target))
 }
 
-/// Boot stopgap: let the interpreter lift from every [`unread_targets`]
-/// target, and register each that has no generated entry or resume as a
-/// fallback entry. A switch that stops with an unknown target, in
-/// generated code or the interpreter, continues at it when the site's
-/// table holds it ([`trampoline`], [`run`]). Returns how many were
-/// registered. Retire when analyze reads these tables. Builds the
-/// interpreter's analysis now.
-pub fn install_unread_targets(rt: &Arc<runtime::Runtime>) -> usize {
+/// Start interpreter discovery off the boot path. A cached unread-target
+/// set can resolve a transfer right away. On a cold start the runner only
+/// asks for the set on an unresolved entry, and generated switch STOPs
+/// still check their own tables before interpreting.
+pub fn start_analysis(rt: &runtime::Runtime) {
     UNREAD_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
     let bytes = *XBE.get().unwrap();
     let path = unread_cache_path(bytes);
-    let cached = path.as_deref().and_then(read_unread_cache);
-    // No file for these sources: another build's for the same image stands
-    // in while this build's is worked out in the background, rather than
-    // holding the first frame for the analysis (12-20 s when the analysis
-    // is not cached either). The analyzer seldom changes which tables it
-    // reads short, so the sets are almost always equal.
-    let stale = match (&cached, path.as_deref()) {
-        (None, Some(p)) => stale_unread_cache(p),
-        _ => None,
+    let cache_hit = if let Some(p) = path.as_deref()
+        && let Some(u) = read_unread_cache(p)
+    {
+        if crate::log::verbose() {
+            eprintln!("fallback: unread jump-table targets from {}", p.display());
+        }
+        let _ = UNREAD.set(u);
+        true
+    } else {
+        false
     };
-    match (cached, stale) {
-        // Cached: register now, and build the interpreter's analysis on a
-        // thread; the first interpreted entry waits for it if it must.
-        (Some(u), _) => {
-            let _ = UNREAD.set(u);
-            eprintln!("fallback: unread jump-table targets from {}", path.as_deref().unwrap().display());
-            let _ = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(|| {
-                let _ = state();
-            });
-        }
-        (None, Some((old, u))) => {
-            let _ = UNREAD.set(u);
-            PROVISIONAL.store(true, std::sync::atomic::Ordering::SeqCst);
-            eprintln!(
-                "fallback: unread jump-table targets from {} for now (other sources); checking them in the background",
-                old.display()
-            );
-            let (rt, path) = (Arc::clone(rt), path.clone());
-            let _ = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(move || {
-                let _ = state();
-                let (Some(fresh), Some(old)) = (FRESH.get(), UNREAD.get()) else { return };
-                if let Some(p) = path.as_deref() {
-                    write_unread_cache(p, fresh);
-                }
-                let added = register_unread(&rt, &unread_added(old, fresh));
-                eprintln!(
-                    "fallback: unread jump-table targets checked: {}",
-                    if added == 0 { "the same".to_owned() } else { format!("{added} more registered") }
-                );
-            });
-        }
-        (None, None) => {
-            let _ = state();
-            if let (Some(p), Some(u)) = (path.as_deref(), UNREAD.get()) {
-                write_unread_cache(p, u);
-            }
-        }
-    }
-    let Some(unread) = UNREAD.get() else { return 0 };
-    register_unread(rt, &unread.all)
-}
-
-/// Registers each of `targets` that has no generated entry or resume as a
-/// fallback entry. Returns how many.
-fn register_unread(rt: &runtime::Runtime, targets: &[u32]) -> usize {
-    let tables = TABLES.get().unwrap();
-    let mut n = 0;
     rt.edit_dispatch(|d| {
-        for &addr in targets {
-            if tables.entries.contains(&addr) || tables.resumes.contains(&addr) {
-                continue;
-            }
-            d.register_override(addr, "boot:fallback from an unread jump-table target", move |cpu, ctx, _| {
+        d.set_entry_fallback(
+            |addr| {
+                let tables = TABLES.get().unwrap();
+                !tables.resumes.contains(&addr)
+                    && unread().is_some_and(|u| u.all.binary_search(&addr).is_ok())
+            },
+            |cpu, ctx, addr| {
                 cpu.eip = addr;
                 Ok(run(cpu, ctx))
-            });
-            n += 1;
-        }
+            },
+        );
     });
-    n
-}
-
-/// Targets in `fresh` that `old` did not have.
-fn unread_added(old: &Unread, fresh: &Unread) -> Vec<u32> {
-    fresh.all.iter().copied().filter(|t| old.all.binary_search(t).is_err()).collect()
-}
-
-/// The newest readable unread-target file for the same image as `path`
-/// (`unread-<image hash>-<sources>.txt`) but other sources.
-fn stale_unread_cache(path: &std::path::Path) -> Option<(std::path::PathBuf, Unread)> {
-    let name = path.file_name()?.to_str()?;
-    let prefix = &name[..name.rfind('-')? + 1];
-    let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(path.parent()?)
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let n = e.file_name().to_str()?.to_owned();
-            (n != name && n.starts_with(prefix) && n.ends_with(".txt")).then_some((e.metadata().ok()?.modified().ok()?, e.path()))
-        })
-        .collect();
-    found.sort();
-    found.into_iter().rev().find_map(|(_, p)| Some((p.clone(), read_unread_cache(&p)?)))
+    if let Err(e) = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(move || {
+        let _ = build_state();
+        if !cache_hit
+            && let (Some(p), Some(u)) = (path.as_deref(), UNREAD.get())
+        {
+            write_unread_cache(p, u);
+        }
+    }) {
+        eprintln!("fallback: could not start interpreter analysis thread: {e}");
+    }
 }
 
 /// The boot's cache directory (`H2_BOOT_CACHE`, or `$TMPDIR/h2boot-cache`),
@@ -732,10 +800,11 @@ fn write_unread_cache(path: &std::path::Path, u: &Unread) {
         .into_iter()
         .map(|(site, t)| std::iter::once(*site).chain(t.iter().copied()).map(|v| format!("{v:x}")).collect::<Vec<_>>().join(" ") + "\n")
         .collect();
-    let tmp = path.with_extension("tmp");
-    let ok = path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
-        && std::fs::write(&tmp, text).is_ok()
-        && std::fs::rename(&tmp, path).is_ok();
+    let ok = path.parent().is_some_and(|d| {
+        std::fs::create_dir_all(d)
+            .and_then(|()| emit::output::replace(path, text.as_bytes()))
+            .is_ok()
+    });
     if !ok {
         crate::log::note(&format!("fallback: could not cache unread targets at {}", path.display()));
     }
@@ -746,54 +815,64 @@ pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     run(cpu, ctx)
 }
 
+pub(crate) fn log_cold_summary(stats: &Stats) {
+    for (&(owner, selector), &hits) in &stats.cold {
+        eprintln!("fallback: slim host summary h2fn_{owner:08x} at {selector:#010x}, hits={hits}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn unread(lines: &[(u32, &[u32])]) -> Unread {
-        let by_site: HashMap<u32, Vec<u32>> = lines.iter().map(|(s, t)| (*s, t.to_vec())).collect();
-        let all = by_site.values().flatten().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        Unread { by_site, all }
-    }
-
-    /// A miss on this build's unread-target file takes the newest one the
-    /// same image left under other sources, never another image's.
     #[test]
-    fn a_missing_unread_file_takes_the_newest_for_the_same_image() {
-        let dir = std::env::temp_dir().join(format!("unread-stale-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let want = dir.join("unread-00000000000000aa-9999999999999999.txt");
-        assert!(stale_unread_cache(&want).is_none(), "nothing there yet");
-        let at = |secs| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-        for (name, u, secs) in [
-            ("unread-00000000000000aa-1111111111111111.txt", unread(&[(0x100, &[0x110])]), 1_000),
-            ("unread-00000000000000aa-2222222222222222.txt", unread(&[(0x200, &[0x210, 0x220])]), 2_000),
-            ("unread-00000000000000bb-3333333333333333.txt", unread(&[(0x300, &[0x310])]), 3_000),
-        ] {
-            let p = dir.join(name);
-            write_unread_cache(&p, &u);
-            std::fs::File::options().append(true).open(&p).unwrap().set_modified(at(secs)).unwrap();
+    fn cold_entries_and_resumes_preserve_the_dispatch_route() {
+        fn interpret(cpu: &mut CpuAbi, _: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
+            cpu.eax = owner;
+            cpu.ebx = selector;
+            TransferAbi::stop(0)
         }
-        // A file being written is not a candidate.
-        std::fs::write(dir.join("unread-00000000000000aa-4444444444444444.tmp"), "zz").unwrap();
-        let (p, u) = stale_unread_cache(&want).unwrap();
-        assert_eq!(p.file_name().unwrap(), "unread-00000000000000aa-2222222222222222.txt");
-        assert_eq!(u.by_site[&0x200], [0x210, 0x220]);
-        assert_eq!(u.all, [0x210, 0x220]);
-        // This build's own file is never its own stand-in.
-        write_unread_cache(&want, &unread(&[]));
-        std::fs::File::options().append(true).open(&want).unwrap().set_modified(at(9_000)).unwrap();
-        assert_eq!(stale_unread_cache(&want).unwrap().0.file_name().unwrap(), "unread-00000000000000aa-2222222222222222.txt");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 
-    /// Once checked, only targets the stand-in lacked are registered.
-    #[test]
-    fn only_targets_the_stand_in_lacked_are_added() {
-        let old = unread(&[(0x100, &[0x110, 0x120])]);
-        assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110, 0x120])])), Vec::<u32>::new());
-        assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110]), (0x200, &[0x120, 0x230])])), [0x230]);
+        let cold = 0x10000;
+        let label = cold + 0x20;
+        let hot = cold + 0x100;
+        let missing = cold + 0x200;
+        let mut d = runtime::Dispatch::default();
+        register_cold(
+            &mut d,
+            ColdRoutes { entries: &[[cold, cold], [label, cold]], resumes: &[[label, cold]] },
+            interpret,
+        ).unwrap();
+        d.register_generated_rust(hot, |cpu, _, _| {
+            cpu.eax = 1;
+            Ok(TransferAbi::stop(0))
+        }).unwrap();
+        d.register_override(label, "lobby HLE", |cpu, _, _| {
+            cpu.eax = 2;
+            Ok(TransferAbi::stop(0))
+        });
+        let mut guest = runtime::Guest::new();
+        guest.map_zeroed(cold, 0x1000, runtime::guest::Permissions::RX).unwrap();
+        let rt = runtime::Runtime::new(guest, d);
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let r = runtime::Runner { max_transfers: 1 };
+        for (transfer, registers) in [
+            (TransferAbi::jump(cold), (cold, cold)),
+            (TransferAbi::ret(label), (cold, label)),
+            (TransferAbi::resume(label), (cold, label)),
+            (TransferAbi::jump(label), (2, 0)),
+            (TransferAbi::jump(hot), (1, 0)),
+        ] {
+            let mut cpu = CpuAbi::default();
+            let t = r.run_from(&mut cpu, &mut ctx, transfer);
+            assert_eq!((t.kind, t.event_id), (abi::STOP, 0));
+            assert_eq!((cpu.eax, cpu.ebx), registers);
+        }
+        let mut cpu = CpuAbi::default();
+        let t = rt.resolve_original(label).unwrap().invoke(&mut cpu, &mut ctx, label);
+        assert_eq!((t.kind, cpu.eax, cpu.ebx), (abi::STOP, cold, label));
+        let t = r.run(&mut cpu, &mut ctx, missing);
+        assert!(matches!(ctx.event(t.event_id), Some(Event::UnsupportedTarget { target, .. }) if *target == missing));
     }
 
     /// `profile.fallbacks`: sites by instructions interpreted, with their

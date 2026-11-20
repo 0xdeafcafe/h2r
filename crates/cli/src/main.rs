@@ -22,6 +22,7 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
+mod sim_store_cmd;
 mod theater_cmd;
 #[cfg(feature = "desktop")]
 mod anim;
@@ -357,7 +358,7 @@ fn main() -> Result<()> {
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
-    let mut args = theater_cmd::arguments()?;
+    let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
         bail!("{USAGE}")
     };
@@ -1174,7 +1175,10 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let a = analyze::analyze(&x)?;
+        let mut a = analyze::analyze(&x)?;
+        if x.certificate.title_id == 0x4d53_0064 && x.entry == 0x002d_0aee {
+            a.expose_instructions(boot::scene_effect_instruction_entries());
+        }
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;

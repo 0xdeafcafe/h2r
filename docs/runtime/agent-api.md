@@ -442,8 +442,8 @@ the game; [snapshots.md](snapshots.md#phase-5-what-was-built)):
 
 | Method | Does |
 |---|---|
-| `state.save {name, replace?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick |
-| `state.load {name, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ |
+| `state.save {name, replace?, cow?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick. `cow: true` also writes a sparse raw RAM image `<name>.ram` beside the snapshot |
+| `state.load {name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write in place of decoding RAM in — pages the match never writes stay shared with every process on the same image; refused, naming the file, when the save wrote no image |
 | `state.list`, `state.drop {name}` | this build's snapshots, answered at once |
 | `state.fork {from, name, replace?}` | load `from` and save it again as `name`, for branching experiments |
 
@@ -1176,8 +1176,9 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
   text so fields added there appear with no change here; `pipeline` is the
   pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
-  `fallbacks` by call, joins, times in ms); `paths` is calls into each
-  native render path since the start (`feature::render_loop::path_calls`:
+  `fallbacks` by call, joins, snapshot coverage, and times in ms including
+  `overlap_ms` for the worker's execution before the game-thread join).
+  `paths` counts calls into each native render path since the start (`feature::render_loop::path_calls`:
   `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
   `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
@@ -1205,7 +1206,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   ([high-framerate.md](../game/high-framerate.md) "Held frames, draw by
   draw").
   Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
-  `H2_PIPELINE_RENDER`, `interp` stays `null`.
+  `impl.render.pipelined_frame`, `interp` stays `null`.
 
 ### Co-op look per rendered view
 
@@ -1263,7 +1264,10 @@ h2 agent fallbacks 20              # where the fallback interpreter runs
   instructions and the function it is in (the nearest analysed start at
   or below it). Kept per address in `boot::fallback::Stats::by_site`, at
   most 4096 addresses (`sites_full` says when later ones count in the
-  totals only).
+  totals only). Slim host modules also report `cold_entries` (total
+  interpreter invocations for omitted owners) and `cold_sites` (distinct
+  owner/selector pairs). The boot log names each pair on first use and
+  reports its final count at shutdown.
 
 ### Load timeline
 
@@ -1374,10 +1378,10 @@ starts another game instance.
 
 | Method | Access | What |
 |---|---|---|
-| `sim.player.add` | act | `{kind: local\|phantom, source: script\|recording\|brain, team?, steps?, recording?, port?, identity?}`: a simulated player, `sim.<n>` |
+| `sim.player.add` | act | `{kind: "phantom", identity: {xuid, gamertag}, source: script\|recording\|brain, team?, steps?, recording?}` adds a phantom peer and returns its `sim.<n>` id. A request with `kind: "local"` returns `INVALID_PARAMS`. |
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
 | `sim.player.list` | read | `players` lists simulated players and their game player (`player.<i>`). `clankers` lists the host's brain-driven bots and their current brain state. |
-| `sim.player.pad` | act | `{id, steps, append?}`: pad steps (`input.pad`'s) for one |
+| `sim.player.pad` | act | `{id, steps, append?}` sets or appends pad steps for a phantom with a script source. The steps use the `input.pad` format. |
 | `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
 | `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
 | `sim.spawn` | act | `{tag, pos, yaw?}`: the game makes an object from its tag at `pos`; answered after the next tick |
@@ -1387,9 +1391,9 @@ starts another game instance.
 
 For a brain-driven simulated player, `sim.player.add`, `sim.player.list`
 and the `sim` root of `sim.view` include `brain` when the backend provides
-it. The list response's `clankers` array includes brain-driven local and
-phantom bots added by the game, headless matches, and sim. Its entries have
-`name`, `kind`, `brain`, and `port` or `player` once placed or joined.
+it. The list response's `clankers` array includes brain-driven phantom
+bots added by the game, headless matches and sim. Each entry includes
+`name`, `kind` and `brain`. Once joined, it also includes `player`.
 Script and recording sources have no brain state.
 
 For a joined phantom, `h2 agent sim list` includes `clankers[].aim` once
@@ -1441,27 +1445,27 @@ There is one script format: `h2 agent run`'s. Any line may be a `sim`
 verb, and `h2 agent sim run <script>` is `h2 agent run` that also removes
 the simulated players the script added (`"cleanup"` in the verdict).
 
+Run this against a game this console hosts. Replace `ROSTER_XUID` and
+`ROSTER_GAMERTAG` with a bot identity issued by the local Live server.
+
 ```sh
 cat > bot-team.txt <<'X'
 sim session
 expect /kind == "mp_host"
-sim add local brain
-expect /port exists
+sim add phantom script xuid=ROSTER_XUID gamertag=ROSTER_GAMERTAG
 wait {"phase":"gameplay","map_ticks":30}
 sim until 600 /sim/1/player exists
 sim set sim.1 team=1 health=0.5 pos=[12.0,-3.5,2.0]
 expect /wrote contains "pos"
-sim view player sim
-expect /sim/1/player == "player.1"
-expect /player/1/team == 1
-expect /player/1/health near {"to":0.5,"within":0.01}
+sim view sim
+expect /sim/1/player exists
 sim pad sim.1 [{"left":[0,1],"ticks":60}]
 X
 h2 agent sim run bot-team.txt
 ```
 
-Verbs (`crates/cli/src/agent_sim.rs`): `add <local|phantom> [source]
-[key=JSON...]`, `remove <sim.N|all>`, `list`, `pad <sim.N> <steps>
+The verbs in `crates/cli/src/agent_sim.rs` include
+`add phantom [source] xuid=X gamertag=G [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad <sim.N> <steps>
 [append]`, `set <player.N|sim.N> key=JSON...`, `give <player.N|sim.N>
 <weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag> pos=[x,y,z]
 [yaw=DEG]`, `view [root...]`,
@@ -1603,54 +1607,23 @@ h2 agent sim give player.0 objects/weapons/rifle/battle_rifle/battle_rifle reser
 h2 agent sim spawn objects/vehicles/warthog/warthog 'pos=[40,-80,2]' yaw=180
 ```
 
-### The split with docs/game/bots.md
+### Phantom backend
 
-What sim reuses from bed6c8dc's lane:
+`boot::sim_bots::SimBots` implements `agent::sim::bots::Bots` over the
+process-wide phantom registry. It places a player through
+`bots::phantom::add(identity, team, source)` using a
+`bots::pad_source::PadSource`. The bots feature must be enabled. A light
+host also needs `--host-bots` to accept simulated players.
 
-- **Local players** are bots.md stage 1's local slots:
-  `bots::local::add(port, PadSource)` and `remove`. **Phantoms** are
-  stage 6's: `bots::phantom::add(identity, team, PadSource)`.
-- **The seam** is `agent::sim::bots::Bots` (`add_local`, `add_phantom`,
-  `remove`, `phantom_player`), shaped like those calls, and
-  `PadSource { Script(Remote), Recording { name, path }, Brain }`. A
-  script source is an `input::backend::remote::Remote`, the step queue
-  `input.pad` uses: sim fills it, the backend reads it each poll with
-  `state_at_tick` (then `state_read`). So a sim script is just another
-  pad source, as bots.md says the brain is.
-- **In the game** `boot::sim_bots::LocalBots` implements `Bots` over the
-  process-wide `bots::local::global()`, so a local sim player is a
-  Clanker like an `H2_BOTS` one: on the lowest port from 1 that no bot
-  asked for (or `port`), named "Clanker N", signed in by the bot glue on
-  the Split Screen players screen or in a pregame lobby, never while a
-  game runs (`bot_glue::to_sign_in`). A script source is read each rendered frame, so a
-  step's `ticks` count bot frames there, not game ticks (`ms` is wall
-  time). A recording is an input log's successful reads of its first
-  pad, one per frame. The brain plays at `H2_BOTS_SKILL`. The bots
-  feature has to be on (it is unless `H2_FEATURES` turns it off), or the
-  bot is placed but never asked for a pad. Phantoms go to
-  `bots::phantom::add`, which refuses until stage 6; the xuid is parsed
-  as hex. `sim.player.remove` only takes off bots sim added. Tests use
-  `FakeBots`; `NotLanded` refuses everything, for a game without bots.
-- A local bot with another source can still be steered: `sim.player.pad`
-  sends its steps to `input.pad` on the bot's port, which merges over the
-  bot's pad (bots.md 4.1). A phantom's pad comes only from its source.
-- A local bot's `team` is kept and reported (`team_pending`): the lobby
-  or a `sim.state.set` decides it in game.
-- **No local player mid-game.** `sim.player.add {kind: local}` while a
-  game runs (`bots::guest::in_game`: a tick, and not the main menu's) is
-  refused with `UNAVAILABLE` and the reason, where it used to answer
-  success for a pad that never became a player. Two things stand in the
-  way. The glue signs a bot in only on the players screen or in a pregame
-  lobby. And the game makes a player for a newly signed-in local user
-  only through a squad session's local-player pass (`0x65770` ->
-  `0x5a880`, bots.md 4.2), which a game started by level boot (`h2 serve`)
-  doesn't have: there is no session at all (level-boot.md), so
-  `sim.session` says `local`. Phantoms need a networked game this console
-  hosts (`bots::phantom::session::host_session`), so they don't join a
-  serve's game either. On a serve, drive the existing player
-  (`input.pad`, `sim.state.set`, `sim.give`). Whether retail's pass would
-  seat a local user mid-game in a hosted System Link game (`0x58d90`
-  passes session state 5, which is both the lobby and a game) is untested.
+A script source uses the same `input::backend::remote::Remote` step
+queue as `input.pad`. Phantom gather samples it once per game tick.
+A recording supplies successful reads of the input log's first pad.
+A brain supplies its own pad. `sim.player.remove` removes players
+created through `sim.player.add`.
+
+Phantoms join multiplayer games this console hosts. In a level-boot
+`h2 serve` session, drive the existing player with `input.pad`,
+`sim.state.set` or `sim.give`.
 
 ### Live
 
@@ -1684,9 +1657,7 @@ H2_AGENT=/tmp/sim.sock h2 agent match.report
 H2_AGENT=/tmp/sim.sock h2 agent match.stop
 ```
 
-Stepping a match is `session.pause` and `session.step N` as in any run.
-`h2 sim batch --fork` drives these and `state.save`/`state.load`: it
-waits on `match.status` for `playing` before it saves or loads.
+Use `session.pause` and `session.step N` to step a match.
 
 ## `havok`: the physics world
 
@@ -1946,16 +1917,26 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
 | `theater.pause` | `{}` | Holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
-| `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | Requests restart and unpaced replay to that tick, carrying camera and timeline state. Direct socket clients reconnect after the restart |
+| `theater.camera` | `{"mode":"orbit","player":"Player","look":[0.2,-0.1],"zoom":-1}` | Sets the camera and returns transport state |
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and
 `cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
-accepts the HUD setting and applies it when rendering resumes.
+accepts HUD and camera changes and applies them to the next rendered frame.
+
+Camera modes are `free`, `orbit`, `follow`, `first-person` and `default`.
+`default` uses the retail view. Rendered playback starts in `free`.
+`orbit`, `follow` and `first-person` accept an optional `player` name,
+defaulting to the first spawned player. `look` applies optional yaw and
+pitch offsets in radians to `free` or `orbit`. `movement` applies
+optional strafe, forward and rise distances in world units to `free`.
+`zoom` changes the `orbit` radius in world units. First person requires a
+host film. `--render-every 0` only accepts `default`.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
-`seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero
+`seeking`, `camera`, an optional `camera_player` and discovered kill
+marker ticks in `kills`, alongside the agent's usual `at` stamp. Tick zero
 is boot. A paused seek holds at its target until play. The HLE compares
 the recorded call index and game-thread hash samples during fast-forward.
 

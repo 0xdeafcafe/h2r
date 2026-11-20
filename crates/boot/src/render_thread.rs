@@ -38,13 +38,17 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
     ),
     #[cfg(feature = "gpu")]
-    ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
-    #[cfg(feature = "gpu")]
     ("native-map-work", "GAME_ACTIVATE", AFTER),
     #[cfg(feature = "gpu")]
     ("native-map-work", "BSP_SWITCH", AFTER),
     #[cfg(feature = "gpu")]
     ("native-map-work", "GAME_STATE_REVERT", AFTER),
+    #[cfg(feature = "gpu")]
+    (
+        "native-objects",
+        "GAME_ACTIVATE",
+        "the map-load model preload runs on the game thread; the render never meets it",
+    ),
     #[cfg(feature = "gpu")]
     (
         "native-transparents",
@@ -71,12 +75,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "RENDER_LIGHT_PASSES",
         "context-only, but shares the light passes with render-timing (off by default), \
          whose timer runs after the body",
-    ),
-    #[cfg(feature = "gpu")]
-    (
-        "native-decals",
-        "DECAL_RENDER",
-        "on by default; the decal scope opens at the callback and closes at its return",
     ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
@@ -230,20 +228,15 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "EMBLEM_WIDGET_DRAW",
         "consumes the shared card refresh flag and updates the live widget",
     ),
-    // Local bots: the game thread's frame, sound and players screen. Around
-    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
-    // hidden; the render thread never meets these points.
+    // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
+    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "SIMULATION_SLOT_ACTION",
         "phantoms sample their pad once per simulation tick: the game thread's tick, \
          answered asynchronously",
     ),
-    ("bots", "SOUND_UPDATE", AFTER),
-    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
-    ("bots", "SOUND_OWNER_USER", AFTER),
-    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "ITEM_SET_UNIT",
@@ -268,22 +261,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "bots",
         "PLAYER_KILLED",
         "a death in the simulation, on the game thread; logs it for the bots' emotes",
-    ),
-    (
-        "bots",
-        "PLAYERS_SCREEN_UNJOINED",
-        "a players screen event on the game thread; signs a bot in with guest calls",
-    ),
-    ("bots", "PLAYERS_SCREEN_UPDATE", AFTER),
-    (
-        "bots",
-        "PREGAME_LOBBY_INPUT",
-        "a lobby input event on the game thread; notes a Start press for the start-state log",
-    ),
-    (
-        "bots",
-        "LOBBY_ROW_PRESS",
-        "a lobby list event on the game thread; notes a Start Game press for the start-state log",
     ),
     (
         "bots",
@@ -381,6 +358,10 @@ mod tests {
         for p in [
             "LAYER_DRAW",
             "TRANSPARENT_GEOMETRY",
+            "SCENE_TRANSPARENTS",
+            "SCENE_TRANSPARENTS_END",
+            "DECAL_RENDER",
+            "DECAL_RENDER_END",
             "RENDER_LIGHT_PASSES",
             "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",

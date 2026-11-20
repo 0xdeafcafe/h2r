@@ -78,7 +78,10 @@ pub fn sources() -> agent::render::RenderSources {
         #[cfg(not(feature = "gpu"))]
         interp: Box::new(|| None),
         pipeline: Box::new(pipeline),
+        #[cfg(feature = "desktop-runtime")]
         paths: Some(feature::render_loop::path_calls),
+        #[cfg(not(feature = "desktop-runtime"))]
+        paths: None,
         counters: Box::new(counters),
     }
 }

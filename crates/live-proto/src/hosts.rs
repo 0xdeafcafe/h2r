@@ -9,12 +9,14 @@ pub const HOST_BOOTING: &str = "HostBooting";
 pub const HOST_READY: &str = "HostReady";
 pub const HOST_PLAYING: &str = "HostPlaying";
 pub const HOST_ENDED: &str = "HostEnded";
-pub const KINDS: [&str; 5] = [
+pub const HOST_STOPPED: &str = "HostStopped";
+pub const KINDS: [&str; 6] = [
     HOST_REQUESTED,
     HOST_BOOTING,
     HOST_READY,
     HOST_PLAYING,
     HOST_ENDED,
+    HOST_STOPPED,
 ];
 
 pub const DEFAULT_IDLE_TIMEOUT_S: u32 = 120;
@@ -61,6 +63,12 @@ pub struct HostLease {
 }
 
 impl HostLease {
+    /// The hard runtime deadline, in Unix milliseconds.
+    pub fn deadline_ms(&self) -> i64 {
+        self.created_ms
+            .saturating_add(i64::from(self.max_match_s) * 1000)
+    }
+
     /// Generates a lease ID from 16 random bytes encoded as unpadded base64url.
     pub fn new_id() -> String {
         format!("hl-{}", random_id())
@@ -153,6 +161,9 @@ pub enum EndReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostRequested {
     pub lease: HostLease,
+    /// A provider address known before launch, usable for cleanup after replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
 }
 
 /// Data for [`HOST_BOOTING`].
@@ -185,6 +196,12 @@ pub struct HostEnded {
     pub reason: EndReason,
     pub ran_ms: u64,
     pub players_peak: u8,
+}
+
+/// Data for [`HOST_STOPPED`], recorded after a managed host confirms shutdown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostStopped {
+    pub lease_id: String,
 }
 
 #[cfg(test)]
@@ -365,9 +382,29 @@ mod tests {
         assert_eq!(STREAM, "hosts");
         assert_eq!(
             KINDS,
-            ["HostRequested", "HostBooting", "HostReady", "HostPlaying", "HostEnded"],
+            [
+                "HostRequested",
+                "HostBooting",
+                "HostReady",
+                "HostPlaying",
+                "HostEnded",
+                "HostStopped",
+            ],
         );
-        round_trip(HostRequested { lease: lease() }, json!({ "lease": lease() }));
+        round_trip(
+            HostRequested {
+                lease: lease(),
+                provider_ref: None,
+            },
+            json!({ "lease": lease() }),
+        );
+        round_trip(
+            HostRequested {
+                lease: lease(),
+                provider_ref: Some("room".into()),
+            },
+            json!({ "lease": lease(), "provider_ref": "room" }),
+        );
         round_trip(
             HostBooting {
                 lease_id: LEASE_ID.into(),
@@ -400,6 +437,12 @@ mod tests {
             json!({
                 "lease_id": LEASE_ID, "reason": "match_over", "ran_ms": 250_000, "players_peak": 5
             }),
+        );
+        round_trip(
+            HostStopped {
+                lease_id: LEASE_ID.into(),
+            },
+            json!({ "lease_id": LEASE_ID }),
         );
     }
 }

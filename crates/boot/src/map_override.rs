@@ -104,7 +104,11 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     maps: Option<&Path>,
     campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
-    if maps.is_none() && cfg.server_maps.is_none() && campaign_maps.is_empty() {
+    if maps.is_none()
+        && cfg.server_maps.is_none()
+        && cfg.sim_store.is_none()
+        && campaign_maps.is_empty()
+    {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
@@ -112,12 +116,36 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     }
     // A level's Halo 2-assets map, when there is one, is served while the
     // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
-    let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc)?;
-    let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned())
-        .with_assets(
-            crate::h1_variants::campaign_choice(),
-            crate::h1_variants::campaign_alternates(campaign_maps),
-        );
+    let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc && cfg.sim_store.is_none())?;
+    // Sim stores sit under every other map layer: an editor override or a
+    // verified server copy still wins where one is set, and everything
+    // they do not serve comes from the store before the disc
+    // (crates/vfs/src/sim_store.rs).
+    match cfg.sim_store.clone() {
+        Some(dir) => over_disc(
+            cfg,
+            vfs::SimStoreBackend::new(dvd, dir),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
+    }
+}
+
+/// The disc's own map layers over `dvd`: campaign additions, verified
+/// server copies, explicit editor overrides, then the fonts rewrite.
+fn over_disc<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
+    cfg: vfs::Config,
+    dvd: B,
+    fonts: Option<R>,
+    maps: Option<&Path>,
+    campaign_maps: &[(String, PathBuf)],
+) -> vfs::Result<vfs::Vfs> {
+    let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned()).with_assets(
+        crate::h1_variants::campaign_choice(),
+        crate::h1_variants::campaign_alternates(campaign_maps),
+    );
     if !campaign_maps.is_empty() {
         eprintln!(
             "campaigns: {} map(s) served from <data>/campaigns",
@@ -266,6 +294,26 @@ pub(crate) mod tests {
             dir_from(Some("/x/maps".into())),
             Some(PathBuf::from("/x/maps"))
         );
+    }
+
+    #[test]
+    fn a_sim_store_mounts_without_other_map_overrides() {
+        let t = Temp::new();
+        let disc = iso(&t);
+        let stores = t.0.join("stores");
+        vfs::sim_store::build(&disc, "level", &[(0, 4)], &stores.join("level.h2store")).unwrap();
+        let mut cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        cfg.mmap_disc = true;
+        cfg.sim_store = Some(stores);
+        let mut v = mount(cfg, &disc, None::<Upper>, None, &[]).unwrap();
+        let path = r"\Device\CdRom0\maps\level.map";
+        assert!(v.host_file(path).is_none());
+        let h = v.open(path, vfs::OpenOptions::default()).unwrap().handle;
+        let mut bytes = [0; 4];
+        assert_eq!(v.read(h, vfs::Offset::Absolute(0), &mut bytes), Ok(4));
+        assert_eq!(&bytes, b"disc");
+        assert_eq!(v.read(h, vfs::Offset::Current, &mut bytes), Err(vfs::Error::NotInStore));
+        v.close(h).unwrap();
     }
 
     #[test]

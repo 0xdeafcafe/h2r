@@ -282,6 +282,7 @@ fn the_locale_bridge_serves_sources() {
 #[test]
 fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
     use feature::{EntryFuture, GuestCall, Ret};
+    const VECTOR: u128 = (0x8123_u128 << 96) | 0x4000_0000;
     let rt = runtime();
     let mut r = Registry::new(Switches::defaults());
     let placed = Arc::new(AtomicU32::new(0));
@@ -294,9 +295,10 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
                 let seen = Arc::clone(&seen);
                 Box::pin(async move {
                     let arg = cx.arg(0)?;
-                    let a = cx.call(GuestCall::new(LEAF).ebx(7).args([1, 2])).await?;
+                    let a = cx.call(GuestCall::new(LEAF).ebx(7).xmm0(VECTOR)
+                        .xmm1(17).xmm2(19).args([1, 2])).await?;
                     let b = cx.call(GuestCall::new(LEAF).esi(9)).await?;
-                    seen.lock().unwrap().push((a.eax, b.eax, a.ebx, b.esi));
+                    seen.lock().unwrap().push((a.eax, b.eax, a.ebx, b.esi, a.xmm0));
                     Ok(Ret::new(a.eax + b.eax + arg, 4))
                 })
             })?;
@@ -335,7 +337,9 @@ fn an_entry_awaits_guest_calls_and_returns_as_stdcall() {
     assert_eq!(cpu.eax, 41 + 41 + 100);
     assert_eq!(cpu.esp, STACK + 8, "the return address and one argument");
     assert_eq!((cpu.ebx, cpu.esi, cpu.edi, cpu.ebp), (0xb, 0x5, 0xd, 0xe));
-    assert_eq!(*seen.lock().unwrap(), [(41, 41, 7, 9)]);
+    assert_eq!(*seen.lock().unwrap(), [(41, 41, 7, 9, VECTOR)]);
+    assert_eq!(cpu.xmm[1], 17u128.to_le_bytes());
+    assert_eq!(cpu.xmm[2], 19u128.to_le_bytes());
 }
 
 /// The same body as a point's implementation.
@@ -529,4 +533,53 @@ fn only_context_only_chains_run_on_a_second_executor() {
             Err(e) => panic!("{what}: {e}"),
         }
     }
+}
+
+#[test]
+fn render_setter_uses_the_runner_only_at_a_refused_device_boundary() {
+    use feature::{EntryFuture, GuestCall, Ret};
+
+    const SETTER: u32 = 0x40_2400;
+    const REGISTER: u32 = 0x60_0040;
+    let rt = runtime();
+    let invoked = Arc::new(AtomicU32::new(0));
+    rt.edit_dispatch(|d| {
+        let invoked = Arc::clone(&invoked);
+        d.register_override(SETTER, "test register setter", move |cpu, ctx, _| {
+            invoked.fetch_add(1, Ordering::Relaxed);
+            let mut m = ctx.memory();
+            m.set_u32(REGISTER, cpu.edx)?;
+            m.ret(cpu, 0)
+        });
+    });
+    let mut registry = Registry::new(Switches::defaults());
+    registry.add(&from_fn("register-writer", |b| {
+        b.raw().before(&points::GAME_TICK, "write", |c| {
+            let setter = feature::entry::RegisterSetter {
+                address: SETTER,
+                name: "test register setter",
+                cache_pages: &[REGISTER],
+                apply: Box::new(|m, address, value| {
+                    if value == 2 { return false; }
+                    m.set_u32(address, value).unwrap();
+                    true
+                }),
+            };
+            c.answer_render_async_with(setter, |cx| -> EntryFuture {
+                Box::pin(async move {
+                    for i in 1..=3 {
+                        let r = cx.call(GuestCall::new(SETTER).ecx(REGISTER).edx(i)).await?;
+                        assert_eq!((r.ecx, r.edx), (REGISTER, i));
+                        assert_eq!(cx.read(|m| m.u32(REGISTER))?, i);
+                    }
+                    Ok(Ret::new(3, 0))
+                })
+            })
+        }).context_only();
+        Ok(())
+    })).unwrap();
+    registry.build(&at(&points::GAME_TICK)).unwrap().install(&rt).unwrap();
+    let cpu = call(&rt, LEAF, 0);
+    assert_eq!((cpu.ecx, cpu.edx), (REGISTER, 3));
+    assert_eq!(invoked.load(Ordering::Relaxed), 1);
 }

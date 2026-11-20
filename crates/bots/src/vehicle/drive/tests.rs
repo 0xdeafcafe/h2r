@@ -79,6 +79,7 @@ fn ride() -> Ride {
         driverless: 0,
         driver: true,
         stuck: false,
+        nowhere: false,
         there: false,
     }
 }
@@ -131,6 +132,25 @@ fn it_gets_out_of_a_wreck_a_flip_a_stuck_one_or_a_stranded_gun() {
 }
 
 #[test]
+fn a_driver_with_nowhere_to_drive_gets_out_but_a_gunner_waits() {
+    // A healthy, upright vehicle: only the nowhere rule says leave, and
+    // only for a driver.
+    let nowhere = Ride {
+        nowhere: true,
+        ..ride()
+    };
+    assert_eq!(leave(&nowhere), Some(Leave::Nowhere));
+    assert_eq!(
+        leave(&Ride {
+            driver: false,
+            ..nowhere
+        }),
+        None,
+        "a gunner is stranded by nobody driving, not by routes"
+    );
+}
+
+#[test]
 fn infantry_in_front_and_in_reach_is_run_over() {
     let at = [0.0; 3];
     let x = [1.0, 0.0];
@@ -143,5 +163,41 @@ fn infantry_in_front_and_in_reach_is_run_over() {
     assert!(
         !splatter(true, at, x, [30.0, 0.0, 0.0], SPLATTER_RANGE),
         "far"
+    );
+}
+
+#[test]
+fn cached_lookahead_still_checks_the_live_span_ahead() {
+    use crate::los::Walls;
+    use crate::nav::{NavMesh, Poly};
+    use crate::vehicle::Class;
+
+    let floor = Poly::new(vec![
+        [-1., -4., 0.],
+        [10., -4., 0.],
+        [10., 4., 0.],
+        [-1., 4., 0.],
+    ]);
+    let wall = [[3., -2., -1.], [3., 2., -1.], [3., 2., 3.], [3., -2., 3.]];
+    let map = MapData {
+        nav: NavMesh::new(vec![floor], vec![]),
+        walls: Walls::from_polygons([wall.as_slice()]),
+        ..Default::default()
+    };
+    let spec = Class::Scout.spec();
+    let goal = [7., 3., 0.];
+    let mut route = Route::straight(goal);
+    assert_eq!(
+        route.steer(&map, spec, [0., 3., 0.], 0., 0, Some(0), 3),
+        Some(goal)
+    );
+    assert!(!clear(&map, spec, [0.; 3], goal));
+    assert_eq!(
+        route.steer(&map, spec, [0.; 3], 0., 1, Some(0), 3),
+        Some(goal)
+    );
+    assert_eq!(
+        route.steer(&map, spec, [2.5, 0., 0.], 0., 2, Some(0), 3),
+        None
     );
 }

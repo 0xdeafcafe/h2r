@@ -21,6 +21,8 @@ pub struct MemoryData {
     dirty_lo: u32,
     dirty_hi: u32,
     watching: u32,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    flat: crate::flat::View,
 }
 impl Default for MemoryData {
     fn default() -> Self {
@@ -31,6 +33,8 @@ impl Default for MemoryData {
             dirty_lo: 256,
             dirty_hi: 0,
             watching: 0,
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+            flat: Default::default(),
         }
     }
 }
@@ -116,6 +120,8 @@ impl Memory {
         // Publish every C store to subscribers before exposing Guest to HLE.
         // SAFETY: result owns the gate and Guest mutex until its Drop.
         let data = unsafe { &mut *self.shared.data.get() };
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        result.guard.publish_flat();
         for word in data.dirty_lo..data.dirty_hi {
             let mut bits = std::mem::take(&mut data.dirty[word as usize]);
             while bits != 0 {
@@ -216,6 +222,8 @@ impl Drop for MemoryGuard<'_> {
         let Some(shared) = self.shared else {
             return;
         };
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        let flat = self.guard.flat_view();
         let (ram, pages, watching) = self.guard.fast_parts();
         // SAFETY: this guard still owns the gate. Re-derive the pointers after
         // every Rust borrow, including replacement of the entire Guest.
@@ -223,6 +231,11 @@ impl Drop for MemoryGuard<'_> {
         data.ram = ram;
         data.pages = pages;
         data.watching = u32::from(watching);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        if let Some(flat) = flat {
+            data.flat = flat;
+            data.watching |= 1 << 31;
+        }
         self.ready.store(!pages.is_null(), Ordering::Release);
         shared.gate.store(0, Ordering::Release);
     }
@@ -355,8 +368,15 @@ pub unsafe extern "C" fn h2abi_v1_fast_release(exec: *mut crate::ExecCtxOpaque) 
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
+    assert!(std::mem::offset_of!(MemoryData, watching) == 2072);
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        assert!(std::mem::offset_of!(MemoryData, flat) == 2080);
+        assert!(size_of::<crate::flat::View>() == 24);
+        assert!(size_of::<MemoryData>() == 2104);
+    }
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
     assert!(size_of::<MemoryData>() == 2080);
-    assert!(size_of::<MemoryShared>() == 2088);
     assert!(std::mem::offset_of!(MemoryShared, data) == 8);
     assert!(size_of::<FastAccess>() == 32);
 };
@@ -544,3 +564,6 @@ mod tests {
         assert_eq!(ctx.memory().u32(0x1000).unwrap(), 42);
     }
 }
+
+#[cfg(all(test, not(miri), any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+mod flat_tests;

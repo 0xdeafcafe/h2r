@@ -7,9 +7,12 @@
 //! start ([`background_build`]). Nothing swaps while the game runs.
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "desktop-runtime")]
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "desktop-runtime")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 
 /// Which module a start runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +21,8 @@ pub enum Tier {
     Clang,
     /// The Cranelift fast tier.
     Fast,
+    /// Clang with coverage-selected owners, for light host runs.
+    Host,
 }
 
 impl Tier {
@@ -25,6 +30,7 @@ impl Tier {
         match self {
             Tier::Clang => "clang",
             Tier::Fast => "fast",
+            Tier::Host => "slim host",
         }
     }
 }
@@ -81,7 +87,7 @@ pub fn fast_stamp(xbe_bytes: &[u8]) -> String {
     fast_stamp_with(
         xbe_bytes,
         &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
-        &clif::opt_level().map_or_else(|e| e, str::to_owned),
+        &emit::compile::clif_opt_level().map_or_else(|e| e, str::to_owned),
     )
 }
 
@@ -140,6 +146,16 @@ pub fn plan(xbe_bytes: &[u8], out: &Path, choice: Choice) -> Plan {
     plan_from(current(xbe_bytes, out).map(|(_, t)| t), fast_current(xbe_bytes, &fast_dylib(out)), out, choice)
 }
 
+/// Select a prebuilt module for a light host or sim. Normal desktop
+/// runs never treat a coverage-pruned image as their current module.
+pub fn plan_light(xbe_bytes: &[u8], out: &Path, choice: Choice) -> Plan {
+    let dylib = clang_dylib(out);
+    if choice != Choice::Fast && crate::current_slim_stamp(xbe_bytes, &dylib).is_some() {
+        return Plan { dylib, tier: Tier::Host, build: false, background_clang: false };
+    }
+    plan(xbe_bytes, out, choice)
+}
+
 fn plan_from(best: Option<Tier>, fast_ok: bool, out: &Path, choice: Choice) -> Plan {
     let fast = |build, background_clang| Plan { dylib: fast_dylib(out), tier: Tier::Fast, build, background_clang };
     let clang = |build| Plan { dylib: clang_dylib(out), tier: Tier::Clang, build, background_clang: false };
@@ -149,6 +165,7 @@ fn plan_from(best: Option<Tier>, fast_ok: bool, out: &Path, choice: Choice) -> P
         Choice::Auto => match best {
             Some(Tier::Clang) => clang(false),
             Some(Tier::Fast) => fast(false, true),
+            Some(Tier::Host) => unreachable!("light host planning handles slim modules"),
             None => fast(true, true),
         },
     }
@@ -158,6 +175,7 @@ fn plan_from(best: Option<Tier>, fast_ok: bool, out: &Path, choice: Choice) -> P
 /// need be, and start clang's build in the background when the plan says
 /// so and `background` allows (a failure to start it only warns). Returns
 /// the module to run.
+#[cfg(feature = "desktop-runtime")]
 pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: usize, background: bool) -> Result<Plan> {
     let p = plan(xbe_bytes, out, choice);
     if p.build {
@@ -167,6 +185,7 @@ pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: 
         match p.tier {
             Tier::Fast => build_fast(xbe_bytes, out, jobs)?,
             Tier::Clang => crate::build(xbe_bytes, out, jobs)?,
+            Tier::Host => unreachable!("slim host modules are built explicitly"),
         };
     }
     if p.background_clang
@@ -181,12 +200,14 @@ pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: 
 
 /// Lift the image and compile it with the Cranelift fast tier into
 /// `out/fast/libh2game.dylib`, stamped with [`fast_stamp`].
+#[cfg(feature = "desktop-runtime")]
 pub fn build_fast(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     build_fast_for(xbe_bytes, out, jobs, emit::compile::Arch::target()?)
 }
 
 /// The Cranelift ISA is the running host's. Check this for both builds and
 /// stamp-only checks so cross builds cannot accept a host fast-tier module.
+#[cfg(feature = "desktop-runtime")]
 pub fn check_fast_target(arch: emit::compile::Arch) -> Result<()> {
     anyhow::ensure!(
         crate::host_audit::module_from_env().is_none(),
@@ -198,6 +219,7 @@ pub fn check_fast_target(arch: emit::compile::Arch) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop-runtime")]
 pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile::Arch) -> Result<PathBuf> {
     check_fast_target(arch)?;
     let total = Instant::now();
@@ -248,6 +270,7 @@ pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::com
 }
 
 /// The log [`background_build`]'s build writes under `out`.
+#[cfg(feature = "desktop-runtime")]
 pub fn background_log(out: &Path) -> PathBuf {
     out.join("clang-build.log")
 }
@@ -256,6 +279,7 @@ pub fn background_log(out: &Path) -> PathBuf {
 /// this executable's `build <disc> --out <out> --background`, logging to
 /// [`background_log`]. `build --background` lowers its own priority and
 /// leaves at once when another background build holds `out`'s lock.
+#[cfg(feature = "desktop-runtime")]
 pub fn background_command(exe: &Path, disc: &Path, out: &Path) -> std::process::Command {
     let mut c = std::process::Command::new(exe);
     // Named, so an H2_TIER=fast in the environment doesn't make it fast.
@@ -266,6 +290,7 @@ pub fn background_command(exe: &Path, disc: &Path, out: &Path) -> std::process::
 
 /// Start clang's build for the next start; it outlives this process. The
 /// log says where its output goes.
+#[cfg(feature = "desktop-runtime")]
 pub fn background_build(disc: &Path, out: &Path) -> Result<()> {
     let exe = std::env::current_exe().context("finding this executable")?;
     std::fs::create_dir_all(out)?;
@@ -364,6 +389,7 @@ mod tests {
         assert_ne!(s, fast_stamp_with(b"y", "all", "speed"));
     }
 
+    #[cfg(feature = "desktop-runtime")]
     #[test]
     fn the_background_build_is_this_h2s_build_into_the_same_out() {
         let c = background_command(Path::new("/bin/h2"), Path::new("/d/halo2.iso"), Path::new("/o"));

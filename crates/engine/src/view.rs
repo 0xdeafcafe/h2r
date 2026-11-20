@@ -228,19 +228,34 @@ impl<T: Record> Datums<T> {
     /// Slots below the high-water mark whose salt is not zero, with their
     /// handles, in slot order. At most `limit` slots are looked at.
     pub fn live(&self, m: &dyn GuestMemory, limit: i32) -> R<Vec<(DatumHandle, T)>> {
-        let high_water = self
-            .array
-            .header_field(m, crate::datum::layout::HIGH_WATER)?
-            .min(limit);
-        let mut out = Vec::new();
-        for i in 0..high_water.max(0) {
-            let elem = self.array.element_addr(m, i)?;
-            let salt = m.u16(elem)?;
-            if salt != 0 {
-                out.push((DatumHandle::new(salt, i as u32), T::at(elem)));
+        self.live_iter(m, limit)?.collect()
+    }
+
+    /// Read live records in slot order without materializing the roster.
+    /// The caller must keep the guest array stable while iterating it.
+    pub fn live_iter<'a>(
+        &self,
+        m: &'a dyn GuestMemory,
+        limit: i32,
+    ) -> R<impl Iterator<Item = R<(DatumHandle, T)>> + use<'a, T>> {
+        use crate::datum::layout;
+        let high_water = self.array.header_field(m, layout::HIGH_WATER)?.min(limit);
+        let (size, data) = if high_water > 0 {
+            (
+                self.array.header_field(m, layout::ELEMENT_SIZE)?,
+                self.array.header_field(m, layout::DATA)? as u32,
+            )
+        } else {
+            (0, 0)
+        };
+        Ok((0..high_water).filter_map(move |i| {
+            let elem = data.wrapping_add(size.wrapping_mul(i) as u32);
+            match m.u16(elem) {
+                Ok(0) => None,
+                Ok(salt) => Some(Ok((DatumHandle::new(salt, i as u32), T::at(elem)))),
+                Err(fault) => Some(Err(fault)),
             }
-        }
-        Ok(out)
+        }))
     }
 }
 

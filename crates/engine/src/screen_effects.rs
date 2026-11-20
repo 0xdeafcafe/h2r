@@ -64,7 +64,7 @@ fn evaluate(mem: &dyn GuestMemory, sse: &mut Sse, control: u16, r: u32, x: u32) 
 
 /// The output range of the blob at `ptr` over `v` unless its flags take it
 /// raw: `v` clamped to 0..1, then `lo + (hi - lo) * v`.
-fn ranged(mem: &dyn GuestMemory, sse: &mut Sse, ptr: u32, v: u32) -> Result<u32, Error> {
+pub(crate) fn ranged(mem: &dyn GuestMemory, sse: &mut Sse, ptr: u32, v: u32) -> Result<u32, Error> {
     if mem.u8(ptr.wrapping_add(1))? & 0xf0 != 0 {
         return Ok(v);
     }

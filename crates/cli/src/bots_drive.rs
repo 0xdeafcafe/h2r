@@ -36,16 +36,12 @@
 //!   then New Account. A on an account row (`0x24b2ea`) copies it into
 //!   the profile and logs on (`0x24b664`). So: DOWN to row 1, A. The
 //!   dialog is known by the `ui: screen none` line's dialog part
-//!   (`, dialog 0x14 dialog_live_signin (window 3, slot 4)`), or by the
-//!   bots' join gate line (`dialog 0x14 (window 3, ...)`), its cursor by
-//!   the list value's low 16 bits. The gate lines alone were not enough:
-//!   a Clankermatch run places no local bot before the roster, so it
-//!   prints none at boot, and run 20261119-115144 took the picker for any
-//!   dialog and pressed A on its no-account row five times;
+//!   (`, dialog 0x14 dialog_live_signin (window 3, slot 4)`), its cursor
+//!   by the list value's low 16 bits. Run 20261119-115144 took the picker
+//!   for any dialog and pressed A on its no-account row five times;
 //! * the main menu: from its row to Xbox Live (row 1), A; signed in, that
-//!   opens the players' screen (`0x1e`) in mode 3 (the local bots no
-//!   longer join there: they join in the lobby, docs/game/bots.md §4.3);
-//!   A there opens the Xbox Live menu (`0xba`). Not signed in, it
+//!   opens the players' screen (`0x1e`) in mode 3; A there opens the Xbox
+//!   Live menu (`0xba`). Not signed in, it
 //!   opens the picker first. Another dialog on the way gets A; a players'
 //!   screen in another mode is backed out of and corrected; Live asking
 //!   for a 6-digit code stops the drive;
@@ -60,10 +56,10 @@
 //!   custom game only once the HLE says `live: session ... advertised`
 //!   (not since deleted) in lobby mode 2. A lobby in another mode
 //!   (OptiMatch's 3) gets B;
-//! * the lobby: once every local bot is on Xbox Live (`bots: NAME on port
-//!   P is on Xbox Live as ...`), or after [`LOBBY_WAIT_MS`], A on Start
-//!   Game (row 0); again (UP, A) if the phase hasn't left `menu` in
-//!   [`START_MS`].
+//! * the lobby: once every phantom has joined it (`bots: phantom NAME
+//!   joins (peer N, in the pregame lobby)`), or after [`LOBBY_WAIT_MS`],
+//!   A on Start Game (row 0); again (UP, A) if the phase hasn't left
+//!   `menu` in [`START_MS`].
 //!
 //! [`Driver::clankermatch`] takes the same way to the Live menu, then its
 //! Clankermatch row (row 2) and a clanker playlist instead
@@ -71,6 +67,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::bots_verdict::{phantom_joined_lobby, phantom_off};
 use crate::coop_drive::{
     CAMPAIGN_SCREENS, GAP_MS, JOIN_SCREEN, LIVE_MENU, MAIN_LIVE_ROW, MAIN_MENU, MODE_LIVE,
     MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES, parse_screen,
@@ -109,8 +106,8 @@ pub const ACCOUNT_PICKER: u32 = 0x14;
 pub const PICKER_ACCOUNT_ROW: u32 = 1;
 /// Accounts picked before the driver gives up on signing in.
 pub const PICKER_PICKS: u32 = 3;
-/// How long the host waits in the lobby for its local bots to be on Xbox
-/// Live before it starts anyway (the verdict then says which did not).
+/// How long the host waits in the lobby for its phantoms to join before
+/// it starts anyway (the verdict then says which did not).
 pub const LOBBY_WAIT_MS: u64 = 90_000;
 /// How long Start Game may take to leave the menus (the countdown, then
 /// the load).
@@ -197,8 +194,8 @@ pub enum Target {
 /// started.
 #[derive(Debug, Clone)]
 pub struct Driver {
-    /// Local bots to wait for in the lobby.
-    local: usize,
+    /// Phantoms to wait for in the lobby.
+    phantoms: usize,
     target: Target,
     step: Step,
     /// The screen id (`None` for every `ui: screen none` line).
@@ -223,8 +220,8 @@ pub struct Driver {
     /// The Xbox Live menu's screen (its window 5 active address), learnt
     /// from the first settled window 5 screen after A on the players'
     /// screen in Xbox Live mode. Its list mask is the signed-in local
-    /// players' (`0xf` with three local bots signed in there, `0x1` alone),
-    /// so the mask alone can't tell it from the main menu (run
+    /// players' (`0xf` with every port signed in there, `0x1` alone), so
+    /// the mask alone can't tell it from the main menu (run
     /// 20261119-013507).
     live_screen: Option<u32>,
     /// A on the players' screen for Xbox Live went; the next settled
@@ -258,8 +255,8 @@ pub struct Driver {
     last_press: u64,
     boot_presses: u32,
     dialog_presses: u32,
-    /// Ports whose bot is on Xbox Live (as an account or a guest).
-    on_live: BTreeSet<u8>,
+    /// The names of the phantoms that joined the pregame lobby.
+    in_lobby: BTreeSet<String>,
     /// The HLE advertised a hosted session (and has not deleted it).
     hosting: bool,
     /// Clankermatch: the HLE's clanker search started
@@ -284,16 +281,6 @@ fn press(button: &'static str, why: &str) -> Press {
 
 fn show(screen: Option<u32>) -> String {
     screen.map_or_else(|| "none".into(), |s| format!("0x{s:02x}"))
-}
-
-/// `bots: NAME on port P is on Xbox Live as ...`: the port.
-fn live_port(text: &str) -> Option<u8> {
-    let rest = text.strip_prefix("bots: ")?;
-    let (_, after) = rest.rsplit_once(" on port ")?;
-    let (port, after) = after.split_once(' ')?;
-    after
-        .starts_with("is on Xbox Live as")
-        .then(|| port.parse::<u8>().ok())?
 }
 
 /// A `ui: screen none (slot 4: window W ... list [M/V ...]; ...)` line's
@@ -349,21 +336,6 @@ pub fn deleted(text: &str) -> bool {
     text.starts_with("live: session ") && text.ends_with(" deleted")
 }
 
-/// A `bots: join gate port P: ..., dialog D, ...` line's dialog: `Some(None)`
-/// for `dialog none`, `Some(Some(id))` for `dialog 0xNN (window ...)`.
-pub fn gate_dialog(text: &str) -> Option<Option<u32>> {
-    let rest = text.strip_prefix("bots: join gate port ")?;
-    let (_, d) = rest.split_once(", dialog ")?;
-    if d.starts_with("none") {
-        return Some(None);
-    }
-    let hex = d.strip_prefix("0x")?;
-    let end = hex
-        .find(|c: char| !c.is_ascii_hexdigit())
-        .unwrap_or(hex.len());
-    Some(u32::from_str_radix(&hex[..end], 16).ok())
-}
-
 /// A `ui: screen none (...), dialog 0x14 dialog_live_signin (window 3,
 /// slot 4)` line's dialog part (`boot::ui_watch::Dialog::line`): the text
 /// from `dialog` on, and the id (`None` for `dialog ?`). `None` when the
@@ -397,9 +369,9 @@ pub fn advertised(text: &str) -> bool {
 }
 
 impl Driver {
-    pub fn new(local: usize) -> Self {
+    pub fn new(phantoms: usize) -> Self {
         Driver {
-            local,
+            phantoms,
             target: Target::CustomGame,
             step: Step::Boot,
             screen: None,
@@ -429,7 +401,7 @@ impl Driver {
             last_press: 0,
             boot_presses: 0,
             dialog_presses: 0,
-            on_live: BTreeSet::new(),
+            in_lobby: BTreeSet::new(),
             hosting: false,
             cm_search: false,
             human_search: None,
@@ -456,20 +428,9 @@ impl Driver {
             }
             let none = none_line(text);
             let (window, value) = none.map_or((None, None), |n| (Some(n.window), n.value));
-            match (line_dialog(text), window) {
-                (Some((said, id)), _) => {
-                    self.dialog_id = id;
-                    self.dialog_said = Some(said.to_string());
-                }
-                // No dialog up: the menus are bare.
-                (None, Some(5)) => {
-                    self.dialog_id = None;
-                    self.dialog_said = None;
-                }
-                // A dialog window without a dialog part (a game from
-                // before the part): the gate lines say, if any come.
-                _ => self.dialog_said = None,
-            }
+            let dialog = line_dialog(text);
+            self.dialog_id = dialog.and_then(|(_, id)| id);
+            self.dialog_said = dialog.map(|(said, _)| said.to_string());
             if value != self.list_value || window != self.window {
                 self.picker_downs = 0;
             }
@@ -515,10 +476,6 @@ impl Driver {
             };
             return;
         }
-        if let Some(d) = gate_dialog(text) {
-            self.dialog_id = d;
-            return;
-        }
         if let Some(m) = text.strip_prefix("coop-live: lobby mode ") {
             self.lobby_mode = m.split(' ').next().and_then(|m| m.parse().ok());
             if self.lobby_mode == Some(MAIN_MENU_MODE) {
@@ -544,9 +501,13 @@ impl Driver {
         }
         if deleted(text) {
             self.hosting = false;
+            self.in_lobby.clear();
         }
-        if let Some(p) = live_port(text) {
-            self.on_live.insert(p);
+        if let Some(name) = phantom_joined_lobby(text) {
+            self.in_lobby.insert(name.to_string());
+        }
+        if let Some(name) = phantom_off(text) {
+            self.in_lobby.remove(name);
         }
         if text.starts_with(clankermatch::SEARCH) {
             self.cm_search = true;
@@ -627,17 +588,15 @@ impl Driver {
         self.screen.is_none() && self.window.is_some_and(|w| w < 5)
     }
 
-    /// The dialog up, for a press's reason and the log: as the game's line
-    /// named it, else by the id the bots' gate gave, else by its window.
+    /// Names the dialog from the game's line or its window.
     fn dialog_name(&self) -> String {
         if let Some(d) = &self.dialog_said {
             return d.clone();
         }
-        match (self.dialog_id, self.window) {
-            (Some(id), Some(w)) => format!("dialog 0x{id:02x} (window {w})"),
-            (None, Some(w)) => format!("an unnamed dialog (window {w}; the game named none)"),
-            _ => "a dialog".into(),
-        }
+        self.window.map_or_else(
+            || "a dialog".into(),
+            |w| format!("an unnamed dialog (window {w}; the game named none)"),
+        )
     }
 
     /// The account picker is up and takes player one's input.
@@ -1106,16 +1065,16 @@ impl Driver {
                 }
             }
             Step::Lobby { since } => {
-                let all = self.on_live.len() >= self.local;
+                let all = self.in_lobby.len() >= self.phantoms;
                 let late = now.saturating_sub(since) > LOBBY_WAIT_MS;
                 if (all || late) && now.saturating_sub(since) >= SETTLE_MS {
                     let why = if all {
-                        format!("Start Game: {} local bots on Xbox Live", self.on_live.len())
+                        format!("Start Game: {} phantoms in the lobby", self.in_lobby.len())
                     } else {
                         self.say(format!(
-                            "only {} of {} local bots on Xbox Live after {} s; starting anyway",
-                            self.on_live.len(),
-                            self.local,
+                            "only {} of {} phantoms in the lobby after {} s; starting anyway",
+                            self.in_lobby.len(),
+                            self.phantoms,
                             LOBBY_WAIT_MS / 1000
                         ));
                         "Start Game: not every bot came".into()

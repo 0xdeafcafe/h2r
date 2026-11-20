@@ -352,6 +352,27 @@ pub fn write_module_with_hot(
     codegen: Codegen,
     hot: Option<&BTreeSet<u32>>,
 ) -> io::Result<WriteReport> {
+    write_selected(owners, dir, codegen, hot, None)
+}
+
+/// Emit native bodies only for the selected owners, keeping exact entry
+/// and resume routes for the interpreter in a separate address table.
+pub fn write_slim_module(
+    owners: &[Owner],
+    dir: &Path,
+    codegen: Codegen,
+    native: &BTreeSet<u32>,
+) -> io::Result<WriteReport> {
+    write_selected(owners, dir, codegen, None, Some(native))
+}
+
+fn write_selected(
+    owners: &[Owner],
+    dir: &Path,
+    codegen: Codegen,
+    strict_hot: Option<&BTreeSet<u32>>,
+    slim_native: Option<&BTreeSet<u32>>,
+) -> io::Result<WriteReport> {
     std::fs::create_dir_all(dir)?;
     // Defined ahead of the header in every generated file, so all of a
     // module's objects agree.
@@ -360,7 +381,10 @@ pub fn write_module_with_hot(
     } else {
         BANNER.to_owned()
     };
-    let mut report = WriteReport { owners: owners.len(), ..Default::default() };
+    let (native, cold): (Vec<_>, Vec<_>) = owners.iter().partition(|o| {
+        slim_native.is_none_or(|selected| selected.contains(&o.func.entry))
+    });
+    let mut report = WriteReport { owners: native.len(), ..Default::default() };
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     files.insert("h2gen.h".into(), PRELUDE.to_owned());
     files.insert("h2fastmem.h".into(), FAST_MEMORY_HEADER.to_owned());
@@ -373,9 +397,9 @@ pub fn write_module_with_hot(
     let mut home: BTreeMap<u32, String> = BTreeMap::new();
     // Each owner's C is independent of the others': generate it on every
     // core, then lay it out in owner order as before.
-    let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
-    let texts = par::map(owners, |o| {
-        if hot.is_some_and(|hot| !hot.contains(&o.func.entry)) {
+    let functions: BTreeSet<u32> = native.iter().map(|o| o.func.entry).collect();
+    let texts = par::map(&native, |o| {
+        if strict_hot.is_some_and(|hot| !hot.contains(&o.func.entry)) {
             return cold_owner(o.func.entry);
         }
         let shape = c::OwnerShape {
@@ -387,7 +411,7 @@ pub fn write_module_with_hot(
         };
         c::function(&o.func, &shape)
     });
-    for (o, text) in owners.iter().zip(texts) {
+    for (o, text) in native.iter().zip(texts) {
         let stem = if text.len() > OVERSIZED {
             format!("fn_{:08x}", o.func.entry)
         } else {
@@ -407,7 +431,11 @@ pub fn write_module_with_hot(
         report.back_edges += o.loops.back_edges.len();
         report.opt += o.opt;
     }
-    files.insert("h2gen_registry.c".into(), registry(owners, &home, &banner, codegen));
+    let mut table = registry(&native, &home, &banner, codegen);
+    if slim_native.is_some() {
+        write_cold_table(&mut table, &cold);
+    }
+    files.insert("h2gen_registry.c".into(), table);
 
     // Drop generated sources from a previous run that no longer exist.
     for e in std::fs::read_dir(dir)?.flatten() {
@@ -449,8 +477,8 @@ fn cold_owner(owner: u32) -> String {
 }
 
 /// The registration object: ABI version export and the entry/resume tables.
-fn registry(owners: &[Owner], home: &BTreeMap<u32, String>, banner: &str, codegen: Codegen) -> String {
-    let mut s = format!("{banner}#include \"h2gen.h\"\n\nH2_EXPORT H2_DEFINE_GENERATED_ABI_NAMED(h2gen_module_abi_version)\n\n");
+fn registry(owners: &[&Owner], home: &BTreeMap<u32, String>, banner: &str, codegen: Codegen) -> String {
+    let mut s = format!("{banner}#define H2_FLAT_STATS_REGISTRY 1\n#include \"h2gen.h\"\n\nH2_EXPORT H2_DEFINE_GENERATED_ABI_NAMED(h2gen_module_abi_version)\n\n");
     let stems: BTreeSet<&String> = home.values().collect();
     for stem in stems {
         s.push_str(&format!("uint32_t h2gen_abi_version_{stem}(void);\n"));
@@ -483,9 +511,71 @@ fn registry(owners: &[Owner], home: &BTreeMap<u32, String>, banner: &str, codege
     s
 }
 
+/// Optional boot extension. The header is two row counts, followed by
+/// (selector, owner) pairs for entries and then resumes.
+fn write_cold_table(out: &mut String, cold: &[&Owner]) {
+    use std::fmt::Write as _;
+
+    let entries: usize = cold.iter().map(|o| o.entries.len()).sum();
+    let resumes: usize = cold.iter().map(|o| o.resumes.len()).sum();
+    writeln!(out, "\nH2_EXPORT const uint32_t h2gen_cold_v1[] = {{\n    {entries}u, {resumes}u,").unwrap();
+    for o in cold {
+        for &(pc, _) in &o.entries {
+            writeln!(out, "    {pc:#010x}u, {:#010x}u,", o.func.entry).unwrap();
+        }
+    }
+    for o in cold {
+        for pc in &o.resumes {
+            writeln!(out, "    {pc:#010x}u, {:#010x}u,", o.func.entry).unwrap();
+        }
+    }
+    out.push_str("};\n");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Codegen;
+    use super::*;
+
+    #[test]
+    fn slim_registry_keeps_cold_routes_without_cold_bodies() {
+        fn owner(entry: u32) -> Owner {
+            Owner {
+                func: IrFunction {
+                    entry,
+                    blocks: BTreeMap::new(),
+                    interior_entries: Vec::new(),
+                    errors: Vec::new(),
+                },
+                selectors: BTreeSet::from([entry]),
+                entries: vec![(entry, EntryKind::Function)],
+                resumes: Vec::new(),
+                entry_exits: 0,
+                loops: Default::default(),
+                opt: Default::default(),
+            }
+        }
+
+        let hot = owner(0x1000);
+        let mut cold = owner(0x2000);
+        cold.entries.push((0x2020, EntryKind::Interior));
+        cold.resumes.push(0x2030);
+        let mut table = registry(
+            &[&hot],
+            &BTreeMap::from([(0x1000, "shard_00001".to_owned())]),
+            "",
+            Codegen::default(),
+        );
+        write_cold_table(&mut table, &[&cold]);
+        assert!(table.contains("h2fn_00001000"));
+        assert!(!table.contains("h2fn_00002000"));
+        assert!(table.contains(concat!(
+            "h2gen_cold_v1[] = {\n",
+            "    2u, 1u,\n",
+            "    0x00002000u, 0x00002000u,\n",
+            "    0x00002020u, 0x00002000u,\n",
+            "    0x00002030u, 0x00002000u,",
+        )));
+    }
 
     #[test]
     fn access_accounting_defaults_on_and_zero_turns_it_off() {

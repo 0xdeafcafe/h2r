@@ -29,7 +29,7 @@ export async function fetchHosts({ api, aud, me }: HostsAdmin, fetchFn: typeof f
   if (!Array.isArray(body?.running) || !Array.isArray(body.recent) ||
     !body.running.every((host) => isHost(host) && nonnegative(host.players) && nonnegative(host.uptime_ms)) ||
     !body.recent.every((host) => isHost(host) && Object.hasOwn(endReasons, host.reason)) ||
-    !nonnegative(body.month_to_date_usd) || !nonnegative(body.budget_usd)) {
+    !nonnegative(body.month_to_date_usd) || (body.budget_usd !== null && !nonnegative(body.budget_usd))) {
     throw new Error("The server sent an invalid host inventory.");
   }
   return {

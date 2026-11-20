@@ -34,7 +34,7 @@ const HOSTING_LINE: &str = "clankers: clankermatch: hosting clanker playlist 10 
 /// A Clankermatch driver for the playlist on `row`, from the main menu to
 /// A on the Live menu's Clankermatch row; the time of that A.
 fn to_clankermatch(row: u32) -> (Driver, u64) {
-    let mut d = Driver::clankermatch(1, row);
+    let mut d = Driver::clankermatch(row);
     d.line(900, MAIN_ROW_0);
     d.line(1000, "coop-live: lobby mode 4294967295");
     d.status(1000, "menu");
@@ -237,7 +237,7 @@ fn a_search_that_never_hosts_or_a_lobby_that_never_starts_is_given_up() {
     assert!(
         d.take_said()
             .iter()
-            .any(|s| s.contains("the Clankermatch lobby did not start in 180 s (0 of 1 local bots")),
+            .any(|s| s.contains("the Clankermatch lobby did not start in 180 s (0 phantoms joined)")),
     );
 }
 
@@ -274,6 +274,6 @@ fn b_that_changes_nothing_is_followed_by_a() {
 fn the_custom_game_target_is_unchanged() {
     let d = Driver::new(3);
     assert_eq!(d.live_row(), (CUSTOM_GAME_ROW, "Custom Game"));
-    let d = Driver::clankermatch(3, 1);
+    let d = Driver::clankermatch(1);
     assert_eq!(d.live_row(), (CLANKERMATCH_ROW, "Clankermatch"));
 }

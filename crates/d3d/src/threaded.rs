@@ -453,6 +453,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     bc: bool,
     sample_surfaces: bool,
     sample_depth: bool,
+    surface_aliases: bool,
     external_pass: bool,
     reusable_external_attachments: bool,
     pinned_external_run: Option<PinnedExternalRun>,
@@ -481,6 +482,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let judge = inner.judge();
         let sample_surfaces = inner.can_sample_surfaces();
         let sample_depth = inner.can_sample_depth_surfaces();
+        let surface_aliases = inner.handles_surface_aliases();
         let external_pass = inner.supports_external_pass();
         let reusable_external_attachments = inner.reusable_external_attachments();
         let mirror = inner.can_mirror();
@@ -579,6 +581,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             bc,
             sample_surfaces,
             sample_depth,
+            surface_aliases,
             external_pass,
             reusable_external_attachments,
             pinned_external_run: None,
@@ -1418,6 +1421,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         Ok(Some(t))
     }
 
+    fn handles_surface_aliases(&self) -> bool { self.surface_aliases }
+
     fn defers_depth_aliases(&self) -> bool {
         true
     }
@@ -1462,7 +1467,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.post(move |w| {
             // A backend that makes the texture itself (`GfxBackend` decodes
             // the words on the GPU) does, with no read-back here.
-            if w.inner.defers_depth_aliases() {
+            if w.inner.defers_depth_aliases() || w.inner.handles_surface_aliases() {
                 let s = w.surface(depth)?;
                 if let Some(h) = w.inner.depth_alias_texture(
                     s, format, width, height, pitch, generation, offset, &desc, options,

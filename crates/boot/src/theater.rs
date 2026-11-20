@@ -1,14 +1,19 @@
 //! Host film lifetime: boot facts before guest entry, observer-only checkpoints,
 //! then seal and optionally upload at the first slice after game over.
+mod camera;
 mod controls;
 use anyhow::{Context, Result, bail, ensure};
+use camera::ReplayCamera;
 pub(crate) use controls::library_methods;
+pub use controls::playback_images;
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
     tape::{Batch, Call, Check, Mark, Playback, Tap},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     fs::File,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
@@ -22,9 +27,18 @@ pub struct Replay {
     pub speed: f64,
     pub seek_tick: u64,
     pub paused_at_target: bool,
+    pub presentation: Presentation,
     /// Receiver for a requested restart, consumed by the CLI parent.
     pub restart: PathBuf,
     pub window_closed: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+/// View and timeline state carried across an exact replay restart.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Presentation {
+    camera: ReplayCamera,
+    kills: BTreeSet<u64>,
+    pub clip_marks: [Option<u64>; 2],
 }
 
 struct Recording {
@@ -32,7 +46,28 @@ struct Recording {
     batch: Batch,
     file: PathBuf,
     match_over: bool,
+    upload: Option<UploadTarget>,
 }
+
+struct UploadTarget {
+    url: String,
+    token: String,
+    game: String,
+}
+
+impl UploadTarget {
+    fn from_env(lease: Option<&str>, env: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+        let (Some(url), Some(token)) = (env("H2_HOST_LIVE_URL"), env("H2_HOST_TOKEN")) else {
+            return Ok(None);
+        };
+        // Live uses the lease ID as the canonical game ID for its host.
+        let game = env("H2_FILM_GAME_ID")
+            .or_else(|| lease.map(str::to_owned))
+            .context("no lease game ID for film")?;
+        Ok(Some(Self { url, token, game }))
+    }
+}
+
 enum Mode {
     Record(Recording),
     Replay(Playback, Replay),
@@ -45,6 +80,7 @@ struct State {
     paused: bool,
     speed: f64,
     seeking: Option<u64>,
+    presentation: Presentation,
     restart: Option<u64>,
     failure: Option<String>,
     complete: bool,
@@ -139,6 +175,11 @@ impl Session {
                     },
                 },
             };
+            let upload = if host_light {
+                UploadTarget::from_env(header.lease_id.as_deref(), |key| std::env::var(key).ok())?
+            } else {
+                None
+            };
             let manifest = film::manifest::Manifest::capture(&opts.data_root)?;
             let mut file = File::options();
             file.write(true).create_new(true);
@@ -159,6 +200,7 @@ impl Session {
                     batch: Batch::default(),
                     file: path,
                     match_over: false,
+                    upload,
                 }),
                 header,
                 1.,
@@ -168,6 +210,13 @@ impl Session {
         } else {
             return Ok(None);
         };
+        let mut presentation = match &mode {
+            Mode::Replay(_, opts) => opts.presentation.clone(),
+            Mode::Record(_) => Presentation::default(),
+        };
+        if !matches!(&mode, Mode::Replay(_, opts) if opts.render_every != 0) {
+            presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+        }
         Ok(Some(Arc::new(Self {
             state: Mutex::new(State {
                 mode,
@@ -175,6 +224,7 @@ impl Session {
                 speed,
                 seeking,
                 paused,
+                presentation,
                 tick: 0,
                 calls: 0,
                 restart: None,
@@ -267,7 +317,7 @@ impl Session {
                 if let Some(target) = s.restart {
                     std::fs::write(
                         &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused))?,
+                        serde_json::to_vec(&(target, s.speed, s.paused, &s.presentation))?,
                     )?;
                     return Ok(false);
                 }
@@ -296,27 +346,18 @@ impl Session {
         }
     }
 
-    pub fn finish(
-        &self,
-        slices: u64,
-        teardown: bool,
-        telemetry: Option<&Arc<crate::telemetry::Telemetry>>,
-    ) -> Result<()> {
-        self.finish_output(slices, teardown, telemetry)?;
+    pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
+        self.finish_output(slices, teardown)?;
         if teardown
             && let Some(job) = self.upload.lock().unwrap_or_else(|e| e.into_inner()).take()
             && job.join().is_err()
         {
-            eprintln!("theater: film upload worker stopped")
+            eprintln!("theater: film upload worker stopped");
         }
         Ok(())
     }
-    fn finish_output(
-        &self,
-        slices: u64,
-        teardown: bool,
-        telemetry: Option<&Arc<crate::telemetry::Telemetry>>,
-    ) -> Result<()> {
+
+    fn finish_output(&self, slices: u64, teardown: bool) -> Result<()> {
         let mut s = self.lock();
         if let Mode::Replay(_, replay) = &s.mode {
             let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
@@ -353,6 +394,7 @@ impl Session {
         };
         let mut out = rec.out.take().context("film already closed")?;
         let path = rec.file.clone();
+        let upload = rec.upload.take();
         let done = (|| -> Result<()> {
             rec.batch.flush(&mut out)?;
             out.chunk(film::HEAD, &header)?;
@@ -373,23 +415,11 @@ impl Session {
         }
         s.complete = true;
         drop(s);
-        if matched
-            && let (Ok(url), Ok(token)) = (
-                std::env::var("H2_HOST_LIVE_URL"),
-                std::env::var("H2_HOST_TOKEN"),
-            )
-        {
-            let telemetry = telemetry.cloned();
+        if matched && let Some(target) = upload {
             let worker = std::thread::Builder::new()
                 .name("film-upload".into())
                 .spawn(move || {
-                    let game = std::env::var("H2_FILM_GAME_ID")
-                        .ok()
-                        .or_else(|| telemetry.and_then(|t| t.film_game_id()));
-                    let sent = game
-                        .context("no telemetry game ID for film")
-                        .and_then(|id| film::upload(&url, &token, &id, &path));
-                    if let Err(e) = sent {
+                    if let Err(e) = film::upload(&target.url, &target.token, &target.game, &path) {
                         eprintln!("theater: upload failed for {}: {e}", path.display())
                     }
                 });
@@ -572,6 +602,19 @@ impl feature::Feature for Observer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
+        camera::install(b, &self.0)?;
+        if self.0.replaying() {
+            let session = self.0.clone();
+            b.raw().observe_before(
+                &engine::points::PLAYER_KILLED,
+                "film kill marker",
+                move |_| {
+                    let mut s = session.lock();
+                    let tick = s.tick;
+                    s.presentation.kills.insert(tick);
+                },
+            );
+        }
         let session = self.0.clone();
         b.game().on_end("film scoreboard", move |o| {
             let mut s = session.lock();

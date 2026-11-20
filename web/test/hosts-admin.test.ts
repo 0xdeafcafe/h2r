@@ -55,7 +55,7 @@ describe("dedicated host display", () => {
 
 describe("hosts inventory", () => {
   test("reads an empty inventory with this server's signed admin.read token", async () => {
-    const data = { running: [], recent: [], month_to_date_usd: 0, budget_usd: 5 };
+    const data = { running: [], recent: [], month_to_date_usd: 0, budget_usd: null };
     const read = recorder(Response.json(data));
     expect(await fetchHosts(CTX, read.fetchFn)).toEqual(data);
     expect(read.calls).toHaveLength(1);

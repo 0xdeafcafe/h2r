@@ -264,15 +264,46 @@ pub struct DepthGridResult {
 /// (the render thread under [`crate::ThreadedBackend`]); it must not block.
 pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
 
+/// Geometry in the vertex window selected by one complete part.
+pub struct IndexedStreams {
+    pub layout: VertexLayout,
+    pub vertex_count: u32,
+    pub streams: Vec<StreamBytes>,
+    pub indices: IndexData,
+}
+
+/// Remaining dispatches on the caller's stack. An indexed scene batch
+/// consumes them only with a synchronous, complete GPU reservation.
+#[derive(Clone, Copy)]
+pub struct IndexedTail {
+    pub indexed_esp: u32,
+    pub counter: u32,
+    pub remaining: u32,
+}
+
+impl IndexedTail {
+    pub(crate) fn consume(self, mem: &mut dyn crate::GuestMemory, esp: Option<u32>) -> bool {
+        esp == Some(self.indexed_esp) && self.remaining > 0
+            && mem.read_u32(self.counter).ok() == Some(self.remaining)
+            && (self.remaining == 1 || mem.try_write(self.counter, &1u32.to_le_bytes()))
+    }
+}
+
 /// A host render pass drawn into the guest's own colour target and depth,
 /// in order with the draws (docs/graphics/native-renderer.md): the native
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    fn indexed_tail(&self) -> Option<IndexedTail> { None }
+
+    /// All these ranges share the textures resolved at the first draw.
+    /// Refuse if a later original draw could observe an earlier write.
+    fn requires_independent_samples(&self) -> bool { false }
+
     #[cfg(feature = "gpu")]
-    /// Records the pass, on the thread that owns the GPU. Called once per
-    /// copy of the targets: twice under the render scale (the 1x
-    /// reference and the scaled view), with the same frame each time.
+    /// Records the pass once per active target copy on the GPU thread.
+    /// Single-copy scaling records the display. Exact scaling records both
+    /// the 1x reference and the display with the same frame inputs.
     fn encode(&mut self, target: ExternalTarget<'_>) { self.record_ranges(target); }
 
     /// The guest is deciding whether to skip the work this pass replaces.
@@ -524,6 +555,8 @@ pub struct ExternalAttachments {
     pub sampled: Vec<Option<SampledLevel>>,
     pub slots: Vec<Option<ExternalColor>>,
     pub stages: [Option<wgpu::TextureView>; 4],
+    /// The active scaled policy requires just the display recording.
+    pub(crate) single_display: bool,
     pub copy: TargetCopy,
 }
 
@@ -550,6 +583,8 @@ pub struct ExternalRecording {
     pub stage: timeline::native::Stage,
     pub view: u32,
     pub items: usize,
+    /// The active scaled policy requires just the display recording.
+    pub(crate) single_display: bool,
     pub copy: TargetCopy,
     pub ranges: usize,
     #[cfg(feature = "gpu")]
@@ -668,7 +703,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
     };
     let targets = targets.as_ref();
-    if !matches!(targets, [one] if one.copy == copy)
+    if !matches!(targets, [one] if one.copy == copy || (one.copy == TargetCopy::Display && one.single_display))
         && !matches!(targets, [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
     {
         return refuse(Metric::RefusedResources);
@@ -759,6 +794,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             view: plan.view,
             items: item_count as usize,
             copy: target.copy,
+            single_display: target.single_display,
             ranges,
             commands,
             uploads: target.uploads.clone(),
@@ -996,6 +1032,13 @@ pub struct ResolvedDraw {
     /// cache ([`crate::glyph`]): text a view backend may magnify with the
     /// glyph filter. Zero when smoothing is off.
     pub glyph_cache: u8,
+}
+
+impl ResolvedDraw {
+    /// Whether submission can change the attached guest depth or stencil.
+    pub fn writes_depth_stencil(&self) -> bool {
+        crate::device::writes_depth_or_stencil(&self.state.render, self.target.depth_format)
+    }
 }
 
 /// Predicts a backend's [`Backend::draw`] outcomes without running it, so
@@ -1428,6 +1471,12 @@ pub trait Backend: Send {
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
         None
     }
+    /// Whether [`depth_alias_texture`](Self::depth_alias_texture) can also reinterpret a colour or depth RTT
+    /// at any byte offset. A zero source pitch selects Morton order.
+    fn handles_surface_aliases(&self) -> bool {
+        false
+    }
+
     /// Whether [`depth_alias_texture`](Self::depth_alias_texture) makes
     /// depth-alias textures (default false).
     fn defers_depth_aliases(&self) -> bool {
@@ -2056,5 +2105,42 @@ impl Backend for RecordingBackend {
             self.external_sampled.push(sampled);
         }
         Ok(self.external_passes)
+    }
+}
+
+#[cfg(test)]
+mod indexed_tail_tests {
+    use super::IndexedTail;
+    use crate::{GuestError, GuestMemory, SparseMemory};
+
+    #[test]
+    fn indexed_tail_consumes_only_the_matching_live_loop() {
+        let mut mem = SparseMemory::new();
+        mem.map(0x6000, 4096);
+        mem.write_u32(0x6040, 3).unwrap();
+        let tail = IndexedTail { indexed_esp: 0x6000, counter: 0x6040, remaining: 3 };
+        assert!(!tail.consume(&mut mem, None));
+        assert!(!tail.consume(&mut mem, Some(0x6004)));
+        assert!(!IndexedTail { remaining: 2, ..tail }.consume(&mut mem, Some(0x6000)));
+        assert_eq!(mem.read_u32(0x6040).unwrap(), 3);
+        assert!(tail.consume(&mut mem, Some(0x6000)));
+        assert_eq!(mem.read_u32(0x6040).unwrap(), 1);
+        assert!(!tail.consume(&mut mem, Some(0x6000)));
+    }
+
+    #[test]
+    fn indexed_tail_refuses_an_unwritable_stack_before_commit() {
+        struct ReadOnly;
+        impl GuestMemory for ReadOnly {
+            fn read(&self, _: u32, out: &mut [u8]) -> Result<(), GuestError> {
+                out.copy_from_slice(&5u32.to_le_bytes());
+                Ok(())
+            }
+            fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError> {
+                Err(GuestError { addr, len: data.len() as u32 })
+            }
+        }
+        let tail = IndexedTail { indexed_esp: 40, counter: 80, remaining: 5 };
+        assert!(!tail.consume(&mut ReadOnly, Some(40)));
     }
 }

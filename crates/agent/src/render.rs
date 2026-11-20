@@ -473,6 +473,12 @@ pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
         "sim_joins": s.sim_joins,
         "d3d_other_thread": s.d3d_other_thread,
         "lead_ms": ms(s.lead),
+        "overlap_ms": ms(s.overlap),
+        "new_snapshot_pages": s.new_snapshot_pages,
+        "snapshot_faults": s.snapshot_faults,
+        "animation_uses": s.animation_uses,
+        "animation_owner_calls": s.animation_owner_calls,
+        "scene_retries": s.scene_retries,
         "join_wait_ms": ms(s.join_wait),
         "hand_back_ms": ms(s.hand_back),
         "snapshot_ms": ms(s.snapshot),
@@ -824,6 +830,12 @@ mod tests {
             pipelined: 4,
             completed: 3,
             join_wait: std::time::Duration::from_micros(1500),
+            overlap: std::time::Duration::from_micros(2250),
+            animation_uses: 5,
+            animation_owner_calls: 2,
+            scene_retries: 1,
+            new_snapshot_pages: 3,
+            snapshot_faults: 1,
             ..Default::default()
         };
         s.serial.insert("loading", 2);
@@ -833,5 +845,11 @@ mod tests {
         assert_eq!(v["serial"]["loading"], 2);
         assert_eq!(v["fallbacks"]["D3DDevice_Swap"], 1);
         assert_eq!(v["join_wait_ms"], 1.5);
+        assert_eq!(v["overlap_ms"], 2.25);
+        assert_eq!(v["animation_uses"], 5);
+        assert_eq!(v["animation_owner_calls"], 2);
+        assert_eq!(v["scene_retries"], 1);
+        assert_eq!(v["new_snapshot_pages"], 3);
+        assert_eq!(v["snapshot_faults"], 1);
     }
 }

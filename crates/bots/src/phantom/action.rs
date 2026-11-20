@@ -9,7 +9,7 @@ use super::{
 use crate::{
     guest,
     human_input::TICK_MS,
-    local::Frame,
+    pad_source::Frame,
     mind::feel::{Rng, reached},
     tuning::PhantomLatency,
 };
@@ -31,6 +31,7 @@ pub(super) struct Uplink {
     sent: HostPadState,
     arrived: HostPadState,
     last_tick: Option<u32>,
+    gated: bool,
 }
 
 impl Uplink {
@@ -44,6 +45,7 @@ impl Uplink {
             sent: HostPadState::default(),
             arrived: HostPadState::default(),
             last_tick: None,
+            gated: false,
         }
     }
 
@@ -55,10 +57,33 @@ impl Uplink {
         self.sent = HostPadState::default();
         self.arrived = HostPadState::default();
         self.last_tick = None;
+        self.gated = false;
     }
 
     fn report_at(&self, tick: u32) -> Option<HostPadState> {
         (self.last_tick == Some(tick)).then_some(self.arrived)
+    }
+
+    fn sample_with_gate(
+        &mut self,
+        tick: u32,
+        pad: HostPadState,
+        latency: PhantomLatency,
+        gated: bool,
+    ) -> HostPadState {
+        // Drop any pre-fade input and publish a fresh sample when the gate
+        // opens. The normal uplink delay resumes on the following tick.
+        let latency = if gated || self.gated {
+            PhantomLatency {
+                ping_ms: Some(0.0),
+                jitter_ms: 0.0,
+            }
+        } else {
+            latency
+        };
+        self.gated = gated;
+        let pad = if gated { HostPadState::default() } else { pad };
+        self.sample(tick, pad, latency)
     }
 
     fn sample(&mut self, tick: u32, pad: HostPadState, latency: PhantomLatency) -> HostPadState {
@@ -275,14 +300,17 @@ impl Phantoms {
                 return Ok(None);
             };
             let mut books = self.lock();
-            if books.hosted_game.is_none() {
+            let super::Books {
+                hosted_game,
+                opening_fade,
+                list,
+                ..
+            } = &mut *books;
+            if hosted_game.is_none() {
                 return Ok(None);
             }
-            let Some(p) = books
-                .list
-                .iter_mut()
-                .find(|p| p.made && p.info.machine == mac)
-            else {
+            // Only a joined phantom with a live slot and unit reaches its pad source.
+            let Some(p) = list.iter_mut().find(|p| p.made && p.info.machine == mac) else {
                 return Ok(None);
             };
             let mut state = p.buttons;
@@ -295,23 +323,32 @@ impl Phantoms {
                 p.reset_input();
                 state = p.buttons;
             }
-            let dt = m.f32(m.u32(engine::points::GAME_TIME.base)? + 4)?;
+            let time = m.u32(engine::points::GAME_TIME.base)?;
+            let dt = m.f32(time + 4)?;
+            let rate = m.u16(time + guest::GAME_TIME_RATE)?;
             let player_addr = player.addr;
             let player = DatumHandle::new(player.salt(m)?, index);
+            let match_fading = match *opening_fade {
+                Some((when, fading)) if tick == when => fading,
+                Some((when, false)) if reached(tick, when) => false,
+                _ => guest::match_opening_fading(m, tick, rate)?,
+            };
+            *opening_fade = Some((tick, match_fading));
+            let gated = match_fading || guest::phantom_spawn_fading(m, player_addr, rate)?;
             let pad = if let Some(report) = p.uplink.report_at(tick) {
                 report
             } else {
                 let latency = p.source.phantom_latency();
+                // Keep observing and planning while the pad is gated
+                // (docs/game/bots.md §5.4).
                 let pad = p.source.pad(&Frame {
                     frame: p.samples,
-                    tick: Some(tick),
-                    port: 4,
-                    machine: Some(mac),
+                    tick,
+                    machine: mac,
                     guest: m,
-                    joining: false,
                 });
                 p.samples = p.samples.saturating_add(1);
-                p.uplink.sample(tick, pad, latency)
+                p.uplink.sample_with_gate(tick, pad, latency, gated)
             };
             let sample = SeatInput {
                 player,
@@ -325,16 +362,17 @@ impl Phantoms {
                     gamepad: pad.to_gamepad(&Default::default(), false),
                 },
             };
-            Ok(Some((p.info.handle, state, Some(sample))))
+            Ok(Some((p.info.handle, state, Some((sample, gated)))))
         })?;
         let Some((handle, mut state, sample)) = input else {
             return Ok(Ret::new(0, 8));
         };
-        if let Some(sample) = sample {
+        if let Some((sample, gated)) = sample {
             let (tick, unit) = (sample.tick, sample.unit);
             let candidate = if let Some(bytes) = build(sample).await {
                 Some((bytes, Publication::Built))
-            } else if state.publication == Publication::Built
+            } else if !gated
+                && state.publication == Publication::Built
                 && cx.read(|m| m.u32(slot + SLOT_STAMP))? == tick.wrapping_sub(1)
             {
                 // A gap or unit change cleared the state above. Bridge one

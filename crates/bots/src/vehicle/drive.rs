@@ -37,6 +37,15 @@ pub const LEAVE_HEALTH: f32 = 0.2;
 pub const FLIPPED_TICKS: u32 = 30;
 /// A gunner or passenger with nobody driving gets out after this long.
 pub const DRIVERLESS_TICKS: u32 = 4 * 30;
+/// A driver without usable steering or a fight for this long gets out:
+/// on a large map every goal it is offered can be beyond a portal the
+/// chassis fits, and a healthy vehicle it cannot plan from is a seat
+/// it would otherwise never leave.
+pub const NOWHERE_TICKS: u32 = 4 * 30;
+/// One failed roam plan counts this many of those ticks: a failure cost
+/// a goal and a search, and a pocket the chassis can roam needs a run of
+/// failures around it before the bot gives up on driving there.
+pub const FAILED_PLAN: u32 = 16;
 /// Within this (XY) of a goal it must reach on foot (the enemy flag, the
 /// ball), it gets out.
 pub const ON_FOOT: f32 = 3.0;
@@ -51,6 +60,7 @@ pub struct Route {
     points: Vec<Vec3>,
     next: usize,
     pub goal: Vec3,
+    checked: Option<(u32, Vec3)>,
 }
 
 impl Route {
@@ -60,12 +70,58 @@ impl Route {
             points,
             next: 0,
             goal,
+            checked: None,
         }
     }
 
     /// Straight there (no nav mesh).
     pub fn straight(goal: Vec3) -> Route {
         Route::new(vec![goal], goal)
+    }
+
+    pub(crate) fn into_points(self) -> Vec<Vec3> {
+        self.points
+    }
+
+    /// The complete span is checked on the driver's phase. Between those
+    /// checks the previous carrot is usable only with fresh local clearance.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn steer(
+        &mut self,
+        map: &MapData,
+        spec: Spec,
+        at: Vec3,
+        speed: f32,
+        tick: u32,
+        slot: Option<u32>,
+        period: u32,
+    ) -> Option<Vec3> {
+        if self.next + 1 == self.points.len() && dist_xy(at, self.points[self.next]) <= ARRIVED {
+            self.next += 1;
+            return None;
+        }
+        let check_full = self.checked.is_none_or(|(then, carrot)| {
+            dist_xy(at, carrot) < 0.45
+                || slot.is_none_or(|slot| crate::work::phase_due(tick, then, slot, period))
+        });
+        if check_full {
+            let mut floor = None;
+            let carrot = self.carrot_clear(at, |to| {
+                clear_with_floor(map, spec, at, to, || {
+                    *floor.get_or_insert_with(|| start_floor(map, at))
+                })
+            });
+            self.checked = carrot.map(|point| (tick, point));
+            return carrot;
+        }
+
+        let (_, carrot) = self.checked?;
+        let length = dist_xy(at, carrot);
+        // At least four wheel samples, or the distance travelled in the
+        // next 150 ms at the current speed, if longer.
+        let fraction = ((speed * 0.15).max(1.8) / length.max(0.01)).min(1.0);
+        let near = std::array::from_fn(|i| at[i] + (carrot[i] - at[i]) * fraction);
+        clear(map, spec, at, near).then_some(carrot)
     }
 
     pub fn done(&self) -> bool {
@@ -104,20 +160,27 @@ impl Route {
 
     /// Follow the route in order. Only cut a corner if the direct span
     /// still fits the chassis, even when a waypoint is already nearby.
-    pub fn carrot_clear(&mut self, at: Vec3, clear: impl Fn(Vec3) -> bool) -> Option<Vec3> {
-        while self.next + 1 < self.points.len()
-            && dist_xy(at, self.points[self.next]) < REACHED
-            && clear(self.points[self.next + 1])
-        {
+    pub fn carrot_clear(&mut self, at: Vec3, mut clear: impl FnMut(Vec3) -> bool) -> Option<Vec3> {
+        let mut first_clear = false;
+        let mut next_blocked = false;
+        while self.next + 1 < self.points.len() && dist_xy(at, self.points[self.next]) < REACHED {
+            if !clear(self.points[self.next + 1]) {
+                next_blocked = true;
+                break;
+            }
             self.next += 1;
+            first_clear = true;
         }
         let first = *self.points.get(self.next)?;
         if self.next + 1 == self.points.len() && dist_xy(at, first) <= ARRIVED {
             self.next += 1;
             return None;
         }
-        if !clear(first) {
+        if !first_clear && !clear(first) {
             return None;
+        }
+        if next_blocked {
+            return Some(first);
         }
         Some(
             self.points[self.next + 1..]
@@ -134,6 +197,55 @@ impl Route {
 /// The lanes under the wheels and hull all stay on drivable ground, and
 /// the chassis fits under overhead geometry and between walls.
 pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
+    clear_with_floor(map, spec, from, to, || start_floor(map, from))
+}
+
+pub(crate) fn on_mesh(map: &MapData, at: Vec3) -> bool {
+    map.nav
+        .locate([at[0], at[1], at[2] + 0.35], 1.85)
+        .is_some()
+}
+
+/// Steer back onto mapped ground after drifting past its edge. Within
+/// one stuck window's travel, look for a landing that fits the chassis
+/// and check the approach for collision. Normal route steering checks
+/// for ground along the entire span once the vehicle is back on the mesh.
+pub(crate) fn rejoin(map: &MapData, spec: Spec, from: Vec3, speed: f32) -> Option<Vec3> {
+    let reach = (speed * STUCK_TICKS as f32 / crate::mind::TICKS).clamp(1.2, 24.0);
+    let (_, to) = map.nav.nearest(from, reach, 0.5, 1.5)?;
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let length = dx.hypot(dy);
+    if length <= 1e-3 {
+        return None;
+    }
+    let inside = [to[0] + dx / length * 0.45, to[1] + dy / length * 0.45, to[2]];
+    if !clear(map, spec, to, inside) {
+        return None;
+    }
+    let side = [-dy * spec.half_width / length, dx * spec.half_width / length];
+    [-1.0, 0.0, 1.0]
+        .into_iter()
+        .all(|lane| {
+            [0.26, spec.height].into_iter().all(|height| {
+                let probe = |p: Vec3| [p[0] + lane * side[0], p[1] + lane * side[1], p[2] + height];
+                map.walls.clear(probe(from), probe(to))
+            })
+        })
+        .then_some(to)
+}
+
+fn start_floor(map: &MapData, from: Vec3) -> Option<f32> {
+    map.nav.nearest(from, 0.25, 0.45, 1.5).map(|(_, p)| p[2])
+}
+
+fn clear_with_floor(
+    map: &MapData,
+    spec: Spec,
+    from: Vec3,
+    to: Vec3,
+    floor: impl FnOnce() -> Option<f32>,
+) -> bool {
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
     let length = dx.hypot(dy);
@@ -144,14 +256,14 @@ pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
         -dy * spec.half_width / length,
         dx * spec.half_width / length,
     ];
-    let Some((_, center)) = map.nav.nearest(from, 0.25, 0.45, 1.5) else {
+    let Some(start_z) = floor() else {
         return false;
     };
     let steps = (length / 0.45).ceil() as u32;
     for lane in [-1.0, 0.0, 1.0] {
         let [sx, sy] = side.map(|v| lane * v);
         let mut last = None;
-        let mut z = center[2];
+        let mut z = start_z;
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
             let probe = [from[0] + dx * t + sx, from[1] + dy * t + sy, z + 0.35];
@@ -254,6 +366,8 @@ pub struct Ride {
     pub driver: bool,
     /// Stuck for good ([`Unstuck::GiveUp`]).
     pub stuck: bool,
+    /// A driver without usable steering or a fight for [`NOWHERE_TICKS`].
+    pub nowhere: bool,
     /// Within [`ON_FOOT`] of a goal it must reach on foot.
     pub there: bool,
 }
@@ -265,6 +379,8 @@ pub enum Leave {
     Wrecked,
     Flipped,
     Stuck,
+    /// A driver with nowhere to drive (see [`NOWHERE_TICKS`]).
+    Nowhere,
     /// A gun with nobody driving.
     Stranded,
     /// Where it was going needs feet.
@@ -279,6 +395,8 @@ pub fn leave(r: &Ride) -> Option<Leave> {
         Some(Leave::Flipped)
     } else if r.driver && r.stuck {
         Some(Leave::Stuck)
+    } else if r.driver && r.nowhere {
+        Some(Leave::Nowhere)
     } else if !r.driver && r.driverless >= DRIVERLESS_TICKS {
         Some(Leave::Stranded)
     } else if r.there {
