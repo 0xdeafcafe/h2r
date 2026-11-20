@@ -101,7 +101,7 @@ pub(super) fn pose(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
 // MOVSD transfers are ordered if the palette aliases its source. With DF
 // clear and disjoint spans the normal 32-byte node fits in one guest read.
 fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bool)->Result<()> {
-    if !backwards && dst.abs_diff(src)>=N as u32 && (src & 4095)+N as u32<=4096 && (dst & 4095)+N as u32<=4096 {
+    if !backwards && dst.abs_diff(src)>=N as u32 && (src & 4095)+(N as u32)<=4096 && (dst & 4095)+(N as u32)<=4096 {
         let b=g.read::<N>(src)?;
         return g.write_bytes(dst,&b,1);
     }

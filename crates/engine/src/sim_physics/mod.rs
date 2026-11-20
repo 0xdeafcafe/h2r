@@ -15,6 +15,8 @@ mod objects;
 mod object_update;
 mod spatial;
 mod visit;
+mod unit_aim;
+mod weld;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 pub struct Port {
@@ -27,6 +29,10 @@ pub struct Port {
 }
 
 pub const PORTS: &[Port] = &[
+    Port { point: &points::UNIT_AIM_UPDATE, switch: "sim.native_unit_aim",
+           resumes: unit_aim::SITES, generated_sites: &[], run: unit_aim::aim },
+    Port { point: &points::HAVOK_WELD_CONTACTS, switch: "sim.native_havok_weld",
+           resumes: weld::SITES, generated_sites: &[], run: weld::contacts },
     Port { point: &points::FIRST_PERSON_POSE_UPDATE, switch: "sim.native_first_person_pose",
            resumes: first_person::POSE_SITES, generated_sites: first_person::POSE_REST, run: first_person::pose },
     Port { point: &points::FIRST_PERSON_FILTER_UPDATE, switch: "sim.native_first_person_filters",
@@ -128,14 +134,16 @@ fn call_arg(c: &mut CpuAbi, g: &mut Guest, arg: u32, target: u32, site: u32) -> 
 /// x87 transcendental oracle supports nearest rounding.
 pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
     let entry = port.point.base;
+    if entry == points::UNIT_AIM_UPDATE.base && cpu.x87.control & 0xc00 != 0 {return false;}
+    if entry == points::HAVOK_WELD_CONTACTS.base && !weld::supported(guest) {return false;}
     if entry == points::OBSERVER_RESULT.base {
         if cpu.x87.control & 0xc00 != 0 || !observer::disjoint(cpu, guest) {
             return false;
         }
     }
-    if [points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
+    if [points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
         && cpu.x87.control & 0x3f != 0x3f { return false; }
-    ![points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
+    ![points::UNIT_AIM_UPDATE.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
       points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)
         || cpu.mxcsr & 0x1f80 == 0x1f80
 }

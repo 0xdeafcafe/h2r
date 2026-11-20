@@ -199,6 +199,57 @@ fn first_person_fixture(m:&mut FlatMemory,case:u32) {
     }
 }
 
+const WELD_SHAPE: u32 = 0x6e0100;
+const WELD_TYPE: u32 = 0x6e0110;
+const WELD_ACCEPT: u32 = 0x6e0120;
+const WELD_QUERY: u32 = 0x6e0130;
+const WELD_REJECT: u32 = 0x6e0140;
+const WELD_AGENT: u32 = RECORDS+0x4000;
+const CONTACT_STORAGE:u32 = RECORDS+0x8000;
+
+fn weld_fixture(m:&mut FlatMemory,c:&mut Cpu,case:u32) {
+    c.fs_base=DATA+0x4000;
+    c.gpr[1]=DATA;
+    word(m,0x480154,0);word(m,0x480158,0);
+    let (a,b,config,records,shape,vtable)=(DATA+128,DATA+256,DATA+512,DATA+768,DATA+1024,DATA+1280);
+    for (i,v) in [a,b,config,DATA+3000].into_iter().enumerate() {word(m,STACK+4+4*i as u32,v);}
+    word(m,a,shape);word(m,b,DATA+1536);word(m,DATA+1536+12,DATA+1792);word(m,DATA+1792+12,shape);
+    word(m,b+8,DATA+2048);word(m,DATA+12,records);word(m,DATA+16,u32::from(case>=4));
+    word(m,DATA+8,DATA+2304);word(m,records+8,WELD_AGENT);word(m,WELD_AGENT,vtable);
+    word(m,WELD_AGENT+24,u32::from(case==3));word(m,shape,vtable);
+    for (off,target) in [(52,WELD_SHAPE),(20,WELD_TYPE),(16,WELD_REJECT),(32,WELD_QUERY)] {word(m,vtable+off,target);}
+    word(m,0x461f0c,WELD_ACCEPT);
+    m.bytes[(DATA+2560) as usize]=u8::from(case!=4);
+    for i in 0..5 {
+        let p=CONTACT_STORAGE+128*i;
+        for j in 0..32 {word(m,p+j*4,0x4000+i*64+j);}
+        word(m,p+32,[2.0f32,1.0,1.0,-0.5,f32::NAN][i as usize].to_bits());
+        word(m,p+112,WELD_AGENT);
+        m.bytes[(p+125) as usize]=(i%2) as u8;
+    }
+}
+
+fn aim_fixture(m:&mut FlatMemory,c:&mut Cpu,case:u32) {
+    let (joint,from,to,rate,bounds)=(RECORDS,DATA+512,DATA+1024,DATA+1536,DATA+2048);
+    let f=|m:&mut FlatMemory,p,v:f32|word(m,p,v.to_bits());
+    for (i,v) in [0.9f32,-0.13,0.25,0.22,0.85,-0.09,0.10,0.17,0.8].into_iter().enumerate() {
+        f(m,joint+4+4*i as u32,v);
+    }
+    for (p,vec) in [(from,[0.9f32,0.4,0.1]),(to,[0.7,-0.2,0.35]),
+            (rate,if case%3==0 {[0.0;3]} else {[0.2,-0.1,0.15]})] {
+        for (i,v) in vec.into_iter().enumerate(){f(m,p+4*i as u32,v);}
+    }
+    for (i,v) in [if case==4 {-4.0} else {-1.0},if case==4 {4.0} else {1.0},
+                    if case==1 || case==5 {0.8} else {-1.0},1.0].into_iter().enumerate() {
+        f(m,bounds+4*i as u32,v);
+    }
+    c.gpr[0]=to;c.gpr[6]=if case%2==0 {0} else {joint};c.gpr[7]=from;
+    for (i,v) in [0.033f32.to_bits(),rate,bounds,0.8f32.to_bits(),0.9f32.to_bits()].into_iter().enumerate(){
+        word(m,STACK+4+4*i as u32,v);
+    }
+    c.x87.control=[0x007f,0x027f,0x037f][case as usize%3];c.mxcsr |= (case%4)<<13;
+}
+
 fn observer_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     let view = RECORDS;
     let axis = RECORDS + 0x400;
@@ -367,6 +418,10 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
             SUPPORT_CHILD => 12,
+            0xc7300=>20, 0xc75d0 | 0xc7750=>4, 0x30bf0 | 0x322bd8=>0,
+            0x2e96a0 | WELD_REJECT => 16, 0x2f9c10 => 4,
+            0x301a40 | WELD_TYPE | WELD_ACCEPT | 0x2f9e80 | 0x302c70 | 0x302eb0 | 0x2f9ca0 => 0,
+            WELD_SHAPE | 0x2da730 => 8, WELD_QUERY | 0x2fa0d0 => 20,
             0x16898b | 0x1c62f0 | 0x1cbd30 | 0x166561 => 0,
             0x167e86 => 8, 0x11eed0 => 20,
             0xbad50 | 0x17ca10 | 0xbaf80 | 0xb9ce0 | 0xb9d20 | 0xc3220 => 0,
@@ -399,6 +454,21 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
                 native.set_u32(a,v).unwrap();
             }
         }
+        if target==0x2f9c10 {
+            let frame=sp+8;
+            let count=match case {1=>1,2=>5,3=>2,_=>0};
+            for (a,v) in [(frame+272,CONTACT_STORAGE),(frame+276,count)] {
+                word(&mut mem,a,v);native.set_u32(a,v).unwrap();
+            }
+        }
+        if target==0x2f9e80 {
+            let a=cpu.gpr[1]+4;let count=mem.read_u32(a).unwrap()+1;
+            word(&mut mem,a,count);native.set_u32(a,count).unwrap();
+        }
+        if target==WELD_QUERY {
+            let a=mem.read_u32(sp+4).unwrap();
+            mem.bytes[a as usize]=1;native.set_u8(a,1).unwrap();
+        }
         if target == 0x14a5b0 {
             let out = mem.read_u32(sp+20).unwrap();
             word(&mut mem, out, (5 << 16) | 2);
@@ -414,6 +484,9 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         cpu.gpr[0] = match target {
             0x31c520 | 0x31c530 => cpu.gpr[1] + mem.read_u32(sp+4).unwrap()
                 * if target == 0x31c520 {32} else {48},
+            0xc7750=>u32::from(case<2),
+            WELD_SHAPE=>DATA+1024, WELD_ACCEPT=>DATA+2560, 0x301a40=>0,
+            0x2fa0d0=>mem.read_u32(sp+16).unwrap(),
             0x16898b => 0, 0x1cbd30 => case%4,
             0xbaf80 => 1,
             0x120850 => case % 3,
@@ -465,6 +538,8 @@ fn native_simulation_matches_xbe() {
             if [points::FIRST_PERSON_POSE_UPDATE.base,points::FIRST_PERSON_FILTER_UPDATE.base].contains(&port.point.base) {
                 first_person_fixture(&mut m,case);
             }
+            if port.point.base == points::UNIT_AIM_UPDATE.base { aim_fixture(&mut m,&mut cpu,case); }
+            if port.point.base == points::HAVOK_WELD_CONTACTS.base { weld_fixture(&mut m,&mut cpu,case); }
             if port.point.base == points::LIGHT_RECORD_UPDATE.base { light_fixture(&mut m,case); }
             if port.point.base == points::HAVOK_SOLVER.base { solver_fixture(&mut m,&mut cpu,case); }
             if port.point.base == points::HAVOK_SUPPORT_VERTICES.base { support_fixture(&mut m,&mut cpu,case); }
