@@ -1782,14 +1782,11 @@ fn run_configured(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline =
-        registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
-    // Sim mode skips the render it would pipeline (both implement the frame).
-    let pipeline = if sim_mode.is_some() || host_light {
-        pipeline.disabled("the world render is skipped (sim-frame)")
-    } else {
-        pipeline
-    };
+    let pipeline = registration::pipeline_for(
+        d3d_glue::pipeline_render(d3d_calls.as_ref()),
+        lockstep_on,
+        host_light,
+    );
     #[cfg(feature = "desktop-runtime")]
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;

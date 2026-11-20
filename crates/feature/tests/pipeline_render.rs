@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use engine::points;
-use feature::pipeline_render::{Addrs, PipelineRender, RANDOM_A, RANDOM_C, SharedCache};
+use feature::pipeline_render::{
+    Addrs, DrawBoundary, PipelineRender, RANDOM_A, RANDOM_C, SharedCache,
+};
 use feature::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
@@ -196,7 +198,8 @@ static ADDRS: Addrs = Addrs {
         record_len: CACHE_RECORD,
         owner: 4,
     }],
-    sim_joins: &[SIM_TICK],
+    scene: None,
+    draw_boundary: None,
 };
 
 /// The cache lookup: the record's lighting for object `h`, allocating as
@@ -1173,6 +1176,45 @@ fn a_render_as_deep_as_the_game_threads_stack_runs_pipelined_and_in_fallbacks() 
 }
 
 #[test]
+fn changed_snapshot_mapping_runs_the_candidate_once_on_the_game_thread() {
+    let mut serial = rig(false);
+    let mut checked = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.check_snapshot(true));
+    for r in [&mut serial, &mut checked] {
+        r.round(1, false);
+        // A device call must settle the prior submission before remapping it.
+        r.run(D3D_SIM);
+        let mut m = r.rt.memory();
+        let original = m.fold_address(PUSH).unwrap() & 0x03ff_ffff;
+        m.unmap(PUSH, 0x1000).unwrap();
+        m.map(PUSH, 0x1000, original + 0x20_0000, Permissions::RW)
+            .unwrap();
+    }
+
+    serial.round(2, false);
+    checked.round(2, false);
+    assert!(!checked.feature.in_flight());
+    let stats = checked.feature.stats();
+    assert_eq!(stats.pipelined, 1);
+    assert_eq!(stats.completed, 1);
+    assert_eq!(stats.serial.get("snapshot_mapping"), Some(&1));
+    assert!(stats.overlap <= stats.lead && stats.overlap <= stats.render);
+    assert_eq!(checked.rt.memory().u32(PUSH), Ok(1));
+    for address in [PUSH, WAITS, FRAMES] {
+        assert_eq!(
+            checked.rt.memory().u32(address),
+            serial.rt.memory().u32(address),
+            "{address:#x}"
+        );
+    }
+    assert_eq!(checked.rt.memory().u64(PRESENTS), Ok(2));
+    let log = checked.log.lock().unwrap();
+    assert_eq!(
+        &*log,
+        &[("draw", 1, true), ("sim", 1, false), ("draw", 2, false)]
+    );
+}
+
+#[test]
 fn switched_on_it_runs_menu_frames_serially_and_launches_nothing() {
     // Off the world path (menus, loading screens): the original, on the
     // game thread, with the same memory as the feature off.
@@ -1802,47 +1844,97 @@ fn a_word_both_sides_wrote_keeps_the_sims_write_whole_and_is_reported() {
     assert!(piped.feature.stats().conflicts >= 8);
 }
 
-/// The particle systems: the render steps them as it draws them, and the
-/// next tick's update steps them from what the render left. Pipelined, the
-/// render's step reaches live RAM only at the join, so a tick running
-/// before it reads the snapshot's state and the hand-back keeps the tick's
-/// word: the render's step is lost, whichever side's word wins. A tick
-/// entry in `Addrs::sim_joins` joins the render first and reads its step,
-/// as serially.
+/// The game thread visits the records and steps both streams before
+/// drawing. The following tick can observe them before the device joins.
 #[test]
-fn a_tick_reading_the_renders_writes_joins_first_and_runs_as_serially() {
-    let run = |on: bool, addrs: Addrs| {
-        let mut r = rig_cfg(on, &[], addrs);
-        for k in 1..=12 {
-            r.run(SIM_TICK);
-            r.round(k, false);
-        }
-        r.finish();
-        r
+fn prepared_particle_and_cache_state_is_visible_during_the_draw() {
+    let addrs = Addrs {
+        draw_boundary: Some(DrawBoundary {
+            entry: D3D_DRAW,
+            return_pc: FRAME + 0x10,
+            depth: 12,
+            view_context: None,
+            debug_flag_from_esp: None,
+        }),
+        ..ADDRS.clone()
     };
-    let serial = run(false, ADDRS.clone());
-    let piped = run(true, ADDRS.clone());
+    let mut serial = rig_cfg(false, &[], addrs.clone());
+    let mut piped = rig_cfg(true, &[], addrs);
+    for r in [&mut serial, &mut piped] {
+        r.rt.memory().set_u32(CACHE_MODE, 1).unwrap();
+    }
+    for k in 1..=12 {
+        for r in [&mut serial, &mut piped] {
+            r.round(k, false);
+            r.run(SIM_TICK);
+        }
+        assert!(piped.feature.in_flight(), "tick {k} joined the draw");
+        let s = serial.rt.memory();
+        let p = piped.rt.memory();
+        for at in [PARTICLE, FRAMES, RNG, RNG + 4, CACHE_NEXT] {
+            assert_eq!(s.u32(at), p.u32(at), "tick {k}, {at:#x}");
+        }
+        for slot in 0..CACHE_LEN {
+            let at = CACHE_RECORDS + slot * CACHE_RECORD;
+            assert_eq!(s.u32(at + 4), p.u32(at + 4));
+            assert_eq!(s.u32(at + 8), p.u32(at + 8));
+        }
+    }
+    piped.finish();
+    serial.finish();
     compare(&serial.data(), &piped.data());
-    let s = piped.feature.stats();
-    assert_eq!(s.pipelined, 12);
-    // Every tick after the first finds a render in flight.
-    assert_eq!(s.sim_joins, 11);
-    assert_eq!(s.conflicts, 0);
-    // Without the entry the tick runs beside the render and loses its
-    // step: the hand-back cannot recover what a read missed.
-    let racing = run(
-        true,
-        Addrs {
-            sim_joins: &[],
+    let stats = piped.feature.stats();
+    assert_eq!(
+        (stats.pipelined, stats.completed, stats.sim_joins),
+        (12, 12, 0)
+    );
+    assert_eq!(stats.conflicts, 0);
+    assert_eq!(
+        piped
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, worker)| *worker)
+            .count(),
+        12
+    );
+}
+
+/// A different caller cannot transfer its stack. A cache request that
+/// makes the pool busy during preparation must finish this same frame
+/// serially, without repeating the request, draw, wait or present.
+#[test]
+fn prepared_frame_fallback_finishes_each_operation_once() {
+    for (return_pc, io_queue, reason) in [
+        (FRAME + 0x20, 0, "unsplit_frame"),
+        (FRAME + 0x10, CACHE_NEXT, "io_busy"),
+    ] {
+        let addrs = Addrs {
+            io_queue,
+            draw_boundary: Some(DrawBoundary {
+                entry: D3D_DRAW,
+                return_pc,
+                depth: 12,
+                view_context: None,
+                debug_flag_from_esp: None,
+            }),
             ..ADDRS.clone()
-        },
-    );
-    assert_eq!(racing.feature.stats().sim_joins, 0);
-    assert_ne!(
-        racing.rt.memory().u32(PARTICLE).unwrap(),
-        serial.rt.memory().u32(PARTICLE).unwrap()
-    );
-    assert!(racing.feature.stats().conflicts >= 11);
+        };
+        let mut serial = rig_cfg(false, &[], addrs.clone());
+        let mut piped = rig_cfg(true, &[], addrs);
+        for r in [&mut serial, &mut piped] {
+            r.rt.memory().set_u32(CACHE_MODE, 1).unwrap();
+            r.round(1, false);
+            assert_eq!(r.rt.memory().u64(PRESENTS), Ok(1));
+            assert_eq!(r.rt.memory().u32(WAITS), Ok(1));
+            assert_eq!(&*r.log.lock().unwrap(), &[("draw", 1, false)]);
+        }
+        compare(&serial.data(), &piped.data());
+        let stats = piped.feature.stats();
+        assert_eq!(stats.pipelined, 0);
+        assert_eq!(stats.serial.get(reason), Some(&1));
+    }
 }
 
 /// The dynamic lights: their visit counter `0x004e0308` only the render

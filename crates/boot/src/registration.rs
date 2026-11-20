@@ -282,13 +282,17 @@ pub struct LateInputs<'a> {
     pub data_root: &'a Path,
 }
 
-/// The pipelined render as the plan gets it: off for a lockstep run, which
-/// compares serial runs.
+/// Light hosts replace the frame entry with the skip implementation.
+/// Full headless simulations keep the entry and can opt in for hash comparisons.
 pub fn pipeline_for(
-    pipeline: feature::pipeline_render::PipelineRender, lockstep_on: bool,
+    pipeline: feature::pipeline_render::PipelineRender,
+    lockstep_on: bool,
+    host_light: bool,
 ) -> feature::pipeline_render::PipelineRender {
     if lockstep_on {
         pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
+    } else if host_light {
+        pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
     }
@@ -360,7 +364,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
-    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
+    // impl.render.pipelined_frame: the render front-end one frame behind the
     // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
     // prototype"). Pipelined and serial runs are not lockstep-compatible.
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;

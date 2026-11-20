@@ -219,13 +219,14 @@ impl Runtime {
     /// [`Dispatch::fork`] of this runtime's tables, under their read lock.
     pub(crate) fn fork_dispatch(
         &self,
+        context_only: bool,
         keep: impl Fn(u32, &str) -> bool,
         refuse: impl Fn(u32, &str) -> Handler,
     ) -> Dispatch {
         self.dispatch
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .fork(keep, refuse)
+            .fork(context_only, keep, refuse)
     }
     /// Original owner and selector for a guest return or loop checkpoint.
     pub fn resolve_original_resume(&self, pc: u32) -> Option<(OriginalHandler,u32)> {

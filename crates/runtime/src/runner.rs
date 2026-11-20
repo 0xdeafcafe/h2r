@@ -34,16 +34,33 @@ impl Runner {
         // hands the direct-call budget back as the outer one set it.
         let outer = ctx.direct_budget();
         let result = ctx.measure(crate::perf::Scope::Runner, |ctx| {
-            self.run_inner(cpu, ctx, transfer)
+            self.run_inner::<false>(cpu, ctx, transfer, (0, 0))
         });
         ctx.set_direct_budget(outer);
         result
     }
-    fn run_inner(
+    /// Run a scoped guest call on its existing stack. Stop when its actual
+    /// return has popped the entry slot, before dispatching the caller.
+    pub(crate) fn scoped(
+        &self,
+        cpu: &mut CpuAbi,
+        ctx: &mut ExecCtx,
+        transfer: TransferAbi,
+        entry_esp: u32,
+        return_pc: u32,
+    ) -> TransferAbi {
+        let outer = ctx.direct_budget();
+        let result = self.run_inner::<true>(cpu, ctx, transfer, (entry_esp, return_pc));
+        ctx.set_direct_budget(outer);
+        result
+    }
+
+    fn run_inner<const SCOPED: bool>(
         &self,
         cpu: &mut CpuAbi,
         ctx: &mut ExecCtx,
         mut transfer: TransferAbi,
+        scope: (u32, u32),
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
         // H2_ENTRY_STATS: what returned `transfer`.
@@ -132,7 +149,12 @@ impl Runner {
                 abi::RETURN => {}
                 _ => ctx.frames.enter(transfer.target_pc),
             }
-            if transfer.kind == abi::RETURN && transfer.target_pc == HARNESS_EXIT {
+            let returned = if SCOPED {
+                cpu.esp > scope.0 && transfer.target_pc == scope.1
+            } else {
+                transfer.target_pc == HARNESS_EXIT
+            };
+            if transfer.kind == abi::RETURN && returned {
                 cpu.eip = HARNESS_EXIT;
                 return TransferAbi::stop(ctx.emit(Event::HarnessExit));
             }
