@@ -53,6 +53,9 @@ mod weapon;
 mod vehicle;
 // Slice 6b: the unit update's state children.
 mod unit_state;
+// Slice 6c: the rest of the unit update.
+mod unit_anim;
+mod unit_rest;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -187,6 +190,18 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::UNIT_UPDATE_STATE, sites: &unit_state::state::STATE_SITES, run: unit_state::state::state },
     Body { point: &points::UNIT_POWERED_SEATS, sites: &unit_state::seats::SEATS_SITES, run: unit_state::seats::seats },
     Body { point: &points::UNIT_CONTROL_REFRESH, sites: &unit_state::seats::REFRESH_SITES, run: unit_state::seats::refresh },
+    // Slice 6c: the rest of the unit update (`c6b30`'s children after the
+    // state and movement: the timers, the dialogue update, the team with
+    // its seat iterator, active camouflage and the integrated light) and
+    // the unit animation state `111650`.
+    Body { point: &points::UNIT_TIMERS, sites: &unit_rest::TIMERS_SITES, run: unit_rest::timers },
+    Body { point: &points::UNIT_DIALOGUE_UPDATE, sites: &unit_rest::DIALOGUE_SITES, run: unit_rest::dialogue },
+    Body { point: &points::UNIT_TEAM_UPDATE, sites: &unit_rest::TEAM_SITES, run: unit_rest::team },
+    Body { point: &points::UNIT_SEATS_BEGIN, sites: &[], run: unit_rest::seats_begin },
+    Body { point: &points::UNIT_SEATS_NEXT, sites: &[], run: unit_rest::seats_next },
+    Body { point: &points::UNIT_CAMO_UPDATE, sites: &unit_rest::CAMO_SITES, run: unit_rest::camo },
+    Body { point: &points::UNIT_LIGHT_UPDATE, sites: &unit_rest::LIGHT_SITES, run: unit_rest::light },
+    Body { point: &points::UNIT_ANIMATION_STATE, sites: &unit_anim::ANIM_SITES, run: unit_anim::anim },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 6b's, slice 8's, slice 9's, slice 10's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`; the unit update's control `c49b0`, state `c58f0`, powered seats `c5eb0` and control refresh `ce0c0`; the weapon update `fdfb0`; the vehicle update `efde0` with its gate `f1320` and contact reset `f06c0` (the type physics and the rest of its tree stay callouts). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `vehicle.rs` the slice 10 bodies; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`; `unit_state/` the slice 6b bodies), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/unit_state/tests.rs` (the slice 6b frames, callouts, stores and the divide error), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 6b, slice 8, slice 9, slice 10 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 6b's, slice 6c's, slice 8's, slice 9's, slice 10's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`; the unit update's control `c49b0`, state `c58f0`, powered seats `c5eb0` and control refresh `ce0c0`; the unit update's timers `c6740`, dialogue update `114c60`, team `c6990` with its seat iterator `d0620` and `d0690`, active camouflage `c6810` and integrated light `c50a0`, and the unit animation state `111650`; the weapon update `fdfb0`; the vehicle update `efde0` with its gate `f1320` and contact reset `f06c0` (the type physics and the rest of its tree stay callouts). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `vehicle.rs` the slice 10 bodies; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`; `unit_state/` the slice 6b bodies; `unit_rest.rs` and `unit_anim.rs` the slice 6c bodies), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/unit_state/tests.rs` (the slice 6b frames, callouts, stores and the divide error), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 6b, slice 6c, slice 8, slice 9, slice 10 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -50,7 +50,9 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   `hooks::install::guard_shared_bodies`): `drive` hands calls into it to the
   runtime, so the point's chain runs its hooks around the body. The Halo
   1 health model's `before` and `after` on `OBJECT_DAMAGE_UPDATE` make
-  that body guarded whenever both are on.
+  that body guarded whenever both are on; so do the Halo 1 search
+  dialogue's `before` on `UNIT_DIALOGUE_UPDATE`, and the Halo 1
+  flashlight's and scope's `before`s on `UNIT_LIGHT_UPDATE`.
 - `sim_bridge::sim_objects` also installs the event observers: the buffer is
   emptied at `GAME_TICK`'s entry, and `Damage` and `Kill` events are
   appended at `DAMAGE_REPORT` and `PLAYER_KILLED` ("Slice 8 body").
@@ -171,7 +173,7 @@ How the body keeps the contract is in "Slice 8 body" below.
 
 How the body keeps the contract is in "Slice 9 body" below.
 
-Slices 6c and 7 (unit, biped) add one block each here, in the same
+Slices 7 (biped) and later add one block each here, in the same
 shape.
 
 ### Slice 10: vehicle
@@ -194,6 +196,21 @@ How the bodies keep the contract is in "Slice 10 body" below.
 | `ce0c0` | `UNIT_CONTROL_REFRESH` | `(unit: edi)`; `ret`. Called from `c5eb0`; the Halo 1 drive model hooks it, so the body is guarded when that feature is on | segment |
 
 How the bodies keep the contract is in "Slice 6b bodies" below.
+
+### Slice 6c: the rest of the unit
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `c6740` | `UNIT_TIMERS` | `(unit: eax) -> al`, whether a timer was running; `ret` | segment |
+| `114c60` | `UNIT_DIALOGUE_UPDATE` | `(unit: eax)`; `ret` | segment |
+| `c6990` | `UNIT_TEAM_UPDATE` | `(unit: eax)`; `ret` | segment |
+| `d0620` | `UNIT_SEATS_BEGIN` | `(unit: eax, iterator: ebx)`; `ret`. `ecx` returns 1 when it climbed | leaf |
+| `d0690` | `UNIT_SEATS_NEXT` | `(iterator: edx) -> al`; `ret`. `ecx`'s top byte returns `al` | leaf |
+| `c6810` | `UNIT_CAMO_UPDATE` | `(unit: eax)`; `ret` | segment |
+| `c50a0` | `UNIT_LIGHT_UPDATE` | `(unit: eax)`; `ret` | segment |
+| `111650` | `UNIT_ANIMATION_STATE` | `(unit: stack 0, record: stack 1) -> al`; `ret 8`. Called by the vehicle update among others, not by `c6b30` | segment |
+
+How the bodies keep the contract is in "Slice 6c bodies" below.
 
 ### Callouts that stay guest in this phase
 
@@ -906,9 +923,9 @@ last x87 instruction leaves.
 
 **Shell `c6b30`.** Calls `c49b0`, `c58f0` and `c60c0` with the unit on
 the stack, then `c5eb0`, `c6740`, `114c60`, `c6990`, `c6810` and `c50a0`
-with it in `eax`; `al` is the OR of the first five answers. `c60c0` is a
-body (fused), and so are `c49b0`, `c58f0` and `c5eb0` ("Slice 6b
-bodies"); the rest stay callouts until slice 6c. The port it
+with it in `eax`; `al` is the OR of the first five answers. `c60c0`,
+`c49b0`, `c58f0` and `c5eb0` ("Slice 6b bodies") and slice 6c's `c6740`,
+`114c60`, `c6990`, `c6810` and `c50a0` are bodies (fused). The port it
 comes from (`sim_physics::objects::unit`) is an oracle.
 
 **Movement `c60c0`.** Returns 0 at once when definition `+bc` bit 10 or
@@ -1149,13 +1166,13 @@ seven-entry table at `f069c` (read from the image), `f1cd0`
 `f4800` or `2056e0` (`VEHICLE_CONTACT_SOLVE`); above 6 none. These stay
 callouts, so the Halo 1 drive model's hooks on them run as before.
 
-**Callees**, every one a callout except the leaves and `bba20`, with the
+**Callees**, every one a callout except the leaves, `bba20` and the unit
+animation state `111650` (slice 6c, fused), with the
 bytes `ret` pops: `320560` the probe; `1d2460`, `efc30`, `ef870`,
 `efb60`, `205510`, `1cfb90`, `ba3d0` (a tail jump into `b7360`),
 `f06c0`, `f6010`, `cc380`, `372d48`, `113e40`, `b9ef0` (0); `b9b90`,
 `ba160`, `ba1d0`, `f1cd0`, `f6bd0`, `b77d0`, `d6660`, `e6830` (4);
-`1d24a0`, `ef4f0`, `f6670`, `205be0`, `f1f80`, `f2360`, `f4800`,
-`111650` (8); `f3010` (`c`); `ba7f0` (`10`); `2056e0` (`14`); `d7b80`
+`1d24a0`, `ef4f0`, `f6670`, `205be0`, `f1f80`, `f2360`, `f4800` (8); `f3010` (`c`); `ba7f0` (`10`); `2056e0` (`14`); `d7b80`
 (`18`).
 
 **Not ported.** The rest of the tree stays guest: the type physics
@@ -1178,6 +1195,127 @@ segment keeps every frame slot and register they read.
   x87 sequences are checked only through what they store.
 - Callee `ret` sizes are read from each callee's first `ret` (`ba3d0`
   from the `ret` of `b7360`, which it tail-jumps to).
+
+## Slice 6c bodies
+
+Each is **C** for its control flow and accesses: read at its address
+with `h2 disasm`, and compared with the lifted original by
+`tests/sim_objects_differential.rs` (a root per body over the unit
+dressing, the shell `c6b30` fusing its five slice 6c children, and the
+vehicle roots, which reach `111650`). Field names are ours and **L**.
+The headers of `unit_rest.rs` and `unit_anim.rs` record each body's
+frame, the registers it keeps across calls and the order of its calls;
+this section records what a caller or a later lane relies on.
+
+**Transfers.** The eight integer registers, the `xmm` registers, MXCSR
+and the x87 state are retail's at every call and return, and every
+store retail makes is made, stack slots included. Flags are left
+undefined at every transfer: no entry and no call site of these bodies
+reads them (`python3 -I scripts/sim-liveness.py 0xc6740 0x114c60 0xc6990
+0xd0620 0xd0690 0xc6810 0xc50a0 0x111650`). Scalar SSE runs through
+`sse.rs` on the guest's registers. The x87 work is three `fld`/`fistp`
+pairs (`114cce`, `c5214`, `c5281`) under the guest's control word, with
+the last-instruction pointers the `fistp` leaves. `111650` touches no
+x87 state.
+
+**Timers `c6740`.** Counts down body `+2e8` (zeroing `+2e4` at 0) and
+`+2ca` (at 0, the deferred injury notice `1c9c80(unit, +2c8, +2cc, 0,
+1)`, then `+2c8` = 0, `+2d0` = none, `+2cc` = 0); either running makes
+`al` 1. Then the byte `+1f4`: at 0, `cffc0` (`edi` the unit); while it
+runs `al` is 1.
+
+**Dialogue `114c60`.** The dialogue block is body `+ [body+342]`. Its
+timer `+3c` is refilled from the tick rate (game time `+2`) through
+`fld`/`fistp` when `+3e` is left; `+42`, `+40`, `+4e`, `+4c` (clearing
+the handle `+54`) and `+50` count down. While a line plays (`+c`
+positive) it starts once (`+48`: `20b140` without a sound `+1c`,
+`1891d0` with the record `[E+c..18]` for the handle `+54`, `20d220`),
+calls `20d570` once before and once after (`+49`), `20fd50` with a
+sound, and clears `+c`. Last, body `+208` moves toward zero by a step
+clamped between two constants. The Halo 1 search dialogue hooks this
+point (`before`), so the body is guarded under Halo 1.
+
+**Team `c6990`, seats `d0620` and `d0690`.** Unless body `+10a` bit 2,
+the team word `+138` is the player's (`+13c`; `i8` at `+c0` of its
+`21c`-byte record), else the actor's (`+12c`; `+24` of its `888`-byte
+record), else for a vehicle (`+aa` 1) the seated units' teams through
+the seat iterator in the frame (`E+4..1c`): a unit whose seat record
+(vehicle definition `+1cc`, `b0` bytes, bit 11) is flagged gives one
+candidate, the others another; the team is that one when they agree or
+the flagged one is none, else none. `d0620` climbs from the unit to its
+top biped or vehicle ancestor (while body `+4` bit 26 is set), storing
+the 1 it shifts over its saved `ecx`; `d0690` walks that ancestor's
+children (siblings `+c`, children `+10`, entering a biped or vehicle
+with bit 26) and stores the next biped or vehicle (`+10`), its seat
+(`+14`, body `+1fc`) and its parent (`+c`). Its found byte is the top
+byte of its saved `ecx`, so `ecx` returns it. Both are leaves: no call.
+
+**Camouflage `c6810`.** In the campaign with the Assassins skull, an AI
+unit whose team is none, outside `0..10`, or not friendly to the local
+player's (`bfe60`, `al`) gets body `+134` bit 3. The level `+2b0` moves
+by `+2b8` times the tick toward 1 (bit 3) or 0, clamped; reaching 1 with
+an effect at `+d4` calls `b58c0(+d4, mask)`. The level `+2b4` moves by
+the tick times a constant toward 1 (bit 4) or 0, clamped.
+
+**Light `c50a0`.** For a player's unit in the campaign only. Without
+the player record's flag `+88` and without the Envy skull, the toggle
+(body `+148` bit 2) switches `+134` bit 29 with `c5890(4)` or
+`c5890(5)` (the latter starting the timer `+268`); the timer counts
+down by the tick, and bit 29 clears when the unit has a parent, is
+dying (`+10a` bit 2), or the timer ran out while the game runs
+(`[[5107e8]]`). The level `+264` then moves toward 1 or 0 by one tick
+over a tick-rate-scaled time. With the flag or Envy: the camouflage
+toggle through `c5740(unit, 1)` and `+134` bit 15, and the timer `+2be`
+ending in `c5890(3)` (`+2bc` 2, then cleared) or `c5740(unit, 0)`
+(`+2bc` 1). The Halo 1 flashlight and scope hook this point
+(`before`), so the body is guarded under Halo 1.
+
+**Animation state `111650`.** It picks two animation names: A (against
+the animation block's `+70`) and B (against `+7c`), from the record
+argument (`+0`, `+4`, each unless none or 0; with B its byte `+8`),
+else from defaults: with no parent, a name `10eef0` gives (`dl` the
+record's byte `+9`), fixed names for a dying unit (`+10a` bit 2) or one
+whose byte `+1f4` runs, and the limits block's (`body + [body+33e]`)
+`+2c` when set. When the animation block (`body + [body+12a]`) plays
+(`+0`, `+6` not none) it calls `1cb710`, `e6a20` and `1c6440` (whose
+answer's word `+14` must exceed 1), then `e6b00` for the names, and a
+signed `cmp` ladder on B before chooses the seat vector (`bfc90`,
+`1c7380`, `10eea0`, `10ee70`, `13e420`, `ba160`, `1c73a0`, `142570`,
+`b8bd0`, then `e5840`), the three channel marks (`or byte [ebp+11|31|51],
+1`), `e4300`, `11b710`, or the kill test (`10f5f0`, `a7670`, `d6bc0`).
+Then `111010` and, with a parent, `c7070` and the parent's seat flags.
+A change of names restarts them (`1103a0` unless given, `10f430`,
+`1ccba0`, `10ee20`); otherwise once in 16 ticks per unit (the counter
+`[55e70c]`) `1ce180` and `1060a0` for each held weapon (`+218..224`).
+The limits block's three channels (`+dc`, `+9c`, `+bc`) each get
+`1c68c0`, `e6a20`, `11b710`, `e6b00`, `110fc0`, `1c63f0`, `114330` and
+`ba350` as their flags ask. `al` is the OR of `113910`'s, `10dc70`'s and
+`10eaf0`'s answers and a channel playing. The string IDs it compares and
+stores, and the `imm32` arguments it pushes, are read from the
+instructions that carry them.
+
+**Callees**, every one a callout, with the bytes `ret` pops: `cffc0`,
+`c5890`, `20fd50`, `113910`, `1c6440`, `bfc90`, `1c7380`, `10eea0`,
+`10ee70`, `e4300`, `10f5f0`, `a7670`, `111010`, `c7070`, `1ccba0`,
+`10ee20`, `1060a0`, `1c63f0`, `114330`, `110fc0`, `10dc70`, `10eaf0`
+(0); `bfe60`, `c5740`, `1891d0`, `10eef0`, `142570`, `b8bd0`, `e5840`,
+`11b710`, `ba160`, `d6bc0`, `ba350` (4); `b58c0`, `20b140`, `20d570`,
+`e6a20`, `13e420`, `1c73a0` (8); `20d220`, `e6b00`, `1103a0`, `1ce180`,
+`1c68c0` (`c`); `1c9c80` (`10`); `1cb710` (`14`); `10f430` (`1c`).
+
+### Not verified for slice 6c
+
+- Captures from Waterworks and a campaign level (the slice's testable
+  result): registers and RAM at the n-th call of each body, compared
+  with `impl.sim.native.objects` off. The harness covers synthetic
+  pools with stubbed callees; the player, actor, skull and dialogue
+  paths are reached only with dressed fields.
+- `111650`'s field names and what its callees do are read from data
+  flow, not from the callees. Its callees' `ret` sizes come from each
+  callee's own `ret`.
+- That the stub answers reach every arm: `111650`'s ladder is driven by
+  the names read from the image, so which arm a case reaches depends on
+  their order, which the test does not assert.
 
 ## Register liveness
 
