@@ -514,7 +514,9 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     let _ = published;
     #[cfg(feature = "native")]
     let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
-    with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
+    with_web(api, pages.clone(), site.web.as_deref())
+        .layer(middleware::from_fn(crate::caching::layer))
+        .layer(middleware::from_fn_with_state(pages, count_api_request))
 }
 
 /// The built web app's files beside the API, `index.html` for any other
@@ -634,6 +636,11 @@ pub fn limit_read(live: &Live, ip: &str) -> Result<(), ApiError> {
 
 #[derive(Clone)]
 pub(crate) struct ClientIp(pub String);
+
+async fn count_api_request(State(live): Shared, req: Request, next: Next) -> Response {
+    live.count_api_request(req.uri().path()).await;
+    next.run(req).await
+}
 
 async fn guard_request(State(live): Shared, mut req: Request, next: Next) -> Response {
     let peer = req

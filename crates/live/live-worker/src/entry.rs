@@ -474,6 +474,7 @@ impl DurableObject for LiveHub {
         let relay = crate::relayroom::session_of(path);
         let tunnel = hostroom::tunnel_lease(path);
         if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() {
+            live.count_api_request(path).await;
             if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
                 let ip = live_server::http::client_ip_key(&live, None, req.headers());
                 if let Err(e) = live_server::http::limit_read(&live, &ip) {

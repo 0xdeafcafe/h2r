@@ -73,7 +73,7 @@ Server admins can open **Live admin** (`/dash/admin`) from the dashboard header
 or Settings for usage, dedicated hosts, the raw event log and the style sample. On these
 pages, the Back link, B, Escape and Backspace go to the previous page
 when opened from the dashboard or another admin page. Direct visits fall
-back to Settings or Server. The **Live admin** breadcrumb opens the hub.
+back to Settings, Server or the Live Admin hub. The **Live admin** breadcrumb opens the hub.
 In Usage, select a gamertag in **Top Accounts** to open its dashboard
 profile (`/dash/players/:tag`).
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,

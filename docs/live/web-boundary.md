@@ -308,13 +308,18 @@ and ranks are on Uplink.
 **The screen** is the deck (§3), with a range (7, 30 or 90 days) and a
 sort for the accounts table:
 
+- The exact number of Live API requests recorded in the range, the
+  earliest retained request day, and a table of measured UTC days. The
+  panel calls out a range without request measurements.
 - Six tiles: data uploaded, events written, messages sent, games played,
   sign-ins and player reports, each with its change against the range
   before (read as twice the range) and a sparkline. More reports is
   marked as bad news, not good.
 - Data uploaded per day, stacked by kind: events, live frames, content,
   cloud saves.
-- What is stored now, by kind (events, content, cloud saves).
+- Logical stored bytes by kind (retained event log, published map
+  packages, cloud save blobs). When the save inventory is unavailable,
+  the storage panel and account list disclose their measured subtotal.
 - Events written, messages sent (friend requests and game invites), and
   active accounts with sign-ins, per day.
 - Events by type, the largest seven and the rest folded into one row.
@@ -323,27 +328,24 @@ sort for the accounts table:
   messages, games, reports against them, active days and last active.
   The table re-sorts in place; the sort chooses who is in it.
 
-A refetch keeps the last numbers on screen, dimmed. Signed out, or signed
-in as someone who is not an admin, the screen says so and reads nothing.
-The shaping is `web/src/deck/usageView.ts`, the reads
-`web/src/admin/usage.ts`; the dev mock answers both endpoints from the
-style page's seeded sample (`web/mock/admin.ts`), so `bun run dev` with
-`H2_MOCK_ADMIN=1` draws it.
+Empty ranges and charts describe what has been recorded. A refetch for
+the same account and server keeps the last answer on screen, dimmed.
+The screen requires an administrator's account. The shaping is
+`web/src/deck/usageView.ts`, and `web/src/admin/usage.ts` reads the
+signed endpoints. The development mock serves the style page's seeded
+sample (`web/mock/admin.ts`).
 
 **Where the numbers stop.**
 
-- Bytes uploaded are request bodies as received, which is the cost.
-  Stored bytes are kept apart, and live frames are not stored at all
-  (their 1 Hz record is in the events).
-- Cloud saves stored counts from when counting began: saves written
-  before then are not in it, and nothing goes back to add them.
-- The co-op relay is not metered (in the Worker it has no line to the
-  hub's store).
-- Events by type are counts, not bytes.
-- 400 days are kept. Older days are dropped by the write that starts a
-  new day; stored totals have no day and stay.
-- `h2 live store copy` copies the log, so the counts read from it rebuild
-  on the other side. The metered counts (frames, content and save bytes,
-  stored saves) are not copied yet and start again from zero.
-- A later sink, Cloudflare Analytics Engine, would sit behind the same
-  `meter` call, beside the in-process counts. It is not built.
+- Upload meters record received bytes for events, authenticated live
+  frames, content uploads and committed save writes.
+- The request count measures traffic reaching the service. On Cloudflare,
+  edge-served assets and cache hits are outside that count. WebSocket
+  messages and co-op relay bytes are outside the request metric.
+- Event types count log records. Stored bytes describe the logical
+  event log, published map catalog and private save blobs.
+- Daily usage covers up to 400 retained UTC days. The current day is
+  still in progress.
+- `h2 live store copy` copies the log and blobs, which supply the derived
+  counters and storage inventories on the destination. Metered counts
+  start fresh on the destination.

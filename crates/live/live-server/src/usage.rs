@@ -11,22 +11,18 @@
 //!   sessions hosted, sign-ins, and what the log says is stored (event
 //!   bytes, content packages). Replayed from the log at startup like the
 //!   read model, so it needs no storage of its own.
-//! - **Metered** at the request ([`Live::meter`]): bytes that never reach
-//!   the log. Live frames off the ingest socket, content uploads (packages,
-//!   images, outlines, title files) and cloud saves, each the body's size
-//!   as received; and cloud saves stored, a running total. These go to the
-//!   store's usage counters ([`EventStore::add_usage`]): added to in memory
-//!   at once, written at most every [`FLUSH_EVERY_S`] seconds by whichever
-//!   write (or sweep) comes along after that, never by a timer of its own,
-//!   so a Durable Object can sleep. Days older than the keep are dropped by
-//!   the same write. A crash loses at most the unwritten minute.
+//! - **Metered** at the request ([`Live::meter`]): API requests, bytes
+//!   received for live frames, content uploads and cloud saves. The native
+//!   server batches deltas for up to [`FLUSH_EVERY_S`] seconds. The Durable
+//!   Object writes through to its store because its memory can be discarded.
+//!   The first write of a new day also drops expired daily counters.
 //!
-//! The co-op relay is not metered: in the Worker it is a Durable Object of
-//! its own with no line to the hub's store, and a counter in one home only
-//! would make the two disagree. A later sink (Cloudflare Analytics Engine)
-//! could take every metered count behind the same `meter` call.
+//! The request counter measures work that reaches the API, including
+//! WebSocket upgrade requests. Static assets, edge-cache hits, and
+//! WebSocket messages do not enter that counter.
 //!
-//! Every read walks only the days asked for, in memory.
+//! Stored save bytes come from an inventory of the private blob store
+//! (`Live::stored_save_bytes`). The other reads use the in-memory books.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -44,7 +40,7 @@ use crate::store::{RecordedEvent, UsageRow};
 
 /// How many days of daily counters are kept.
 pub const KEEP_DAYS: i64 = 400;
-/// Metered counts wait at most this long (given traffic) before they are written.
+/// The native server's interval for batching metered counts.
 pub const FLUSH_EVERY_S: i64 = 60;
 /// The most days a read covers.
 pub const MAX_RANGE_DAYS: i64 = KEEP_DAYS;
@@ -54,6 +50,8 @@ pub const MAX_ACCOUNTS: usize = 500;
 /// The counters' names, as stored. `messages.*` has one per kind of
 /// message, so text messages join as `messages.text` when there are any.
 pub mod metric {
+    /// HTTP requests reaching the Live API service (server-wide).
+    pub const REQUESTS: &str = "requests";
     /// Bytes of events an account signed, as received.
     pub const UP_EVENTS: &str = "up.events";
     /// Live frames off the ingest socket (text and packed), as received.
@@ -75,6 +73,7 @@ pub mod metric {
     /// Dayless running totals.
     pub const STORED_EVENTS: &str = "stored.events";
     pub const STORED_CONTENT: &str = "stored.content";
+    /// A response key. Legacy metered save deltas have no storage baseline.
     pub const STORED_SAVES: &str = "stored.saves";
 
     pub const UPLOADS: [&str; 4] = [UP_EVENTS, UP_FRAMES, UP_CONTENT, UP_SAVES];
@@ -168,12 +167,14 @@ struct Metered {
     pending: BTreeMap<(String, String, String), i64>,
     last_flush: i64,
     last_day: String,
+    prune_pending: bool,
 }
 
 /// The usage book ([module docs](self)).
 pub struct Usage {
     derived: RwLock<Derived>,
     metered: Mutex<Metered>,
+    write_through: bool,
     /// Today's first kept day, for replays of old events; from the clock.
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
 }
@@ -185,6 +186,13 @@ impl Default for Usage {
 }
 
 impl Usage {
+    pub(crate) fn with_write_through(write_through: bool) -> Self {
+        Self {
+            write_through,
+            ..Self::default()
+        }
+    }
+
     pub fn with_clock(clock: Box<dyn Fn() -> i64 + Send + Sync>) -> Self {
         let now = clock();
         Usage {
@@ -194,6 +202,7 @@ impl Usage {
                 last_day: day_of(now),
                 ..Default::default()
             }),
+            write_through: false,
             clock,
         }
     }
@@ -203,7 +212,9 @@ impl Usage {
         let keep = keep_from((self.clock)());
         let mut m = self.metered.lock().unwrap();
         for r in rows {
-            if r.day.is_empty() || r.day >= keep {
+            if !r.day.is_empty() && r.day < keep {
+                m.prune_pending = true;
+            } else if r.metric != metric::STORED_SAVES {
                 m.book.add(&r.day, &r.account, &r.metric, r.n);
             }
         }
@@ -227,19 +238,24 @@ impl Usage {
             .or_default() += n;
     }
 
-    /// The rows to write now, if a write is due: a minute since the last,
-    /// or a new day (which also cuts the days past the keep). Taken out:
-    /// a failed write hands them back with [`Usage::unflushed`].
+    /// The rows to write now, if a write is due: a new day (which also cuts
+    /// the days past the keep) or pending deltas due to be flushed. Taken out:
+    /// a failed write hands them back with [`Usage::unflushed`]. An empty
+    /// cutoff means there is nothing to prune on this write.
     pub fn due(&self) -> Option<(Vec<UsageRow>, String)> {
         let now = (self.clock)();
         let today = day_of(now);
         let mut m = self.metered.lock().unwrap();
         let new_day = today != m.last_day;
-        if !new_day && (m.pending.is_empty() || now - m.last_flush < FLUSH_EVERY_S) {
+        if !new_day
+            && ((m.pending.is_empty() && !m.prune_pending)
+                || (!self.write_through && now - m.last_flush < FLUSH_EVERY_S))
+        {
             return None;
         }
         m.last_flush = now;
-        let keep = keep_from(now);
+        let prune = std::mem::take(&mut m.prune_pending) || new_day;
+        let keep = if prune { keep_from(now) } else { String::new() };
         if new_day {
             m.last_day = today;
             m.book.prune(&keep);
@@ -259,8 +275,9 @@ impl Usage {
     }
 
     /// Rows a write could not take, back in line for the next.
-    pub fn unflushed(&self, rows: Vec<UsageRow>) {
+    pub fn unflushed(&self, rows: Vec<UsageRow>, keep_from: &str) {
         let mut m = self.metered.lock().unwrap();
+        m.prune_pending |= !keep_from.is_empty();
         for r in rows {
             *m.pending.entry((r.day, r.account, r.metric)).or_default() += r.n;
         }
@@ -403,6 +420,8 @@ impl Subscriber for Usage {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct DayUsage {
     pub day: String,
+    /// Live API requests, if present in the metered history.
+    pub requests: Option<i64>,
     /// Bytes uploaded by kind: `events`, `frames`, `content`, `saves`.
     pub up: BTreeMap<String, i64>,
     pub events: i64,
@@ -450,14 +469,18 @@ pub struct Overview {
     pub from: String,
     pub to: String,
     pub keep_days: i64,
+    /// Earliest retained UTC day with a request counter.
+    pub request_count_from: Option<String>,
     /// Only days with something in them, oldest first.
     pub days: Vec<DayUsage>,
     pub totals: DayUsage,
     /// Distinct accounts active in the range (`totals.active_accounts` sums days).
     pub accounts_active: i64,
     pub event_types: Vec<TypeCount>,
-    /// Stored now, by kind, over every account: `events`, `content`, `saves`.
+    /// Stored by kind, over every account: `events`, `content`, `saves`.
     pub stored: BTreeMap<String, i64>,
+    /// Whether the response includes the private store's save inventory.
+    pub saves_storage_measured: bool,
 }
 
 /// A metric's name within its group: `up.frames` is `frames`.
@@ -534,6 +557,7 @@ impl Usage {
     fn day_row(day: &str, s: &Sum, active: i64) -> DayUsage {
         DayUsage {
             day: day.to_string(),
+            requests: s.0.get(metric::REQUESTS).copied(),
             up: s.by(&metric::UPLOADS),
             events: s.get(metric::EVENTS),
             messages: s.by(&metric::MESSAGES),
@@ -588,21 +612,36 @@ impl Usage {
         for s in self.totals().values() {
             stored.add(&s.0);
         }
+        let request_count_from = self
+            .metered
+            .lock()
+            .unwrap()
+            .book
+            .days
+            .range(keep_from((self.clock)())..=to.clone())
+            .find(|(_, accounts)| {
+                accounts
+                    .get("")
+                    .is_some_and(|metrics| metrics.contains_key(metric::REQUESTS))
+            })
+            .map(|(day, _)| day.clone());
         Overview {
             from,
             to,
             keep_days: KEEP_DAYS,
+            request_count_from,
             days: rows,
             totals,
             accounts_active: active.len() as i64,
             event_types,
             stored: stored.by(&metric::STORED),
+            saves_storage_measured: false,
         }
     }
 
     /// Every account with anything in the last `days` days or anything
     /// stored, with its numbers; unsorted, gamertags not filled in.
-    pub fn accounts(&self, days: i64) -> Vec<AccountUsage> {
+    fn accounts(&self, days: i64, saves: Option<&HashMap<String, i64>>) -> Vec<AccountUsage> {
         let (from, to) = self.range(days);
         let mut sums: HashMap<String, (Sum, i64, Option<String>)> = HashMap::new();
         for (day, accts) in self.per_day(&from, &to) {
@@ -622,12 +661,18 @@ impl Usage {
         for a in stored.keys().filter(|a| !a.is_empty()) {
             sums.entry(a.clone()).or_default();
         }
+        for a in saves.into_iter().flat_map(HashMap::keys) {
+            sums.entry(a.clone()).or_default();
+        }
         sums.into_iter()
             .map(|(xuid, (s, active_days, last_active))| {
-                let st = stored
+                let mut st = stored
                     .get(&xuid)
                     .map(|t| t.by(&metric::STORED))
                     .unwrap_or_else(|| Sum::default().by(&metric::STORED));
+                if let Some(&bytes) = saves.and_then(|s| s.get(&xuid)) {
+                    st.insert(short(metric::STORED_SAVES).to_string(), bytes);
+                }
                 let up = s.by(&metric::UPLOADS);
                 let messages = s.by(&metric::MESSAGES);
                 AccountUsage {
@@ -688,16 +733,18 @@ pub fn top(mut items: Vec<AccountUsage>, sort: &str, limit: usize) -> Option<Vec
 }
 
 impl Live {
+    /// Counts an HTTP request at the API boundary. Both the shared router
+    /// and the Worker's direct WebSocket routes use the same counter.
+    pub async fn count_api_request(&self, path: &str) {
+        if path.starts_with("/v1/") {
+            self.meter(None, metric::REQUESTS, 1).await;
+        }
+    }
+
     /// Counts metered usage ([module docs](self)) and writes what is due.
     pub async fn meter(&self, account: Option<Xuid>, metric: &str, n: u64) {
         self.usage
             .meter(account, metric, i64::try_from(n).unwrap_or(i64::MAX));
-        self.flush_usage().await;
-    }
-
-    /// [`Live::meter`] for a running total that can go down.
-    pub async fn meter_signed(&self, account: Option<Xuid>, metric: &str, n: i64) {
-        self.usage.meter(account, metric, n);
         self.flush_usage().await;
     }
 
@@ -708,7 +755,7 @@ impl Live {
         };
         if let Err(e) = self.store.add_usage(&rows, &keep).await {
             eprintln!("live: usage counters not written ({e}); kept for the next write");
-            self.usage.unflushed(rows);
+            self.usage.unflushed(rows, &keep);
         }
     }
 
@@ -740,10 +787,14 @@ pub async fn get_overview(
         crate::invites::LXM_ADMIN_READ,
     )?;
     let days = days_param(&p)?;
-    Ok(crate::http::json(
-        StatusCode::OK,
-        &live.usage.overview(days),
-    ))
+    let mut overview = live.usage.overview(days);
+    if let Some(saves) = live.stored_save_bytes().await {
+        overview.saves_storage_measured = true;
+        overview
+            .stored
+            .insert(short(metric::STORED_SAVES).to_string(), saves.values().sum());
+    }
+    Ok(crate::http::json(StatusCode::OK, &overview))
 }
 
 #[derive(Serialize)]
@@ -753,6 +804,7 @@ struct AccountsPage {
     /// Accounts with anything in the range or anything stored.
     total: usize,
     items: Vec<AccountUsage>,
+    saves_storage_measured: bool,
 }
 
 /// `GET /v1/admin/usage/accounts?days=30&sort=uploaded&limit=50`: admins.
@@ -776,7 +828,8 @@ pub async fn get_accounts(
             .filter(|l| (1..=MAX_ACCOUNTS).contains(l))
             .ok_or_else(|| invalid(format!("limit is 1 to {MAX_ACCOUNTS}")))?,
     };
-    let all = live.usage.accounts(days);
+    let saves = live.stored_save_bytes().await;
+    let all = live.usage.accounts(days, saves.as_deref());
     let total = all.len();
     let mut items = top(all, &sort, limit)
         .ok_or_else(|| invalid(format!("sort is one of {}", SORTS.join(", "))))?;
@@ -795,6 +848,7 @@ pub async fn get_accounts(
             sort,
             total,
             items,
+            saves_storage_measured: saves.is_some(),
         },
     ))
 }
@@ -962,7 +1016,7 @@ mod tests {
         );
         assert_eq!(o.stored["events"], 300 + 100 + 50 + 80 + 10);
 
-        let all = top(u.accounts(7), "uploaded", 10).unwrap();
+        let all = top(u.accounts(7, None), "uploaded", 10).unwrap();
         assert_eq!(
             all.iter().map(|a| a.xuid.as_str()).collect::<Vec<_>>(),
             [A, B]
@@ -1025,7 +1079,7 @@ mod tests {
             (o.days[0].events, o.days[0].reports, o.days[0].up["events"]),
             (3, 1, 0)
         );
-        let acc = top(u.accounts(1), "reports_received", 5).unwrap();
+        let acc = top(u.accounts(1, None), "reports_received", 5).unwrap();
         assert_eq!(
             (acc[0].xuid.as_str(), acc[0].reports_received, acc[0].events),
             (B, 1, 0)
@@ -1065,7 +1119,7 @@ mod tests {
         let o = u.overview(400);
         assert_eq!(o.stored["content"], 4096);
         assert_eq!(o.totals.sign_ins, 0);
-        let acc = u.accounts(30);
+        let acc = u.accounts(30, None);
         let a = acc.iter().find(|a| a.xuid == A).unwrap();
         assert_eq!((a.stored["content"], a.active_days), (4096, 0));
         assert!(acc.iter().any(|a| a.xuid == B), "B stores event bytes");
@@ -1087,7 +1141,7 @@ mod tests {
         );
         t.fetch_add(FLUSH_EVERY_S, Ordering::SeqCst);
         let (rows, keep) = u.due().expect("a minute on");
-        assert_eq!(keep, "2025-10-15");
+        assert!(keep.is_empty(), "no cutoff change within a UTC day");
         assert_eq!(
             rows,
             [
@@ -1107,17 +1161,19 @@ mod tests {
         );
         assert!(u.due().is_none(), "nothing pending");
         // A failed write comes back for the next.
-        u.unflushed(rows);
+        u.unflushed(rows, &keep);
         assert_eq!(u.pending(), 2);
         // A new day writes even with nothing pending, to cut old days.
         t.fetch_add(86_400, Ordering::SeqCst);
-        assert!(u.due().is_some());
+        let (_, keep) = u.due().expect("prune on the new day");
+        assert_eq!(keep, "2025-10-16");
+        assert!(u.due().is_none(), "no second write of the same cutoff");
         assert_eq!(u.overview(1).days.len(), 0, "today has nothing");
         assert_eq!(u.overview(2).days[0].up["frames"], 150);
     }
 
     #[test]
-    fn loading_keeps_the_kept_days_and_every_total() {
+    fn loading_keeps_the_kept_days_and_ignores_legacy_save_deltas() {
         let t = Arc::new(AtomicI64::new(NOON));
         let u = Usage::with_clock(clock(&t));
         let row = |day: &str, metric: &str, n| UsageRow {
@@ -1133,8 +1189,48 @@ mod tests {
         ]);
         let o = u.overview(400);
         assert_eq!(o.totals.up["content"], 7);
-        assert_eq!(o.stored["saves"], 5);
+        assert_eq!(o.stored["saves"], 0);
+        assert!(!o.saves_storage_measured);
         assert_eq!(u.pending(), 0, "loaded rows are not written again");
+    }
+
+    #[test]
+    fn request_counts_keep_unmeasured_history_distinct() {
+        let t = Arc::new(AtomicI64::new(NOON));
+        let u = Usage::with_clock(clock(&t));
+        let request_row = |day: String| UsageRow {
+            day,
+            account: String::new(),
+            metric: metric::REQUESTS.into(),
+            n: 10,
+        };
+        u.load(&[
+            UsageRow {
+                day: "2026-11-17".into(),
+                account: A.into(),
+                metric: metric::UP_CONTENT.into(),
+                n: 50,
+            },
+            request_row(day_of(NOON - KEEP_DAYS * 86_400)),
+        ]);
+        let history = u.overview(7);
+        assert_eq!(history.request_count_from, None);
+        assert_eq!(history.totals.requests, None);
+
+        u.meter(None, metric::REQUESTS, 5);
+        let usage = u.overview(7);
+        assert_eq!(usage.request_count_from.as_deref(), Some("2026-11-18"));
+        assert_eq!(usage.days[0].requests, None);
+        assert_eq!(usage.days[1].requests, Some(5));
+        assert_eq!(usage.totals.requests, Some(5));
+        assert_eq!(usage.accounts_active, 1);
+
+        let first = keep_from(NOON);
+        u.load(&[request_row(first.clone())]);
+        let narrow = u.overview(7);
+        assert_eq!(narrow.request_count_from, Some(first));
+        assert_eq!(narrow.totals.requests, Some(5));
+        assert_eq!(u.overview(KEEP_DAYS).totals.requests, Some(15));
     }
 
     #[test]

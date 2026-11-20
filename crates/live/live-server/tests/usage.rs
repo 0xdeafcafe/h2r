@@ -77,6 +77,26 @@ async fn only_admins_read_usage() {
 }
 
 #[tokio::test]
+async fn counts_api_requests_including_errors_and_preflight() {
+    let h = server().await;
+    assert_eq!(h.get("/assets/missing").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(h.get("/healthz").await.status, StatusCode::OK);
+    assert_eq!(h.get("/v1/missing").await.status, StatusCode::NOT_FOUND);
+    let preflight = h
+        .call(
+            Method::OPTIONS,
+            "/v1/snapshot",
+            &[("access-control-request-method", "GET".into())],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(preflight.status, StatusCode::NO_CONTENT);
+    let usage = h.live.usage().overview(2);
+    assert_eq!(usage.totals.requests, Some(2));
+    assert_eq!(usage.accounts_active, 0);
+}
+
+#[tokio::test]
 async fn the_log_and_the_ingest_socket_both_count() {
     let h = server().await;
     let boss = h.create("Boss").await;

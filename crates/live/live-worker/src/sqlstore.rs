@@ -423,7 +423,7 @@ impl<S: Sql> EventStore for SqlStore<S> {
             .collect())
     }
 
-    /// One atomic batch: every add, then the cut.
+    /// One atomic write, adding increments and applying the cutoff if it changed.
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         let mut statements: Vec<Statement> = rows
             .iter()
@@ -439,8 +439,15 @@ impl<S: Sql> EventStore for SqlStore<S> {
                 )
             })
             .collect();
-        statements.push((sql::PRUNE_USAGE, vec![keep_from.into()]));
-        self.sql.batch(statements).await?;
+        if !keep_from.is_empty() {
+            statements.push((sql::PRUNE_USAGE, vec![keep_from.into()]));
+        }
+        if statements.len() == 1 {
+            let (sql, params) = statements.pop().unwrap();
+            self.sql.all(sql, params).await?;
+        } else if !statements.is_empty() {
+            self.sql.batch(statements).await?;
+        }
         Ok(())
     }
 
@@ -680,6 +687,125 @@ mod tests {
         let (status, _) = get("/v1/rank-stats?leaderboards=1&xuids=nope").await;
         assert_eq!(status, 400);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn worker_usage_survives_hub_restart() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_proto::{ClientMessage, lxm};
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::{Timers, now},
+            blobs::{BlobStore, Blobs, Meta},
+            ingest::IngestSession,
+            titleblobs::BlobsElsewhere,
+        };
+        use tower::ServiceExt;
+
+        let path = temp_db("worker-usage");
+        let dir = path.parent().unwrap();
+        let private = BlobStore::memory();
+        let start = || async {
+            let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+            let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+            let identity = ServerIdentity::open(dir, Some("live.test")).unwrap();
+            let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+                .await
+                .unwrap();
+            live.set_blobs(Blobs {
+                private: private.clone(),
+                public: None,
+            });
+            live
+        };
+        let call = |live, req| async move {
+            let r = live_server::http::router(live).oneshot(req).await.unwrap();
+            let status = r.status();
+            let body = r.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice::<Value>(&body).unwrap())
+        };
+
+        let live = start().await;
+        let key = KeyPair::generate();
+        let req = Request::post("/v1/accounts")
+            .body(Body::from(AccountRequest::sign(
+                &key, "Host", None, "live.test", now(),
+            )))
+            .unwrap();
+        let (status, account) = call(live.clone(), req).await;
+        assert_eq!(status, 201, "{account}");
+        let xuid = account["xuid"].as_str().unwrap();
+        private
+            .put(
+                &format!("storage/{xuid}/blobs/aa/{}", "a".repeat(64)),
+                "save-data".into(),
+                &Meta::default(),
+            )
+            .await
+            .unwrap();
+        private
+            .put(
+                &format!("storage/{xuid}/index.json"),
+                "index metadata".into(),
+                &Meta::default(),
+            )
+            .await
+            .unwrap();
+
+        // The hub's direct upgrade path counts the request before accepting
+        // the socket. Frame traffic uses the same ingest session as the hub.
+        live.count_api_request("/v1/ingest").await;
+        let mut ingest = IngestSession::new(live.clone());
+        let auth = serde_json::to_string(&ClientMessage::Auth {
+            token: issue_token(
+                &key,
+                account["id"].as_str().unwrap(),
+                "live.test",
+                lxm::GAMES_WRITE,
+                now(),
+            ),
+        })
+        .unwrap();
+        assert!(ingest.on_text(&auth).await.is_empty());
+        // Malformed frame data still traverses the authenticated socket.
+        ingest.on_binary(&[0u8; 40]).await;
+        drop(ingest);
+        drop(live);
+
+        // No sweep or goal deadline runs between an isolated request and
+        // eviction. These counters must already be in SQLite.
+        let live = start().await;
+        let usage = live.usage().overview(2);
+        assert_eq!(usage.totals.requests, Some(2));
+        assert_eq!(usage.totals.up["frames"], 40);
+
+        let operator = ServerIdentity::load(dir).unwrap();
+        for uri in ["/v1/admin/usage", "/v1/admin/usage/accounts?sort=stored"] {
+            let bearer = issue_token(
+                &operator.key,
+                &operator.author(),
+                "live.test",
+                "admin.read",
+                now(),
+            );
+            let req = Request::get(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap();
+            let (status, usage) = call(live.clone(), req).await;
+            assert_eq!(status, 200, "{usage}");
+            assert_eq!(usage["saves_storage_measured"], true);
+            if let Some(items) = usage["items"].as_array() {
+                assert_eq!(items[0]["xuid"], xuid);
+                assert_eq!(items[0]["stored"]["saves"], 9);
+            } else {
+                assert_eq!(usage["stored"]["saves"], 9);
+                assert_eq!(usage["totals"]["requests"], 3);
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A host's own Clankers on the Worker's composition, as on a machine
