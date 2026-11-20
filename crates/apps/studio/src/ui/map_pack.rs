@@ -1,9 +1,10 @@
 //! The Maps list's Map Pack group: the installed Multiplayer Map Pack maps
-//! in the game's Select Map order, each a [`map_list`](super::map_list) row
+//! in display-name order, each a [`map_list`](super::map_list) row
 //! with its record's picture and description. With nothing installed the
 //! group stays, with a line on how to install it. State lives in
 //! [`crate::app::map_pack`]; clicks go back as [`Action::OpenMapPack`].
 use dear_imgui_rs::Ui;
+use editor_core::map_groups::MapGroup;
 
 use super::map_list::{Group, MapListUi, Row};
 use crate::app::map_pack::HINT;
@@ -21,7 +22,7 @@ pub fn group(
     actions: &mut Vec<Action>,
 ) {
     ui.spacing();
-    heading(ui, "Map Pack");
+    heading(ui, MapGroup::MapPack.label());
     match app.mappack() {
         Some(disc) => {
             let kind = if disc.is_folder() {
@@ -42,7 +43,7 @@ pub fn group(
         return;
     }
     let opened = app.opened_pack_map();
-    for m in app.map_pack() {
+    for m in app.map_pack_entries() {
         let from = format!(
             "{}.map, {}\nopens with the Halo 2 disc's shared maps; edits save as a package \
              over it",

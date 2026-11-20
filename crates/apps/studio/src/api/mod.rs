@@ -130,9 +130,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SOURCE_MAPS,
-        "The source's maps, the map loaded, and the packages under the data root",
+        "The source maps and library entries with their picker groups, and the map loaded",
         "{}",
-        r#"{"source":"string|null","maps":"[string]","loaded":"string|null","packages":"[{key,label}]"}"#,
+        r#"{"source":"string|null","maps":"[string]","map_entries":"[{map,label,group}]","halo1_maps":"[{map,label,group}]","map_pack":"[{map,label,group}]","loaded":"string|null","packages":"[{key,map,label,group}]"}"#,
         "null",
     ),
     def(

@@ -178,18 +178,16 @@ package...** and **Open package...** save and open map packages in
 
 ### Packages and Halo 1 in the Maps list
 
-Below the source's maps, **Maps** lists the **Map Pack**'s maps (the
-open map pack disc's, else the installed ones), then what is under
-`<data>/maps`
-(`editor_core::packages::list`, re-read when the data root changes and
-after a save), then Halo 1. Every row has the map's card, its name,
-picture and description as the game's menus show them ("The Maps list's
-cards", below):
+**Maps** starts with the Halo 2 source's **Multiplayer maps** and
+**Campaign levels**. The library sections below them hold the Map Pack,
+user packages, converted Halo 1 variants and the read-only Halo 1
+source's playable maps. **Shared and menu** is the final section for
+both sources. Source rows show each map's card when available.
 
-- **Map Pack**: the nine multiplayer maps, named, ordered and pictured as
-  the game's Select Map shows them ("The Map Pack", below), opened like
-  the disc's. A package that edits one of them opens that map, then the
-  package over it, as for a disc map. **Save as
+- **Map Pack**: the nine multiplayer maps, sorted by display name and
+  pictured as in the game's Select Map ("The Map Pack", below). They
+  open like the disc's maps. A package that edits one of them opens the
+  map first, then applies the package over it. **Save as
   package...** writes a package with the pack's map as its base
   ([maps.md](../game/maps.md) section 4).
 
@@ -200,10 +198,10 @@ cards", below):
   resolved bytes (`Session::open_derived`), with the open disc's
   `shared.map` region as the place the shared caches come from. Saving
   either replaces that package.
-- **Halo 1**: maps converted by the Halo 1 import
-  ([multiplayer.md](../halo1/multiplayer.md)), one entry per sandbox
-  variant, `Blood Gulch (H1 sandbox)` and `(H2 sandbox)`. Then, with a
-  Halo 1 source open, its maps, read-only.
+- **Halo 1 sandbox variants**: maps converted by the Halo 1 import
+  ([multiplayer.md](../halo1/multiplayer.md)), sorted by display name
+  with each map's H1 sandbox followed by its H2 sandbox. The **Halo 1**
+  section shows the open Halo 1 source's playable maps read-only.
 
 **What marks a converted map** is decided in one function,
 `editor_core::packages::halo1_origins`: an `origin` table with
@@ -323,6 +321,16 @@ each, in one cache for every group keyed by the row
 (`MapListUi::texture`: `map-<name>`, `pack-<map>`, `pkg-<key>`,
 `h1-<name>`), and are replaced when a card's picture changes.
 
+`editor_core::map_groups::MapGroup` classifies source maps using the
+cache type and reserved file names. `MapSource::map_groups` and
+`H1Source::map_groups` read the headers when a source opens. A map
+without a recognised type uses its menu card's kind when available and
+falls under **Other maps** otherwise. `app::map_cards::MapEntry` supplies
+the display name and case-insensitive ordering to Maps, Tags, HUD and
+`source.maps`. The **Shared and menu** rows use a layers icon and the
+subtitle “Shared resources and menu screens”. The Playlists picker uses
+the multiplayer catalog with the same name sort.
+
 Where each group's cards come from (`app::map_cards`; nothing of them is
 in the repository, all are read from the user's files):
 
@@ -396,15 +404,13 @@ the maps from:
   `<map>.map` and a version 2 `patch.lvl`. So the maps are there without
   the map pack ISO.
 
-Either way the group names, orders and pictures the maps as the game's
-Select Map does, from the installed records, read with the game's own
-code (`boot::map_select`): `map_of_package` reads each record,
-`category_of` keeps the offers in the Map Pack's range (`0x0101..=0x03ff`;
-new maps' packages, whose offers have the top bit set, stay out), and
-`Catalogue` orders them by sort order, then id. Names, descriptions and
-pictures are the records' (the `A8R8G8B8` preview turned to RGBA). A disc
-map with no installed record keeps its file name and goes last. A record
-whose map file is missing is left out and logged once. The group is
+The group uses the installed records for display names, descriptions
+and pictures (the `A8R8G8B8` preview turned to RGBA).
+`boot::map_select::map_of_package` reads each record and `category_of`
+keeps the Map Pack's offers (`0x0101..=0x03ff`). A disc map without an
+installed record uses its file name. `App::map_pack_entries` supplies
+the rows in display-name order. A record whose map file is missing
+is left out and logged once. The group is
 rebuilt with the packages (data root change, save, `refresh_packages`)
 and when a map pack opens. With neither, it shows one line on how to
 install the pack.
@@ -1092,10 +1098,10 @@ step (`TagDoc::squash`) and saves with the map like any edit.
 
 ### The windows and the panel
 
-`ui/tags.rs` draws the tool: the **map picker** (the open map, the
-shared caches, any other map of the source), the **tag tree** (by group
-or by path, with a word search; `*` marks an edited tag, a bracket where
-its data lives), the **fields** of the selected tag with Export and
+`ui/tags.rs` draws the tool: the **map picker** (the source maps in their
+sections with an **(open map)** marker for the Scenario tool's map),
+the **tag tree** (by group or path, with a word search and marks for
+edited tags and where their data lives), the **fields** of the selected tag with Export and
 Import, and **Data and bytes**: the tag's data and resources (with a
 bitmap preview), then the bytes of the element under the mouse with the
 hovered field lit and edited bytes marked.
@@ -1196,7 +1202,8 @@ The developer's page is [hud-editor.md](hud-editor.md): the placement
 rules and their proof, the checks, the save, and how the widget fields
 use the generic field panel (`fields.rs`, named by
 `tags/src/defs/nhdt.txt`) with the HUD tool's own history. `app/hud.rs` (`HudTool`) holds the tool's state
-and its `Hud*` actions; `ui/hud.rs` draws it; the logic is
+and its `Hud*` actions. `ui/hud.rs` draws it and uses the shared map
+sections for the source and package picker. The logic lives in
 `crates/tools/hud-edit`.
 
 ## Code

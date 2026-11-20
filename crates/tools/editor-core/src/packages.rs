@@ -14,6 +14,8 @@ use anyhow::{Context, Result, bail};
 use content::manifest::MANIFEST_FILE;
 use content::{Library, store};
 
+use crate::map_groups::MapGroup;
+
 /// Which sandbox (weapons, vehicles, bipeds) a converted map plays with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sandbox {
@@ -115,6 +117,15 @@ pub struct PackageEntry {
 }
 
 impl PackageEntry {
+    /// The picker section for this package.
+    pub fn map_group(&self) -> MapGroup {
+        if self.halo1.is_some() {
+            MapGroup::Halo1Sandbox
+        } else {
+            MapGroup::Packages
+        }
+    }
+
     /// The list label: the package's name, with the sandbox of a
     /// converted variant (`Blood Gulch (H1 sandbox)`).
     pub fn label(&self) -> String {
@@ -185,7 +196,7 @@ pub fn list(maps: &Path) -> Vec<PackageEntry> {
             out.extend(origins.into_iter().map(|o| entry(Some(o))));
         }
     }
-    out.sort_by_key(|e| (e.halo1.is_some(), e.label().to_ascii_lowercase(), e.key()));
+    out.sort_by_cached_key(|e| (e.map_group().sort_key(&e.label()), e.key()));
     out
 }
 
@@ -345,6 +356,11 @@ mod tests {
         assert_eq!(
             labels,
             ["Blood Gulch (H1 sandbox)", "Blood Gulch (H2 sandbox)"]
+        );
+        assert!(
+            listed
+                .iter()
+                .all(|entry| entry.map_group() == MapGroup::Halo1Sandbox)
         );
         assert_eq!(read_map(&maps, &listed[1], None).unwrap(), b"map");
         let _ = std::fs::remove_dir_all(&maps);

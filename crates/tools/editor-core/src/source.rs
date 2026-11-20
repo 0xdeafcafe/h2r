@@ -4,12 +4,15 @@
 //! file, or a folder of `.map` files (an extracted `maps` directory).
 //! Read-only; nothing is copied anywhere.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use map::{Map, ResourceFile};
+use map::{Header, Map, ResourceFile};
+
+use crate::map_groups::MapGroup;
 
 /// A disc image's `/maps/*.map` files.
 pub struct Disc {
@@ -37,27 +40,24 @@ impl Disc {
     /// Map names (without `.map`) in on-disc order: only files directly
     /// under `/maps/`, the set [`Disc::open_map`] accepts.
     pub fn map_names(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .filter_map(|e| map_name(&e.path))
-            .map(str::to_owned)
-            .collect()
+        self.map_regions().map(|(name, _)| name.to_owned()).collect()
     }
 
     /// The byte range `(offset, length)` of `/maps/<name>.map` in the image.
     pub fn region(&self, name: &str) -> Result<(u64, u64)> {
         let want = name.strip_suffix(".map").unwrap_or(name);
-        let e = self
-            .entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .find(|e| map_name(&e.path).is_some_and(|n| n.eq_ignore_ascii_case(want)))
-            .with_context(|| format!("no /maps/{want}.map on disc"))?;
-        Ok((
-            self.partition + u64::from(e.sector) * xiso::SECTOR,
-            u64::from(e.size),
-        ))
+        self.map_regions()
+            .find(|(name, _)| name.eq_ignore_ascii_case(want))
+            .map(|(_, region)| region)
+            .with_context(|| format!("no /maps/{want}.map on disc"))
+    }
+
+    fn map_regions(&self) -> impl Iterator<Item = (&str, (u64, u64))> {
+        self.entries.iter().filter(|e| !e.is_dir).filter_map(|e| {
+            let name = map_name(&e.path)?;
+            let base = self.partition + u64::from(e.sector) * xiso::SECTOR;
+            Some((name, (base, u64::from(e.size))))
+        })
     }
 
     pub fn open_map(&self, name: &str) -> Result<Map<BufReader<File>>> {
@@ -111,8 +111,8 @@ impl MapSource {
         }
     }
 
-    /// What the sidebar lists: every map on a disc or in the folder (sorted),
-    /// or the loose map's stem.
+    /// Every map stem in the source. Disc maps follow on-disc order, and
+    /// folder maps are sorted by stem.
     pub fn map_names(&self) -> Vec<String> {
         match self {
             MapSource::Disc(d) => d.map_names(),
@@ -121,6 +121,37 @@ impl MapSource {
                 .file_stem()
                 .map(|s| vec![s.to_string_lossy().into_owned()])
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Sections keyed by map stem, read from the cache headers.
+    pub fn map_groups(&self) -> HashMap<String, MapGroup> {
+        match self {
+            Self::Disc(disc) => {
+                let mut file = File::open(disc.path()).ok();
+                disc.map_regions()
+                    .map(|(name, (base, length))| {
+                        let header = file.as_mut().and_then(|file| {
+                            Header::read_region(file, base, length).ok()
+                        });
+                        (name.to_owned(), map_group(name, header))
+                    })
+                    .collect()
+            }
+            Self::Folder(dir) => folder_entries(dir)
+                .into_iter()
+                .map(|(name, path)| {
+                    let group = map_group(&name, file_header(&path).ok());
+                    (name, group)
+                })
+                .collect(),
+            Self::Loose(path) => self.map_names()
+                .into_iter()
+                .map(|name| {
+                    let group = map_group(&name, file_header(path).ok());
+                    (name, group)
+                })
+                .collect(),
         }
     }
 
@@ -203,6 +234,16 @@ impl MapSource {
     }
 }
 
+fn file_header(path: &Path) -> Result<Header> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    Ok(Header::read_region(&mut file, 0, length)?)
+}
+
+fn map_group(name: &str, header: Option<Header>) -> MapGroup {
+    MapGroup::classify(name, header.map_or(MapGroup::Other, |h| h.cache_type.into()))
+}
+
 /// Reads raw-resource byte ranges, bounded by each map file's extent.
 pub struct Resources {
     files: Vec<(ResourceFile, PathBuf, u64, u64)>,
@@ -253,7 +294,7 @@ pub fn folder_maps(dir: &Path) -> Vec<String> {
 }
 
 /// `(stem, path)` of each `*.map` file directly in `dir`, sorted by stem.
-fn folder_entries(dir: &Path) -> Vec<(String, PathBuf)> {
+pub(super) fn folder_entries(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };

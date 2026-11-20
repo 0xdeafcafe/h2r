@@ -773,12 +773,11 @@ mod tests {
         };
         assert_eq!(
             h.studio.map_list.shown(Group::Halo2).cloned(),
-            rows(&[
-                ("The Pier", true),
-                ("mainmenu", false),
-                ("shared", false),
-                ("Yard", true)
-            ])
+            rows(&[("Yard", true), ("The Pier", true)])
+        );
+        assert_eq!(
+            h.studio.map_list.shown(Group::SharedAndMenu).cloned(),
+            rows(&[("mainmenu", false), ("shared", false)])
         );
         assert_eq!(
             h.studio.map_list.shown(Group::Packages).cloned(),

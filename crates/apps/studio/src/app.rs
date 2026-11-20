@@ -4,6 +4,7 @@
 //! guard. The Dear ImGui layer (`ui`) turns
 //! clicks and shortcuts into [`Action`]s and draws this state; tests drive
 //! it directly.
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod commands;
@@ -31,6 +32,7 @@ pub use hud::HudTool;
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
+use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
@@ -343,6 +345,7 @@ pub struct LogLine {
 pub struct App {
     source: Option<MapSource>,
     maps: Vec<String>,
+    h2_map_groups: HashMap<String, MapGroup>,
     /// The map loaded into the scenario session, by name.
     loaded: Option<String>,
     /// The file the edited map was last saved to.
@@ -395,6 +398,7 @@ pub struct App {
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
+    h1_map_groups: HashMap<String, MapGroup>,
     /// The Halo 1 map shown read-only, and its name.
     h1_view: Option<editor_core::halo1::H1View>,
     h1_loaded: Option<String>,
@@ -442,6 +446,7 @@ impl App {
         Self {
             source: None,
             maps: Vec::new(),
+            h2_map_groups: HashMap::new(),
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
@@ -470,6 +475,7 @@ impl App {
             pkg_cards: Default::default(),
             h1: None,
             h1_maps: Vec::new(),
+            h1_map_groups: HashMap::new(),
             h1_view: None,
             h1_loaded: None,
             compare: None,
@@ -1312,6 +1318,7 @@ impl App {
         match MapSource::open(path) {
             Ok(source) => {
                 self.maps = source.map_names();
+                self.h2_map_groups = source.map_groups();
                 self.info(format!(
                     "opened {} ({} maps)",
                     path.display(),

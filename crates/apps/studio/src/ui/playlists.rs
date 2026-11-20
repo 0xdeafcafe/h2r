@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use dear_imgui_rs::{Direction, TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
+use editor_core::map_groups::MapGroup;
 use hopper_edit::choices::{Choice, variant_label};
 use hopper_edit::model::{self, EditHopper, EditRecord, MAX_WEIGHT};
 use hopper_edit::presets::{self, PRESETS};
@@ -467,7 +468,16 @@ fn map_picker(ui: &Ui, view: &EditView<'_>, r: &mut EditRecord) {
         .map(|m| m.name.clone())
         .unwrap_or_else(|| format!("id {} (not a map in this game)", r.id));
     if let Some(_c) = ui.begin_combo("##map", shown) {
-        for m in &c.maps {
+        let group = MapGroup::Multiplayer;
+        let mut maps: Vec<_> = c
+            .maps
+            .iter()
+            .filter(|m| MapGroup::classify(m.key.as_deref().unwrap_or_default(), group) == group)
+            .collect();
+        maps.sort_by_cached_key(|m| (group.sort_key(&m.name), m.id));
+        let mut last = None;
+        for m in maps {
+            super::map_list::section(ui, &mut last, group);
             if ui.selectable_config(&m.name).selected(m.id == r.id).build() {
                 r.id = m.id;
             }
