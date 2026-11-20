@@ -1,7 +1,7 @@
 //! Install a campaign scenario's text without changing Halo 1's message order.
 
 use h1map::H1Map;
-use map::build::{Block, FixupKind, TagPayload, TagSet};
+use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
 
 use crate::text::Result;
@@ -69,7 +69,10 @@ impl LevelText {
             .map(|r| Ustr::read(map, map.tag(r.id)?))
             .transpose()?
             .map_or_else(Vec::new, crate::text::scenario_help::messages);
-        let events = crate::text::events::read(map, refs.object_names)?;
+        let events = crate::text::events::read(
+            map,
+            crate::text::events::Scope::Campaign(refs.object_names),
+        )?;
         let hud_messages = if messages.messages.is_empty()
             && help.is_empty()
             && events.entries.is_empty()
@@ -82,7 +85,7 @@ impl LevelText {
                 &events,
                 &help_flash(map)?,
                 unit_hud(map)?,
-                &set.strings,
+                Some(&set.strings),
             )?
             .install(set, &path)?)
         };
@@ -132,18 +135,7 @@ impl LevelText {
         let TagPayload::Built(root) = &mut tag.payload else {
             return;
         };
-        if let Some(FixupKind::Block { child, .. }) = root
-            .fixups
-            .iter_mut()
-            .find(|fixup| fixup.offset == hud::PROMPT_SUBJECTS)
-            .map(|fixup| &mut fixup.kind)
-        {
-            for (index, id) in definitions {
-                let offset = index as u32 * hud::PROMPT_SUBJECT_SIZE;
-                child.fixups.retain(|fixup| fixup.offset != offset);
-                child.tag_id(offset, id);
-            }
-        }
+        hud::bind_subjects(root, definitions);
     }
 
     /// Index control prompts by the new placements, including gaps from

@@ -1783,6 +1783,15 @@ name; the converted cyborg's HUD (`nhdt`) has a widget on the body
 is an `eqip` with `+0x12c` = 5 (i16) and `+0x130` > 0; retail Halo 2
 already handles that powerup type, so no hook is needed.
 
+### Pickup HUD text (**Built**)
+
+The Halo 1 sandbox's weapons show their source name and silhouette in
+the pickup and swap prompts. Halo 2 sandbox weapons use the retail
+HUD strings. In both sandboxes, automatic Halo 1 power-up pickups show
+their source pickup notification. The scenario's `hmt ` ties the
+rebuilt items to the existing HUD lookup. See [the disc and XBE
+evidence](text.md#multiplayer-pickup-text).
+
 ## What only a game run can prove
 
 - that the engine loads a converted `sbsp`/`ltmp` and the player stands on
