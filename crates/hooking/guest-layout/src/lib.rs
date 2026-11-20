@@ -9,8 +9,12 @@
 //! field read is a bounds check and a load; through `dyn` memory (what
 //! engine code holds) it is one virtual call, as before.
 //!
-//! What sits on top: `engine::view` keeps its datum-array and builder
-//! machinery and takes these offsets; `sim-state` (docs/engine/sim-review.md
+//! The guest-memory boundary ([`memory`], [`testing`]), datum arrays and
+//! handles ([`datum`], [`handle`]), the tag index ([`tags`]), typed views
+//! ([`view`], `record!`) and the one table of named guest functions and
+//! globals ([`points`]) live here too; `engine` re-exports them.
+//!
+//! What sits on top: `sim-state` (docs/engine/sim-review.md
 //! lane 6) builds `ObjectView`/`UnitView` and `SimRead` over [`object`],
 //! [`unit`], [`player`] and [`game`] (docs/engine/sim-rewrite-objects.md
 //! section 8). Bots, telemetry and the agent API read the same

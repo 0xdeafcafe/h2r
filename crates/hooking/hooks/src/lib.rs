@@ -66,6 +66,8 @@ pub mod render_timing;
 pub mod shadow;
 #[cfg(feature = "native-render")]
 pub mod scene_step;
+pub mod scene_entries;
+pub mod scope_zoom_hud;
 pub mod sim_frame;
 pub mod sim_native;
 pub mod sim_objects;
@@ -91,37 +93,6 @@ pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
-
-/// Retail instruction boundaries that the emitter must route through entry
-/// dispatch. Hook bodies keep working on images with only a subset present.
-#[cfg(not(feature = "native-render"))]
-pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
-    std::iter::empty()
-}
-
-/// Retail instruction boundaries that the emitter must route through entry
-/// dispatch. Hook bodies keep working on images with only a subset present.
-#[cfg(feature = "native-render")]
-pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
-    let mut seen = std::collections::HashSet::new();
-    [
-        native_decals::DECAL_ITEM_GEOMETRY.base,
-        native_decals::DECAL_RENDER_END.base,
-        native_transparents::GEOMETRY_RANGE_READY.base,
-        native_transparents::SCENE_TRANSPARENTS_END.base,
-        native_hud::HUD_QUAD_READY.base,
-        native_post::SCREEN_STRIP_READY.base,
-        native_particles::EMIT_READY.base,
-        native_particles::EMIT_PUBLISH.base,
-        native_particles::EMIT_END.base,
-        native_particles::DYNAMIC_QUAD_READY.base,
-        native_particles::DYNAMIC_PUBLISH.base,
-        native_particles::DYNAMIC_END.base,
-    ].into_iter().chain(native_effects::instruction_entries())
-        .chain(native_scene_lists::instruction_entries())
-        .chain(native_hud::instruction_entries())
-        .filter(move |&address| seen.insert(address))
-}
 
 /// Log the full startup plan and first use of each hook. Read once.
 pub fn plan_verbose() -> bool {
