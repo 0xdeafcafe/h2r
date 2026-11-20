@@ -37,7 +37,7 @@ use agent_proto::{RpcError, code, method};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use bots::pad_source::{Frame, PadSource};
+use bots::pad_source::{Frame, PadSource, Sampled};
 use feature::sim_frame::SimFrame;
 
 use crate::telemetry;
@@ -431,6 +431,7 @@ impl Sim {
                 brain,
                 sim: Arc::clone(&self.0),
                 last_tick: None,
+                thinking: None,
             };
             let id = bots::phantom::Identity {
                 xuid: live_proto::bots::local_xuid(u32::from(b.seat) + 1).0,
@@ -685,6 +686,9 @@ pub struct Metered {
     brain: bots::Brain,
     sim: Arc<Inner>,
     last_tick: Option<u32>,
+    /// A split sample's tick and, once thought, its pad (bots::think): the
+    /// count waits for the game thread's conclusion.
+    thinking: Option<(u32, Option<HostPadState>)>,
 }
 
 impl PadSource for Metered {
@@ -695,6 +699,7 @@ impl PadSource for Metered {
     fn reset_input(&mut self) {
         self.brain.reset_input();
         self.last_tick = None;
+        self.thinking = None;
     }
 
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
@@ -706,7 +711,46 @@ impl PadSource for Metered {
             return HostPadState::default();
         }
         let pad = self.brain.pad(f);
-        let t = f.tick;
+        self.meter(f.tick, pad);
+        pad
+    }
+
+    fn observe(&mut self, f: &Frame<'_>) -> Sampled {
+        if self.sim.lock().phase != Phase::Playing {
+            return Sampled::Pad(HostPadState::default());
+        }
+        match self.brain.observe(f) {
+            Sampled::Pad(pad) => {
+                self.meter(f.tick, pad);
+                Sampled::Pad(pad)
+            }
+            Sampled::Think => {
+                self.thinking = Some((f.tick, None));
+                Sampled::Think
+            }
+        }
+    }
+
+    fn think(&mut self) -> HostPadState {
+        let pad = self.brain.think();
+        if let Some((_, thought)) = &mut self.thinking {
+            *thought = Some(pad);
+        }
+        pad
+    }
+
+    fn conclude(&mut self) {
+        self.brain.conclude();
+        if let Some((tick, Some(pad))) = self.thinking.take() {
+            self.meter(tick, pad);
+        }
+    }
+}
+
+impl Metered {
+    /// The brain's tick for the sim's tally: once per game tick, on the
+    /// game thread.
+    fn meter(&mut self, t: u32, pad: HostPadState) {
         if self.last_tick != Some(t) {
             self.last_tick = Some(t);
             let m = &self.brain.mind;
@@ -730,7 +774,6 @@ impl PadSource for Metered {
                 s.tally.brain_for_player(player, b);
             }
         }
-        pad
     }
 }
 

@@ -34,6 +34,7 @@ pub mod roam;
 mod sound;
 pub mod stuck;
 pub mod tactics;
+pub mod think;
 pub mod tuning;
 pub mod vehicle;
 mod visits;
@@ -72,6 +73,31 @@ pub struct Brain {
     player_unit: Option<(u32, u32)>,
     vehicle_headers: Vec<vehicle::read::VehicleHeader>,
     vehicle_seats: vehicle::read::SeatBuffers,
+    /// The radio it listens and talks on ([`radio::host`]).
+    radio: &'static std::sync::Mutex<radio::Radio>,
+    /// What the read phase left for the think
+    /// ([`pad_source::PadSource::observe`]).
+    staged: Option<Staged>,
+    /// Calls the last think made, published by `Brain::speak`.
+    outbox: Outbox,
+    /// Its place in the radio's open batch, from its last listen.
+    seat: Option<radio::Seat>,
+}
+
+/// One sample between the read phase and the think: the observation, with
+/// the radio already heard, and the map it was filtered against.
+struct Staged {
+    observation: Observation,
+    map: Option<Arc<cache::MapData>>,
+}
+
+/// The calls a think made, held for the game thread to publish in seat
+/// order ([`pad_source::PadSource::conclude`]).
+#[derive(Default)]
+struct Outbox {
+    tick: u32,
+    report: Option<radio::Call>,
+    supplies: Vec<radio::SupplyCall>,
 }
 
 #[derive(Default)]
@@ -126,6 +152,7 @@ impl Brain {
         self.sampled = None;
         self.pending_kills.clear();
         self.player_unit = None;
+        self.outbox = Outbox::default();
     }
 
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
@@ -145,7 +172,19 @@ impl Brain {
             player_unit: None,
             vehicle_headers: Vec::new(),
             vehicle_seats: Default::default(),
+            radio: radio::host(),
+            staged: None,
+            outbox: Outbox::default(),
+            seat: None,
         }
+    }
+
+    /// The brain on its own radio, for tests that run beside each other.
+    #[cfg(test)]
+    pub(crate) fn on_radio(mut self, board: &'static std::sync::Mutex<radio::Radio>) -> Self {
+        self.radio = board;
+        self.epoch = radio::lock(board).epoch;
+        self
     }
 
     /// The brain with `t` over its skill: the aim table and awareness while
@@ -206,25 +245,45 @@ impl Brain {
         }
     }
 
+    /// One whole sample in the serial order: listen, think, publish.
+    #[cfg(test)]
     fn sample(
         &mut self,
-        mut observation: Observation,
+        observation: Observation,
         map: Option<&cache::MapData>,
         channel: &std::sync::Mutex<radio::Radio>,
     ) -> HostPadState {
+        let observation = self.listen(observation, channel);
+        let pad = self.decide(observation, map);
+        self.speak(channel);
+        pad
+    }
+
+    /// The radio half of the read phase (game thread, seat order): the
+    /// board moves on to this tick, this bot's deaths prune it, and the
+    /// bot hears its team. A new match gives a fresh mind.
+    fn listen(
+        &mut self,
+        mut observation: Observation,
+        channel: &std::sync::Mutex<radio::Radio>,
+    ) -> Observation {
         let p = &observation.perception;
         let tick = p.tick;
-        let alive = p.me.is_some();
         let epoch = {
             let mut board = radio::lock(channel);
+            let seq = board.take_seat();
             if p.observations.player.is_some() {
                 board.advance(tick);
                 if board.epoch == self.epoch {
                     board.forget_deaths(&observation.kills);
+                    if let Some(seq) = seq {
+                        board.note_forget(seq, &observation.kills);
+                    }
                 }
             }
             board.listen_into(p, &mut observation.inbox);
             board.supply_calls_into(p, &mut observation.supply_calls);
+            self.seat = seq.map(|seq| board.seat(seq));
             board.epoch
         };
         if self.epoch != epoch {
@@ -235,7 +294,16 @@ impl Brain {
             self.epoch = epoch;
             observation.kills.clear();
         }
+        observation
+    }
 
+    /// The think (any thread): everything after the radio is heard, up to
+    /// the pad. Touches this brain, the map data and thread-local scratch
+    /// only; the calls it makes wait in the outbox.
+    fn decide(&mut self, mut observation: Observation, map: Option<&cache::MapData>) -> HostPadState {
+        let p = &observation.perception;
+        let tick = p.tick;
+        let alive = p.me.is_some();
         if self.sampled == Some((tick, alive)) {
             self.pending_kills.append(&mut observation.kills);
             self.spare_observations.push(observation);
@@ -274,18 +342,17 @@ impl Brain {
                     }
                     ready = Some(next);
                 }
-                ready.map_or_else(HostPadState::default, |o| self.think(o, map, channel, tick))
+                ready.map_or_else(HostPadState::default, |o| self.step_mind(o, map, tick))
             } else {
-                self.think(observation, map, channel, tick)
+                self.step_mind(observation, map, tick)
             };
         self.controller.step(tick, intent, limits)
     }
 
-    fn think(
+    fn step_mind(
         &mut self,
         mut observation: Observation,
         map: Option<&cache::MapData>,
-        channel: &std::sync::Mutex<radio::Radio>,
         tick: u32,
     ) -> HostPadState {
         let p = &observation.perception;
@@ -311,20 +378,46 @@ impl Brain {
             )
         });
         let reports = self.mind.decisions.supply_reports(p);
-        if self.mind.decisions.report.is_some() || !reports.is_empty() {
-            let mut board = radio::lock(channel);
-            if board.epoch == self.epoch {
-                if let Some(mut call) = self.mind.decisions.report {
-                    call.tick = tick;
+        self.outbox.tick = tick;
+        self.outbox.report = self.mind.decisions.report.map(|mut call| {
+            call.tick = tick;
+            call
+        });
+        self.outbox.supplies = reports;
+        self.spare_observations.push(observation);
+        pad
+    }
+
+    /// Publishes what the last think said (game thread, seat order). From
+    /// a batch seat the call goes in as the serial order would have put it.
+    fn speak(&mut self, channel: &std::sync::Mutex<radio::Radio>) {
+        let seat = self.seat.take();
+        let out = std::mem::take(&mut self.outbox);
+        if out.report.is_none() && out.supplies.is_empty() {
+            return;
+        }
+        let mut board = radio::lock(channel);
+        if board.epoch != self.epoch {
+            return;
+        }
+        match seat {
+            None => {
+                if let Some(call) = out.report {
                     board.publish(call);
                 }
-                for call in reports {
-                    board.publish_supply(call, tick);
+            }
+            Some(seat) => {
+                if !seat.accepts(self.epoch, out.tick) {
+                    return;
+                }
+                if let Some(call) = out.report {
+                    board.publish_seated(seat, call);
                 }
             }
         }
-        self.spare_observations.push(observation);
-        pad
+        for call in out.supplies {
+            board.publish_supply(call, out.tick);
+        }
     }
 }
 
@@ -347,6 +440,12 @@ impl pad_source::PadSource for Brain {
             self.controller.reset();
         }
         self.player_unit = None;
+        // A think staged or made for the interrupted stream says nothing.
+        if let Some(staged) = self.staged.take() {
+            self.spare_observations.push(staged.observation);
+        }
+        self.outbox = Outbox::default();
+        self.seat = None;
     }
 
     fn phantom_latency(&self) -> tuning::PhantomLatency {
@@ -356,6 +455,21 @@ impl pad_source::PadSource for Brain {
     fn pad(&mut self, f: &pad_source::Frame<'_>) -> HostPadState {
         self.pad_in_map(f, cache::current().as_ref())
     }
+
+    fn observe(&mut self, f: &pad_source::Frame<'_>) -> pad_source::Sampled {
+        self.observe_in_map(f, cache::current().as_ref())
+    }
+
+    fn think(&mut self) -> HostPadState {
+        match self.staged.take() {
+            Some(Staged { observation, map }) => self.decide(observation, map.as_deref()),
+            None => self.controller.report(),
+        }
+    }
+
+    fn conclude(&mut self) {
+        self.speak(self.radio);
+    }
 }
 
 impl Brain {
@@ -364,6 +478,26 @@ impl Brain {
         f: &pad_source::Frame<'_>,
         map: Option<&Arc<cache::MapData>>,
     ) -> HostPadState {
+        use pad_source::PadSource;
+        match self.observe_in_map(f, map) {
+            pad_source::Sampled::Pad(pad) => pad,
+            pad_source::Sampled::Think => {
+                let pad = self.think();
+                self.conclude();
+                pad
+            }
+        }
+    }
+
+    /// The read phase (game thread): everything the bot takes from the
+    /// guest and from host-wide state (kill feed, shots, the loaded map,
+    /// the radio), staged for [`pad_source::PadSource::think`].
+    fn observe_in_map(
+        &mut self,
+        f: &pad_source::Frame<'_>,
+        map: Option<&Arc<cache::MapData>>,
+    ) -> pad_source::Sampled {
+        use pad_source::Sampled;
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         let cursor = emote::kills().since_into(self.kills_seen, &mut observation.kills);
         let name_change = autonav::loaded_change(&self.map);
@@ -383,7 +517,7 @@ impl Brain {
         {
             self.kills_seen = cursor;
             self.spare_observations.push(observation);
-            return self.controller.report();
+            return Sampled::Pad(self.controller.report());
         }
         self.vehicle_headers.clear();
         if guest::perception_into(
@@ -398,7 +532,7 @@ impl Brain {
         {
             self.spare_observations.push(observation);
             pad_source::PadSource::reset_input(self);
-            return HostPadState::default();
+            return Sampled::Pad(HostPadState::default());
         }
         if let Some(name) = name_change {
             self.mind.bounces = glitches::bounces(&name);
@@ -470,7 +604,43 @@ impl Brain {
             observation.sounds.clear();
             observation.grenades.clear();
         }
-        self.sample(observation, map_data, radio::host())
+        let observation = self.listen(observation, self.radio);
+        self.staged = Some(Staged {
+            observation,
+            map: map.cloned(),
+        });
+        Sampled::Think
+    }
+
+    /// The read phase from a fixture instead of the guest: `p` and the
+    /// kills heard since the last sample, filtered as the guest read is.
+    #[cfg(test)]
+    pub(crate) fn observe_fixture(
+        &mut self,
+        p: brain::Perception,
+        kills: &[emote::Kill],
+        map: Option<&Arc<cache::MapData>>,
+    ) -> pad_source::Sampled {
+        let mut observation = self.spare_observations.pop().unwrap_or_default();
+        observation.perception = p;
+        observation.kills.clear();
+        observation.kills.extend_from_slice(kills);
+        observation.sounds.clear();
+        observation.grenades.clear();
+        self.vehicle_seats.clear_sight(&mut observation.vehicles);
+        observation.visible_players = Some(perceive::observe_for_brain(
+            &mut observation.perception,
+            &mut observation.vehicles,
+            &mut observation.kills,
+            map.map(|m| m.as_ref()),
+            &mut self.vehicle_seats,
+        ));
+        let observation = self.listen(observation, self.radio);
+        self.staged = Some(Staged {
+            observation,
+            map: map.cloned(),
+        });
+        pad_source::Sampled::Think
     }
 }
 

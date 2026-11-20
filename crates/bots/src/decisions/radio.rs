@@ -1,5 +1,13 @@
 //! The host's local and phantom pads share one radio. Publish into this
 //! tick, listen to completed ticks only, so pad polling order is irrelevant.
+//!
+//! Almost: a bot's own deaths prune pending calls ([`Radio::forget_deaths`]),
+//! and a pad sampled later in the same tick prunes the calls of the bots
+//! sampled before it. A batch ([`Radio::begin_batch`], `crate::think`)
+//! listens for every bot first and publishes after they have all thought;
+//! it keeps each listener's place ([`Seat`]) and the deaths it pruned with,
+//! so a call published late is pruned exactly as the serial order would
+//! have pruned it.
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use super::supplies::Supply;
@@ -57,10 +65,43 @@ pub(crate) struct Radio {
     pending: Vec<Call>,
     supplies: Vec<SupplyCall>,
     pending_supplies: Vec<SupplyCall>,
+    batch: Option<Batch>,
+}
+
+/// One batch of listeners: each one's place in seat order and the deaths
+/// it pruned pending calls with.
+#[derive(Default)]
+struct Batch {
+    next: u32,
+    forgets: Vec<(u32, Vec<crate::emote::Kill>)>,
+}
+
+/// A listener's place in a batch and the board as the serial order would
+/// have left it for that listener's publish: right after its own listen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seat {
+    seq: u32,
+    tick: Option<u32>,
+    epoch: u64,
+}
+
+impl Seat {
+    /// Whether a serial publish right after this seat's listen would have
+    /// reached the board: same match, and the board on the call's tick.
+    pub fn accepts(self, epoch: u64, tick: u32) -> bool {
+        self.epoch == epoch && self.tick == Some(tick)
+    }
+}
+
+fn survives(kills: &[crate::emote::Kill], c: &Call) -> bool {
+    !kills
+        .iter()
+        .any(|k| k.tick >= c.tick && (k.victim == c.sender || k.victim == c.target))
 }
 
 impl Radio {
     pub fn reset(&mut self) {
+        self.batch = None;
         self.epoch = self.epoch.wrapping_add(1);
         self.tick = None;
         self.ready.clear();
@@ -99,13 +140,76 @@ impl Radio {
         if kills.is_empty() {
             return;
         }
-        let surviving = |c: &Call| {
-            !kills
+        self.ready.retain(|c| survives(kills, c));
+        self.pending.retain(|c| survives(kills, c));
+    }
+
+    /// Opens a batch: the listeners that follow take places in order.
+    /// Replaces any batch still open.
+    pub fn begin_batch(&mut self) {
+        self.batch = Some(Batch::default());
+    }
+
+    pub fn end_batch(&mut self) {
+        self.batch = None;
+    }
+
+    /// The next place in the open batch, if one is open.
+    pub fn take_seat(&mut self) -> Option<u32> {
+        let b = self.batch.as_mut()?;
+        let seq = b.next;
+        b.next += 1;
+        Some(seq)
+    }
+
+    /// The seat `seq` with the board as it is now (after its listen).
+    pub fn seat(&self, seq: u32) -> Seat {
+        Seat {
+            seq,
+            tick: self.tick,
+            epoch: self.epoch,
+        }
+    }
+
+    /// Records the deaths seat `seq` pruned with, for the calls published
+    /// by earlier seats after it ([`Radio::publish_seated`]).
+    pub fn note_forget(&mut self, seq: u32, kills: &[crate::emote::Kill]) {
+        if kills.is_empty() {
+            return;
+        }
+        if let Some(b) = self.batch.as_mut() {
+            b.forgets.push((seq, kills.to_vec()));
+        }
+    }
+
+    /// [`Radio::publish`] from a batch seat: the call goes in as if the
+    /// seat had published before the later seats listened, so their deaths
+    /// prune it. The caller checks [`Seat::accepts`].
+    pub fn publish_seated(&mut self, seat: Seat, call: Call) {
+        if self.tick != Some(call.tick) {
+            return;
+        }
+        self.pending.retain(|c| c.sender != call.sender);
+        let pruned = self.batch.as_ref().is_some_and(|b| {
+            b.forgets
                 .iter()
-                .any(|k| k.tick >= c.tick && (k.victim == c.sender || k.victim == c.target))
-        };
-        self.ready.retain(surviving);
-        self.pending.retain(surviving);
+                .any(|(seq, kills)| *seq > seat.seq && !survives(kills, &call))
+        });
+        if !pruned {
+            self.pending.push(call);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn digest(&self) -> (u64, Option<u32>, Vec<Call>, Vec<Call>, usize, usize) {
+        (
+            self.epoch,
+            self.tick,
+            self.ready.clone(),
+            self.pending.clone(),
+            self.supplies.len(),
+            self.pending_supplies.len(),
+        )
     }
 
     #[cfg(test)]
@@ -173,4 +277,72 @@ pub(crate) fn lock(board: &Mutex<Radio>) -> MutexGuard<'_, Radio> {
 
 pub(crate) fn map_loaded() {
     lock(host()).reset();
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use crate::emote::Kill;
+
+    fn call(sender: u32, target: u32, tick: u32) -> Call {
+        Call {
+            sender,
+            team: 0,
+            target,
+            at: [0.0; 3],
+            tick,
+            help: false,
+        }
+    }
+
+    fn death(victim: u32, tick: u32) -> Kill {
+        Kill {
+            seq: 1,
+            tick,
+            victim,
+            attacker: None,
+            betrayal: false,
+            at: None,
+        }
+    }
+
+    /// Serial: listen 0, publish 0, listen 1 (which prunes 0's call).
+    /// Batched: listen 0, listen 1, publish 0, publish 1. Same pending.
+    #[test]
+    fn a_seated_publish_is_pruned_by_later_listeners_only() {
+        let kills = [death(9, 5)];
+        let mut serial = Radio::default();
+        serial.advance(5);
+        serial.publish(call(0, 9, 5));
+        serial.forget_deaths(&kills);
+        serial.publish(call(1, 9, 5));
+
+        let mut batched = Radio::default();
+        batched.begin_batch();
+        let s0 = batched.take_seat().unwrap();
+        batched.advance(5);
+        let seat0 = batched.seat(s0);
+        let s1 = batched.take_seat().unwrap();
+        batched.forget_deaths(&kills);
+        batched.note_forget(s1, &kills);
+        let seat1 = batched.seat(s1);
+        assert!(seat0.accepts(batched.epoch, 5));
+        batched.publish_seated(seat0, call(0, 9, 5));
+        batched.publish_seated(seat1, call(1, 9, 5));
+        assert_eq!(serial.digest(), batched.digest());
+        assert_eq!(batched.pending, [call(1, 9, 5)]);
+    }
+
+    #[test]
+    fn a_seat_before_the_board_reached_the_tick_publishes_nothing() {
+        let mut r = Radio::default();
+        r.advance(4);
+        r.begin_batch();
+        let s0 = r.take_seat().unwrap();
+        // Seat 0 had no player and did not advance; seat 1 did.
+        let seat0 = r.seat(s0);
+        r.take_seat();
+        r.advance(5);
+        assert!(!seat0.accepts(r.epoch, 5));
+    }
 }

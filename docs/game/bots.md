@@ -2764,6 +2764,82 @@ opening gate applies the retail hold through `round(1.5 * tick_rate)`
 (`0x15c4c6`). Since action gather precedes the update, the gate opens
 at tick 56 at 30 Hz if the phantom's own fade has cleared.
 
+### 5.5 Brains off the game thread
+
+`bots::think`. The simulation's gather (`0x84990`) asks for one phantom's
+pad at a time, on the game thread. Read and think used to run whole at
+each slot. In a Clankers sample on Waterworks the brains took about 62% of
+the game thread. Three modes, set with `Phantoms::set_think_mode`, or
+from the environment for the process's phantoms:
+
+| `H2_BOT_THREADS` | `H2_BOT_PIPELINE` | Mode |
+|---|---|---|
+| unset, `0`, `off` | unset, off | **Serial** (the default): each phantom sampled whole at its own slot. |
+| `N` or `auto` | unset, off | **Batched**: every phantom at the tick's first gather, the thinks across `N` workers. |
+| `N`, `auto` or unset | `1`, `on` | **Pipelined**: batched, and the thinks overlap the guest's tick. |
+
+`auto` takes one worker fewer than the cores, at most 8. The game thread
+also runs queued thinks while it waits for them.
+
+A batched sample has three phases (`PadSource::observe`, `think`,
+`conclude`; a plain `pad` runs all three in a row):
+
+1. **Read**, on the game thread in slot order. Each phantom reads the
+   guest's state, the kill feed, recent shots, the loaded map and the radio
+   into its own staged observation. Every guest read happens here, before
+   any think starts.
+2. **Think**, on the workers. Perception filtering is already done.
+   Memory, decisions, routes, aim and the human-input controller run here.
+   A think touches its own brain, the shared map data (`Arc`, read-only)
+   and thread-local scratch: the A\* workspace, grid visit marks and
+   the tuning scope. Each of these is reset per query. No think reads
+   another brain or guest memory.
+3. **Conclude**, on the game thread in slot order. Each brain publishes
+   its radio calls.
+
+Radio order is kept. Each brain prunes calls with its own deaths, so a
+serial gather could prune a call published by an earlier slot in the
+same tick. A batch records each listener's place and the deaths it pruned
+with (`radio::Seat`, `Radio::publish_seated`). A late publish is then
+pruned only by later slots, and only while the board was on the call's
+tick for that slot. That is what the serial order did. Batched and serial
+give the same pads, minds and radio at any thread count.
+
+The batch covers the phantoms the gather would sample this tick. These
+are joined phantoms whose own slot is remote mode 4 with a listed player
+of its machine ID and a live unit. An interrupted stream is reset first,
+as at the slot. Slots go in address order. The batch is held per hosted
+game and tick, and later slots take their pad from it. A phantom outside
+it (the checks disagreed) is sampled whole at its slot. Building the
+retail action in a private executor writes nothing a perception read
+looks at. Between two slots, main memory only gets the slot's action
+record and stamp, the `0x14d0a0` check of `out`, and possibly an
+animation-cache fill. Reading every phantom at the first gather therefore
+reads what each later slot would have read. The sim's state hashes should
+confirm this (§11).
+
+**Pipelined**, the thinks staged at tick N run while the guest simulates
+N, and their pads are tick N+1's: the bot acts on what it saw a tick ago.
+Phantoms model a network seat, so the uplink takes that tick back off its
+wire delay (`Uplink::think_ticks`). The host then gets the same input on
+the same tick as serial, except on the first tick after the opening fade.
+A pad source that has its pad without a think (a script, a recording) is
+not delayed. A think from before an input reset (generation) or a tick
+gap is dropped, and the seat sends a neutral pad. When the hosted game
+ends, the thinks in flight are settled. The fade gate (§5.4) is
+unchanged: brains observe and plan through the fade, the uplink sends a
+neutral pad while it is up, and the first clear tick sends the newest
+pad at once.
+
+The boot sources (`clankers::Clanker`, `sim_glue::Metered`) forward the
+three phases. `Metered` counts the sim tally at the conclusion, on the
+game thread.
+
+Tests: `bots::think::tests` (serial against batched at 0 to 8 threads,
+pipelined pads one tick later with identical thinks and radio, reset and
+gap drops, the pool) and `phantom::action::tests` (the fade and latency
+with the pipeline).
+
 ## 6. Phantom players in the game record
 
 Bots run on the host. Clients see them as remote players, with their
