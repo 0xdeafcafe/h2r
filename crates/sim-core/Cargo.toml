@@ -14,3 +14,7 @@ simd.workspace = true
 # compare both paths. Off in shipping builds, so `lanes::enabled` reads one
 # atomic and no thread-local.
 override = []
+
+[dev-dependencies]
+# The reference for `det::x87_neg_quotient`.
+x87.workspace = true
