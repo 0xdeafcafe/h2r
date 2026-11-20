@@ -35,6 +35,8 @@ mod machine;
 mod projectile;
 mod scenery;
 mod sse;
+// Slice 9: the weapon update.
+mod weapon;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -124,6 +126,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
     Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
     Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
+    // Slice 9: the weapon update (the `weap` descriptor's slot `+40`).
+    Body { point: &points::WEAPON_UPDATE, sites: &weapon::WEAPON_SITES, run: weapon::weapon_update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

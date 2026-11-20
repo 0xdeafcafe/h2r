@@ -1233,6 +1233,9 @@ points! { ALL;
     CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Creature post-physics update: slot `+44` of `crea`.
     CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 9 of docs/engine/sim-rewrite-objects.md: the weapon update.
+    /// Weapon update: slot `+40` of `weap`, after the item update.
+    WEAPON_UPDATE @ 0x000f_dfb0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
