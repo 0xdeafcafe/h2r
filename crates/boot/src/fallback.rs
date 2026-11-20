@@ -31,6 +31,30 @@ struct Tables {
     resumes: HashSet<u32>,
 }
 
+/// Registry routes for owners whose bodies were left out of a slim module.
+/// Pairs are (selector, owner), with a separate table for each route.
+#[derive(Clone, Copy)]
+pub(crate) struct ColdRoutes<'a> {
+    pub entries: &'a [[u32; 2]],
+    pub resumes: &'a [[u32; 2]],
+}
+
+pub(crate) fn register_cold(
+    dispatch: &mut runtime::Dispatch,
+    routes: ColdRoutes<'_>,
+    interpret: fn(&mut CpuAbi, &mut ExecCtx, u32, u32) -> TransferAbi,
+) -> Result<(), runtime::dispatch::RegistrationError> {
+    for &[pc, owner] in routes.entries {
+        dispatch.register_generated_rust(pc, move |cpu, ctx, selector| {
+            Ok(interpret(cpu, ctx, owner, selector))
+        })?;
+    }
+    for &[pc, owner] in routes.resumes {
+        dispatch.register_resume(pc, owner, pc)?;
+    }
+    Ok(())
+}
+
 static TABLES: OnceLock<Tables> = OnceLock::new();
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static XBE: OnceLock<&'static [u8]> = OnceLock::new();
@@ -46,6 +70,8 @@ pub struct Stats {
     /// Each address the interpreter was entered at (the STOP's), at most
     /// [`MAX_SITES`] of them: for the agent's `profile.fallbacks`.
     pub by_site: std::collections::BTreeMap<u32, Site>,
+    /// Coverage misses, keyed by (owner, selector) without the safety net's site cap.
+    pub cold: std::collections::BTreeMap<(u32, u32), u64>,
 }
 
 /// One fallback entry address: how often, how much it interpreted, and
@@ -95,6 +121,8 @@ impl Stats {
             .collect();
         serde_json::json!({
             "fallbacks": self.fallbacks,
+            "cold_entries": self.cold.values().sum::<u64>(),
+            "cold_sites": self.cold.len(),
             "interpreted": self.interpreted,
             "x87": self.x87,
             "x87_mnemonics": self.x87_mnemonics,
@@ -112,6 +140,7 @@ struct State {
     lifter: lift::Lifter<'static>,
     functions: Vec<u32>,
     cache: HashMap<u32, ir::IrInsn>,
+    cold: HashMap<u32, rustc_hash::FxHashMap<u32, ir::IrInsn>>,
 }
 
 /// Whether an unsupported-instruction STOP from generated code is
@@ -136,6 +165,15 @@ static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// can reach the trampoline. Returns the count of resume selectors that
 /// map to more than one handler.
 pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, u32)]) -> Result<usize, String> {
+    init_with_cold(xbe_bytes, entries, resumes, None)
+}
+
+pub(crate) fn init_with_cold(
+    xbe_bytes: &[u8],
+    entries: &[(u32, GuestFn)],
+    resumes: &[(u32, u32, u32)],
+    cold: Option<ColdRoutes<'_>>,
+) -> Result<usize, String> {
     if CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("the boot fallback serves one generated module per process; a second load was refused".into());
     }
@@ -150,11 +188,15 @@ pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, 
             conflicts += 1;
         }
     }
-    let tables = Tables {
+    let mut tables = Tables {
         handlers,
         entries: entries.iter().map(|e| e.0).collect(),
         resumes: resumes.iter().map(|r| r.0).collect(),
     };
+    if let Some(cold) = cold {
+        tables.entries.extend(cold.entries.iter().map(|r| r[0]));
+        tables.resumes.extend(cold.resumes.iter().map(|r| r[0]));
+    }
     // CLAIMED guarantees these are unset.
     let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
     assert!(set, "fallback tables set outside init");
@@ -211,14 +253,37 @@ fn build_state() -> &'static Mutex<State> {
         // net is ready, not in use. The exit line ("fallback: N entries")
         // and `H2_HOST_PERF` ("fallback N/frame") count what ran.
         eprintln!(
-            "fallback: interpreter safety net ready (image analysed in {:.1}s); nothing runs on it unless generated code stops, counted at exit",
+            "fallback: interpreter ready (image analysed in {:.1}s); entries counted at exit",
             t.elapsed().as_secs_f64()
         );
-        Mutex::new(State { lifter, functions, cache: HashMap::new() })
+        Mutex::new(State { lifter, functions, cache: HashMap::new(), cold: HashMap::new() })
     })
 }
 
 impl State {
+    fn cold_insn(&mut self, owner: u32, pc: u32) -> Option<&ir::IrInsn> {
+        // Overlapping owners can disagree about which edges leave the
+        // function. Use the same owner as the full module's registry.
+        let body = self.cold.entry(owner).or_insert_with(|| {
+            self.lifter.lift(owner).into_iter()
+                .flat_map(|func| func.blocks.into_values())
+                .flat_map(|block| block.insns)
+                .map(|insn| (insn.pc, insn))
+                .collect()
+        });
+        // The interpreter's discovery adds proven unread jump-table
+        // targets. A published resume can be inside one of those new
+        // functions, outside its original owner's widened CFG.
+        let tables = TABLES.get().unwrap();
+        if !body.contains_key(&pc)
+            && UNREAD_ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+            && (tables.resumes.contains(&pc) || tables.entries.contains(&pc))
+        {
+            return self.insn(pc);
+        }
+        self.cold.get(&owner)?.get(&pc)
+    }
+
     fn insn(&mut self, pc: u32) -> Option<&ir::IrInsn> {
         if !self.cache.contains_key(&pc) {
             // Lift the nearest functions at or below pc until one holds it.
@@ -282,16 +347,18 @@ fn from_interp(i: &interp::Cpu, c: &mut CpuAbi) {
     c.mxcsr = i.mxcsr;
 }
 
-struct GuestMem<'a>(&'a mut runtime::Guest, Option<runtime::GuestFault>);
+struct GuestMem<'a>(&'a mut runtime::Guest, Option<runtime::GuestFault>, u64);
 
 impl interp::Memory for GuestMem<'_> {
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), interp::MemFault> {
+        self.2 += 1;
         self.0.read_bytes(addr, buf, 1).map_err(|f| {
             self.1 = Some(f);
             interp::MemFault { addr, write: false }
         })
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), interp::MemFault> {
+        self.2 += 1;
         self.0.write_bytes(addr, data, 1).map_err(|f| {
             self.1 = Some(f);
             interp::MemFault { addr, write: true }
@@ -301,12 +368,14 @@ impl interp::Memory for GuestMem<'_> {
 
 impl crate::x87::Mem for GuestMem<'_> {
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), u32> {
+        self.2 += 1;
         self.0.read_bytes(addr, buf, 1).map_err(|f| {
             self.1 = Some(f);
             addr
         })
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), u32> {
+        self.2 += 1;
         self.0.write_bytes(addr, data, 1).map_err(|f| {
             self.1 = Some(f);
             addr
@@ -337,6 +406,23 @@ fn publish_tsc(reads: u64, mut read: impl FnMut() -> u64) {
 
 /// Interpret from `cpu.eip`.
 fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
+    run_from(cpu, ctx, None)
+}
+
+pub(crate) fn interpret_cold(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
+    {
+        let mut stats = STATS.lock().unwrap();
+        let hits = stats.get_or_insert_default().cold.entry((owner, selector)).or_default();
+        *hits += 1;
+        if hits.is_power_of_two() {
+            eprintln!("fallback: slim host h2fn_{owner:08x} at {selector:#010x}, hits={hits}");
+        }
+    }
+    cpu.eip = selector;
+    ctx.measure(runtime::perf::Scope::Fallback, |ctx| run_from(cpu, ctx, Some(owner)))
+}
+
+fn run_from(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: Option<u32>) -> TransferAbi {
     let tables = TABLES.get().unwrap();
     let mut st = state().lock().unwrap();
     let rt = Arc::clone(ctx.runtime());
@@ -347,12 +433,16 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     icpu.tsc = seed;
     let mut steps = 0u64;
     let (mut x87n, mut mn): (u64, HashMap<String, u64>) = (0, HashMap::new());
+    let mut memory_fault = None;
+    let mut exception = false;
     let result = {
         let mut guard = rt.memory();
-        let mut mem = GuestMem(&mut guard, None);
-        loop {
+        let mut mem = GuestMem(&mut guard, None, 0);
+        let outcome = loop {
             let pc = icpu.eip;
-            if steps > 0 {
+            if owner.is_some() {
+                ctx.charge_accesses(std::mem::take(&mut mem.2));
+            } else if steps > 0 {
                 if tables.resumes.contains(&pc) {
                     break Ok(resume_jump(pc));
                 }
@@ -364,21 +454,55 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
                 break Err(format!("fallback step limit at {pc:#x}"));
             }
             steps += 1;
-            let Some(insn) = st.insn(pc).cloned() else {
+            let insn = match owner {
+                Some(owner) => st.cold_insn(owner, pc),
+                None => st.insn(pc),
+            };
+            let Some(insn) = insn else {
                 break Err(format!("fallback: no lifted instruction at {pc:#x}"));
             };
             if insn.is_supported() {
-                match interp::step(&mut icpu, &mut mem, &insn) {
+                match interp::step(&mut icpu, &mut mem, insn) {
                     Ok(Flow::Call { target, continuation }) => break Ok(TransferAbi::call(target, continuation)),
                     Ok(Flow::Return { target }) => break Ok(TransferAbi::ret(target)),
                     Ok(Flow::Jump { target, tail: true }) => break Ok(TransferAbi::jump(target)),
-                    Ok(_) => continue,
+                    Ok(flow) => {
+                        if owner.is_some() {
+                            let tail = match (&insn.control, flow) {
+                                (ir::Control::Branch { taken, fallthrough, .. }, Flow::Branch { taken: side, .. }) =>
+                                    if side { taken.tail } else { fallthrough.tail },
+                                (ir::Control::Switch { cases, .. }, Flow::Switch { case, .. }) => cases[case].tail,
+                                _ => false,
+                            };
+                            let dest = flow.target();
+                            if tail {
+                                break Ok(TransferAbi::jump(dest));
+                            }
+                            if tables.resumes.contains(&dest) && ctx.preempt_pending() != 0 {
+                                break Ok(resume_jump(dest));
+                            }
+                        }
+                        continue;
+                    }
                     Err(interp::Exit::Memory { pc, .. }) => {
-                        let f = mem.1.take();
-                        break Err(format!("memory fault at {pc:#x}: {f:x?}"));
+                        memory_fault = mem.1.take();
+                        break Err(format!("memory fault at {pc:#x}: {memory_fault:x?}"));
+                    }
+                    Err(interp::Exit::Fault { pc, fault, next }) if owner.is_some() => {
+                        exception = true;
+                        let saved = next.unwrap_or(pc);
+                        break Err(format!("fallback: {fault:?} at {pc:#x} (saved eip {saved:#x})"));
                     }
                     Err(interp::Exit::UnknownTarget { pc, target }) if unread_allowed(pc, target) => {
                         icpu.eip = target;
+                        if owner.is_some() {
+                            let transfer = if !tables.entries.contains(&target) && tables.resumes.contains(&target) {
+                                resume_jump(target)
+                            } else {
+                                TransferAbi::jump(target)
+                            };
+                            break Ok(transfer);
+                        }
                         continue;
                     }
                     Err(e) => break Err(format!("fallback stop: {e:x?}")),
@@ -404,17 +528,21 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
                     icpu.eip = next;
                 }
                 Err(crate::x87::Error::Memory(a)) => {
-                    let f = mem.1.take();
-                    break Err(format!("x87 memory fault at {pc:#x} addr {a:#x}: {f:x?}"));
+                    memory_fault = mem.1.take();
+                    break Err(format!("x87 memory fault at {pc:#x} addr {a:#x}: {memory_fault:x?}"));
                 }
                 Err(crate::x87::Error::Unsupported(s)) => break Err(format!("at {pc:#x}: {s}")),
             }
+        };
+        if owner.is_some() {
+            ctx.charge_accesses(mem.2);
         }
+        outcome
     };
-    let function = {
+    let function = owner.or_else(|| {
         let i = st.functions.partition_point(|&e| e <= cpu.eip);
         i.checked_sub(1).map(|i| st.functions[i])
-    };
+    });
     drop(st);
     // Hand the interpreted reads back (the memory lock is released, so the
     // clock may be read): the next generated rdtsc must not repeat or go
@@ -438,8 +566,15 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     match result {
         Ok(t) => t,
         Err(msg) => {
+            if owner.is_some() && let Some(fault) = memory_fault {
+                return ctx.fault(cpu.eip, fault);
+            }
             let id = crate::shim::record_ctx(ctx, cpu.eip, msg);
-            TransferAbi::stop(id)
+            if owner.is_some() && exception {
+                TransferAbi::fault(id)
+            } else {
+                TransferAbi::stop(id)
+            }
         }
     }
 }
@@ -746,6 +881,12 @@ pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     run(cpu, ctx)
 }
 
+pub(crate) fn log_cold_summary(stats: &Stats) {
+    for (&(owner, selector), &hits) in &stats.cold {
+        eprintln!("fallback: slim host summary h2fn_{owner:08x} at {selector:#010x}, hits={hits}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,6 +935,56 @@ mod tests {
         let old = unread(&[(0x100, &[0x110, 0x120])]);
         assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110, 0x120])])), Vec::<u32>::new());
         assert_eq!(unread_added(&old, &unread(&[(0x100, &[0x110]), (0x200, &[0x120, 0x230])])), [0x230]);
+    }
+
+    #[test]
+    fn cold_entries_and_resumes_preserve_the_dispatch_route() {
+        fn interpret(cpu: &mut CpuAbi, _: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
+            cpu.eax = owner;
+            cpu.ebx = selector;
+            TransferAbi::stop(0)
+        }
+
+        let cold = 0x10000;
+        let label = cold + 0x20;
+        let hot = cold + 0x100;
+        let missing = cold + 0x200;
+        let mut d = runtime::Dispatch::default();
+        register_cold(
+            &mut d,
+            ColdRoutes { entries: &[[cold, cold], [label, cold]], resumes: &[[label, cold]] },
+            interpret,
+        ).unwrap();
+        d.register_generated_rust(hot, |cpu, _, _| {
+            cpu.eax = 1;
+            Ok(TransferAbi::stop(0))
+        }).unwrap();
+        d.register_override(label, "lobby HLE", |cpu, _, _| {
+            cpu.eax = 2;
+            Ok(TransferAbi::stop(0))
+        });
+        let mut guest = runtime::Guest::new();
+        guest.map_zeroed(cold, 0x1000, runtime::guest::Permissions::RX).unwrap();
+        let rt = runtime::Runtime::new(guest, d);
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        let r = runtime::Runner { max_transfers: 1 };
+        for (transfer, registers) in [
+            (TransferAbi::jump(cold), (cold, cold)),
+            (TransferAbi::ret(label), (cold, label)),
+            (TransferAbi::resume(label), (cold, label)),
+            (TransferAbi::jump(label), (2, 0)),
+            (TransferAbi::jump(hot), (1, 0)),
+        ] {
+            let mut cpu = CpuAbi::default();
+            let t = r.run_from(&mut cpu, &mut ctx, transfer);
+            assert_eq!((t.kind, t.event_id), (abi::STOP, 0));
+            assert_eq!((cpu.eax, cpu.ebx), registers);
+        }
+        let mut cpu = CpuAbi::default();
+        let t = rt.resolve_original(label).unwrap().invoke(&mut cpu, &mut ctx, label);
+        assert_eq!((t.kind, cpu.eax, cpu.ebx), (abi::STOP, cold, label));
+        let t = r.run(&mut cpu, &mut ctx, missing);
+        assert!(matches!(ctx.event(t.event_id), Some(Event::UnsupportedTarget { target, .. }) if *target == missing));
     }
 
     /// `profile.fallbacks`: sites by instructions interpreted, with their

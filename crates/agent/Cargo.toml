@@ -14,7 +14,7 @@ agent-proto = { path = "../agent-proto" }
 serde.workspace = true
 serde_json.workspace = true
 runtime.workspace = true
-feature = { path = "../feature" }
+feature = { path = "../feature", default-features = false }
 engine = { path = "../engine", features = ["runtime-glue"] }
 live-telemetry = { path = "../live-telemetry" }
 timeline = { path = "../timeline" }

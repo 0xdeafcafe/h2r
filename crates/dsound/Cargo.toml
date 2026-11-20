@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/audio out"
 
+[features]
+default = ["playback"]
+# A dedicated host only advances DirectSound's guest-visible clock.
+playback = []
+
 [dependencies]
 # The device (cpal) feature is the host's business, not the shim's.
 audio = { path = "../audio", default-features = false }

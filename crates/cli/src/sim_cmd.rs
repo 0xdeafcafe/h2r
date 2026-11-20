@@ -33,6 +33,7 @@ const USAGE: &str = "usage:
                           [--max-parallel N] [--budget-usd X] [--dry-run]
   h2 sim compare <results dir>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
+  h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
 
 A match file names the map, the game type, the limits, the seed and up to 16
 bots (up to four local pads and fifteen phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
@@ -71,6 +72,19 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let c = compare_dir(Path::new(&dir))?;
             print!("{}", c.table());
             Ok(())
+        }
+        Some("audit-coverage") => {
+            let output = it.next().context(USAGE)?;
+            let mut report = boot::host_audit::Report::default();
+            for input in it {
+                let file = File::open(&input).with_context(|| format!("opening {input}"))?;
+                let run: boot::host_audit::Report =
+                    serde_json::from_reader(std::io::BufReader::new(file))
+                        .with_context(|| format!("reading {input}"))?;
+                run.coverage().with_context(|| format!("checking {input}"))?;
+                report.merge(run)?;
+            }
+            report.coverage()?.write(Path::new(&output))
         }
         Some("audit-merge") => {
             let output = it.next().context(USAGE)?;
@@ -219,6 +233,14 @@ fn live_slot(dir: &Path) -> Result<Option<File>> {
     Ok(None)
 }
 
+fn plan_sim_module(xbe: &[u8], out: &Path, choice: boot::tier::Choice) -> Result<boot::tier::Plan> {
+    Ok(if boot::sim_glue::use_light_host()? {
+        boot::tier::plan_light(xbe, out, choice)
+    } else {
+        boot::tier::plan(xbe, out, choice)
+    })
+}
+
 /// `h2 sim run`.
 fn run_one(args: Vec<String>) -> Result<()> {
     let mut common = Common::default();
@@ -269,7 +291,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
         None if std::env::var_os("H2_TIER").is_none() => Choice::Clang,
         None => Choice::from_env()?,
     };
-    let plan = boot::tier::plan(&xbe, &out, choice);
+    let plan = plan_sim_module(&xbe, &out, choice)?;
     if plan.build {
         bail!(
             "h2 sim: {} isn't built for this image and this h2; `h2 build{}` first (sim never builds)",
@@ -281,7 +303,8 @@ fn run_one(args: Vec<String>) -> Result<()> {
             }
         );
     }
-    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, 1, false)?.dylib;
+    let slim = plan.tier == boot::tier::Tier::Host;
+    let lib = plan.dylib;
     let mut slot = None;
     let upload = if let Some((base_url, account)) = account {
         use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
@@ -356,7 +379,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
         );
     }
     println!("report: {}", report.display());
-    if std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
+    if slim || std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
         let report: sim::metrics::Report =
             serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(report)?))?;
         anyhow::ensure!(matches!(report.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver),
@@ -862,9 +885,12 @@ fn batch(args: Vec<String>) -> Result<()> {
         Some(t) => boot::tier::Choice::parse(t)?,
         None => boot::tier::Choice::Clang,
     };
-    if boot::tier::plan(&xbe, &common.out(), choice).build {
+    let plan = plan_sim_module(&xbe, &common.out(), choice)?;
+    if plan.build {
         bail!("h2 sim batch: the image isn't built; `h2 build` first (sim never builds)");
     }
+    anyhow::ensure!(!audit || plan.tier != boot::tier::Tier::Host,
+        "sim batch audit requires a full generated module");
     let shared = common.data();
     std::fs::create_dir_all(&b.out)?;
     let snapshots = b.out.join("snapshots");

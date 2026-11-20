@@ -1254,7 +1254,10 @@ h2 agent fallbacks 20              # where the fallback interpreter runs
   instructions and the function it is in (the nearest analysed start at
   or below it). Kept per address in `boot::fallback::Stats::by_site`, at
   most 4096 addresses (`sites_full` says when later ones count in the
-  totals only).
+  totals only). Slim host modules also report `cold_entries` (total
+  interpreter invocations for omitted owners) and `cold_sites` (distinct
+  owner/selector pairs). The boot log names each pair on first use and
+  reports its final count at shutdown.
 
 ### Load timeline
 

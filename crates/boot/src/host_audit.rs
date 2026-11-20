@@ -22,12 +22,8 @@ pub(crate) fn module_from_env() -> Option<PathBuf> {
 pub(crate) fn module_owners(path: &Path, expected: &str) -> Result<BTreeSet<u32>> {
     let input = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let report: Report = serde_json::from_reader(std::io::BufReader::new(input))?;
-    ensure!(report.format == 1 && report.image == expected && report.light,
-        "host module audit must come from the matching full clang module and light profile");
-    ensure!(report.ticks > 0 && report.unmapped_entries == 0 && !report.functions.is_empty(),
-        "host module audit has no complete generated-entry coverage");
-    ensure!(report.missing_runs.is_empty() && report.missing_hooks.is_empty(),
-        "host module audit has missing runs or hooks");
+    ensure!(report.image == expected, "host module audit must come from the matching full clang module");
+    report.check_coverage()?;
     Ok(report.functions)
 }
 
@@ -81,6 +77,24 @@ pub struct Report {
 }
 
 impl Report {
+    fn check_coverage(&self) -> Result<()> {
+        ensure!(self.format == 1 && self.light && self.image.starts_with("xbe ") && self.image.lines().count() == 1,
+            "host audit must use the light profile and a full clang module");
+        ensure!(self.runs > 0 && self.ticks > 0 && self.unmapped_entries == 0 && !self.functions.is_empty(),
+            "host audit has no complete generated-entry coverage");
+        ensure!(self.missing_runs.is_empty() && self.missing_hooks.is_empty(),
+            "host audit has missing runs or hooks");
+        Ok(())
+    }
+
+    pub fn coverage(&self) -> Result<crate::host_coverage::Coverage> {
+        self.check_coverage()?;
+        let owners: BTreeSet<_> = self.selectors.iter().map(|&(owner, _)| owner).collect();
+        ensure!(owners == self.functions && owners.is_subset(&self.registered_functions),
+            "host audit selectors disagree with the generated registry");
+        Ok(crate::host_coverage::Coverage { selectors: self.selectors.clone() })
+    }
+
     pub fn merge(&mut self, other: Self) -> Result<()> {
         if self.runs == 0 {
             *self = other;
@@ -444,14 +458,33 @@ mod tests {
 
     #[test]
     fn merge_unions_observations_and_rejects_other_images() {
-        let mut a = Report {
-            runs: 1, format: 1, image: "one".into(), ticks: 5,
-            functions: [1, 2].into(), ..Report::default()
+        let first = Report {
+            runs: 1,
+            format: 1,
+            light: true,
+            image: "xbe one".into(),
+            ticks: 5,
+            registered_functions: [1, 2, 3].into(),
+            functions: [1, 2].into(),
+            selectors: [(1, 1), (2, 2)].into(),
+            ..Report::default()
         };
-        let b = Report { functions: [2, 3].into(), ..a.clone() };
-        a.merge(b).unwrap();
-        assert_eq!(a.functions, [1, 2, 3].into());
-        assert_eq!((a.runs, a.ticks), (2, 10));
-        assert!(a.merge(Report { image: "two".into(), ..a.clone() }).is_err());
+        let second = Report {
+            functions: [2, 3].into(),
+            selectors: [(2, 2), (2, 20), (3, 30)].into(),
+            ..first.clone()
+        };
+        let mut merged = first.clone();
+        merged.merge(second.clone()).unwrap();
+        assert_eq!(merged.functions, [1, 2, 3].into());
+        assert_eq!((merged.runs, merged.ticks), (2, 10));
+        let coverage = merged.coverage().unwrap();
+        assert_eq!(coverage.selectors, [(1, 1), (2, 2), (2, 20), (3, 30)].into());
+        let mut reverse = second;
+        reverse.merge(first).unwrap();
+        assert_eq!(reverse.coverage().unwrap(), coverage);
+        assert!(merged.merge(Report { image: "xbe two".into(), ..merged.clone() }).is_err());
+        merged.missing_runs.insert("missing-match".into());
+        assert!(merged.coverage().is_err());
     }
 }

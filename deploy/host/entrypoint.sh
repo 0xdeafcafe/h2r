@@ -9,7 +9,6 @@ set -eu
 
 export H2_IMAGE="${H2_IMAGE:-/opt/h2/image}"
 export H2_HOST_CACHE="${H2_HOST_CACHE:-/var/cache/h2}"
-mkdir -p "$H2_HOST_CACHE"
 
 set -- host run \
   --lease "$H2_LEASE" \

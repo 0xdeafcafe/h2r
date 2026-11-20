@@ -172,10 +172,14 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     ]
     .into_iter()
     .find(|p| {
+        if let Some(stamp) = boot::current_slim_stamp(&xbe, p) {
+            return film.header.meta.playable_here(&stamp);
+        }
         boot::tier::module_tier(&xbe, p).is_some_and(|tier| {
             let stamp = match tier {
                 boot::tier::Tier::Clang => boot::build_stamp(&xbe),
                 boot::tier::Tier::Fast => boot::tier::fast_stamp(&xbe),
+                boot::tier::Tier::Host => return false,
             };
             film.header.meta.playable_here(&stamp)
         })
