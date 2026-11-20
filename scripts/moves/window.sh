@@ -6,7 +6,7 @@
 #   scripts/moves/window.sh replay <id>   a lane, on its own branch
 #   scripts/moves/window.sh list <id>     the git mv lines, nothing changed
 #
-# <id> is w1, w2, w3, s1, s2, s5, or the name of a spec in scripts/moves/splits/.
+# <id> is w1, w2, w3, s1, s2, s4, s5, or the name of a spec in scripts/moves/splits/.
 # `run` tags the tip move-<id>-pre, runs the window's script, commits
 # exactly its output and tags that move-<id>. `replay` merges
 # move-<id>-pre, runs the same script on the lane's tree, commits, and
@@ -23,6 +23,7 @@ case $id in
   w3) set -- python3 "$here/w3-h1-merge.py" "$@" ;;
   s1) set -- python3 "$here/s1-small.py" "$@" ;;
   s2) set -- python3 "$here/s2-guest-layout.py" "$@" ;;
+  s4) set -- python3 "$here/s4-recomp.py" "$@" ;;
   s5) set -- python3 "$here/s5-boot-root.py" "$@" ;;
   *)  [ -f "$here/splits/$id.toml" ] || { echo "window: no window '$id'" >&2; exit 2; }
       set -- python3 "$here/split.py" "$id" "$@" ;;
