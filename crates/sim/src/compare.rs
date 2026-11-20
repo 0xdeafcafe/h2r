@@ -769,6 +769,7 @@ mod tests {
             },
             ticks: 0,
             state_hashes_v1: Vec::new(),
+            state_components_v1: None,
             game_seconds: 0.0,
             wall: Wall::default(),
             players,

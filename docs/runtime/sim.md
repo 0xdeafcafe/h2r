@@ -805,6 +805,40 @@ arena check also covers hidden state inside that allocation.
 `H2_LOCKSTEP` provides the wider whole-RAM check. Time matches with arena
 verification off so copying and hashing the arena does not enter the budget.
 
+### Finding the first differing state
+
+`h2 sim diff <a.json> <b.json>` says which state differs first, not only
+that a digest does. Each report also carries `state_components_v1`: the
+same ticks as `state_hashes_v1`, broken into named components with their
+values as text. The first row lists every component; each later row lists
+only those that changed (a component that goes away reads `-`). It is on in
+every `h2 sim run` and is bounded at 250,000 recorded values; a longer match
+keeps its first ticks and sets `truncated_after`.
+
+Components: `time.tick`, `rng.seed`, `world.bsp`, `world.flags`,
+`team.NN.score`, and for each player slot `player.NN.{id, stats, pos,
+velocity, unit_velocity, facing, aim, health, weapon, vehicle, anim,
+motion}` (or `player.NN.object` when the unit is gone). They come from the
+same telemetry snapshot as the gameplay digest, so they cost one pass of
+string formatting per tick and no extra guest reads. Floats print so they
+read back exactly.
+
+The object table and every other hidden allocation are covered by the
+checkpoint arena, hashed in fixed 64 KiB blocks as `arena.NN` (hex digest).
+That needs the 4 MiB read and hash each tick, so it stays behind
+`H2_FEATURES=impl.sim.arena-hash` (the same switch as the aggregate `arena`
+digest, which it replaces with a single pass). `arena_base` in the series is
+the guest address of block 0.
+
+`diff` replays both series and prints the first tick where any component
+differs, then those components sorted by name with both values; for an arena
+block it adds the block index and guest address range. A tick that only one
+run observed shows as component `tick`. If either report lacks the series
+(an older report), it falls back to the first tick whose aggregate
+`gameplay` or `arena` digest differs, and says so. Reports with neither are
+reported as not comparable. A series cut short at its size bound with no
+difference so far reports that later ticks are unverified.
+
 The silent audio packet clock and the sim's reduced telemetry reads can
 be toggled separately with `-impl.audio.packet-clock` and
 `-impl.sim.metrics-projection` in `H2_FEATURES`. The post-bot-change

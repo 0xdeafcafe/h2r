@@ -852,10 +852,23 @@ impl feature::Feature for SimMetrics {
                 .filter(|p| *p != 0)
                 .and_then(|p| g.u8(p + telemetry::layout::GAME_ENDED).ok())
                 .is_some_and(|b| b != 0);
+            // With arena verification on, also hash it in fixed blocks so a
+            // divergence names the first differing block.
+            let mut arena_blocks = Vec::new();
             let arena = arena_buffer.as_ref().and_then(|buffer| {
                 let mut bytes = buffer.lock().unwrap_or_else(|e| e.into_inner());
-                lockstep::hash_sim_buffered(&g, lockstep::SimRegion::HALO2, &mut bytes)
+                lockstep::hash_sim_blocks(
+                    &g,
+                    lockstep::SimRegion::HALO2,
+                    sim::diff::ARENA_BLOCK as usize,
+                    &mut bytes,
+                    &mut arena_blocks,
+                )
             });
+            let (arena_base, arena) = match arena {
+                Some((base, hash)) => (Some(base), Some(hash)),
+                None => (None, None),
+            };
             drop(g);
             let mut s = me.lock();
             match snap {
@@ -879,6 +892,11 @@ impl feature::Feature for SimMetrics {
                     let tick = sample.tick;
                     s.tally
                         .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
+                    let mut components = state_hash::components(&snap, rng);
+                    components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
+                        (format!("{}{i:02}", sim::diff::ARENA_PREFIX), format!("{h:016x}"))
+                    }));
+                    s.tally.tick_components(tick, arena_base, components);
                     if arena_buffer.is_some() && arena.is_none() {
                         const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
                         if !s.notes.iter().any(|n| n == NOTE) {

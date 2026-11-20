@@ -8,6 +8,7 @@
 //!   seed run per map saves a snapshot at spawn and every run loads it,
 //!   falling back to its own boot when the snapshot is refused.
 //! - `compare <dir>`: the comparison of a batch's results again.
+//! - `diff <a.json> <b.json>`: the first differing state of two reports.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ const USAGE: &str = "usage:
   h2 sim batch <batch.toml> --provider cloud [--live URL] [--token T] [--as GAMERTAG]
                           [--max-parallel N] [--budget-usd X] [--dry-run]
   h2 sim compare <results dir>
+  h2 sim diff <report a.json> <report b.json>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
 
@@ -73,6 +75,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let dir = it.next().context(USAGE)?;
             let c = compare_dir(Path::new(&dir))?;
             print!("{}", c.table());
+            Ok(())
+        }
+        Some("diff") => {
+            let a = it.next().context(USAGE)?;
+            let b = it.next().context(USAGE)?;
+            anyhow::ensure!(it.next().is_none(), "{USAGE}");
+            let read = |path: &str| -> Result<sim::metrics::Report> {
+                let file = File::open(path).with_context(|| format!("opening {path}"))?;
+                serde_json::from_reader(std::io::BufReader::new(file))
+                    .with_context(|| format!("reading {path}"))
+            };
+            print!("{}", sim::diff::diff(&read(&a)?, &read(&b)?).render());
             Ok(())
         }
         Some("audit-coverage") => {
@@ -1185,6 +1199,7 @@ mod tests {
             },
             ticks: 10,
             state_hashes_v1: Vec::new(),
+            state_components_v1: None,
             game_seconds: 0.3,
             wall: Default::default(),
             players: vec![p(0, arm_a, 1), p(1, arm_b, kills_b)],
