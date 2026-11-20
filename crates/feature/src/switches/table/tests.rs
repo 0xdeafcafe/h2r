@@ -197,13 +197,13 @@ fn every_switch_the_code_reads_is_listed_with_its_default() {
             Initial::Off => Some(false),
             Initial::Follows(_) | Initial::Group => None,
         };
-        if let (Some(want), Some(got)) = (want, r.default) {
-            if want != got {
-                problems.push(format!(
-                    "{}: reads {} with default {got}, the table says {want}",
-                    r.at, r.name
-                ));
-            }
+        if let (Some(want), Some(got)) = (want, r.default)
+            && want != got
+        {
+            problems.push(format!(
+                "{}: reads {} with default {got}, the table says {want}",
+                r.at, r.name
+            ));
         }
     }
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
