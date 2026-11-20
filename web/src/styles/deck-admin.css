@@ -1,0 +1,20 @@
+.dk a.dk-admin-card { color: var(--ink); text-decoration: none; align-self: stretch; }
+.dk-admin-card .dk-face { min-height: 112px; }
+.dk-admin-card .dk-panel-head { justify-content: space-between; }
+.dk-admin-card .dk-panel-head span { color: var(--lime); font-size: 20px; line-height: .9; }
+.dk-admin-card:is(:hover, :focus-visible) .dk-panel-head { color: var(--sel-1); }
+.dk-admin-card:is(:hover, :focus-visible) .dk-face { box-shadow: var(--page-inset), inset 0 0 0 1px var(--page-focus); }
+
+.dk-admin-headlines {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.dk-admin-headlines dt { color: var(--ink-2); }
+.dk-admin-headlines dd { margin: 0; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+.dk-admin-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.dk-admin-events li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; overflow-wrap: anywhere; }
+.dk-admin-events li span, .dk-admin-events time { color: var(--ink-2); }
+.dk-admin-events time { font-variant-numeric: tabular-nums; }

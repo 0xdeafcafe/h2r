@@ -62,7 +62,9 @@ Three consequences:
   It stays where it is, in the stats site's style.
 - **Live admin** (`/dash/admin`, dashboard, in the dense style of §3): the
   hub for usage, dedicated hosts, the raw event log and the style sample.
-  Confirmed server admins open it from the dashboard's Settings.
+  The hub shows seven-day usage totals, the dedicated host fleet and recent
+  events from the Live API. Each card opens its full page. Confirmed server
+  admins open the hub from the dashboard header or Settings.
   Account, invite and player report tools sit under `/dash/server`.
 
 The line: if it changes what the game shows or plays, it is Halo Admin;
@@ -120,7 +122,7 @@ Every route and every page-level component, checked against §1.
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
 | Server overview | `/dash/server` | stays | Running the service. |
 | Invites, accounts, import, connect | `/dash/server/{invites,accounts,import,connect}` | stays | Running the service. |
-| Live admin hub | `/dash/admin` | stays | Admin-only entry in Settings. Links to usage, hosts, the event log and the style sample. |
+| Live admin hub | `/dash/admin` | stays | Linked from the dashboard header and Settings for server admins. Summary cards open usage, hosts, the event log and the style sample. |
 | Live admin: usage | `/dash/admin/usage` | stays | Usage accounting (§5), in the dense style. |
 | Live admin: hosts | `/dash/admin/hosts` | stays | Running and recently ended dedicated hosts. |
 | Live admin: accounts and player reports | `/dash/server/{accounts,reports}` | stays | Service administration. |
