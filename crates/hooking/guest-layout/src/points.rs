@@ -788,6 +788,8 @@ points! { ALL;
     /// The campaign pause menu's row chosen: rows 0 to 3 have their own
     /// press, and every other row runs row 4's.
     PAUSE_ROW_CHOSEN @ 0x0023_1fe3: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
+    /// The in-game Controller Settings loader (screen 200).
+    PAUSE_CONTROLS_LOADER @ 0x0023_1db5: [fn(request: stack 0) -> eax ret 4]; "docs/game/settings-menu.md";
     /// The multiplayer pause menu's list handler constructor (screen 195,
     /// `mp_menu`): ESI the handler, one stack argument. Makes the rows'
     /// datum array (room for six) and adds a datum per row it shows, the

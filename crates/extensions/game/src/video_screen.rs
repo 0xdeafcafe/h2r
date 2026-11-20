@@ -1,8 +1,7 @@
 //! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
 //! (after Player Profiles and Game Variants) that opens a Controls screen
-//! holding our video rows (Field of View, Frame Rate, Resolution,
-//! Lighting, Mute Button, Aim Assist: every setting whose `Def` names this screen, through the `ui`
-//! model) instead of the retail six. See docs/game/settings-menu.md "Video
+//! holding the display rows (Field of View, Frame Rate, Resolution and
+//! Lighting) instead of the retail six. See docs/game/settings-menu.md "Video
 //! screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
@@ -36,7 +35,7 @@ use settings::Store;
 
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
-    FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
+    AIM_ASSIST, FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
     TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
@@ -88,8 +87,6 @@ pub struct Switches {
     pub video_screen: bool,
     /// The Voice screen (`crate::voice_settings`).
     pub voice_screen: bool,
-    /// Video and Voice rows on the pause menus (`crate::pause_menu`).
-    pub pause_rows: bool,
 }
 
 impl Switches {
@@ -100,7 +97,6 @@ impl Switches {
         fov_row: true,
         video_screen: true,
         voice_screen: true,
-        pause_rows: true,
     };
 
     /// This platform's rows: [`Switches::ALL`] with the touch rows in
@@ -160,37 +156,16 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             .row(Row::setting(TOUCH_ACCEL.key))
             .row(
                 Row::setting(TOUCH_AUTO_FIRE.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
-            );
+            )
+            .row(Row::setting(AIM_ASSIST.key));
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen (crate::voice_settings), opened from the pause menus.
+    // The Voice screen opens from pause Settings and Edit Profile.
     let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
     }
-    let mut extensions = vec![controls, settings];
-    // Video Settings and Voice Settings on both pause menus, right below
-    // their own settings row (crate::pause_menu); a row whose screen has no
-    // rows is left out by the model.
-    if on.pause_rows {
-        use crate::pause_menu::{VIDEO_LABEL, VOICE_LABEL};
-        let rows = |list, retail| {
-            ui::extend(list, retail)
-                .row(Row::open(SCREEN).label(VIDEO_LABEL))
-                .row(Row::open(VOICE_SCREEN).label(VOICE_LABEL))
-        };
-        // Below Controller Settings: on the campaign menu by index (Save
-        // and Quit moves down past ours), on the multiplayer menu by the
-        // rows' order (`pause_menu::order_actions`).
-        extensions.push(
-            rows(List::Pause, crate::pause_menu::PAUSE_ROWS)
-                .at(crate::pause_menu::PAUSE_CONTROLLER_ROW as u32 + 1),
-        );
-        extensions.push(rows(List::MpPause, crate::pause_menu::MP_ACTIONS));
-    }
-    // Voice Chat on a profile's Edit Profile, after Voice Masking
-    // (crate::profile_voice_row); left out with the Voice screen.
-    extensions.push(crate::profile_voice_row::rows());
+    let extensions = vec![controls, settings, crate::profile_voice_row::rows()];
     Model::with_ids(
         store,
         vec![video, voice],
@@ -339,8 +314,6 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
-                RowKind::Setting(PAD_MUTE.key),
-                RowKind::Setting(crate::setting_defs::AIM_ASSIST.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -352,7 +325,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 5);
+        assert_eq!(no_fov.rows(LIST).len(), 3);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
         // No Video screen: no Video row on Settings either.
@@ -376,7 +349,6 @@ mod tests {
                 touch_rows: false,
                 fov_row: true,
                 voice_screen: true,
-                pause_rows: true,
             },
         )
         .unwrap();
@@ -395,7 +367,7 @@ mod tests {
         let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
         assert_eq!(
             m.count(List::Controls, 6),
-            12,
+            13,
             "the speaker's and the touch rows"
         );
         assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
@@ -403,7 +375,21 @@ mod tests {
         assert_eq!(drawn(&m, List::Controls, 9), s("Gyro Aim", "0"));
         assert_eq!(drawn(&m, List::Controls, 10), s("Look Acceleration", "5"));
         assert!(drawn(&m, List::Controls, 11).is_some(), "Touch Auto Fire");
-        assert_eq!(drawn(&m, List::Controls, 12), None);
+        assert_eq!(speaker_row::VANILLA_ROWS + speaker_row::MAX_VISIBLE_EXTRA, 12);
+        assert_eq!(drawn(&m, List::Controls, 12), s("Aim Assist", "Auto"));
+        assert_eq!(
+            press(&m, List::Controls, 12),
+            Chosen::Stepped("controls.aim_assist: default".into())
+        );
+        assert_eq!(drawn(&m, List::Controls, 12), s("Aim Assist", "Default"));
+        assert_eq!(drawn(&m, List::Controls, 13), None);
+        let desktop = all();
+        assert_eq!(desktop.index_of(List::Controls, &RowKind::Setting(AIM_ASSIST.key)), None);
+        let platform = model(Arc::new(Store::defaults(ALL)), Switches::PLATFORM).unwrap();
+        assert_eq!(
+            platform.index_of(List::Controls, &RowKind::Setting(AIM_ASSIST.key)).is_some(),
+            cfg!(target_os = "ios")
+        );
         assert_eq!(
             m.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
             None
@@ -525,9 +511,7 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
-        assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "On"));
-        assert_eq!(drawn(&m, LIST, 5), s("Aim Assist", "Auto"));
-        assert_eq!(drawn(&m, LIST, 6), None);
+        assert_eq!(drawn(&m, LIST, 4), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -617,10 +601,10 @@ mod tests {
             "applies at once"
         );
         assert_eq!(
-            press(&m, LIST, 4),
+            press(&m, VOICE_LIST, 8),
             Chosen::Stepped("pad.mute_button: false".into())
         );
-        assert_eq!(drawn(&m, LIST, 4), s("Mute Button", "Off"));
+        assert_eq!(drawn(&m, VOICE_LIST, 8), s("Mute Button", "Off"));
         assert!(!mute.get(), "applies at once");
         // Each change reached its listener, in order, once.
         assert_eq!(

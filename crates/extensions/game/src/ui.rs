@@ -27,14 +27,6 @@ pub enum List {
     Controls,
     /// The retail Settings list (Player Profiles, Game Variants).
     Settings,
-    /// The campaign pause menu (screen 18, `crate::pause_menu`): its rows
-    /// are told apart by index, and ours sit among the retail ones
-    /// ([`Extension::at`]).
-    Pause,
-    /// The multiplayer pause menu (screen 195, `crate::pause_menu`): its
-    /// rows are told apart by action word, and our row `i` past the retail
-    /// ones has action `retail + i`.
-    MpPause,
     /// The Edit Profile list (screen 38, `crate::profile_voice_row`): its
     /// rows are told apart by index, and ours sits among the retail ones
     /// ([`Extension::at`]).
@@ -366,7 +358,7 @@ impl Model {
     pub fn rows(&self, list: List) -> &[Row] {
         match list {
             List::Screen(id) => self.screen(id).map_or(&[], |s| &s.rows),
-            List::Controls | List::Settings | List::Pause | List::MpPause | List::Profile => self
+            List::Controls | List::Settings | List::Profile => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -380,7 +372,7 @@ impl Model {
     pub fn count(&self, list: List, retail: u32) -> u32 {
         match list {
             List::Screen(_) => self.rows(list).len() as u32,
-            List::Controls | List::Settings | List::Pause | List::MpPause | List::Profile => {
+            List::Controls | List::Settings | List::Profile => {
                 match self.extensions.iter().find(|e| e.list == list) {
                     Some(e) if e.retail == retail => retail + e.rows.len() as u32,
                     _ => retail,
@@ -393,7 +385,7 @@ impl Model {
     pub fn row(&self, list: List, index: i16) -> Option<&Row> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Pause | List::MpPause | List::Profile => self
+            List::Controls | List::Settings | List::Profile => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)
@@ -407,7 +399,7 @@ impl Model {
     pub fn index_of(&self, list: List, kind: &RowKind) -> Option<i16> {
         let base = match list {
             List::Screen(_) => 0,
-            List::Controls | List::Settings | List::Pause | List::MpPause | List::Profile => self
+            List::Controls | List::Settings | List::Profile => self
                 .extensions
                 .iter()
                 .find(|e| e.list == list)

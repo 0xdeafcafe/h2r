@@ -207,7 +207,7 @@ fn pad_speaker(
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
-    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Video screen's
+    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Voice screen's
     // Mute Button row). A row press reaches the HID thread at once, so the
     // thread runs while the row can still turn it on (not when
     // H2_PAD_MUTE=0 locks it off and the speaker is off).
@@ -282,7 +282,7 @@ fn pad_speaker(
 }
 
 /// The Steam Controller thread, when pads are wanted, the platform has raw
-/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Video screen's
+/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Controls screen's
 /// Steam rows (`steam_pad.*`).
 fn steam_pads(
     config: &app::AppConfig,
