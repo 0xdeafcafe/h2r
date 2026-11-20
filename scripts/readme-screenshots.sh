@@ -70,7 +70,8 @@ h2="${H2:-h2}"
 command -v "$h2" >/dev/null || { echo "no h2 on PATH (set H2 or cargo install)" >&2; exit 1; }
 
 mkdir -p "$dest"
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/readme-screenshots.XXXXXX")"
+# Short names: the agent socket path must fit in SUN_LEN (104 bytes).
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/rs.XXXXXX")"
 serve_pid=""
 cleanup() {
   [[ -n "$serve_pid" ]] && kill "$serve_pid" 2>/dev/null || true
@@ -86,7 +87,7 @@ wanted() {
 shot() {
   local name="$1" level="$2"
   wanted "$name" || return 0
-  local gfx="$scratch/$name" sock="$scratch/$name.sock"
+  local gfx="$scratch/$name" sock="$scratch/$level.sock"
   mkdir -p "$gfx"
   echo "$name: starting $level at 4x"
   env H2_OPT=2 H2_LEVEL="$level" H2_RENDER_SCALE=4 \
@@ -100,7 +101,7 @@ shot() {
     kill -0 "$serve_pid" 2>/dev/null || { tail -20 "$scratch/$name.log" >&2; echo "$name: serve exited" >&2; exit 1; }
     sleep 1
   done
-  "$h2" agent wait '{"phase":"gameplay"}' 600000 --socket "$sock" >/dev/null
+  "$h2" agent wait '{"phase":"gameplay","map_ticks":30}' 600000 --socket "$sock" >/dev/null
   sleep "$settle"
   # The newest frame may still be written; take the one before it.
   local frame

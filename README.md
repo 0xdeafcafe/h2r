@@ -108,8 +108,13 @@ anyone has taken.
 | Dedicated host, Waterworks, 4 bots | 14.96 ms/tick | 14.12 ms/tick | Five-minute run, same seed, 2026-11-20 |
 | Dedicated host, Lockout | 9.07 ms/tick | 8.49 ms/tick | same |
 | Campaign frame rate | | steady 30 fps, dips with 6+ enemies | Owner's M3, 4K, 4x |
+| Headless gameplay, 600 ticks, native on vs off | 34.3 fps (off) | 32.4 fps (on) | Old Mombasa, 4x, M3, quiet machine, 2026-11-20 |
+| Flat guest RAM, Waterworks 2v2 | 10.11 ms/tick (off) | 21.67 ms/tick (on), state diverges at tick 6 | 3600 ticks, same seed, 2026-11-20 |
 
-The host numbers are one run each, and same-build repeatability on Waterworks
+Two of those rows are regressions. The native renderer (on by default) is still about 6% slower than the D3D path at 4x (its
+submit is 1.4 ms/frame dearer, with object and light fallbacks still drawing
+through the guest), and flat guest RAM (off by default) doubles the tick
+and breaks determinism. Both are being fixed. The host numbers are one run each, and same-build repeatability on Waterworks
 is open ([sim-budget.md](docs/perf/sim-budget.md)). Native-renderer history,
 including the rounds that were slower than D3D, is in
 [native-renderer.md](docs/graphics/native-renderer.md#the-all-native-push-2026-11-1920).
@@ -122,7 +127,7 @@ including the rounds that were slower than D3D, is in
 
 | Target | Today |
 | --- | --- |
-| Locked 30 fps at 4x on an M3, with 60 and above as the goal | Steady 30 with dips (above) |
+| Locked 30 fps at 4x on an M3, with 60 and above as the goal | 32-34 fps headless, dips with 6+ enemies |
 | Sim about 2x faster per tick: Waterworks at 7.48 ms/tick | 14.12 ms/tick |
 | One render path: sim, then native render, nothing drawn twice | Native on by default; 0 reference-copy draws in the measured scene, other scenes unchecked |
 
@@ -132,7 +137,6 @@ Built or being built. The figures are estimates, not timings.
 
 | Work | Estimate |
 | --- | --- |
-| Flat guest RAM (`H2_FLAT_RAM=1`, off by default) | about 8% of the sim tick |
 | 32 native sim functions replacing guest code | 0.5-0.6 ms/tick for each batch |
 | SIMD transform and collision | not estimated |
 | Pipelined frames (tick N+1 overlapping frame N) | not estimated |
