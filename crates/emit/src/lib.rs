@@ -48,6 +48,7 @@ pub mod host;
 mod lazy;
 pub mod output;
 pub mod par;
+pub mod sim;
 mod x87;
 
 /// The IR passes [`plan`] runs, re-exported for callers choosing them.

@@ -1910,6 +1910,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "emit",
  "guest-layout",
  "ir",
  "lift",
