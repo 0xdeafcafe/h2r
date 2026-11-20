@@ -34,7 +34,7 @@ impl Justify {
 }
 
 /// A retail bitmap block, by where it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Art {
     /// Bitmap `index` of pane `pane` of the screen whose `wgit` has
@@ -46,6 +46,8 @@ pub enum Art {
         index: u16,
         image: i16,
     },
+    /// The picture referenced by this scenario in the UI level catalogue.
+    Level { stem: String },
     /// Bitmap `index` of list skin `skin` (an index into `wigl +0x138`).
     Skin { skin: i16, index: u16, image: i16 },
 }
@@ -223,6 +225,9 @@ pub struct View {
     pub screen: String,
     pub state: String,
     pub backing: Backing,
+    /// A kit screen visible beneath this modal, in the state it opened from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underlay: Option<Box<View>>,
     /// In draw order.
     pub widgets: Vec<Widget>,
     /// The focused element's id prefix (`row.3`, `cell.2`).
@@ -311,7 +316,7 @@ pub struct ItemArt {
 
 /// A screen's frame art: a retail screen's bitmap at its own point (its
 /// top-left).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PaneArt {
     pub art: Art,
     pub at: [i16; 2],
@@ -517,7 +522,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             layer: Layer::Frame,
             alpha: 255,
             kind: Kind::Art {
-                art: a.art,
+                art: a.art.clone(),
                 size: a.size,
             },
         });
@@ -534,7 +539,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             layer: Layer::Panel,
             alpha: 255,
             kind: Kind::Art {
-                art: a.art,
+                art: a.art.clone(),
                 size: a.size,
             },
         });
@@ -626,7 +631,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             layer: Layer::Frame,
             alpha: 255,
             kind: Kind::Art {
-                art: a.art,
+                art: a.art.clone(),
                 size: a.size,
             },
         });
@@ -669,6 +674,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
         screen: s.name.clone(),
         state: state.into(),
         backing: Backing::GameShell,
+        underlay: None,
         widgets: w,
         focus: (!s.rows.is_empty()).then(|| format!("row.{}", s.focus)),
         list: Some(ListAt {

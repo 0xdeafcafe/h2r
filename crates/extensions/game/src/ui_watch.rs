@@ -402,7 +402,14 @@ pub fn dialog<M: Gm + ?Sized>(m: &M) -> Option<Dialog> {
                     .and_then(|s| m.u32(s))
                     .and_then(crate::ui_kit::dialog_tag::by_vtable)
                     .map(|d| d.name)
-                    .filter(|n| *n == crate::clanker_card::SCREEN);
+                    .filter(|n| {
+                        matches!(
+                            *n,
+                            crate::clanker_card::SCREEN
+                                | crate::ui_kit::picker::NAME
+                                | crate::ui_kit::picker::GAME_NAME
+                        )
+                    });
                 return Some(Dialog {
                     window,
                     slot,
@@ -781,24 +788,34 @@ mod tests {
     }
 
     #[test]
-    fn ui_screen_names_the_clanker_card_by_class() {
-        use crate::ui_kit::{dialog::DialogBase, dialog_tag};
-        let d = dialog_tag::Registered {
-            name: crate::clanker_card::SCREEN,
-            vtable: 0x7154_2000,
-            page: 0x7154_4000,
-            loader: 0x7154_3000,
-            base: DialogBase::Large,
-            list: dialog_tag::base_layout(DialogBase::Large, 4),
-        };
-        dialog_tag::register(d);
-        let mut f = Fake::default();
-        let active = 0x8000_2000;
-        screen(&mut f, WINDOW_1 + 4 * STRIDE_13, active, 39, 1);
-        f.set_u32(active, d.vtable);
-        let v = screen_json(std::time::Duration::ZERO, None, dialog(&f));
-        assert_eq!(v["dialog"]["name"], "clanker_player_options");
-        assert_eq!(v["dialog"]["id"], 39);
+    fn ui_screen_distinguishes_the_card_and_value_pickers_sharing_the_controls_id() {
+        use crate::ui_kit::{dialog::DialogBase, dialog_tag, picker};
+        for (i, (name, base)) in [
+            (crate::clanker_card::SCREEN, DialogBase::Large),
+            (picker::NAME, DialogBase::ValuePicker),
+            (picker::GAME_NAME, DialogBase::Large),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = i as u32 * 0x100;
+            let d = dialog_tag::Registered {
+                name,
+                vtable: 0x7154_2000 + offset,
+                page: 0x7154_4000 + offset,
+                loader: 0x7154_3000 + offset,
+                base,
+                list: dialog_tag::base_layout(base, 4),
+            };
+            dialog_tag::register(d);
+            let mut f = Fake::default();
+            let active = 0x8000_2000;
+            screen(&mut f, WINDOW_1 + 4 * STRIDE_13, active, 39, 1);
+            f.set_u32(active, d.vtable);
+            let v = screen_json(std::time::Duration::ZERO, None, dialog(&f));
+            assert_eq!(v["dialog"]["name"], name);
+            assert_eq!(v["dialog"]["id"], 39);
+        }
     }
 
     #[test]

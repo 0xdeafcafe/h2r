@@ -2113,7 +2113,7 @@ pub fn install(
 
 pub mod page_layout;
 pub mod spec;
-mod text_fit;
+use crate::ui_kit::text_fit;
 
 #[cfg(test)]
 mod tests;

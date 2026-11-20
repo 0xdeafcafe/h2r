@@ -28,6 +28,9 @@ use crate::ui_kit::view::{
 /// `error_dialog_large`'s screen id: the large dialog's panel and header
 /// layout.
 pub const LARGE_SCREEN_ID: i16 = 240;
+/// The upper-left and lower-right corner bitmap blocks in pane 0.
+pub(crate) const FRAME_CORNERS: [u16; 2] = [0, 1];
+pub(crate) const FRAME_CORNER_SIZE: u16 = 128;
 /// `dialog_live_password`'s screen id, and its first `password` cell's
 /// bitmap index in pane 0.
 pub const PASSWORD_SCREEN_ID: i16 = 21;
@@ -385,7 +388,7 @@ impl DialogGeometry {
                     .panel
                     .iter()
                     .map(|p| PaneArt {
-                        art: match p.art {
+                        art: match p.art.clone() {
                             Art::Screen {
                                 pane, index, image, ..
                             } => Art::Screen {
@@ -466,8 +469,8 @@ impl DialogGeometry {
             header_colour: [0.678431, 0.764706, 0.847059],
             footer: rect(-83, -243, -103, 240),
             panel: vec![
-                panel(0, [-273, 109], 128),
-                panel(1, [203, -33], 128),
+                panel(FRAME_CORNERS[0], [-273, 109], FRAME_CORNER_SIZE),
+                panel(FRAME_CORNERS[1], [203, -33], FRAME_CORNER_SIZE),
                 panel(2, [-268, 104], 256),
                 panel(3, [12, 153], 256),
             ],
@@ -658,7 +661,7 @@ pub fn dialog_view(
             layer: Layer::Panel,
             alpha: 255,
             kind: Kind::Art {
-                art: a.art,
+                art: a.art.clone(),
                 size: a.size,
             },
         });
@@ -721,7 +724,7 @@ pub fn dialog_view(
             layer: Layer::Frame,
             alpha: 255,
             kind: Kind::Art {
-                art: a.art,
+                art: a.art.clone(),
                 size: a.size,
             },
         });
@@ -746,7 +749,7 @@ pub fn dialog_view(
                 layer: Layer::Under,
                 alpha: if lit { 255 } else { FRAME_DIM },
                 kind: Kind::Art {
-                    art: g.cell.art,
+                    art: g.cell.art.clone(),
                     size: g.cell.size,
                 },
             });
@@ -788,6 +791,7 @@ pub fn dialog_view(
         screen: s.name.clone(),
         state: state.into(),
         backing: Backing::Over(d.opener),
+        underlay: None,
         widgets: w,
         focus: d
             .cells

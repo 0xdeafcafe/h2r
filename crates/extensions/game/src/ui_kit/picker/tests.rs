@@ -61,6 +61,26 @@ fn it_takes_two_to_max_choices() {
     assert_eq!(slots as u32, ids::family(GAME_NAME).len);
 }
 
+#[test]
+fn a_filter_list_reuses_its_text_slots_and_selects_the_scrolled_row() {
+    let n = MAX_CHOICES + 2;
+    let values = (0..n).map(|i| format!("Map {i}")).collect();
+    let chosen = Arc::new(Mutex::new(None));
+    let save = chosen.clone();
+    let set = Arc::new(move |i| {
+        *save.lock().unwrap() = Some(i);
+        String::new()
+    });
+    assert_eq!(offer_list(Pick::new("Map", values, 0, "", set)), Some(NAME));
+    let picker = Picker::new(false);
+    assert_eq!(picker.count(), n);
+    assert_eq!(picker.texts(MAX_CHOICES as i16), picker.texts(0));
+    assert_eq!(picker.texts((n - 1) as i16), picker.texts(1));
+    assert_eq!(picker.spec().rows[n - 1].label, format!("Map {}", n - 1));
+    assert_eq!(picker.press((n - 1) as i16), Chosen::Act);
+    assert_eq!(*chosen.lock().unwrap(), Some(n - 1));
+}
+
 /// In the main menu it is `low_level_settings`; in a game the large
 /// dialog.
 #[test]
@@ -199,7 +219,7 @@ fn the_value_picker_geometry_is_the_large_dialogs_with_its_own_list() {
     assert_eq!(g.panel.len(), 4);
     for (a, b) in g.panel.iter().zip(&large.panel) {
         assert_eq!((a.at, a.size), (b.at, b.size));
-        match (a.art, b.art) {
+        match (&a.art, &b.art) {
             (
                 Art::Screen {
                     screen_id: s,
@@ -212,7 +232,7 @@ fn the_value_picker_geometry_is_the_large_dialogs_with_its_own_list() {
                     ..
                 },
             ) => {
-                assert_eq!((s, t), (VALUE_PICKER_SCREEN_ID, LARGE_SCREEN_ID));
+                assert_eq!((*s, *t), (VALUE_PICKER_SCREEN_ID, LARGE_SCREEN_ID));
                 assert_eq!(i, j);
             }
             _ => panic!("panel art is a screen's"),

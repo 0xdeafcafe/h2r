@@ -995,9 +995,11 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
   or `null` for an id not named yet. The party leader picker reports
   `dialog.name = party_leader_picker` with id `0xb1`. The Clanker player
-  card reports `dialog.name = clanker_player_options` from the active
-  screen's kit class. Its numeric id belongs to the retail base class and
-  can identify other screens too. Dialogs read as `"screen": null`, so this
+  card reports `clanker_player_options`. The retail-style value picker
+  used by Theater reports `kit.picker` in the main menu and
+  `kit.picker.game` in game. These names identify the active kit class.
+  Their numeric ids identify the shared retail base class. Dialogs read as
+  `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
 - **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary

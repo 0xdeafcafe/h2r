@@ -18,8 +18,8 @@
 //! as 55%, not traced) and model scenes. Nothing is kept: the PNG goes
 //! where the caller says, never into the repository.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -133,6 +133,7 @@ pub struct Disc {
     map: RefCell<map::Map<BufReader<File>>>,
     files: RefCell<assets::ResourceFiles>,
     images: RefCell<HashMap<(TagId, i16), Option<Image>>>,
+    level_pictures: OnceCell<BTreeMap<String, u32>>,
     /// Every screen of `mainmenu.map` by screen id, decoded on first use.
     screens: RefCell<Option<HashMap<i16, tui::Screen>>>,
     /// The screens modals open over, made and drawn once.
@@ -232,6 +233,7 @@ impl Disc {
             map: RefCell::new(m),
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
+            level_pictures: OnceCell::new(),
             screens: RefCell::new(None),
             openers: RefCell::new(HashMap::new()),
         })
@@ -501,6 +503,35 @@ impl Disc {
     /// The image `a` names.
     pub fn art(&self, a: &Art) -> Option<Image> {
         match *a {
+            Art::Level { ref stem } => {
+                let pictures = self.level_pictures.get_or_init(|| {
+                    let template = crate::mods_screen::page_layout::PICTURE;
+                    let unknown_map = self
+                        .screen(template.screen_id as i16)
+                        .and_then(|s| {
+                            s.panes
+                                .get(template.pane as usize)?
+                                .bitmaps
+                                .get(template.bitmap as usize)?
+                                .bitmap
+                                .id
+                        })
+                        .map(|id| id.0);
+                    let mut map = self.map.borrow_mut();
+                    super::level_art::pictures(
+                        tags::ui_levels::read_mp(&mut *map).unwrap_or_default(),
+                        tags::ui_levels::read_campaign(&mut *map).unwrap_or_default(),
+                        unknown_map,
+                    )
+                });
+                self.image(
+                    tui::TagRef {
+                        group: tui::BITMAP,
+                        id: Some(TagId(*pictures.get(stem)?)),
+                    },
+                    0,
+                )
+            }
             Art::Skin { skin, index, image } => {
                 let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
                 self.image(b.bitmap, image)
@@ -693,6 +724,7 @@ impl Disc {
             screen: o.name.into(),
             state: o.state(),
             backing: Backing::GameShell,
+            underlay: None,
             widgets: w,
             focus: None,
             list: None,
@@ -875,16 +907,7 @@ impl Disc {
     /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
     /// and fonts.
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
-        if let Some(d) = &s.dialog {
-            return Ok(dialog_view(
-                s,
-                d,
-                &self.dialog_geometry_for(d.base)?,
-                &self.fonts,
-                state,
-            ));
-        }
-        Ok(view_of(s, &self.geometry(s.list)?, &self.fonts, state))
+        From::Disc(self).view(s, state)
     }
 
     /// `s` drawn at 640 by 480; texts that overflow outlined in red.
@@ -1064,6 +1087,7 @@ impl Source for SyntheticSource {
             screen: o.name.into(),
             state: o.state(),
             backing: Backing::GameShell,
+            underlay: None,
             widgets,
             focus: None,
             list: None,
@@ -1206,8 +1230,15 @@ pub fn render_view_where(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
 ) -> Canvas {
-    let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
-    src.backing(&mut c, v.backing);
+    let mut c = if let Some(parent) = &v.underlay {
+        // Widget filters apply to this screen. The parent stays painted
+        // when an audit samples the pixels underneath the dialog's text.
+        render_view_where(parent, src, &|_| true, false)
+    } else {
+        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+        src.backing(&mut c, v.backing);
+        c
+    };
     let mut order: Vec<&crate::ui_kit::view::Widget> = v.widgets.iter().collect();
     order.sort_by_key(|w| w.layer);
     for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
@@ -1494,7 +1525,7 @@ impl From<'_> {
     /// `s` in state `state` as a view: a dialog's
     /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
-        Ok(match (&s.dialog, self) {
+        let mut view = match (&s.dialog, self) {
             (Some(d), From::Disc(disc)) => dialog_view(
                 s,
                 d,
@@ -1510,7 +1541,12 @@ impl From<'_> {
                 state,
             ),
             (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
-        })
+        };
+        if let Some(parent) = &s.underlay {
+            view.backing = Backing::None;
+            view.underlay = Some(Box::new(self.view(parent, state)?));
+        }
+        Ok(view)
     }
     /// `s` in state `state`: its view and its picture.
     pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {

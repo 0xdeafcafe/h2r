@@ -724,7 +724,7 @@ mod tests {
                 assert_eq!(focused.description_text().as_deref(), Some(help), "{name}");
                 let art = focused.shown_art();
                 assert_eq!(art.len(), 1, "{name}: {}'s icon", r.label);
-                let icon = art[0];
+                let icon = &art[0];
                 assert!(
                     matches!(
                         icon.art,

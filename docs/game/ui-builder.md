@@ -611,6 +611,11 @@ the row itself still step. A row with one value, or more than
 The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
+Theater uses `picker::offer_list` for Sort, Map and Game type. Each opens
+over the library with A, including a filter whose only entry is All.
+Long lists reuse text slots as new rows scroll into view. The preview
+composites the dialog over the library with its tab, rows and focus intact.
+
 Not on the picker: the Video and Voice screens (`ui::Model` rows,
 `Model::press`), the skulls (toggles, not settings) and the variant
 editor's More Options page (`variant_page`, its own rows). They step
@@ -634,13 +639,9 @@ the pane set-up, row text for each item) on the runner, and reads each
 `TEXT_SET`'s string from the slot at the moment of the call, as the game
 does.
 
-**Not verified.** The list's first focus: the class can't
-set it yet (no focus setter is traced), so the game likely opens on the
-first value, not the held one; the preview draws the held one focused.
-The rest to check: the picker opening over the Clankers or Halo 1
-Options dialog (both on the dialogs' window), the title and description
-set, A saving and closing, B closing, and the page beneath showing the
-new value.
+After the pane builds its list, the picker focuses the held value with
+the retail list cursor setter (`list_class::LIST_SET_ROW`). Each opening
+applies this once, including when the row is reopened after a change.
 
 ### The value picker's game run
 
@@ -651,7 +652,7 @@ From a custom game lobby, Game Setup, Clanker Options:
    the large dialog's glow over the Clankers page, "DIFFICULTY" as its
    title, Easy, Normal, Heroic, Legendary, Mixed down the left, "How well
    the Clankers aim..." on the right, `(A) SELECT (B) CANCEL` in the footer.
-2. Note which value has the focus (first, or the held one).
+2. Check that the held value has the focus.
 3. Down to Heroic, A: stderr `kit.picker: clankers.difficulty -> Heroic`
    then `kit.picker: chosen; closing`; the Clankers page shows Heroic.
 4. A on Count (more than six values): the list scrolls, its arrows show.
