@@ -54,22 +54,27 @@ fn peak_rss_mib() -> u64 {
     }
 }
 
-/// `proc_pid_rusage`'s `ri_phys_footprint`, in MiB. `None` off Apple
-/// hosts, where there is no footprint number, only the RSS.
+/// Returns a snapshot of the calling process's resource use.
+#[cfg(target_os = "macos")]
+pub(super) fn process_rusage() -> Option<libc::rusage_info_v4> {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
+    // SAFETY: the flavor selects the size and alignment of this buffer.
+    let result = unsafe {
+        libc::proc_pid_rusage(
+            std::process::id() as libc::c_int,
+            libc::RUSAGE_INFO_V4,
+            info.as_mut_ptr().cast(),
+        )
+    };
+    // SAFETY: success means the OS filled the requested v4 structure.
+    (result == 0).then(|| unsafe { info.assume_init() })
+}
+
+/// The physical footprint in MiB on macOS.
 fn footprint_mib() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
-        // SAFETY: a pointer to that struct, as the flavor's buffer.
-        let ok = unsafe {
-            libc::proc_pid_rusage(
-                std::process::id() as libc::c_int,
-                libc::RUSAGE_INFO_V4,
-                info.as_mut_ptr().cast(),
-            )
-        } == 0;
-        // SAFETY: on success the kernel filled the requested v4 structure.
-        ok.then(|| unsafe { info.assume_init() }.ri_phys_footprint / (1 << 20))
+        process_rusage().map(|info| info.ri_phys_footprint / (1 << 20))
     }
     #[cfg(not(target_os = "macos"))]
     {
