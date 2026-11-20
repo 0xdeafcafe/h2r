@@ -1,0 +1,32 @@
+# cargo-nextest settings (docs/dev/build-speed.md). `cargo test` ignores
+# this file.
+#
+# nextest runs every test in a process of its own and spreads the tests of
+# all binaries over the cores at once, where `cargo test` runs one binary at
+# a time. Doctests are not run: `cargo test --doc` still does those.
+
+[profile.default]
+# A sweep reports every failure, not only the first.
+fail-fast = false
+# Name a test still running after a minute. Nothing is killed: the disc
+# tests convert whole maps and may take several.
+slow-timeout = { period = "60s" }
+status-level = "fail"
+final-status-level = "slow"
+failure-output = "immediate-final"
+
+[test-groups]
+# Tests that read a disc image or convert whole maps hold a lot of memory
+# each, so only a few run together.
+disc = { max-threads = 4 }
+# Tests that time the machine or count on a thread being scheduled soon
+# run one at a time, though still beside the untimed tests.
+timing = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(h1objects) | package(h1convert) | package(h1campaign) | binary(disc) | test(/_disc(::|$)/)'
+test-group = 'disc'
+
+[[profile.default.overrides]]
+filter = 'binary(/^(perf|pacing|lock_contention|vblank_clock|threaded|threaded_frame_stats|visibility_async|pipeline_cache|hot_overrides)$/) | binary(/bench|churn|cost/)'
+test-group = 'timing'

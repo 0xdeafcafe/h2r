@@ -3,6 +3,8 @@ name = "h1convert"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 # The package manifest of a converted map.
@@ -37,3 +39,7 @@ xiso.workspace = true
 # The player representation reader, checked in the retail XBE (tests/h2_globals.rs).
 xbe.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

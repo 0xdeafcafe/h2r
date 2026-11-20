@@ -4,7 +4,7 @@
 //! `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test animation_codec_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it animation_codec_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! The rules are `tags::anim::AnimationGraph::engine_problems`: the clip

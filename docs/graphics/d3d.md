@@ -184,7 +184,7 @@ Notes on the table:
   that is not a one-word header for a 4-aligned method below `0x2000`,
   `0x030C` in the table, or every entry the same). Unit tests use a small
   hand-built table; the ignored `tests/xbe_tables.rs`
-  (`H2_XBE=/abs/path/default.xbe cargo test -p d3d --test xbe_tables --
+  (`H2_XBE=/abs/path/default.xbe cargo test -p d3d --test it xbe_tables:: --
   --ignored`) checks the real one against what the crate assumes.
 - **Not reached from game code, but implemented on the device** for the API
   surface: `SetVertexShader`, `SetStreamSource`, `DrawVerticesUP`,

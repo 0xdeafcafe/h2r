@@ -5,7 +5,7 @@
 //! counts only.
 //!
 //! ```sh
-//! H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored --nocapture
+//! H1_ISO=... cargo test -p h1objects --test it hud_disc:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

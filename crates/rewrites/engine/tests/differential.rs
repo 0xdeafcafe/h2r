@@ -12,7 +12,7 @@
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --release \
-//!     --features differential --test differential -- --nocapture
+//!     --features differential --test it -- differential:: --skip _differential:: --nocapture
 //! ```
 //!
 //! `H2_DIFF_SEEDS=1,7,99` and `H2_DIFF_SCALE=2` override the defaults.

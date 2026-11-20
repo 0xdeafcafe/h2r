@@ -2,7 +2,7 @@
 //! Prints names and counts only. Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_compare_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it sandbox_compare_disc:: -- --ignored --nocapture
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -3,7 +3,7 @@
 //! written. Prints tag paths only.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test weapon_sounds_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it weapon_sounds_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo1_firing_effect_layout`: every trigger firing effect on every

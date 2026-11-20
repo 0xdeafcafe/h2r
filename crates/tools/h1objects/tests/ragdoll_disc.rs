@@ -12,7 +12,7 @@
 //! validation.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test ragdoll_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it ragdoll_disc:: -- --ignored --nocapture
 //! ```
 
 use std::collections::BTreeMap;

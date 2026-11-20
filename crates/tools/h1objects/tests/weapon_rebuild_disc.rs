@@ -3,7 +3,7 @@
 //! and `$H2_DISC`; nothing is written. Prints counts, names and paths only.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test weapon_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it weapon_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo_1_and_halo_2_pairs_agree_on_the_named_fields`: the evidence for

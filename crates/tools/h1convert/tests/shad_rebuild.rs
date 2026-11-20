@@ -3,7 +3,7 @@
 //!
 //! ```sh
 //! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
-//!   cargo test --release -p h1convert --test shad_rebuild -- --ignored --nocapture
+//!   cargo test --release -p h1convert --test it shad_rebuild:: -- --ignored --nocapture
 //! ```
 //!
 //! - **Halo 2 side** (`every_layout_matches_its_stems_retail_instances`):

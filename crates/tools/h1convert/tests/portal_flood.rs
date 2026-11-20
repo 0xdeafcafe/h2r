@@ -2,7 +2,7 @@
 //! `0x00173130`) run offline over converted Halo 1 structures, from the
 //! owner's Halo 1 disc (`$H1_ISO`). Only counts are printed.
 //!
-//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test portal_flood -- --ignored --nocapture
+//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test it portal_flood:: -- --ignored --nocapture
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};

@@ -59,9 +59,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync",
 # variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
 [profile.dev]
 debug = "line-tables-only"
+# Debug info stays in the object files: no dsymutil run and no .dSYM beside
+# each test binary. This is cargo's macOS default, pinned so an environment
+# or config override can't bring `packed` back.
+split-debuginfo = "unpacked"
 
+# Dependencies carry no debug info at all: smaller rlibs and less for every
+# test binary's link to read. A panic still names its file and line, and a
+# backtrace still names their functions (docs/dev/build-speed.md).
 [profile.dev.package."*"]
-debug = "line-tables-only"
+debug = false
 
 # The fixture tests decode ~5M rows; keep them quick in debug builds.
 [profile.dev.package.sse-oracle]
@@ -75,3 +82,29 @@ opt-level = 2
 
 [profile.dev.package.iced-x86]
 opt-level = 2
+
+# Small codec and checksum crates that tests push whole images and maps
+# through. Unoptimised they run 10 to 50 times slower, and they compile in
+# seconds either way.
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.ruzstd]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

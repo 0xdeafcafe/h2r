@@ -3,7 +3,7 @@
 //! repository, and neither is the table). Run with the path to a
 //! `default.xbe`, read-only:
 //!
-//! `H2_XBE=/abs/path/default.xbe cargo test -p d3d --test xbe_tables -- --ignored`
+//! `H2_XBE=/abs/path/default.xbe cargo test -p d3d --test it xbe_tables:: -- --ignored`
 
 mod common;
 

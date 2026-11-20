@@ -4,7 +4,7 @@
 //! prints names only. Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test model_shaders_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it model_shaders_disc:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

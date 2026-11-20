@@ -126,7 +126,7 @@ cargo test -p h1ai -p h1models -p h1convert -p h1campaign -p h1scripts -p engine
 cargo test -p h1ai --test convert
 cargo test --release -p h1models --lib retail_overlay_defaults_round_trip_on_all_23_maps -- --ignored
 cargo test --release -p h1ai --test disc retail_spawn_bindings_keep_every_actor_weapon_and_command -- --ignored
-cargo test --release -p h1objects --test sandbox_disc halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
+cargo test --release -p h1objects --test it sandbox_disc::halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
 cargo test --release -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
 cargo test --release -p h1scripts --test conversations_disc every_campaign_conversation_compiles_with_its_source_sounds -- --ignored
 cargo test --release -p h1campaign --test disc both_sandboxes_rebuild_every_retail_map -- --ignored

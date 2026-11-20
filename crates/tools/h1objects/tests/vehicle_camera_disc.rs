@@ -2,7 +2,7 @@
 //! `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test vehicle_camera_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it vehicle_camera_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo_2s_default_track_is_halo_1s`: Halo 2's
