@@ -851,11 +851,10 @@ fn every_fresh_map(
             let fresh = p
                 .build_fresh(&mut base, &mopp)
                 .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
-            // Built from scratch, not the pruned fallback.
+            // Built from scratch (`build_fresh` fails otherwise).
             assert!(
                 fresh.report.scratch.is_some(),
-                "{name} {sandbox:?}: not from scratch: {:?}",
-                fresh.report.scratch_failed
+                "{name} {sandbox:?}: not from scratch"
             );
             each(name, sandbox, &p, &fresh);
         }
@@ -1079,11 +1078,7 @@ fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
     .unwrap();
     let mopp = structure_mopp(&p.collision).unwrap();
     let fresh = p.build_fresh(&mut retail, &mopp).unwrap();
-    assert!(
-        fresh.report.scratch.is_some(),
-        "{:?}",
-        fresh.report.scratch_failed
-    );
+    assert!(fresh.report.scratch.is_some(), "not from scratch");
     let mut converted = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
     let base = Base::read(&mut converted).unwrap();
 

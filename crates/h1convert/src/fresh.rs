@@ -16,9 +16,11 @@
 //! | `ugh!` | [`h1sounds::gestalt::SoundGestalt`], chunks' local raw copied |
 //! | converted tags (structure, lightmap, collections, objects) | as the conversion built them |
 //!
-//! So the map carries the base's tags (everything Coagulation has, whether
-//! Blood Gulch uses it or not), the converted ones, and no byte of the
-//! base's file beyond what those tags name.
+//! That set, pruned to what the scenario reaches ([`prune`]), gives the
+//! scenario and BSP to the map written: built from scratch
+//! ([`crate::scratch`]), the base's tags read by path, only what is
+//! reached. A map that cannot be built from scratch is an error; the
+//! pruned set is never written.
 
 use std::io::{Cursor, Read, Seek};
 
@@ -75,10 +77,10 @@ pub struct FreshReport {
     /// Tags the schema cannot move, left without data, and why
     /// ([`check_refused`]).
     pub refused: Vec<(TagId, String)>,
-    /// The map from scratch ([`crate::scratch`]), or why not (the pruned
-    /// set is written instead).
+    /// The map from scratch ([`crate::scratch`]): always there after
+    /// [`Prepared::build_fresh`], which fails when the map cannot be built
+    /// so.
     pub scratch: Option<crate::scratch::ScratchReport>,
-    pub scratch_failed: Option<String>,
     /// The base's tags the pinned map it is read from dropped
     /// ([`prune_pinned`]), before [`Self::pruned`].
     pub pinned_pruned: Pruned,
@@ -132,41 +134,37 @@ impl Prepared {
         check_refused(&mut fresh, &report)?;
         drop(src);
         // Then from scratch: the base's tags by path, only what is reached,
-        // on a dense index. The pruned set is the fallback.
-        let mut precision = self.applied.precision.clone();
-        let mut hud = huds.clone();
-        match from_scratch(base, &pinned, &bytes, &fresh, &keep) {
-            Ok((set, r)) => {
-                // The swaps' datums, in the new index (the manifest's).
-                let key = |s: &TagSet, d: TagId| {
-                    let slot = s.slots.get(d.index())?;
-                    let t = slot.tag.as_ref().filter(|t| t.id == d)?;
-                    Some((t.group, slot.name.clone()))
-                };
-                let by_key: std::collections::HashMap<_, TagId> = set
-                    .slots
-                    .iter()
-                    .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
-                    .collect();
-                let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
-                precision = self
-                    .applied
-                    .precision
-                    .iter()
-                    .map(|&(a, b)| Some((new(a)?, new(b)?)))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
-                hud = huds
-                    .iter()
-                    .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| Error::Fresh("a HUD pair's tag left out".into()))?;
-                fresh = set;
-                report.scratch = Some(r);
-            }
-            Err(e) => report.scratch_failed = Some(e.to_string()),
-        }
-        let (bytes, _) = fresh.build()?;
+        // on a dense index. The pruned set gives the scenario and BSP; it is
+        // never written, so a map that cannot be built from scratch fails.
+        let (set, r) = from_scratch(base, &pinned, &bytes, &fresh, &keep).map_err(|e| {
+            Error::Fresh(format!("{}: not built from scratch: {e}", self.h1_name))
+        })?;
+        // The swaps' datums, in the new index (the manifest's).
+        let key = |s: &TagSet, d: TagId| {
+            let slot = s.slots.get(d.index())?;
+            let t = slot.tag.as_ref().filter(|t| t.id == d)?;
+            Some((t.group, slot.name.clone()))
+        };
+        let by_key: std::collections::HashMap<_, TagId> = set
+            .slots
+            .iter()
+            .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
+            .collect();
+        let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
+        let precision = self
+            .applied
+            .precision
+            .iter()
+            .map(|&(a, b)| Some((new(a)?, new(b)?)))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
+        let hud = huds
+            .iter()
+            .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| Error::Fresh("a HUD pair's tag left out".into()))?;
+        report.scratch = Some(r);
+        let (bytes, _) = set.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
             bytes,

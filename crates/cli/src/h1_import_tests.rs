@@ -599,6 +599,130 @@ fn every_multiplayer_job_builds_in_both_sandboxes() {
     assert!(built > 0);
 }
 
+/// Every job the import runs (the 10 levels in both asset variants and the
+/// 13 multiplayer maps in both sandboxes: 46 on the retail disc) built
+/// from scratch, as the import builds it, in memory: nothing of the base
+/// pinned, a dense index with no empty slot, no reference nulled, and the
+/// file and tag memory inside the engine's bounds (the native campaign
+/// slot, `map::writer::NATIVE_CAMPAIGN_FILE_LIMIT`; the multiplayer cache
+/// limit). A map that cannot be built so is the conversion's error, so
+/// this also proves no job relies on a pinned or pruned map.
+///
+/// `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test --release -p cli
+/// --bin h2 h1_import::tests::every_job_builds_from_scratch -- --ignored
+/// --nocapture` (H1_JOBS=d40,d40/h2,bloodgulch for some).
+#[test]
+#[ignore = "reads the discs named by H1_ISO and H2_DISC; converts every map (minutes)"]
+fn every_job_builds_from_scratch() {
+    let h1 = PathBuf::from(std::env::var("H1_ISO").expect("H1_ISO"));
+    let h2 = PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
+    let only: Option<Vec<String>> = std::env::var("H1_JOBS")
+        .ok()
+        .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect());
+    let f = File::open(&h1).unwrap();
+    let mut iso = Xiso::open(BufReader::new(f)).unwrap();
+    let disc = Disc::open(&mut iso).unwrap();
+    let stems: Vec<String> = disc.maps.iter().map(|e| map_stem(e).to_owned()).collect();
+    let todo: Vec<Job> = jobs(&stems)
+        .into_iter()
+        .filter(|j| only.as_ref().is_none_or(|o| o.contains(&j.key())))
+        .collect();
+    if only.is_none() {
+        assert_eq!(todo.len(), 46, "the retail disc's jobs");
+    }
+    let conv = DiscConverter::new(h1.clone(), iso, disc, h2, PathBuf::new());
+    conv.expect(&todo);
+    let campaign_max = map::writer::max_metadata_size(map::CacheType::Campaign).unwrap();
+    let mp_file_max = map::writer::cache_size_limit(map::CacheType::Multiplayer).unwrap();
+    // One job's problems, empty when it built from scratch and fits.
+    let check = |job: &Job| -> Vec<String> {
+        let mut bad = Vec::new();
+        let bytes = match *job {
+            Job::Campaign(level) | Job::CampaignHalo2(level) => {
+                let assets = if matches!(job, Job::Campaign(_)) {
+                    h1campaign::h2assets::Assets::Halo1
+                } else {
+                    h1campaign::h2assets::Assets::Halo2
+                };
+                let done = match conv.campaign(level, assets) {
+                    Ok(d) => d,
+                    Err(e) => return vec![format!("{e:#}")],
+                };
+                let r = &done.report;
+                match &r.scratch {
+                    Some(s) if s.dangling.is_empty() => {}
+                    Some(s) => bad.push(format!("{} nulled: {:?}", s.dangling.len(), s.dangling)),
+                    None => bad.push(format!("not from scratch: {:?}", r.dropped)),
+                }
+                if !r.fresh {
+                    bad.push("written pinned".into());
+                }
+                if r.memory > campaign_max {
+                    bad.push(format!("tag memory {:#x} over {campaign_max:#x}", r.memory));
+                }
+                let limit = u64::from(map::writer::NATIVE_CAMPAIGN_FILE_LIMIT);
+                if done.bytes.len() as u64 > limit {
+                    bad.push(format!("file {:#x} over {limit:#x}", done.bytes.len()));
+                }
+                println!(
+                    "{}: tag memory {:#x}, file {:#x}, lean {:?}",
+                    job.key(),
+                    r.memory,
+                    done.bytes.len(),
+                    r.lean
+                );
+                done.bytes
+            }
+            Job::Multiplayer(name, sandbox) => {
+                let f = match conv.multiplayer(name, sandbox) {
+                    Ok((_, f)) => f,
+                    Err(e) => return vec![format!("{e:#}")],
+                };
+                match &f.report.scratch {
+                    Some(s) if s.dangling.is_empty() => {}
+                    Some(s) => bad.push(format!("{} nulled: {:?}", s.dangling.len(), s.dangling)),
+                    None => bad.push("not from scratch".into()),
+                }
+                if f.bytes.len() as u64 > mp_file_max {
+                    bad.push(format!("file {:#x} over {mp_file_max:#x}", f.bytes.len()));
+                }
+                println!("{}: file {:#x}", job.key(), f.bytes.len());
+                f.bytes
+            }
+        };
+        // Read back: a valid checksum and one index slot per tag (a map
+        // from scratch keeps no slot of the base's index).
+        let mut m = map::Map::from_reader(Cursor::new(bytes)).unwrap();
+        if let Err(e) = m.validate_checksum() {
+            bad.push(format!("checksum: {e}"));
+        }
+        let holes = (m.index_slots() as usize).saturating_sub(m.tags().len());
+        if holes != 0 {
+            bad.push(format!("{holes} empty index slots"));
+        }
+        bad
+    };
+    let next = AtomicUsize::new(0);
+    let failed = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..workers().clamp(1, todo.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = todo.get(i) else { break };
+                    let bad = catch_unwind(AssertUnwindSafe(|| check(job)))
+                        .unwrap_or_else(|p| vec![format!("panicked: {}", panic_text(&p))]);
+                    conv.release(job);
+                    let mut f = failed.lock().unwrap();
+                    f.extend(bad.into_iter().map(|b| format!("{}: {b}", job.key())));
+                }
+            });
+        }
+    });
+    let failed = failed.into_inner().unwrap();
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// What the import shares between jobs (each Halo 1 map read and inflated
 /// once for the jobs that convert it, each Halo 2 base read once, the
 /// scripts' tables and donors built once) changes no byte: a level's two

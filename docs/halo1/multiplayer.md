@@ -871,8 +871,9 @@ the fresh build's, their datums renamed (`scratch::Transfer`). Equal
 blocks are shared across tags, as retail does, except bitmaps and the
 sound gestalt, which the readers that take one tag's bytes
 (`tags::DecodedTag`, `SoundGestalt::decode`) need whole
-(`scratch::SELF_CONTAINED`). If it fails, the pruned set is written
-(`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
+(`scratch::SELF_CONTAINED`). If it fails, the conversion fails with
+the reason (`Error::Fresh`, "not built from scratch"); the pruned set is
+never written. Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
 slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the

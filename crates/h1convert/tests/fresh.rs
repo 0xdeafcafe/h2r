@@ -258,10 +258,7 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         // Built from scratch (fresh::from_scratch): a dense index of its
         // own, every tag one of the pinned map's by group and name, with
         // data where it had; every converted tag kept.
-        let s = r
-            .scratch
-            .as_ref()
-            .unwrap_or_else(|| panic!("not built from scratch: {:?}", r.scratch_failed));
+        let s = r.scratch.as_ref().expect("built from scratch");
         println!(
             "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSP; {} datum words \
              rewritten), {} dangling; index {} slots",
