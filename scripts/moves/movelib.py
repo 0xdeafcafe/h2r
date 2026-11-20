@@ -459,17 +459,37 @@ def crate_dirs():
 
 # Rust path edits ---------------------------------------------------------------
 
-def rename_rust_crate(files, old_ident, new_path, own_crate_files=(), own_path=None):
+def local_binding(old_ident):
+    """Matches a file that gives `old_ident` another meaning: a module of
+    that name, or an import that ends in it (`use a::old;`,
+    `use a::old::{self, ..}`, `use a::{b, old}`, `as old`). In such a
+    file a bare `old::` is not the crate."""
+    i = re.escape(old_ident)
+    return re.compile(
+        rf"(?m)^\s*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+{i}\s*[;{{]"
+        rf"|\buse\s+[\w:]+::{i}\s*(?:;|::\s*\{{\s*self\b)"
+        rf"|\buse\s+[\w:]+::\{{[^}}]*(?<![\w:]){i}\s*[,}}]"
+        rf"|\bas\s+{i}\s*[;,}}]")
+
+
+def rename_rust_crate(files, old_ident, new_path, own_crate_files=(), own_path=None, skipped=None):
     """`old_ident::` -> `new_path::` in Rust files. In `own_crate_files`
     (files that now live inside the crate the name points into) the
-    replacement is `own_path::` instead. Returns the number of edits."""
+    replacement is `own_path::` instead. A file that binds `old_ident` to
+    something else is left alone and appended to `skipped`. Returns the
+    number of edits."""
     pattern = re.compile(r"(?<![\w:.$])" + re.escape(old_ident) + r"(?=::)")
     bare = re.compile(r"(?<![\w:.$])(use|extern crate)\s+" + re.escape(old_ident) + r"\s*(;| as )")
+    local = local_binding(old_ident)
     own = set(own_crate_files)
     edits = 0
     for path in files:
         text = read(path)
         if text is None or old_ident not in text:
+            continue
+        if local.search(text):
+            if skipped is not None and pattern.search(text):
+                skipped.append(path)
             continue
         to = own_path if path in own and own_path else new_path
         out, n = pattern.subn(to, text)
@@ -541,7 +561,10 @@ def rename_crate(old, new, window_name):
 
     # Rust paths. A crate with its own top-level module of the new name
     # must say `::new::` to mean the crate.
-    rust = tracked("*.rs")
+    # Only a crate that depends on `old`, and `old` itself, can mean the
+    # crate by that name; anywhere else `old::` is a module of its own.
+    users = {new_dir} | {p["dir"] for p in pkgs.values() if any(d["name"] == old for d in p["dependencies"])}
+    rust = [f for f in tracked("*.rs") if any(f.startswith(u + "/") for u in users)]
     shadowed = []
     for name, p in pkgs.items():
         root = p["dir"] if name != old else new_dir
@@ -550,13 +573,16 @@ def rename_crate(old, new, window_name):
             if text and re.search(rf"(?m)^\s*(pub(\([a-z ]+\))?\s+)?mod\s+{re.escape(new_ident)}\s*[;{{]", text):
                 shadowed.append(root)
     inside = [f for f in rust if any(f.startswith(r + "/src/") for r in shadowed)]
-    edits = rename_rust_crate([f for f in rust if f not in set(inside)], old_ident, new_ident)
-    edits += rename_rust_crate(inside, old_ident, "::" + new_ident)
+    skipped = []
+    edits = rename_rust_crate([f for f in rust if f not in set(inside)], old_ident, new_ident, skipped=skipped)
+    edits += rename_rust_crate(inside, old_ident, "::" + new_ident, skipped=skipped)
     for f in rust:
         w.changed.add(f)  # counted loosely; `git status` has the truth
     w.changed = {f for f in w.changed if not f.endswith(".rs")}
     w.report.append(f"Rust: {edits} `{old_ident}::` paths renamed to `{new_ident}::`"
                     + (f" (`::{new_ident}::` in {', '.join(shadowed)}, which has its own `mod {new_ident}`)" if shadowed else ""))
+    for path in skipped:
+        w.report.append(f"left alone: {path} has its own `{old_ident}` (a module or an import); its `{old_ident}::` paths are not the crate's")
     w.mentions()
 
     # `-p old` in docs and scripts; the domain table.

@@ -279,13 +279,15 @@ def main():
                 write(path, out)
                 scoped += n
     w.report.append(f"Rust: {scoped} `crate::` paths in the moved sources now name their module")
-    edits = 0
+    edits, skipped = 0, []
     for s in present:
         t, m = part_of[s]
         t_ident, td = t.replace("-", "_"), dir_of(t)
         inside = [f for f in rust if f.startswith(f"{td}/src/")]
-        edits += movelib.rename_rust_crate(rust, s, f"{t_ident}::{m}", inside, f"crate::{m}")
+        edits += movelib.rename_rust_crate(rust, s, f"{t_ident}::{m}", inside, f"crate::{m}", skipped=skipped)
     w.report.append(f"Rust: {edits} paths through a merged crate's name rewritten")
+    for path in skipped:
+        w.report.append(f"left alone: {path} has its own module or import of a merged crate's name")
     w.relative_paths()
     w.mentions()
 
