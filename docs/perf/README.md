@@ -70,8 +70,9 @@ include the earlier host setup. [Load timeline](../runtime/agent-api.md#load-tim
 ## Experiments not adopted
 
 [notes/not-adopted.md](notes/not-adopted.md) lists the experiments that
-lost, with the result of each. The Mach exception write-watch prototype
-is written up in [notes/fastmem-proto.md](notes/fastmem-proto.md).
+lost, with the result of each. The Mach exception write-watch prototype,
+no longer in the tree, is written up in
+[notes/fastmem-proto.md](notes/fastmem-proto.md).
 
 ## Elsewhere
 

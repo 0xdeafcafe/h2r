@@ -47,12 +47,12 @@ crates/
                +sim-core +sim-anim +sim-collision +sim-objects +sim-state +sim-bridge
                +frame-scene +scene-extract +render-bridge
   live/        [live-proto live-hle live-telemetry live-server live-worker coop bots film
-                cloud-saves host-data sim]
+                cloud-saves host-data ~sim-bench]
   extensions/  agent agent-proto debug-menu hot-tags lockstep
                +game +ui-kit +h1-runtime  [+net-glue +bot-glue +theater]
   tools/       h1map ~h1-assets h1convert h1objects ~h1campaign
                editor-core scenario-edit hopper-edit hud-edit  perf viewer  [+live-art]
-  apps/        boot cli app app-icon studio studio-proto apple-host uwp-host
+  apps/        boot cli app app-icon studio studio-proto ~h2host uwp-host
                +cmd +cmd-host +cmd-play +cmd-tags +cmd-recomp +cmd-h1 +cmd-dev
                [+cmd-live +cmd-drive]
 ```
@@ -126,7 +126,6 @@ More rules in the same file:
 |---|---|
 | `feature` → `engine` (`hooking` → `rewrites`) | S2: the points, views and entry glue move to `guest-layout` and `hooks` |
 | `feature` → `native-render` (`hooking` → `rewrites`) | S3: the renderer's guest half leaves for `render-bridge` |
-| `oracle` → `wma` (`recompiler` → `platform`) | S1: the WMA oracle moves into `wma` |
 | `native-render` → `analyze`, `ir`, `lift` (guest-free) | the `lifted` crate lands and the differential tests take it as a dev-dependency |
 
 Every other dependency in the tree already obeys the table.
@@ -143,7 +142,8 @@ Every other dependency in the tree already obeys the table.
 | `engine` | `rewrites` | Ported engine functions. Its points and typed views are `hooking`'s and leave in S2 |
 | `lockstep`, `hot-tags` | `extensions` | A determinism harness and live tag edits: features we add, built on hooks |
 | `agent-proto`, `studio-proto` | `extensions`, `apps` | A wire protocol lives with the thing that serves it |
-| `sim` | `live` | Sim mode's match and report files; only the bot glue and `h2 sim` read them. `[x]` |
+| `sim-bench` | `live` | Sim mode's match and report files; only the bot glue and `h2 sim` read them. `[x]` |
+| `viewer` | `tools` | The model viewer and the `bsp`, `bsp_cracks` and `shadowlab` tools read a disc map offline; the crate stays whole |
 | `net-glue`, `bot-glue`, `theater` | `extensions` | Live and bots inside the game process. They use `game`'s menus and `ui-kit`, which `live` may not, so they are extensions that the Live owner owns (`live_owned` in the rules file) |
 | `live-art` | `tools` | The art pipeline works offline on the disc and uses the Halo 1 converters and `scenario-edit`, which `live` may not |
 | `cmd-live`, `cmd-drive` | `apps` | Commands depend on `cmd`, and nothing below `apps` may |
@@ -356,7 +356,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | W1 | Every crate into its domain directory | `w1-domains.py` | 86 `git mv`, 2,668 files renamed, 513 edited | now |
 | W2 | `feature` becomes `hooks` | `w2-hooks.py` | 91 files renamed, 193 edited | after W1 |
 | W3 | Eleven Halo 1 crates become five | `w3-h1-merge.py` | 99 files renamed, 7 manifests removed, 121 edited | after W1; `h1-contract` first (below) |
-| S1 | Small renames and deletions | `rename-crate.py` | 2 crates renamed, 1 deleted | needs decisions 2 and 3 |
+| S1 | Small renames and deletions | `s1-small.py` | 2 crates renamed, 1 deleted, 3 files to `wma` | ran: `move-s1` |
 | S2 | `guest-layout` and `hooks` take `engine`'s hooking parts | the `guest-layout` lane | 8 files, about 4,000 lines | when that lane lands |
 | S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 6 + 24 + 2 modules, 24,222 lines | sim and Halo 1: after W2. Render: 7 references to cut |
 | S4 | `recomp` out of `boot` | the contract lane | 7 files and 630 lines of `lib.rs` | before the contract work starts |
@@ -454,16 +454,28 @@ into one `h1-assets = ...`, in `[features]` too.
 
 ### S1. Small renames and deletions
 
-`scripts/moves/rename-crate.py sim sim-bench` and
-`scripts/moves/rename-crate.py apple-host h2host` (the package takes its
-library's name; `platform/apple/build.sh` and `platform/xbox/build.sh`
-name the package and are edited by hand). On the scratch tree the first
-renames 84 `sim::` paths in `boot` and `cli` and leaves
-`cli/src/agent_sim.rs`, where `sim` is `agent_proto::sim`; the second
-changes no Rust.
-`oracle`'s WMA oracle (`src/wma.rs`, a test, an example) moves into `wma`
-behind an `oracle` feature, which clears the `oracle` → `wma` exception.
-`viewer`: decision 3.
+`scripts/moves/s1-small.py`, run as `scripts/moves/window.sh run s1`
+(tags `move-s1-pre`, `move-s1`; a lane replays it with
+`scripts/moves/window.sh replay s1`).
+
+- `sim` becomes `sim-bench` (`crates/live/sim-bench`), by
+  `rename_crate`: 85 `sim::` paths in `boot` and `cli` become
+  `sim_bench::`. `cli/src/agent_sim.rs` and `agent`'s `sim` module are
+  `agent_proto::sim` and are left alone; `agent` names the package as
+  `sim-report = { package = "sim-bench", ... }`.
+- `apple-host` becomes `h2host`, its library's name already, so no Rust
+  path changes. `platform/apple/build.sh` and `platform/xbox/build.sh`
+  build `-p h2host`.
+- `fastmem-proto` is deleted. Its write-up stays in
+  [fastmem-proto.md](../perf/notes/fastmem-proto.md).
+- `oracle`'s WMA oracle moves into `wma` behind an `oracle` feature
+  (`wma/src/oracle.rs`, `tests/oracle_disc.rs`,
+  `examples/wma_oracle.rs`), which clears the `oracle` → `wma` exception.
+  `oracle` keeps only the x86 instruction oracle.
+- `viewer` stays in `tools`, whole.
+
+The lock file still names `sim`, `apple-host` and `fastmem-proto` after
+the move; the first cargo command rewrites it.
 
 ### S2. `guest-layout` and `hooks` take `engine`'s hooking parts
 
@@ -867,7 +879,8 @@ edited by hand, and each item is that owner's to confirm or change.
 ## Decisions needed
 
 Decided: domain directories; `feature` becomes `hooks`; the Halo 1 merge
-to five crates and `h1-contract`.
+to five crates and `h1-contract`; `apple-host` becomes `h2host` and `sim`
+becomes `sim-bench`; `viewer` stays whole in `tools`.
 
 1. **The Live glue in `extensions`** (and `live-art` in `tools`,
    `cmd-live` and `cmd-drive` in `apps`), marked as the Live owner's, so
@@ -875,18 +888,11 @@ to five crates and `h1-contract`.
    keep all of that owner's crates under `crates/live/` and give `live`
    two tiers in the rules: the service and libraries below `extensions`,
    three glue crates above it.
-2. **`apple-host` becomes `h2host`, `sim` becomes `sim-bench`** (S1).
-3. **`viewer`:** delete `shadowlab` (3,730 lines) and keep `bsp` and
-   `bsp_cracks` as `h2` commands in `cmd-tags`, or keep the crate in
-   `tools`.
-4. **`h1_options`, `h1_options_row` and `h1_variants` stay in `game`.**
+2. **`h1_options`, `h1_options_row` and `h1_variants` stay in `game`.**
    The Clankers and theater pages use them as menu rows; the other 14
    `h1_*` modules are `h1-runtime`.
-5. **Who cuts the references.** One lane working down the `--check` lists
+3. **Who cuts the references.** One lane working down the `--check` lists
    of S5 and S6, with the coordinator landing a window after each.
-6. **When W1 runs.** It touches every branch. The cheapest moment is
-   right after an integration that leaves few lanes open; `integ-1120`
-   and `build-1120` landing first means two fewer large replays.
 
 ## Not verified
 

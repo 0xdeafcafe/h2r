@@ -125,6 +125,8 @@ the moves that put every crate in its domain's directory are in
 | `sim-anim` | rewrites | Native animation sampling: decoded clips and the node-record sampler (docs/engine/anim-sampling.md) | [anim-sampling.md](engine/anim-sampling.md) |  |
 | `sim-collision` | rewrites | The native collision world: BSPs decoded once, queries as single Rust calls (docs/engine/sim-rewrite-collision.md) | [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) |  |
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
+| `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
+| `sim-state` | rewrites | Typed, read-only views of the simulation for theater, stats, Live and the agent API (docs/engine/sim-rewrite-objects.md section 8) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `bots` | live | Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md) | [bots.md](game/bots.md) |  |
 | `cloud-saves` | live | Cloud saves on the Live service: merge an account's saved items into the local save storage at sign-in, and push changes as the game writes them (docs/live/live-cloud-saves.md) | [live-cloud-saves.md](live/live-cloud-saves.md) | in progress |
 | `coop` | live | Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live/live-coop.md) | [live-coop.md](live/live-coop.md) | in progress |
@@ -135,7 +137,7 @@ the moves that put every crate in its domain's directory are in
 | `live-server` (bin `h2-live-server`) | live | The Xbox Live replacement service: signed events on SQLite or Postgres behind axum (docs/live/live.md, docs/live/live-api.md) | [live.md](live/live.md), [live-api.md](live/live-api.md) | in progress |
 | `live-telemetry` | live | Non-invasive Halo 2 guest-state telemetry and live ingest | [live-telemetry.md](live/live-telemetry.md) | in progress |
 | `live-worker` (cdylib `live_worker`) | live | The Live server as a Cloudflare Worker: live-server's routes over D1, R2 and Durable Objects (docs/live/live-worker.md) | [live-worker.md](live/live-worker.md) |  |
-| `sim` | live | Sim mode's pure parts: match and batch files, bot tuning files, the paced clock and speed-up, the metrics tally and report, and the A/B comparison (docs/runtime/sim.md) | [sim.md](runtime/sim.md) |  |
+| `sim-bench` | live | Sim mode's pure parts: match and batch files, bot tuning files, the paced clock and speed-up, the metrics tally and report, and the A/B comparison (docs/runtime/sim.md) | [sim.md](runtime/sim.md) |  |
 | `agent` | extensions | The agent API server: a Unix socket in the game process, answered at tick boundaries (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
 | `agent-proto` | extensions | The agent API's wire types: JSON-RPC 2.0 over a Unix socket, one JSON object per line (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
 | `debug-menu` | extensions | Our in-game debug menu: a tree of rows over the agent API's registries, its navigation, touchpad and pad input, and the lines the host overlay draws (docs/runtime/debug-menu.md) | [debug-menu.md](runtime/debug-menu.md) |  |
@@ -154,9 +156,9 @@ the moves that put every crate in its domain's directory are in
 | `viewer` (bin `viewer`, bin `bsp`, bin `bsp_cracks`, bin `shadowlab`) | tools | Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx | [structure-bsp.md](formats/structure-bsp.md) | done |
 | `app` (bin `h2-app-demo`) | apps | Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first) | [app.md](runtime/app.md) | done; `h2 play` runs the game in it |
 | `app-icon` | apps | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |
-| `apple-host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
 | `boot` | apps | Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE | [BOOT.md](runtime/BOOT.md) | done |
 | `cli` (bin `h2`) | apps | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
+| `h2host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
 | `studio` (bin `h2-editor`) | apps | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |
 | `studio-proto` | apps | The studio agent API's names, short forms and client: JSON-RPC 2.0 over a local Unix socket, as the game's agent API (docs/editor/agent-api.md) | [agent-api.md](editor/agent-api.md) |  |
 | `uwp-host` (bin `h2uwp`) | apps | The Xbox (UWP, Dev Mode) app: a CoreApplication view that runs the game into a composition swap chain, and the Mac-side packaging helpers (AppxManifest, package identity, the app-container API check) | [xbox.md](runtime/xbox.md) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
