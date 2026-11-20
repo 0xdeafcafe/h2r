@@ -1,6 +1,8 @@
 //! Dynamic object change colours. Each channel starts from its base RGB,
 //! evaluates all permutation functions, then all scale functions, then
 //! clamps. The two function passes may read the object's live outputs.
+//! A test oracle (`ORACLES`): `crate::sim_objects::functions::colors` is
+//! the body under `impl.sim.native.objects`.
 use super::spatial::{fp_error, scalar};
 use super::*;
 use crate::{datum::layout, light_constants::Sse};

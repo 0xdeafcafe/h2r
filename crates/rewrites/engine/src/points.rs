@@ -448,6 +448,27 @@ points! { ALL;
     OBJECT_WAKE_CHILDREN @ 0x000b_c7b0: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
     /// Wake what an early mover's sphere touches.
     OBJECT_EARLY_MOVER_WAKE @ 0x0010_9580: [fn(mover: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 3 of docs/engine/sim-rewrite-objects.md: function values and change colours.
+    /// Evaluate one function export of an object's definition.
+    OBJECT_FUNCTION_EVALUATE @ 0x000b_a8c0: [fn(record: eax, object: stack 0, value: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
+    /// The `unit` level's function import (slot `+4c`).
+    UNIT_FUNCTION_IMPORT @ 0x000c_6b90: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// A unit import helper: a fraction from the unit's body `+334`/`+338`.
+    UNIT_IMPORT_FRACTION @ 0x000d_1210: [fn(unit: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// A unit import helper: a value from the unit's animation state.
+    UNIT_IMPORT_ANIMATION @ 0x000d_1410: [fn(unit: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// The `bipd` level's function import (slot `+4c`).
+    BIPED_FUNCTION_IMPORT @ 0x000d_e3b0: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `vehi` level's function import (slot `+4c`).
+    VEHICLE_FUNCTION_IMPORT @ 0x000f_6d10: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `weap` level's function import (slot `+4c`).
+    WEAPON_FUNCTION_IMPORT @ 0x000f_f5f0: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `proj` level's function import (slot `+4c`).
+    PROJECTILE_FUNCTION_IMPORT @ 0x000f_be70: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `devi` level's function import (slot `+4c`).
+    DEVICE_FUNCTION_IMPORT @ 0x0010_6d70: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `mach` and `bloc` levels' function import (slot `+4c`).
+    MACHINE_FUNCTION_IMPORT @ 0x0011_bd60: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";

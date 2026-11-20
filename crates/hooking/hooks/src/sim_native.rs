@@ -75,11 +75,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         sim::collision::query,
     ),
     (
-        &points::BASE_OBJECT_IMPORT,
-        "sim.native_base_object_import",
-        sim::object_base::base_import,
-    ),
-    (
         &points::SIM_MOPP_BOX,
         "sim.native_mopp_box",
         sim::mopp_query::box_query,
@@ -88,16 +83,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
         &points::SIM_MOPP_RAY,
         "sim.native_mopp_ray",
         sim::mopp_query::ray_query,
-    ),
-    (
-        &points::OBJECT_FUNCTION_IMPORT,
-        "sim.native_object_import",
-        sim::object::import,
-    ),
-    (
-        &points::OBJECT_FUNCTION_VALUE,
-        "sim.native_object_value",
-        sim::object::value,
     ),
 ];
 
@@ -115,12 +100,6 @@ impl Feature for SimNative {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         sim::set_simd(simd_on(b.switches()));
-        let descriptor_on = b
-            .switches()
-            .implementation("sim.native_object_import", false);
-        let value_on = b
-            .switches()
-            .implementation("sim.native_object_value", false);
         let query_on = b
             .switches()
             .implementation("sim.native_collision_query", false);
@@ -135,10 +114,6 @@ impl Feature for SimNative {
                 continue;
             }
             let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
-            let completes_descriptor =
-                descriptor_on && point.base == points::BASE_OBJECT_IMPORT.base;
-            let completes_value = value_on
-                && (point.base == points::OBJECT_FUNCTION_IMPORT.base || completes_descriptor);
             // Long programs yield at the float VM dispatch loop. Some
             // generated images omit loop selectors.
             let installed = b.switches().implementation(name, false)
@@ -159,15 +134,6 @@ impl Feature for SimNative {
                                     if completes_query {
                                         return sim::collision::complete_segment(
                                             cpu, mem, transfer,
-                                        );
-                                    }
-                                    if completes_descriptor || completes_value {
-                                        return sim::object::complete_return(
-                                            cpu,
-                                            mem,
-                                            transfer,
-                                            completes_descriptor,
-                                            completes_value,
                                         );
                                     }
                                     Ok(transfer)

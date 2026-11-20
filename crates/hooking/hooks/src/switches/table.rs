@@ -45,7 +45,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 87;
+pub const BUDGET: usize = 83;
 
 use Initial::{Follows, Group, Off, On};
 
@@ -160,16 +160,12 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_marker_transforms", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_bsp_segment", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_collision_query", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_base_object_import", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_mopp_box", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_mopp_ray", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_object_import", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_object_value", Off, "sim", "2026-11-20", SIM_PORT),
     // Simulation: hand ports (`engine::sim_physics::PORTS`).
     sw("impl.sim.native_havok_solver", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_havok_support_vertices", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_havok_weld", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_object_change_colors", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_spatial_visit", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_spatial_portal", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
