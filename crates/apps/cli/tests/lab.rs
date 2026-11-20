@@ -1,7 +1,7 @@
 //! `h2 lab` end to end on this machine with a fake game: a host on a
-//! temporary socket, runs through `--host local` and through a stand-in for
-//! ssh (`H2_LAB_SSH`), builds of a branch from a scratch git checkout with a
-//! fake cargo, and the image cache. Nothing here builds or runs the game.
+//! temporary socket, runs through `--host local` and paired TLS over loopback,
+//! builds of a bundled branch from a scratch git checkout with a fake cargo,
+//! and the image cache. Nothing here builds or runs the game.
 #![cfg(unix)]
 
 use std::fs;
@@ -66,10 +66,6 @@ echo "    #1 33.0 ms: cpu 10.0"
 echo "outcome: stopped at present $n"
 "#;
 
-/// Stands in for ssh: drops the host and runs the command with sh, as the
-/// remote login shell would.
-const FAKE_SSH: &str = "#!/bin/sh\nshift\nexec sh -c \"$*\"\n";
-
 fn scratch(name: &str) -> PathBuf {
     // Short: Unix socket paths are limited to about 100 bytes.
     let p = std::env::temp_dir().join(format!("h2lab{name}{}", std::process::id()));
@@ -118,6 +114,7 @@ struct Lab {
     dir: PathBuf,
     socket: PathBuf,
     root: PathBuf,
+    endpoint: String,
     /// The laptop's checkout.
     repo: PathBuf,
     /// This machine's checkout, a clone of it.
@@ -135,7 +132,6 @@ impl Lab {
         let dir = scratch(name);
         let fake_h2 = dir.join("fake-h2");
         script(&fake_h2, FAKE_H2);
-        script(&dir.join("fake-ssh"), FAKE_SSH);
         let cargo_log = dir.join("cargo.log");
         // A fake cargo: logs its call and "builds" h2 as the fake.
         script(
@@ -166,7 +162,7 @@ impl Lab {
         let socket = dir.join("s");
         let root = dir.join("root");
         let child = Command::new(env!("CARGO_BIN_EXE_h2"))
-            .args(["lab", "host", "--root"])
+            .args(["lab", "host", "--listen", "127.0.0.1:0", "--root"])
             .arg(&root)
             .arg("--socket")
             .arg(&socket)
@@ -191,15 +187,26 @@ impl Lab {
         }
         let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        Lab {
+        fs::create_dir(dir.join("driver-home")).unwrap();
+        let mut lab = Lab {
             dir,
             socket,
             root,
+            endpoint: String::new(),
             repo,
             dev,
             cargo_log,
             _host: host,
-        }
+        };
+        let status = json(&ok(&lab.local(&["status"])));
+        lab.endpoint = status["listen"].as_str().unwrap().to_owned();
+        assert!(err(&lab.lan(&["status"])).contains("unpaired"));
+        let code = ok(&lab.h2(
+            &["host", "pair-code", "--root", lab.root.to_str().unwrap()],
+            &[],
+        ));
+        ok(&lab.h2(&["pair", &lab.endpoint, code.trim()], &[]));
+        lab
     }
 
     /// `h2 lab <args> --host local --socket S`, from the dev checkout.
@@ -210,19 +217,9 @@ impl Lab {
         )
     }
 
-    /// The same through the fake ssh and `h2 lab pipe`.
-    fn ssh(&self, args: &[&str]) -> Output {
-        self.h2(
-            args,
-            &[
-                "--host",
-                "laptop",
-                "--socket",
-                self.socket.to_str().unwrap(),
-                "--remote-h2",
-                env!("CARGO_BIN_EXE_h2"),
-            ],
-        )
+    /// The same operations over the paired loopback connection.
+    fn lan(&self, args: &[&str]) -> Output {
+        self.h2(args, &["--host", &self.endpoint])
     }
 
     fn h2(&self, args: &[&str], target: &[&str]) -> Output {
@@ -233,8 +230,9 @@ impl Lab {
             .args(target)
             .args(&args[1..])
             .current_dir(&self.dev);
-        c.env("H2_LAB_SSH", self.dir.join("fake-ssh"))
+        c.env("HOME", self.dir.join("driver-home"))
             .env_remove("H2_LAB_HOST")
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("RUSH_KEEP");
         c.output().unwrap()
     }
@@ -273,11 +271,11 @@ fn json(s: &str) -> Value {
 fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let lab = Lab::start();
 
-    // status, locally and through ssh + pipe.
+    // status, locally and through paired TCP.
     let s = json(&ok(&lab.local(&["status"])));
     assert_eq!(s["version"], 1);
     assert!(s["active"].is_null());
-    let s2 = json(&ok(&lab.ssh(&["status"])));
+    let s2 = json(&ok(&lab.lan(&["status"])));
     assert_eq!(s2["repo"], s["repo"]);
 
     // A run of the host's own image, waited for and fetched.
@@ -387,8 +385,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     assert!(log.contains("got TERM"), "{log}");
     assert!(err(&lab.local(&["stop", &long])).contains("not running (stopped)"));
 
-    // Record, then replay the recording (level from its manifest), through ssh.
-    let v = json(&ok(&lab.ssh(&[
+    // Record, then replay the recording (level from its manifest), over the LAN transport.
+    let v = json(&ok(&lab.lan(&[
         "run",
         "--current",
         "--level",
@@ -402,13 +400,13 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         to.to_str().unwrap(),
     ])));
     assert_eq!(v["job"]["state"], "done");
-    let recs = json(&ok(&lab.ssh(&["recordings"])));
+    let recs = json(&ok(&lab.lan(&["recordings"])));
     let r = &recs["recordings"][0];
     assert_eq!(r["name"], "fight");
     assert_eq!(r["level"], "03a_oldmombasa");
     assert!(r["snapshot"].is_null());
     assert!(lab.root.join("recordings/fight/input.bin").is_file());
-    let v = json(&ok(&lab.ssh(&[
+    let v = json(&ok(&lab.lan(&[
         "run",
         "--current",
         "--replay",
@@ -437,10 +435,10 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
             .contains("exists")
     );
 
-    // put: an uploaded recording, through ssh.
+    // put: an uploaded recording, over the LAN transport.
     let file = lab.dir.join("mine.bin");
     fs::write(&file, b"\x00\x01recorded elsewhere\xff").unwrap();
-    let v = json(&ok(&lab.ssh(&[
+    let v = json(&ok(&lab.lan(&[
         "put",
         file.to_str().unwrap(),
         "--as",
@@ -454,14 +452,14 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         fs::read(&file).unwrap()
     );
 
-    // A branch: synced over (fake) ssh into lab/<branch>, built in a
+    // A branch: synced over paired TCP into lab/<branch>, built in a
     // worktree with its build variables, run; the second run reuses the
     // image.
     git(&lab.dev, &["checkout", "-q", "-b", "perf-work"]);
     fs::write(lab.dev.join("README"), "faster\n").unwrap();
     git(&lab.dev, &["commit", "-q", "-am", "two"]);
     let head = git(&lab.dev, &["rev-parse", "HEAD"]);
-    let v = json(&ok(&lab.ssh(&[
+    let v = json(&ok(&lab.lan(&[
         "run",
         "--level",
         "ascension",
@@ -501,7 +499,7 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let cargo = fs::read_to_string(&lab.cargo_log).unwrap();
     assert_eq!(cargo.lines().count(), 1);
     assert!(cargo.contains("build --release -p cli --bin h2"), "{cargo}");
-    let v = json(&ok(&lab.ssh(&[
+    let v = json(&ok(&lab.lan(&[
         "run",
         "--level",
         "ascension",
@@ -552,6 +550,18 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         ]))
         .contains("no PGO profile")
     );
+}
+
+#[test]
+fn the_lan_pairing_can_be_revoked_without_stopping_the_host() {
+    let lab = Lab::named("r");
+    ok(&lab.lan(&["status"]));
+    ok(&lab.h2(
+        &["host", "unpair", "--root", lab.root.to_str().unwrap()],
+        &[],
+    ));
+    assert!(err(&lab.lan(&["status"])).contains("authentication"));
+    ok(&lab.local(&["status"]));
 }
 
 #[test]
@@ -658,7 +668,7 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
         "{sock:?}"
     );
 
-    // A short form, a method with JSON, and the same through ssh + pipe.
+    // A short form, a method with JSON, and the same through the paired transport.
     let out = json(&ok(&lab.local(&[
         "agent",
         &id,
@@ -669,7 +679,7 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     ])));
     assert_eq!(out["frames"], 12);
     assert_eq!(out["busy_ms"]["p95"], 12.5);
-    let out = json(&ok(&lab.ssh(&[
+    let out = json(&ok(&lab.lan(&[
         "agent",
         &id,
         "session.wait",
@@ -679,7 +689,7 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     assert_eq!(out["params"], r#"{"until":{"phase":"gameplay"}}"#);
 
     // The exit code and stderr of the call come back as they were.
-    let f = lab.ssh(&["agent", &id, "fail"]);
+    let f = lab.lan(&["agent", &id, "fail"]);
     assert_eq!(f.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&f.stderr).contains(r#""code":3"#));
     assert!(f.stdout.is_empty());
@@ -734,7 +744,7 @@ fn lab_bench_measures_a_level_and_saves_the_answers_for_an_ab() {
             let id = id.clone();
             std::thread::spawn(move || open_agent_socket(&root, &id))
         };
-        let out = ok(&lab.local(&[
+        let args = [
             "bench",
             "--current",
             "--level",
@@ -749,7 +759,12 @@ fn lab_bench_measures_a_level_and_saves_the_answers_for_an_ab() {
             to.to_str().unwrap(),
             "--",
             "--unpaced",
-        ]));
+        ];
+        let out = if n == 1 {
+            ok(&lab.local(&args))
+        } else {
+            ok(&lab.lan(&args))
+        };
         let _held = opener.join().unwrap();
         let line = out.lines().next().unwrap();
         assert_eq!(

@@ -207,7 +207,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   studio <call>           call h2-editor's agent API (the open window, or
                           `h2-editor --serve`): maps, tags, placements,
                           variants, playlists, UI screens (docs/editor/agent-api.md)
-  lab <command>           run levels on another Mac over SSH: replays, frame
+  lab <command>           run levels on another Mac over the LAN: replays, frame
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
