@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use crate::expect::Expect;
 use crate::{PadStep, RpcError, code};
 
+pub mod hashes;
 pub mod menu;
 
 /// Method names. They are host methods: `session.methods` lists them where
@@ -51,6 +52,10 @@ pub mod method {
     /// functions ([`super::SpawnParams`]): host only, never in a co-op
     /// session.
     pub const SPAWN: &str = "sim.spawn";
+
+    /// The running game's `state_hashes_v1` rows ([`super::hashes`]). Not
+    /// in [`ALL`]: boot's agent glue registers it, not `agent::sim::install`.
+    pub const HASHES: &str = "sim.hashes";
 
     pub const ALL: &[&str] = &[
         PLAYER_ADD,

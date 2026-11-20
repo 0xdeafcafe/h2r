@@ -88,14 +88,8 @@ impl Aabb {
     }
 }
 
-/// What a draw belongs to in the BSP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Owner {
-    /// A cluster, by index in `sbsp+0x9c`.
-    Cluster(u32),
-    /// An instanced-geometry placement, by index in `sbsp+0x140`.
-    Instance(u32),
-}
+/// What a draw belongs to in the BSP (the scene's type).
+pub use frame_scene::Owner;
 
 /// A lightmap page through one palette: the cluster's or instance's
 /// render info in the lightmap group (docs/formats/lighting.md).

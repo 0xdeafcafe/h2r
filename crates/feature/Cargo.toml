@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["native-render"]
-native-render = ["dep:native-render"]
+native-render = ["dep:native-render", "dep:frame-scene", "dep:scene-extract"]
 
 [dependencies]
 runtime.workspace = true
@@ -16,6 +16,9 @@ engine = { path = "../engine", features = ["runtime-glue"] }
 timeline = { path = "../timeline" }
 # The world skip and camera read (pure: no GPU, no map reader).
 native-render = { path = "../native-render", default-features = false, optional = true }
+# The frame step's scene (docs/graphics/framescene.md).
+frame-scene = { path = "../frame-scene", optional = true }
+scene-extract = { path = "../scene-extract", optional = true }
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }

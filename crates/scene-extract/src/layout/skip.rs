@@ -15,7 +15,7 @@
 //! - Structure and model geometry build with `0x0004cbf0`; its render
 //!   record (`0x004ba138 + 0x20 · index`) has `+4` an object's render
 //!   model tag datum, `-1` for BSP clusters and instanced geometry (not the
-//!   object handle: [`crate::objects::record_owner`] finds that).
+//!   object handle: [`crate::layout::objects::record_owner`] finds that).
 //! - Which BSP geometry a structure item draws (the build `0x0004cbf0`,
 //!   `0x0004cec1`..`0x0004cf21`): the record's `+0` bit 12 clear, a cluster
 //!   (`+0xc` bits 9..17, the structure BSP's clusters at `+0xa0`, `0xb0`
@@ -32,8 +32,8 @@
 //!   (`0x001332f0`). An item with neither leaves the stencil as the layer
 //!   found it. [`stencil_plan`] says which do.
 
-use crate::camera::{GuestRead, GuestWrite};
-use crate::world::Owner;
+use crate::{GuestRead, GuestWrite};
+use frame_scene::Owner;
 
 pub const LAYER_DRAW: u32 = 0x0004_4550;
 pub const CURRENT_LAYER: u32 = 0x0046_7130;
@@ -351,7 +351,7 @@ pub fn restore(mem: &mut dyn GuestWrite, cleared: &Cleared) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::Mem;
 
     const LIST: u32 = 0x004c_1a48;
     const ITEMS: u32 = 0x0060_0000;

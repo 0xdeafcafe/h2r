@@ -49,6 +49,8 @@ wgpu = { version = "30", optional = true }
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
 native-render = { path = "../native-render", optional = true }
+# The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
+frame-scene = { path = "../frame-scene" }
 shaders = { path = "../shaders", optional = true }
 serde.workspace = true
 x87 = { path = "../x87" }

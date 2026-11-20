@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::camera::GuestRead;
-use crate::object_nodes::{MODEL_RECORD, MODEL_SECTIONS, Row, SECTION_STRIDE, TAG_INSTANCES};
-use crate::objects::{self, ItemKey, RecordOwner};
-use crate::skip::{
+use crate::GuestRead;
+use crate::layout::object_nodes::{MODEL_RECORD, MODEL_SECTIONS, Row, SECTION_STRIDE, TAG_INSTANCES};
+use crate::layout::objects::{self, ItemKey, RecordOwner};
+use crate::layout::skip::{
     GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORDS, RENDER_RECORD_SIZE,
 };
 
@@ -41,6 +41,24 @@ const PART_INDEX_COUNT: u32 = 8;
 // Handler state changes: stencil marking, conditional stream ranges and
 // the auxiliary render-state toggle in the geometry draw's prologue/epilogue.
 const SPECIAL_RECORD_FLAGS: u32 = (1 << 6) | (1 << 9) | (1 << 11) | (1 << 14);
+
+/// The `vrtx` classification `0x0001cb20` picks for a section of geometry
+/// classification `geometry` (the section's u16 at `+0x18`) and node
+/// influences `influences` (its byte `+0x14`), of a tag with `count`
+/// classifications: 0 and 1 and 2 as they are, 3 (weighted nodes) the
+/// influences plus 2 when that is below `count`, else 0; `None` past 3
+/// (the jump table has four entries). The layer-3 draw reads `+0x14`; the
+/// draw modes 4 and 5 read `+0x15` instead (`0x0001cabd`), not taken here.
+pub fn classification(geometry: u16, influences: u8, count: u32) -> Option<u32> {
+    Some(match geometry {
+        0..=2 => u32::from(geometry),
+        3 => {
+            let c = u32::from(influences) + 2;
+            if c < count { c } else { 0 }
+        }
+        _ => return None,
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Part {
@@ -180,7 +198,7 @@ fn read_part(
     let vertex_shader = word(mem, program, PROGRAM_VERTEX_SHADER)?;
     let vertex_tag = word(mem, tag_table, 16 * (vertex_shader & 0xffff) + 8)?;
     let classes = word(mem, vertex_tag, VERTEX_SHADER_CLASS_COUNT)?;
-    let class = crate::object_streams::classification(geometry_class, node_influences, classes)?;
+    let class = classification(geometry_class, node_influences, classes)?;
     if class >= classes || u32::from(half(mem, slot, ENTRY_CLASSIFICATION)?) != class {
         return None;
     }
@@ -293,9 +311,9 @@ pub fn decide(entries: &[Entry], current: usize) -> Decisions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
-    use crate::object_nodes::RECORD_MATRIX;
-    use crate::objects::tests::{lighting, object, record};
+    use crate::testing::Mem;
+    use crate::layout::object_nodes::RECORD_MATRIX;
+    use crate::testing::{lighting, object, record};
 
     const SHADER: u32 = 0xe500_0012;
     const VERTEX_SHADER: u32 = 0xe100_003e;

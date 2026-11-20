@@ -16,7 +16,11 @@
 //! sampler, [`crate::sampling`], which `profile.capture {"sample": true}`
 //! runs too) and `host.perf` (the newest host perf line), and
 //! `render.frame` and `render.stats` (crates/agent's `render`, over
-//! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]).
+//! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]),
+//! and `render.compare`, `render.capture`, `render.scene` and
+//! `render.parity`. With a socket it adds `agent-frames`
+//! ([`crate::agent_frames`]): the tick marks `render.capture` needs and
+//! the rows `sim.hashes` answers.
 //! `sim.*` ([`install_sim`]) gets its session kind from `coop_probe`'s
 //! readers ([`session_view`]); its teleports, `sim.give` and `sim.spawn`
 //! call the game's own functions through the `agent-calls` feature
@@ -87,6 +91,9 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
+        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md).
+        #[cfg(feature = "gpu")]
+        crate::scene_glue::install();
         let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
@@ -126,6 +133,15 @@ impl AgentGlue {
             }
             Err(e) => anyhow::bail!("agent: {e}"),
         }
+        // render.capture's tick marks and sim.hashes' rows.
+        match registry.add(&crate::agent_frames::AgentFrames) {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "agent: agent-frames switched off by H2_FEATURES; render.capture and sim.hashes see no ticks"
+            ),
+            Err(e) => anyhow::bail!("agent-frames: {e}"),
+        }
+        agent::sim::hashes::install(&agent, &agent::sim::hashes::HASHES);
         match xapi {
             Some(x) => {
                 let mut x = x.lock().unwrap_or_else(|e| e.into_inner());
@@ -226,6 +242,11 @@ pub fn add_host_methods(agent: &agent::Agent) {
     }
     #[cfg(feature = "desktop-runtime")]
     agent::render::add_methods(agent, &agent::render::PROBE, crate::render_probe::sources());
+    // render.compare, render.capture (fed by d3d_diag's presents, the
+    // H2_BOOT_GFX present hook and crate::agent_frames), render.scene and
+    // render.parity (their sources register on agent::render::HOSTED).
+    #[cfg(feature = "desktop-runtime")]
+    agent::render::add_frame_methods(agent, &agent::render::CAPTURE, &agent::render::HOSTED);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,

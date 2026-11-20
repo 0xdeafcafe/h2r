@@ -40,7 +40,8 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
+use frame_scene::View;
+use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
 use native_render::world::Owner;
 
@@ -141,12 +142,12 @@ pub trait Host: Send + Sync {
         Err("no opaque draw host")
     }
 
-    /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `camera`
-    /// the view's render camera, `stencil` how the layer's items switch
+    /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `view`
+    /// the frame step's open view (its camera; [`crate::scene_step`]), `stencil` how the layer's items switch
     /// the stencil. Asks for the native pass when a world for `bsp` is
     /// ready and the device can draw it; returns the parts it draws, or
     /// `None` to leave the world to the D3D path.
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Cleared>;
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -262,10 +263,10 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         return;
     };
-    let (Some(camera), Some(bsp)) = (RenderCamera::read(&m, RENDER_CAMERA), m.read_u32(ACTIVE_BSP)) else {
+    let (Some(view), Some(bsp)) = (crate::scene_step::open_view(&*m.0), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
-    if let Some(c) = host.ask(m.0, bsp, &camera, &stencil) {
+    if let Some(c) = host.ask(m.0, bsp, &view, &stencil) {
         DRAWN.fetch_add(1, Ordering::Relaxed);
         ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
         let views = VIEWS.load(Ordering::Relaxed);
@@ -357,6 +358,7 @@ impl Feature for NativeWorld {
                 before_layer(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
+            .after_feature(crate::scene_step::ID)
             .after_feature(native_map_work::ID)
             .context_only();
         Ok(())

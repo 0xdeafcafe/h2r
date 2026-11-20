@@ -445,6 +445,11 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&feature::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
+        // The frame step's FrameScene: camera, world and objects extracted
+        // for the native stages (docs/graphics/framescene.md).
+        features
+            .add(&feature::scene_step::FrameSceneStep)
+            .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it
         // off; docs/graphics/native-renderer.md). Its layer-draw observer is
