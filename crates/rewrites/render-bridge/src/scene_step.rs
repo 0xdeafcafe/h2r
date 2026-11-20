@@ -4,8 +4,11 @@
 //! extracted at the object walk, its lights at each light passes' entry
 //! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
 //! each one's draw, its model decorators at its layer 3
-//! (`scene_extract::decorators`), and a first-person view with the items
-//! of its layers at the first-person draw `0x0003fdf0`, sealed and published after
+//! (`scene_extract::decorators`), a first-person view with the items
+//! of its layers at the first-person draw `0x0003fdf0`, and the view's late
+//! passes (slice 5: the fog at layer 16 and the water at layer 6 from their
+//! glue, [`late_layer`]; the post passes at `render_screen_effects` and its
+//! callees, [`post`]), sealed and published after
 //! `render_frame_and_present`.
 //!
 //! Still game-thread, still packets, still masks: the world and object
@@ -20,7 +23,10 @@ use std::time::Instant;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
-use frame_scene::{Camera, Cut, FrameScene, GroupSite, LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind};
+use frame_scene::{
+    Camera, Cut, DeviceFog, FrameScene, GroupSite, LateInput, LateLayer, LateMaterial, LatePart, LightStep, SceneBuilder, SceneId,
+    SceneLight, Stamp, View, ViewKey, ViewKind,
+};
 use native_render::object_walk::Entry;
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 use native_render::world_layers::{Site, layer_site};
@@ -77,6 +83,18 @@ static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS_WHOLE: AtomicU64 = AtomicU64::new(0);
 static LIGHT_ENTRIES: AtomicU64 = AtomicU64::new(0);
+/// Per late layer (fog, water): views written, of those the gate held,
+/// parts the stage took, and views it took.
+static LATE_VIEWS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static LATE_GATED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static LATE_PARTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static LATE_DRAWN: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static POST_VIEWS: AtomicU64 = AtomicU64::new(0);
+static POST_COLOUR: AtomicU64 = AtomicU64::new(0);
+static POST_EFFECTS: AtomicU64 = AtomicU64::new(0);
+/// Post callees' calls with no `render_screen_effects` of their view in
+/// the scene.
+static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
 static LIGHT_ENTRY_REMAINDER: [AtomicU64; Cause::ALL.len()] = [const { AtomicU64::new(0) }; Cause::ALL.len()];
 /// `render.scene`'s counter of each [`Cause`], in [`Cause::ALL`]'s order.
 const LIGHT_ENTRY_REMAINDER_NAMES: [&str; Cause::ALL.len()] = [
@@ -327,6 +345,149 @@ pub fn light_group(
     })
 }
 
+/// The game view's key of the guest view being drawn, with a view of
+/// that key in the scene: opened when it has none (a late pass with no
+/// layer 3 before it this frame). `None` when no view opens.
+fn late_key(mem: &dyn GuestMemory) -> Option<ViewKey> {
+    let m = Ro(mem);
+    let key = ViewKey { kind: ViewKind::Game, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let has = with_step(|step| step.builder.scene().is_some_and(|s| s.views.iter().any(|v| v.key == key)));
+    if !has && open_kind(mem, ViewKind::Game)?.key != key {
+        return None;
+    }
+    Some(key)
+}
+
+fn late_index(layer: u8) -> Option<usize> {
+    match layer {
+        16 => Some(0),
+        6 => Some(1),
+        _ => None,
+    }
+}
+
+/// What a late layer's stage reads, copied out of the scene: the layer as
+/// written, its resolved materials and the parts it draws.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LateStage {
+    pub key: ViewKey,
+    pub state: LateLayer,
+    pub materials: Vec<LateMaterial>,
+    pub parts: Vec<LatePart>,
+}
+
+/// The late layer `layer` (16 the fog, 6 the water) of the view being
+/// drawn (docs/graphics/framescene.md, slice 5): whether its gate held,
+/// the device's fog words, the items the current list holds in it, and
+/// what its stage would draw (`materials`, `parts`), not yet taken
+/// ([`late_drawn`]). Returns the scene's copy, which the stage records
+/// from; `None` when no view opens or the builder refuses, and then the
+/// stage leaves the layer to the guest.
+pub fn late_layer(
+    mem: &dyn GuestMemory, layer: u8, draws: bool, device: DeviceFog, materials: &[LateMaterial], parts: &[LatePart],
+) -> Option<LateStage> {
+    let i = late_index(layer)?;
+    let key = late_key(mem)?;
+    let items = scene_extract::late::layer_items(&Ro(mem), layer);
+    with_step(|step| {
+        let input = LateInput { draws, device, items, materials, parts };
+        let state = match step.builder.set_late(key, layer, input) {
+            Ok(s) => s,
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+        LATE_VIEWS[i].fetch_add(1, Ordering::Relaxed);
+        if draws {
+            LATE_GATED[i].fetch_add(1, Ordering::Relaxed);
+        }
+        let scene = step.builder.scene()?;
+        Some(LateStage {
+            key,
+            materials: scene.late_materials_of(&state).to_vec(),
+            parts: scene.late_parts_of(&state).to_vec(),
+            state,
+        })
+    })
+}
+
+/// The late layer `layer` of the view being drawn ran with its gate
+/// `draws` and its stage did not take it: written as the guest draws it
+/// (no device words, no parts) unless the stage's glue wrote it already.
+pub fn late_kept(mem: &dyn GuestMemory, layer: u8, draws: bool) {
+    let Some(key) = late_key(mem) else { return };
+    let written = with_step(|step| {
+        step.builder.scene().and_then(|s| s.views.iter().rev().find(|v| v.key == key)).is_some_and(|v| v.late(layer).is_some())
+    });
+    if !written {
+        late_layer(mem, layer, draws, [None; frame_scene::FOG_WORDS], &[], &[]);
+    }
+}
+
+/// The stage took the late layer `layer` of the view `key`: the guest
+/// skips its parts.
+pub fn late_drawn(key: ViewKey, layer: u8) {
+    let Some(i) = late_index(layer) else { return };
+    with_step(|step| match step.builder.late_drawn(key, layer) {
+        Ok(()) => {
+            LATE_DRAWN[i].fetch_add(1, Ordering::Relaxed);
+            let parts = step.builder.scene().and_then(|s| s.views.iter().rev().find(|v| v.key == key)?.late(layer).cloned());
+            LATE_PARTS[i].fetch_add(parts.map_or(0, |l| l.parts.len() as u64), Ordering::Relaxed);
+        }
+        Err(_) => {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// `render_screen_effects`' entry with its stack bytes: the view's post
+/// passes.
+pub fn post(mem: &dyn GuestMemory, late: bool, colour: bool) {
+    let Some(params) = scene_extract::late::post(&Ro(mem), late, colour) else {
+        POST_UNPLACED.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let Some(key) = late_key(mem) else { return };
+    with_step(|step| match step.builder.set_post(key, params) {
+        Ok(()) => {
+            POST_VIEWS.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// The colour pass `0x000214f0` with its seven arguments, under the view's
+/// post passes.
+pub fn post_colour(mem: &dyn GuestMemory, args: [u32; 7]) {
+    let key = ViewKey { kind: ViewKind::Game, player: 0, view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    with_step(|step| match step.builder.post_colour(key, args) {
+        Ok(()) => {
+            POST_COLOUR.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            POST_UNPLACED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// A screen effect `0x0002d140` (its datum, values address, columns and
+/// rows), under the view's post passes.
+pub fn post_effect(mem: &dyn GuestMemory, datum: u32, values: u32, columns: u32, rows: u32) {
+    let effect = scene_extract::late::post_effect(&Ro(mem), datum, values, columns, rows);
+    let key = ViewKey { kind: ViewKind::Game, player: 0, view: mem.u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    with_step(|step| match step.builder.push_post_effect(key, effect) {
+        Ok(()) => {
+            POST_EFFECTS.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            POST_UNPLACED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
 /// Runs `f` with the scene being written and its open view (`None`
 /// without one). The step is held for the call: `f` must not come back
 /// here.
@@ -382,6 +543,18 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
         ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
         ("scene_light_layers_alone", crate::native_lights::drawn_alone()),
+        ("scene_fog_views", LATE_VIEWS[0].load(Ordering::Relaxed)),
+        ("scene_fog_gate_held", LATE_GATED[0].load(Ordering::Relaxed)),
+        ("scene_fog_drawn", LATE_DRAWN[0].load(Ordering::Relaxed)),
+        ("scene_fog_parts", LATE_PARTS[0].load(Ordering::Relaxed)),
+        ("scene_water_views", LATE_VIEWS[1].load(Ordering::Relaxed)),
+        ("scene_water_gate_held", LATE_GATED[1].load(Ordering::Relaxed)),
+        ("scene_water_drawn", LATE_DRAWN[1].load(Ordering::Relaxed)),
+        ("scene_water_parts", LATE_PARTS[1].load(Ordering::Relaxed)),
+        ("scene_post_views", POST_VIEWS.load(Ordering::Relaxed)),
+        ("scene_post_colour", POST_COLOUR.load(Ordering::Relaxed)),
+        ("scene_post_effects", POST_EFFECTS.load(Ordering::Relaxed)),
+        ("scene_post_unplaced", POST_UNPLACED.load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(LIGHT_ENTRY_REMAINDER.iter().map(|c| c.load(Ordering::Relaxed))))
@@ -444,6 +617,18 @@ impl Feature for FrameSceneStep {
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
+        // The view's post passes: `render_screen_effects`' two stack
+        // bytes (`late`, `colour`). Its callees' calls are put in the
+        // scene by `native_post`'s hooks.
+        b.raw()
+            .observe_before(&points::RENDER_SCREEN_EFFECTS, "frame_scene_post", |o| {
+                let g = o.guest();
+                let byte = |n: u32| o.cpu.esp.checked_add(4 + 4 * n).and_then(|a| g.u32(a).ok()).is_some_and(|w| w as u8 != 0);
+                let (late, colour) = (byte(0), byte(1));
+                post(&*g, late, colour);
+            })
+            .context_only()
+            .optional();
         b.raw().observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
         // The census of the entries slices 4 and 5 replace: an option,
         // since its exit observers give those entries an after part.
@@ -474,6 +659,7 @@ mod tests {
         };
         let off = text("");
         assert!(!off.contains("entry_census"), "{off}");
+        assert!(off.contains("frame_scene_post"), "the post passes are extracted with or without it\n{off}");
         let on = text("frame-scene.census");
         for label in [
             "entry_census_layer",
@@ -481,6 +667,8 @@ mod tests {
             "entry_census_light_passes_end",
             "entry_census_object_shadow",
             "entry_census_screen_effects_end",
+            "entry_census_colour_pass_end",
+            "entry_census_screen_effect_end",
             "entry_census_animation_get",
             "entry_census_particle_update",
         ] {

@@ -347,9 +347,10 @@ pub struct SceneReply {
     pub counters: BTreeMap<String, u64>,
     /// The entry census (`frame-scene.census`; framescene.md, section 8.2):
     /// per guest entry slices 4 and 5 replace (`layer.scene.3`,
-    /// `layer.light.12`, `light_passes`, `object_shadow`,
-    /// `screen_effects`, ...), what the guest still does under it since the
-    /// start. `None` when the census is off.
+    /// `layer.light.12`, `layer.scene.16`, `light_passes`,
+    /// `object_shadow`, `screen_effects`, `colour_pass`, `screen_effect`,
+    /// ...), what the guest still does under it since the start. `None`
+    /// when the census is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<SceneEntries>,
     /// The JSON file written when `dump` was asked.
@@ -433,6 +434,52 @@ pub struct SceneViewRecord {
     pub decorator_instances: u32,
     #[serde(default)]
     pub decorator_remainder: u32,
+    /// The view's fog, layer 16, when its draw ran (framescene.md,
+    /// slice 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fog: Option<SceneLateRecord>,
+    /// The view's water edge blend, layer 6, when its draw ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water: Option<SceneLateRecord>,
+    /// The view's post passes, when `render_screen_effects` ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<ScenePostRecord>,
+}
+
+/// A view's late layer (the fog's 16 or the water's 6) in a sealed scene.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneLateRecord {
+    /// The layer's own gate held: it draws at all.
+    pub draws: bool,
+    /// Its items in the current list: what the guest would draw.
+    pub items: u32,
+    /// Materials the native stage draws with, their fog words resolved.
+    pub materials: u32,
+    /// Parts the native stage draws.
+    pub parts: u32,
+    /// The native stage took the layer (the guest skips its parts).
+    pub drawn: bool,
+    /// Items the guest still draws on the D3D path.
+    pub kept: u32,
+    /// Device fog words (of 7) that read at the layer.
+    pub device_words: u32,
+}
+
+/// A view's post passes in a sealed scene.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenePostRecord {
+    /// `render_screen_effects`' two stack bytes.
+    pub colour: bool,
+    pub late: bool,
+    pub view_kind: u32,
+    /// The scenario's screen-effect entries, and whether the loop's gates
+    /// read from memory pass.
+    pub screen_effects: u32,
+    pub screen_effects_gated: bool,
+    /// The colour pass ran, with its arguments in the scene.
+    pub colour_pass: bool,
+    /// Screen effects drawn under the call.
+    pub effects: u32,
 }
 
 /// `render.parity`: arm the in-process two-path comparison for one frame
@@ -535,6 +582,24 @@ mod tests {
         assert_eq!(v["tick"], 90);
         assert_eq!(v["size"], serde_json::json!([4, 2]));
         assert_eq!(serde_json::from_value::<ParityReply>(v).unwrap(), p);
+    }
+
+    #[test]
+    fn a_views_late_passes_print_only_when_they_ran() {
+        let v = serde_json::to_value(SceneViewRecord::default()).unwrap();
+        for absent in ["fog", "water", "post"] {
+            assert!(v.get(absent).is_none(), "{absent}");
+        }
+        let r = SceneViewRecord {
+            fog: Some(SceneLateRecord { draws: true, items: 9, materials: 2, parts: 7, drawn: true, kept: 2, device_words: 7 }),
+            post: Some(ScenePostRecord { colour: true, colour_pass: true, effects: 1, ..Default::default() }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["fog"]["kept"], 2);
+        assert_eq!(v["post"]["effects"], 1);
+        assert!(v.get("water").is_none());
+        assert_eq!(serde_json::from_value::<SceneViewRecord>(v).unwrap(), r);
     }
 
     #[test]

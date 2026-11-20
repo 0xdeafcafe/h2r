@@ -1,0 +1,130 @@
+//! Guest memory to a view's late passes (docs/graphics/framescene.md,
+//! slice 5): what the fog's and the water's layer draws hold in the
+//! current list, and what `render_screen_effects` and its callees are
+//! asked to draw. The fog words come from the device, not from here: the
+//! glue reads them through `d3d::Device::render_state` at the layer's
+//! draw and hands them to the builder (`frame_scene::LateInput`).
+
+use frame_scene::{PostEffect, PostParams};
+
+use crate::GuestRead;
+use crate::layout::post::PostFrame;
+use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, ITEM_SIZE, MAX_ITEMS};
+
+/// The current list's items with `layer`'s bit set, when the current
+/// layer is `layer`: what the guest's layer draw would draw. `None` when
+/// another layer is current or the list does not read.
+pub fn layer_items(mem: &dyn GuestRead, layer: u8) -> Option<u32> {
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != u32::from(layer) {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    if first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    let bit = 1u32 << layer;
+    let mut n = 0;
+    for i in first..count {
+        let item = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
+        if mem.read_u32(item.checked_add(0x10)?)? & bit != 0 {
+            n += 1;
+        }
+    }
+    Some(n)
+}
+
+/// One call of `render_screen_effects` with its stack bytes `late` and
+/// `colour`: what it was asked to draw. Its callees' calls are added as
+/// they come ([`post_effect`], the colour pass's arguments). `None` when a
+/// word it reads cannot be read.
+pub fn post(mem: &dyn GuestRead, late: bool, colour: bool) -> Option<PostParams> {
+    let f = PostFrame::read(mem, late, colour)?;
+    Some(PostParams {
+        colour: f.colour,
+        late: f.late,
+        view_kind: f.view_kind,
+        screen_effects: f.screen_effects,
+        screen_effects_gated: f.screen_effects_gated,
+        colour_pass: None,
+        effects: 0..0,
+    })
+}
+
+/// One call of the screen effect `0x0002d140`: its datum (EAX), the
+/// address of its four values and its grid's columns and rows (its stack
+/// words). The values are read by value; the address is not kept.
+pub fn post_effect(mem: &dyn GuestRead, datum: u32, values: u32, columns: u32, rows: u32) -> PostEffect {
+    let read = || {
+        let mut v = [0u32; 4];
+        for (i, w) in v.iter_mut().enumerate() {
+            *w = mem.read_u32(values.checked_add(4 * i as u32)?)?;
+        }
+        Some(v)
+    };
+    PostEffect { datum, values: if values == 0 { None } else { read() }, columns, rows }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::post::{SCENARIO, SCENARIO_SCREEN_EFFECTS, VIEW_KIND};
+    use crate::testing::Mem;
+
+    const LIST: u32 = 0x0010_0000;
+    const ITEMS: u32 = 0x0020_0000;
+
+    /// A list of four items: two with bit 16, one with bit 6, one with
+    /// both.
+    fn list(layer: u32) -> Mem {
+        let mut m = Mem::default();
+        m.w(CURRENT_LAYER, layer);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 4);
+        m.w(LIST + 0xc, 0);
+        m.w(LIST + 0x14, ITEMS);
+        for (i, mask) in [1u32 << 16, 1 << 16, 1 << 6, 1 << 16 | 1 << 6].into_iter().enumerate() {
+            m.w(ITEMS + ITEM_SIZE * i as u32 + 0x10, mask);
+        }
+        m
+    }
+
+    #[test]
+    fn a_late_layers_items_are_those_with_its_bit_in_the_current_list() {
+        assert_eq!(layer_items(&list(16), 16), Some(3));
+        assert_eq!(layer_items(&list(6), 6), Some(2));
+        assert_eq!(layer_items(&list(6), 16), None, "another layer is current");
+        let mut m = list(16);
+        m.0.remove(&(ITEMS + ITEM_SIZE * 2 + 0x10));
+        assert_eq!(layer_items(&m, 16), None, "an item that does not read");
+        m.w(CURRENT_LIST, 0);
+        assert_eq!(layer_items(&m, 16), None, "no list");
+    }
+
+    #[test]
+    fn a_post_call_reads_its_gates_and_a_screen_effect_its_values() {
+        let mut m = Mem::default();
+        m.w(VIEW_KIND, 1);
+        m.w(SCENARIO, 0x0070_0000);
+        m.w(0x0070_0000 + SCENARIO_SCREEN_EFFECTS, 2);
+        m.w(0x0048_5604, 0);
+        m.w(0x0048_50c8, 0);
+        let p = post(&m, true, true).unwrap();
+        assert_eq!((p.colour, p.late, p.view_kind, p.screen_effects, p.screen_effects_gated), (true, true, 1, 2, true));
+        assert_eq!((p.colour_pass, p.effects), (None, 0..0));
+        m.0.remove(&VIEW_KIND);
+        assert_eq!(post(&m, true, true), None);
+        for (i, v) in [5u32, 6, 7, 8].into_iter().enumerate() {
+            m.w(0x0080_0000 + 4 * i as u32, v);
+        }
+        let e = post_effect(&m, 0xe000_0001, 0x0080_0000, 2, 1);
+        assert_eq!(e, PostEffect { datum: 0xe000_0001, values: Some([5, 6, 7, 8]), columns: 2, rows: 1 });
+        assert_eq!(post_effect(&m, 1, 0x0090_0000, 2, 1).values, None, "values that do not read");
+        assert_eq!(post_effect(&m, 1, 0, 2, 1).values, None, "no values");
+    }
+}

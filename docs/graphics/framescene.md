@@ -6,8 +6,10 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
-census is built, and its section says what the replacements wait on. The
-rest is the plan. Lanes write code and tests; the coordinator builds, runs and
+census is built, and its section says what the replacements wait on. Of
+slice 5 the extraction of the fog, the water and the post passes and the
+fog's and water's recording on the render thread are built; its section
+says what the replacements wait on. The rest is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -185,7 +187,8 @@ pub struct PartDraw {
 
 `Light`, `ShadowMap`, `FogState`, `WaterState` and `PostParams` take the
 fields today's stages read at their hooks (`native_render::lights::Light`
-and `LightConstants`, `shadows`, `fog::FogWords`, `post`), by value.
+and `LightConstants`, `shadows`, `fog::FogWords`, `post`), by value. The
+last three are `frame_scene::late`'s (slice 5).
 `ModelId`, `MaterialId` and texture ids are tag datums plus the map
 epoch; they name GPU resources the loaders built from the tags, never
 guest pointers. `InstanceKey` is opaque to the renderer.
@@ -206,8 +209,8 @@ hundred kilobytes at most (**Estimate**).
 | Model decorators | the layer-3 list's items of build `0x0004de20`, each instance's `v11..v15` as the draw `0x0004e260` sets them ([native-decorators.md](native-decorators.md)) | typed | 4 |
 | Lights and their geometry | the Rust light order and gathered light geometry (`native_scene_lists::lights`, `native_lights::walk`) | typed | 3 |
 | Shadow maps | the shadow layers' casters and projections (`native_shadows`) | typed | 3 |
-| Fog (layer 16), water (layer 6) | the device-resolved fog words; the water gate and items | typed | 5 |
-| Post: colour pass, screen effects, glow | the arguments of `0x00013870` and its callees, the strip rows of `0x0002d565` | typed | 5 |
+| Fog (layer 16), water (layer 6) | the device-resolved fog words; the layer gates and items (`scene_extract::late`, the glue) | typed | 5 |
+| Post: colour pass, screen effects, glow | the arguments of `0x00013870` and its callees (`scene_extract::late::post`), the strip rows of `0x0002d565` | typed | 5 |
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
@@ -371,8 +374,8 @@ queue is the order. A typed stage is one command in that queue
 its guest view and its ranges, and the stage's typed inputs by value.
 The render thread prepares and records it when it reaches it, into the
 pass that is open (the packet path the native-cost lane built). The sim
-thread does none of that work and does not wait for it. Slice 2 says
-which stages queue one and what stays on the sim thread.
+thread does none of that work and does not wait for it. Slices 2 and 5
+say which stages queue one and what stays on the sim thread.
 
 **Snapshots and pause.** `state.save` needs no scene. `state.load`
 publishes a scene with `cut` set. A paused game publishes nothing; the
@@ -1011,12 +1014,80 @@ counted by the census.
 
 ### Slice 5: fog, water and post, typed
 
-- **Code.** `FogState`, `WaterState`, `PostParams` extracted; layers 16
-  and 6 and `render_screen_effects` replaced under the rule of 8.2. The
-  post stage owns its bloom and effect targets (they stop being guest
-  surfaces). Their glue is deleted.
-- **Tests.** The existing fog, water and post stage tests, fed from
-  scenes; the differential for each replaced entry.
+The late passes are in the scene, and the fog and the water draw from it
+on the render thread. No entry is replaced: as in slice 4, rule 1 of 8.2
+waits on the census corpus, and the post stage still draws through the
+device's swallow. What is built (**Code**):
+
+- **The types** (`frame_scene::late`). `View::fog` and `View::water` are
+  a `LateLayer` (`FogState`, `WaterState`): the layer's own gate (the
+  fog's `0x00044582` test, the water's bit 4 of `0x004b9fe0` clear), the
+  fog words the device holds at the layer's draw by slot, the layer's
+  items in the current list, each material the stage draws with and its
+  words resolved over the device's (`LateMaterial`), the structure parts
+  the stage draws in item order (`LatePart`), and whether the stage took
+  the layer. `View::post` is `PostParams`: what `render_screen_effects`
+  was asked to draw (its two stack bytes, the view kind, the scenario's
+  screen-effect count and the loop's gates, read as
+  `scene_extract::layout::post::PostFrame` reads them), the colour pass
+  `0x000214f0`'s seven arguments, and each screen effect `0x0002d140`
+  under it (`PostEffect`: its datum, its four values by value, its
+  grid). The late passes run after the view's opaque block, after the
+  first person's view can open, so the builder writes them into the
+  scene's last view of the guest view's key
+  (`SceneBuilder::set_late`, `set_post`); they extend no view range. The
+  summary hash covers them.
+- **Extraction.** The fog's and the water's glue
+  (`boot::native_fog_glue`, `native_water_glue`) read the device's fog
+  words, resolve each material's words over them and plan the skip;
+  then `render_bridge::scene_step::late_layer` writes the view's layer
+  (with `scene_extract::late::layer_items`) and hands back the scene's
+  copy, and the pass is built from that copy: the parts it draws and
+  each material's fog unit. A layer whose gate does not hold, with no
+  structure item, or that the glue leaves to the guest is written as
+  the guest draws it (`late_kept`). The frame step observes
+  `RENDER_SCREEN_EFFECTS` for `PostParams`; `native_post`'s colour-pass
+  and screen-effect hooks add their calls (`post_colour`,
+  `post_effect`).
+- **Recording on the render thread.** With a render thread that
+  records scene stages, the fog and the water each queue one
+  (`native_fog_glue::commit_late`: `Device::reserve_scene_stage`, as the
+  world's in slice 2); the render thread prepares and records the pass,
+  the water's scene copy and sampled targets included. Not taken, the
+  pass is reserved on the sim thread as before. Either way the load is
+  pinned until the masks and the commands commit, and only then does
+  `late_drawn` mark the layer taken. Any refusal before the commit
+  leaves the layer's items to the guest (the D3D path); a stage the
+  render thread cannot record is slice 2's named error and stands the
+  stage down.
+- **Coverage.** `render.scene` reports each view's `fog` and `water`
+  (gate, items, materials, parts, whether the stage took the layer, the
+  items the guest keeps, the device words that read) and `post`, and the
+  counters `scene_fog_*`, `scene_water_*`, `scene_post_*` and
+  `scene_stages_{fog,water}`, `scene_dropped_{fog,water}`. The entry
+  census names the late passes' calls `layer.scene.16` and
+  `layer.scene.6` (`entry_census::late_site`) and counts `colour_pass`
+  and each `screen_effect` under `screen_effects`.
+- **Tests** (synthetic). `frame_scene::late`:
+  `a_views_late_layers_keep_their_words_and_parts_and_count_what_the_guest_keeps`,
+  `a_post_call_keeps_its_colour_pass_and_effects_in_order`,
+  `the_late_passes_count_in_the_hash`; `scene_extract::late`:
+  `a_late_layers_items_are_those_with_its_bit_in_the_current_list`,
+  `a_post_call_reads_its_gates_and_a_screen_effect_its_values`;
+  `render_bridge::entry_census`:
+  `the_late_passes_fog_and_water_calls_are_the_scenes`,
+  `the_post_callees_nest_under_the_screen_effects`; `boot::scene_glue`'s
+  `a_scene_summarises_per_view`; `agent_proto`'s
+  `a_views_late_passes_print_only_when_they_ran`.
+- **Not built.** The replacement of layers 16 and 6 and of
+  `render_screen_effects` (8.2: their census over the corpus, the table
+  of writes, the differentials); the post stage drawing from
+  `PostParams` on the render thread, owning its bloom and effect
+  targets, in place of the swallow, which matches the guest's draws as
+  they run and replays them on a mismatch, so it needs the guest's
+  calls; the deletion of the three stages' glue. Screen effects the
+  scope-zoom HUD draws are not put in the scene (`native_post` leaves
+  them to the HUD).
 - **Gate.** As slice 4. No guest surface other than the back buffer,
   depth and a carried stage's own targets is bound in a game view
   (from `render.frame`).
@@ -1186,7 +1257,9 @@ Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,
 from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dropped}`,
 `walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts,topology}`, and from slice 1 `scene_dropped_*`,
-`scene_unresident`, `scene_readback`, `scene_held_draws`.
+`scene_unresident`, `scene_readback`, `scene_held_draws`; from slice 5
+`render.scene`'s per-view `fog`, `water` and `post` and the counters
+`scene_{fog,water}_{views,gate_held,drawn,parts}`.
 
 **Pixels and the sim** (two launches from boot, same image):
 
