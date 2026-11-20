@@ -69,7 +69,7 @@ pub use backend::{
     RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{
-    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
+    Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };

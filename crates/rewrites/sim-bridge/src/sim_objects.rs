@@ -123,7 +123,7 @@ mod tests {
         for body in &TEST_BODIES {
             let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, OBJECTS);
-            assert_eq!(implement.resume_sites, body.sites);
+            assert_eq!(implement.continuation_sites().0, body.sites);
         }
     }
 
