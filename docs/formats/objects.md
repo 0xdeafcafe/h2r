@@ -1,5 +1,7 @@
 # Halo 2 object tags (`obje` family, `hlmt`, `itmc`, `vehc`)
 
+Status: Built. Code: `crates/tags/src/object/`. Switch: none.
+
 Implementation: `crates/tags/src/object/` (self-contained, table-driven
 decoder; not in `schema.rs`). Command: `h2 object` in
 `crates/cli/src/object.rs`. Evidence labels:

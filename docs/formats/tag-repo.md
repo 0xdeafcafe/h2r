@@ -1,8 +1,12 @@
 # The loose tag repository (`tags::repo`)
 
-Status: **Built** (2026-11-17) for extraction, the file format, closure and
-building a map from scratch. Proven offline on the owner's disc (below).
-**Not yet loaded by the game.** Evidence labels are those of
+Status: Built for extraction, the file format, closure and building a map
+from scratch. Proven offline on the owner's disc (below); the Halo 1
+converter assembles its levels from the repository
+(`crates/h1campaign/src/scratch.rs`), and the builder's open points are in
+[map-builder.md](map-builder.md), "Not verified".
+Code: `crates/tags/src/repo.rs`. Switch: none.
+Evidence labels are those of
 [map-format.md](map-format.md): **V** checked on the owner's disc, **Design**
 an implementation choice.
 

@@ -1,5 +1,7 @@
 # Halo 2 sound tags (`snd!`, `ugh!`)
 
+Status: Built. Code: `crates/tags/src/sound.rs`. Tests: `crates/tags/src/sound_tests.rs`. Switch: none.
+
 Implementation: `crates/tags/src/sound.rs` (self-contained, hand-written fixed
 codecs; not in `schema.rs`). Export and validation: `h2 sound` in
 `crates/cli/src/sound.rs`. Evidence labels as in [map-format.md](map-format.md):

@@ -470,9 +470,8 @@ them:
 - node rest-frame and scale fields;
 - the visibility block (`0x10`) and the other uninterpreted section blocks.
 
-An earlier draft claimed that node `+0x5c` held the translation length. The
-disc disproves it: 1,614 nodes disagree. That word is now part of
-`unknown_028`.
+Node `+0x5c` is not the translation length (V: 1,614 nodes disagree); that
+word is part of `unknown_028`.
 
 ### Records
 

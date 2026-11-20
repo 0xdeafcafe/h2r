@@ -1,5 +1,7 @@
 # Structure BSP render geometry and lightmaps
 
+Status: Built. Code: `crates/tags/src/structure.rs`, `crates/tags/src/geometry.rs`. Tests: `crates/tags/src/structure_tests.rs`. Switch: none.
+
 This covers `crates/tags/src/geometry.rs` (the one geometry-section decoder,
 shared with render models) and `crates/tags/src/structure.rs` (structure BSP
 `sbsp` and lightmap `ltmp` render blocks). It extends

@@ -1,5 +1,7 @@
 # Collision models (`coll`) and physics models (`phmo`)
 
+Status: Built. Code: `crates/tags/src/collision.rs`. Tests: `crates/tags/src/collision_tests.rs`. Switch: none.
+
 Implementation: `crates/tags/src/collision.rs` (hand-written codecs, not in
 `schema.rs`; synthetic tests in `collision_tests.rs`). CLI: `h2 collision`
 in `crates/cli/src/collision.rs`. Engine addresses are in

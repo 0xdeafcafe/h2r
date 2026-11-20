@@ -1,5 +1,7 @@
 # Halo 2 effects family (`effe`, `prt3`, `pmov`, `jpt!`, `cont`, `deca`, `ligh`, `lens`)
 
+Status: Built. Code: `crates/tags/src/effects/`. Switch: none.
+
 Implementation: `crates/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
 `crates/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):

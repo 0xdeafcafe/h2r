@@ -1,5 +1,7 @@
 # Havok MOPP code (`sbsp+0x1e0`) and writing it
 
+Status: Built. Code: `crates/mopp`. Switch: none.
+
 A structure BSP carries a Havok MOPP program: bytecode that walks a
 bounding-volume tree over the level's collision surfaces and emits the
 key of each surface a query may touch. Havok bodies (vehicles, dropped
