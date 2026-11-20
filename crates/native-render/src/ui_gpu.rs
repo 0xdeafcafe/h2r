@@ -208,7 +208,7 @@ impl DeviceCache {
         for clip in rest {
             packets.push(packets[0].clone().with_scissor(clip, target.size));
         }
-        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards })
+        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 

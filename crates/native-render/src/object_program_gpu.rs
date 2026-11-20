@@ -585,7 +585,7 @@ impl LitObjects {
                 scissor,
             ));
         }
-        Ok(ExternalDraws { ranges: packets.len(), packets, discards })
+        Ok(ExternalDraws { ranges: packets.len(), packets, discards, writes: Vec::new() })
     }
 }
 

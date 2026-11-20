@@ -1135,6 +1135,39 @@ fn render_pipeline(
     })
 }
 
+/// Shader ids the world's packets report to the pass they join (for
+/// diagnostics; the pipelines are the programs' own).
+const WORLD_CLUSTER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 1);
+const WORLD_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 2);
+
+/// [`render_pipeline`]'s state as a packet describes it: primitive, depth
+/// and stencil, and colour target (its write mask splits merged passes).
+fn described_pipeline(
+    shader: gfx::pipeline::ShaderId,
+    color: wgpu::TextureFormat,
+    depth: wgpu::TextureFormat,
+    state: Option<&PassState>,
+    cull: Option<Cull>,
+    stencil: wgpu::StencilState,
+) -> gfx::pipeline::PipelineKey {
+    let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
+    let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
+    gfx::pipeline::PipelineKey {
+        shader,
+        vertex_buffers: Vec::new(),
+        primitive,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth,
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(depth_compare),
+            stencil,
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        color_target: wgpu::ColorTargetState { format: color, blend, write_mask },
+        samples: 1,
+    }
+}
+
 /// A material's rigid program on the GPU ([`RigidProgram`]): one vertex
 /// uniform buffer with a slot per placement the material draws, bound at
 /// that slot's dynamic offset for the placement's draws, with the
@@ -1454,6 +1487,44 @@ impl ProgramSet {
         }
     }
 
+    /// [`ProgramSet::write_selected`]'s copies as writes ahead of the
+    /// world's packets (`d3d::backend::ExternalDraws::writes`).
+    pub(crate) fn selected_writes(
+        &self, view: &ViewInputs, selection: &crate::gpu::WorldSelection,
+    ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
+        let bytes = view_bytes(view);
+        let (prefix, rest) = bytes.split_at(VIEW_PREFIX);
+        let (viewport, pixel) = rest.split_at(32);
+        let mut writes = Vec::with_capacity(selection.materials.len() + 2 * selection.vertices.len());
+        for material in selection.materials.keys() {
+            writes.push((self.materials[material].pixel_buffer.clone(), PIXEL_TAIL as u64, pixel.to_vec()));
+        }
+        for &(material, instance) in &selection.vertices {
+            let (buffer, offset) = if let Some(n) = instance {
+                let r = &self.rigid[&material];
+                (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
+            } else {
+                (&self.materials[&material].vertex_buffer, 0)
+            };
+            writes.push((buffer.clone(), offset, prefix.to_vec()));
+            writes.push((buffer.clone(), offset + VERTEX_TAIL as u64, viewport.to_vec()));
+        }
+        writes
+    }
+
+    /// What a world packet drawing `material`'s clusters (or, `rigid`, a
+    /// placement's parts) reports to the pass it joins: the state its
+    /// pipeline was made with ([`ProgramSet::cluster`], [`ProgramSet::rigid`]).
+    pub(crate) fn described(
+        &self, material: u16, rigid: bool, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState,
+    ) -> Option<gfx::pipeline::PipelineKey> {
+        let g = self.materials.get(&material)?;
+        let cull = self.cull.of(g.program.inherits_cull, !rigid);
+        let shader = if rigid { WORLD_RIGID_PROGRAM } else { WORLD_CLUSTER_PROGRAM };
+        Some(described_pipeline(shader, color, depth, g.program.state.as_ref(), cull, stencil.clone()))
+    }
+
     /// Batch `index`'s pipeline and groups, when its material has a
     /// program and the pipelines for these formats and stencil state are
     /// made.
@@ -1627,6 +1698,102 @@ mod tests {
         assert_eq!(&pipeline, set.batch(3, 1, format, depth, &stencil).unwrap().0);
         assert!(set.materials[&0].module.is_none());
         assert!(replacement.materials[&1].world_pipelines.is_empty());
+    }
+
+    /// The world's packets (`GpuWorld::selection_draws`) with their view
+    /// rows written at the front of the submission draw what the selected
+    /// pass draws on its own encoder, adjacent triangle lists joined, and
+    /// write exactly the ranges the ordered path writes.
+    #[test]
+    fn world_packets_draw_what_the_selected_pass_draws_with_the_view_written_up_front() {
+        use crate::camera::RenderCamera;
+        use crate::gpu::{DepthRule, GpuWorld, PassViewport};
+        use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+        use wgpu::{TextureFormat as F, TextureUsages as U};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        const SIZE: u32 = 32;
+        let wall = |x: f32, material| SectionInput {
+            positions: vec![[x, 2.0, -2.0], [x, -2.0, -2.0], [x, 2.0, 2.0], [x, -2.0, 2.0]],
+            uvs: vec![[0.5; 2]; 4],
+            lightmap_uvs: vec![[0.5; 2]; 4],
+            normals: vec![[-1.0, 0.0, 0.0]; 4],
+            parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+            ..Default::default()
+        };
+        let page = Some(LightmapKey { page: 0, palette: 0 });
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &wall(10.0, 0), &Placement::IDENTITY, page);
+        b.add_section(Owner::Cluster(1), &wall(12.0, 0), &Placement::IDENTITY, page);
+        b.add_section(Owner::Cluster(2), &wall(14.0, 1), &Placement::IDENTITY, page);
+        let world = b.finish();
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.dims[..2].fill(Some(TextureDim::D2));
+        program.stages[0] = Stage::Bitmap { bitmap: map::TagId(7), image: 1 };
+        program.stages[1] = Stage::Lightmap;
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, program.clone()), (1, program)].into(),
+            &mut |_| Some(Image::solid([200, 100, 50, 255])), &mut |_| Some(Image::solid([255; 4])));
+        let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
+        let camera = RenderCamera {
+            position: [0.0; 3], forward: [1.0, 0.0, 0.0], up: [0.0, 0.0, 1.0], fov: 60f32.to_radians(),
+            viewport: [0, 0, SIZE as i16, SIZE as i16], near: 0.0625, far: 1024.0,
+        };
+        let parts = [(Owner::Cluster(0), 0), (Owner::Cluster(1), 0), (Owner::Cluster(2), 0)];
+        let selection = gpu.select_parts(&parts, &camera).expect("all parts in view");
+        assert!(gpu.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, &selection));
+        let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
+        constants[..4].copy_from_slice(&[[0.0, -2.0, 0.0, 16.0], [0.0, 0.0, -2.0, 16.0], [0.5, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]);
+        let view = ViewInputs { constants, guest_size: (SIZE, SIZE), size: (SIZE, SIZE), z_scale: 16_777_215.0, w_clip: None };
+        let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None, size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+            usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+        });
+        let mut images = Vec::new();
+        // Packets first: the rows they read are only those written ahead.
+        for packets in [true, false] {
+            let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
+            let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+            let target = gfx::RenderTarget {
+                color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(F::Depth32Float),
+                size: (SIZE, SIZE), samples: 1,
+            };
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &cv, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &dv, stencil_ops: None,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            }));
+            let draws = gpu.selection_draws(F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selection, &view).unwrap();
+            assert_eq!((draws.ranges, draws.packets.len()), (3, 2), "clusters 0 and 1 join");
+            assert_eq!(draws.writes.len(), 2 + 2 * 2, "each material's pixel tail, its vertex prefix and viewport");
+            if packets {
+                // Ahead of the submission (`GfxBackend::write_ahead`).
+                for (buffer, offset, bytes) in &draws.writes {
+                    arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+                }
+                gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::NONE, &draws.packets, None).unwrap();
+            } else {
+                let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena: &arena, encoder: &mut enc };
+                assert!(gpu.write_selection(&mut uploads, &selection, Some(&view), &camera, DepthRule::D24));
+                assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
+                let vp = PassViewport { x: 0.0, y: 0.0, width: SIZE as f32, height: SIZE as f32 };
+                assert_eq!(gpu.encode_selection(&mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (SIZE, SIZE), &selection), 3);
+            }
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let read = |t, aspect| gfx::readback::read_texture(&ctx, t, aspect, 4, (SIZE, SIZE));
+            images.push((read(&color, wgpu::TextureAspect::All), read(&depth, wgpu::TextureAspect::DepthOnly)));
+        }
+        assert_eq!(images[0], images[1]);
     }
 
     #[test]

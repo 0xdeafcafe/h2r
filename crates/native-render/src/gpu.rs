@@ -271,6 +271,9 @@ pub struct GpuWorld {
     /// Batches left out of a pass because their material program could
     /// not be bound (with programs set; see [`GpuWorld::encode`]).
     unbound_batches: u64,
+    /// The programs' pipelines as packets hold them
+    /// ([`GpuWorld::selection_draws`]).
+    packet_pipelines: HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,
 }
 
 const SHADER: &str = include_str!("world.wgsl");
@@ -553,6 +556,7 @@ impl GpuWorld {
             water: None,
             lights: None,
             unbound_batches: 0,
+            packet_pipelines: HashMap::new(),
         }
     }
 
@@ -1010,6 +1014,124 @@ impl GpuWorld {
         selection: &WorldSelection,
     ) -> usize {
         self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true)
+    }
+
+    /// [`GpuWorld::write_selection`] and [`GpuWorld::encode_selection`] as
+    /// packets for the D3D pass already open on these attachments: the
+    /// view's rows written ahead of them, the same pipelines, groups,
+    /// stencil references and index ranges, adjacent triangle lists under
+    /// one binding joined as there. Material programs only (the fixed stage
+    /// reads its frame and indirect buffers in draw order). Refused, rather
+    /// than leaving batches out, when a program cannot be bound.
+    pub fn selection_draws(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        use gfx::{BoundGroup, RecordedDraw, ScissorRect};
+        let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
+        let p = programs.as_ref().ok_or("world programs unavailable")?;
+        let has_stencil = depth_format.has_stencil_aspect();
+        let scissor = ScissorRect::full(target_size.0, target_size.1);
+        // Retired programs' pipelines (a map change) leave with the world;
+        // bound what a long session of program swaps could hold.
+        if packet_pipelines.len() > 4096 {
+            packet_pipelines.clear();
+        }
+        struct Bound {
+            key: gfx::pipeline::PipelineKey,
+            pipeline: std::sync::Arc<gfx::compile::PendingPipeline>,
+            groups: Vec<BoundGroup>,
+            state: gfx::state::RenderState,
+        }
+        let mut packets = Vec::new();
+        let mut ranges = 0;
+        let mut bound: Option<((u16, &wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut pending: Option<std::ops::Range<u32>> = None;
+        let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
+            let count = range.end - range.start;
+            packets.push(RecordedDraw::prepared_indexed(
+                &b.key,
+                b.pipeline.clone(),
+                vec![(program_vertices.clone(), 0, program_vertices.size())],
+                (indices.clone(), u64::from(range.start) * 4, u64::from(count) * 4),
+                count,
+                b.groups.clone(),
+                &b.state,
+                target_size,
+                scissor,
+            ));
+        };
+        for &(i, first, last) in &selection.spans {
+            let batch = &world.batches[i];
+            let textures = p.batch_textures(i).ok_or("world batch textures unavailable")?;
+            let draws = &world.draws[first..last];
+            let mut k = 0;
+            while k < draws.len() {
+                let owner = draws[k].owner;
+                let reference = stencil.reference_of(owner);
+                let same = |d: &WorldDraw| match owner {
+                    Owner::Cluster(_) => matches!(d.owner, Owner::Cluster(_)) && stencil.reference_of(d.owner) == reference,
+                    Owner::Instance(_) => d.owner == owner,
+                };
+                let end = k + draws[k..].iter().take_while(|d| same(d)).count();
+                let instance = match owner {
+                    Owner::Cluster(_) => None,
+                    Owner::Instance(n) => Some(n),
+                };
+                let binding = (batch.material, textures, instance, reference);
+                if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
+                    if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
+                        emit(&mut packets, b, range);
+                    }
+                    let (pipeline, uniforms, offsets) = match instance {
+                        None => {
+                            let (pipeline, uniforms) = p.cluster(batch.material, color_format, depth_format, &stencil.state)
+                                .ok_or("world program unbound")?;
+                            (pipeline, uniforms, Vec::new())
+                        }
+                        Some(n) => {
+                            let (pipeline, slots, offset) = p.rigid(batch.material, n, color_format, depth_format, &stencil.state)
+                                .ok_or("world rigid program unbound")?;
+                            (pipeline, slots, vec![offset])
+                        }
+                    };
+                    let key = p.described(batch.material, instance.is_some(), color_format, depth_format, &stencil.state)
+                        .ok_or("world program unbound")?;
+                    let pipeline = packet_pipelines.entry(pipeline.clone())
+                        .or_insert_with(|| gfx::compile::Pending::ready(Some(pipeline.clone())))
+                        .clone();
+                    let mut state = gfx::state::RenderState::default();
+                    // Set only with a stencil aspect, as the pass sets it.
+                    state.stencil.reference = if has_stencil { reference as u8 } else { 0 };
+                    bound = Some((binding, Bound {
+                        key,
+                        pipeline,
+                        groups: vec![
+                            BoundGroup { index: 0, group: uniforms.clone(), offsets },
+                            BoundGroup::new(1, textures.clone()),
+                        ],
+                        state,
+                    }));
+                }
+                for d in &draws[k..end] {
+                    let next = d.first_index..d.first_index + d.index_count;
+                    if let Some(previous) = append_triangles(&mut pending, next) {
+                        emit(&mut packets, &bound.as_ref().expect("bound before its draws").1, previous);
+                    }
+                }
+                ranges += end - k;
+                k = end;
+            }
+        }
+        if let (Some(range), Some((_, b))) = (pending, &bound) {
+            emit(&mut packets, b, range);
+        }
+        if packets.is_empty() {
+            return Err("world selection draws nothing");
+        }
+        // Conservative: the programs' alpha tests and kill sources discard.
+        let writes = p.selected_writes(view, selection);
+        Ok(d3d::backend::ExternalDraws { ranges, packets, discards: true, writes })
     }
 
     #[allow(clippy::too_many_arguments)]

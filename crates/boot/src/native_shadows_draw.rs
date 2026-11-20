@@ -280,7 +280,7 @@ impl d3d::ExternalPass for Range {
         ) else {
             return Some(Err("shadow resources or shader unavailable"));
         };
-        Some(Ok(ExternalDraws { ranges: packets.len(), packets, discards }))
+        Some(Ok(ExternalDraws { ranges: packets.len(), packets, discards, writes: Vec::new() }))
     }
 }
 

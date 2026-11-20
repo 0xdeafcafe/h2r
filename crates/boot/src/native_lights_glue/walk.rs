@@ -157,7 +157,7 @@ impl ExternalPass for Pass {
 
     fn record_draws(&mut self, target: &ExternalAttachments, request: ExternalPassRequest)
         -> Option<Result<ExternalDraws, &'static str>> {
-        let mut group = ExternalDraws { packets: Vec::new(), ranges: 0, discards: false };
+        let mut group = ExternalDraws { packets: Vec::new(), ranges: 0, discards: false, writes: Vec::new() };
         for (expected, pass) in &mut self.passes {
             match pass.record_draws(target, request) {
                 Some(Ok(draws)) if draws.ranges == *expected && draws.packets.len() >= *expected => {

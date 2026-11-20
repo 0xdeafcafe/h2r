@@ -323,6 +323,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             w_clip: None,
             stencil,
             cull,
+            run: u64::from(d.swap_count()).wrapping_add(1),
         });
         drop(planning);
         let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok()??;
@@ -469,7 +470,12 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 /// needs it (on the render thread). `None` inside when it was taken and
 /// is gone.
 pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::sync::MutexGuard<'a, Option<GpuWorld>> {
-    let (device, queue) = (t.device, t.queue);
+    upload_on(ready, t.device, t.queue)
+}
+
+/// [`upload`] on pinned attachments' device and queue (packet passes,
+/// `d3d::ExternalPass::record_draws`).
+pub(crate) fn upload_on<'a>(ready: &'a Ready, device: &wgpu::Device, queue: &wgpu::Queue) -> std::sync::MutexGuard<'a, Option<GpuWorld>> {
     let mut gpu = ready.gpu.lock().unwrap_or_else(|e| e.into_inner());
     if gpu.is_some() {
         return gpu;
@@ -530,6 +536,9 @@ struct WorldPass {
     /// The device's cull at the layer-3 call ([`inherited_cull`]; `None`:
     /// it did not read).
     cull: Option<native_render::program::Cull>,
+    /// The swap's run, shared with the object runs: adjacent reservations
+    /// reuse one pin of the attachments (`d3d::ExternalPass::batch_key`).
+    run: u64,
 }
 
 /// `CULLMODE` and `FRONTFACE` as the D3D path's pipeline takes them
@@ -549,14 +558,14 @@ pub(crate) fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::F
 }
 
 impl WorldPass {
-    fn configure(&self, gpu: &mut GpuWorld, t: &d3d::ExternalTarget<'_>) {
+    fn configure(&self, gpu: &mut GpuWorld, depth_format: wgpu::TextureFormat) {
         gpu.set_inherited_cull(native_render::program::InheritedCull {
             device: self.cull,
             placements: true,
             clusters: true,
         });
         let (state, marked) = &self.stencil;
-        let mut stencil = PassStencil::from_device(state, t.depth_format);
+        let mut stencil = PassStencil::from_device(state, depth_format);
         if stencil != PassStencil::default() {
             stencil.marked = marked.clone();
         }
@@ -565,6 +574,10 @@ impl WorldPass {
 }
 
 impl d3d::ExternalPass for WorldPass {
+    /// Packets need no worker round trip; the pin holds while no other
+    /// command intervenes (`d3d::ThreadedBackend`).
+    fn batch_key(&self) -> Option<u64> { Some(self.run) }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -577,7 +590,7 @@ impl d3d::ExternalPass for WorldPass {
         let mut guard = upload(&self.ready, t);
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
-        self.configure(gpu, t);
+        self.configure(gpu, t.depth_format);
         if self.selection.is_none() {
             self.selection = gpu.select_parts(&self.selected, &self.camera);
         }
@@ -590,12 +603,37 @@ impl d3d::ExternalPass for WorldPass {
         d3d::ExternalWrites { color: true, depth_stencil: true }
     }
 
+    /// Material programs' parts join the D3D render pass already open on
+    /// these attachments, their view rows written ahead of them
+    /// (`ExternalDraws::writes`): no pass, command buffer or worker round
+    /// trip of their own. The fixed stage records on its own encoder (`None`).
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        let mut guard = upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        if !gpu.has_programs() { return None; }
+        let Some(constants) = self.view else { return Some(Err("world view constants unavailable")) };
+        self.configure(gpu, t.depth_format);
+        if self.selection.is_none() {
+            self.selection = gpu.select_parts(&self.selected, &self.camera);
+        }
+        let Some(selection) = self.selection.as_ref() else { return Some(Err("world part unavailable")) };
+        if !gpu.prepare_selection(&t.device, t.color_format, t.depth_format, selection) {
+            return Some(Err("world part or program binding unavailable"));
+        }
+        let view = ViewInputs {
+            constants, guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
+        };
+        Some(gpu.selection_draws(t.color_format, t.depth_format, t.size, selection, &view))
+    }
+
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
-        self.configure(gpu, &t);
+        self.configure(gpu, t.depth_format);
         let Some(selection) = &self.selection else { return 0 };
         let view = self.view.map(|constants| ViewInputs {
             constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,

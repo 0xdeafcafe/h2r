@@ -174,6 +174,10 @@ pub enum Counter {
     /// encoders, upload patches and every native stage's private command
     /// buffer (`native_<stage>_command_buffers`).
     CommandBuffers,
+    /// Packet runs whose persistent rows (the world's view) were copied in
+    /// draw order, splitting the pass, because the submission's front
+    /// already held other bytes for them (`GfxBackend::write_ahead`).
+    OrderedWrites,
 }
 
 /// Number of [`Counter`]s.
@@ -185,7 +189,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 30] = [
+    pub const ALL: [Counter; 31] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -216,6 +220,7 @@ impl Counter {
         Counter::LightWalkHandlersSkipped,
         Counter::ShadowWalkLayers,
         Counter::CommandBuffers,
+        Counter::OrderedWrites,
     ];
 
     pub fn label(self) -> &'static str {
@@ -249,6 +254,7 @@ impl Counter {
             Counter::LightWalkHandlersSkipped => "light_walk_handlers_skipped",
             Counter::ShadowWalkLayers => "shadow_walk_layers",
             Counter::CommandBuffers => "command_buffers",
+            Counter::OrderedWrites => "ordered_writes",
             Counter::FileIoUs => "file_io_us",
         }
     }

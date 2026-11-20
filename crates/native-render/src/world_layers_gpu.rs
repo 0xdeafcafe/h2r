@@ -562,7 +562,7 @@ impl IndexedPass {
         for scissor in clip {
             packets.push(packets[0].clone().with_scissor(scissor, target.size));
         }
-        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards })
+        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 

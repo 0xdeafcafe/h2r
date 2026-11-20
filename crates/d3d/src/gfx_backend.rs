@@ -225,6 +225,10 @@ pub struct GfxBackend {
     upload_pool: gfx::ring::UploadPool,
     current_uploads: Option<gfx::ring::SubmissionUploads>,
     submitted_uploads: Vec<gfx::ring::SubmissionUploads>,
+    /// Persistent buffer ranges written at the front of the submission for
+    /// packet runs (`native_runs::write_ahead`): one content per range
+    /// until the runs reading them are submitted.
+    front_writes: std::collections::HashMap<wgpu::Buffer, Vec<(u64, Vec<u8>)>>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
     /// The scratch depth a colour-only external pass gets, by size.
@@ -363,6 +367,7 @@ impl GfxBackend {
             external_prefix: Vec::new(),
             external_on_submit: Vec::new(),
             upload_pool: Default::default(), current_uploads: None, submitted_uploads: Vec::new(),
+            front_writes: Default::default(),
             defer_side_passes: true,
             scratch_depth: None,
         }
@@ -984,6 +989,11 @@ impl GfxBackend {
     fn submit(&mut self, enc: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
         let open = self.open.take().map(|(e, _)| e.finish());
         self.current_uploads.take();
+        // A packet run still pending reads its front writes in a later
+        // submission: keep their claims until it is submitted.
+        if self.pending.as_ref().is_none_or(|p| p.native.is_empty()) {
+            self.front_writes.clear();
+        }
         let uploads = std::mem::take(&mut self.submitted_uploads);
         let patches: Vec<_> = uploads.iter().filter_map(|batch| batch.upload_commands(&self.ctx.queue)).collect();
         self.renderer.flush_uploads(&self.ctx.queue);
@@ -1749,7 +1759,7 @@ impl Backend for GfxBackend {
                 self.append_native(recording.stage, recording.copy, targets, color, depth, stencil, draws);
             }
             crate::backend::ExternalCommands::Draws { targets, draws } => {
-                if !self.append_native_draws(recording.stage, recording.copy, targets, draws) { return; }
+                if !self.append_native_draws(recording.stage, recording.copy, targets, draws, &recording.uploads) { return; }
             }
             crate::backend::ExternalCommands::Standalone(commands) => {
                 if !self.encode_before_external() { return; }

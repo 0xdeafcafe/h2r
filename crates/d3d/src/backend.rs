@@ -633,10 +633,15 @@ impl ExternalBundles {
 
 #[cfg(feature = "gpu")]
 pub struct ExternalDraws {
-    /// Guest ranges represented by the packets (a range may have several scissors).
+    /// Guest ranges represented by the packets (a range may have several
+    /// scissors, and adjacent ranges may share a packet).
     pub ranges: usize,
     pub packets: Vec<gfx::RecordedDraw>,
     pub discards: bool,
+    /// Persistent buffer ranges the packets read, written ahead of them:
+    /// at the front of the submission when it holds no other bytes for
+    /// them, otherwise in draw order before the run (`GfxBackend`).
+    pub writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
 }
 
 #[cfg(feature = "gpu")]
@@ -755,7 +760,8 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         let (ranges, commands, valid) = match prepared {
             Prepared::Draws(draws) => {
                 let ranges = draws.ranges;
-                let valid = ranges <= draws.packets.len()
+                // A packet can join adjacent ranges (the world's triangle lists).
+                let valid = !draws.packets.is_empty()
                     && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
                 (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
             }
