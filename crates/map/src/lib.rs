@@ -76,3 +76,161 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests;
 #[cfg(test)]
 mod build_tests;
+
+/// Marker in a converted hlmt voice variant's word at +0x24. Its low
+/// word is the signed Halo 1 selector. Ordinary model variants opt out.
+pub const H1_VOICE_VARIANT: u32 = 0x4831_0000;
+
+/// Marker in a converted udlg source row's word at +0x00, outside the
+/// native indexed vocabulary. Its low word is the Halo 1 slot index.
+pub const H1_DIALOGUE_SLOT: u32 = 0x4831_0000;
+
+/// Provenance of a native vocalization in a converted dialogue bank.
+pub const H1_NATIVE_DIALOGUE_SLOT: u32 = 0x4832_0000;
+
+/// The original Halo 1 damage category, kept at jpt! +0x34 for dialogue.
+/// Halo 2's own damage category at +0x12 uses Halo 2's numbering.
+pub const H1_DAMAGE_CATEGORY: u32 = 0x4831_0000;
+
+/// Unit death line for the authored Halo 1 damage impulse threshold.
+pub const H1_DEATH_FLYING_LINE: usize = 0x140;
+
+/// The periodic query and its reply in Halo 1's wait behaviour.
+pub const H1_SEARCH_QUERY_LINE: usize = 0x850;
+pub const H1_SEARCH_REPLY_LINE: usize = 0x860;
+
+/// Attacker and victim utterances for the original nonlethal damage stimuli.
+pub const fn h1_injury_line(offset: usize) -> bool {
+    matches!(offset, 0x160 | 0x170 | 0x180 | 0x1e0 | 0x210 | 0x250 | 0x260 | 0x2a0 | 0x2e0)
+}
+
+/// Halo 1 kill stimulus 0's attacker lines for damage categories that
+/// have no distinct Halo 2 vocalization. The second word is a source
+/// udlg byte offset.
+pub const H1_WEAPON_KILL_LINES: &[(u16, usize)] = &[
+    (5, 0x450),  // sniper rifle
+    (8, 0x4c0),  // mounted weapon
+    (11, 0x430), // needler
+    (12, 0x4a0), // shotgun
+];
+
+/// Speaker-independent victim classes used by Halo 1's automatic dialogue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum H1DialogueClass {
+    Other = 0,
+    Player = 1,
+    Human = 2,
+    Covenant = 4,
+    CombatForm = 8,
+    Carrier = 16,
+    InfectionForm = 32,
+    Sentinel = 64,
+}
+
+impl H1DialogueClass {
+    /// H1's actor-kind classification at 0x146089. Halo 2 preserves these
+    /// actor type values when installing the converted actor's char.
+    pub const fn actor(kind: u16) -> Self {
+        match kind {
+            0..=5 | 14 => Self::Covenant,
+            6..=8 => Self::Human,
+            9 => Self::CombatForm,
+            10 => Self::InfectionForm,
+            11 => Self::Carrier,
+            12 | 13 => Self::Sentinel,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn hostile_kill_line(self) -> Option<usize> {
+        match self {
+            Self::Player => Some(0x380),
+            Self::Covenant => Some(0x3a0),
+            Self::CombatForm => Some(0x3c0),
+            Self::Carrier => Some(0x3e0),
+            Self::Sentinel => Some(0x400),
+            _ => None,
+        }
+    }
+}
+
+/// Victim-specific attacker cheers that use the generic H2 kill candidate.
+pub const fn h1_species_kill_line(offset: usize) -> bool {
+    matches!(offset, 0x380 | 0x3a0 | 0x3c0 | 0x3e0 | 0x400)
+}
+/// Lethal friendly-fire reactions spoken by the attacker.
+pub const fn h1_friendly_kill_line(offset: usize) -> bool {
+    matches!(offset, 0x320 | 0x340)
+}
+
+/// Nearby allies respond after one of these source utterances finishes.
+pub const fn h1_allied_reply_line(offset: usize) -> bool {
+    matches!(
+        offset,
+        0x190 | 0x1f0 | 0x330 | 0x350 | 0x370 | 0x390 | 0x3b0 | 0x3d0 | 0x3f0 | 0x410
+            | 0x560 | 0x590 | 0x5b0
+    )
+}
+
+/// Ally-witness remarks, after the engine reports a unit's death.
+pub const fn h1_kill_witness_line(offset: usize) -> bool {
+    matches!(offset, 0x630 | 0x640 | 0x650 | 0x660 | 0x670 | 0x680 | 0x690)
+}
+
+/// The original multikill trigger and the nearby reply to a player.
+pub const H1_KILLING_SPREE_LINE: usize = 0x4d0;
+pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
+
+/// Exchanges based on perception, cover and group movement.
+pub const fn h1_tactical_dialogue_line(offset: usize) -> bool {
+    matches!(
+        offset,
+        0x6e0 | 0x7c0 | 0x7d0 | 0x7e0 | 0x7f0 | 0x800 | 0x810 | 0x820 | 0x830
+            | 0x8a0 | 0x8b0 | 0x8f0 | 0x900 | 0x9e0 | 0xa20 | 0xa30
+    )
+}
+
+/// Notices that lack an authored Halo 2 vocalization or have a separate
+/// source remark at the same native event.
+pub const fn h1_actor_notice_line(offset: usize) -> bool {
+    matches!(offset, 0x720 | 0xa50 | 0xb70)
+}
+
+/// Remarks selected by the original firing-burst conditions.
+pub const fn h1_firing_line(offset: usize) -> bool {
+    matches!(offset, 0x960 | 0x970 | 0x980 | 0x990 | 0x9a0)
+}
+
+/// Alerts and involuntary speech driven by the selected grenade danger.
+pub const fn h1_grenade_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0x280 | 0x760 | 0x770 | 0x780 | 0x790)
+}
+
+/// Remarks and replies spoken during the original combat aftermath.
+pub const fn h1_postcombat_line(offset: usize) -> bool {
+    matches!(
+        offset,
+        0xbf0 | 0xc10 | 0xc60 | 0xc70 | 0xc80 | 0xc90 | 0xca0 | 0xcb0 | 0xcc0 | 0xcd0
+    )
+}
+
+/// Involuntary Flood speech when the unit resumes life.
+pub const H1_REVIVAL_LINE: usize = 0xb80;
+
+/// Authored source lines with no selection rule or incoming fallback in the
+/// retail executable. Preserve their indices for explicit sound lookup.
+pub const fn h1_unselected_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0xa90 | 0xaa0 | 0xb60)
+}
+
+/// Marker on rebuilt hlmt tags that carry Halo 1 physical speech rules.
+pub const H1_PHYSICAL_DIALOGUE: u32 = 0x4831_0000;
+pub const H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL: u32 = 1;
+pub const H1_DIALOGUE_AIRBORNE_PASSENGERS: u32 = 2;
+pub const H1_FREEFALL_LINE: usize = 0x0b0;
+
+/// Involuntary speech when damage destroys a collision region.
+pub const fn h1_region_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0x0d0 | 0x0e0)
+}

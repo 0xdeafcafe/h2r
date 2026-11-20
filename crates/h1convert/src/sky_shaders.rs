@@ -1,5 +1,6 @@
-//! Halo 1's sky shaders as copies of the base's Halo 2 sky shaders, drawing
-//! Halo 1's own bitmaps at Halo 1's map scale.
+//! Rebuilds Halo 1 sky shaders with Halo 1 bitmaps and UV transforms on
+//! native sky programs. When the base lacks the two-input cloud program,
+//! the installer builds its shared equivalent from the shader definitions.
 //!
 //! **Halo 1's side.** A sky model's shaders are `schi` (transparent
 //! chicago), `sotr` (transparent generic) or `swat` (water). D (every sky
@@ -28,9 +29,9 @@
 //!
 //! **Halo 2's side.** Three sky stems (D: Coagulation's sky shaders), each
 //! a [`crate::shad`] layout the shader is rebuilt with from the `shad`
-//! definition. The sky stems are on most maps but not in `shared.map`;
-//! without one, the shared transparent stem stands in
-//! ([`SkyTemplates::layout`]).
+//! definition. Picture and additive shaders can use the matching shared
+//! transparent layouts. A missing cloud stem is built when a sky needs
+//! it, with the same bindings as the retail cloud stem.
 //!
 //! - `sky_one_alpha_env`: stage 3's bitmap is the picture (`rgb = t3.rgb ×
 //!   t3.a` plus a stage-2 term the template's default bitmap leaves black;

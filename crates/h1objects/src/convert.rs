@@ -865,32 +865,25 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// A Halo 1 dialogue tag as a Halo 2 `udlg`
-    /// ([`crate::rebuild::dialogue`]): one vocalization per slot of
-    /// [`crate::rebuild::DIALOGUE`] holding a sound, the sound converted
-    /// with `h1sounds`, within [`Options::dialogue_budget`]. Converted
-    /// once; `None` when no line converts.
-    pub fn dialogue(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<Option<TagId>> {
+    /// Rebuilds the native vocalization table and the exact source slots.
+    pub fn dialogue(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<TagId> {
         if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(Some(*id));
+            return Ok(*id);
         }
-        let d = h1::Dialogue::read(self.h1, tag)?;
+        let d = self.read_dialogue(tag)?;
         let wanted = crate::rebuild::dialogue_lines(&d);
-        if let Some((offset, id)) = d
-            .lines
-            .iter()
-            .find(|(at, _)| !wanted.iter().any(|(_, slot, _)| slot == at))
-        {
-            let line = self.h1_tag(*id)?;
-            return Err(h1convert::Error::no_rebuild(
-                &self.h1.header().name,
-                &line.name,
-                format!("{} has no vocalization for slot {offset:#x}", tag.name),
-            )
-            .into());
+        for (name, _, _) in &wanted {
+            if !self.base.dialogue_names.iter().any(|entry| entry.as_str() == *name) {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &tag.name,
+                    format!("base dialogue vocabulary lacks {name}"),
+                )
+                .into());
+            }
         }
-        let mut lines = Vec::new();
-        for (voc, _, id) in wanted {
+        let mut source = Vec::with_capacity(d.lines.len());
+        for &(offset, id) in &d.lines {
             let line = self.h1_tag(id)?;
             let sound = self.dialogue_sound(line)?.ok_or_else(|| {
                 h1convert::Error::no_rebuild(
@@ -899,14 +892,24 @@ impl<'a> Converter<'a> {
                     "dialogue exceeds the configured sound budget",
                 )
             })?;
-            lines.push((voc, sound));
+            source.push((offset, sound));
         }
+        let native = wanted
+            .iter()
+            .map(|&(name, offset, _)| {
+                let index = source
+                    .binary_search_by_key(&offset, |&(at, _)| at)
+                    .expect("source slot read from this dialogue");
+                (name, offset, source[index].1)
+            })
+            .collect::<Vec<_>>();
+        let root = crate::rebuild::dialogue(&self.base.dialogue_names, &native, &source)?;
         rep.no_home.push(format!(
-            "{}: {} dialogue vocalizations",
+            "{}: {} native vocalizations, {} source slots",
             tag.name,
-            lines.len()
+            native.len(),
+            source.len()
         ));
-        let root = crate::rebuild::dialogue(&lines)?;
         let id = self.tree.push(
             &tag.name,
             Converted {
@@ -916,7 +919,41 @@ impl<'a> Converter<'a> {
             },
         );
         self.done.insert(tag.id.0, id);
-        Ok(Some(id))
+        Ok(id)
+    }
+
+    fn read_dialogue(&self, tag: &Tag) -> Result<h1::Dialogue> {
+        h1::Dialogue::read(self.h1, tag)
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e).into())
+    }
+
+    fn biped_dialogue(
+        &mut self,
+        tag: &Tag,
+        bytes: &[u8],
+        rep: &mut ObjectReport,
+    ) -> Result<Vec<(i16, TagId)>> {
+        let variants = h1::dialogue_variants(self.h1, bytes)
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        let mut voices = Vec::with_capacity(variants.len());
+        for (selector, id) in variants {
+            let voice = self.h1_tag(id)?;
+            let source = self.read_dialogue(voice)?;
+            if let Some((slot, id)) = crate::rebuild::unbound_dialogue_line(&source) {
+                let sound = self.h1_tag(id)?;
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &sound.name,
+                    format!(
+                        "{} slot {slot:#x} has no automatic dialogue event on {}",
+                        voice.name, tag.name
+                    ),
+                )
+                .into());
+            }
+            voices.push((selector, self.dialogue(voice, rep)?));
+        }
+        Ok(voices)
     }
 
     /// A Halo 1 `foot` as a Halo 2 one ([`crate::rebuild::foot`]): its
@@ -2380,6 +2417,11 @@ impl<'a> Converter<'a> {
             "none: rebuilt from source vehicle type and powered mass points",
         );
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
+        if b[0x17c] & 0x40 != 0 && let Some(h) = hlmt {
+            let bits = map::H1_PHYSICAL_DIALOGUE | map::H1_DIALOGUE_AIRBORNE_PASSENGERS;
+            let root = &mut self.tree.tags[h.0 as usize & 0xffff].1.root;
+            root.bytes[0x80..0x84].copy_from_slice(&bits.to_le_bytes());
+        }
         let kind = match scripted {
             Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
             Some(scripted_props::ScriptedVehicle::Flyer) => PhysicsKind::ScriptedFlyer,
@@ -2763,26 +2805,15 @@ impl<'a> Converter<'a> {
             None => Vec::new(),
         };
         let player = health_hud::is_player_biped(&tag.name);
-        // Halo 1's dialogue: the `udlg` the unit names (its dialogue
-        // variants block), in place of the counterpart's. A unit naming
-        // more than one needs per-unit variant selection Halo 2's single
-        // model dialogue cannot hold: a named error.
-        let variants = h1::elements(self.h1, b, 0x2b4, 0x18)?;
-        let mut voices = variants.iter().filter_map(|v| h1::reference(self.h1, v, 8));
-        let dialogue = voices.next();
-        if let Some(extra) = voices.find(|&id| Some(id) != dialogue) {
-            let voice = self.h1_tag(extra)?;
+        let voices = self.biped_dialogue(tag, b, &mut rep)?;
+        if !voices.is_empty() && hlmt.is_none() {
             return Err(h1convert::Error::no_rebuild(
                 &self.h1.header().name,
-                &voice.name,
-                format!("{} needs per-unit dialogue variant selection", tag.name),
+                &tag.name,
+                "unit voices require a model",
             )
             .into());
         }
-        let udlg = match dialogue {
-            Some(id) => self.dialogue(self.h1_tag(id)?, &mut rep)?,
-            None => None,
-        };
         let source_damage = u.object.collision.map(|id| -> Result<_> {
             h1::tag_bytes(self.h1, self.h1_tag(id)?, b"coll", h1::COLL_SIZE)
         }).transpose()?;
@@ -2806,10 +2837,40 @@ impl<'a> Converter<'a> {
             if player {
                 crate::biped_hits::write_player_targets(hd, &mut r, &markers, &tag.name)?;
             }
+            if !voices.is_empty() {
+                let freefall = if b[0x2f4] & 0x84 == 0 {
+                    map::H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL
+                } else {
+                    0
+                };
+                r.set("h1_dialogue_flags", Val::Int(i64::from(map::H1_PHYSICAL_DIALOGUE | freefall)))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
             if let Some(v) = native.as_ref().and_then(|c| c.at("shad_ref_94")) {
                 r.set("shad_ref_94", v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
             }
             if let Some(src) = source_damage {
+                if !voices.is_empty() {
+                    let regions = h1::elements(self.h1, src, 0x240, 0x54)?;
+                    let region_def = hd.child("h1_dialogue_regions").expect("physical dialogue");
+                    let mut physical_dialogue = Vec::new();
+                    let mut has_threshold = false;
+                    for region in regions {
+                        let threshold = f32::from_le_bytes(region[0x28..0x2c].try_into().unwrap());
+                        let flags = u32::from_le_bytes(region[0x20..0x24].try_into().unwrap());
+                        has_threshold |= threshold > 0.0;
+                        let mut out = defs::default_record(region_def);
+                        out.set("threshold", Val::Float(threshold))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        out.set("flags", Val::Int(i64::from(flags)))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        physical_dialogue.push(out);
+                    }
+                    if has_threshold {
+                        r.set("h1_dialogue_regions", Val::Block(physical_dialogue))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                    }
+                }
                 let mut damage = defs::default_record(hd.child("block_60").expect("model damage"));
                 // Native shield shaders and NPC damage responses are part of the
                 // H2 damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
@@ -2874,10 +2935,7 @@ impl<'a> Converter<'a> {
                 }
                 r.set("block_60", Val::Block(vec![damage])).map_err(|e| Error::Invalid(e.to_string()))?;
             }
-            if let Some(id) = udlg {
-                r.set(DIALOGUE_FIELD, Val::tag(FourCC(*b"udlg"), id))
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-            }
+            crate::rebuild::model_dialogue(&mut r, &voices)?;
             self.tree.tags[h.0 as usize & 0xffff].1.root =
                 defs::to_built(hd, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))?;
             self.tree.note_roles(h, copied);

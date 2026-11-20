@@ -1472,6 +1472,22 @@ impl Decal {
     }
 }
 
+/// One authored voice selector and its voice tag. Repeated selectors are
+/// alternatives in author order (H1 0x468d0, stride 0x18).
+pub fn dialogue_variants(map: &H1Map, unit: &[u8]) -> Result<Vec<(i16, TagId)>> {
+    elements(map, unit, 0x2b4, 0x18)?
+        .into_iter()
+        .map(|v| {
+            let reference = TagRef::read(v, 8).expect("voice row");
+            let tag = map.tag(reference.id)?;
+            if reference.group != Group::new(b"udlg") || tag.group != reference.group {
+                return Err(Error::WrongGroup(tag.group.to_string(), *b"udlg"));
+            }
+            Ok((i16_at(v, 0), tag.id))
+        })
+        .collect()
+}
+
 /// `udlg`: `0x1010` bytes, a fixed table of `snd!` references, one per
 /// line a character can say, `0x10` apart from `+0x10`. V: all 102
 /// distinct dialogue tags on the disc are `0x1010` bytes and hold only
@@ -1493,11 +1509,21 @@ impl Dialogue {
     pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
         let b = tag_bytes(map, tag, b"udlg", UDLG_SIZE)?;
         let snd = Group::new(b"snd!");
-        let lines = (0x10..UDLG_SIZE)
-            .step_by(0x10)
-            .filter(|at| TagRef::read(b, *at).is_some_and(|r| r.group == snd))
-            .filter_map(|at| reference(map, b, at).map(|t| (at, t)))
-            .collect();
+        let mut lines = Vec::new();
+        for at in (0x10..UDLG_SIZE).step_by(0x10) {
+            let reference = TagRef::read(b, at).expect("dialogue slot");
+            if reference.id.is_none() || b[at..at + 0x10] == [0; 0x10] {
+                continue;
+            }
+            let line = map.tag(reference.id)?;
+            if reference.group != snd || line.group != snd {
+                return Err(Error::Invalid(format!(
+                    "{} dialogue slot {at:#x} names {} {}",
+                    tag.name, line.group, line.name
+                )));
+            }
+            lines.push((at, line.id));
+        }
         Ok(Self { lines })
     }
 

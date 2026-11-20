@@ -256,6 +256,32 @@ points! { ALL;
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
+    /// Initializes the unit's speech block from its model and variant name.
+    UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Enqueue the selected candidate in the AI dialogue scheduler.
+    AI_DIALOGUE_ENQUEUE @ 0x0020_d0c0: [fn(vocabulary: stack 0, time: stack 1, stimulus: stack 2, candidate: stack 3, context: stack 4, parent: stack 5, queued: stack 6) -> al ret 28]; "docs/halo1/ai.md";
+    /// Check whether a unit can play a line and resolve its sound.
+    UNIT_DIALOGUE_CHECK @ 0x0011_4520: [fn(unit: eax, vocalization: edx, priority: stack 0, speech_time: stack 1, sound: stack 2) -> al ret 12]; "docs/halo1/ai.md";
+    /// Installs the prepared utterance into the per-unit speech block.
+    UNIT_DIALOGUE_SET_LINE @ 0x0011_4680: [fn(unit: eax, line: ebx) ret 0]; "docs/halo1/ai.md";
+    /// Update the unit's playing and queued speech.
+    UNIT_DIALOGUE_UPDATE @ 0x0011_4c60: [fn(unit: eax) ret 0], Hot; "docs/halo1/ai.md";
+    /// Clears body depletion and restores a reanimating unit.
+    UNIT_REANIMATE @ 0x000c_af00: [fn(unit: eax) ret 0]; "docs/halo1/ai.md";
+    /// Reports a nonlethal hit to the victim's and aggressor's AI.
+    AI_INJURY_NOTICE @ 0x001c_9c80: [fn(victim: eax, owner: edx, category: stack 0, amount: stack 1, direction: stack 2, deferred: stack 3) ret 16]; "docs/halo1/ai.md";
+    /// Reports a depleted unit body and the player or unit responsible.
+    AI_KILL_NOTICE @ 0x001c_95d0: [fn(victim: stack 0, owner: stack 1, category: stack 2, amount: stack 3) ret 16]; "docs/halo1/ai.md";
+    /// Announces a vocalization event from an actor and its perceived object.
+    AI_ACTOR_VOCALIZE @ 0x001f_b7e0: [fn(event: eax, actor: ecx, context: edx, object: stack 0, other: stack 1) -> al ret 8]; "docs/halo1/ai.md";
+    /// Notifies the AI when native dismount action 29 has been accepted.
+    AI_DISMOUNT_NOTICE @ 0x001b_ba20: [fn(actor: eax) ret 0]; "docs/halo1/ai.md";
+    /// Enters the leaping variant of the native melee charge.
+    AI_MELEE_LEAP_ENTER @ 0x001a_b380: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
+    /// Dispatches the global vocalization stimulus and its two participants.
+    AI_DIALOGUE_STIMULUS @ 0x0020_ba60: [fn(event: stack 0, speaker: stack 1, object: stack 2, relation: stack 3, other: stack 4, context: stack 5) -> al ret 24]; "docs/halo1/ai.md";
+    /// Enters native postcombat behavior.
+    AI_POSTCOMBAT_ENTER @ 0x001b_4240: [fn(actor: stack 0, state: stack 1) -> al ret 8]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

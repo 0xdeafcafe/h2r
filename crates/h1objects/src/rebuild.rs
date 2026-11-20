@@ -2896,9 +2896,8 @@ pub fn decal(
 /// Chief's dialogue tags give the bridge (V): their `death` sound plays
 /// for `dth`, `dth_mjr`, `dth_slnt`, `dth_slw` and `dth_hdsht`, their
 /// `deathfall` / `fall_death` for `dth_fall`, their `pain` for
-/// `pain_mjr`. Halo 1 slots with no line here (the hurt and killed
-/// variants by weapon and by species, the replies, the search and
-/// vehicle chatter) have no Halo 2 vocalization close enough.
+/// `pain_mjr`. Source-only weapon kill lines use the winning kill
+/// candidate in the runtime scheduler instead.
 pub const DIALOGUE: &[(usize, &str)] = &[
     (0x010, "look_noncmbt"),     // idle_non_combat
     (0x020, "look_cmbt"),        // idle_combat
@@ -2912,13 +2911,14 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x100, "dth_mjr"),          // deathviolent
     (0x100, "dth"),              // deathviolent
     (0x110, "dth_fall"),         // deathfalling
-    (0x140, "dth_fall"),         // deathflying
     (0x120, "dth_slw"),          // deathagonizing
     (0x130, "dth_hdsht"),        // deathinstant
     (0x100, "dth_hdsht"),        // deathviolent
+    (0x200, "scld_plr_hrtme"),   // hurtfriendplayer, event 3
     (0x360, "chr_kllfoe"),       // killedenemy
     (0x420, "chr_kllfoe_blt"),   // killedenemybullet
-    (0x380, "prs_plr_kll"),      // killedenemyplayer
+    (0x460, "chr_kllfoe_bm"),    // killedenemygrenade, event 0 hostile attacker, category 3
+    (0x550, "prs_plr_sniping"),  // playerkillsnipercm, adlg event 0 pattern 27
     (0x610, "lmnt_deadally"),    // frienddied
     (0x620, "lmnt_deadplr"),     // friendplayerdied
     (0x6a0, "betray"),           // friendbetrayed
@@ -2926,14 +2926,27 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x6f0, "foundfoe"),         // oldenemysighted
     (0x700, "seefoe_srprs"),     // unexpectedenemy
     (0x710, "chckallybdy"),      // deadfriendfound
+    (0x730, "forgive"),          // alliancereformed, event 196
     (0x740, "strk_grnd"),        // grenadethrowing
     (0x750, "warn_incmn_grnd"),  // grenadesighted
     (0x840, "srchstart"),        // searchstart
+    (0x870, "srch_allclr"),      // searchreport, event 46 search completion
+    (0x870, "prst_allclr"),      // searchreport, event 48 pursuit completion
+    (0x880, "prstfail_nospc"),   // searchabandon, cannot take the pursuit position
+    (0x880, "prstfail_agg"),     // aggressive variant
+    (0x880, "prstfail_notme"),   // searchabandon, another actor takes the pursuit
+    (0x880, "prstfail_tim"),     // timid variant
+    (0x880, "prstfail_nopts"),   // searchabandon, no valid point
+    (0x880, "prstfail_nopts_tim"),
     (0x8c0, "newordr_advance"),  // advance
     (0x8e0, "newordr_retreat"),  // retreat
+    (0x950, "grt_plr"),          // sightedfriendlyplayer, event 163
     (0x9b0, "tnt"),              // taunt
     (0x9d0, "flee"),             // flee
+    (0x9f0, "fear_rtrt_ldrdead"), // flee_leader_died, adlg event 63 pattern 110
     (0xa40, "entervcl"),         // vehicleentry
+    (0xa60, "prs_plr_vclchr"),   // vehiclewoohoo, event 85
+    (0xa70, "scld_plr_vclcrazy"), // vehiclescared, event 87
     (0xb20, "srprs"),            // surprise
     (0xb30, "brsrk"),            // berserk
     (0xb40, "melee"),            // meleeattack
@@ -2942,6 +2955,41 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0xbe0, "chkfoebdy"),        // checkbodyenemy
     (0xc00, "shotfoebdy"),       // shootingdeadenemy
 ];
+
+/// The first authored slot without a native, rebuilt, or dormant source rule.
+pub fn unbound_dialogue_line(source: &h1::Dialogue) -> Option<(usize, TagId)> {
+    let routed = dialogue_lines(source);
+    let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
+    source.lines.iter().copied().find(|(slot, _)| {
+        let native = routed.iter().any(|(_, at, _)| at == slot);
+        let kill_variant = generic_kill
+            && (map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot)
+                || map::h1_species_kill_line(*slot));
+        !native
+            && !kill_variant
+            && !map::h1_injury_line(*slot)
+            && !map::h1_friendly_kill_line(*slot)
+            && !map::h1_kill_witness_line(*slot)
+            && !map::h1_actor_notice_line(*slot)
+            && !map::h1_firing_line(*slot)
+            && !map::h1_tactical_dialogue_line(*slot)
+            && !map::h1_grenade_dialogue_line(*slot)
+            && !map::h1_postcombat_line(*slot)
+            && !map::h1_unselected_dialogue_line(*slot)
+            && !map::h1_region_dialogue_line(*slot)
+            && !map::h1_allied_reply_line(*slot)
+            && !matches!(
+                *slot,
+                map::H1_KILLING_SPREE_LINE
+                    | map::H1_KILLING_SPREE_REPLY_LINE
+                    | map::H1_DEATH_FLYING_LINE
+                    | map::H1_REVIVAL_LINE
+                    | map::H1_FREEFALL_LINE
+                    | map::H1_SEARCH_QUERY_LINE
+                    | map::H1_SEARCH_REPLY_LINE
+            )
+    })
+}
 
 /// The vocalizations a Halo 1 dialogue tag gives, each with the slot its
 /// sound is in ([`DIALOGUE`]), first slot holding a sound winning.
@@ -2965,28 +3013,79 @@ const UDLG_GROUP: [u8; 4] = *b"glda";
 /// (V: every retail element).
 const UDLG_SOUND_GROUP: [u8; 4] = *b"!dns";
 
-/// The `udlg` root: one element per line, its vocalization and its
-/// sound (a datum: a converted sound's placeholder). `+8` and the
-/// trailing string are zero, as on every retail dialogue tag of the
-/// base (V, `halo2_dialogue_survey`).
-pub fn dialogue(lines: &[(&str, TagId)]) -> Result<Block> {
+/// The native prefix is indexed by Halo 2's global vocabulary. Rows
+/// after that prefix keep each authored Halo 1 slot, including lines
+/// whose source events do not have a native vocalization.
+pub fn dialogue(
+    vocabulary: &[String],
+    native: &[(&str, usize, TagId)],
+    source: &[(usize, TagId)],
+) -> Result<Block> {
     let d = def(b"udlg")?;
     let mut r = defs::default_record(d);
     set(&mut r, "unknown_0", Val::Bytes(UDLG_GROUP.to_vec()))?;
     set(&mut r, "unknown_4", Val::Bytes(vec![0xff; 4]))?;
     let el = d.child("vocalizations").expect("udlg vocalizations");
-    let items = lines
+    let row = |name: &str, sound: TagId, marker: u32| -> Result<Record> {
+        let mut x = defs::default_record(el);
+        set(&mut x, "vocalization", Val::text(name))?;
+        set(&mut x, "unknown_0", Val::Bytes(marker.to_le_bytes().to_vec()))?;
+        set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
+        set(&mut x, "sound", Val::Datum(defs::Target::Id(sound)))?;
+        Ok(x)
+    };
+    let mut items = vocabulary
         .iter()
-        .map(|(voc, sound)| {
-            let mut x = defs::default_record(el);
-            set(&mut x, "vocalization", Val::text(voc))?;
-            set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
-            set(&mut x, "sound", Val::Datum(defs::Target::Id(*sound)))?;
-            Ok(x)
+        .map(|name| {
+            let Some(&(_, offset, sound)) = native.iter().find(|(voc, _, _)| *voc == name.as_str()) else {
+                return row(name, TagId::NULL, 0);
+            };
+            let slot = (offset / 0x10 - 1) as u32;
+            row(name, sound, map::H1_NATIVE_DIALOGUE_SLOT | slot)
         })
         .collect::<Result<Vec<_>>>()?;
+    for &(offset, sound) in source {
+        let slot = (offset / 0x10 - 1) as u32;
+        let marker = map::H1_DIALOGUE_SLOT | slot;
+        items.push(row(&format!("h1_slot_{slot:03x}"), sound, marker)?);
+    }
     set(&mut r, "vocalizations", Val::Block(items))?;
     built(d, &r)
+}
+
+/// H2 speech setup (0x114ec0) honors variant dialogue at +0x34. Voice
+/// variants are selected only by the speech hook, using the marked
+/// Halo 1 selector. The default visual variant keeps its own index.
+pub(crate) fn model_dialogue(r: &mut Record, voices: &[(i16, TagId)]) -> Result<()> {
+    let udlg = FourCC(*b"udlg");
+    match voices {
+        [] => return Ok(()),
+        [(0, id)] => return set(r, crate::convert::DIALOGUE_FIELD, Val::tag(udlg, *id)),
+        _ => {}
+    }
+
+    let d = def(b"hlmt")?.child("variants").expect("hlmt variants");
+    let mut variants = match r.at("variants") {
+        Some(Val::Block(rows)) => rows.clone(),
+        _ => return Err(Error::Invalid("hlmt variants".into())),
+    };
+    let visual = |name: &str| -> Result<Record> {
+        let mut row = defs::default_record(d);
+        set(&mut row, "name", Val::text(name))?;
+        set(&mut row, "region_map", Val::List(vec![Val::Int(-1); 16]))?;
+        Ok(row)
+    };
+    if variants.is_empty() {
+        variants.push(visual("default")?);
+    }
+    for (i, &(selector, id)) in voices.iter().enumerate() {
+        let mut row = visual(&format!("h1_voice_{i}"))?;
+        let marker = map::H1_VOICE_VARIANT | u32::from(selector as u16);
+        set(&mut row, "h1_voice_selector", Val::Int(marker.into()))?;
+        set(&mut row, "udlg_ref_30", Val::tag(udlg, id))?;
+        variants.push(row);
+    }
+    set(r, "variants", Val::Block(variants))
 }
 
 /// Halo 1's foot kinds Halo 2 has at the same index (V: on every Halo 2

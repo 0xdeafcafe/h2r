@@ -168,7 +168,7 @@ impl ModelDefaults {
             vertex,
             &self.pixel(emission),
             textures,
-            1,
+            [1; 4],
             2,
             &[
                 (67, 0x010101),

@@ -336,6 +336,27 @@ The accompanying TSV has 35,510 rows. Each gives the map, group, source path, pa
 | Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases used one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
 | Ordinary biped shields, `biped_rebuilt` | 55 biped/modifier rows name three `spla` tags. The H2 Chief uses `masterchief_plasma_shield_change_color_fp` and `masterchief_plasma_shield_change_color`; the Elite uses `elite_plasma_shield_fp` and `elite_plasma_shield`. | **Built.** Both ordinary shield views bind the source modifier through the model-material converter. All three source shaders use the Elite shield noise volume twice. The volume-plasma rebuild above draws them. |
 
+### Sky clouds and unit voices
+
+- **Built.** The two-input sky pass uses the retail cloud equation on bases
+  without the stem. Its mask and tiled texture are separate authored
+  inputs. Coagulation and Beaver Creek establish the pass, and the
+  05a_deltaapproach vertex shader supplies the same two transforms.
+  See [sky.md](sky.md#the-models-shaders).
+- **Built.** One unit can select among all of its authored voices. Halo 1
+  `0x468d0` defines selector matching and alternative selection. Halo 2
+  `0x114ec0` binds a model variant's dialogue to the individual unit.
+  The rebuilt table uses the native vocalization indices, and explicit
+  vocalize commands resolve source slots on that unit.
+  See [ai.md](ai.md#command-execution).
+- **Built.** Every authored `udlg` slot has an automatic event. The
+  authored biped voice inventory across all 23 Xbox retail maps has zero
+  unbound rows. Source-only automatic lines use Halo 2's native
+  notifications or boot hooks for their original conditions. Three
+  authored slots that the Halo 1 retail scheduler never selects remain
+  available by their exact source index. A slot with no rule fails
+  conversion naming the sound, voice and unit.
+
 ### Dependencies kept from Halo 2
 
 The base map supplies engine globals, global material indices, the sound
@@ -366,10 +387,10 @@ The offline draw survey covered all ten campaign and thirteen multiplayer maps. 
 
 ### Retail gaps that stop conversion
 
-| Source | Implementation still needed |
-| --- | --- |
-| A sky cloud layer on a base without the two-input sky program | Supply the shared two-input program and preserve the authored mask and tile. A single-sampler transparent material omits the mask. |
-| Authored `udlg` slots without a corresponding H2 vocalization and bipeds with multiple dialogue variants | Native event routing for the unmapped lines and per-unit voice selection. H2 has one dialogue reference per model. The converter identifies the source sound or additional voice that cannot be represented. |
+No retail gap is open. The former sky cloud and `udlg` rows are built
+(see [Sky clouds and unit voices](#sky-clouds-and-unit-voices)), as are the
+textureless and glass draws, maximum-blend particles and source widgets
+above.
 
 The ignored `both_sandboxes_rebuild_every_retail_map` test attempts all 46
 conversions, collects individual map/sandbox errors and asserts that the

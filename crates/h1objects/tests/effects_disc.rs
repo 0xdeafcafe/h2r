@@ -665,22 +665,15 @@ fn halo2_dialogue_survey() {
     }
 }
 
-/// Every Halo 1 dialogue tag of the ten campaign levels and the
-/// multiplayer maps converts to a `udlg` from its definition: the
-/// vocalizations are [`h1objects::rebuild::DIALOGUE`]'s for the slots
-/// holding a sound, each a name the base's own dialogue uses, each sound
-/// one the tree converted; it reads back with no pinned bytes. Every
-/// rebuilt biped whose Halo 1 unit names a dialogue tag points its
-/// model's dialogue at the converted one.
+/// Every retail map's voice tables preserve the native indices and every
+/// source slot. The source rows must resolve to the original voice's
+/// sound even when that slot has no Halo 2 vocalization.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn every_dialogue_converts() {
-    let mut sets: Vec<(&str, Vec<String>)> = vec![(
+    let mut sets: Vec<(&str, Vec<&str>)> = vec![(
         "05a_deltaapproach",
-        h1map::disc::CAMPAIGN_LEVELS
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+        h1map::disc::CAMPAIGN_LEVELS.to_vec(),
     )];
     for mp in ["coagulation", "beavercreek"] {
         sets.push((
@@ -688,119 +681,340 @@ fn every_dialogue_converts() {
             h1convert::convert::MAPS
                 .iter()
                 .filter(|m| m.2 == mp)
-                .map(|m| m.0.to_string())
+                .map(|m| m.0)
                 .collect(),
         ));
     }
+
+    let weapon_lines = map::H1_WEAPON_KILL_LINES;
     let udlg = Group::new(b"udlg");
-    let (mut tags, mut lines, mut slots) = (0usize, 0usize, 0usize);
-    let (mut bipeds, mut speaking, mut two) = (0usize, 0usize, 0usize);
-    let mut sample_bytes = 0u64;
+    let mut maps = 0;
+    let mut multi_voice = 0;
     for (base_name, levels) in sets {
-        let mut base_map = h2_map(base_name);
-        let base = Base::read(&mut base_map).unwrap();
-        // The base's own vocalization names.
-        let strings = base_map.strings().to_vec();
-        let mut vocab = std::collections::BTreeSet::new();
-        for (id, g, _, _) in base.tags.iter() {
-            if *g != FourCC(*b"udlg") {
-                continue;
-            }
-            let r = base.record(def(b"udlg"), *id).unwrap();
-            for e in block(&r, "vocalizations") {
-                if let Some(Val::String(Str::Index(i))) = e.at("vocalization") {
-                    if let Some(Some(s)) = strings.get((*i & 0xffff) as usize) {
-                        vocab.insert(s.clone());
-                    }
-                }
-            }
-        }
-        for (_, voc) in h1objects::rebuild::DIALOGUE {
-            assert!(
-                base_name != "05a_deltaapproach" || vocab.contains(*voc),
-                "{voc}: not a vocalization on {base_name}"
-            );
-        }
+        let base = Base::read(&mut h2_map(base_name)).unwrap();
+        assert!(!base.dialogue_names.is_empty(), "{base_name} has no adlg");
+        assert_eq!(&base.dialogue_names[244], "chr_kllfoe");
+        assert_eq!(&base.dialogue_names[253], "chr_deaddrvsh");
         for level in levels {
-            let Some(m) = h1_level(&level) else { continue };
+            let Some(m) = h1_level(level) else { continue };
+            maps += 1;
             let mut c = Converter::new(&m, &base);
             let mut rep = Default::default();
-            let mut got = Vec::new();
-            for t in m.tags().iter().filter(|t| t.group == udlg) {
+            let mut voices = std::collections::HashMap::new();
+            for tag in m.tags().iter().filter(|t| t.group == udlg) {
+                let context = format!("{level} {}", tag.name);
                 let id = c
-                    .dialogue(t, &mut rep)
-                    .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
-                got.push((t, id));
-            }
-            let mut rebuilt = Vec::new();
-            for t in m.tags().iter().filter(|t| t.group == Group::new(b"bipd")) {
-                let u = h1::Unit::read(&m, t).unwrap();
-                let named: Vec<_> = u
-                    .references
-                    .iter()
-                    .filter(|r| r.group == udlg && r.tag.is_some())
-                    .collect();
-                bipeds += 1;
-                speaking += usize::from(!named.is_empty());
-                two += usize::from(named.len() > 1);
-                if let Ok(id) = c.object(t) {
-                    rebuilt.push((t, id, named.first().and_then(|r| r.tag)));
-                }
-            }
-            sample_bytes += c.dialogue_bytes;
-            let tree = &c.tree;
-            for (t, id) in &got {
-                let name = format!("{level} {}", t.name);
-                let d = h1::Dialogue::read(&m, t).unwrap();
-                let want = h1objects::rebuild::dialogue_lines(&d);
-                tags += 1;
-                slots += d.lines.len();
-                let Some(id) = id else {
-                    assert!(want.is_empty(), "{name}: no udlg for {} lines", want.len());
-                    continue;
-                };
-                let got = &tree.tags[id.0 as usize & 0xffff].1;
-                assert_eq!(got.group, FourCC(*b"udlg"), "{name}");
-                let r = read_back(got, &name);
-                let els = block(&r, "vocalizations");
-                assert_eq!(els.len(), want.len(), "{name}");
-                for (e, (voc, _, _)) in els.iter().zip(&want) {
-                    assert_eq!(&text(e, "vocalization"), voc, "{name}");
-                    assert!(vocab.contains(*voc) || base_name != "05a_deltaapproach");
-                    let Some(Val::Datum(Target::Id(s))) = e.at("sound") else {
-                        panic!("{name} {voc}: no sound");
-                    };
-                    assert_eq!(resolve(tree, *s), Some(FourCC(*b"snd!")), "{name} {voc}");
-                }
-                lines += els.len();
-            }
-            for (t, id, named) in &rebuilt {
-                let b = &tree.tags[id.0 as usize & 0xffff].1;
-                if b.group != FourCC(*b"bipd") {
-                    continue;
-                }
-                let r = defs::from_built(def(b"bipd"), &b.root).unwrap();
-                let (_, Some(h)) = target(&r, "unit.obje.model") else {
-                    continue;
-                };
-                if h.0 & PLACEHOLDER != h1objects::convert::local(0).0 {
-                    continue;
-                }
-                let hl = &tree.tags[h.0 as usize & 0xffff].1;
-                let hr = defs::from_built(def(b"hlmt"), &hl.root).unwrap();
-                let (_, d) = target(&hr, h1objects::convert::DIALOGUE_FIELD);
-                if let Some(n) = named {
-                    let want = got.iter().find(|g| g.0.id == *n).and_then(|g| g.1);
-                    if want.is_some() {
-                        assert_eq!(d, want, "{level} {}: model dialogue", t.name);
+                    .dialogue(tag, &mut rep)
+                    .unwrap_or_else(|e| panic!("{context}: {e}"));
+                assert!(voices.insert(tag.id, id).is_none());
+                let src = h1::Dialogue::read(&m, tag).unwrap();
+                let routed = h1objects::rebuild::dialogue_lines(&src);
+                for &(_, offset) in weapon_lines {
+                    if src.line(offset).is_some() {
+                        assert!(src.line(0x360).is_some(), "{context}: missing killer cheer");
                     }
+                }
+                assert!(
+                    src.line(0x360).is_some()
+                        || src.lines.iter().all(|&(offset, _)| !map::h1_species_kill_line(offset)),
+                    "{context}: species variants need a native killer cheer"
+                );
+                let record = read_back(&c.tree.tags[id.index()].1, &context);
+                let rows = block(&record, "vocalizations");
+                let (native, slots) = rows.split_at(base.dialogue_names.len());
+                assert_eq!(slots.len(), src.lines.len(), "{context}");
+                let assert_sound = |row: &Record, sound| {
+                    let Some(Val::Datum(Target::Id(id))) = row.at("sound") else {
+                        panic!("{context}: no sound");
+                    };
+                    assert_eq!(resolve(&c.tree, *id), Some(FourCC(*b"snd!")), "{context}");
+                    assert_eq!(c.tree.sounds[id.index()].0, m.tag(sound).unwrap().name, "{context}");
+                };
+                for (row, name) in native.iter().zip(&base.dialogue_names) {
+                    assert_eq!(&text(row, "vocalization"), name, "{context}: wrong native index");
+                    if let Some((_, _, sound)) = routed.iter().find(|(voc, _, _)| *voc == name.as_str()) {
+                        assert_sound(row, *sound);
+                    } else {
+                        assert_eq!(row.at("sound"), Some(&Val::Datum(Target::Null)), "{context} {name}");
+                    }
+                }
+                for (row, &(offset, sound)) in slots.iter().zip(&src.lines) {
+                    let slot = (offset / 0x10 - 1) as u32;
+                    let marker = map::H1_DIALOGUE_SLOT | slot;
+                    assert_eq!(
+                        row.at("unknown_0"),
+                        Some(&Val::Bytes(marker.to_le_bytes().to_vec())),
+                        "{context} slot {slot}"
+                    );
+                    assert_sound(row, sound);
+                }
+            }
+            for unit in m.tags().iter().filter(|t| t.group == Group::new(b"bipd")) {
+                let selectors = h1::dialogue_variants(&m, m.tag_data(unit).unwrap()).unwrap();
+                multi_voice += usize::from(selectors.len() > 1);
+                for (_, voice) in selectors {
+                    assert!(voices.contains_key(&voice), "{level} {}: missing voice {voice}", unit.name);
+                    let source = h1::Dialogue::read(&m, m.tag(voice).unwrap()).unwrap();
+                    assert_eq!(
+                        h1objects::rebuild::unbound_dialogue_line(&source),
+                        None,
+                        "{level} {} has unbound dialogue",
+                        unit.name
+                    );
                 }
             }
         }
     }
-    println!(
-        "{tags} dialogue tags, {slots} slots holding a sound, {lines} Halo 2 lines, {sample_bytes:#x} sample bytes; {bipeds} bipeds, {speaking} name dialogue, {two} name more than one"
+    assert_eq!(maps, 23);
+    assert!(multi_voice > 0);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 disc executables"]
+fn automatic_damage_dialogue_has_retail_trigger_evidence() {
+    let default_xbe = |var, fallback| {
+        let mut iso =
+            xiso::Xiso::open(BufReader::new(File::open(disc(var, fallback)).unwrap())).unwrap();
+        let entry = iso
+            .entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.path.eq_ignore_ascii_case("/default.xbe"))
+            .unwrap();
+        iso.read(&entry).unwrap()
+    };
+    let h1_bytes = default_xbe("H1_ISO", "halo1.iso");
+    let h1 = xbe::Xbe::parse(&h1_bytes).unwrap();
+    let start = 0x001e_eb70;
+    let patterns = h1.bytes_at(start, 29 * 0x28).unwrap();
+    for (category, offset) in [(3, 0x460)]
+        .into_iter()
+        .chain(map::H1_WEAPON_KILL_LINES.iter().copied())
+    {
+        let slot = (offset / 0x10 - 1) as u16;
+        assert!(
+            patterns.chunks_exact(0x28).any(|row| {
+                // Kill stimulus, spoken by the attacker after a hostile kill.
+                u16_at(row, 0) == 0
+                    && u16_at(row, 4) == slot
+                    && u16_at(row, 8) == 1
+                    && u16_at(row, 0x1c) == 3
+                    && u16_at(row, 0x24) == category
+            }),
+            "no weapon kill rule for {offset:#x}"
+        );
+    }
+    assert_eq!(h1.bytes_at(0x0004_7293, 5).unwrap(), &[0xb8, 19, 0, 0, 0]);
+    assert_eq!(h1.read_u32(0x001f_0b04).unwrap(), 2.0f32.to_bits());
+    let query = h1.bytes_at(0x001e_f4a8, 0x28).unwrap();
+    let reply = h1.bytes_at(0x001f_00a0, 0x24).unwrap();
+    let slot = |offset: usize| (offset / 0x10 - 1) as u16;
+    assert_eq!(u16_at(query, 0), 17);
+    assert_eq!(u16_at(query, 4), slot(map::H1_SEARCH_QUERY_LINE));
+    assert_eq!(u16_at(reply, 0), slot(map::H1_SEARCH_QUERY_LINE));
+    assert_eq!(u16_at(reply, 6), slot(map::H1_SEARCH_REPLY_LINE));
+    assert_eq!(u32_at(reply, 0x20), 0x0014_28e0);
+    assert_eq!(h1.read_u32(0x001f_0bc0).unwrap(), 0.3f32.to_bits());
+    for actor in 0..16u16 {
+        let record = h1.read_u32(0x0025_f2c8 + u32::from(actor) * 4).unwrap();
+        let actual = u16_at(h1.bytes_at(record + 4, 2).unwrap(), 0);
+        let class = map::H1DialogueClass::actor(actor);
+        assert_eq!(class as u16, actual, "dialogue class for actor type {actor}");
+        if let Some(offset) = class.hostile_kill_line() {
+            let slot = (offset / 0x10 - 1) as u16;
+            assert!(
+                patterns.chunks_exact(0x28).any(|row| {
+                    u16_at(row, 0) == 0
+                        && u16_at(row, 4) == slot
+                        && u16_at(row, 8) == 1
+                        && u16_at(row, 0x1c) == 3
+                        && u16_at(row, 0x20) == actual
+                }),
+                "no victim-specific kill rule for {offset:#x}"
+            );
+        }
+    }
+
+    for (offset, relationship, attacker_class) in [
+        (0x630, 2, u16::MAX),
+        (0x640, 2, 1),
+        (0x650, 3, u16::MAX),
+        (0x660, 3, 1),
+        (0x670, 3, 4),
+        (0x680, 3, 56),
+        (0x690, 3, 64),
+    ] {
+        assert!(map::h1_kill_witness_line(offset));
+        assert!(patterns.chunks_exact(0x28).any(|row| {
+            u16_at(row, 0) == 0
+                && u16_at(row, 4) == slot(offset)
+                && u16_at(row, 8) == 2
+                && u16_at(row, 0x1c) == relationship
+                && u16_at(row, 0x22) == attacker_class
+        }));
+    }
+    let spree = h1.bytes_at(0x001e_eff8, 0x28).unwrap();
+    assert_eq!(u16_at(spree, 0), 1);
+    assert_eq!(u16_at(spree, 4), slot(map::H1_KILLING_SPREE_LINE));
+    assert_eq!(h1.bytes_at(0x0004_155f, 3).unwrap(), &[0x83, 0xc1, 120]);
+    let firing = h1.bytes_at(0x001e_f5e8, 5 * 0x28).unwrap();
+    for (i, row) in firing.chunks_exact(0x28).enumerate() {
+        assert_eq!(u16_at(row, 0), 26 + i as u16);
+        assert_eq!(u16_at(row, 4), slot(0x960 + i * 0x10));
+    }
+    let leap = h1.bytes_at(0x001e_f9d0, 0x28).unwrap();
+    assert_eq!(u16_at(leap, 0), 47);
+    assert_eq!(u16_at(leap, 4), slot(0xb70));
+    let tactics = h1.bytes_at(start, 104 * 0x28).unwrap();
+    for (offset, event) in [
+        (0x760, 11),
+        (0x770, 12),
+        (0x780, 12),
+        (0x790, 12),
+        (0x820, 14),
+        (0x6e0, 4),
+        (0x7e0, 15),
+        (0x800, 13),
+        (0x8a0, 21),
+        (0x900, 24),
+        (0xa20, 13),
+        (0xa30, 35),
+    ] {
+        assert!(tactics.chunks_exact(0x28).any(|row| {
+            u16_at(row, 0) == event && u16_at(row, 4) == slot(offset)
+        }));
+    }
+    let aftermath = h1.bytes_at(0x001e_fa20, 11 * 0x28).unwrap();
+    for (offset, event) in [
+        (0xc60, 48),
+        (0xc70, 49),
+        (0xc80, 50),
+        (0xca0, 51),
+        (0xcc0, 52),
+        (0xbf0, 54),
+        (0xc10, 55),
+    ] {
+        assert!(aftermath.chunks_exact(0x28).any(|row| {
+            u16_at(row, 0) == event && u16_at(row, 4) == slot(offset)
+        }));
+    }
+    assert_eq!(h1.read_u32(0x001f_0bcc).unwrap(), 0.8f32.to_bits());
+    let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
+    let fallbacks = h1.bytes_at(0x001e_0720, 0x100 * 2).unwrap();
+    for offset in [0xa90, 0xaa0, 0xb60] {
+        assert!(map::h1_unselected_dialogue_line(offset));
+        let index = slot(offset);
+        assert_eq!(u16_at(fallbacks, usize::from(index) * 2), u16::MAX);
+        assert!(!fallbacks.chunks_exact(2).any(|row| u16_at(row, 0) == index));
+        assert!(
+            !tactics
+                .chunks_exact(0x28)
+                .any(|row| u16_at(row, 4) == index)
+        );
+        assert!(
+            !responses
+                .chunks_exact(0x24)
+                .any(|row| { u16_at(row, 0) == index || u16_at(row, 6) == index })
+        );
+    }
+    assert_eq!(h1.bytes_at(0x0004_93a4, 2).unwrap(), &[0x6a, 0]);
+    assert_eq!(h1.read_u32(0x0004_6c2a).unwrap(), u32::from(slot(map::H1_FREEFALL_LINE)));
+    assert_eq!(h1.bytes_at(0x0004_b6b9, 5).unwrap(), &[0xb9, 40, 0, 0, 0]);
+    assert_eq!(u16_at(h1.bytes_at(0x001e_f818, 6).unwrap(), 4), slot(map::H1_FREEFALL_LINE));
+    let dormant_scream = h1.bytes_at(0x001e_f9f8, 6).unwrap();
+    assert_eq!(u16_at(dormant_scream, 0), 46);
+    assert_eq!(u16_at(dormant_scream, 4), slot(map::H1_FREEFALL_LINE));
+
+    // The command-list update can forward a queued event alongside an
+    // action. Check the actual event field read and the complete set of
+    // assignments to that field in the retail action switch.
+    assert_eq!(
+        h1.bytes_at(0x0016_c653, 7).unwrap(),
+        &[0x66, 0x8b, 0x8e, 0xfc, 0, 0, 0],
     );
+    let action_switch = h1.bytes_at(0x0016_ba9a, 0x16bc08 - 0x16ba9a).unwrap();
+    let mut action_events: Vec<_> = action_switch
+        .windows(6)
+        .filter(|bytes| bytes.starts_with(&[0x66, 0xc7, 0x47, 0x34]))
+        .map(|bytes| u16_at(bytes, 4))
+        .collect();
+    action_events.sort_unstable();
+    action_events.dedup();
+    assert_eq!(action_events, [38, 39, 41, 42, 44, u16::MAX]);
+
+    // The other variable event is chosen by the aftermath switch and
+    // passed from EBX to ECX. Its cases only load 48 through 56.
+    assert_eq!(h1.bytes_at(0x0016_d20c, 2).unwrap(), &[0x8b, 0xcb]);
+    let aftermath_cases = h1.bytes_at(0x0016_d172, 0x16d1af - 0x16d172).unwrap();
+    let aftermath_events: Vec<_> = aftermath_cases
+        .windows(5)
+        .filter(|bytes| bytes[0] == 0xbb)
+        .map(|bytes| u32_at(bytes, 1))
+        .collect();
+    assert_eq!(aftermath_events, (48..=56).collect::<Vec<_>>());
+    assert_eq!(h1.read_u32(0x0003_dd36).unwrap(), 0x200);
+    assert_eq!(h1.read_u32(0x0004_6c77).unwrap(), u32::from(slot(0xd0)));
+    assert_eq!(h1.read_u32(0x0004_6c7e).unwrap(), u32::from(slot(0xe0)));
+    assert_eq!(h1.bytes_at(0x0004_508a, 2).unwrap(), &[0x6a, 5]);
+    assert_eq!(
+        h1.read_u32(0x0004_6c85).unwrap(),
+        u32::from(slot(map::H1_REVIVAL_LINE))
+    );
+    for (primary, response) in [
+        (0x180, 0x190),
+        (0x320, 0x330),
+        (0x340, 0x350),
+        (0x360, 0x370),
+        (0x380, 0x390),
+        (0x3a0, 0x3b0),
+        (0x3c0, 0x3d0),
+        (0x3e0, 0x3f0),
+        (0x400, 0x410),
+    ] {
+        assert!(responses.chunks_exact(0x24).any(|row| {
+            u16_at(row, 0) == slot(primary)
+                && u16_at(row, 4) == 2
+                && u16_at(row, 6) == slot(response)
+        }));
+    }
+    for (category, offset) in [(3, 0x560), (7, 0x590), (9, 0x5b0)] {
+        assert!(responses.chunks_exact(0x24).any(|row| {
+            u16_at(row, 0) == slot(0x360)
+                && u16_at(row, 2) == category
+                && u16_at(row, 4) == 2
+                && u16_at(row, 6) == slot(offset)
+        }));
+    }
+    assert!(responses.chunks_exact(0x24).any(|row| {
+        u16_at(row, 0) == slot(0x1e0)
+            && u16_at(row, 4) == 3
+            && u16_at(row, 6) == slot(0x1f0)
+    }));
+    let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
+    let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
+    for (call, target) in [
+        (0x001b_42bb, 0x0020_ba60),
+        (0x001b_3c3e, 0x0020_ba60),
+        (0x001b_39ce, 0x001f_b7e0),
+        (0x0026_48eb, 0x0026_5050),
+        (0x0025_b38c, 0x001f_b7e0),
+        (0x000e_ac66, 0x001b_ba20),
+        (0x0025_accf, 0x001f_b7e0),
+        (0x001c_9958, 0x0020_ba60),
+        (0x001c_831d, 0x0020_ba60),
+        (0x001c_8347, 0x0020_ba60),
+        (0x000c_6b62, 0x0011_4c60),
+        (0x000c_a512, 0x001c_9c80),
+        (0x000c_a45d, 0x0011_47e0),
+        (0x0011_4a06, 0x0011_4520),
+        (0x000c_a4ed, 0x001c_95d0),
+        (0x001c_975c, 0x0020_ba60),
+        (0x0020_bb49, 0x0020_d0c0),
+    ] {
+        let inst = h2.bytes_at(call, 5).unwrap();
+        assert_eq!(inst[0], 0xe8, "no near call at {call:#x}");
+        assert_eq!((call + 5).wrapping_add(u32_at(inst, 1)), target);
+    }
 }
 
 /// Survey: Halo 1 `foot` tags: the root's block fields (count at each

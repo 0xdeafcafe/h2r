@@ -9,6 +9,7 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub(super) mod clouds;
 pub mod force_field;
 pub mod glass;
 pub mod model_defaults;
@@ -140,7 +141,7 @@ pub(super) fn pass(
         vertex_shader,
         pixel,
         textures,
-        address,
+        [address; 4],
         mip_filter,
         states,
         restore,
@@ -155,7 +156,7 @@ fn pass_with_inputs(
     vertex_shader: TagId,
     pixel: &PixelShaderDef,
     textures: &[(u8, u8)],
-    address: u8,
+    addresses: [u8; 4],
     mip_filter: u8,
     states: &[(u8, u32)],
     restore: &[(u8, u32)],
@@ -163,6 +164,9 @@ fn pass_with_inputs(
     vertex_bindings: &[[u8; 4]],
     scalars: u64,
 ) -> Result<Block> {
+    if textures.len() > addresses.len() {
+        return Err(Error::Invalid("a shader pass has more than four texture stages"));
+    }
     // Mode 4 reads a vector engine input (the object change colours, for example).
     let vectors = pixel_bindings
         .iter()
@@ -235,7 +239,7 @@ fn pass_with_inputs(
         &mut body,
         pp,
         "stage_states",
-        textures.iter().map(|_| {
+        textures.iter().zip(addresses).map(|(_, address)| {
             vec![
                 ("min_filter", int(0x20)),
                 ("mag_mip_filter", int(2 | (mip_filter << 4))),

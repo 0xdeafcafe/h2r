@@ -73,7 +73,7 @@ pub fn composite(vertex: TagId, profile: Profile, masked: bool) -> Result<Block>
         vertex,
         &ps,
         &textures,
-        3,
+        [3; 4],
         0,
         &OPAQUE,
         &RESTORE,

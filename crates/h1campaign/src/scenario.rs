@@ -2142,9 +2142,7 @@ fn install_scripts(
             );
         })
     });
-    if let Some(h) = left.iter().find(|h| {
-        h.h1_type == h1scripts::commands::ANIMATION_GRAPH || h.h1_type == "command_voice_sound"
-    }) {
+    if let Some(h) = left.iter().find(|h| h.h1_type == h1scripts::commands::ANIMATION_GRAPH) {
         return Err(invalid(format!("AI command {} {} could not be installed", h.type_name, h.token)));
     }
     if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {

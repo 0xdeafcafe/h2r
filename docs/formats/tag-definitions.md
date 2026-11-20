@@ -1299,35 +1299,19 @@ per offset, the sound's own name saying which on every tag that sets it
 (`+0x70` pain minor, `+0xf0` death quiet, `+0x740` grenade throwing,
 `+0x360` killed enemy, ...).
 
-Converted since version 53 (`h1objects::rebuild::DIALOGUE`,
-`Converter::dialogue`): a table from Halo 1 offsets to Halo 2
-vocalization names, 41 pairs. The Halo 1 slot names are V (the sound
-names); the Halo 2 names are V (every one is used by a retail `udlg` on
-05a; the disc test asserts it); the pairing is D by meaning, except pain
-and death, where the two retail dialogue tags whose sounds are not named
-after the vocalization (the Chief's and the multiplayer elite's) give
-the bridge: their `death` plays for `dth`, `dth_mjr`, `dth_slnt`,
-`dth_slw` and `dth_hdsht`, their falling death for `dth_fall`, their
-`pain` for `pain_mjr`. Where two slots feed one vocalization the first
-holding a sound wins. The hurt and killed lines by weapon and species,
-the replies, the search and vehicle chatter have no Halo 2 name close
-enough and are left out. The root's `adlg` word, null datum and `snd!`
-group words are as on every retail tag; the designator string is null
-(D: what reads it is not established).
+**Built.** The rebuilt `udlg` starts with one row per entry of the
+base's `adlg +0x00` vocabulary. Halo 2 accesses it by numeric index
+(`0x1144f4`). Native rows carry the converted Halo 1 sounds for
+`h1objects::rebuild::DIALOGUE`'s verified event pairs. Explicit source
+slots follow those rows. Each source row has the exact sound and the
+slot index in the low half of its marker at `+0x00`.
 
-A rebuilt biped's model (`hlmt +0x8c`, `DIALOGUE_FIELD`) names the
-converted dialogue of the first `udlg` its Halo 1 unit names, in place
-of the counterpart's. V (`every_dialogue_converts`, ten campaign levels
-and the multiplayer maps): 102 tags, 6,502 slots holding a sound, 2,140
-Halo 2 lines, all reading back with no pinned bytes and every sound a
-converted one; 125 of 169 bipeds name dialogue, 21 more than one (only
-the first is kept). The sounds are large (0xa0acae4 sample bytes over
-all maps), so h1campaign's file size ladder has a dialogue step: after
-the music, a level over the file limit gets a dialogue budget
-(`Options::dialogue_budget`) that much smaller, down to none, before the
-ambience is cut. A line whose sound would pass the budget is left out.
-What only a real run can confirm: that the AI plays the lines (the
-engine's reader of the vocalization list is not traced).
+A rebuilt unit with one ordinary voice uses `hlmt +0x8c`. Multiple
+voices use separate variant references at `hlmt.variants[].+0x30`,
+with their source selectors. H2 caches the selected dialogue datum
+per unit during speech setup. See [AI dialogue](../halo1/ai.md) for
+the runtime lookup and remaining automatic events.
+
 
 ### Material effects (`foot`)
 

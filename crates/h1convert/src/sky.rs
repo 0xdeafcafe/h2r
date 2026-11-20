@@ -16,7 +16,7 @@ use map::build::{Block, FixupKind, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::shader::SHAD;
 
-use crate::sky_shaders::{H1SkyShader, SkyTemplates, read_h1, recipe};
+use crate::sky_shaders::{H1SkyShader, Recipe, SkyTemplates, read_h1, recipe};
 use crate::{Error, Result};
 
 /// `scnr` skies block field (count; pointer at `+4`) and element size.
@@ -53,7 +53,7 @@ pub struct Sky {
 pub struct Skies {
     pub skies: Vec<Sky>,
     pub notes: Vec<String>,
-    /// The base's sky shaders the materials copy
+    /// The native programs the rebuilt sky materials use
     /// ([`crate::sky_shaders::sky_templates`]).
     pub templates: SkyTemplates,
 }
@@ -161,7 +161,7 @@ impl Sky {
         })
     }
 
-    /// Adds the sky to `set`: its bitmaps, a shader copy per material
+    /// Adds the sky to `set`: its bitmaps, a rebuilt shader per material
     /// (`templates`), the model and the sky; returns the sky's datum. A
     /// missing material fails conversion with its source path.
     pub fn install(&self, set: &mut TagSet, templates: &SkyTemplates) -> Result<TagId> {
@@ -169,7 +169,22 @@ impl Sky {
         let model = match &self.model {
             Some((n, c)) => {
                 let mut c = c.clone();
-                // Only the bitmaps a shader copy draws
+                let mut extended;
+                let templates = if let Some(shader) = self.shaders.iter().flatten().find(|s| {
+                    set.converted(SHAD, &s.name).is_none()
+                        && recipe(s).is_some_and(|r| {
+                            matches!(r, Recipe::Clouds { .. }) && templates.layout(r).is_none()
+                        })
+                }) {
+                    extended = templates.clone();
+                    extended.library.install_sky_clouds(set).map_err(|e| {
+                        Error::no_rebuild(&self.source_map, &shader.name, e)
+                    })?;
+                    &extended
+                } else {
+                    templates
+                };
+                // Only the bitmaps the rebuilt shader draws
                 // ([`SkyTemplates::drawn`]): a dome's star detail has no
                 // stage, and nothing would name it. A picture drawn
                 // through its opaque copy

@@ -1093,6 +1093,12 @@ pub(crate) fn damage_with_scale(
     let f = |at: usize| f32::from_bits(u32_at(b, at));
     word(&mut r, "unknown_a0", (f(0xec) / 30.0).to_bits())?;
     let category = u32_at(b, 0x1c4);
+    set(
+        &mut r,
+        "h1_damage_category",
+        Val::Int((map::H1_DAMAGE_CATEGORY | (category >> 16)).into()),
+    )?;
+    set(&mut r, "h1_death_impulse", Val::Float(f(0x1f4)))?;
     // H1 sniper rounds have a distinct category. H2 uses the bullet category.
     let category = if category >> 16 == 5 { (category & 0xffff) | (2 << 16) } else { category };
     word(&mut r, "unknown_10", category)?;
@@ -1138,5 +1144,7 @@ pub(crate) fn damage_with_scale(
 }
 
 /// Minimum Halo 1 `jpt!` bytes for the scalar damage and feedback fields.
-/// The source material multipliers follow at `+0x200`.
-pub const H1_JPT_MIN: usize = 0x1e4;
+/// The last of them this converter reads is the damage impulse at `+0x1f4`
+/// (Halo 1 dialogue selection at `0x4721b`). The source material
+/// multipliers follow at `+0x200`.
+pub const H1_JPT_MIN: usize = 0x1f8;

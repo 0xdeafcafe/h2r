@@ -222,7 +222,7 @@ pub fn pass(vertex: TagId) -> Result<Block> {
         vertex,
         &pixel(),
         &[(0, 0); 4],
-        1,
+        [1; 4],
         2,
         &[
             (67, 0x10101),

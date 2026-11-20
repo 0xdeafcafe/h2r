@@ -5,6 +5,13 @@ use hs::h1_conversation::{ACTOR_CAPACITY, ROLE_STRIDE};
 
 pub(super) const ACTORS: u32 = 0x004f_55f0;
 pub(super) const UNIT_ACTOR: u32 = 0x12c;
+pub(super) const ACTOR_FOCUS: u32 = 0x338;
+const PROP_REFERENCES: u32 = 0x0050_2418;
+const PROPS: u32 = 0x0050_241c;
+const FIRST_PROP: u32 = 0x58;
+const PROP_TYPE: u32 = 0x18;
+const PROP_RECOGNITION: u32 = 0x27;
+const NEXT_PROP: u32 = 0x2c;
 const UNIT_TEAM: u32 = 0x138;
 pub(super) const ACTOR_UNIT: u32 = 0x18;
 pub(super) const ACTOR_COMMAND_STACK: u32 = 0x858;
@@ -17,6 +24,7 @@ const OBJECT_ORIGIN: u32 = 0x64;
 const HEADER_CLUSTER: u32 = 4;
 const UNIT_AIM: u32 = 0x168;
 const VEHICLE_DRIVER: u32 = 0x248;
+const VEHICLE_GUNNER: u32 = 0x24c;
 const TEAM_RELATIONSHIPS: u32 = 0x004f_55ec;
 const ALLIANCES: u32 = 0xa4;
 const RANDOM_SEED: u32 = 0x004e_7408;
@@ -25,18 +33,27 @@ const RANDOM_SEED: u32 = 0x004e_7408;
 pub(super) struct Unit {
     handle: u32,
     parent: u32,
-    team: i16,
-    pos: [f32; 3],
-    cluster: i16,
+    pub(super) team: i16,
+    pub(super) pos: [f32; 3],
+    pub(super) cluster: i16,
     forward: [f32; 3],
 }
 
 impl Unit {
     pub(super) fn read(m: &dyn GuestMemory, handle: u32) -> Result<Option<Self>, MemFault> {
+        Self::read_unit(m, handle, true)
+    }
+
+    pub(super) fn read_unit(
+        m: &dyn GuestMemory,
+        handle: u32,
+        require_alive: bool,
+    ) -> Result<Option<Self>, MemFault> {
         let Some(body) = object_address(m, handle)? else {
             return Ok(None);
         };
-        if !matches!(m.u8(body + 0xaa)?, 0 | 1) || m.f32(body + crate::health::BODY_HEALTH)? <= 0.0
+        if !matches!(m.u8(body + 0xaa)?, 0 | 1)
+            || (require_alive && m.f32(body + crate::health::BODY_HEALTH)? <= 0.0)
         {
             return Ok(None);
         }
@@ -97,7 +114,7 @@ fn player_preference(player: Unit, unit: Unit) -> f32 {
     distance_bonus + aim_bonus
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(super) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     a.into_iter()
         .zip(b)
         .map(|(a, b)| (a - b).powi(2))
@@ -138,7 +155,7 @@ fn object_global(m: &dyn GuestMemory, index: u32) -> Result<u32, MemFault> {
     }
 }
 
-fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
+pub(super) fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
     let Some(body) = object_address(m, unit)? else {
         return Ok(None);
     };
@@ -150,6 +167,91 @@ fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault>
         return Ok(None);
     };
     Ok((m.u32(actor + ACTOR_UNIT)? == unit).then_some(handle))
+}
+
+pub(super) fn focus_object(m: &dyn GuestMemory, actor: u32) -> Result<u32, MemFault> {
+    let Some(prop) = datum(m, PROP_REFERENCES, m.u32(actor + ACTOR_FOCUS)?)? else {
+        return Ok(NONE);
+    };
+    m.u32(prop + 0x20)
+}
+
+pub(super) fn focusing_on_traitor(m: &dyn GuestMemory, actor: u32) -> Result<bool, MemFault> {
+    let Some(reference) = datum(m, PROP_REFERENCES, m.u32(actor + ACTOR_FOCUS)?)? else {
+        return Ok(false);
+    };
+    let Some(prop) = datum(m, PROPS, m.u32(reference + 8)?)? else {
+        return Ok(false);
+    };
+    Ok(m.u8(prop + 0x23)? != 0)
+}
+
+pub(super) fn sees_hostile_group(m: &dyn GuestMemory, actor: u32) -> Result<bool, MemFault> {
+    let mut count = 0;
+    let mut id = m.u32(actor + FIRST_PROP)?;
+    while let Some(prop) = datum(m, PROP_REFERENCES, id)? {
+        if matches!(m.u16(prop + PROP_TYPE)?, 1 | 6) && m.u8(prop + PROP_RECOGNITION)? >= 2 {
+            count += 1;
+            if count == 5 {
+                return Ok(true);
+            }
+        }
+        let next = m.u32(prop + NEXT_PROP)?;
+        if next == id {
+            break;
+        }
+        id = next;
+    }
+    Ok(false)
+}
+
+pub(super) fn mounted(m: &dyn GuestMemory, body: u32) -> Result<bool, MemFault> {
+    if m.u16(body + 0x1fc)? == u16::MAX {
+        return Ok(false);
+    }
+    let Some(vehicle) = object_address(m, m.u32(body + OBJECT_PARENT)?)? else {
+        return Ok(false);
+    };
+    Ok(m.u8(vehicle + 0xaa)? == 1)
+}
+
+/// The gunner owns a normal vehicle shot. A collision belongs to the driver.
+/// Halo 2 resolves the same owner at 0x1c9580.
+pub(super) fn damage_owner(
+    m: &dyn GuestMemory,
+    owner: u32,
+    collision: bool,
+) -> Result<Option<u32>, MemFault> {
+    let Some(body) = object_address(m, owner)? else {
+        return Ok(None);
+    };
+    match m.u8(body + 0xaa)? {
+        0 => Ok(Some(owner)),
+        1 => {
+            if !collision {
+                let gunner = m.u32(body + VEHICLE_GUNNER)?;
+                if gunner != NONE {
+                    return Ok(Some(gunner));
+                }
+            }
+            let driver = m.u32(body + VEHICLE_DRIVER)?;
+            Ok(Some(if driver == NONE { owner } else { driver }))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(super) fn team(m: &dyn GuestMemory, unit: u32) -> Result<Option<i16>, MemFault> {
+    object_address(m, unit)?
+        .map(|body| read_i16(m, body + UNIT_TEAM))
+        .transpose()
+}
+
+pub(super) fn is_player(m: &dyn GuestMemory, unit: u32) -> Result<bool, MemFault> {
+    let Some(body) = object_address(m, unit)? else {
+        return Ok(false);
+    };
+    Ok(m.u32(body + 0x13c)? != NONE)
 }
 
 pub(super) fn draw_voice(m: &mut dyn GuestMemory, count: usize) -> Result<usize, MemFault> {
@@ -165,7 +267,7 @@ pub(super) fn draw_voice(m: &mut dyn GuestMemory, count: usize) -> Result<usize,
     Ok((count * (draw >> 16) as usize) >> 16)
 }
 
-fn allied(m: &dyn GuestMemory, a: i16, b: i16) -> Result<bool, MemFault> {
+pub(super) fn allied(m: &dyn GuestMemory, a: i16, b: i16) -> Result<bool, MemFault> {
     if !(0..16).contains(&a) || !(0..16).contains(&b) {
         return Ok(false);
     }
