@@ -558,9 +558,7 @@ measurement.
 
 ## Open questions
 
-1. **Budgets.** 256 MiB for the ring and 4 GiB for sidecars by default,
-   both settings?
-2. **Hosts beyond macOS** that register the `h2recomp` scheme.
+1. **Hosts beyond macOS** that register the `h2recomp` scheme.
 
 Settled: downloads serve the scrubbed, compacted Live film (sharing
 above); films after a breaking simulation change are refused, not drawn
@@ -569,7 +567,8 @@ stores only tick ranges; the scheme is `h2recomp`; every player in a Live
 match records their own film of the simulation, and Theater on that
 player's machine plays it with the full picture and their HUD, while the
 host film is what Live serves to everyone else; rewind is jumps of 5 s
-and 30 s until slice 11 brings scrubbing.
+and 30 s until slice 11 brings scrubbing; the ring (256 MiB) and the
+sidecar cache (4 GiB) are both settings, with those defaults.
 
 ## Related
 
