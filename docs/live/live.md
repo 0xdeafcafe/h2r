@@ -459,7 +459,7 @@ the CLI sign with exactly this code. `crates/live/live-server` is the service
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
 discovery, accounts (create, list, one, keys by gamertag and by XUID),
-presence (with `POST /v1/presence/ping`), invites (`POST /v1/invites`,
+presence ([heartbeats](live-api.md#presence-heartbeats)), invites (`POST /v1/invites`,
 operator), the event log (`GET /v1/events` with `from`/`cursor`, `type`,
 `exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
 `/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live events
@@ -499,14 +499,14 @@ recordings and their verified archives. The `/frames` endpoint serves
 recordings made before chunks. Accounts list their 10 latest games as
 `recent_games`. [Game reads](live-api.md#frame-chunks)
 
-**Ingest.** `/v1/ingest` is the game's WebSocket: the first message is
-`{kind: "auth", token}` (`games.write`), then `frame`, `events` (`{game_id,
-jws}`: one batch JWS, answered `{kind: "appended", game_id, position}` or
-`{kind: "error", error, message}`) and `ping`. Frames go out to stream
-readers at most 15 a second per game. The recorder stores admitted
-frames in H2CK chunks. Finished recordings are queued for H2AR
-publication. The socket closes (4401) when its token expires unless the
-same author sends a fresh `auth` message.
+**Ingest.** `/v1/ingest` is the game's WebSocket. After authentication
+the client sends packed frames and signed event batches. When discovery
+advertises batched ingest, the client combines packed frames in a
+single message. The server sends admitted frames to readers at about
+15 frames per second per game on average and records them in H2CK
+chunks. Finished recordings are queued for H2AR publication. The
+socket closes (4401) when its token expires unless the same author
+reauthenticates.
 [Stream and ingest API](live-api.md#streams-websocket) ·
 [Archives](live-api.md#finished-replay-archives)
 
@@ -518,8 +518,8 @@ upload and replace outlines. `GET` returns the bytes.
 **Managers.** One sweeper task (every 5 s) ends what clients leave behind,
 as the server: presence with no event or ping for 90 s gets
 `PresenceExpired`, and a game with no frame or event for 5 minutes gets
-`GameEnded {reason: "lost"}`. Pings (`POST /v1/presence/ping`, or `ping` on
-the ingest socket) refresh the in-memory deadline only. Deadlines start
+`GameEnded {reason: "lost"}`. HTTP heartbeats and `ping` on the ingest
+socket refresh the in-memory deadline. Deadlines start
 from the projection (the last event's `at`), so they survive a restart; a
 restart then renews every presence, open session and live game to a full
 deadline from the moment it finishes (`Model::renew_deadlines`). Pings and
@@ -1029,8 +1029,11 @@ HTTPS; HTTP is allowed only for loopback. Discovery can select a same-origin API
 path, and redirects are disabled. A discovered URL cannot move bearer tokens to
 another origin. The per-account `server` field never overrides LiveConfig.
 
-While connected, signed POSTs to `/v1/presence/ping` keep each distinct account
-alive. NotificationSetState and PresenceInit/Submit queue PresenceChanged events:
+While connected, the worker sends one heartbeat per console every 30
+seconds. It uses `POST /v1/presence/ping/batch` for multiple accounts and
+individual `POST /v1/presence/ping` requests for a single account or a
+server without the batch route. NotificationSetState and
+PresenceInit/Submit queue PresenceChanged events:
 a clear ONLINE bit means away, otherwise online. `Hle::set_game_id(Some(id))` is
 the telemetry hook for playing with a server game ID; `None` returns to online.
 The raw Xbox session ID is not used as a server game ID. Identical states are

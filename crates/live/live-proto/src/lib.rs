@@ -431,6 +431,9 @@ pub struct Discovery {
     /// Additional packed ingest versions this server accepts beyond the v7 baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ingest_frame_versions: Vec<u8>,
+    /// This server accepts the `auth_batched` ingest mode.
+    #[serde(default)]
+    pub ingest_frame_batch: bool,
     /// Private sim combat previews are accepted on the authenticated ingest socket.
     #[serde(default)]
     pub sim_combat: bool,
@@ -537,6 +540,41 @@ impl Presence {
     pub fn has(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
     }
+}
+
+/// Maximum accounts in one console heartbeat.
+pub const MAX_PING_BATCH: usize = 4;
+
+/// `POST /v1/presence/ping/batch`'s body: every account a console has
+/// signed in, as the `events.write` token its own single ping would bear
+/// (docs/live/live-api.md, Presence heartbeats). A console's heartbeat is one
+/// request instead of one per account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingBatch {
+    pub tokens: Vec<String>,
+}
+
+/// `POST /v1/presence/ping/batch`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingBatchReply {
+    /// One outcome per token of [`PingBatch::tokens`], in their order.
+    pub results: Vec<PingOutcome>,
+}
+
+/// One token's outcome in a [`PingBatchReply`]: the presence's new
+/// deadline, or the status and error the account's single ping would have
+/// answered with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PingOutcome {
+    Ok {
+        ttl: i64,
+    },
+    Failed {
+        status: u16,
+        error: ErrorCode,
+        message: String,
+    },
 }
 
 /// The data of a `SignedIn`, `PresenceChanged`, `SignedOut` or
@@ -719,7 +757,7 @@ pub enum StreamMessage {
     Event {
         event: Box<WireEvent>,
     },
-    /// A live telemetry frame (not stored; up to 15 Hz per game).
+    /// A live telemetry frame (about 15 Hz per game, with bounded bursts).
     Frame {
         frame: Box<game::Frame>,
     },
@@ -728,12 +766,19 @@ pub enum StreamMessage {
     },
 }
 
+/// Maximum records in one binary message on a batched ingest socket.
+pub const MAX_INGEST_BATCH_FRAMES: usize = 16;
+
 /// Messages a WebSocket client sends. Readers of `/v1/stream` send only
 /// `auth`; the game's `/v1/ingest` sends all of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientMessage {
     Auth {
+        token: String,
+    },
+    /// Authenticates an ingest stream that sends bursts of packed frames.
+    AuthBatched {
         token: String,
     },
     Frame {
@@ -758,6 +803,8 @@ pub enum IngestReply {
     Appended { game_id: String, position: u64 },
     /// A message was refused; the socket stays open unless auth failed.
     Error { error: ErrorCode, message: String },
+    /// A frame was refused on a batched ingest socket.
+    FrameError { error: ErrorCode, message: String },
 }
 
 /// Every non-2xx body: `{"error": "<code>", "message": "..."}`.

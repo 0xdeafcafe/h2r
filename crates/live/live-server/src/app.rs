@@ -1139,6 +1139,7 @@ impl Live {
         Discovery {
             sim_combat: true,
             ingest_frame_versions: vec![live_proto::pack::LIVE_VERSION],
+            ingest_frame_batch: true,
             id: self.identity.id.clone(),
             api: "/v1".into(),
             keys: vec![self.identity.key.public().jwk()],

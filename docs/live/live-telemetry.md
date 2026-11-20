@@ -489,18 +489,20 @@ telemetry.
 Plaintext credentials are accepted only for loopback URLs; remote servers must
 use HTTPS/WSS. The worker performs discovery lazily, creates each game through
 `POST /v1/games`, opens `/v1/ingest`, authenticates with a fresh
-`games.write` token, refreshes it before expiry, sends frames unsigned as the
-contract allows, and batches up to four game events into one JWS signed with
-the account key through `live-proto` (a `GameEnded` always goes in a batch of
-its own). Empty batches and messages over 16 KiB are rejected. The account
-key is never included in debug output.
+`games.write` token and refreshes it before expiry. The sink in
+`crates/live/live-telemetry/src/server.rs` sends unsigned frames and signs
+up to 16 queued events from one game into a single JWS. It splits a group
+if the signed message would exceed 16 KiB and sends `GameEnded` by itself.
+The server rejects empty event batches and messages over 16 KiB.
 
-Frames go as [packed frames](#packed-frames): one record per binary
-message, a stream per connection (a [reconnect](#reconnect) starts a new one), a keyframe
-every 150 frames (ten seconds) and deltas between. A frame the format
-cannot carry (it never should: the same checks the server makes) goes as
-the JSON `frame` message instead and the stream carries on. The offline
-JSONL capture stays JSON.
+With `ingest_frame_batch` advertised in discovery, the sink uses
+`auth_batched` and combines [packed frame records](#packed-frames) in
+order. It flushes after 500 ms, at 16 records or the 16 KiB message
+limit, before signed events or a JSON fallback frame, and at shutdown.
+The worker wakes for the flush deadline even when the game is idle.
+Older servers receive one packed record per message. Each connection
+has its own stream with a keyframe every 150 frames and deltas between.
+[Ingest wire format](live-api.md#streams-websocket)
 
 ### Reconnect
 
@@ -525,18 +527,18 @@ were never created.
   is a keyframe, which is what the server's new decoder needs. A frame
   refused with `frame: ...` (the server lost its decoder, as after a Durable
   Object wakes from hibernation) also makes the next frame a keyframe.
-- **Frames** go now or never: while there is no connection, or before the
-  game is created, they are dropped.
+- **Frames.** A dead connection drops its pending frames. The sink also
+  drops frames made during the outage or before the game is created.
 - **The outbox.** Game starts and events are kept in order in a bounded
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
   wait behind it. Past the bound the oldest `PlayerKilled` or
   `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
-- **Answers.** A batch leaves the outbox only on its answer. Replies come in
-  the order the server took the messages, a batch is always answered and a
-  frame only when refused, so `appended` is the batch's, and a refusal is
-  the batch's once half a second passes with nothing after it (refusals
-  carry no id). No answer in 10 s counts as a lost connection.
+- **Answers.** A signed batch leaves the outbox on its answer. A batched
+  socket reports frame refusals as `frame_error`, so the sink can handle
+  them while it waits for an event acknowledgement. Legacy sockets use
+  `error` for both. A refusal settles after half a second with no further
+  reply. No event answer in 10 s counts as a lost connection.
 - **Resends.** A batch is kept as signed, so a resend repeats its nonces.
   If the first copy landed and only the answer was lost, the server refuses
   the copy with `conflict` "nonce already used" and the sink counts the
@@ -551,9 +553,9 @@ were never created.
   it telemetry for the process: a `banned` refusal (HTTP, a batch reply, or
   a close naming the ban), or three auth refusals in a row (close 4401 or
   HTTP 401) with nothing accepted between.
-- **Exit.** On shutdown the sink makes one last delivery on a live
-  connection, without reconnecting; anything left is logged as not
-  delivered. The outbox is in memory only.
+- **Exit.** On shutdown the sink sends pending frames and tries to drain
+  the event outbox over the open connection. It logs unsent events. The
+  outbox is in memory only.
 
 What a duplicate does on the server, when a resend is not the same signed
 batch:

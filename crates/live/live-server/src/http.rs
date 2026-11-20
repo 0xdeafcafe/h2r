@@ -36,19 +36,7 @@ type Shared = State<Arc<Live>>;
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self.code {
-            ErrorCode::Invalid => StatusCode::BAD_REQUEST,
-            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
-            ErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            ErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ErrorCode::Conflict => StatusCode::CONFLICT,
-            ErrorCode::Gone => StatusCode::GONE,
-            ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::Banned => StatusCode::FORBIDDEN,
-            ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
-            ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        };
+        let status = status_of(self.code);
         let team_error = self.message.strip_prefix("team:").and_then(|s| {
             serde_json::from_value::<live_proto::team::TeamError>(serde_json::Value::String(
                 s.into(),
@@ -66,6 +54,24 @@ impl IntoResponse for ApiError {
                 .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         }
         resp
+    }
+}
+
+/// The status an error answers with, as on the routes themselves; batch
+/// answers carry it per item.
+fn status_of(code: ErrorCode) -> StatusCode {
+    match code {
+        ErrorCode::Invalid => StatusCode::BAD_REQUEST,
+        ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        ErrorCode::NotFound => StatusCode::NOT_FOUND,
+        ErrorCode::Conflict => StatusCode::CONFLICT,
+        ErrorCode::Gone => StatusCode::GONE,
+        ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::Banned => StatusCode::FORBIDDEN,
+        ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
+        ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -342,6 +348,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/presence", get(presence))
         .route("/v1/presence/ping", post(ping))
+        .route("/v1/presence/ping/batch", post(ping_batch))
         .route(
             "/v1/invites",
             post(create_invite).get(crate::invites::get_invites),
@@ -1100,6 +1107,36 @@ async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
         StatusCode::OK,
         &serde_json::json!({"ok": true, "expires_in": ttl}),
     ))
+}
+
+/// `POST /v1/presence/ping/batch`: a console's whole heartbeat in one
+/// request, every account as the `events.write` token its single ping
+/// would bear. The answer is one outcome per token, in their order; a
+/// failed account (unknown, banned, not signed in) does not fail the rest
+/// (docs/live/live-api.md, Presence heartbeats).
+async fn ping_batch(State(live): Shared, body: Result<Bytes, BytesRejection>) -> ApiResult<Response> {
+    use live_proto::{MAX_PING_BATCH, PingBatch, PingBatchReply, PingOutcome};
+
+    let batch: PingBatch = serde_json::from_slice(&body_bytes(body)?)
+        .map_err(|e| invalid(format!("ping batch: {e}")))?;
+    if batch.tokens.is_empty() || batch.tokens.len() > MAX_PING_BATCH {
+        return Err(invalid(format!(
+            "a ping batch carries 1 to {MAX_PING_BATCH} tokens"
+        )));
+    }
+    let results = batch
+        .tokens
+        .iter()
+        .map(|token| match live.ping(Some(token)) {
+            Ok(ttl) => PingOutcome::Ok { ttl },
+            Err(e) => PingOutcome::Failed {
+                status: status_of(e.code).as_u16(),
+                error: e.code,
+                message: e.message,
+            },
+        })
+        .collect();
+    Ok(json(StatusCode::OK, &PingBatchReply { results }))
 }
 
 /// `POST /v1/invites`: with a signed `InviteCreated` event as the body, an

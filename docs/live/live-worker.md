@@ -324,9 +324,10 @@ the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
-the auth message or decoding any frames. The attachment keeps the author
-and token expiry. After a wake, the sender's next keyframe restarts the
-packed decoder.
+auth or decoding frames, and accepts up to 16 frame records per message
+in batched mode. The attachment keeps the author, token expiry and
+ingest mode. After a wake, the sender's next keyframe restarts the packed
+decoder. [Ingest wire format](live-api.md#streams-websocket)
 
 ## Timers and hibernation
 
@@ -372,6 +373,10 @@ A body over 8 MiB (`doretry::KEEP_BODY_BYTES`), or one without a
 `Content-Length`, is sent once without a copy, so a 95 MiB content upload
 never sits twice in a 128 MB isolate; a reset under it is the 503 above,
 and the client sends it again.
+
+`POST /v1/presence/ping/batch` goes to the hub's shared HTTP router.
+The edge returns 503 on a transient hub failure so the client can issue
+new per-account tokens for its next attempt.
 
 Anything else thrown surfaces as before. The single-use token guard (`jti`)
 is in the hub's memory and is lost on a reset, so a repeat with the same

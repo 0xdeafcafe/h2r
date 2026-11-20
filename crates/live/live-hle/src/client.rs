@@ -364,6 +364,7 @@ impl Service {
                     seen: seen_by_worker,
                     retry: options.retry,
                     grace: options.connection_grace,
+                    ping_batch: true,
                     retry_after: Cell::new(None),
                 };
                 let mut next_ping = Instant::now() + options.heartbeat_interval;
@@ -613,6 +614,10 @@ struct Worker {
     retry: Retry,
     /// How long the heartbeat may fail before the connection is lost.
     grace: Duration,
+    /// Whether the server has `POST /v1/presence/ping/batch` (one request
+    /// a heartbeat for the whole console). A 404 from it says an older
+    /// server: back to one ping per account.
+    ping_batch: bool,
     /// The last error answer's `Retry-After`, for [`Worker::retried`].
     retry_after: Cell<Option<Duration>>,
 }
@@ -726,6 +731,10 @@ impl Worker {
         body: Option<&str>,
         limit: usize,
     ) -> Result<Vec<u8>, Error> {
+        self.retry_response(|| self.response(build(), body, limit))
+    }
+
+    fn retry_response(&self, send: impl Fn() -> Result<Vec<u8>, Error>) -> Result<Vec<u8>, Error> {
         let attempts = self.retry.attempts.max(1);
         let mut wait = self.retry.backoff;
         // The server's own answer says more than a later failure to reach it.
@@ -733,7 +742,7 @@ impl Worker {
         let mut attempt = 1;
         loop {
             self.retry_after.set(None);
-            let error = match self.response(build(), body, limit) {
+            let error = match send() {
                 Ok(bytes) => return Ok(bytes),
                 // An earlier attempt landed and its answer was lost.
                 Err(Error::Replayed) if attempt > 1 => return Ok(Vec::new()),
@@ -796,6 +805,7 @@ impl Worker {
             api: api.as_str().trim_end_matches('/').into(),
             id: discovery.id,
         });
+        self.ping_batch = true;
         Ok(())
     }
     fn author(&self, user: &Identity) -> String {
@@ -1988,9 +1998,35 @@ impl Worker {
             return;
         };
         let users: Vec<Identity> = active.users.values().cloned().collect();
+        let outcomes = if self.ping_batch && (2..=live_proto::MAX_PING_BATCH).contains(&users.len()) {
+            match self.keep_alive_batch(&users) {
+                Ok(outcomes) => Some(outcomes),
+                // A route-level 404 means the server only supports single pings.
+                Err(Error::Status(404)) => {
+                    self.ping_batch = false;
+                    None
+                }
+                Err(e) => {
+                    let result = e.result();
+                    self.metrics.last_error.store(result, Ordering::Release);
+                    return self.health(Some(result));
+                }
+            }
+        } else {
+            None
+        };
         let mut failure = None;
-        for user in &users {
-            match self.keep_alive(user) {
+        for (index, user) in users.iter().enumerate() {
+            let ping = match &outcomes {
+                Some(outcomes) => outcomes[index],
+                None => self.keep_alive(user),
+            };
+            let ping = match ping {
+                // An expired presence is restored with the last known state.
+                Err(Error::Status(404)) => self.announce(user),
+                other => other,
+            };
+            match ping.and_then(|()| self.flush_unsent(user)) {
                 Ok(()) => {
                     self.metrics.pings.fetch_add(1, Ordering::AcqRel);
                 }
@@ -2005,23 +2041,55 @@ impl Worker {
         }
         self.health(failure);
     }
-    /// One account's heartbeat, and the presence the game set while the
-    /// server could not be reached.
-    fn keep_alive(&mut self, user: &Identity) -> Result<(), Error> {
-        let ping = self.retried(
+    fn keep_alive(&self, user: &Identity) -> Result<(), Error> {
+        self.retried(
             || self.request("POST", "/presence/ping", user, lxm::EVENTS_WRITE),
             Some(""),
             64 * 1024,
-        );
-        match ping {
-            // The server has no presence for the player: it expired while
-            // the server could not be reached. The player never left: it
-            // signs in again, as it is.
-            Err(Error::Status(404)) => self.announce(user)?,
-            other => {
-                other?;
-            }
+        )
+        .map(|_| ())
+    }
+    /// Every signed-in account's heartbeat in one request
+    /// (`POST /v1/presence/ping/batch`): each account is its own
+    /// `events.write` token, answered in order, so a console of four costs
+    /// one request a heartbeat instead of four. Per account the outcome is
+    /// its single ping's: ok, `404` to sign in again, or the failure.
+    fn keep_alive_batch(&self, users: &[Identity]) -> Result<Vec<Result<(), Error>>, Error> {
+        let c = self.connection.as_ref().unwrap();
+        let url = format!("{}/presence/ping/batch", c.api);
+        let bytes = self.retry_response(|| {
+            // An attempt may have reached the server and spent its tokens.
+            let now = now();
+            let tokens = users
+                .iter()
+                .map(|u| issue_token(&u.key, &self.author(u), &c.id, lxm::EVENTS_WRITE, now))
+                .collect();
+            let body = serde_json::to_string(&live_proto::PingBatch { tokens })
+                .map_err(|_| Error::Protocol)?;
+            let request = self.agent.post(&url).set("content-type", "application/json");
+            self.response(request, Some(&body), 64 * 1024)
+        })?;
+        let reply: live_proto::PingBatchReply =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        if reply.results.len() != users.len() {
+            return Err(Error::Protocol);
         }
+        Ok(reply
+            .results
+            .into_iter()
+            .map(|outcome| match outcome {
+                live_proto::PingOutcome::Ok { .. } => Ok(()),
+                live_proto::PingOutcome::Failed {
+                    error: live_proto::ErrorCode::Banned,
+                    ..
+                } => Err(Error::Banned),
+                live_proto::PingOutcome::Failed { status, .. } => Err(Error::Status(status)),
+            })
+            .collect())
+    }
+    /// The presence the game set while the server could not be reached,
+    /// after a good heartbeat.
+    fn flush_unsent(&mut self, user: &Identity) -> Result<(), Error> {
         let unsent = self
             .active
             .as_mut()
@@ -2132,6 +2200,117 @@ pub(crate) fn presence_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+
+    #[test]
+    fn a_console_heartbeat_batches_accounts_and_renews_tokens_on_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let users: BTreeMap<_, _> = [1, 2]
+            .into_iter()
+            .map(|xuid| {
+                let user = Identity {
+                    xuid,
+                    gamertag: format!("Player{xuid}"),
+                    key: Arc::new(KeyPair::generate()),
+                };
+                (xuid, user)
+            })
+            .collect();
+        let expected: Vec<_> = users.values().cloned().collect();
+        let server = std::thread::spawn(move || {
+            let mut seen_nonces = std::collections::HashSet::new();
+            for (status, reply) in [
+                ("200 OK", r#"{"results":[{"ttl":90},{"ttl":90}]}"#),
+                ("503 Service Unavailable", r#"{"error":"unavailable"}"#),
+                ("200 OK", r#"{"results":[{"ttl":90},{"ttl":90}]}"#),
+            ] {
+                let (mut conn, _) = listener.accept().unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = BufReader::new(&conn);
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                assert_eq!(line.trim_end(), "POST /v1/presence/ping/batch HTTP/1.1");
+                let mut length = None;
+                loop {
+                    line.clear();
+                    assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let mut body = vec![0; length.unwrap()];
+                request.read_exact(&mut body).unwrap();
+                let batch: live_proto::PingBatch = serde_json::from_slice(&body).unwrap();
+                assert_eq!(batch.tokens.len(), expected.len());
+                for (raw, user) in batch.tokens.iter().zip(&expected) {
+                    let token = live_proto::sign::Token::parse(raw).unwrap();
+                    token
+                        .verify(user.key.public(), "live.test", lxm::EVENTS_WRITE, now())
+                        .unwrap();
+                    assert_eq!(
+                        token.claims.iss,
+                        Author::Account {
+                            xuid: Xuid(user.xuid),
+                            server: "live.test".into(),
+                        }
+                        .to_string()
+                    );
+                    assert!(seen_nonces.insert(token.claims.jti), "spent token reused");
+                }
+                write!(
+                    conn,
+                    "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        let mut worker = Worker {
+            publisher: None,
+            base: base.clone(),
+            maps: None,
+            software: Software::default(),
+            agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build(),
+            connection: Some(Connection {
+                api: format!("{base}/v1"),
+                id: "live.test".into(),
+            }),
+            active: Some(Active {
+                published: None,
+                session: Session::new(1),
+                users,
+                presence: BTreeMap::new(),
+                matches: BTreeMap::new(),
+                unsent: BTreeMap::new(),
+                failing_since: None,
+            }),
+            metrics: Arc::new(Metrics::default()),
+            seen: Seen::default(),
+            retry: Retry {
+                attempts: 2,
+                backoff: Duration::ZERO,
+                max_wait: Duration::ZERO,
+            },
+            grace: Duration::from_secs(90),
+            ping_batch: true,
+            retry_after: Cell::new(None),
+        };
+        worker.ping();
+        assert_eq!(worker.metrics.pings.load(Ordering::Acquire), 2);
+        worker.ping();
+        assert_eq!(worker.metrics.pings.load(Ordering::Acquire), 4);
+        assert_eq!(worker.metrics.last_error.load(Ordering::Acquire), 0);
+        assert!(worker.active.as_ref().unwrap().failing_since.is_none());
+        server.join().unwrap();
+    }
 
     #[test]
     fn recent_session_cache_bounds_churn_and_keeps_refreshed_rows() {

@@ -273,6 +273,33 @@ impl Harness {
         )
         .await
     }
+
+    /// `POST /v1/presence/ping/batch` with each user's `events.write`
+    /// token, in order.
+    pub async fn ping_batch(&self, users: &[&User]) -> Resp {
+        let tokens: Vec<String> = users
+            .iter()
+            .map(|u| self.token(&u.key, &u.author, lxm::EVENTS_WRITE))
+            .collect();
+        self.call(
+            Method::POST,
+            "/v1/presence/ping/batch",
+            &[],
+            json!({"tokens": tokens}).to_string(),
+        )
+        .await
+    }
+
+    /// `POST /v1/presence/ping/batch` with raw tokens (bad ones included).
+    pub async fn ping_batch_raw(&self, body: Value) -> Resp {
+        self.call(
+            Method::POST,
+            "/v1/presence/ping/batch",
+            &[],
+            body.to_string(),
+        )
+        .await
+    }
 }
 
 /// A two-player team game; player 0 is `host`'s account.

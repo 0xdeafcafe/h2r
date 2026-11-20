@@ -311,7 +311,8 @@ game it is; all five fields are optional and old senders leave them out:
 Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
 games) and the others when the start had them.
 
-Live frames go out on the stream at up to 15 Hz, and every frame sent is
+Live frames go out on the stream at about 15 Hz per game on average.
+Batched ingest can deliver a bounded burst. Every frame sent is
 recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`
 count since the previous frame sent (the sum over the frames the throttle
 dropped, capped at 64 per player or actor); the same goes for `actions` and
@@ -371,7 +372,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | method and path | returns |
 |---|---|
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
-| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)), and `ingest_frame_versions` for supported live codecs |
+| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url` with the public base URL when known ([live-hosting.md](live-hosting.md)), `ingest_frame_versions` for supported live codecs and `ingest_frame_batch` for batched ingest |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
@@ -1792,19 +1793,46 @@ also uses this history to catch up a slow reader and suppresses records
 that it has already sent. A hibernated Worker socket retains its requested
 version across wake-up.
 
-**`GET /v1/ingest`** for the game. The first message is
-`{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
-`{ "kind": "frame", "frame": {...} }` and
-`{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
-may also come as binary messages: containers of packed frame records, one
-stream per socket. The server caps each text or binary message at 16 KiB,
-including the first auth message. The server fans frames out to readers,
-records them in [frame chunks](#frame-chunks), and appends events.
+**`GET /v1/ingest`** opens a game socket. The first message is
+`{ "kind": "auth", "token": "<jwt>" }` with a `games.write` account
+token or a `telemetry.ingest` host lease. If discovery advertises
+`ingest_frame_batch: true`, the client can send `auth_batched` as the
+message kind, including on token refresh. A socket carries one stream of
+packed frame records, oldest first, in binary messages. In batched mode
+each message can hold up to 16 records, and each game can spend up to 16
+frames of accumulated credit, replenished at about 15 frames per second.
+The same budget applies across the game's publishers. Each text or
+binary message is capped at 16 KiB.
+
+Clients can also send `{ "kind": "frame", "frame": {...} }` for a JSON
+frame. Frames are recorded in [frame chunks](#frame-chunks) and sent to
+readers. Only refused frames get a reply, with kind `frame_error` in
+batched mode and `error` on legacy sockets. An event message carries
+`{ "kind": "events", "game_id": "...", "jws": "<one batch JWS>" }` and
+gets `{kind: "appended", game_id, position}` or `{kind: "error", error,
+message}`. A `{kind: "ping"}` refreshes presence for an account or
+session activity for a leased host. Both deployments use
+`crates/live/live-server/src/ingest.rs`.
 
 A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
 `packed` is the frame as one packed keyframe, base64url without padding, so
 the event's signature covers the packed bytes. The oldest hold the JSON
 frame plus `source`; both read the same through `/frames`.
+
+## Presence heartbeats
+
+| Endpoint | Request | Response |
+|---|---|---|
+| `POST /v1/presence/ping` | One `events.write` bearer token | `{ok: true, expires_in}`, or 404 if the account has no presence |
+| `POST /v1/presence/ping/batch` | JSON `{tokens: [...]}` containing 1–4 single-use `events.write` tokens | HTTP 200 with `{results: [...]}` in token order. Each result is `{ttl}` in seconds or `{status, error, message}` for that token |
+
+The batch handler in `crates/live/live-server/src/http.rs` returns 400 for
+an invalid body or token count and 413 for a body over 64 KiB. Each token
+is verified independently. The client issues fresh tokens on retries and
+uses individual pings if the batch endpoint returns HTTP 404. An
+individual result with status 404 tells the client to sign that account
+in again. Presence expires 90 seconds after the last event or ping under
+the default policy.
 
 ## Map outline
 
@@ -1978,16 +2006,11 @@ above where they differ.
   and writes `GameStarted` itself, signed by the server key, with an extra
   `host` field naming the token's author. Later game events are written by
   the host or a player in the game.
-- **Ingest `events`** messages are `{ "kind": "events", "game_id": "...",
-  "jws": "<one batch JWS>" }`, answered with `{kind: "appended", position}`
-  or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
 - **`POST /v1/events`** returns the stored wire event (a superset of
   `{position}`).
 - **Map outlines** can be uploaded and replaced by admins and the operator.
-- **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
-  the caller isn't signed in. Presence expires 90 s after the last event or
-  ping; a game with no events or frames for 5 minutes ends as `lost`. That
-  `GameEnded` carries the last tick seen, but its `at` (the game's
+- **Idle games.** A game with no events or frames for 5 minutes ends as
+  `lost`. That `GameEnded` carries the last tick seen, but its `at` (the game's
   `ended_at`) is when the server gave up, so a game's length is
   `(GameEnded.tick - GameStarted.tick) / 30`, not `ended_at - started_at`.
   A `lost` game that never got past its start tick (the console went quiet

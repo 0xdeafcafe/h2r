@@ -648,6 +648,61 @@ async fn invites_and_pings() {
     assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
 }
 
+#[tokio::test]
+async fn a_batch_ping_covers_the_whole_console() {
+    let h = harness().await;
+    let pete = h.create("Pete").await;
+    let amy = h.create("Amy").await;
+    // Bob never signs in.
+    let bob = h.create("Bob").await;
+    // The batch is bounded (a console signs in at most four accounts).
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": []})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a", "b", "c", "d", "e"]}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a".repeat(live_server::http::MAX_BODY)]}))
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(h.sign_in(&pete).await.status, StatusCode::CREATED);
+    assert_eq!(h.sign_in(&amy).await.status, StatusCode::CREATED);
+    // Every token answers in its order; a failed account fails its own
+    // line only.
+    let r = h.ping_batch(&[&pete, &amy, &bob]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results.as_array().unwrap().len(), 3);
+    assert_eq!(results[0], json!({"ttl": 90}));
+    assert_eq!(results[1], json!({"ttl": 90}));
+    assert_eq!(results[2]["status"], 404);
+    assert_eq!(results[2]["error"], "not_found");
+    // A token that is no token at all is an unauthorized line.
+    let r = h
+        .ping_batch_raw(json!({
+            "tokens": [
+                "not-a-token",
+                h.token(&pete.key, &pete.author, lxm::EVENTS_WRITE),
+            ]
+        }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results[0]["status"], 401);
+    assert_eq!(results[0]["error"], "unauthorized");
+    assert_eq!(results[1], json!({"ttl": 90}));
+    // The batch refreshes presence as the single ping does.
+    let r = h.ping(&pete).await;
+    assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
+}
+
 /// A Durable Object's server runs nothing on a timer: it says when the
 /// sweep is due, and sweeps when called.
 #[tokio::test]

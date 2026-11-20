@@ -108,7 +108,7 @@ struct Queue {
     ticks: usize,
     /// The worker holds a batch.
     busy: bool,
-    /// The worker waits with no deadline: only a wake gets it going.
+    /// The worker stopped polling for ticks and needs a wake for new work.
     parked: bool,
     stop: bool,
 }
@@ -372,17 +372,26 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
         {
             let mut queue = shared.queue.lock().unwrap();
             queue.busy = false;
+            let deadline = if failed { None } else { sink.flush_deadline() };
             while queue.work.is_empty() && !queue.stop {
                 shared.idle.notify_all();
+                let remaining = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+                if remaining.is_some_and(|wait| wait.is_zero()) {
+                    break;
+                }
                 if active.is_some_and(|at| at.elapsed() < PARK_AFTER) {
-                    queue = shared.wake.wait_timeout(queue, POLL).unwrap().0;
+                    let wait = remaining.map_or(POLL, |wait| wait.min(POLL));
+                    queue = shared.wake.wait_timeout(queue, wait).unwrap().0;
                 } else {
                     queue.parked = true;
-                    queue = shared.wake.wait(queue).unwrap();
+                    queue = match remaining {
+                        Some(wait) => shared.wake.wait_timeout(queue, wait).unwrap().0,
+                        None => shared.wake.wait(queue).unwrap(),
+                    };
                     queue.parked = false;
                 }
             }
-            if queue.work.is_empty() {
+            if queue.work.is_empty() && queue.stop {
                 shared.idle.notify_all();
                 break;
             }
@@ -392,7 +401,9 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             shared.space.notify_all();
         }
         let start = Instant::now();
-        active = Some(start);
+        if !batch.is_empty() {
+            active = Some(start);
+        }
         let mut session = session.lock().unwrap();
         for work in batch.drain(..) {
             if failed {

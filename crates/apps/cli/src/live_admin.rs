@@ -389,6 +389,7 @@ mod tests {
             &live_proto::Discovery {
                 sim_combat: false,
                 ingest_frame_versions: Vec::new(),
+                ingest_frame_batch: false,
                 id: "localhost".into(),
                 api: "/v1".into(),
                 keys: Vec::new(),

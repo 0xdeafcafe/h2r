@@ -215,6 +215,15 @@ mod tests {
     }
 
     #[test]
+    fn batch_heartbeat_retry_is_left_to_the_client_to_resign() {
+        let reset = thrown(Some(true), None, "Network connection lost.");
+        assert_eq!(
+            decide(&reset, "POST", "/v1/presence/ping/batch", 1),
+            Outcome::Unavailable
+        );
+    }
+
+    #[test]
     fn relay_upgrade_is_not_retried_with_a_spent_nonce() {
         assert!(!repeatable("GET", "/v1/sessions/0123456789abcdef/relay"));
         assert!(repeatable("GET", "/v1/sessions/0123456789abcdef"));

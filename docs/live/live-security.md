@@ -273,6 +273,9 @@ Not built yet; the formats above are chosen so it can be.
 - Request bodies are capped (64 KiB normally, title files 2 MiB because the
   playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
   cap before authentication and throughout the session on both deployments.
+  Batched ingest allows at most 16 packed frame records per message.
+  A [presence heartbeat batch](live-api.md#presence-heartbeats) accepts
+  at most four single-use tokens, each authenticated independently.
   Writes have an in-memory budget per author and method. API GET and HEAD
   requests share a budget of 30 requests per second per client IP with a
   burst of 120. Both budgets return 429 when exhausted. The native server
