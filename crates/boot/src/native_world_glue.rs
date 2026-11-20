@@ -859,9 +859,6 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // a material that stays on the D3D path for layer 3 may still fog
     // natively.
     let fog = Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
-    // The water/camouflage census (`native_water_glue`), read-only,
-    // before the world's draws are kept.
-    crate::native_water_glue::census(&mut map, &shaders, &world);
     // The water edge blend (layer 6), over the world's transparent parts
     // before its draws are kept.
     let water = Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
