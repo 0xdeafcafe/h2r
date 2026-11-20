@@ -1004,6 +1004,9 @@ points! { ALL;
     /// 8). Start state 8's text is "Waiting for ... to start the game"
     /// (docs/game/bots.md §4.2, "The start check").
     LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// Refresh the pregame lobby's game type picture and option lines
+    /// (EAX the screen, stack 0 the current game variant or null).
+    LOBBY_VARIANT_PANEL @ 0x0025_01c0: [fn(screen: eax, variant: stack 0) ret 4]; "docs/game/ui-builder.md";
     /// The pregame lobby's input handler (ECX the screen, the event on the
     /// stack, AL handled, `ret 4`): event `+0` the kind (5 a button), `+4`
     /// the controller, `+8` the button (0 A, `0xc` Start). A or Start from

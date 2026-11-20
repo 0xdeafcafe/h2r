@@ -258,6 +258,15 @@ pub(crate) fn register_core_film(
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
     }
+    if let Some(store) = i.settings.as_ref() {
+        features
+            .add(&crate::lobby_options::LobbyOptions::new(
+                Arc::clone(store),
+                i.live.clone(),
+                bots_on,
+            ))
+            .map_err(|e| anyhow::anyhow!("lobby options: {e}"))?;
+    }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.

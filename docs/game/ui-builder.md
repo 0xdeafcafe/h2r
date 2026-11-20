@@ -774,6 +774,31 @@ Options (the Spartan over the roster, our text), then back to Change
 Map (its map picture comes back). Note any frame where the text flickers
 between empty and ours.
 
+## The pregame lobby's Quick Options
+
+The custom game information panel on Xbox Live, System Link and Split
+Screen uses pane 0 of screen 14 (`pregame_lobby`). In the lobby update,
+`LOBBY_VARIANT_PANEL` (`0x2501c0`) calls the formatter at `0x25092c` for
+five retail option rows. Text widgets 6 through 10 use the pane's text
+blocks 4 through 8. Text block 9 gives the panel a sixth row with the
+same font, colour, animation and 19-unit spacing. The last row ends at
+y −190.
+
+`crates/extensions/game/src/lobby_options.rs` adds the enabled options in
+this order: Clankers with the configured count and difficulty on the
+hosting console, Halo 1 Options when either multiplayer choice uses
+Halo 1 on a converted map, and the multiplayer skull count. Hosted games
+use the signed-in profiles' skull choices. Xbox Live guests read the last
+cached host advertisement for skulls.
+
+The enabled lines follow the retail options that fit. With all five
+retail rows filled, one extra line uses the spare sixth row and each
+further line replaces a bottom retail option. The hook sets each extra
+text widget through `TEXT_SET` and the shared locale table
+(`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
+[`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
+reads those widgets in display order.
+
 ## Behaviour
 
 Each native screen's `Page` is proven by table tests: an input sequence

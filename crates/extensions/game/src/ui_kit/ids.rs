@@ -91,6 +91,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("clanker card", TABLE + 0x0c00_0000, 0x40),
     Family::new("theater menu", TABLE + 0x0d00_0000, 1),
     Family::new("campaign actions", TABLE + 0x0e00_0000, 3),
+    Family::new("lobby options", TABLE + 0x1000_0000, 0x50),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

@@ -39,6 +39,13 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
             model.strings().iter().map(|(i, _)| *i).collect(),
         ),
         ("live menu rows", ids(custom_games::strings())),
+        (
+            "lobby options",
+            crate::lobby_options::strings()
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect(),
+        ),
         ("skulls pages", ids(skulls_menu::strings())),
         (
             "variant page",
@@ -163,6 +170,13 @@ fn every_served_id_is_in_its_registered_family() {
             ],
         ),
         ("live menu rows", ids(custom_games::strings())),
+        (
+            "lobby options",
+            crate::lobby_options::strings()
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect(),
+        ),
         // The model's ids run past the "ui model" block into "ui model
         // more" (video_screen::MORE); each must be in one of the two.
         ("ui model", model_ids.0),

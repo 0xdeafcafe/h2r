@@ -21,6 +21,7 @@ An `impl.` name is an implementation switch
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |
 | `impl.render.reproject` | in-between frames by reprojection, the 60 fps choice ([high-framerate.md](../game/high-framerate.md)) |
 | `audio.hrtf`, `audio.distance_reverb` | headphone binaural filtering; extra distance reverb |
+| `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)) |
 
 ## Build and code generation
 

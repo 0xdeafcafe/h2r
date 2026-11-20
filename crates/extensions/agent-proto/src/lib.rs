@@ -188,6 +188,8 @@ pub mod method {
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// The visible option lines in the active pregame custom lobby.
+    pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";

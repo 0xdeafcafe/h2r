@@ -408,6 +408,14 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_game_method(method::UI_CAMPAIGN, Access::Read, |_, ctx| {
         ctx.read_guest(crate::campaign_menu::inspect)
     });
+    agent.add_game_method(method::UI_LOBBY_OPTIONS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "expected no parameters"));
+        }
+        ctx.read_guest(crate::lobby_options::inspect)?
+            .map(|lines| json!({"lines": lines}))
+            .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no active custom game options panel"))
+    });
     agent.add_method(
         method::UI_SCREEN,
         Access::Read,
