@@ -373,7 +373,7 @@ month-to-date spend and the configured cap.
 4. Register the endpoint (contract 5) and report state.
 5. Exit on match over, empty, idle or max duration. The exit code is 0 on a clean end.
 
-Playerless lobby agent methods (`crates/apps/boot/src/host_lobby.rs` +
+Playerless lobby agent methods (`crates/extensions/game/src/host_lobby.rs` +
 agent-proto entries, `dh-lobby`):
 
 | method | params | result |

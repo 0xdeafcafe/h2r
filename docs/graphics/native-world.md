@@ -1,7 +1,7 @@
 # Native renderer stage 1: the static world
 
 Status: Built. The static world draws natively in the default configuration.
-Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/native_world.rs`, `crates/apps/boot/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
+Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/native_world.rs`, `crates/extensions/game/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 1 of [native-renderer.md](native-renderer.md). The structure BSP's opaque
@@ -363,9 +363,9 @@ there is no hand-written look in between.
   `impl.render.native=off` places nothing; the skip and its restore at the
   next layer draw on synthetic memory, a rebuilt list left alone, and a
   part left to D3D keeping its bit though its shader is drawn);
-  `crates/apps/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
+  `crates/extensions/game/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
   render-thread safe).
-- **Boot glue** (`crates/apps/boot/src/native_world_glue.rs`). On a new (map
+- **Boot glue** (`crates/extensions/game/src/native_world_glue.rs`). On a new (map
   name, active BSP address) a worker opens the loaded map through the VFS
   with its shared maps, picks the scenario BSP whose tag data sits at that
   address, builds the world, decodes each lightmap page (with its mip

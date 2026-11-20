@@ -129,7 +129,7 @@ shields") skips the subtraction so the body takes the full hit.
 
 ## What we do
 
-The `h1-health` feature (`crates/apps/boot/src/health.rs`), on the feature
+The `h1-health` feature (`crates/extensions/game/src/health.rs`), on the feature
 plan:
 
 - **No regeneration.** `before` on `OBJECT_DAMAGE_UPDATE` notes a player

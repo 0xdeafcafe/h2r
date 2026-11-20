@@ -8,7 +8,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 
 Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
-`crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/apps/boot/src/sim_glue.rs` and its
+`crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/extensions/game/src/sim_glue.rs` and its
 System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
@@ -156,7 +156,7 @@ process (boot and load included).
 ## 4. Sim mode
 
 `H2_SIM=<match file>` on the boot path, or `h2 sim run <match file>`.
-What it changes (**Code**, `crates/apps/boot/src/sim_glue.rs`,
+What it changes (**Code**, `crates/extensions/game/src/sim_glue.rs`,
 `crates/rewrites/sim-bridge/src/sim_frame.rs`):
 
 1. **The light host can skip the render front-end** in world frames. The `sim-frame`

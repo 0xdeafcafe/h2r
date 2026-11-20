@@ -128,3 +128,8 @@ until = "the `lifted` crate lands"
 from = "sim-core"
 to = "simd"
 until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"
+
+[[exception]]
+from = "game"
+to = "perf"
+until = "the sampler is a hook boot installs: sampling.rs reaches the profiler behind `perf`, and agent_glue answers profile.sample.* with it"

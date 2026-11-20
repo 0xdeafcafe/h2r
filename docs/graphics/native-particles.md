@@ -1,7 +1,7 @@
 # Native particles and effect geometry
 
 Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, lens reflections, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/apps/boot/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
+Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).

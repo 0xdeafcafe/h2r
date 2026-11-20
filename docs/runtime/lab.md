@@ -261,7 +261,7 @@ A recording is a directory with a manifest, not a file:
 ### What replay does and doesn't promise
 
 The input log is `xapi::tap`'s: every `XInputGetState` the game made,
-answered on replay by read index (crates/apps/boot/src/lockstep_glue.rs). A
+answered on replay by read index (crates/extensions/game/src/lockstep_glue.rs). A
 replay starts from a fresh boot of the level.
 
 - **Not verified: that a replay from a fresh level boot follows the same

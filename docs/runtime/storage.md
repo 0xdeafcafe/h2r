@@ -130,7 +130,7 @@ it for the font files ([button-icons.md](../input/button-icons.md)).
 `MapOverrideBackend::new(inner, dir)` serves `maps\<name>.map` from
 `<dir>/<name>.map` when the inner backend (the disc) has that map and the
 directory holds a file of that name. The boot mounts the disc through it
-when `H2_MAP_DIR` names a directory (`crates/apps/boot/src/map_override.rs`);
+when `H2_MAP_DIR` names a directory (`crates/extensions/game/src/map_override.rs`);
 unset or empty, the disc is mounted with `with_disc`/`with_disc_rewrite`
 exactly as before. The font rewrite wraps it, so both apply.
 
@@ -178,7 +178,7 @@ scan on the next main-menu tick. An open file keeps its resolved bytes
 until the last handle closes. The normal boot mounts the disc, campaign
 additions, any explicit `H2_MAP_DIR` override and the font rewrite
 independently of the generated offers. [Live refresh](../game/map-select.md#changes-during-a-session) ·
-[Boot mounts](../../crates/apps/boot/src/map_override.rs)
+[Boot mounts](../../crates/extensions/game/src/map_override.rs)
 
 `Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
 backend built by the caller. Tests: `crates/runtime/vfs/src/map_override.rs` and

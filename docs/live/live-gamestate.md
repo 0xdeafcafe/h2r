@@ -164,7 +164,7 @@ playing = C != 0 && read_u8(C + 5) != 0
 
 The same two functions also write the `0x84`-byte block at `[0x004de2f4]` (`+0x80` and `+0x81` set and cleared; builtins 208 and 209 set them from a boolean argument, the shape of `cinematic_show_letterbox` and its immediate form), the players globals' `+6`, the game globals' `+0x11f8` and the AI globals' `+0x20` (cleared by start, set by stop). Those are effects of a cinematic; `+5` above is the state the game itself tests. The main menu's background also runs `cinematic_start`; telemetry is only on in a game.
 
-The agent API (`crates/extensions/agent`) and the co-op straggler fix (`crates/apps/boot/src/coop_players.rs`) instead observe the two HaloScript calls; the byte stays right across a checkpoint revert taken inside a cinematic, which observing the calls does not.
+The agent API (`crates/extensions/agent`) and the co-op straggler fix (`crates/extensions/game/src/coop_players.rs`) instead observe the two HaloScript calls; the byte stays right across a checkpoint revert taken inside a cinematic, which observing the calls does not.
 
 ## 4. Players datum array
 

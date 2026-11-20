@@ -1310,7 +1310,7 @@ retention/draining. No test runs the title.
 
 ## Client HLE: Live not set up
 
-`crates/apps/boot/src/live_notice.rs` puts our text on the game's own "cannot
+`crates/extensions/game/src/live_notice.rs` puts our text on the game's own "cannot
 connect to Xbox Live" dialog, the one that offers the troubleshooter (UI
 error `0x23`). The game draws it in its dialog and font; no tag or localized
 string is edited. `boot::run_hosted_with_live` installs it after the Live
@@ -1375,7 +1375,7 @@ dashboard's network settings through `XLaunchNewImageA`, which ends the run
 here. Other Live errors (servers busy `0x25`, invalid user `0x9a`,
 connection lost `0x38`) keep the game's text.
 
-Tests: `crates/apps/boot/src/live_notice.rs` checks the text, the URL line and
+Tests: `crates/extensions/game/src/live_notice.rs` checks the text, the URL line and
 the buffer bounds on synthetic guest memory; `crates/apps/boot/tests/live_notice.rs`
 runs the hook through the real Runner with the fixture module's leaf
 standing in for the fill, and checks that only error `0x23` changes, that
@@ -1464,7 +1464,7 @@ gamertag, lockout, reset, an unreachable server, saving with other entries
 kept at 0600, and a saved account signing in after `reload_accounts`. All of
 them run against the in-process memory server.
 `crates/live/live-hle/src/account_setup.rs` maps refusals to errors.
-`crates/apps/boot/src/account_screen.rs` covers every transition and checks that
+`crates/extensions/game/src/account_screen.rs` covers every transition and checks that
 every page fits.
 
 ### In-game sign-in
@@ -1508,7 +1508,7 @@ record is replaced by the saved account's (the controller slot word kept),
 and the service logon starts as for any account, ending in `CONNECTED`.
 Cancel fails the logon with `INVALID_USER` (the user's HRESULT too).
 
-**The prompt** (`crates/apps/boot/src/signin_screen.rs`) is our own list class
+**The prompt** (`crates/extensions/game/src/signin_screen.rs`) is our own list class
 (`list_class`) with one row and a description, on the Controls layout. The
 d-pad types the code (up and down change the digit, left and right move;
 direction events, kinds 1 to 4, from the d-pad or the left stick, as
@@ -1594,7 +1594,7 @@ was typed:
 - **Anything else** (unreachable, busy, server error) is said on the
   gamertag page.
 
-**The keyboard** (`crates/apps/boot/src/signin_keyboard.rs`). A on either page
+**The keyboard** (`crates/extensions/game/src/signin_keyboard.rs`). A on either page
 opens the game's own on-screen keyboard. On the app builds the host's
 system keyboard types into it (`keyboard_glue`). It is opened with the
 retail opener `0x00238c21`: stdcall `(context, buffer, capacity)`, `ret
@@ -1686,9 +1686,9 @@ signed in with its code, backing out of one, an invite-only server);
 `crates/live/live-hle/src/config.rs` (the list, the New Account row);
 `crates/apps/boot/tests/new_account_prompt.rs` (New Account opening the prompt
 through the runner; A opening the retail keyboard on our buffer, with our
-title); `crates/apps/boot/src/signin_keyboard.rs` (reading the text back);
-`crates/apps/boot/src/signin_screen.rs` (the d-pad entry, every page fitting
-five lines of 40); `crates/apps/boot/src/list_class.rs` (a class's own buttons,
+title); `crates/extensions/game/src/signin_keyboard.rs` (reading the text back);
+`crates/extensions/game/src/signin_screen.rs` (the d-pad entry, every page fitting
+five lines of 40); `crates/extensions/game/src/list_class.rs` (a class's own buttons,
 live text); `crates/apps/cli/src/play_live.rs` (the hand-off).
 
 ## Client HLE: outgoing messages

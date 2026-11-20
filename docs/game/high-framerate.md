@@ -1,7 +1,7 @@
 # 60 and 120 fps
 
 Status: Partly built. The setting, the determinism harness, the interpolated replay (D) and rotation-only reprojection (E1) are built and tested on synthetic draw lists; none has been run in the game. Object tagging, bundles, 120 and variable refresh are design.
-Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/platform/d3d/src/interp/`, `crates/apps/boot/src/d3d_glue.rs`, `crates/apps/boot/src/lockstep_glue.rs`. Tests: sections 6 to 8.
+Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/platform/d3d/src/interp/`, `crates/extensions/game/src/d3d_glue.rs`, `crates/extensions/game/src/lockstep_glue.rs`. Tests: sections 6 to 8.
 Switch: `H2_FPS`, `impl.render.interpolate`, `impl.render.reproject`, `impl.render.reproject_ahead`, `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`, listed in [switches.md](../runtime/switches.md).
 
 The rule: **the guest tick stays 30 Hz, and 60 or 120 fps interpolates the picture.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
@@ -169,7 +169,7 @@ instructions on the same schedule whether it is on or off.
 - Each guest present already hands the backend a frame: the ordered
   `ResolvedDraw`s with their streams, state and shader constants, plus
   clears, copies and uploads. `H2_BOOT_CAPTURE` already records exactly this
-  for offline replay (`crates/apps/boot/src/d3d_diag.rs`), so replaying a frame
+  for offline replay (`crates/extensions/game/src/d3d_diag.rs`), so replaying a frame
   is not new.
 - The presenter keeps two frames, N-1 and N, each stamped on the game's
   thread at the `Swap` entry and carried with the present command. Not in
@@ -465,7 +465,7 @@ phase is gated on the per-tick hash test from phase 1.
 
 ## 6. Phase 1: the harness and the setting
 
-Status: Built. Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/apps/boot/src/lockstep_glue.rs`.
+Status: Built. Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/extensions/game/src/lockstep_glue.rs`.
 
 ### The harness
 
@@ -482,7 +482,7 @@ H2_INPUT_REPLAY=$TMPDIR/in.log H2_LOCKSTEP=$TMPDIR/b.trace h2 run <disc> ...
 h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
 ```
 
-`H2_LOCKSTEP_TICKS=0` keeps only the present records. Record and replay are exclusive. The wiring is `crates/apps/boot/src/lockstep_glue.rs`; the report prints one `lockstep:` line (records written, reads replayed, reads past the end, handle mismatches). `h2 play` takes the same variables.
+`H2_LOCKSTEP_TICKS=0` keeps only the present records. Record and replay are exclusive. The wiring is `crates/extensions/game/src/lockstep_glue.rs`; the report prints one `lockstep:` line (records written, reads replayed, reads past the end, handle mismatches). `h2 play` takes the same variables.
 
 ### The setting
 
@@ -510,7 +510,7 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 ## 7. Phase 2: the interpolated replay
 
-Status: Built, tested on synthetic draw lists only. Code: `crates/platform/d3d/src/interp/` (`backend.rs`, `model.rs`, `camera.rs`, `pacing.rs`, `epilogue.rs`), `crates/apps/boot/src/d3d_glue.rs`. Tests: `crates/platform/d3d/tests/interp.rs`, `crates/platform/d3d/tests/interp_gpu.rs`.
+Status: Built, tested on synthetic draw lists only. Code: `crates/platform/d3d/src/interp/` (`backend.rs`, `model.rs`, `camera.rs`, `pacing.rs`, `epilogue.rs`), `crates/extensions/game/src/d3d_glue.rs`. Tests: `crates/platform/d3d/tests/interp.rs`, `crates/platform/d3d/tests/interp_gpu.rs`.
 
 Design D's geometry replay at 60 Hz, for a single gameplay view, behind a switch.
 
