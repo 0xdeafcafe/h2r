@@ -7,9 +7,10 @@
 //! - anything that can leave the handler, because every exit spills EFLAGS
 //!   and the defined mask to `CpuAbi` where the runtime, a guest exception
 //!   handler or a resumed handler sees them: loads and stores (they may
-//!   fault), `FaultIf`, `StopIf`, intrinsics, unsupported statements,
-//!   atomic instructions (which also hand the flags to the runtime), and
-//!   every control transfer that is not a local `goto`;
+//!   fault; not with [`Observers::IMPRECISE_FAULTS`]), `FaultIf`, `StopIf`,
+//!   intrinsics, unsupported statements, atomic instructions (which also
+//!   hand the flags to the runtime), and every control transfer that is not
+//!   a local `goto`;
 //! - a `Repeat`, whose exits restore the flags it started with;
 //! - the start of a loop header, where generated code polls for
 //!   preemption and may leave with the state canonical.
@@ -31,6 +32,23 @@ use ir::{Control, Flag, IrBlock, IrFunction, IrInsn, Stmt, Target};
 
 use crate::Shape;
 
+/// What observes the flags besides reads, exits and polls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Observers {
+    /// A load or store, which may fault and leave with the flags spilled.
+    pub memory: bool,
+}
+
+impl Observers {
+    /// Every fault exit is exact.
+    pub const PRECISE: Observers = Observers { memory: true };
+    /// Imprecise memory faults (docs/runtime/block-clock-imprecise-faults.md):
+    /// a memory fault's exit keeps exact registers and EIP, not EFLAGS, so a
+    /// load or store observes nothing. `FaultIf`, intrinsics, atomics and
+    /// `Repeat` still do.
+    pub const IMPRECISE_FAULTS: Observers = Observers { memory: false };
+}
+
 /// Every flag the IR models, as EFLAGS bits.
 pub const ALL: u32 = 0x0cd5;
 
@@ -41,7 +59,7 @@ pub const fn bit(f: Flag) -> u32 {
 /// Flags live before `stmts`, given the flags live after them. With
 /// `edit`, dead top-level and `If`-nested writes are removed on the way
 /// (removing a dead write does not change what is live before it).
-fn stmts(list: &mut Vec<Stmt>, mut live: u32, edit: bool, removed: &mut usize) -> u32 {
+fn stmts(list: &mut Vec<Stmt>, mut live: u32, edit: bool, removed: &mut usize, obs: Observers) -> u32 {
     let mut i = list.len();
     while i > 0 {
         i -= 1;
@@ -75,15 +93,18 @@ fn stmts(list: &mut Vec<Stmt>, mut live: u32, edit: bool, removed: &mut usize) -
             }
             Stmt::ReadFlag { flag, .. } => live |= bit(*flag),
             Stmt::ReadEflags { .. } => live |= ALL,
-            Stmt::Load { .. }
-            | Stmt::Store { .. }
-            | Stmt::FaultIf { .. }
+            Stmt::Load { .. } | Stmt::Store { .. } => {
+                if obs.memory {
+                    live = ALL;
+                }
+            }
+            Stmt::FaultIf { .. }
             | Stmt::StopIf { .. }
             | Stmt::Intrinsic { .. }
             | Stmt::Unsupported { .. }
             | Stmt::Repeat { .. } => live = ALL,
             Stmt::If { then, otherwise, .. } => {
-                live = stmts(then, live, edit, removed) | stmts(otherwise, live, edit, removed);
+                live = stmts(then, live, edit, removed, obs) | stmts(otherwise, live, edit, removed, obs);
             }
             Stmt::Assign { .. }
             | Stmt::ReadReg { .. }
@@ -98,12 +119,12 @@ fn stmts(list: &mut Vec<Stmt>, mut live: u32, edit: bool, removed: &mut usize) -
 }
 
 /// Flags live before `insn`, given those live after its statements.
-fn insn(insn: &mut IrInsn, live_after: u32, edit: bool, removed: &mut usize) -> u32 {
+fn insn(insn: &mut IrInsn, live_after: u32, edit: bool, removed: &mut usize, obs: Observers) -> u32 {
     if insn.atomic.is_some() {
         // The runtime performs it from the spilled state and may fault.
         return ALL;
     }
-    stmts(&mut insn.stmts, live_after, edit, removed)
+    stmts(&mut insn.stmts, live_after, edit, removed, obs)
 }
 
 /// Flags live after the last instruction's statements, from its control.
@@ -119,7 +140,14 @@ fn control(c: &Control, next_pc: u32, live_in: &dyn Fn(u32) -> u32) -> u32 {
 }
 
 /// Flags live on entry to `b` (before any poll), and optionally edit it.
-fn block(b: &mut IrBlock, polled: bool, live_in: &dyn Fn(u32) -> u32, edit: bool, removed: &mut usize) -> u32 {
+fn block(
+    b: &mut IrBlock,
+    polled: bool,
+    live_in: &dyn Fn(u32) -> u32,
+    edit: bool,
+    removed: &mut usize,
+    obs: Observers,
+) -> u32 {
     let n = b.insns.len();
     let mut live = 0;
     for (k, i) in b.insns.iter_mut().enumerate().rev() {
@@ -131,20 +159,25 @@ fn block(b: &mut IrBlock, polled: bool, live_in: &dyn Fn(u32) -> u32, edit: bool
             // An unsupported stop in the middle of a block.
             ALL
         };
-        live = insn(i, after, edit, removed);
+        live = insn(i, after, edit, removed, obs);
     }
     if polled { ALL } else { live }
 }
 
-/// Live-in flags of every block of `f`.
+/// Live-in flags of every block of `f`, every fault exit exact.
 pub fn live_in(f: &mut IrFunction, shape: &Shape<'_>) -> BTreeMap<u32, u32> {
+    live_in_with(f, shape, Observers::PRECISE)
+}
+
+/// [`live_in`] with the given observers.
+pub fn live_in_with(f: &mut IrFunction, shape: &Shape<'_>, obs: Observers) -> BTreeMap<u32, u32> {
     let mut live: BTreeMap<u32, u32> = f.blocks.keys().map(|&k| (k, 0)).collect();
     let mut scratch = 0;
     loop {
         let mut changed = false;
         for (&start, b) in f.blocks.iter_mut().rev() {
             let get = |pc: u32| live.get(&pc).copied().unwrap_or(ALL);
-            let v = block(b, shape.polled.contains(&start), &get, false, &mut scratch);
+            let v = block(b, shape.polled.contains(&start), &get, false, &mut scratch, obs);
             if live[&start] != v {
                 live.insert(start, v);
                 changed = true;
@@ -159,11 +192,16 @@ pub fn live_in(f: &mut IrFunction, shape: &Shape<'_>) -> BTreeMap<u32, u32> {
 /// The dead-flag pass: remove every flag write nothing can observe.
 /// Returns the number of writes removed.
 pub fn dead_flags(f: &mut IrFunction, shape: &Shape<'_>) -> usize {
-    let live = live_in(f, shape);
+    dead_flags_with(f, shape, Observers::PRECISE)
+}
+
+/// [`dead_flags`] with the given observers.
+pub fn dead_flags_with(f: &mut IrFunction, shape: &Shape<'_>, obs: Observers) -> usize {
+    let live = live_in_with(f, shape, obs);
     let get = |pc: u32| live.get(&pc).copied().unwrap_or(ALL);
     let mut removed = 0;
     for (&start, b) in f.blocks.iter_mut() {
-        block(b, shape.polled.contains(&start), &get, true, &mut removed);
+        block(b, shape.polled.contains(&start), &get, true, &mut removed, obs);
     }
     removed
 }

@@ -28,7 +28,7 @@ fn split_handlers_match_the_interpreter_and_the_whole_handlers() {
         .map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body)))
         .collect();
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
-    let counting = emit::Codegen { accounting: true };
+    let counting = emit::Codegen::accesses(true);
     let whole = common::build_split(&owners, &header, &format!("{NAME}-whole"), counting, Split::NEVER);
     let split = common::build_split(&owners, &header, &format!("{NAME}-split"), emit::Codegen::default(), Split::EVERY_BLOCK);
     let split_counting = common::build_split(&owners, &header, &format!("{NAME}-split-acc"), counting, Split::EVERY_BLOCK);
@@ -37,7 +37,7 @@ fn split_handlers_match_the_interpreter_and_the_whole_handlers() {
     let mut failures = Vec::new();
     for (k, (name, f)) in funcs.iter().enumerate() {
         let o = owners.iter().find(|o| o.func.entry == f.entry).unwrap();
-        let shape = OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None };
+        let shape = OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, block_clock: false, functions: None };
         let text = emit::c::function_with(&o.func, &shape, Split::EVERY_BLOCK);
         // Every handler of more than one block is cut; one block is not.
         let routed = text.contains("H2_PART_LENT();");
@@ -122,7 +122,7 @@ fn a_loop_across_parts_polls_and_resumes_as_a_whole_one() {
     };
     let owners = emit::plan(vec![sum()]);
     let o = &owners[0];
-    let shape = OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, functions: None };
+    let shape = OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false, block_clock: false, functions: None };
     let text = emit::c::function_with(&o.func, &shape, Split::EVERY_BLOCK);
     assert!(text.contains("H2_PART_GOTO(") && text.contains("_p1("), "{text}");
     // The router alone has the handler's name; perf's marker attribution

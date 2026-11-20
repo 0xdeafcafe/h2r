@@ -68,7 +68,7 @@ fn builds(name: &str, funcs: Vec<IrFunction>) -> Option<[emit::host::Generated; 
     };
     let owners = emit::plan(funcs);
     Some([false, true].map(|accounting| {
-        common::build_with(&owners, &abi, &format!("{name}-{accounting}"), emit::Codegen { accounting })
+        common::build_with(&owners, &abi, &format!("{name}-{accounting}"), emit::Codegen::accesses(accounting))
     }))
 }
 

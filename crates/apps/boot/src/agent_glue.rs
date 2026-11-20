@@ -235,6 +235,71 @@ impl agent::Sampler for BootSampler {
     }
 }
 
+/// The methods that read the runtime itself: `profile.faults`, the fault
+/// census (`runtime::fault_census`).
+pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Runtime>) {
+    let rt = std::sync::Arc::clone(rt);
+    agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
+        let top = top_param(&v, 20)?;
+        Ok(faults_json(&rt.fault_census().snapshot(), rt.module_features(), top))
+    });
+}
+
+/// `{"top": n}` (1 to 500, `default` when absent), and no other field.
+fn top_param(v: &Value, default: usize) -> std::result::Result<usize, RpcError> {
+    if let Some(o) = v.as_object()
+        && let Some(k) = o.keys().find(|k| *k != "top")
+    {
+        return Err(RpcError::new(code::INVALID_PARAMS, format!("unknown field {k}")));
+    }
+    match v.get("top") {
+        None => Ok(default),
+        Some(n) => n
+            .as_u64()
+            .filter(|n| (1..=500).contains(n))
+            .map(|n| n as usize)
+            .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "top: 1 to 500")),
+    }
+}
+
+/// `profile.faults`' answer: the census totals, its verdict, the module's
+/// clock and fault precision (from its `features`), and the `top` fault PCs
+/// by count.
+pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: usize) -> Value {
+    use runtime::generated::{FEATURE_BLOCK_CLOCK, FEATURE_IMPRECISE_FAULTS};
+    let sites: Vec<Value> = c
+        .sites
+        .iter()
+        .take(top)
+        .map(|s| {
+            json!({
+                "pc": format!("{:#010x}", s.pc),
+                "source": s.source.name(),
+                "count": s.count,
+                "continued": s.continued,
+                "addr": format!("{:#010x}", s.first.addr),
+                "len": s.first.len,
+                "access": format!("{:?}", s.first.access).to_lowercase(),
+                "reason": format!("{:?}", s.first.reason),
+            })
+        })
+        .collect();
+    json!({
+        "generated": c.generated,
+        "runtime": c.runtime,
+        "ended": c.ended,
+        "continued": c.continued,
+        "continued_generated": c.continued_generated,
+        "continued_imprecise": c.continued_imprecise,
+        "precise_exits_needed": c.precise_exits_needed(),
+        "imprecise_faults": features & FEATURE_IMPRECISE_FAULTS != 0,
+        "clock": if features & FEATURE_BLOCK_CLOCK != 0 { "blocks" } else { "accesses" },
+        "sites": c.sites.len(),
+        "sites_full": c.sites_full,
+        "top": sites,
+    })
+}
+
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
     if crate::sampling::available() {
@@ -462,6 +527,16 @@ mod tests {
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));
         assert!(r["result"]["top"].is_array(), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 0}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        add_runtime_methods(&a, &rt);
+        let r = call(method::PROFILE_FAULTS, json!({"top": 3}));
+        assert_eq!(r["result"]["generated"], 0, "{r}");
+        assert_eq!(r["result"]["precise_exits_needed"], false, "{r}");
+        assert_eq!(r["result"]["clock"], "accesses", "{r}");
+        assert_eq!(r["result"]["imprecise_faults"], false, "{r}");
+        assert!(r["result"]["top"].is_array(), "{r}");
+        let r = call(method::PROFILE_FAULTS, json!({"top": 3, "x": 1}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::RENDER_FRAME, Value::Null);
         assert_eq!(r["result"]["armed"], false, "{r}");

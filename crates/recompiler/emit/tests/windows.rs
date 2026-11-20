@@ -88,7 +88,7 @@ fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols()
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("windows-module");
     let _ = std::fs::remove_dir_all(&dir);
     let src = dir.join("src");
-    emit::write_module_with(&owners, &src, emit::Codegen { accounting: true }).unwrap();
+    emit::write_module_with(&owners, &src, emit::Codegen::accesses(true)).unwrap();
     compile::install_header(&src, &header).unwrap();
     let b = compile::build(&src, &dir, Arch::X86_64Windows, 2).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(b.arch, Arch::X86_64Windows);

@@ -202,12 +202,29 @@ pub const FEATURE_ENTRY_TABLE: u32 = 8;
 /// thunk. [`FEATURE_DIRECT_CALLS`] needs it: an image built before it reads
 /// the block at the old offsets and is refused. (16 is kept for flat RAM.)
 pub const FEATURE_HOST_CALLS: u32 = 32;
+/// Module feature (`H2GEN_FEATURE_BLOCK_CLOCK`, `H2_ACCESS_COUNT=block`;
+/// needs [`FEATURE_ACCOUNTING`]): the handlers' count is the plan's block
+/// costs (`crates/recompiler/emit/src/clock.rs`), charged at function
+/// entries and loop trips through accounting's plumbing, not their memory
+/// accesses. The runtime then also charges [`crate::preempt::HLE_COST`] for
+/// each Rust handler it invokes. One dispatch runs one clock
+/// (docs/runtime/block-clock-imprecise-faults.md).
+pub const FEATURE_BLOCK_CLOCK: u32 = 64;
+/// Module feature (`H2GEN_FEATURE_IMPRECISE_FAULTS`, `H2_PASSES` with
+/// `imprecise-faults`): the IR passes did not keep EFLAGS exact at memory
+/// accesses, so a memory FAULT from the module's handlers has exact EIP and
+/// registers and best-effort EFLAGS. Nothing in the runtime goes on from a
+/// fault; the fault census reports any host that does
+/// (`fault_census`, `continued_imprecise`).
+pub const FEATURE_IMPRECISE_FAULTS: u32 = 128;
 /// Every module feature this runtime implements.
 pub const FEATURES: u32 = FEATURE_ACCOUNTING
     | FEATURE_DIRECT_CALLS
     | FEATURE_DIRECT_VIEW
     | FEATURE_ENTRY_TABLE
-    | FEATURE_HOST_CALLS;
+    | FEATURE_HOST_CALLS
+    | FEATURE_BLOCK_CLOCK
+    | FEATURE_IMPRECISE_FAULTS;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +302,15 @@ impl Dispatch {
         if module.features & !FEATURES != 0 {
             return Err(RegistrationError::UnknownFeatures(module.features & !FEATURES));
         }
+        if module.features & FEATURE_BLOCK_CLOCK != 0 && module.features & FEATURE_ACCOUNTING == 0 {
+            return Err(RegistrationError::BlockClockWithoutAccounting(module.features));
+        }
+        if self.modules != 0 && (module.features ^ self.module_features) & FEATURE_BLOCK_CLOCK != 0 {
+            return Err(RegistrationError::MixedClock {
+                module: module.features,
+                registered: self.module_features,
+            });
+        }
         let with_table = module.features & FEATURE_ENTRY_TABLE != 0;
         if module.features & FEATURE_DIRECT_CALLS != 0 && !with_table {
             return Err(RegistrationError::DirectCallsWithoutEntryTable);
@@ -345,6 +371,8 @@ impl Dispatch {
             self.register_resume(r.pc, r.owner, r.start)
                 .expect("validated resume row");
         }
+        self.modules += 1;
+        self.module_features |= module.features;
         if let Some(t) = entry_table {
             self.set_entry_table(t);
         }

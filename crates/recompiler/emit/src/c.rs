@@ -78,6 +78,9 @@ pub struct OwnerShape<'a> {
     pub loops: &'a crate::backedge::Loops,
     /// Count guest memory accesses in the handler ([`crate::Codegen`]).
     pub accounting: bool,
+    /// Count the plan's block costs instead ([`crate::clock`]; needs
+    /// `accounting`): `H2_CLOCK` at the function entry and each loop trip.
+    pub block_clock: bool,
     /// The module's function entries (each has a handler `h2fn_<entry>`)
     /// and their entry indices (RUNTIME-CONTRACT.md §2, the entry table):
     /// a call or tail jump to one may invoke it directly (`H2_DCALL`,
@@ -796,7 +799,10 @@ impl Emitter<'_> {
             }
             // Entered from the runner, which is a safe point: skip the poll.
             let label = if headers.contains(s) { "P" } else { "L" };
-            self.line(1, format!("case {s:#010x}u: goto {label}_{s:08x};"));
+            // The block clock charges entering the function (crate::clock).
+            let entry = if self.shape.block_clock && *s == f.entry { crate::clock::entry_cost(f, headers) } else { 0 };
+            let clock = if entry > 0 { format!("H2_CLOCK({entry}u); ") } else { String::new() };
+            self.line(1, format!("case {s:#010x}u: {clock}goto {label}_{s:08x};"));
         }
         // From another part: the block's own label, a header's poll first.
         for c in cut_ins.into_iter().flatten() {
@@ -817,6 +823,10 @@ impl Emitter<'_> {
                 // poll onto the back-edge: one load and a branch per trip.
                 self.line(1, format!("H2_LOOP_POLL({:#x}u);", b.start));
                 self.line(0, format!("P_{:08x}:;", b.start));
+                if self.shape.block_clock {
+                    // One charge per trip that runs the header, resumed or not.
+                    self.line(1, format!("H2_CLOCK({}u);", crate::clock::header_cost(f, b.start)));
+                }
             }
             for (i, insn) in b.insns.iter().enumerate() {
                 let last = i + 1 == b.insns.len();
@@ -1244,7 +1254,9 @@ impl Emitter<'_> {
                     // A long REP gives the RAM gate up every few trips.
                     self.line(d + 1, "h2_gate_tick(h2_mem_, &h2g_);");
                     if *kind == RepKind::Rep && let Some(width) = rep_movs_width(body) {
-                        let limit = if self.shape.accounting { "(h2left > h2acc ? h2left - h2acc : 0u)" } else { "UINT64_MAX" };
+                        // The block clock does not count the copy's accesses.
+                        let counted = self.shape.accounting && !self.shape.block_clock;
+                        let limit = if counted { "(h2left > h2acc ? h2left - h2acc : 0u)" } else { "UINT64_MAX" };
                         // The bulk copy takes the gate itself.
                         self.line(d + 1, "H2_GATE_DROP();");
                         self.line(d + 1, format!("uint32_t n_ = h2_fast_movs(h2_mem_, esi, edi, ecx, {width}u, H2_FLAG(10), {limit});"));
@@ -1252,7 +1264,9 @@ impl Emitter<'_> {
                         self.line(d + 2, "H2_FLAT_NOTE(H2FC_TOTAL, 2ull * n_); H2_FLAT_NOTE(H2FC_BULK, 2ull * n_);");
                         self.line(d + 2, format!("uint32_t delta_ = n_ * {width}u; if (H2_FLAG(10)) delta_ = 0u - delta_; esi += delta_; edi += delta_; ecx -= n_;"));
                         if self.shape.accounting {
-                            self.line(d + 2, "h2acc += (uint64_t)n_ * 2u;");
+                            if counted {
+                                self.line(d + 2, "h2acc += (uint64_t)n_ * 2u;");
+                            }
                             self.line(d + 2, format!("if (ecx) H2_REP_POLL({pc:#x}u);"));
                         }
                         self.line(d + 2, "continue;");
