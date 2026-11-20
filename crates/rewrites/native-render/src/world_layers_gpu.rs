@@ -336,8 +336,8 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
-        let draw = self.draw.for_copy(target.copy);
-        let draw = draw.as_ref();
+        // Both target copies retain the same geometry and material snapshot.
+        let draw = &self.draw;
         let (width, height) = guest_size;
         if target.targets.0 == target.targets.1 {
             return None;
@@ -523,6 +523,10 @@ impl IndexedPass {
             groups.push((views, textures.clone()));
         }
 
+        // Only the per-draw uniforms and scissors depend on the presentation
+        // lens and UI fit. Keep their copy out of the resident cache.
+        let copy = draw.for_copy(target.copy);
+        let draw = copy.as_ref();
         let clip = if draw.clip_rects.is_empty() {
             std::slice::from_ref(draw.clip.as_ref()?)
         } else {
