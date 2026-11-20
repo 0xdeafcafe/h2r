@@ -7,9 +7,10 @@ by name when their address is wrong.
 
 ## `crates/hooking/guest-layout`
 
-A crate with no dependencies, so bots, telemetry, the agent API, the
-engine and the native renderer can all read guest structures without
-pulling each other in.
+A crate with few dependencies (`paste`; `runtime` only behind its
+`runtime-glue` feature), so bots, telemetry, the agent API, the engine and
+the native renderer can all read guest structures without pulling each
+other in.
 
 A structure is declared once with `layout!`:
 
@@ -31,9 +32,9 @@ still adds by hand), a getter per field generic over any `Mem`
 (`unit.player(m)?`), `get`/`set` with an `Off`, and `FIELDS`, which the
 crate's tests check for overlaps and bounds.
 
-- **Memory.** `Mem` and `MemMut` are two byte methods. `engine`
-  implements them for `dyn GuestMemory`, `FakeGuest` and `FlatMemory`;
-  `engine::MemFault` is `guest_layout::Fault`. Through a concrete memory a
+- **Memory.** `Mem` and `MemMut` are two byte methods, implemented for
+  `dyn GuestMemory`, `FakeGuest` and `FlatMemory`; `MemFault` is
+  `Fault`. Through a concrete memory a
   field read is a bounds check and a load; through `dyn` it is one
   virtual call, as before. `FlatRam` is a flat region for tests and for
   copied-out state.
@@ -43,9 +44,19 @@ crate's tests check for overlaps and bounds.
   variant, game time, player globals, engine statistics), `datum_array`
   (a datum array's header), `tag` (the tag index and its entries),
   `damage` (the damage report `d9640` applies).
-- **Globals.** `global` is the one table of global addresses, moved from
-  `engine::points`, which re-exports it unchanged. New globals go here.
-- **Readers.** `engine::view`'s player and object records take their
+- **Globals.** `global` is the one table of global addresses; `points`
+  re-exports it unchanged. New globals go here.
+- **The guest boundary and the points.** `memory` (`GuestMemory`,
+  `FlatMemory`, `MemFault`), `testing` (`FakeGuest`), `handle`, `datum`,
+  `tags`, `view` (`record!`) and `points` (the one table of named guest
+  functions and globals, `points!`) are this crate's. `engine` re-exports
+  each module and macro, so `engine::points`, `engine::GuestMemory` and
+  `engine::record!` name the same items. With `runtime-glue`,
+  `GuestMemory` has `take_write_watch` and the runtime's `Guest` and
+  `WritebackView` implement it (`src/memory.rs`). The engine's async
+  entries (`engine::entry`) stay in `engine`
+  ([crate-structure.md](../dev/crate-structure.md), S2).
+- **Readers.** `view`'s player and object records take their
   offsets from the layouts; `live_telemetry::layout` keeps its names but
   every object, unit, biped, game and global value comes from here;
   `agent::sim::state` reads and writes through `Unit` and `Weapon`.

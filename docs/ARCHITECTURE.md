@@ -116,7 +116,7 @@ the moves that put every crate in its domain's directory are in
 | `voice` | platform | The communicator under the title's own voice engine: microphone and headphone media objects over host capture and playback (docs/live/live-voice.md) | [live-voice.md](live/live-voice.md) |  |
 | `wma` | platform | Native WMAv2 decoder ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
 | `xapi` | platform | Guest XAPI service replacements for Halo 2 | [xapi.md](runtime/xapi.md) | done |
-| `guest-layout` | hooking | Typed guest layouts: every Halo 2 structure offset and global address, written once (docs/engine/guest-layout.md) | [guest-layout.md](engine/guest-layout.md) |  |
+| `guest-layout` | hooking | Typed guest layouts: every Halo 2 structure offset and global address, written once; the guest-memory boundary, typed views and the named points (docs/engine/guest-layout.md) | [guest-layout.md](engine/guest-layout.md) |  |
 | `hooks` | hooking | The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md) | [feature-engine.md](engine/feature-engine.md) | in progress |
 | `engine` | rewrites | Hand-written Rust replacements for Halo 2 engine functions, over guest memory | [engine/README.md](engine/README.md) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
 | `frame-scene` | rewrites | FrameScene: the owned, typed snapshot of one rendered frame that the native renderer reads; no guest addresses, no GPU (docs/graphics/framescene.md) | [framescene.md](graphics/framescene.md) |  |

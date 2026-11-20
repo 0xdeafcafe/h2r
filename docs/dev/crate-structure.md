@@ -124,7 +124,7 @@ More rules in the same file:
 
 | Refused dependency the tree has today | Removed by |
 |---|---|
-| `feature` → `engine` (`hooking` → `rewrites`) | S2: the points, views and entry glue move to `guest-layout` and `hooks` |
+| `hooks` → `engine` (`hooking` → `rewrites`) | `engine::entry`, `abi`, `runtime_glue` and `point_shapes` leave `engine` for `hooking` (S2 moved the points and views) |
 | `feature` → `native-render` (`hooking` → `rewrites`) | S3: the renderer's guest half leaves for `render-bridge` |
 | `native-render` → `analyze`, `ir`, `lift` (guest-free) | the `lifted` crate lands and the differential tests take it as a dev-dependency |
 
@@ -139,7 +139,7 @@ Every other dependency in the tree already obeys the table.
 | `x87`, `simd` | `recompiler` | `ir` is built on them; `runtime` uses `x87` from above |
 | `lifted`, `recomp` | `runtime` | Both run lifted code on `runtime`, which `recompiler` may not use |
 | `assets`, `hot-render`, `wma` | `platform` | Host-side support that `d3d` and `dsound` depend on (`assets` uses `gfx`; `wma` keeps snapshot state) |
-| `engine` | `rewrites` | Ported engine functions. Its points and typed views are `hooking`'s and leave in S2 |
+| `engine` | `rewrites` | Ported engine functions. Its points and typed views are `guest-layout`'s since S2, re-exported |
 | `lockstep`, `hot-tags` | `extensions` | A determinism harness and live tag edits: features we add, built on hooks |
 | `agent-proto`, `studio-proto` | `extensions`, `apps` | A wire protocol lives with the thing that serves it |
 | `sim-bench` | `live` | Sim mode's match and report files; only the bot glue and `h2 sim` read them. `[x]` |
@@ -176,7 +176,7 @@ cannot become a member.
 
 | Crate | Lane | Directory | Note |
 |---|---|---|---|
-| `guest-layout` | `guest-layout` | `crates/hooking/guest-layout` | No dependencies. S2 moves `engine`'s points and views into it |
+| `guest-layout` | `guest-layout` | `crates/hooking/guest-layout` | Landed; S2 moved `engine`'s guest boundary, points and views into it |
 | `switches` | `guest-layout` | `crates/hooking/switches` | Planned by that lane; `feature/src/switches.rs` until then |
 | `lifted` | `shadow-exec` | `crates/runtime/lifted` | Uses `analyze`, `ir`, `lift`, `runtime`, `xbe`. Its landing clears three exceptions |
 | `sim-core`, `sim-anim` | `sim-anim` | `crates/rewrites/` | Guest-free. The adapter the branch puts in `engine/src/sim_anim.rs` and the install in `feature/src/sim_native.rs` go to `sim-bridge` (S3) |
@@ -210,8 +210,8 @@ the hook engine:
 
 **`engine`** (36,378 lines) keeps the ports and gives away the hooking
 parts: `points`, `memory`, `handle`, `datum`, `view`, `tags`, `testing`
-to `crates/hooking/guest-layout`, and `entry` to `hooks` (S2, the
-`guest-layout` lane). Its render ports follow the render glue into
+to `crates/hooking/guest-layout` (S2, done), and `entry` to `hooking`
+once `bots` names it there. Its render ports follow the render glue into
 `render-bridge` when FrameScene replaces them; the register-level sim
 ports stay as oracles until each `impl.sim.native.<subsystem>` lands.
 
@@ -357,7 +357,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | W2 | `feature` becomes `hooks` | `w2-hooks.py` | 91 files renamed, 193 edited | after W1 |
 | W3 | Eleven Halo 1 crates become five | `w3-h1-merge.py` | 99 files renamed, 7 manifests removed, 121 edited | after W1; `h1-contract` first (below) |
 | S1 | Small renames and deletions | `s1-small.py` | 2 crates renamed, 1 deleted, 3 files to `wma` | ran: `move-s1` |
-| S2 | `guest-layout` and `hooks` take `engine`'s hooking parts | the `guest-layout` lane | 8 files, about 4,000 lines | when that lane lands |
+| S2 | `guest-layout` takes `engine`'s guest boundary and points | `s2-guest-layout.py` | 7 files, 3,505 lines | ran: `move-s2`; `entry.rs` stays in `engine` |
 | S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 6 + 24 + 2 modules, 24,222 lines | sim and Halo 1: after W2. Render: 7 references to cut |
 | S4 | `recomp` out of `boot` | the contract lane | 7 files and 630 lines of `lib.rs` | before the contract work starts |
 | S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 151 modules, 291 files, 146,827 lines | 96 references to cut, about 30 of them S4's |
@@ -477,16 +477,30 @@ into one `h1-assets = ...`, in `[features]` too.
 The lock file still names `sim`, `apple-host` and `fastmem-proto` after
 the move; the first cargo command rewrites it.
 
-### S2. `guest-layout` and `hooks` take `engine`'s hooking parts
+### S2. `guest-layout` takes `engine`'s guest boundary and points
 
-The `guest-layout` lane's. `engine/src/{points, memory, handle, datum,
-view, tags, testing}.rs` move to `guest-layout`, and `engine/src/entry.rs`
-to `hooks`. `engine` re-exports them, so the 605 `engine::` paths in
-`boot` and 88 in `bots` are untouched. `hooks` then depends on
-`guest-layout` and not on `engine`: the first exception goes. `points.rs`
-is one table of 374 entries and the second hottest file in the tree; it
-splits by owner when the registration work lets each crate keep its own
-(see "Local registration").
+`scripts/moves/s2-guest-layout.py`, run as `scripts/moves/window.sh run
+s2` (tags `move-s2-pre`, `move-s2`; replay with `scripts/moves/window.sh
+replay s2`). `engine/src/{points, memory, handle, datum, view, tags,
+testing}.rs` move unchanged to `crates/hooking/guest-layout/src`.
+`engine` re-exports each module and the macros they export (`record!`,
+`points!`, `point_loc!`, `point_sig!`, `point_ret!`), so the 605
+`engine::` paths in `boot` and 88 in `bots` are untouched.
+`guest-layout` names itself (`extern crate self as guest_layout`), so the
+moved files' own paths still resolve, and gains `paste` and, behind a
+`runtime-glue` feature that `engine`'s turns on, `runtime`: the trait's
+`take_write_watch` and the `GuestMemory` impls for the runtime's `Guest`
+and `WritebackView`, which the orphan rule refuses in `engine` once the
+trait is foreign there, move with it.
+
+`engine/src/entry.rs` stays in `engine`. `bots` (`[x]`) and `agent`
+name `engine::entry`, and `engine` cannot re-export it from `hooks`,
+which depends on `engine`. So the `hooks` → `engine` exception stays:
+after S3, `hooks` still names `engine::entry`, `engine::abi`,
+`engine::runtime_glue` (`leaves.rs`) and `engine::point_shapes`
+(`verify.rs`). `points.rs` is one table of 374 entries and the second
+hottest file in the tree; it splits by owner when the registration work
+lets each crate keep its own (see "Local registration").
 
 ### S3. `hooks` gives away what is not the hook engine
 
