@@ -160,12 +160,79 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 |---|---|---|---|
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
-| 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
+| 2. Objects and skinning | Render models with rigid and skinned sections, permutations and LODs | Supported layer-3 draw handlers, object list building and whole-call object setup | Node matrices, object and render-record layouts |
 | 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
 Each stage falls back to D3D for the materials or draws it cannot handle.
+
+### Scene list builders
+
+`impl.render.native_scene_lists` defaults on and requires
+`impl.render.native=on`. This stage publishes the engine's original
+visibility lists and render records. A draw can consume the same lists
+through either renderer. The game supplies the camera, clipped cluster
+frusta, live datum arrays and current tag definitions.
+
+| Rust publication | Original work bypassed when the inputs resolve |
+|---|---|
+| Camera and light visibility | `0x00134390` publishes visible BSP clusters and placements. `0x00132220` walks both object reference partitions and the light reference partition. Both start after the portal or sphere cluster pass. |
+| Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
+| Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
+| Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. |
+| Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
+
+The object walk uses the live salt, original partition order and visit
+epoch. It writes the accepted object and placement stamps, light record
+stamps, cluster ordinals, visibility bits and masks in guest memory.
+The callers still advance the epochs. The light history retains its
+candidate mask, removal swaps, protected entries and fade accumulators.
+The transparent queue retains the guest's depth calculation, handlers
+and payloads. Consumers read the same addresses and counts.
+
+Object setup touches the requested sections in region order before
+consulting the previous permutations. It tries the cached LOD without
+requesting I/O when selection at the desired LOD fails. It preserves
+the guest's per-view permutation bytes, LOD and palette tokens, resource
+epochs, miss counts, lighting cache data, and object render stamps. New
+palettes use the same transposed node matrices and per-section remaps.
+The object walk emits each parent's sections before descending through
+its child and sibling links. The no-draw exit updates the low byte of
+the original visibility column. The existing caller uses AL to process
+a kind-1 retry, including the retry call's different render flags.
+
+Setup stages writes across the entire object tree. A refusal restarts at
+the original entry with the incoming registers and memory. New resource
+I/O, synchronous waits, request reprioritization, resource relocation,
+live light-probe work, animated pose evaluation, and auxiliary model
+materials use that path. Portal traversal and dynamic light frustum
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
+producers decide when effects are ready to queue.
+
+Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
+the associated `_memory`, `_layout` or `_unsupported` reason. Object
+setup also reports `_residency`, `_lighting`, `_palette` and
+`_object_model` for the corresponding guest service paths. Counts are
+per list, setup or append, depending on the stage.
+
+`H2_NATIVE_LISTS_COMPARE=1` builds the Rust result and lets the guest
+publish its own. For object setup it compares the staged palette, cache,
+resource, group and record bytes at the function return, along with the
+visibility word, palette cursor, record counts, object lighting handle
+and AL. It logs the first mismatch per seam and counts additional
+mismatches. Compare mode uses the guest result for draw dispatch.
+Use `H2_FRAME_STATS=1` for the `_compared` and `_mismatch` columns.
+
+For timing, compare `impl.render.native_scene_lists=off` with the
+default, using `H2_FEATURES=render-timing` in both captures. Include the
+`game_view` stage for the main-camera object gather, and sites
+`0x0002bd2d`, `0x0002c03e` and `0x0002c19a` for transparent production,
+dynamic lights and the sorted dispatch. The Old Mombasa census measured
+1.88 ms/frame for the entire dynamic-light bookkeeping site and about
+0.01 ms/frame for the two old sort leaves combined. The census does not
+isolate the object setup or transparent allocation costs. A net saving
+needs a matching A/B with the compare mode off. See [render-loop.md](render-loop.md).
 
 ### Maps with no native work
 
@@ -1246,10 +1313,11 @@ After every required target copy records the whole run, the hook adjusts
 ESI and the saved loop count and returns with the handler's normal stack
 cleanup. The guest loop advances to the next entry in its original order.
 If planning or reservation fails, the cursor stays put and the original
-handler runs. Visibility and `OBJECT_RENDER_SETUP` still produce the
-records and palettes consumed by the walk, lights, shadows and later
-passes. The savings come from skipping `0x0004d0b0` and its per-part
-shader and geometry preparation, including `0x0001bbf0` and
+handler runs. The scene list builders supply visibility, LOD inputs and
+supported records. The object setup tail supplies the palettes consumed
+by the walk, lights, shadows and later passes. The draw savings come from
+skipping `0x0004d0b0` and its per-part shader and geometry preparation,
+including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
 The activation hook starts an eager scan of the mounted map's object
@@ -1947,12 +2015,12 @@ opaque layers left.
 - `[0x004b6288]`: entries of `0x70` bytes, the live ones from index
   `[0x004b6284]` to `[0x004b6280]` (at most `0x400`), allocated by
   `0x0001e2d0` (and `0x0001e4e0`/`0x0001e5e0` for other kinds).
-- `0x0001e370` fills the `u16` index array `[0x004b628c]`, sorts it
-  with `TRANSPARENT_SORT` (`0x0013df80`, comparator `0x0001e700`: by
-  `+0` first, then through the plane at `+0x10` when `+0xc` is set; the
-  rest is not read),
-  then for each index in order calls `[entry+0x20]` with `entry+0x24`
-  (stdcall), skipping a null handler.
+- `0x0001e370` fills the `u16` index array `[0x004b628c]` and sorts it
+  with `TRANSPARENT_SORT` (`0x0013df80`). Comparator `0x0001e700` uses
+  class `+0`, the plane at `+0x10` when either entry has `+0xc` set,
+  and otherwise depth `+4` then the integer key `+8`. The dispatcher
+  calls `[entry+0x20]` with `entry+0x24` for each index in order,
+  skipping a null handler.
 - A geometry entry (`0x00041040`'s transparent branch, `0x00041381`):
   `+0` a class from `0x00040e10`, `+4` the view depth, `+0xc` a byte
   (plane present), `+0x20` the handler `0x00041020`, `+0x24` the shader
@@ -2059,9 +2127,10 @@ definition flags).
 
 - **Visible lights.** `0x00031c80` builds the visible-light list
   (`0x00031910`, from the candidates at `[0x00547f98]`; entries of `0x14`
-  bytes, `+0` the light datum, `+8` a weight; sorted and trimmed by
-  `0x0004a7c0`/`0x0004ac30`), then walks it. For each light above the
-  weight threshold (`[0x0045dc58]`) it re-poses an attached light
+  bytes with light datum `+4`, root owner `+8`, weight `+0xc` and
+  screen priority `+0x10`). The original `0x0004a7c0`/`0x0004ac30`
+  helpers merge and rank that list before the pass walks it. For each
+  light above the weight threshold (`[0x0045dc58]`) it re-poses an attached light
   (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
   stride `0x408`, at most eight, count `[0x00509440]`), decides the
   shadow (`0x00031e02`), gathers the light's geometry into the light's

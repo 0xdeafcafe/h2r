@@ -43,7 +43,6 @@ const WORLD_OPAQUE_COLUMNS: [&str; 11] = [
 const WORLD_OPAQUE_BASE: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
 const WORLD_SECTION_COLUMNS: [&str; 2] = ["taken_sections", "fallback_sections"];
 const WORLD_SECTION_BASE: usize = WORLD_OPAQUE_BASE + WORLD_OPAQUE_COLUMNS.len();
-pub(crate) const COLUMNS: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
 
 /// Count at the front-end boundary, independently of which backend
 /// records the GPU draw. Section counts are deduplicated by the caller.
@@ -236,6 +235,64 @@ impl std::fmt::Display for WorldMaterials {
     }
 }
 
+const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
+const SCENE_LISTS: [&str; 14] = [
+    "view_objects", "light_objects", "object_order", "object_setup", "object_record",
+    "view_geometry", "light_geometry_gather", "visible_lights", "light_geometry",
+    "light_extra_caster", "transparent_effect", "transparent_polygon",
+    "transparent_geometry", "transparents",
+];
+const SCENE_LIST_RESULTS: [&str; 11] = [
+    "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
+    "palette", "object_model", "compared", "mismatch",
+];
+pub(crate) const COLUMNS: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum SceneList {
+    ViewObjects,
+    LightObjects,
+    ObjectOrder,
+    ObjectSetup,
+    ObjectRecord,
+    ViewGeometry,
+    LightGeometryGather,
+    VisibleLights,
+    LightGeometry,
+    LightExtraCaster,
+    TransparentEffect,
+    TransparentPolygon,
+    TransparentGeometry,
+    Transparents,
+}
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum SceneListResult {
+    Native,
+    Fallback,
+    Memory,
+    Layout,
+    Unsupported,
+    Residency,
+    Lighting,
+    Palette,
+    ObjectModel,
+    Compared,
+    Mismatch,
+}
+
+impl SceneList {
+    pub fn count(self, result: SceneListResult) {
+        phase::count_index(
+            phase::Counter::ALL.len() + SCENE_LIST_START + self as usize * SCENE_LIST_RESULTS.len()
+                + result as usize,
+            1,
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum ObjectWalk {
@@ -275,6 +332,11 @@ pub(crate) fn labels() -> &'static [String] {
         out.extend(OBJECT_WALK_COLUMNS.map(|name| format!("native_objects_{name}")));
         out.extend(WORLD_OPAQUE_COLUMNS.map(|name| format!("native_world_opaque_{name}")));
         out.extend(WORLD_SECTION_COLUMNS.map(|name| format!("native_world_opaque_{name}")));
+        for stage in SCENE_LISTS {
+            for result in SCENE_LIST_RESULTS {
+                out.push(format!("native_scene_lists_{stage}_{result}"));
+            }
+        }
         out
     })
 }
@@ -352,6 +414,9 @@ mod tests {
         assert_eq!(columns[i].1, "native_objects_v2_reference_ranges");
         assert_eq!(columns[i + 1].1, "native_objects_v2_display_ranges");
         assert_eq!(columns[i + 2].1, "native_objects_v2_invariants");
+        let lists = phase::Counter::ALL.len() + SCENE_LIST_START;
+        assert_eq!(columns[lists].1, "native_scene_lists_view_objects_native");
+        assert_eq!(columns.last().unwrap().1, "native_scene_lists_transparents_mismatch");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
         assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
         assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");

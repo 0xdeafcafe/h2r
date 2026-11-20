@@ -122,6 +122,29 @@ impl Point {
     }
 }
 
+/// Beginning and end of the index build within the sorted dispatcher.
+pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
+    "TRANSPARENT_ORDER_BEGIN", 0x0001_e381, Sig::Site, "docs/graphics/native-renderer.md",
+);
+pub const TRANSPARENT_ORDER_READY: Point = Point::new(
+    "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
+);
+
+/// The object section loop's call to the shared record writer.
+pub const OBJECT_RECORD_APPEND: Point = Point::new(
+    "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
+);
+/// Return from that call, routed through the generated resume table.
+pub const OBJECT_RECORD_APPENDED: u32 = 0x0013_41d5;
+
+/// The geometry submitter's transparent-only append branch and epilogue.
+pub const TRANSPARENT_GEOMETRY_ENTRY: Point = Point::new(
+    "TRANSPARENT_GEOMETRY_ENTRY", 0x0004_1381, Sig::Site, "docs/graphics/native-renderer.md",
+);
+pub const TRANSPARENT_GEOMETRY_QUEUED: Point = Point::new(
+    "TRANSPARENT_GEOMETRY_QUEUED", 0x0004_1477, Sig::Site, "docs/graphics/native-renderer.md",
+);
+
 /// A named guest global (a word or a structure at a fixed address).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Global {
@@ -510,6 +533,20 @@ points! { ALL;
     /// each entry through `SetRenderState_Simple`, the D3D shadow and
     /// dirty bits, or a per-state setter.
     RENDER_STATES @ 0x0001_a170: [fn(context: ebx, list: stack 0) ret 4]; "docs/graphics/render-loop.md";
+    /// Populate visibility lists from the current view's cluster references.
+    SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Publish clusters and their instanced geometry in visibility order.
+    SCENE_GEOMETRY_GATHER @ 0x0013_4390: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Move objects with the model-link property to the front of the list.
+    SCENE_OBJECT_ORDER @ 0x0013_4240: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Collect, rank and fade the current view's dynamic lights.
+    VISIBLE_LIGHT_LIST @ 0x0003_1910: [fn(output: stack 0) -> eax ret 4]; "docs/graphics/native-renderer.md";
+    /// Mark caster and receiver flags on a light's visibility lists.
+    LIGHT_GEOMETRY_FLAGS @ 0x0003_1660: [fn(light: eax, definition: ecx, vis: esi, owner: stack 0, root: stack 1, point: stack 2, shadow: stack 3) ret 16]; "docs/graphics/native-renderer.md";
+    /// Append the optional owner or owning unit as a dynamic light caster.
+    LIGHT_EXTRA_CASTER @ 0x0003_1c20: [fn(shadow: al, owner: ecx, vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Write one BSP or model render record, with its associated cache state.
+    SCENE_RECORD_WRITER @ 0x0002_cbf0: [opaque]; "docs/graphics/native-renderer.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
@@ -524,6 +561,10 @@ points! { ALL;
     /// calls it after the opaque layers and before the first-person
     /// chain): the occlusion depth capture point.
     SCENE_TRANSPARENTS @ 0x0001_e370: [opaque]; "docs/graphics/occlusion-culling.md";
+    /// Queue an effect callback with inline payload and view depth.
+    TRANSPARENT_EFFECT_ENTRY @ 0x0001_e4e0: [fn(size: ecx, position: edx, handler: stack 0, payload: stack 1) -> al ret 8]; "docs/graphics/native-renderer.md";
+    /// Queue the polygon effect callback with seven extra words.
+    TRANSPARENT_POLYGON_ENTRY @ 0x0001_e5e0: [fn(size: ecx, position: edx) -> al ret 32]; "docs/graphics/native-renderer.md";
     /// A sorted transparent geometry entry's handler: the transparents call
     /// it through the entry's `+0x20` with the entry's `+0x24` (shader
     /// datum, then the render record argument), stdcall, `ret 4`. Runs the
