@@ -162,6 +162,11 @@ impl Memory {
         if parking && restore == NO_RESTORE {
             restore = self.wait_for_park();
         }
+        // The flat model ends here: no paged view was ever lent
+        // (`h2abi_v1_fast_acquire` refuses one in a flat-RAM runtime), so
+        // there is no gate to take and no C dirty bitmap to drain. Its
+        // stores are on the window's cards, which the write watch folds
+        // itself (`Guest::fold_cards`) before anything reads it.
         if !self.enabled.load(Ordering::Acquire) {
             return MemoryGuard {
                 guard,
@@ -202,7 +207,8 @@ impl Memory {
             memory: self,
             restore,
         };
-        // Publish every C store to subscribers before exposing Guest to HLE.
+        // The paged model only: publish every C store to subscribers
+        // before exposing Guest to HLE.
         // SAFETY: result owns the gate and Guest mutex until its Drop.
         let data = unsafe { &mut *self.shared.data.get() };
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
@@ -278,7 +284,11 @@ impl Memory {
     }
     /// A flat-RAM module runs on this memory: its Guest, and any Guest put
     /// in its place, keeps RAM in a backing the window can alias
-    /// ([`Guest::require_aliasable_ram`]). Takes the Guest.
+    /// ([`Guest::require_aliasable_ram`]). Takes the Guest. From here on
+    /// no paged view is lent (`h2abi_v1_fast_acquire`); one lent before,
+    /// by a paged module that ran first, keeps the gate and its bitmap.
+    /// The boot path registers the image's one module before any code
+    /// runs, so that never happens there.
     pub(crate) fn make_flat(&self) {
         if self.flat.swap(true, Ordering::AcqRel) {
             return;
@@ -589,7 +599,11 @@ pub unsafe extern "C" fn h2abi_v1_fast_acquire(exec: *mut crate::ExecCtxOpaque) 
     // SAFETY: the invocation-scoped exclusive context is the caller contract.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
     sync_accesses(ctx);
-    if !ctx.fast_memory_enabled {
+    // A flat-RAM runtime lends no paged view: its write watch is the
+    // window's cards, and a guard there never takes the gate or drains the
+    // C dirty bitmap (`Memory::lock`). A paged module beside the flat one
+    // takes the checked helpers, as with its fast memory off.
+    if !ctx.fast_memory_enabled || ctx.runtime().flat_ram() {
         return std::ptr::null_mut();
     }
     let memory = ctx.runtime().fast_memory();

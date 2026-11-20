@@ -166,7 +166,11 @@ docs/runtime/contract-thin-transfers-flat-ram.md, section 4.1.
   catches window faults, parks generated code for memory guards
   (`Runtime::enable_parking`) and moves guest RAM into a backing the
   window can alias, copying what was there (`Guest::require_aliasable_ram`);
-  a Guest put in its place and a copy-on-write restore are moved too. A
+  a Guest put in its place and a copy-on-write restore are moved too. It
+  lends no paged view (`h2abi_v1_fast_acquire` returns null), so a paged
+  module registered beside the flat one takes the checked helpers and a
+  memory guard never takes the gate or drains the paged dirty bitmap;
+  the write watch reads the cards (`Guest::fold_cards`). A
   second-executor refresh still leaves RAM the window cannot alias, so
   such a view runs through its fixups. A runtime without bit 16 in
   `FEATURES` refuses the module as unknown; a module without it runs the

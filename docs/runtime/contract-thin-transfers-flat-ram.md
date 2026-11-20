@@ -1,6 +1,6 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1, T2, T3 and F3 are built (section 6),
+Written 2026-11-20. Slices T1, F1, T2, T3, F3 and F4 are built (section 6),
 and F2 except its first bullet: deleting the opt-in flat RAM waits for M0,
 which has not been taken. M0's span image still builds with
 `H2_EMIT_FLAT_RAM=1`; `H2_FLAT_RAM=1` alone builds F3's model. F3's tests
@@ -721,7 +721,15 @@ Runtime only. Old images keep running on the paged path.
 
 - `d3d_glue.rs` barrier and `native_world_glue.rs` drain through
   `fold_cards`. Remove the C dirty bitmap from the guard path.
-- Tests: `barrier_sees_every_store_between_draws`; the existing
+- Both drain with `Guest::take_dirty`, which folds the cards first. A
+  flat-RAM runtime lends no paged view (`h2abi_v1_fast_acquire` returns
+  null there, so a paged module beside the flat one takes the helpers),
+  so its guards never take the gate or drain the bitmap
+  (`ffi/memory.rs`, `Memory::lock`). The bitmap and the gate stay for
+  paged images until F8.
+- Tests: `barrier_sees_every_store_between_draws` (in that file, on a
+  flat runtime); `flat_runtime_lends_no_paged_view`
+  (`crates/runtime/runtime/src/window/tests.rs`); the existing
   `crates/apps/boot/tests/write_barrier.rs`.
 - Exit: gameplay frame time on the lab level not worse than paged with
   rendering on (M5); no signal in a steady-state run.

@@ -271,3 +271,39 @@ fn make_aliasable_keeps_the_bytes() {
     assert!(ram.can_alias());
     assert_eq!((ram[5], ram[RAM_SIZE - 1], ram[0x12345], ram[0x5000]), (1, 2, 3, 0));
 }
+
+/// Contract slice F4: a flat-RAM runtime lends no paged view, so its
+/// guards never take the gate or drain the C dirty bitmap; a store through
+/// the window reaches the write watch through its card alone.
+#[test]
+fn flat_runtime_lends_no_paged_view() {
+    let rt = Runtime::new(Guest::new(), flat_dispatch());
+    let id = {
+        let mut m = rt.memory();
+        m.map_zeroed(0x10000, 0x4000, Permissions::RW).unwrap();
+        watched(&mut m, "f4")
+    };
+    let mut ctx = crate::ExecCtx::new(rt.clone(), 0);
+    let exec = (&mut ctx as *mut crate::ExecCtx).cast();
+    // SAFETY: the context is live and nothing else uses it.
+    assert!(unsafe { crate::ffi::h2abi_v1_fast_acquire(exec) }.is_null(), "no paged view");
+    let w = rt.memory().window().cloned().expect("a window on this host");
+    assert!(w.holds(0x10010));
+    // A store through the window, then its card, as generated code makes it.
+    // SAFETY: the window holds the page (checked above).
+    unsafe { (rt.flat_base().unwrap().add(0x10010) as *mut u32).write_volatile(7) };
+    w.mark(0x10010);
+    let physical = rt
+        .memory()
+        .mappings()
+        .iter()
+        .find(|m| m.virtual_start == 0x10000)
+        .unwrap()
+        .physical_start;
+    let dirty = rt.memory().take_dirty(id).unwrap();
+    assert!(
+        dirty.iter().any(|r| (r.addr..r.addr + r.len).contains(&(CONTIGUOUS_BASE | physical))),
+        "{dirty:x?}"
+    );
+    assert_eq!(rt.memory().u32(0x10010).unwrap(), 7);
+}
