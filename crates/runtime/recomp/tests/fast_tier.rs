@@ -32,12 +32,12 @@ fn a_fast_tier_module_links_with_boots_bridges() {
     let entry = 0x0001_0000;
     let owners = emit::plan(vec![function(entry, &code)]);
     let dir = std::env::temp_dir().join(format!("boot-fast-tier-{}", std::process::id()));
-    let lib_path = dir.join(boot::DYLIB);
+    let lib_path = dir.join(recomp::DYLIB);
     let r = clif::build_dylib(
         &owners,
         &dir,
-        Path::new(boot::H2ABI_H),
-        &[("h2boot_bridge.c", boot::BRIDGE), ("h2boot_bridge_x87.c", boot::BRIDGE_X87)],
+        Path::new(recomp::H2ABI_H),
+        &[("h2boot_bridge.c", recomp::BRIDGE), ("h2boot_bridge_x87.c", recomp::BRIDGE_X87)],
         &lib_path,
         1,
     );

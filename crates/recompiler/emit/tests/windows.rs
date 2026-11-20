@@ -108,7 +108,7 @@ fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols()
     compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &emit_dll).unwrap_or_else(|e| panic!("{e}"));
     // ...and as boot does (boot::build): boot's bridge and the x87 bridge
     // compiled apart, exactly as boot::BRIDGE and boot::BRIDGE_X87 are.
-    let boot_bridge = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/boot/c/boot_bridge.c")).unwrap();
+    let boot_bridge = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/recomp/c/boot_bridge.c")).unwrap();
     let boot_x87 = format!("#include \"h2gen.h\"\n{}", include_str!("../c/bridge_x87.c"));
     let boot_dll = dir.join(Arch::X86_64Windows.module_file_name());
     compile::host_dylib(&b, &src, &[("h2boot_bridge.c", &boot_bridge), ("h2boot_bridge_x87.c", &boot_x87)], &boot_dll)
