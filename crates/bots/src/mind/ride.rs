@@ -227,8 +227,10 @@ impl Mind {
                 .vehicles
                 .errand
                 .is_some_and(|at| dist_xy(position, at) < drive::ON_FOOT);
+            let off_mesh = map.filter(|m| !drive::on_mesh(m, position));
             let dest = match dest {
                 Some(d) => Some(d),
+                None if off_mesh.is_some() => None,
                 None => {
                     if self.goal.is_none()
                         || self.vehicles.route.as_ref().is_none_or(drive::Route::done)
@@ -239,10 +241,13 @@ impl Mind {
                     self.goal
                 }
             };
-            if !there
-                && go.is_none()
-                && let Some(dest) = dest
-            {
+            let mut carrot = None;
+            if !there && go.is_none() && let Some(map) = off_mesh {
+                // A missing start polygon says nothing about the goal.
+                // Return to mapped ground before replacing the route.
+                carrot = drive::rejoin(map, spec, position, speed);
+                self.vehicles.route_blocked = true;
+            } else if !there && go.is_none() && let Some(dest) = dest {
                 let needs_route = self.vehicles.route_blocked
                     || self
                         .vehicles
@@ -299,7 +304,7 @@ impl Mind {
                 } else if !self.vehicles.route_refresh {
                     self.vehicles.route_plan.idle();
                 }
-                let carrot = self.vehicles.route.as_mut().and_then(|r| match map {
+                carrot = self.vehicles.route.as_mut().and_then(|r| match map {
                     Some(m) => r.steer(
                         m,
                         spec,
@@ -311,12 +316,8 @@ impl Mind {
                     ),
                     None => r.carrot(position),
                 });
-                if let Some(c) = carrot {
+                if carrot.is_some() {
                     self.vehicles.route_blocked = false;
-                    let to = sub(c, position);
-                    let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
-                    go = Some([to[0] / f, to[1] / f]);
-                    look = Some([c[0], c[1], eye[2]]);
                 } else if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
                     if !self.vehicles.route_blocked {
                         self.vehicles.paths.discard_corridor();
@@ -331,6 +332,22 @@ impl Mind {
                         self.goal = None;
                     }
                 }
+            }
+            if let Some(c) = carrot {
+                let to = sub(c, position);
+                let f = to[0].hypot(to[1]);
+                if f > 1e-3 {
+                    go = Some([to[0] / f, to[1] / f]);
+                    look = Some([c[0], c[1], eye[2]]);
+                }
+            }
+            // This is a budget for a spell without usable steering. Between
+            // spells a driver may finish a short route and choose another.
+            // Backing up to get unstuck does not count as route progress.
+            if chosen.is_some() || go.is_some() {
+                self.vehicles.planless = 0;
+            } else {
+                self.vehicles.planless = self.vehicles.planless.saturating_add(1);
             }
             if let Some(d) = go {
                 let off = wrap(d[1].atan2(d[0]) - aim_at.0);
@@ -356,19 +373,6 @@ impl Mind {
                     }
                 }
                 drive::Unstuck::GiveUp => stuck = true,
-            }
-            // Nowhere to drive: on a large map a roam goal can be beyond
-            // every portal the chassis fits, and plans that keep failing
-            // move nothing. A fight empties the count, a tick steering a
-            // live route slowly pays it off, an idle tick grows it, and a
-            // failed plan grows it by a run's worth (above); past
-            // drive::NOWHERE_TICKS the bot gets out and fights on foot.
-            if chosen.is_some() {
-                self.vehicles.planless = 0;
-            } else if go.is_some() || self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
-                self.vehicles.planless = self.vehicles.planless.saturating_sub(1);
-            } else {
-                self.vehicles.planless += 1;
             }
         } else if look.is_none() {
             // A gun with nothing to shoot: where the enemy was, else ahead.

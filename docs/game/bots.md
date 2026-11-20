@@ -1671,13 +1671,14 @@ the player looks. The driver:
 - plans over walk edges whose portals fit the vehicle and routes through
   their clear spans. Centre and wheel-line probes check floor, overhead
   room and walls before steering, cutting a corner, reversing or trying
-  to splatter someone. With an objective on an unreachable road it
-  dismounts to finish on foot. A roaming goal the chassis cannot reach
+  to splatter someone. After drifting off the mesh it keeps its goal and
+  looks for nearby ground it can steer back onto. With an objective on
+  an unreachable road it dismounts to finish on foot. A roaming goal the chassis cannot reach
   (an infantry-only way there) is blacklisted for 10 s like a foot goal
   it got stuck on, so it is not re-picked at once; and a driver that has
-  had neither a route nor a fight for 4 s — each failed plan counts 16 of
-  those ticks, a tick steering a live route pays one off — gets out to
-  fight on foot rather than sit in a healthy vehicle going nowhere (the
+  had neither usable steering nor a fight for 4 s — each failed roam plan
+  counts 16 of those ticks, and usable steering clears the count — gets
+  out to fight on foot rather than sit in a healthy vehicle going nowhere (the
   large-map case: a pocket the chassis cannot leave). While it waits it
   sweeps the view, as an idle bot on foot does;
 - looks at the carrot (or the enemy it fights) and pushes the stick that

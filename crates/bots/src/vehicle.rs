@@ -365,8 +365,8 @@ pub struct Memory {
     pub(crate) route_plan: crate::work::PlanSchedule,
     pub(crate) route_refresh: bool,
     pub(crate) route_blocked: bool,
-    /// Consecutive ticks a driver that wants to go somewhere has had
-    /// neither a route nor a fight ([`drive::NOWHERE_TICKS`] gets it out).
+    /// Budget spent without usable steering or a fight, including the
+    /// cost of failed roam plans ([`drive::NOWHERE_TICKS`] gets it out).
     pub(crate) planless: u32,
     /// It is getting out for having nowhere to drive: the vehicle is left
     /// alone for [`NOWHERE_SHUN_TICKS`], not [`plan::SHUN_TICKS`].
