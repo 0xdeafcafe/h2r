@@ -54,6 +54,7 @@ dependencies = [
  "debug-menu",
  "engine",
  "feature",
+ "guest-layout",
  "hot-render",
  "hot-tags",
  "input",
@@ -3601,6 +3602,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "feature",
+ "guest-layout",
  "live-proto",
  "live-server",
  "map",
