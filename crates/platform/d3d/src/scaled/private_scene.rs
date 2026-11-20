@@ -72,7 +72,7 @@ impl<'a> MixedPrivatePass<'a> {
         let gpu_aliases = std::mem::replace(&mut backend.view.single_copy_aliases, true);
         let lighting = backend.view.scene_lighting();
         if lighting == crate::Lighting::E3 {
-            backend.view.set_hard_shadows(false);
+            backend.view.set_scene_receiver(false);
         }
         let mut pass = Self {
             source,
@@ -168,7 +168,7 @@ impl Drop for MixedPrivatePass<'_> {
         self.backend.view.count_samples = self.count_samples;
         self.backend.view.single_copy_aliases = self.gpu_aliases;
         if self.lighting == crate::Lighting::E3 {
-            self.backend.view.set_hard_shadows(true);
+            self.backend.view.set_scene_receiver(true);
         }
         std::mem::swap(&mut self.backend.view, self.source);
     }
