@@ -235,12 +235,7 @@ pub(crate) fn playerless_hooks(
     b.raw().before(
         &points::UI_SYNC_NETWORK_SCREEN,
         "machine owns the lobby UI",
-        move |c| {
-            if current().is_some_and(|id| id.playerless_host(&*c.ctx.memory())) {
-                return Ok(Flow::Return(c.ret(0)?));
-            }
-            Ok(Flow::Continue)
-        },
+        move |c| sync_playerless_screen(c, current()),
     );
 
     // The initial title screen can finish constructing after Create. Its
@@ -249,20 +244,34 @@ pub(crate) fn playerless_hooks(
     b.raw().before(
         &points::UI_LEAVE_SESSIONS,
         "keep squad on title screen reset",
-        move |c| {
-            let Some(id) = owner() else {
-                return Ok(Flow::Continue);
-            };
-            let keep = {
-                let m = c.ctx.memory();
-                m.u32(c.cpu.esp).ok() == Some(TITLE_RESET_AFTER_LEAVE) && id.playerless_host(&*m)
-            };
-            if keep {
-                return Ok(Flow::Return(c.ret(4)?));
-            }
-            Ok(Flow::Continue)
-        },
+        move |c| keep_on_title_reset(c, owner()),
     );
+}
+
+fn sync_playerless_screen(
+    c: &mut hooks::Call<'_>,
+    owner: Option<SquadId>,
+) -> Result<Flow, runtime::GuestFault> {
+    if owner.is_some_and(|id| {
+        let m = c.ctx.memory();
+        matches!(m.u32(bots::lobby::SESSION_TYPE), Ok(1 | 2)) && id.playerless_host(&*m)
+    }) {
+        return Ok(Flow::Return(c.ret(0)?));
+    }
+    Ok(Flow::Continue)
+}
+
+fn keep_on_title_reset(
+    c: &mut hooks::Call<'_>,
+    owner: Option<SquadId>,
+) -> Result<Flow, runtime::GuestFault> {
+    if owner.is_some_and(|id| {
+        let m = c.ctx.memory();
+        m.u32(c.cpu.esp).ok() == Some(TITLE_RESET_AFTER_LEAVE) && id.playerless_host(&*m)
+    }) {
+        return Ok(Flow::Return(c.ret(4)?));
+    }
+    Ok(Flow::Continue)
 }
 
 /// Return site of the controller reset's UI_LEAVE_SESSIONS(0).

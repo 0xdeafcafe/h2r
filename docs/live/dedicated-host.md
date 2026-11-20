@@ -736,7 +736,8 @@ and `0x199a03(2)`. A human host's menu then opens the pregame screen.
 Each frame the menu reconciler (`0x199b08`) compares its screen with the
 network lifecycle. With zero signed-in users, the pregame branch at
 `0x19b284` requests a squad leave. A playerless host skips that UI update
-while it owns the active squad. Ownership checks the squad address,
+in pregame (session type 1 or 2) while it owns the active squad. Retail
+runs the update during play and postgame. Ownership checks the squad address,
 incarnation, network class and local host peer. The title screen's
 controller reset also requests a leave during boot. Its call at
 `0x1906d3` preserves the same owned squad. Explicit close uses the

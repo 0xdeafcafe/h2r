@@ -94,12 +94,15 @@ impl Facts {
     }
 
     /// An allocated menu object may remain at the same address after teardown.
-    /// A failed read or a different active session is not a teardown signal.
-    fn lost_after(&self, step: Step) -> bool {
+    /// A replacement releases ownership too, even if its address was reused.
+    fn lost_after(&self, step: Step, current: Option<bool>) -> bool {
         matches!(
             step,
             Step::SquadCreated | Step::SessionStarted | Step::Start
-        ) && (self.squad == Some(0) || self.squad_state == Some(0) || self.network_class == Some(0))
+        ) && (self.squad == Some(0)
+            || self.squad_state == Some(0)
+            || self.network_class == Some(0)
+            || current == Some(false))
     }
 }
 
@@ -243,18 +246,19 @@ pub(super) fn install(b: &mut hooks::Builder, sim: Arc<Inner>) -> Result<(), hoo
                 state.update(step, Some(why.into()), facts);
                 return Ok(Flow::Continue);
             }
-            if facts.lost_after(step) {
+            let current = state.owned_squad.and_then(|id| id.is_current(&*g));
+            if facts.lost_after(step, current) {
                 state.playerless = Some(PlayerlessLobby::default());
                 state.owned_squad = None;
-                state.update(Step::Create, Some("the hosted squad retired".into()), facts);
-                return Ok(Flow::Continue);
-            }
-            if state.owned_squad.is_some_and(|id| !id.is_current(&*g)) {
                 state.update(
-                    step,
-                    Some("the owned squad changed or is unreadable".into()),
+                    Step::Create,
+                    Some("the hosted squad retired or was replaced".into()),
                     facts,
                 );
+                return Ok(Flow::Continue);
+            }
+            if state.owned_squad.is_some() && current.is_none() {
+                state.update(step, Some("the owned squad is unreadable".into()), facts);
                 return Ok(Flow::Continue);
             }
             if step == Step::Start {
@@ -525,13 +529,15 @@ mod tests {
             ..active
         };
         for step in [Step::SquadCreated, Step::SessionStarted, Step::Start] {
-            assert!(!Facts::default().lost_after(step));
-            assert!(!active.lost_after(step));
-            assert!(freed.lost_after(step));
-            assert!(cleared.lost_after(step));
-            assert!(offline.lost_after(step));
+            assert!(!Facts::default().lost_after(step, None));
+            assert!(!active.lost_after(step, Some(true)));
+            assert!(!active.lost_after(step, None));
+            assert!(active.lost_after(step, Some(false)));
+            assert!(freed.lost_after(step, None));
+            assert!(cleared.lost_after(step, None));
+            assert!(offline.lost_after(step, None));
         }
-        assert!(!cleared.lost_after(Step::Create));
-        assert!(!cleared.lost_after(Step::Loading));
+        assert!(!cleared.lost_after(Step::Create, Some(false)));
+        assert!(!cleared.lost_after(Step::Loading, Some(false)));
     }
 }

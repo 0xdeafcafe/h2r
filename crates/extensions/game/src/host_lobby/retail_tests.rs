@@ -221,6 +221,11 @@ fn the_menu_guard_only_keeps_the_driver_owned_playerless_host() {
         .put_u32(S + SESSION_NETWORK_CLASS, 1)
         .put_u32(S + PEER_COUNT, 5);
     assert!(id.playerless_host(&m));
+    assert_eq!(id.is_current(&m), Some(true));
+    assert_eq!(id.is_current(&FakeGuest::new()), None);
+    let mut replacement = m.clone();
+    replacement.put_u32(S + INCARNATION, 10);
+    assert_eq!(id.is_current(&replacement), Some(false));
     for (field, value) in [
         (lobby::SESSION, TARGET),
         (S + INCARNATION, 10),
@@ -232,6 +237,92 @@ fn the_menu_guard_only_keeps_the_driver_owned_playerless_host() {
         let mut other = m.clone();
         other.put_u32(field, value);
         assert!(!id.playerless_host(&other));
+    }
+}
+
+#[test]
+fn pregame_screen_and_title_reset_guards_return_to_their_callers() {
+    use crate::host_lobby::{keep_on_title_reset, sync_playerless_screen};
+    use hooks::{Call, Flow};
+    use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime, TransferAbi, guest::Permissions};
+
+    const STACK: u32 = 0x0060_0000;
+    let id = SquadId {
+        addr: S,
+        incarnation: 9,
+        class: 1,
+    };
+    let mut g = Guest::new();
+    for (addr, size) in [
+        (STACK, 0x1000),
+        (S, 0x8000),
+        (lobby::SESSION & !0xfff, 0x1000),
+        (bots::guest::SLOTS & !0xfff, 0x4000),
+    ] {
+        g.map_zeroed(addr, size, Permissions::RW).unwrap();
+    }
+    g.set_u8(lobby::NETWORKING, 1).unwrap();
+    g.set_u32(lobby::SESSION, S).unwrap();
+    g.set_u32(S + STATE, session::STATE_LIVE).unwrap();
+    g.set_u32(S + INCARNATION, id.incarnation).unwrap();
+    g.set_u32(S + SESSION_NETWORK_CLASS, id.class).unwrap();
+    let rt = Runtime::new(g, Dispatch::default());
+    let mut ctx = ExecCtx::new(rt.clone(), 1);
+
+    for (point, cycle, caller, owner, popped) in [
+        (&points::UI_SYNC_NETWORK_SCREEN, 0, 123, Some(id), 0),
+        (&points::UI_SYNC_NETWORK_SCREEN, 1, 123, Some(id), 4),
+        (&points::UI_SYNC_NETWORK_SCREEN, 2, 123, Some(id), 4),
+        (&points::UI_SYNC_NETWORK_SCREEN, 3, 123, Some(id), 0),
+        (&points::UI_SYNC_NETWORK_SCREEN, 1, 123, None, 0),
+        (
+            &points::UI_LEAVE_SESSIONS,
+            1,
+            0x0019_06d8,
+            Some(id),
+            8,
+        ),
+        (
+            &points::UI_LEAVE_SESSIONS,
+            1,
+            0x0019_06d9,
+            Some(id),
+            0,
+        ),
+        (
+            &points::UI_LEAVE_SESSIONS,
+            1,
+            0x0019_06d8,
+            None,
+            0,
+        ),
+    ] {
+        rt.memory().set_u32(lobby::SESSION_TYPE, cycle).unwrap();
+        rt.memory().set_u32(STACK, caller).unwrap();
+        let mut cpu = CpuAbi {
+            esp: STACK,
+            ..Default::default()
+        };
+        let mut c = Call {
+            cpu: &mut cpu,
+            ctx: &mut ctx,
+            addr: point.base,
+            point,
+        };
+        let flow = if point.base == points::UI_LEAVE_SESSIONS.base {
+            keep_on_title_reset(&mut c, owner)
+        } else {
+            sync_playerless_screen(&mut c, owner)
+        }
+        .unwrap();
+        match flow {
+            Flow::Continue => assert_eq!(popped, 0),
+            Flow::Return(t) => {
+                assert_ne!(popped, 0);
+                assert_eq!(t, TransferAbi::ret(caller));
+            }
+        }
+        assert_eq!(cpu.esp, STACK + popped);
     }
 }
 

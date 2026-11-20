@@ -70,15 +70,20 @@ pub(crate) struct SquadId {
 }
 
 impl SquadId {
-    pub(crate) fn is_current(self, m: &dyn GuestMemory) -> bool {
-        squad(m).ok().flatten() == Some(self.addr)
-            && m.u32(self.addr + INCARNATION) == Ok(self.incarnation)
-            && m.u32(self.addr + SESSION_NETWORK_CLASS) == Ok(self.class)
-            && matches!(self.class, 1 | 2)
+    /// A failed read leaves ownership unknown until the next tick.
+    pub(crate) fn is_current(self, m: &dyn GuestMemory) -> Option<bool> {
+        if squad(m).ok()? != Some(self.addr) {
+            return Some(false);
+        }
+        Some(
+            m.u32(self.addr + INCARNATION).ok()? == self.incarnation
+                && m.u32(self.addr + SESSION_NETWORK_CLASS).ok()? == self.class
+                && matches!(self.class, 1 | 2),
+        )
     }
 
     pub(super) fn playerless_host(self, m: &dyn GuestMemory) -> bool {
-        self.is_current(m)
+        self.is_current(m) == Some(true)
             && m.u32(self.addr + STATE) == Ok(session::STATE_LIVE)
             && m.u32(self.addr + LOCAL_PEER).is_ok_and(|local| {
                 local < session::MAX && m.u32(self.addr + HOST_PEER) == Ok(local)

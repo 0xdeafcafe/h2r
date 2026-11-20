@@ -251,7 +251,9 @@ regular phantom uplink and remote gather.
 
 Each change in wait reason emits `sim: System Link host waits at <step>: <reason>`.
 A wait at `Start` can report `3 of 4 players` or a peer's map status.
-If the squad retires during setup, the host returns to `Create`.
+If the squad retires or is replaced during setup, the host releases ownership
+and returns to `Create`. If another network squad is still active, creation
+reports that a network squad already exists.
 The co-op hooks (`SESSION_GAME_LIMITS` "peer limit 2",
 `SESSION_GAME_START` "one peer for the campaign check",
 `LOBBY_START_STATE` "co-op over 2 to N consoles") act on campaign
