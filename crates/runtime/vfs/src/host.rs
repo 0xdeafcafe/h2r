@@ -14,10 +14,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
+
+#[path = "host_format.rs"]
+mod format;
 
 #[derive(Clone)]
 struct Child {
@@ -212,50 +215,12 @@ fn write_record(target: &Path, info: BasicInfo) -> Result<()> {
     sync_directory(parent)
 }
 
-/// The sibling path a format stages `root`'s replacement or moves its old
-/// tree aside to (see [`HostBackend::format`]). The counter keeps a
-/// leftover of an earlier, crashed or partly deleted format from blocking
-/// the next one; construction sweeps what remains.
-fn format_companion(root: &Path, kind: &str) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let name = root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    root.with_file_name(format!(
-        ".{name}.h2format-{kind}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-/// Delete what an interrupted format left next to `root`: a staged empty
-/// root or an old tree whose deletion failed (see [`HostBackend::format`]).
-/// Links are removed themselves, never followed.
-fn sweep_format_leftovers(root: &Path) {
-    let (Some(name), Some(parent)) = (root.file_name().and_then(|n| n.to_str()), root.parent())
-    else {
-        return;
-    };
-    let prefix = format!(".{name}.h2format-");
-    let Ok(entries) = fs::read_dir(parent) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if !entry.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)) {
-            continue;
-        }
-        if let Err(error) = fs::remove_dir_all(entry.path()) {
-            eprintln!(
-                "vfs: cannot remove {} left by an interrupted format: {error}",
-                entry.path().display()
-            );
-        }
-    }
-}
-
 /// FATX view of a private host directory. Metadata is outside the mounted tree.
 /// One owner must serialize mutations, including direct Backend calls. The Vfs checks access at open.
 pub struct HostBackend {
     root: PathBuf,
     metadata_root: PathBuf,
+    format_roots: [format::FormatRoot; 2],
     capacity: u64,
     label: String,
     serial: u32,
@@ -369,8 +334,10 @@ impl HostBackend {
         if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
             return Err(Error::InvalidParameter);
         }
-        sweep_format_leftovers(&root);
-        sweep_format_leftovers(&metadata_root);
+        let format_roots = [
+            format::FormatRoot::new(&root)?,
+            format::FormatRoot::new(&metadata_root)?,
+        ];
         let written = Arc::new(Written {
             metadata_root: metadata_root.clone(),
             stale: Mutex::new(METADATA_STALE),
@@ -385,6 +352,7 @@ impl HostBackend {
             written,
             root,
             metadata_root,
+            format_roots,
             capacity: 5 * 1024 * 1024 * 1024,
             label: "Xbox Data".into(),
             serial: 1,
@@ -1100,16 +1068,10 @@ impl Backend for HostBackend {
         basic.attributes &= FATX_ATTRIBUTES;
         self.store_basic(path, basic)
     }
-    /// Empty the volume by swapping both roots for staged empty
-    /// directories ([`HostBackend::swap_roots`]), then dropping every
-    /// cached and pending record of the old trees. A failed swap is rolled
-    /// back, so a failed format changes nothing the guest can see: a host
-    /// read error on an old entry (a permission failure, a transient I/O
-    /// error) cannot make that entry look deleted, it can only fail the
-    /// format with the entry's files intact. The old trees are deleted
-    /// best-effort after the swap; a tree that cannot go (an unreadable
-    /// host directory) stays next to its root, invisible to the guest, and
-    /// is swept at the next mount ([`sweep_format_leftovers`]).
+    /// Replace both roots with staged empty directories before clearing any
+    /// cached or pending metadata. A swap error rolls back the renames.
+    /// Old trees are cleaned up separately, so an unreadable entry cannot
+    /// cause partial deletion on a failed format.
     fn format(&mut self) -> Result<()> {
         // Land queued writes before their files move aside.
         self.settle_all();
@@ -1120,31 +1082,24 @@ impl Backend for HostBackend {
         if let Some(error) = self.next_format_error.take() {
             return Err(error);
         }
-        let asides = self.swap_roots()?;
+        let swaps = format::swap_roots(&self.format_roots, || {
+            #[cfg(test)]
+            if let Some(remaining) = self.format_error_after_renames.get() {
+                if remaining == 0 {
+                    self.format_error_after_renames.set(None);
+                    return Err(Error::IoDeviceError);
+                }
+                self.format_error_after_renames.set(Some(remaining - 1));
+            }
+            Ok(())
+        })?;
         if let Some(wb) = &self.write_behind {
             wb.clear_errors();
         }
         written.clear();
         *self.cache.borrow_mut() = Cache::default();
         drop(written);
-        // The swap is durable before the old trees go.
-        let parents: BTreeSet<_> = [&self.root, &self.metadata_root]
-            .into_iter()
-            .filter_map(|root| root.parent().map(Path::to_owned))
-            .collect();
-        for parent in parents {
-            if let Err(error) = sync_directory(&parent) {
-                eprintln!("vfs: formatted volume, but its directory sync failed: {error}");
-            }
-        }
-        for aside in &asides {
-            if let Err(error) = fs::remove_dir_all(aside) {
-                eprintln!(
-                    "vfs: the old tree of a formatted volume stays at {} ({error}); the next mount sweeps it",
-                    aside.display()
-                );
-            }
-        }
+        format::finish(&mut self.format_roots, swaps);
         Ok(())
     }
     fn remove(&mut self, path: &str) -> Result<()> {
@@ -1295,79 +1250,6 @@ impl Backend for HostBackend {
         })
     }
 }
-impl HostBackend {
-    /// The emptying half of `format`: swap each root for a staged empty
-    /// sibling directory, rolling every completed swap back on the first
-    /// error, so a failed format leaves both roots exactly as they were.
-    /// Returns the old trees' aside paths; their deletion is the caller's
-    /// and best-effort, after the swap is durable.
-    fn swap_roots(&self) -> Result<Vec<PathBuf>> {
-        let roots = [self.root.clone(), self.metadata_root.clone()];
-        let mut asides = Vec::with_capacity(roots.len());
-        for root in &roots {
-            match self.swap_root(root) {
-                Ok(aside) => asides.push(aside),
-                Err(error) => {
-                    for (root, aside) in roots.iter().zip(&asides).rev() {
-                        // The staged root is empty; the old tree moves back.
-                        let undo =
-                            fs::remove_dir(root).and_then(|()| fs::rename(aside, root));
-                        if let Err(undo) = undo {
-                            eprintln!(
-                                "vfs: format rollback of {} failed, its old tree is at {}: {undo}",
-                                root.display(),
-                                aside.display()
-                            );
-                        }
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        Ok(asides)
-    }
-
-    /// Swap `root` for a staged empty directory, returning the old tree's
-    /// aside path. A rename is atomic, so the root is either swapped or —
-    /// after undoing the first half of a failed swap — untouched.
-    fn swap_root(&self, root: &Path) -> Result<PathBuf> {
-        let staging = format_companion(root, "new");
-        let aside = format_companion(root, "old");
-        fs::create_dir(&staging)?;
-        let swapped = self
-            .format_rename(root, &aside)
-            .and_then(|()| self.format_rename(&staging, root));
-        if let Err(error) = swapped {
-            // Undo a completed first half; a failed one moved nothing.
-            if aside.exists()
-                && let Err(undo) = fs::rename(&aside, root)
-            {
-                eprintln!(
-                    "vfs: format rollback of {} failed, its old tree is at {}: {undo}",
-                    root.display(),
-                    aside.display()
-                );
-            }
-            let _ = fs::remove_dir(&staging);
-            return Err(error);
-        }
-        Ok(aside)
-    }
-
-    /// One rename of a root swap, with the test's fault injection.
-    fn format_rename(&self, from: &Path, to: &Path) -> Result<()> {
-        #[cfg(test)]
-        if let Some(n) = self.format_error_after_renames.get() {
-            if n == 0 {
-                self.format_error_after_renames.set(None);
-                return Err(Error::IoDeviceError);
-            }
-            self.format_error_after_renames.set(Some(n - 1));
-        }
-        Ok(fs::rename(from, to)?)
-    }
-}
-
 impl Drop for HostBackend {
     fn drop(&mut self) {
         // Every queued write lands before the cleanups sync the files.
@@ -1891,6 +1773,20 @@ mod tests {
         backend.format().unwrap();
         assert_eq!(backend.pending_written(), 0);
         assert!(!backend.root.join("data").exists());
+    }
+
+    #[test]
+    fn successive_formats_use_the_replacement_roots() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        for _ in 0..2 {
+            backend.create("data", false, ATTR_HIDDEN).unwrap();
+            let record = backend.metadata_path("data");
+            assert!(record.exists());
+            backend.format().unwrap();
+            assert_eq!(backend.stat("data"), Err(Error::ObjectNameNotFound));
+            assert!(!record.exists());
+        }
     }
 
     #[cfg(unix)]

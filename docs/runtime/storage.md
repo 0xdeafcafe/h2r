@@ -92,18 +92,28 @@ file's READONLY attribute; permission decisions belong to the VFS open and
 disposition paths. Host OS permissions still apply.
 
 `Vfs::format_device(device)` quick-formats one mounted device by exact name
-through `Backend::format` (default `MediaWriteProtected`). `HostBackend`
-swaps its root and metadata directories for staged empty siblings (a rename
-on the same filesystem) and drops its caches; the old trees are deleted
-afterwards, without following symlinks. The swap rolls back on the first
-error, so a failed format changes nothing the guest can see: a host read
-error inside the old tree (a permission failure, a transient I/O error)
-cannot make its entries look deleted. An old tree that cannot be deleted
-stays next to its root, invisible to the guest, and is swept at the next
-mount. `Vfs::device_of(name)`
-gives the mounted device a name finally resolves into. It fails with `SharingViolation`, changing nothing,
-while any file object or pending delete exists on that volume. XAPI uses it for
-the Z: and N: cache volumes (docs/runtime/xapi.md).
+through `Backend::format` (default `MediaWriteProtected`). The format fails
+with `SharingViolation` while any file object or pending delete exists on
+that volume. `HostBackend::format` swaps the data and metadata roots for
+staged empty siblings by rename. It rolls back completed renames if a
+swap fails and clears caches and pending metadata after both swaps succeed.
+Cleanup of the old trees is best effort. A tree left aside stays outside
+the guest namespace for the next mount to sweep.
+
+On Unix, the format code in `crates/runtime/vfs/src/host_format.rs` holds
+descriptors for each root and its parent from mount time. It identifies the
+mounted root by device and inode, finding it under its new name if it moves
+within that parent. If the root leaves the held parent, the format fails.
+Staging, renames, rollback, directory sync, and cleanup use the held
+descriptors. A moved ancestor therefore leaves format anchored to the
+original parent. Format syncs the parent directories before cleanup,
+which opens directories without following symlinks and unlinks the links
+themselves. Windows uses paths for swaps and rollback within the app's
+private directories and deletes old trees without following links inside
+them.
+
+`Vfs::device_of(name)` gives the mounted device a name finally resolves
+into. XAPI uses it to distinguish the [Z: and N: cache volumes](xapi.md).
 
 `DiscBackend<R: Read + Seek + Send>` uses `xiso::Xiso` to discover the game
 partition and index directory records. `DiscBackend::open(path)` uses a
@@ -212,13 +222,10 @@ subtrees. Litter symlinks are unlinked without following them. Other invisible
 objects are left untouched and can still prevent physical removal; that
 failure preserves the directory's logical metadata.
 
-Use one VFS instance under a kernel mutex for all guest threads, and one
-owner of each data root. Do not mount the same physical directory through
-multiple independent backend objects. Host paths are resolved for each
-operation, not held as OS descriptors per guest handle. Concurrent external
-renames, replacements or hostile symlink changes are outside this contract;
-this is a private emulator data directory, not a sandbox for untrusted host
-processes. Share reservations do not coordinate separate processes/VFSes.
+Use one VFS instance under a kernel mutex for all guest threads and one
+backend per physical directory. Ordinary guest file operations resolve host
+paths for each request and rely on the mounted paths staying stable. Share
+reservations apply within a single VFS instance.
 Directory indexes refresh on a parent-directory modification timestamp change
 and are updated incrementally by VFS create/write/resize/remove. Repeated lookups do not enumerate
 the parent again. Logical allocation is scanned once and updated incrementally

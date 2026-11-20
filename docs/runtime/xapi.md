@@ -445,10 +445,11 @@ Volumes are compared with `Vfs::device_of`, so an alias chain or a link
 into a subdirectory counts. Either format fails with 32 while a file on that
 volume is open. So N:'s format cannot empty Z:, and XFormatUtilityDrive
 cannot empty N:. `HostBackend::format` swaps each root directory for a
-staged empty sibling by rename, then deletes the old tree without
-following symlinks. A root or ancestor path swapped for a symlink later,
-or a symlink inside the volume, cannot redirect its deletions, and a swap
-that fails partway is rolled back (docs/runtime/storage.md).
+staged empty sibling by rename and rolls back completed renames if a swap
+fails. On Unix the format follows the mounted roots when their parents
+move or when the roots are renamed within those parents. It uses directory
+descriptors for the swaps and cleanup, so symlinks cannot redirect either
+operation. See [filesystem implementations](storage.md#filesystem-implementations).
 
 ## Runtime registration
 
