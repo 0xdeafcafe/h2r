@@ -1314,7 +1314,7 @@ retention/draining. No test runs the title.
 connect to Xbox Live" dialog, the one that offers the troubleshooter (UI
 error `0x23`). The game draws it in its dialog and font; no tag or localized
 string is edited. `boot::run_hosted_with_live` installs it after the Live
-boundary and telemetry. `H2_NO_LIVE_NOTICE=1` leaves it out.
+boundary and telemetry.
 
 How the dialog is reached (static reading of the retail image, not a run):
 

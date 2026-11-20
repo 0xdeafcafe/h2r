@@ -8,7 +8,6 @@ built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
 
 Code: `crates/boot/src/community_variants.rs`, installed by the boot runner.
-Set `H2_NO_COMMUNITY_VARIANTS=1` to leave the list as retail.
 
 No game data is in the repository. Addresses are guest virtual addresses of
 the retail XBE (SHA-256 `03215919…935d`), named only as hook points. The
@@ -179,7 +178,7 @@ Why these, and the sources:
   custom game; no source gives a Halo 2 recipe, so the settings are ours.
   Halo 2's editor has no unarmed start; our added choice "None" for the
   starting weapon gives one (game-options.md). Without our choices
-  (`H2_NO_VARIANT_OPTIONS=1`) the variant is left out, as any variant with
+  the variant would be left out, as any variant with
   a value the game doesn't offer is.
 
 Considered and left out: Michael Jackson (the name), Fiesta and Dodgeball (retail names), Duck Hunt and
