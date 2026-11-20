@@ -51,8 +51,8 @@ use map::build::{Block, TagSet};
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Target, Val};
 
-use crate::convert::{ConvertedSound, convert_sound, decibels};
-use crate::h1::{SND, Sound};
+use crate::convert::{ConvertedSound, decibels};
+use crate::h1::SND;
 use crate::{Error, Result};
 
 /// Halo 1 `lsnd` group.
@@ -141,13 +141,7 @@ fn elements<'a>(h1: &'a H1Map, b: &[u8], at: usize, len: usize) -> Result<Vec<&'
 /// Reads `tag` (an `lsnd`) and converts every sound it names.
 pub fn read_looping(h1: &H1Map, tag: &Tag) -> Result<Looping> {
     let mut out = read_definition(h1, tag)?;
-    for name in out.sound_names() {
-        let t = h1.find(SND, &name).expect("named by a reference above");
-        match Sound::read(h1, t).and_then(|s| convert_sound(&s, h1.bytes())) {
-            Ok(c) => out.sounds.push((name, c)),
-            Err(e) => return Err(Error::Invalid(format!("{}: {name}: {e}", h1.header().name))),
-        }
-    }
+    out.sounds = crate::convert::read_source_sounds(h1, out.sound_names(), |_| false)?;
     Ok(out)
 }
 

@@ -48,12 +48,6 @@ use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 /// or the referenced tag's group. Checked before [`KNOWN`].
 const ALLOWED: &[Rule] = &[
     (
-        "mode",
-        "materials[].shader",
-        "emblem",
-        "(a) the player biped's emblem material: Halo 2's, which draws the player's own emblem and colours (h1models::emblem)",
-    ),
-    (
         "vehi",
         "*",
         "none-word",
@@ -182,6 +176,14 @@ struct Audit<'a> {
 impl Halo1Objects for Audit<'_> {
     fn object(&mut self, group: [u8; 4], name: &str) -> Result<usize, String> {
         self.inner.object(group, name)
+    }
+
+    fn fixture(
+        &mut self,
+        tag: &h1map::Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<usize, String> {
+        self.inner.fixture(tag, lighting)
     }
 
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
@@ -379,7 +381,7 @@ fn meaning<'d>(d: &'d StructDef, path: &str) -> Option<&'d str> {
 
 /// Each original slot must point into this tree, to the shader it was
 /// built from. Only the extra slot appended to a player can be an emblem.
-fn campaign_materials(h1: &H1Map, base: &Base, snap: &Snapshot, name: &str, mode: &Record) {
+fn campaign_materials(h1: &H1Map, snap: &Snapshot, name: &str, mode: &Record) {
     let map = &h1.header().name;
     let model = h1.find(h1map::Group::new(b"mode"), name).expect("source render model");
     let source = h1map::Block::read(h1.tag_data(model).unwrap(), 0xdc).unwrap();
@@ -392,7 +394,11 @@ fn campaign_materials(h1: &H1Map, base: &Base, snap: &Snapshot, name: &str, mode
             panic!("{map} {name} slot {k}: unresolved shader {shader:?}");
         };
         if k == n {
-            assert_eq!(base.name(*id), Some((FourCC(*b"shad"), h1objects::convert::EMBLEM_SHADER)));
+            let (name, shader) = local_index(*id)
+                .and_then(|i| snap.tags.get(i))
+                .expect("the emblem instance is rebuilt in this tree");
+            assert_eq!(name, h1objects::convert::EMBLEM_SHADER);
+            assert_eq!(shader.group, FourCC(*b"shad"));
             continue;
         }
         let source = h1.tag(h1map::TagRef::read(rows, k * 0x20).unwrap().id).unwrap();
@@ -422,7 +428,7 @@ fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
         let d = Defs::builtin().group(conv.group);
         let record = d.and_then(|d| defs::from_built(d, &conv.root).ok());
         if conv.group == FourCC(*b"mode") && h1map::disc::CAMPAIGN_LEVELS.contains(&map) {
-            campaign_materials(h1, base, snap, tag, record.as_ref().expect("read campaign model"));
+            campaign_materials(h1, snap, tag, record.as_ref().expect("read campaign model"));
         }
         // Retail references.
         let mut refs = Vec::new();
@@ -434,14 +440,7 @@ fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
             let (g, name) = base.name(id).unwrap_or_else(|| {
                 panic!("{map} {group} {tag} {p}: {id:?} is in neither the tree nor the base")
             });
-            // The emblem material is Halo 2's on purpose: it draws the
-            // player's own emblem and colours.
-            let what = if name == h1objects::convert::EMBLEM_SHADER {
-                "emblem".to_owned()
-            } else {
-                g.to_string()
-            };
-            out.push(leak(&p, what, name.to_owned()));
+            out.push(leak(&p, g.to_string(), name.to_owned()));
         }
         // Role values still there.
         let Some(r) = &record else {

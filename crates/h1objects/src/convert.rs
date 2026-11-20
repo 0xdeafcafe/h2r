@@ -288,10 +288,8 @@ pub const TICKS_PER_SECOND: f32 = 30.0;
 /// (docs/halo1/health.md).
 pub const POWERUP_HEALTH: i16 = 5;
 
-/// The Chief's emblem material (stem `opaque\emblem_overlay_simple`): the
-/// engine's emblem bitmap, its frame and colours the drawn player's
-/// (`0x0022ace7`). Player bipeds' emblem parts draw with it.
-pub const EMBLEM_SHADER: &str = "objects\\characters\\masterchief\\shaders\\mc_emblem";
+/// The rebuilt player-emblem instance, using Halo 2's emblem draw program.
+pub const EMBLEM_SHADER: &str = r"h1\player_emblem";
 
 /// One value carried from Halo 1 into the Halo 2 tag.
 #[derive(Clone, Debug, PartialEq)]
@@ -763,9 +761,12 @@ pub struct Converter<'a> {
     /// ([`Self::dialogue`]).
     pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
+    /// Per rebuilt machine or light, the variants used by fixture placements.
+    fixture_variants: HashMap<(TagId, [u32; 4]), TagId>,
     /// Render models by source, weapon counter maximum and object texture override.
     render_models: HashMap<(h1map::TagId, Option<i16>, i16), TagId>,
     permuted_shaders: HashMap<(h1map::TagId, i16), TagId>,
+    emblem_shader: Option<TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Per converted `coll`, the `hlmt` materials it needs
@@ -835,8 +836,10 @@ impl<'a> Converter<'a> {
             tree: Tree::default(),
             coll_reports: Vec::new(),
             done: HashMap::new(),
+            fixture_variants: HashMap::new(),
             render_models: HashMap::new(),
             permuted_shaders: HashMap::new(),
+            emblem_shader: None,
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             coll_materials: HashMap::new(),
@@ -1024,10 +1027,7 @@ impl<'a> Converter<'a> {
             return Ok(None);
         }
         self.dialogue_bytes += size;
-        self.tree.sounds.push((tag.name.clone(), c));
-        let k = self.tree.sounds.len() - 1;
-        self.sound_index.insert(tag.id.0, k);
-        Ok(Some(sound(k)))
+        self.queue_sound(tag, c).map(Some)
     }
 
     /// A Halo 1 decal from the `deca` definition
@@ -1092,9 +1092,28 @@ impl<'a> Converter<'a> {
         let converted = h1sounds::Sound::read(self.h1, tag)
             .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
             .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        self.queue_sound(tag, converted)
+    }
+
+    fn queue_sound(&mut self, tag: &Tag, converted: h1sounds::ConvertedSound) -> Result<TagId> {
+        let target = converted.promotion.as_ref().and_then(|p| p.target.clone());
+        let dependencies = h1sounds::convert::read_source_sounds(self.h1, target, |name| {
+            self.h1.find(h1sounds::h1::SND, name).is_some_and(|source| {
+                source.id == tag.id || self.sound_index.contains_key(&source.id.0)
+            })
+        })
+        .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
         let k = self.tree.sounds.len();
         self.tree.sounds.push((tag.name.clone(), converted));
         self.sound_index.insert(tag.id.0, k);
+        for (name, sound) in dependencies {
+            let source = self
+                .h1
+                .find(h1sounds::h1::SND, &name)
+                .expect("read source sound");
+            self.sound_index.insert(source.id.0, self.tree.sounds.len());
+            self.tree.sounds.push((name, sound));
+        }
         Ok(sound(k))
     }
 
@@ -1324,7 +1343,7 @@ impl<'a> Converter<'a> {
                 let player = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"bipd")
                     && health_hud::is_player_biped(name);
                 if player {
-                    self.emblem(rep, &mut h1_model, &mut shaders);
+                    self.emblem(&rep.source, &mut h1_model, &mut shaders)?;
                 }
                 // One material per Halo 1 shader, as convert_model writes.
                 let opts = ModelOptions {
@@ -1584,35 +1603,44 @@ impl<'a> Converter<'a> {
         Ok((id, key))
     }
 
-    /// Adds the player's emblem to a player biped's `model`
-    /// ([`h1models::emblem::add_emblem`] at its default, the left
-    /// shoulder) and names its material: the base's [`EMBLEM_SHADER`],
-    /// which draws the emblem of the player being drawn. `shaders` (one
-    /// per Halo 1 shader so far) gains it at the emblem's index. Without
-    /// the shader in the base, or a spot on the model, the model is left
-    /// as it is and the report says so.
+    /// Adds the player's emblem part and builds its material once per tree.
     fn emblem(
         &mut self,
-        rep: &mut ObjectReport,
+        source: &str,
         model: &mut h1models::h1::Model,
         shaders: &mut Vec<TagId>,
-    ) {
-        let Some(shader) = self.base.find(b"shad", EMBLEM_SHADER) else {
-            rep.no_home.push(format!(
-                "emblem: the base has no {EMBLEM_SHADER}; none drawn"
-            ));
-            return;
-        };
+    ) -> Result<()> {
+        use h1convert::shad::{EMBLEM_BITMAP, EMBLEM_STEM, emblem};
+        let error = |why: String| h1convert::Error::no_rebuild(&self.h1.header().name, source, why);
         let at = &h1models::emblem::LEFT_SHOULDER;
-        let Some(index) = h1models::emblem::add_emblem(model, at) else {
-            rep.no_home.push(format!(
-                "emblem: no surface bound to {} met the ray; none drawn",
-                at.node
-            ));
-            return;
+        let index = h1models::emblem::add_emblem(model, at)
+            .ok_or_else(|| error(format!("emblem: no surface bound to {}", at.node)))?;
+        let shader = if let Some(id) = self.emblem_shader {
+            id
+        } else {
+            let stem = self
+                .base
+                .find(b"stem", EMBLEM_STEM)
+                .ok_or_else(|| error(format!("emblem program {EMBLEM_STEM} is missing")))?;
+            let bitmap = self
+                .base
+                .find(b"bitm", EMBLEM_BITMAP)
+                .ok_or_else(|| error(format!("emblem atlas {EMBLEM_BITMAP} is missing")))?;
+            let root = emblem(stem, bitmap).map_err(|e| error(e.to_string()))?;
+            let id = self.tree.push(
+                EMBLEM_SHADER,
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root,
+                    raw: Vec::new(),
+                },
+            );
+            self.emblem_shader = Some(id);
+            id
         };
         debug_assert_eq!(shaders.len(), index);
         shaders.push(shader);
+        Ok(())
     }
 
     /// One rebuilt material per Halo 1 shader. Null-base model shaders
@@ -2224,13 +2252,107 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Rebuild the placement-specific light on the fixture's original
+    /// markers. Identical overrides share a machine and its light tags.
+    pub fn fixture(
+        &mut self,
+        tag: &Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<TagId> {
+        use tags::defs::{self, Defs, Target, Val};
+
+        if tag.group != h1map::Group::new(b"lifi") {
+            return Err(Error::WrongGroup(tag.group.to_string(), *b"lifi"));
+        }
+        let machine = self.object(tag)?;
+        let Some(lighting) = lighting else {
+            return Ok(machine);
+        };
+        let key = (machine, lighting.key());
+        if let Some(&id) = self.fixture_variants.get(&key) {
+            return Ok(id);
+        }
+        let machine_group = FourCC(*b"mach");
+        let light_group = FourCC(*b"ligh");
+        let machine_def = Defs::builtin()
+            .group(machine_group)
+            .expect("machine definition");
+        let owner = local_index(machine).expect("rebuilt fixture is local");
+        let mut record = defs::from_built(machine_def, &self.tree.tags[owner].1.root)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let Some(Val::Block(attachments)) = record.at_mut("devi.obje.attachments") else {
+            return Err(Error::Invalid(format!(
+                "{}: fixture attachments missing",
+                tag.name
+            )));
+        };
+        let mut light_count = 0;
+        for attachment in attachments {
+            let Some(Val::Ref { group, target }) = attachment.at_mut("type") else {
+                return Err(Error::Invalid(format!(
+                    "{}: invalid fixture attachment",
+                    tag.name
+                )));
+            };
+            if *group != light_group.as_u32() {
+                continue;
+            }
+            let Target::Id(light) = target else {
+                return Err(Error::Invalid(format!(
+                    "{}: fixture light is unresolved",
+                    tag.name
+                )));
+            };
+            let light_key = (*light, lighting.key());
+            let variant = if let Some(&id) = self.fixture_variants.get(&light_key) {
+                id
+            } else {
+                let index = local_index(*light).ok_or_else(|| {
+                    Error::Invalid(format!("{}: fixture light is not rebuilt", tag.name))
+                })?;
+                let (name, existing) = &self.tree.tags[index];
+                let name = format!("{name}_fixture");
+                let root = crate::rebuild::fixture_light(&existing.root, lighting)?;
+                let id = self.tree.push(
+                    &name,
+                    Converted {
+                        group: light_group,
+                        root,
+                        raw: Vec::new(),
+                    },
+                );
+                self.fixture_variants.insert(light_key, id);
+                id
+            };
+            *light = variant;
+            light_count += 1;
+        }
+        if light_count == 0 {
+            return Err(Error::Invalid(format!(
+                "{}: authored fixture lighting has no attached light",
+                tag.name
+            )));
+        }
+        let root = defs::to_built(machine_def, &record, &mut |_| None)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let id = self.tree.push(
+            &format!("{}_placed", tag.name),
+            Converted {
+                group: machine_group,
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.fixture_variants.insert(key, id);
+        Ok(id)
+    }
+
     /// A Halo 1 machine, control or light fixture, from the `mach` or
     /// `ctrl` definition ([`crate::rebuild::device`]); a light fixture is
     /// a machine (Halo 2 has no `lifi` tags). There is no template path.
     fn device(&mut self, tag: &Tag) -> Result<TagId> {
         let mut dev = h1::Device::read(self.h1, tag)?;
         self.halo2_change_colours(&mut dev.object);
-        let lifi = dev.machine.is_none() && dev.control.is_none();
         let group = if dev.control.is_some() {
             b"ctrl"
         } else {
@@ -2317,11 +2439,6 @@ impl<'a> Converter<'a> {
         }
         let root = tags::defs::to_built(d, &record, &mut |_| None)
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        if lifi {
-            rep.no_home.push(
-                "lifi: built as a mach (platform) with its attachments; the placement's colour and intensity are not carried".into(),
-            );
-        }
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,

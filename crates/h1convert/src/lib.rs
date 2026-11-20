@@ -28,6 +28,7 @@ pub mod clusters;
 pub mod collision;
 pub mod compact;
 pub mod convert;
+pub mod fixture;
 pub mod flood;
 pub mod fresh;
 pub mod globals;

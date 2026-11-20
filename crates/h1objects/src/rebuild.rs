@@ -2850,6 +2850,23 @@ pub fn light(l: &h1::Light) -> Result<Block> {
     built(d, &r)
 }
 
+/// Write the authored placement's constant RGB and brightness to the
+/// rebuilt light while keeping its shape and flare.
+pub fn fixture_light(root: &Block, lighting: h1convert::fixture::Lighting) -> Result<Block> {
+    let d = def(b"ligh")?;
+    let mut r = defs::from_built(d, root).map_err(|e| Error::Invalid(e.to_string()))?;
+    for field in [
+        "diffuse_colour_lower",
+        "diffuse_colour_upper",
+        "specular_colour_lower",
+        "specular_colour_upper",
+    ] {
+        set(&mut r, field, Val::floats(&lighting.rgb))?;
+    }
+    set(&mut r, "brightness", Val::floats(&[lighting.intensity; 2]))?;
+    built(d, &r)
+}
+
 /// A Halo 1 decal written from the `deca` definition, no retail template
 /// read: Halo 1's flags, kind, radius, colours, lifetime, decay time and
 /// sprite extent (the two hold them in the same order), the converted

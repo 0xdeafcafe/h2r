@@ -93,9 +93,9 @@ integration run. There is no new pass count or play result yet.
   H2-specific. Halo 1 implements camouflage through its globals.
 - The optional Halo 2 side of the paired HUD, HUD drawing shaders,
   particle and material shader templates, default texture inputs, the
-  scope effect's screen vertex shader and the player emblem are native
-  rendering dependencies. The primary HUD and source bitmap slots use
-  converted Halo 1 tags.
+  scope effect's screen vertex shader and the player emblem's draw program
+  and atlas are native rendering dependencies. The primary HUD and source
+  bitmap slots use converted Halo 1 tags.
 
 ## Models that used the marine head shader
 
@@ -335,6 +335,25 @@ The accompanying TSV has 35,510 rows. Each gives the map, group, source path, pa
 | Contrails, `Converter::contrail` | 265 map/contrail/physics rows formerly emitted a null `pphy`. Cold smoke, steam, vacuum and the Warthog antenna have corresponding point-physics records with differing coefficients on the two discs. | **Built.** The typed H2 definition receives source flags, mass, air/liquid buoyancy, density, drag, friction and restitution. Each contrail point names its own converted physics tag. |
 | Multiplayer starting equipment, `halo1::plan_starting_equipment` | Both H2 bases used one `multiplayer\\single_weapons\\smg` collection. Blood Gulch's CTF row instead names the assault rifle and pistol. Wizard has three distinct game-type rows. | **Built.** The H1 sandbox rebuilds its source rows, selector words, collections, weapons and weights. A native variant selector with no H1 weapon or vehicle is left unassigned. |
 | Ordinary biped shields, `biped_rebuilt` | 55 biped/modifier rows name three `spla` tags. The H2 Chief uses `masterchief_plasma_shield_change_color_fp` and `masterchief_plasma_shield_change_color`; the Elite uses `elite_plasma_shield_fp` and `elite_plasma_shield`. | **Built.** Both ordinary shield views bind the source modifier through the model-material converter. All three source shaders use the Elite shield noise volume twice. The volume-plasma rebuild above draws them. |
+
+**Built. Script sounds and player emblem.** Every named script sound is
+installed without a converter count budget. The runtime datum lookup in Halo 1
+(`0xf2e53`, `0x2b9f6`) and the 570 authored map/sound pairs are documented
+in [campaign.md](campaign.md#script-sound-capacity). The converter builds a
+player-emblem instance from the Halo 2 `shad` definition. Halo 1's part
+shader selection (`0xa2449..0xa246d`) uses the model's authored slots, and
+the cyborg lacks an emblem slot. The appended part uses Halo 2's named
+emblem inputs at `0x22ace7`. See [models.md](models.md#the-emblem-built).
+
+**Built. Impulse promotion and fixture lighting.** Halo 1's `0x24ea0`
+compares decaying mixer credit against the authored count and duration.
+The converted sound appends that rule and references the rebuilt target
+by datum. The boot hook routes the impulse or applies the source rate
+limit. The fixture constructor at `0x118e00` copies the placement's RGB
+and intensity. Campaign and multiplayer retain the fixture machines and
+marker lights. Each of b30's 42 authored placements binds a light with
+that tuple. See [sounds.md](sounds.md#impulse-promotion-built) and
+[objects.md](objects.md#light-fixture-placements-built).
 
 ### Dependencies kept from Halo 2
 

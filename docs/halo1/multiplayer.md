@@ -291,6 +291,14 @@ geometry. They aren't removed, since scripts, the kill list and BSP
 switches (`scnr+0x130`, `0xe` entries, E `0x0014b6d6`) hold their
 indices; each origin moves to `(0, 0, -1e6)`, where nothing ever is.
 
+**Halo 1 light fixtures (Built).** Both sandbox variants rebuild the
+source fixtures as machines with their marker lights. Carousel,
+Damnation and Rat Race have 46 placements between them. The fresh
+scenario writes their machine blocks directly. The pinned builder appends
+them to the metadata and updates the scenario descriptors. The source
+placement's light values use the same rule as campaign fixtures.
+See [objects.md](objects.md#light-fixture-placements-built).
+
 **Lights (emptied, `convert::BASE_BLOCKS`).** `scnr+0xe8` is the light
 fixture placements, `0x6c` each: `+0x00` an index into the light
 palette at `+0xf0` (`0x28` each, its tag reference at `+0`), `+0x02` a

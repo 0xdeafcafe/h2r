@@ -88,6 +88,8 @@ fn invented(channels: usize) -> (Sound, Vec<u8>) {
             id: H1TagId(u32::MAX),
         },
         promotion_count: 0,
+        promotion_millis: 0,
+        promotion_name: None,
         pitch_ranges: vec![
             PitchRange {
                 name: "idle".into(),
@@ -699,5 +701,41 @@ fn mouth_descriptors_span_ranges_and_survive_gestalt_reinstallation() {
         assert_eq!(g.element(blocks::PERMUTATIONS, i)[5], i as u8);
         let d = &raw[at + i * 16..][..16];
         assert_eq!((word(d, 0), word(d, 4), word(d, 12)), (offset, len, 0));
+    }
+}
+
+#[test]
+fn cyclic_promotion_targets_resolve_to_the_new_sound_datums() {
+    use tags::sound::h1_promotion::*;
+
+    let (mut snd, file) = invented(1);
+    snd.promotion.id = H1TagId(0xe111_0002);
+    snd.promotion_count = 2;
+    snd.promotion_millis = 750;
+    snd.promotion_name = Some("large".to_owned());
+    let small = convert_sound(&snd, &file).unwrap();
+    snd.promotion.id = H1TagId(0xe112_0003);
+    snd.promotion_name = Some("small".to_owned());
+    let large = convert_sound(&snd, &file).unwrap();
+    let mut set = TagSet::new(CacheType::Multiplayer, "synthetic", "synthetic");
+    let ids = install_sounds(
+        &mut set,
+        vec![("small".to_owned(), small), ("large".to_owned(), large)],
+    )
+    .unwrap();
+    let (bytes, _) = set.build().unwrap();
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        let bytes = map.read_tag_bytes(*id).unwrap();
+        assert!(present(&bytes));
+        let at = |offset: u32| {
+            let offset = offset as usize;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        assert_eq!(at(TARGET), ids[1 - i].0);
+        assert_eq!(
+            (at(COUNT), at(MILLIS), at(CREDIT), at(LAST_TIME)),
+            (2, 750, 0, 0)
+        );
     }
 }

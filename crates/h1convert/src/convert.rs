@@ -191,6 +191,7 @@ pub struct Prepared {
     /// Halo 1's scenery ([`halo1::plan_scenery`]), written into the
     /// scenario by the fresh build; `None` places none.
     pub scenery: Option<halo1::Scenery>,
+    pub(crate) fixtures: halo1::Fixtures,
     /// The Halo 1 sandbox's player biped (one of the added objects), made
     /// the multiplayer player unit when the map is built
     /// ([`crate::globals::set_player_unit`]); `None` keeps the base's.
@@ -522,6 +523,7 @@ fn prepare_plan<R: Read + Seek>(
         objects: None,
         objects_first: 0,
         scenery: None,
+        fixtures: halo1::Fixtures::default(),
         player_biped: None,
         player_hands: None,
         grenades: Vec::new(),
@@ -782,6 +784,9 @@ impl Prepared {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
+        if !intermediate && !self.fixtures.placements.is_empty() {
+            patched = self.fixtures.patch_pinned(patched)?;
+        }
         let mut set = TagSet::from_map(&mut patched)?;
         set.check_bsp_space = !intermediate;
         // The vehicle collections the placements build first (their
@@ -896,6 +901,7 @@ impl Prepared {
         // which no placement names (`boot::precision`, `boot::hud_swap`).
         let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
         keep.extend(self.hud_swaps().iter().map(|h| h[2]));
+        keep.extend(self.fixtures.palette.iter().copied());
         let pruned = crate::fresh::prune_pinned(
             &mut set,
             base.index_slots() as usize,

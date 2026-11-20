@@ -945,6 +945,8 @@ points! { ALL;
     /// session. Callers `0x18f5c6`, `0x1901e7`, `0x1906be`, `0x24b807`,
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
+    /// Allocates a one-shot sound after native playback admission.
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";

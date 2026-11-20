@@ -248,7 +248,12 @@ pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
         let TagPayload::Built(b) = &t.payload else {
             return Err(fail(format!("{:?} is not built", s.name)));
         };
-        if b.bytes.len() < snd::LEN || !b.fixups.is_empty() {
+        use tags::sound::h1_promotion as h1;
+        let promoted = h1::present(&b.bytes)
+            && (b.fixups.is_empty()
+                || matches!(b.fixups.as_slice(), [f] if f.offset == h1::TARGET
+                    && matches!(f.kind, FixupKind::TagId(_))));
+        if !promoted && (b.bytes.len() < snd::LEN || !b.fixups.is_empty()) {
             return Err(fail(format!("{:?} is not a plain snd!", s.name)));
         }
         // The merge refuses promotions; carried here whole (see

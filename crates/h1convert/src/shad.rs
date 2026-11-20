@@ -1506,6 +1506,200 @@ fn animate_ranges(rec: &mut Record, tree: &AnimTree, props: &[Property], width: 
     set(rec, "postprocess", Val::Block(vec![pp]))
 }
 
+/// Native draw dependencies for a player emblem, which has no Halo 1 shader.
+pub const EMBLEM_STEM: &str = r"shaders\shader_templates\opaque\emblem_overlay_simple";
+pub const EMBLEM_BITMAP: &str = r"ui\global_bitmaps\emblems\foreground";
+
+/// Build a player-emblem instance. The native program supplies the team/member
+/// colours. The instance binds the foreground frame, toggle and active inputs.
+pub fn emblem(stem: TagId, foreground: TagId) -> Result<Block> {
+    use tags::effects::function::{Function, FunctionType};
+
+    const FRAMES: u16 = 64;
+    let layout = Layout {
+        stem: EMBLEM_STEM,
+        word_14: 1,
+        ints: [0, 0],
+        bitmaps: &[],
+        colors: &[],
+        vectors: &[],
+        root: Root::None,
+        animation: None,
+        tint: None,
+    };
+    let foreground = Bound {
+        id: foreground,
+        scale: [1.0, 1.0],
+        lod_offset: 3.363171,
+    };
+    let mut root = build_record(
+        &layout,
+        stem,
+        &[Some(foreground)],
+        &[0; 2],
+        &[[1.0, 1.0, 0.0, 0.0]],
+        None,
+    )?;
+    set(&mut root, "scalar_input", Val::Float(0.0))?;
+    let image_def = child(shad_def(), "bitmap_images")?;
+    let images = (0..FRAMES)
+        .map(|image| {
+            let mut row = defs::default_record(image_def);
+            set(&mut row, "image", Val::Int(i64::from(image)))?;
+            set(&mut row, "bitmap", datum(Some(foreground.id)))?;
+            Ok(row)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut root, "bitmap_images", Val::Block(images))?;
+    let ppdef = child(shad_def(), "postprocess")?;
+    let Some(Val::Block(postprocess)) = root.at_mut("postprocess") else {
+        return Err(Error::Invalid("emblem shader lacks its postprocess"));
+    };
+    let pp = &mut postprocess[0];
+    let rows = |path: &str, values: Vec<Vec<(&str, Val)>>| -> Result<Val> {
+        let def = child(ppdef, path)?;
+        values
+            .into_iter()
+            .map(|fields| {
+                let mut row = defs::default_record(def);
+                for (field, value) in fields {
+                    set(&mut row, field, value)?;
+                }
+                Ok(row)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Val::Block)
+    };
+    set(
+        pp,
+        "lods",
+        rows(
+            "lods",
+            vec![vec![
+                ("layer_mask", Val::Int(1 << 2)),
+                ("layers", range16(0, 25)),
+            ]],
+        )?,
+    )?;
+    set(
+        pp,
+        "layers",
+        rows(
+            "layers",
+            (0..25)
+                .map(|layer| {
+                    vec![(
+                        "passes",
+                        range16(u16::from(layer > 2), u16::from(layer == 2)),
+                    )]
+                })
+                .collect(),
+        )?,
+    )?;
+    set(
+        pp,
+        "passes",
+        rows("passes", vec![vec![("implementations", range16(0, 1))]])?,
+    )?;
+    set(
+        pp,
+        "implementations",
+        rows(
+            "implementations",
+            vec![vec![
+                ("bitmap_animations", range16(3, 1)),
+                ("render_state_animations", range16(3, 0)),
+                ("stage_state_animations", range16(3, 0)),
+                ("pixel_constant_animations", range16(0, 2)),
+                ("vertex_constant_animations", range16(2, 1)),
+            ]],
+        )?,
+    )?;
+
+    // Two scalar properties bracket the ten texture-transform components.
+    // Component 0 selects the frame; 1–3 are unity and 4–9 are zero.
+    let mut properties = vec![Vec::new(); 12];
+    for (i, row) in properties.iter_mut().enumerate() {
+        let (input, maximum) = match i {
+            0 => ("emblem_toggle_foreground", 1.0),
+            1 => ("emblem_foreground_index", f32::from(FRAMES)),
+            11 => ("emblem_active", 1.0),
+            _ => ("", if i < 5 { 1.0 } else { 0.0 }),
+        };
+        let function = if input.is_empty() {
+            Function {
+                kind: FunctionType::Constant,
+                flags: 0,
+                sub_types: [0, 0],
+                range: [maximum; 2],
+                unknown_0c: [0; 8],
+                payload: [1.0f32.to_le_bytes(); 2].concat(),
+            }
+        } else {
+            row.push(("input", Val::text(input)));
+            Function {
+                kind: FunctionType::Identity,
+                flags: 0,
+                sub_types: [0, 0],
+                range: [0.0, maximum],
+                unknown_0c: [0; 8],
+                payload: Vec::new(),
+            }
+        };
+        row.extend([
+            ("input_b", Val::Float(1.0)),
+            ("function", Val::Data(function.to_bytes())),
+        ]);
+    }
+    set(pp, "properties", rows("properties", properties)?)?;
+    set(
+        pp,
+        "property_refs",
+        rows(
+            "property_refs",
+            (0..12)
+                .map(|i| {
+                    vec![
+                        ("property", Val::Int(i)),
+                        ("component", Val::Int(if i == 11 { -1 } else { i - 1 })),
+                    ]
+                })
+                .collect(),
+        )?,
+    )?;
+    set(
+        pp,
+        "property_ranges",
+        rows(
+            "property_ranges",
+            vec![
+                vec![("property_refs", range16(0, 1))],
+                vec![("property_refs", range16(1, 10))],
+                vec![("property_refs", range16(11, 1))],
+            ],
+        )?,
+    )?;
+    set(
+        pp,
+        "animations",
+        rows(
+            "animations",
+            [[128, 0, 3, 0], [0, 1, 3, 2], [176, 1, 0, 1], [0, 0, 0, 1]]
+                .map(|b| {
+                    vec![
+                        ("target", Val::Int(b[0])),
+                        ("param_1", Val::Int(b[1])),
+                        ("param_2", Val::Int(b[2])),
+                        ("property_range", Val::Int(b[3])),
+                    ]
+                })
+                .to_vec(),
+        )?,
+    )?;
+    defs::to_built(shad_def(), &root, &mut |_| None)
+        .map_err(|e| Error::Textures(format!("emblem shader: {e}")))
+}
+
 /// The `shad` definition.
 pub fn shad_def() -> &'static tags::defs::StructDef {
     Defs::builtin().group(SHAD).expect("shad is defined")
@@ -3115,6 +3309,47 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuilt_emblem_binds_the_player_inputs_at_the_native_pass() {
+        use tags::effects::function::Function;
+
+        let stem = TagId(0xe001_0001);
+        let atlas = TagId(0xe002_0002);
+        let b = emblem(stem, atlas).unwrap();
+        let r = defs::from_built(shad_def(), &b).unwrap();
+        assert_eq!(r.at("template"), Some(&Val::tag(FourCC(*b"stem"), stem)));
+        assert_eq!(
+            r.at("postprocess[0].bitmaps[0].bitmap"),
+            Some(&datum(Some(atlas)))
+        );
+        assert_eq!(
+            r.at("postprocess[0].lods[0].layer_mask"),
+            Some(&Val::Int(4))
+        );
+        assert_eq!(
+            r.at("postprocess[0].implementations[0].bitmap_animations"),
+            Some(&range16(3, 1))
+        );
+        assert_eq!(
+            r.at("postprocess[0].animations[3].property_range"),
+            Some(&Val::Int(1))
+        );
+        for (i, input, sample, expected) in [
+            (0, "emblem_toggle_foreground", 1.0, 1.0),
+            (1, "emblem_foreground_index", 17.0 / 64.0, 17.0),
+            (11, "emblem_active", 0.0, 0.0),
+        ] {
+            let path = format!("postprocess[0].properties[{i}]");
+            assert_eq!(r.at(&format!("{path}.input")), Some(&Val::text(input)));
+            let Some(Val::Data(data)) = r.at(&format!("{path}.function")) else {
+                panic!("missing emblem property function {input}");
+            };
+            let function = Function::parse(data).unwrap();
+            let [lo, hi] = function.range;
+            assert_eq!(lo + (hi - lo) * function.evaluate(sample, 0.0), expected);
+        }
+    }
 
     #[test]
     fn textureless_layout_requires_absent_layers_and_white_glass_tint() {

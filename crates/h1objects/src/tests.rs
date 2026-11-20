@@ -2695,3 +2695,45 @@ fn only_the_source_projectile_slots_get_references() {
     assert_eq!(target(PROJECTILE_DETONATION), Target::Id(local(3)));
     assert_eq!(target("ref_140"), Target::Null);
 }
+
+#[test]
+fn a_fixture_changes_the_light_emission_and_keeps_the_shape() {
+    let source = crate::h1::Light {
+        flags: 0,
+        radius: 3.5,
+        falloff_angle: 0.0,
+        cutoff_angle: std::f32::consts::PI,
+        colour_lower: [1.0; 4],
+        colour_upper: [1.0; 4],
+        duration_ticks: 0.0,
+        lens_flare: None,
+    };
+    let original = crate::rebuild::light(&source).unwrap();
+    let rebuilt = crate::rebuild::fixture_light(
+        &original,
+        h1convert::fixture::Lighting {
+            rgb: [0.1, 0.3, 0.8],
+            intensity: 0.25,
+        },
+    )
+    .unwrap();
+    let channel = |root: &map::build::Block, at: usize| {
+        f32::from_le_bytes(root.bytes[at..at + 4].try_into().unwrap())
+    };
+    assert_eq!(channel(&rebuilt, 0x18), 3.5);
+    assert_eq!(channel(&original, 0x70), 1.0);
+    for field in [0x40, 0x4c, 0x58, 0x64] {
+        assert_eq!(
+            [
+                channel(&rebuilt, field),
+                channel(&rebuilt, field + 4),
+                channel(&rebuilt, field + 8)
+            ],
+            [0.1, 0.3, 0.8],
+        );
+    }
+    assert_eq!(
+        [channel(&rebuilt, 0x70), channel(&rebuilt, 0x74)],
+        [0.25; 2]
+    );
+}

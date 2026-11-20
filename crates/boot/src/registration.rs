@@ -179,6 +179,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         &crate::h1_flag::H1Flag,
         &crate::h1_glow::H1Glow,
         &crate::h1_lightning::H1Lightning,
+        &crate::h1_sound_promotion::H1SoundPromotion,
     ] {
         features
             .add(effect)

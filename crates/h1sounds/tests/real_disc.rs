@@ -429,10 +429,18 @@ fn converted_sounds_read_back_sample_identical() {
             .collect();
         let mut set = TagSet::from_map(&mut bm).unwrap();
         h1sounds::convert::make_index_room(&mut set);
-        let converted = picked
-            .iter()
-            .map(|(n, s)| (format!("halo1\\{n}"), convert_sound(s, m.bytes()).unwrap()))
-            .collect();
+        let mut converted = h1sounds::convert::read_source_sounds(
+            &m,
+            picked.iter().map(|(name, _)| name.clone()),
+            |_| false,
+        )
+        .unwrap();
+        for (name, sound) in &mut converted {
+            *name = format!("halo1\\{name}");
+            if let Some(target) = sound.promotion.as_mut().and_then(|p| p.target.as_mut()) {
+                *target = format!("halo1\\{target}");
+            }
+        }
         let ids = install_sounds(&mut set, converted).unwrap();
         let (out, _) = set.build().unwrap();
         let mut built = Map::from_reader(Cursor::new(&out[..])).unwrap();
@@ -882,4 +890,69 @@ fn a10_dialogue_mouth_curves_reach_the_retail_resource_layout() {
         }
     }
     assert_eq!(count, 4659);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn every_retail_halo1_promotion_round_trips() {
+    use tags::sound::h1_promotion::*;
+
+    let word = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+
+    let mut iso = h1_disc();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let (mut maps, mut redirects, mut rate_limits) = (0, 0, 0);
+    for entry in &disc.maps {
+        let source = H1Map::from_bytes(&iso.read(entry).unwrap()).unwrap();
+        if !matches!(
+            source.header().cache_type,
+            h1map::CacheType::Campaign | h1map::CacheType::Multiplayer
+        ) {
+            continue;
+        }
+        maps += 1;
+        let level = &source.header().name;
+        let rules: Vec<_> = source
+            .tags()
+            .iter()
+            .filter(|tag| tag.group == SND)
+            .filter_map(|tag| {
+                let bytes = source.tag_data(tag).unwrap();
+                let target = h1map::TagId(word(bytes, 0x7c));
+                let count = u16::from_le_bytes([bytes[0x80], bytes[0x81]]);
+                (count != 0 || !target.is_none()).then_some((tag, count, word(bytes, 0x84), target))
+            })
+            .collect();
+        let mut set = TagSet::new(map::CacheType::Multiplayer, level, level);
+        let ids = h1sounds::convert::install_source_sounds(
+            &source,
+            &mut set,
+            rules.iter().map(|(tag, _, _, _)| tag.name.clone()),
+        )
+        .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let (bytes, _) = set.build().unwrap();
+        let mut converted = Map::from_reader(Cursor::new(bytes)).unwrap();
+        let gestalt = tags::sound::Gestalt::read(&mut converted).unwrap();
+        for (tag, count, millis, target) in rules {
+            let id = ids[&tag.name];
+            let bytes = converted.read_tag_bytes(id).unwrap();
+            assert!(present(&bytes), "{level}: {} lost its rule", tag.name);
+            assert_eq!(word(&bytes, COUNT as usize), count as u32);
+            assert_eq!(word(&bytes, MILLIS as usize), millis);
+            let target_out = TagId(word(&bytes, TARGET as usize));
+            if target.is_none() {
+                rate_limits += 1;
+                assert_eq!(target_out, TagId::NULL);
+            } else {
+                redirects += 1;
+                let source_target = source.tag(target).unwrap();
+                let rebuilt = converted.tag(target_out).unwrap();
+                assert_eq!(rebuilt.group, FourCC(*b"snd!"));
+                assert_eq!(rebuilt.name.as_ref(), Some(&source_target.name));
+                let header = tags::sound::read_header(&mut converted, target_out).unwrap();
+                assert!(!gestalt.resolve(&header).unwrap().ranges.is_empty());
+            }
+        }
+    }
+    assert_eq!((maps, redirects, rate_limits), (23, 253, 77));
 }

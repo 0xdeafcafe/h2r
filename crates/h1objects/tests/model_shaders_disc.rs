@@ -479,10 +479,11 @@ fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
     );
 
     let mut base_map = h2_map("coagulation");
-    let base = Base::read(&mut base_map).unwrap();
-    let emblem = base
-        .find(b"shad", h1objects::convert::EMBLEM_SHADER)
-        .expect("the base has the Chief's emblem shader");
+    let mut base = Base::read(&mut base_map).unwrap();
+    let retail_emblem = r"objects\characters\masterchief\shaders\mc_emblem";
+    assert!(base.find(b"shad", retail_emblem).is_some());
+    base.tags
+        .retain(|(_, group, name, _)| *group != map::FourCC(*b"shad") || name != retail_emblem);
     let mut conv = Converter::new(&h1, &base);
     let t = h1
         .tags()
@@ -498,10 +499,26 @@ fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
         .expect("the converted model");
     let mut refs = Vec::new();
     tag_refs(&m.root, &mut refs);
-    assert!(
-        refs.contains(&emblem),
-        "a material is the Chief's emblem shader"
-    );
+    let emblem = conv
+        .tree
+        .tags
+        .iter()
+        .position(|(name, tag)| {
+            name == h1objects::convert::EMBLEM_SHADER && tag.group == map::FourCC(*b"shad")
+        })
+        .expect("rebuilt emblem material");
+    assert!(refs.contains(&local(emblem)));
+    let mut bindings = Vec::new();
+    tag_refs(&conv.tree.tags[emblem].1.root, &mut bindings);
+    for (group, name) in [
+        (b"stem", h1convert::shad::EMBLEM_STEM),
+        (b"bitm", h1convert::shad::EMBLEM_BITMAP),
+    ] {
+        assert!(
+            bindings.contains(&base.find(group, name).unwrap()),
+            "{name}"
+        );
+    }
 }
 
 /// The change-colour map `name` against the Halo 1 multipurpose map

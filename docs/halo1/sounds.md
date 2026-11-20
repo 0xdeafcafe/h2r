@@ -88,9 +88,39 @@ through the installed sound's pitch range and permutation.
 | `6c` | `u16` encoding: 0 mono, 1 stereo | V |
 | `6e` | `u16` compression: 0 none, 1 Xbox ADPCM, 2 IMA ADPCM, 3 Ogg | V: only 1 on the disc |
 | `70` | `snd!` reference: promotion sound | V: 258 sounds set it |
-| `80` | `u16` promotion count | S |
-| `84`..`98` | runtime values | not read |
+| `80` | `i16` promotion count | E: `0x24eb5` and `0x24f11` |
+| `84` | milliseconds credited per request | E: `0x24ed7` and `0x24f01` |
+| `88`, `8c` | live promotion credit and last request time | E: `0x24ec3..0x24f3a` |
 | `98` | pitch ranges block | V |
+
+### Impulse promotion (Built)
+
+Halo 1 checks promotion once an impulse has passed playback eligibility
+(`0x26c7c..0x26c90`). `0x24ea0` subtracts elapsed mixer milliseconds from
+its credit, floors the result at zero, and adds the duration at `snd! +0x84`.
+A request goes through at or below count × duration. Above that threshold,
+the mixer resets the credit and retries with the datum at `+0x7c`
+(`0x26e09..0x26e28`). With a null datum it rejects the request and retains
+the decayed credit. A count of zero bypasses the calculation.
+
+Halo 2's `0x126ec0` promotion selects a range inside one sound
+(`0x218f10`). Converted H1 sounds keep the native header and gestalt with
+an appended rule containing the target datum, count, duration and two
+initially zero counter words. The boot hook uses the H2 mixer clock
+(`0x126a34`) and routes an eligible impulse at `0x126000`. Native impulse
+allocation and permutation selection then use the selected sound. A rate
+limit returns the allocator's no-sound datum. The H1 mixer has no promotion
+call in its looping playback path.
+
+The installer follows each promotion target to its source sound and assigns
+all datums before installing the target fixups. This handles the retail
+cycles in the small, medium and large rock impact sounds. Fresh map
+construction and gestalt compaction retain the fixups. A read-only census
+found 253 redirect rules and 77 rate limits across the 23 playable maps.
+The ignored `every_retail_halo1_promotion_round_trips` test rebuilds them
+all and checks the target, count and duration. The campaign and multiplayer
+read-back audit checks rules on sounds reached by each converted map.
+The boot unit tests cover decay, threshold crossing and rate limiting.
 
 ### Pitch range (`0x48`)
 
@@ -266,7 +296,7 @@ let ids = install_sounds(&mut set, vec![(name, c)])?;
 
 - `ConvertedSound` holds the header with its indices unset, the playback and
   scale elements, and per range its parameters and permutations with their
-  chunks. `dropped` lists sound promotions.
+  chunks, and the source impulse promotion rule when present.
 - `ConvertedSound::add_to(gestalt, set) -> h1models::Converted` appends the
   entries to a `SoundGestalt`, adds the chunks to the set as raw resources,
   and returns the 20-byte `snd!` in the `Converted { group, root, raw }`
@@ -510,8 +540,6 @@ music, Cortana, UI.
 - **Chunk size bit 31**: set on some retail chunks, never `0x7ff8` ones; meaning open.
 - **Playback, scale and pitch range parameter fields** are S; the
   conversions (dB, cents, half cone angles) are untested in game.
-- **Promotions** (258 Halo 1 sounds) are dropped and listed in
-  `ConvertedSound::dropped`. Translating their rules remains open.
 - **Class 45** holds the Halo 1 multiplayer announcer as well as scripted
   effects; whether Halo 2's mixer treats `scripted_cinematic_foley` well for
   announcer lines is unchecked.

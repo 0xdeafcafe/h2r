@@ -155,8 +155,6 @@ pub struct Options<'a> {
     pub ai: bool,
     /// Scripts (h1scripts), with hooks resolved to what was placed.
     pub scripts: Option<&'a Scripting>,
-    /// Sounds the scripts name (h1sounds), up to this many tags.
-    pub sounds: usize,
     /// Retail maps to copy the characters the base lacks from
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
@@ -247,7 +245,6 @@ impl Default for Options<'_> {
             objects: true,
             ai: true,
             scripts: None,
-            sounds: 0,
             donors: None,
             cutscenes: None,
             cutscene_data: true,
