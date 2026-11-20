@@ -42,6 +42,7 @@ mod h1_drive;
 pub mod h1_options;
 pub mod h1_options_row;
 mod h1_particle_physics;
+mod h1_glow;
 mod h1_cinematics;
 mod h1_script_builtins;
 mod h1_squad_storage;

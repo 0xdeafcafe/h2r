@@ -58,6 +58,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("sky_.txt", include_str!("defs/sky_.txt")),
     ("effe.txt", include_str!("defs/effe.txt")),
     ("prt3.txt", include_str!("defs/prt3.txt")),
+    ("ant_.txt", include_str!("defs/ant_.txt")),
     ("pphy.txt", include_str!("defs/pphy.txt")),
     ("cont.txt", include_str!("defs/cont.txt")),
     ("ligh.txt", include_str!("defs/ligh.txt")),

@@ -885,3 +885,96 @@ fn every_pctl_part_becomes_particle_systems() {
     println!("{parts} pctl parts as {systems} particle systems; state blend functions {blends:?}");
     assert!(systems > 0);
 }
+
+/// Exercise the public owner entry point. Count duplicate references on an
+/// owner independently and require each target to be a locally rebuilt tag.
+#[test]
+#[ignore = "reads the original Xbox Halo 1 and Halo 2 discs"]
+fn every_retail_widget_reaches_its_owner() {
+    use h1objects::base::Base;
+    use h1objects::convert::{Converter, local_index};
+    use h1objects::h1::{OBJECT_TYPES, elements};
+    use map::build::FixupKind;
+
+    let mut failures = Vec::new();
+    let mut counts = BTreeMap::new();
+    for (base_name, levels) in level_sets() {
+        let base = Base::read(&mut h2_map(base_name)).unwrap();
+        for level in levels {
+            // Some multiplayer maps belonged to the later PC release.
+            let Some(map) = h1_level(&level) else { continue };
+            let mut converter = Converter::new(&map, &base);
+            for owner in map.tags().iter().filter(|t| {
+                OBJECT_TYPES.iter().any(|g| t.group == Group::new(g))
+            }) {
+                let bytes = map.tag_data(owner).unwrap();
+                let mut expected = Vec::new();
+                for (src_offset, stride) in [(0x14c, 0x20), (0x140, 0x48)] {
+                    for row in elements(&map, bytes, src_offset, stride).unwrap() {
+                        let source = TagRef::read(row, 0).unwrap();
+                        if src_offset == 0x140 && source.group != Group::new(b"mgs2") {
+                            continue;
+                        }
+                        let tag = map.tag(source.id).unwrap();
+                        let group = tag.group.0.to_be_bytes();
+                        let (dst_offset, dst_group) = match &group {
+                            b"mgs2" => (0x94, *b"MGS2"),
+                            b"elec" => (0x9c, *b"tdtl"),
+                            b"flag" => (0x9c, *b"clwd"),
+                            b"ant!" => (0x9c, *b"ant!"),
+                            b"glw!" => (0x94, *b"MGS2"),
+                            _ => panic!("{level} {} has unexpected widget {}", owner.name, tag.group),
+                        };
+                        let marker = (dst_offset == 0x94).then(|| {
+                            let name = if src_offset == 0x140 { &row[0x10..0x30] }
+                                else { &map.tag_data(tag).unwrap()[..32] };
+                            let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+                            String::from_utf8(name[..end].to_vec()).unwrap()
+                        });
+                        expected.push((dst_offset, map::FourCC(dst_group), &tag.name, marker));
+                        *counts.entry((src_offset, group)).or_insert(0usize) += 1;
+                    }
+                }
+                if expected.is_empty() { continue }
+                let owner_id = match converter.object(owner) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        failures.push(format!("{level} {}: {e}", owner.name));
+                        continue;
+                    }
+                };
+                let tree = &converter.tree.tags;
+                let root = &tree[local_index(owner_id).unwrap()].1.root;
+                let mut matched = std::collections::BTreeSet::new();
+                for (offset, group, path, marker) in expected {
+                    let found = root.fixups.iter().find(|f| f.offset == offset).and_then(|f| {
+                        let FixupKind::Block { count, child } = &f.kind else { return None };
+                        (0..*count).find(|&i| {
+                            let at = i * if offset == 0x94 { 0x18 } else { 8 };
+                            if matched.contains(&(offset, i)) { return false }
+                            let Some(f) = child.fixups.iter().find(|f| f.offset == at) else { return false };
+                            let FixupKind::TagRef(target) = &f.kind else { return false };
+                            let Some((name, built)) = local_index(*target).and_then(|i| tree.get(i)) else { return false };
+                            name == path && built.group == group && marker.as_ref().is_none_or(|want| {
+                                child.fixups.iter().any(|f| f.offset == at + 8
+                                    && matches!(&f.kind, FixupKind::StringId(s) if s == want))
+                                    || (want.is_empty() && child.bytes[at as usize + 8..at as usize + 12] == [0; 4])
+                            })
+                        })
+                    });
+                    if let Some(i) = found {
+                        matched.insert((offset, i));
+                    } else {
+                        failures.push(format!("{level} {}: missing {group} {path} at {marker:?}", owner.name));
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(counts, BTreeMap::from([
+        ((0x14c, *b"ant!"), 51), ((0x14c, *b"mgs2"), 175),
+        ((0x14c, *b"elec"), 15), ((0x14c, *b"flag"), 13),
+        ((0x14c, *b"glw!"), 8), ((0x140, *b"mgs2"), 1),
+    ]));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

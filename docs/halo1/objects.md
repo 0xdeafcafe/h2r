@@ -37,6 +37,34 @@ time and print counts, names and values only.
 - **E:** from [objects.md](../formats/objects.md) (engine code).
 - **Design:** a choice made here.
 
+## Source widgets
+
+**Built in code.** The Xbox discs contain 51 antenna references, 175 light-volume
+widget references, eight sword-glow references and one additional volume attached to
+the beam emitter on a10. The ignored `every_retail_widget_reaches_its_owner`
+test follows each source occurrence through the public object converter and
+checks the destination block, local tag, group and attachment marker.
+
+- **Antenna.** The three vehicle antennas have matching vertex layouts on both
+  discs. The H2 widget table at `0x467498` dispatches an `ant!` from object
+  offset `0x9c`. Creation at `0x115da0` uses the bitmap sequence and cached
+  joint displacements. The builder relocates the marker, bitmap, point physics
+  and every source vertex. Its 20-segment limit leaves room for the terminal joint.
+- **Light volume.** H1 `0x97d10..0x97e6a` applies spacing before sampling axial
+  distance, radius, colour and opacity. H2 `0x41a24..0x41b91` resolves the
+  owner's attachment marker and evaluates the primary scale before queuing
+  `MGS2`. The builder writes the sample coordinates and curves into that
+  definition. A null source image selects the glow bitmap in the source
+  rasterizer globals, as in H1 `0x64495`.
+- **Sword glow.** H1 `0x99420` orders five animated markers by forward
+  alignment. `0x98ac0`, `0x98ce0` and `0x98340` assign sprites their
+  radii, colours, travel directions and positions on the curve. Each sword
+  glow becomes one H2 volume attachment naming its original marker group and
+  sprite bitmap. H2 sorts indices into the marker queue at `0x1e392`.
+  At the volume submission `0x4f792`, the context-only glow hook reads the
+  consecutive marker frames and writes the orbiting sprites into the native
+  sample array. The per-instance random sequence uses the owner and tag datums.
+
 ## Reading Halo 1
 
 Halo 1 references are 16 bytes (group, name address, name length, datum);

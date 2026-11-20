@@ -175,6 +175,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         .context("installing our skulls")?;
     features
         .add(&crate::h1_particle_physics::H1ParticlePhysics)
+        .add(&crate::h1_glow::H1Glow)
         .map_err(|e| anyhow::anyhow!("installing Halo 1 attachment particle physics: {e}"))?;
     features
         .add(&crate::h1_conversation::Conversations)

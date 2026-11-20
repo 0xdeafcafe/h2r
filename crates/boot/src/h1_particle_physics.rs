@@ -105,7 +105,7 @@ impl Feature for H1ParticlePhysics {
     }
 }
 
-fn fault(f: MemFault) -> GuestFault {
+pub(super) fn fault(f: MemFault) -> GuestFault {
     GuestFault {
         addr: f.addr,
         len: f.len as usize,

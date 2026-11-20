@@ -317,6 +317,8 @@ points! { ALL;
     EFFECT_STEP_EMITTERS @ 0x0017_9020: [fn(effect: stack 0, elapsed: stack 1, dt: stack 2) ret 12]; "docs/halo1/objects.md";
     /// Dispatch one native movement operator over an emitter's particle list.
     PARTICLE_MOVEMENT_STAGE @ 0x002b_8da0: [fn(stage: eax, head: esi, dt: stack 1) ret 12]; "docs/halo1/objects.md";
+    /// Submit 0x18-byte light-volume samples (0x4f792).
+    LIGHT_VOLUME_SPRITES @ 0x0004_f7e0: [fn(bitmap: ecx, samples: stack 0, count: stack 1) -> al ret 32]; "docs/halo1/objects.md";
     /// Initialise a particle's local position and velocity at birth.
     PARTICLE_INITIALISE @ 0x0024_9170: [fn(emitter: stack 0, particle: edi) ret 8]; "docs/halo1/objects.md";
     /// Begin, update and remove a command on the Halo 2 AI scheduler.

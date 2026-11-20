@@ -17,6 +17,8 @@ use crate::h1::{self, Unit};
 use crate::{health_hud, scripted_props};
 use crate::{Error, Result};
 
+#[path = "convert_widgets.rs"]
+mod widgets_conv;
 #[path = "convert_attachments.rs"]
 mod attachments_conv;
 #[path = "convert_arsenal.rs"]
@@ -1206,7 +1208,10 @@ impl<'a> Converter<'a> {
     }
 
     fn object_uncached(&mut self, tag: &Tag) -> Result<TagId> {
-        match &tag.group.0.to_be_bytes() {
+        let group = tag.group.0.to_be_bytes();
+        if !h1::OBJECT_TYPES.contains(&&group) { return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")); }
+        let widgets = self.native_widgets(tag)?;
+        let id = match &tag.group.0.to_be_bytes() {
             b"weap" => self.weapon(tag),
             b"proj" => self.projectile(tag),
             b"eqip" => self.equipment(tag),
@@ -1219,7 +1224,14 @@ impl<'a> Converter<'a> {
             b"ssce" => self.sound_scenery(tag),
             b"mach" | b"ctrl" | b"lifi" => self.device(tag),
             _ => Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
+        }?;
+        if let Some(field) = widgets {
+            let owner = local_index(id).ok_or_else(|| Error::Invalid("widget owner is not local".into()))?;
+            let root = &mut self.tree.tags[owner].1.root;
+            root.fixups.retain(|f| f.offset != field.offset);
+            root.fixups.push(field);
         }
+        Ok(id)
     }
 
     fn h1_tag(&self, id: h1map::TagId) -> Result<&'a Tag> {
@@ -1239,24 +1251,13 @@ impl<'a> Converter<'a> {
         rounds: Option<i16>,
     ) -> Result<Option<TagId>> {
         let is_biped = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"bipd");
-        if let Some((kind, id)) = obj
-            .widgets
-            .iter()
-            .flatten()
-            .next()
-            .map(|id| ("object widget", *id))
-            .or_else(|| {
-                obj.modifier_shader
-                    .filter(|_| !is_biped)
-                    .map(|id| ("object modifier shader", id))
-            })
-        {
+        if let Some(id) = obj.modifier_shader.filter(|_| !is_biped) {
             let dependency = self.h1_tag(id)?;
             return Err(h1convert::Error::no_rebuild(
                 &self.h1.header().name,
                 &dependency.name,
                 format!(
-                    "{kind} {} on {name} has no output binding",
+                    "object modifier shader {} on {name} has no output binding",
                     dependency.group
                 ),
             )
