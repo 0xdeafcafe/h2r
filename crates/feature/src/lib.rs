@@ -62,6 +62,15 @@ pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
 
+/// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
+/// and per-material load lines, and its comparison dumps, print. Without
+/// it each stage prints one summary line per level load (the environment
+/// table in `docs/runtime/BOOT.md`). Read once.
+pub fn native_verbose() -> bool {
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERBOSE.get_or_init(|| std::env::var("H2_NATIVE_VERBOSE").as_deref() == Ok("1"))
+}
+
 /// What a feature is, for switches and the plan text.
 #[derive(Clone, Debug)]
 pub struct Manifest {

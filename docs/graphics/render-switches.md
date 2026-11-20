@@ -118,6 +118,7 @@ without a window.
 | `H2_SWEEP_DIAG` | `d3d_diag` sweep report |
 | `H2_BOOT_STOP_AT_PRESENT` | end the run at a present |
 | `H2_D3D_WRITEBACK_TRACE` | print each write-back with its cause |
+| `H2_NATIVE_VERBOSE=1` | the native stages' per-definition and per-material load lines, and their comparison dumps (off: one summary line per stage per level load) |
 | `H2_BENCH_*` | knobs of the ignored bench tests in `crates/d3d/tests` |
 
 `H2_BOOT_OLD_GLUE` is kernel and voice glue, not rendering; out of scope

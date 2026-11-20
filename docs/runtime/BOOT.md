@@ -45,6 +45,7 @@ copies. Nothing is ever written next to it.
 | `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
 | `H2_BOOT_TRAMPOLINE=1` | register every generated entry through the old fallback trampoline instead of as itself; this also keeps every direct call from matching, as before 2026-11. For A/B comparisons |
 | `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
+| `H2_NATIVE_VERBOSE=1` | the native renderer's per-definition and per-material load lines, and its comparison dumps ([native-renderer.md](../graphics/native-renderer.md)). Off, each native stage prints one summary line per level load. The stages themselves are on by default since 2026-11-20; `H2_FEATURES=impl.render.native_<stage>=off` gives one back to the D3D path for a comparison |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
 | `H2_BOOT_VOICE=1` | with `H2_BOOT_OLD_GLUE`, keep voice on (skip the 0x55810 override) |

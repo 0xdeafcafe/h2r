@@ -198,7 +198,9 @@ pub fn upload_fog(
     lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
 ) {
     let set = fog_gpu::FogSet::new(device, queue, gpu.world(), fog.parts.clone(), fog.programs.clone(), stage_image, lightmap);
-    eprintln!("native-fog: {} materials' layer-16 passes uploaded, {} parts", set.len(), fog.parts.len());
+    if feature::native_verbose() {
+        eprintln!("native-fog: {} materials' layer-16 passes uploaded, {} parts", set.len(), fog.parts.len());
+    }
     gpu.set_fog(set);
 }
 

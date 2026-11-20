@@ -84,6 +84,9 @@ pub struct Ready {
     parts: Arc<PartSet>,
     part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
     programs_on: bool,
+    /// How many of the load's materials draw natively, of how many the
+    /// world holds: the load's one summary line.
+    pub(crate) coverage: (usize, usize),
     /// The fog of this load (`native_fog_glue`, `impl.render.native_fog`):
     /// the compiled layer-16 passes, their fog words and the parts the
     /// fog pass draws. `None` with the fog off.
@@ -177,10 +180,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
                         };
                         eprintln!(
-                            "native-world: {} BSP {} at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
+                            "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s",
                             key.0,
                             key.2,
                             key.1,
+                            r.coverage.0,
+                            r.coverage.1,
                             draws,
                             batches,
                             r.parts.len(),
@@ -1014,7 +1019,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             lightmaps.insert(key, page);
         }
     }
-    if linear_pages > 0 {
+    if linear_pages > 0 && feature::native_verbose() {
         eprintln!("native-world: {linear_pages} lightmap pages are linear textures; their materials stay on the D3D path");
     }
     // What draws natively. With material programs (the default) a
@@ -1051,7 +1056,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         Default::default()
     };
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
-    if programs_on {
+    if feature::native_verbose() && programs_on {
         log_coverage(&mut map, &world, &shaders, &native, refused);
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
         let (with, without) = placed.fold((0, 0), |(w, wo), d| if rigid.contains(&d.material) { (w + 1, wo) } else { (w, wo + 1) });
@@ -1106,11 +1111,12 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
+    let coverage = (native.len(), world.materials().len());
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok(Ready {
-        part_bounds, programs_on,
+        part_bounds, programs_on, coverage,
         cpu: Mutex::new(Some(CpuWorld {
             world,
             base_maps,

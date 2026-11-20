@@ -211,6 +211,9 @@ fn diagnostics() -> &'static Diagnostics {
 }
 
 fn describe(entry: Entry, draw: &ResolvedDraw, native: &IndexedGeometry) {
+    if !feature::native_verbose() {
+        return;
+    }
     let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
     let original = RepackPlan::with_mode(&draw.layout, &strides, FetchMode::Gpu);
     let packed = RepackPlan::with_mode(&native.layout, &[native.stream.stride], FetchMode::Gpu);

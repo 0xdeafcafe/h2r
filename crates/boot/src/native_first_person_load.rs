@@ -96,16 +96,21 @@ pub(crate) fn spawn_worker(
                         s.set = Arc::new(set);
                         drop(st);
                         loaded += 1;
-                        eprintln!(
-                            "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
-                        );
+                        if feature::native_verbose() {
+                            eprintln!(
+                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                            );
+                        }
                     }
                     Err(why) => {
                         refused += 1;
-                        eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                        if feature::native_verbose() {
+                            eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                        }
                     }
                 }
             }
+            eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
         })
         .ok()?;
     Some(tx)

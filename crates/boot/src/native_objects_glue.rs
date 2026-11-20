@@ -501,7 +501,9 @@ fn spawn_worker(
             while let Ok(def) = rx.recv() {
                 if excepted(def) {
                     refused += 1;
-                    eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    if feature::native_verbose() {
+                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    }
                     continue;
                 }
                 let t0 = std::time::Instant::now();
@@ -532,17 +534,22 @@ fn spawn_worker(
                         // No lock held across the print.
                         drop(st);
                         loaded += 1;
-                        eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
-                            t0.elapsed().as_secs_f32() * 1000.0
-                        );
+                        if feature::native_verbose() {
+                            eprintln!(
+                                "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                                t0.elapsed().as_secs_f32() * 1000.0
+                            );
+                        }
                     }
                     Err(e) => {
                         refused += 1;
-                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        if feature::native_verbose() {
+                            eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        }
                     }
                 }
             }
+            eprintln!("native-objects: {name}: {loaded} models native, {refused} left to the D3D path");
         })
         .ok()?;
     Some(tx)
@@ -774,7 +781,11 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
     if o.lightmap.is_none() {
         let l = object_lightmap(o);
         match &l {
-            Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
+            Ok(i) => {
+                if feature::native_verbose() {
+                    eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height);
+                }
+            }
             Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
         }
         o.lightmap = Some(l);
