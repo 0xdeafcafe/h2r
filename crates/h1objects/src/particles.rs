@@ -608,7 +608,7 @@ fn constant_property(r: &mut Record, field: &str, scalar: f32, colour: Option<u3
     set(r, &format!("{field}.function"), Val::Data(constant_data(scalar, colour)))
 }
 
-fn constant_data(scalar: f32, colour: Option<u32>) -> Vec<u8> {
+pub(crate) fn constant_data(scalar: f32, colour: Option<u32>) -> Vec<u8> {
     let mut data = first_sprite_frame();
     if let Some(argb) = colour {
         data[1] = 0x10;

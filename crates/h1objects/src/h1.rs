@@ -480,7 +480,31 @@ impl Weapon {
             bend_angle: f32_at(b, 0x3f4),
             first_person_model: reference(map, b, 0x45c),
             first_person_animations: reference(map, b, 0x46c),
-            hud: reference(map, b, 0x480),
+            hud: {
+                let r = TagRef::read(b, 0x480).ok_or(Error::Truncated("weapon HUD reference"))?;
+                if r.id.is_none() {
+                    None
+                } else {
+                    let hud = map.tag(r.id).map_err(|e| {
+                        Error::Invalid(format!(
+                            "{} {} HUD {:?}: {e}",
+                            map.header().name,
+                            tag.name,
+                            r.id
+                        ))
+                    })?;
+                    if hud.group != h1map::Group::new(b"wphi") {
+                        return Err(Error::Invalid(format!(
+                            "{} {} HUD {} is {}",
+                            map.header().name,
+                            tag.name,
+                            hud.name,
+                            hud.group
+                        )));
+                    }
+                    Some(hud.id)
+                }
+            },
             pickup_sound: reference(map, b, 0x490),
             weapon_type: i16_at(b, 0x4e2),
             magazines,

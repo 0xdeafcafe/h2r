@@ -130,6 +130,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("h1-script-builtins", "HS_FALSE_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-script-builtins", "HS_CONSTANT_LONG_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
+    ("h1-hud-text", "GAME_TICK", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
     ("h1-precision", "GAME_ACTIVATE", AFTER),
