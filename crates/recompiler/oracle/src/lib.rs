@@ -190,5 +190,3 @@ pub fn run(bytes: &[u8], state: CpuState, mem: &[(u32, Vec<u8>)]) -> Outcome {
     }
 }
 
-#[cfg(feature = "unicorn")]
-pub mod wma;

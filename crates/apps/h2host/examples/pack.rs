@@ -1,7 +1,7 @@
 //! Packs what the tvOS, iOS or Xbox app bundles, on the Mac
 //! (platform/tvos/build.sh, platform/ios/build.sh, platform/xbox/build.sh):
 //!
-//!     cargo run --release -p apple-host --example pack -- <halo2.iso> <out-dir> \
+//!     cargo run --release -p h2host --example pack -- <halo2.iso> <out-dir> \
 //!         [--platform tvos|ios|xbox] [--gen DIR] [--no-module]
 //!
 //! * `<out>/disc/`: the disc files in `h2host::layout::DISC_FILES`, copied

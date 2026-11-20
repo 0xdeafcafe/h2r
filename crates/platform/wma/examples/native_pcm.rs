@@ -1,4 +1,4 @@
-//! Native counterpart of oracle/examples/wma_oracle.rs, with identical indices.
+//! Native counterpart of examples/wma_oracle.rs, with identical indices.
 use std::{fs::OpenOptions, io::Write, path::Path};
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();

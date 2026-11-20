@@ -103,7 +103,7 @@ fn host_call(uc: &mut Unicorn<Host>, address: u64) -> Result<(), uc_error> {
 }
 impl Decoder {
     pub fn new(
-        image: &::wma::VerifiedImage<'_>,
+        image: &crate::VerifiedImage<'_>,
         format: &asf::WaveFormat<'_>,
         packets: Vec<Vec<u8>>,
     ) -> Result<Self> {

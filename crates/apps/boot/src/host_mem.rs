@@ -3,7 +3,7 @@
 //! physical footprint on macOS, where the two differ by the clean mapped
 //! pages (the shared dylib's code, the disc image's resident pages).
 
-use sim::metrics::MemoryUsage;
+use sim_bench::metrics::MemoryUsage;
 
 /// The process's memory now. `ru_maxrss` is a high-water mark, so this is
 /// safe to sample wherever a report is built.

@@ -76,12 +76,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let a = it.next().context(USAGE)?;
             let b = it.next().context(USAGE)?;
             anyhow::ensure!(it.next().is_none(), "{USAGE}");
-            let read = |path: &str| -> Result<sim::metrics::Report> {
+            let read = |path: &str| -> Result<sim_bench::metrics::Report> {
                 let file = File::open(path).with_context(|| format!("opening {path}"))?;
                 serde_json::from_reader(std::io::BufReader::new(file))
                     .with_context(|| format!("reading {path}"))
             };
-            print!("{}", sim::diff::diff(&read(&a)?, &read(&b)?).render());
+            print!("{}", sim_bench::diff::diff(&read(&a)?, &read(&b)?).render());
             Ok(())
         }
         Some("audit-coverage") => {
@@ -123,7 +123,7 @@ struct Common {
     upload: bool,
     as_tag: Option<String>,
     server: Option<String>,
-    pace: Option<sim::clock::Pace>,
+    pace: Option<sim_bench::clock::Pace>,
 }
 
 impl Common {
@@ -138,7 +138,7 @@ impl Common {
             "--as" => self.as_tag = Some(val()?),
             "--server" => self.server = Some(val()?),
             "--pace" => {
-                self.pace = Some(sim::clock::Pace::parse(&val()?).map_err(anyhow::Error::msg)?)
+                self.pace = Some(sim_bench::clock::Pace::parse(&val()?).map_err(anyhow::Error::msg)?)
             }
             _ => return Ok(false),
         }
@@ -275,7 +275,7 @@ fn run_one(args: Vec<String>) -> Result<()> {
     let file = file.context(USAGE)?;
     let file = std::path::absolute(&file)?;
     // Checked here, with every problem listed, before anything boots.
-    let mut m = sim::config::load_match(&file)
+    let mut m = sim_bench::config::load_match(&file)
         .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     if let Some(pace) = common.pace {
         m.pace = pace;
@@ -387,16 +387,16 @@ fn run_one(args: Vec<String>) -> Result<()> {
     }
     println!("report: {}", report.display());
     if slim || std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
-        let report: sim::metrics::Report =
+        let report: sim_bench::metrics::Report =
             serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(report)?))?;
-        anyhow::ensure!(matches!(report.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver),
+        anyhow::ensure!(matches!(report.result.end, sim_bench::metrics::End::TickLimit | sim_bench::metrics::End::GameOver),
             "host module did not finish the match: {}", r.stop);
     }
     Ok(())
 }
 
 fn sim_game(
-    matched: &sim::config::Match,
+    matched: &sim_bench::config::Match,
     run_id: String,
     batch_id: Option<String>,
     deferred: bool,
@@ -428,11 +428,11 @@ fn run_host_child(args: Vec<String>) -> Result<()> {
     )
     .context("decoding sim host lease")?;
     let job = cloud::host_match(&live, &token, &lease)?;
-    let matched = sim::config::resolve(job.matched, &|_| {
+    let matched = sim_bench::config::resolve(job.matched, &|_| {
         Err("a hosted sim requires inline bot tuning".into())
     })
     .map_err(anyhow::Error::msg)?;
-    if matched.pace != sim::clock::Pace::Unpaced
+    if matched.pace != sim_bench::clock::Pace::Unpaced
         || !matched.config.map.eq_ignore_ascii_case(&lease.map)
         || !matched.bots.iter().map(|bot| &bot.name).eq(&lease.bots)
     {
@@ -477,7 +477,7 @@ fn default_report(file: &Path) -> PathBuf {
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("match");
     std::env::temp_dir()
         .join("h2sim")
-        .join(format!("{}.report.json", sim::config::safe(stem)))
+        .join(format!("{}.report.json", sim_bench::config::safe(stem)))
 }
 
 /// One run's files.
@@ -631,7 +631,7 @@ fn batch(args: Vec<String>) -> Result<()> {
             "--token" => token = Some(val()?),
             "--budget-usd" => {
                 let usd = val()?.parse::<f64>()?;
-                budget = Some(sim::batch::budget_microusd(usd).map_err(anyhow::Error::msg)?);
+                budget = Some(sim_bench::batch::budget_microusd(usd).map_err(anyhow::Error::msg)?);
             }
             "-h" | "--help" => bail!("{USAGE}"),
             _ if file.is_none() && !a.starts_with('-') => file = Some(PathBuf::from(a)),
@@ -639,7 +639,7 @@ fn batch(args: Vec<String>) -> Result<()> {
         }
     }
     let file = std::path::absolute(file.context(USAGE)?)?;
-    let mut b = sim::config::load_batch(&file)
+    let mut b = sim_bench::config::load_batch(&file)
         .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     let audit = b.config.audit;
     if cloud_provider {
@@ -656,11 +656,11 @@ fn batch(args: Vec<String>) -> Result<()> {
         {
             bail!("cloud batches use Live's host data and upload automatically; remove local-only options");
         }
-        if common.pace.is_some_and(|pace| pace != sim::clock::Pace::Unpaced) {
+        if common.pace.is_some_and(|pace| pace != sim_bench::clock::Pace::Unpaced) {
             bail!("cloud batches run unpaced");
         }
         for r in &mut b.runs {
-            r.config.pace = sim::clock::Pace::Unpaced.label();
+            r.config.pace = sim_bench::clock::Pace::Unpaced.label();
         }
     } else if live.is_some() || token.is_some() {
         bail!("--live and --token require --provider cloud");
@@ -670,7 +670,7 @@ fn batch(args: Vec<String>) -> Result<()> {
         .or(b.config.parallel)
         .unwrap_or_else(|| {
             if cloud_provider {
-                sim::batch::DEFAULT_MAX_PARALLEL
+                sim_bench::batch::DEFAULT_MAX_PARALLEL
             } else {
                 std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1))
             }
@@ -789,8 +789,8 @@ fn batch(args: Vec<String>) -> Result<()> {
         for r in &b.runs {
             let run = RunDir::new(&b.out, &r.id);
             let complete = std::fs::File::open(run.report()).ok()
-                .and_then(|f| serde_json::from_reader::<_, sim::metrics::Report>(std::io::BufReader::new(f)).ok())
-                .is_some_and(|r| r.ticks > 0 && matches!(r.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver));
+                .and_then(|f| serde_json::from_reader::<_, sim_bench::metrics::Report>(std::io::BufReader::new(f)).ok())
+                .is_some_and(|r| r.ticks > 0 && matches!(r.result.end, sim_bench::metrics::End::TickLimit | sim_bench::metrics::End::GameOver));
             if !complete {
                 missing.push(&r.id);
                 continue;
@@ -818,7 +818,7 @@ fn batch(args: Vec<String>) -> Result<()> {
 }
 
 fn prepare_output(
-    b: &sim::config::Batch,
+    b: &sim_bench::config::Batch,
     file: &Path,
     arms: &[String],
     batch_id: Option<&str>,
@@ -850,7 +850,7 @@ fn prepare_output(
     Ok(())
 }
 
-fn finish_batch(b: &sim::config::Batch, failed: usize, started: Instant) -> Result<()> {
+fn finish_batch(b: &sim_bench::config::Batch, failed: usize, started: Instant) -> Result<()> {
     let c = compare_dir(&b.out)?;
     let table = c.table();
     std::fs::write(
@@ -873,7 +873,7 @@ fn finish_batch(b: &sim::config::Batch, failed: usize, started: Instant) -> Resu
 
 /// Reads `<dir>/runs/*/report.json` and compares them, arms in
 /// `batch.json`'s order when it is there.
-fn compare_dir(dir: &Path) -> Result<sim::compare::Comparison> {
+fn compare_dir(dir: &Path) -> Result<sim_bench::compare::Comparison> {
     let manifest = std::fs::read_to_string(dir.join("batch.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -897,13 +897,13 @@ fn compare_dir(dir: &Path) -> Result<sim::compare::Comparison> {
         let path = runs.join(&id).join("report.json");
         match std::fs::read_to_string(&path)
             .ok()
-            .and_then(|t| serde_json::from_str::<sim::metrics::Report>(&t).ok())
+            .and_then(|t| serde_json::from_str::<sim_bench::metrics::Report>(&t).ok())
         {
             Some(r) => reports.push((id, r)),
             None => missing.push(id),
         }
     }
-    Ok(sim::compare::compare(&arms, &reports, missing))
+    Ok(sim_bench::compare::compare(&arms, &reports, missing))
 }
 
 #[cfg(test)]
@@ -960,8 +960,8 @@ mod tests {
         d
     }
 
-    fn report(arm_a: &str, arm_b: &str, kills_b: i32) -> sim::metrics::Report {
-        let p = |index: u8, arm: &str, kills: i32| sim::metrics::PlayerReport {
+    fn report(arm_a: &str, arm_b: &str, kills_b: i32) -> sim_bench::metrics::Report {
+        let p = |index: u8, arm: &str, kills: i32| sim_bench::metrics::PlayerReport {
             index,
             name: format!("b{index}"),
             bot: true,
@@ -970,12 +970,12 @@ mod tests {
             kills,
             ..Default::default()
         };
-        sim::metrics::Report {
-            format: sim::metrics::FORMAT.into(),
+        sim_bench::metrics::Report {
+            format: sim_bench::metrics::FORMAT.into(),
             match_: Value::Null,
-            result: sim::metrics::MatchResult {
-                end: sim::metrics::End::TickLimit,
-                winner: Some(sim::metrics::Winner::Player(1)),
+            result: sim_bench::metrics::MatchResult {
+                end: sim_bench::metrics::End::TickLimit,
+                winner: Some(sim_bench::metrics::Winner::Player(1)),
                 teams: vec![],
             },
             ticks: 10,

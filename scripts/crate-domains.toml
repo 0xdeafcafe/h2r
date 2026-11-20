@@ -22,7 +22,7 @@ crates = [
 about = "XBE to host code: analysis, lifting, IR, the C and Cranelift back ends, their oracles"
 uses = ["formats"]
 crates = [
-    "analyze", "clif", "emit", "fastmem-proto", "ir", "lift", "opt", "oracle",
+    "analyze", "clif", "emit", "ir", "lift", "opt", "oracle",
     "sim-tier", "simd", "sse-oracle", "symbols", "x87",
 ]
 
@@ -64,7 +64,7 @@ about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's d
 uses = ["formats", "runtime", "platform", "hooking", "rewrites"]
 crates = [
     "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
-    "live-server", "live-telemetry", "live-worker", "sim", "sim-bench",
+    "live-server", "live-telemetry", "live-worker", "sim-bench",
 ]
 
 [extensions]
@@ -90,7 +90,7 @@ live_owned = ["live-art"]
 about = "What links a binary: the composition root, the desktop shell, the command line and its command crates, the editor, the embedded hosts"
 uses = ["formats", "recompiler", "runtime", "platform", "hooking", "rewrites", "live", "extensions", "tools"]
 crates = [
-    "app", "app-icon", "apple-host", "boot", "cli", "cmd", "cmd-dev",
+    "app", "app-icon", "boot", "cli", "cmd", "cmd-dev",
     "cmd-drive", "cmd-h1", "cmd-host", "cmd-live", "cmd-play", "cmd-recomp",
     "cmd-tags", "h2host", "studio", "studio-proto", "uwp-host",
 ]
@@ -110,10 +110,6 @@ from = "hooks"
 to = "native-render"
 until = "S3: the renderer's guest half leaves for render-bridge"
 
-[[exception]]
-from = "oracle"
-to = "wma"
-until = "S1: the WMA oracle moves into wma"
 
 [[exception]]
 from = "native-render"

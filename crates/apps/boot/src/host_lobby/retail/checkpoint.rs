@@ -62,7 +62,7 @@ impl Machine {
             let live = r.bool()?;
             let variant = match r.u8()? {
                 0 => Variant::Stock(
-                    *sim::config::GameType::ALL
+                    *sim_bench::config::GameType::ALL
                         .get(r.u32()? as usize)
                         .ok_or_else(|| corrupt("stock variant"))?,
                 ),
@@ -115,7 +115,7 @@ mod tests {
     fn stable_squad_round_trip_and_incomplete_state() {
         let config = Config {
             map: 99,
-            variant: Variant::Stock(sim::config::GameType::King),
+            variant: Variant::Stock(sim_bench::config::GameType::King),
             max_players: 16,
             live: true,
         };
