@@ -191,8 +191,8 @@ boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
 A server without it (404) gets a note, and the live parts still show. The
 mock (`mock/stats.ts`) counts its log the same way and folds in a made-up
 month of games before the simulated history so the home has weeks to show;
-`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The events carry no headshots,
-so there are none.
+`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The kill feed shows a headshot
+when the killing hit reports one.
 
 ### Derived stats
 
@@ -202,7 +202,9 @@ events (`src/state/derive.ts`); the API does not serve them. They are
 marked with a `*` and a tooltip. They only cover games this browser has
 loaded, and a game's snapshot carries at most its recent kills, so they are
 estimates for long histories. The Tool of Destruction pairs each weapon's
-"kills with" (gold bar) with "killed by" (blue bar). Medals (original names;
+"kills with" (gold bar) with "killed by" (blue bar). Both group scoring
+kills by their recorded damage source. Kills without one appear under
+Unknown. Medals (original names;
 the badges are raster art from `public/art/medals`, named after the medal
 ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat

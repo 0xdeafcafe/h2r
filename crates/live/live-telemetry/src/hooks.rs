@@ -428,7 +428,15 @@ impl Telemetry {
         self.submit(Work::End(Box::new(snapshot)))
     }
 
-    fn kill(&self, guest: &runtime::Guest, attacker: u32, victim: u32) -> Result<(), String> {
+    fn kill(
+        &self,
+        guest: &runtime::Guest,
+        attacker: u32,
+        victim: u32,
+        esp: u32,
+        credited_damage: Option<u8>,
+    ) -> Result<(), String> {
+        use guest_layout::damage::{KillingDamage, killing_damage};
         let tick = match memory::game_tick(guest) {
             Ok(tick) => tick,
             Err(fault) => return self.missing_sample("kill_clock", fault),
@@ -444,10 +452,23 @@ impl Telemetry {
             Ok(object) => object,
             Err(fault) => self.missing_sample("kill_position", fault)?,
         };
+        let damage = killing_damage(
+            guest,
+            esp,
+            credited_damage.map(|code| KillingDamage {
+                code,
+                owner_player: guest_layout::Datum(attacker),
+            }),
+        );
+        let source = damage.and_then(|d| {
+            let other = d.owner_player.get().is_some_and(|owner| owner != victim);
+            layout::kill_source(d.code, other)
+        });
         self.submit(Work::Kill(Box::new(Kill {
             tick,
             attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
             victim: victim_index,
+            source,
             object,
             // The scripts' kills in a cutscene are not play.
             cinematic: memory::cinematic(guest).unwrap_or(false),
@@ -524,22 +545,15 @@ impl ::hooks::Feature for TelemetryFeature {
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
                 if t.disabled() { return; }
-                let esp = o.cpu.esp;
-                let observation = {
-                    let guest = o.guest();
-                    (|| {
-                        let attacker = guest.u32(esp.wrapping_add(4))?;
-                        let victim = guest.u32(esp.wrapping_add(8))?;
-                        // `[esp+0x0c]` is not a betrayal flag (it is set in
-                        // free-for-all too): the session tells betrayals by
-                        // the players' teams.
-                        Ok::<_, runtime::GuestFault>((attacker, victim))
-                    })()
+                let (Some(attacker), Some(victim)) = (o.arg_u32("attacker"), o.arg_u32("victim"))
+                else {
+                    t.dropped_film_sample("kill");
+                    return;
                 };
-                match observation {
-                    Ok((attacker, victim)) => t.protect(|| t.kill(&o.guest(), attacker, victim)),
-                    Err(_) => t.dropped_film_sample("kill"),
-                }
+                // Only the low byte of this stack slot is initialized. A
+                // missing source still leaves the attributed death observable.
+                let damage = o.arg_u32("damage").map(|slot| slot as u8);
+                t.protect(|| t.kill(&o.guest(), attacker, victim, o.cpu.esp, damage));
             });
         // Observers only: nothing here writes the guest or feeds back into
         // it. The session is an outbound record of the run; a load winds
@@ -772,15 +786,30 @@ mod tests {
             .unwrap();
         assert_eq!(object.pos, [1.0, 2.0, 3.0]);
         telemetry.protect(|| telemetry.start(&guest));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000));
+        let esp = 0x1a0000;
+        let headshot = Some((1 << 6) | 10);
+        guest.set_u32(esp, 0x2222).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000, esp, Some(21)));
+        // A different player earns credit for earlier rifle damage, but
+        // the final hit was an unowned collision with the world.
+        use guest_layout::damage::{DEPLETING, DamageReport};
+        use points::kill_credit::{RETURN_TO_ATTRIBUTION, RETURN_TO_DAMAGE_REPORT};
+        let report = 0x1b0000;
+        guest.set_u32(esp, RETURN_TO_ATTRIBUTION).unwrap();
+        guest.set_u32(esp + 0x74, RETURN_TO_DAMAGE_REPORT).unwrap();
+        guest.set_u32(esp + 0x1c, report).unwrap();
+        guest.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        guest.set_u8(report + DamageReport::CODE.offset, 2).unwrap();
+        guest.set_u32(report + DamageReport::OWNER_PLAYER.offset, u32::MAX).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
         // In a cutscene the scripts' kills are not counted, and the tick's
         // frame is a marked, empty one.
         fixture::set_cinematic(&mut guest, true);
         guest
             .set_u32(fixture::TIME + layout::TIME_TICK, 10)
             .unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, esp, headshot));
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -801,12 +830,19 @@ mod tests {
             .into_iter()
             .filter(|event: &serde_json::Value| event["type"] == "PlayerKilled")
             .collect();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0]["data"]["victim"], 1);
         assert_eq!(events[0]["data"]["kind"], "kill");
+        assert_eq!(events[0]["data"]["weapon"], "battle_rifle");
+        assert_eq!(events[0]["data"]["headshot"], true);
         assert_eq!(events[0]["data"]["pos"], serde_json::json!([1.0, 2.0, 3.0]));
         assert_eq!(events[1]["data"]["victim"], 0);
         assert_eq!(events[1]["data"]["kind"], "suicide");
+        assert_eq!(events[1]["data"]["weapon"], "frag_grenade");
+        assert_eq!(events[1]["data"]["headshot"], false);
+        assert_eq!(events[2]["data"]["killer"], 0);
+        assert_eq!(events[2]["data"]["weapon"], "collision");
+        assert_eq!(events[2]["data"]["headshot"], false);
         let _ = std::fs::remove_file(path);
     }
 

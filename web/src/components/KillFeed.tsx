@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js";
 import type { GameState, Kill } from "../state/reducer";
 import { colourFor } from "../lib/game";
-import { killVerb } from "../lib/format";
+import { damageSourceName, killVerb } from "../lib/format";
 import { VerifyMark } from "./bits";
 
 export default function KillFeed(props: { game: GameState; kills: Kill[]; limit?: number }) {
@@ -36,7 +36,9 @@ export default function KillFeed(props: { game: GameState; kills: Kill[]; limit?
               >
                 <Name i={k.killer} /> <span class="kf-verb">{killVerb(k.kind, k.position)}</span> <Name i={k.victim} />
               </Show>
-              <Show when={k.weapon}><span class="kf-weapon">{k.weapon}</span></Show>
+              <Show when={k.weapon || k.headshot}>
+                <span class="kf-weapon">{[k.weapon && damageSourceName(k.weapon), k.headshot && "Headshot"].filter(Boolean).join(" · ")}</span>
+              </Show>
               <Show when={k.position > 0}><VerifyMark position={k.position} compact /></Show>
             </li>
           )}

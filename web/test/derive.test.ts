@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Kill } from "../src/state/reducer";
-import { applyEvents, initialState } from "../src/state/reducer";
+import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
 import {
   bestSprees, countMedals, gameHistory, gameMedals, nextRankAt, places, playedWith, rankFor, rankIndex, serviceRecord,
   weaponBreakdown, weaponsAgainst,
 } from "../src/state/derive";
+import { damageSourceName } from "../src/lib/format";
 import { ev, resetPos } from "./helpers";
 
 let pos = 0;
@@ -55,6 +56,33 @@ describe("medals", () => {
 });
 
 describe("weapons", () => {
+  test("snapshot and stream carry the killing source into the carnage report", () => {
+    resetPos();
+    const s = initialState();
+    const shot = { tick: 10, victim: 1, killer: 0, kind: "kill" as const, weapon: "smg", headshot: false };
+    const event = ev("PlayerKilled", "game-g", shot);
+    applyGameSnapshot(s, {
+      game_id: "g", started_at: event.at, map: "arena", mode: "multiplayer", players: [],
+      kills: [{ ...shot, at: event.at, position: event.position }],
+    });
+    applyEvents(s, [
+      event, // The stream repeats the snapshot's kill.
+      ev("PlayerKilled", "game-g", { tick: 20, victim: 1, killer: 0, kind: "kill", weapon: "battle_rifle", headshot: true }),
+      ev("PlayerKilled", "game-g", { tick: 30, victim: 0, killer: 0, kind: "suicide", weapon: "frag_grenade" }),
+      ev("PlayerKilled", "game-g", { tick: 40, victim: 0, kind: "world", weapon: "fall" }),
+      ev("PlayerKilled", "game-g", { tick: 50, victim: 1, killer: 0, kind: "kill" }),
+    ]);
+    const kills = s.games.g!.kills;
+    expect(kills.map((k) => [k.weapon, k.headshot])).toEqual([
+      ["smg", false], ["battle_rifle", true], ["frag_grenade", null], ["fall", null], [null, null],
+    ]);
+    expect(weaponBreakdown(kills).map((r) => [damageSourceName(r.weapon), r.kills])).toEqual([
+      ["Battle Rifle", 1], ["SMG", 1], ["Unknown", 1],
+    ]);
+    expect(damageSourceName("frag_grenade")).toBe("Frag Grenade");
+    expect(damageSourceName("energy_blade")).toBe("Energy Sword");
+  });
+
   test("breakdown by weapon for a slot, most used first", () => {
     const kills = [k(0, 0, 1, "rifle"), k(1, 0, 2, "sword"), k(2, 0, 3, "rifle"), k(3, 1, 0, "rocket"), k(4, 0, 0, null, "suicide"), k(5, 0, 2, null)];
     const rows = weaponBreakdown(kills, new Set([0]));

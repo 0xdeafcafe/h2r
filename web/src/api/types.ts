@@ -336,7 +336,9 @@ export interface PlayerKilled {
   pos?: [number, number, number] | null;
   victim: number;
   killer?: number | null;
+  /** Killing damage source, including non-weapon causes such as a fall. */
   weapon?: string | null;
+  headshot?: boolean | null;
   kind: KillKind;
 }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }

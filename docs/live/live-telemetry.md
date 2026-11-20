@@ -14,7 +14,7 @@ Five overrides are installed after the generated module is registered (the last 
 |---|---|
 | `0x0018f000` | After the original map activation returns success, read map/mode/variant, team play, score/time limits, tick, and the initial roster. |
 | `0x00137fe0` | After the original tick, sample only when the game-time counter changed. Frames are emitted every second changed tick (up to 15 Hz). |
-| `0x0015ce70` | Read attacker, victim and victim position at entry, then invoke the original kill handler unchanged. The kind is told from the players: a betrayal is a teammate killed in a team game or campaign (`live_proto::game::is_betrayal`); the third argument is not a betrayal flag. Scores are reconciled at a later tick. |
+| `0x0015ce70` | Read the credited attacker, victim, victim position and packed damage code at entry. A teammate kill in a team game or campaign is a betrayal (`live_proto::game::is_betrayal`). Scores are reconciled at a later tick. |
 | `0x001389c0` | After the original end-latch function, publish the final scoreboard and a unique high-score winner (or none for a tie). |
 | `0x00104150` | Weapon barrel fire: read the weapon object datum at `[esp+4]`, count one shot for it, then invoke the original unchanged. Optional: if the entry is missing or already overridden, telemetry installs without it and frames carry no `shots`. |
 
@@ -22,6 +22,16 @@ The start, tick and end wrappers use shadow entries and runtime continuations to
 observe after the original returns. If continuation setup fails, the wrapper
 restores the guest stack and invokes the original directly. The kill wrapper
 invokes the original immediately after its read.
+
+At `guest_layout::points::PLAYER_KILLED`, the killer is the player who
+receives credit. The weapon and headshot flag come from the damage report
+that depleted the victim's body. These can have different sources. For
+example, a player can earn credit for an opponent's fall after shooting
+them. The kill then carries the shooter's slot and the source `fall`.
+The same read identifies a delayed projectile after a weapon switch or a
+thrower's death, and preserves the grenade type on a self-kill. A missing
+or unrecognised source leaves the damage fields absent and preserves the kill.
+[Kill hook and damage code](live-gamestate.md#7-killdeath-and-damage-hooks)
 
 Per-tick work follows only live player records and their current unit/vehicle
 objects. It does not scan all 2,048 objects or the one-MiB object pool. A full

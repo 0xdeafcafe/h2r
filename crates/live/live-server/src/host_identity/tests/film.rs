@@ -37,6 +37,7 @@ fn kill() -> game::PlayerKilled {
         victim: 1,
         killer: Some(0),
         weapon: Some("rifle".into()),
+        headshot: None,
         kind: "kill".into(),
         pos: None,
     }

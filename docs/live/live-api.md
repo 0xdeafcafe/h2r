@@ -53,7 +53,7 @@ Event types so far (payload fields):
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
-| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
+| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `headshot?`, `pos?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -640,8 +640,8 @@ knockout with a bot on either side counts in the totals, maps and weapons
 but in nobody's row: a human's kill of a bot is not a career kill, nor a
 death to a bot a career death. The game record keeps every one of them.
 `activity` lists hours with any game starts or kills, within the window
-and at most 30 days back. There are no headshots or medals: the events do
-not carry them (the web app derives medals itself).
+and at most 30 days back. Headshots are available on individual kills when
+reported. The summary has no headshot or medal totals.
 
 ## Clanker Training
 
@@ -1893,7 +1893,14 @@ Settled after the first client was built against this page.
    /v1/games/{id}/chunks`). Games recorded before them are read with `GET
    /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`, packed, at most 600
    per page, oldest first.
-9. **`PlayerKilled`** carries `pos`, the victim's position.
+9. **`PlayerKilled`** carries `pos` when the victim's position is known.
+   `weapon` is the stable key for the killing damage, such as `battle_rifle`,
+   `frag_grenade`, `melee` or `fall`. It can also identify the cause of a
+   suicide or world death. The credited `killer` may have damaged a player
+   who later fell. In that case `weapon` describes the fall. `headshot`
+   is a boolean when the source reports the modifier. Both fields are
+   optional in the event log and the `kills` array returned by
+   `GET /v1/games/{id}`. An absent field means unknown.
 10. **Who writes a game** (2026-11-18). The server trusts the host's
     record. Only the host ends the game (`GameEnded`; 403 from anyone
     else, who leaves with `PlayerLeft`). A `PlayerJoined` from anyone but
