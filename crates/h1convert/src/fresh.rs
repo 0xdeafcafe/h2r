@@ -359,6 +359,37 @@ pub fn unpin_all<R: Read + Seek>(
         }
         ordinary.push(t.id);
     }
+    // The sound data bounds the resources before it. A resource whose
+    // size isn't stored (a bitmap's level 0) runs to the next known start,
+    // and the gestalt's chunks and extra-info resources are known only
+    // when the schema walks the gestalt: without them the last such
+    // resource before the sound data ran over all of it (a50 from 05a,
+    // 0x4bf5000 bytes, past the 64 MiB read limit). Read from `src`'s
+    // gestalt, where every pointer is a file offset, converted ones
+    // included.
+    if let Some((id, _)) = &gestalt {
+        use h1sounds::gestalt::{STRIDES, blocks};
+        let address = src
+            .tag(*id)?
+            .location
+            .ok_or(Error::Invalid("the gestalt has no data"))?
+            .address;
+        let bytes = src.read_tag_bytes(*id)?;
+        // Each chunk's pointer (+0) and each extra info's (+8).
+        for (block, pointer) in [(blocks::CHUNKS, 0), (blocks::EXTRA_INFOS, 8)] {
+            let field = (block * 8) as u32;
+            let (count, at) = (word(&bytes, field) as usize, word(&bytes, field + 4));
+            if count == 0 {
+                continue;
+            }
+            let (stride, start) = (STRIDES[block], at.wrapping_sub(address) as usize);
+            let elements = count
+                .checked_mul(stride)
+                .and_then(|n| bytes.get(start..start.checked_add(n)?))
+                .ok_or_else(|| Error::Fresh(format!("ugh!: block {block} lies outside the tag")))?;
+            u.add_starts(elements.chunks_exact(stride).map(|e| word(e, pointer)));
+        }
+    }
     // A tag the schema cannot move is left without data: the unreachable
     // ones are pruned next, and [`check_refused`] fails the map when one
     // is still reached. A size-0 tag at an address no tag owns (`NoData`)
