@@ -2,7 +2,8 @@
 //! user's own disc and loaded by the running game (docs/game/test-maps.md).
 //!
 //! - `maps.test.create` checks the recipe, then builds it on a thread of its
-//!   own: the base map from the disc, `scenario_edit::recipe::build_package`
+//!   own: the base map from the disc, built by the [`Recipes`] the caller
+//!   gives (boot's `test_maps_recipes`, over `scenario_edit::recipe`)
 //!   into `<data>/maps/test-<name>/`, then the offers are installed again
 //!   (`map_select::packages_changed`, else `new_maps::install_at_boot`) and
 //!   the VFS rescans, so the map has a multiplayer slot of its own, as a
@@ -28,7 +29,6 @@ use agent_proto::test_maps::{
     RecipeInfo, RemoveResult, State, TestMap,
 };
 use agent_proto::{RpcError, code, method};
-use scenario_edit::recipe::{self, Recipe};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -53,11 +53,56 @@ fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(v).map_err(|e| invalid(e.to_string()))
 }
 
-/// Where test maps come from and go.
+/// A recipe, resolved: what the methods need to know before a build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    pub name: String,
+    pub base: String,
+    /// The package's directory under the maps directory.
+    pub package_dir: String,
+}
+
+/// A disc map to build on: a file, or a region of the disc image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BaseMap {
+    pub path: PathBuf,
+    /// `(offset, length)` inside `path`, or `None` for the whole file.
+    pub region: Option<(u64, u64)>,
+}
+
+/// A finished build: the package's `MapId` and the build report.
 #[derive(Clone, Debug)]
+pub struct Built {
+    pub map_id: String,
+    pub report: Value,
+}
+
+/// Recipes and their builder. `game` may not use the scenario editor, so
+/// the app that links it implements this (boot's `test_maps_recipes`) and
+/// hands it to [`install`]. A recipe is named (`Value::String`, a built-in)
+/// or given whole (`Value::Object`), on its own base or `base`; a
+/// `String` error is shown to the caller.
+pub trait Recipes: Send + Sync + 'static {
+    /// The built-in recipes, for `maps.test.list`.
+    fn built_in(&self) -> Result<Vec<RecipeInfo>, String>;
+    /// Checks a recipe and names its package.
+    fn resolve(&self, recipe: &Value, base: Option<&str>) -> Result<Resolved, String>;
+    /// Builds the recipe into a package under `data_root`'s maps directory.
+    fn build(
+        &self,
+        recipe: &Value,
+        base: Option<&str>,
+        source: BaseMap,
+        data_root: &Path,
+    ) -> Result<Built, String>;
+}
+
+/// Where test maps come from and go, and what builds them.
+#[derive(Clone)]
 struct Paths {
     disc: PathBuf,
     data_root: PathBuf,
+    recipes: Arc<dyn Recipes>,
 }
 
 impl Paths {
@@ -83,35 +128,6 @@ type Shared = Arc<Mutex<Jobs>>;
 
 fn lock(j: &Shared) -> MutexGuard<'_, Jobs> {
     j.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The recipe a `maps.test.create` names: a built-in by name or a whole
-/// recipe, on its own base or `base`.
-fn recipe_of(p: &CreateParams) -> Result<Recipe, RpcError> {
-    let r = match &p.recipe {
-        Value::String(name) => recipe::built_in_named(name),
-        v @ Value::Object(_) => Recipe::from_json(v.clone()),
-        _ => return Err(invalid("recipe: a built-in recipe's name, or a recipe object")),
-    }
-    .map_err(|e| invalid(e.to_string()))?;
-    match &p.base {
-        Some(b) => r.on_base(b.trim()).map_err(|e| invalid(e.to_string())),
-        None => Ok(r),
-    }
-}
-
-fn info(r: &Recipe) -> RecipeInfo {
-    RecipeInfo {
-        name: r.name.clone(),
-        title: r.title.clone(),
-        base: r.base.clone(),
-        fidelity: match r.fidelity {
-            recipe::Fidelity::Full => "full".into(),
-            recipe::Fidelity::Approximate => "approximate".into(),
-        },
-        purpose: r.purpose.clone(),
-        note: r.note.clone(),
-    }
 }
 
 /// Where a build's report is kept.
@@ -202,24 +218,28 @@ fn all_maps(paths: &Paths, jobs: &Shared) -> Vec<TestMap> {
 
 /// The disc's map `base` as a source: a region of the image, or the file
 /// itself in an extracted disc.
-fn base_source(disc: &Path, base: &str) -> Result<scenario_edit::MapSource, String> {
+fn base_source(disc: &Path, base: &str) -> Result<BaseMap, String> {
     let file = crate::new_maps::IsoDisc::new(disc)
         .map_file(base)
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| format!("the disc has no maps\\{base}.map"))?;
     let whole = file.offset == 0
         && std::fs::metadata(&file.path).is_ok_and(|m| m.len() == file.len);
-    Ok(if whole {
-        scenario_edit::MapSource::file(file.path)
-    } else {
-        scenario_edit::MapSource::region(file.path, Some((file.offset, file.len)))
+    Ok(BaseMap {
+        region: (!whole).then_some((file.offset, file.len)),
+        path: file.path,
     })
 }
 
 /// Builds `r` into its package (replacing an old one when asked) and keeps
 /// the report. The package's `MapId` and the report.
-fn build(paths: &Paths, r: &Recipe, replace: bool) -> Result<(String, recipe::Built), String> {
-    let dir = paths.maps().join(r.package_dir());
+fn build(
+    paths: &Paths,
+    cp: &CreateParams,
+    r: &Resolved,
+    replace: bool,
+) -> Result<(String, Value), String> {
+    let dir = paths.maps().join(&r.package_dir);
     if dir.exists() {
         if !replace {
             return Err(format!("{} exists (replace: true rebuilds it)", dir.display()));
@@ -227,9 +247,9 @@ fn build(paths: &Paths, r: &Recipe, replace: bool) -> Result<(String, recipe::Bu
         std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
     }
     let source = base_source(&paths.disc, &r.base)?;
-    let (built, saved) =
-        recipe::build_package(source, r, &paths.data_root).map_err(|e| e.to_string())?;
-    let id = saved.id.to_string();
+    let Built { map_id: id, report: built } = paths
+        .recipes
+        .build(&cp.recipe, cp.base.as_deref(), source, &paths.data_root)?;
     let report = report_path(&id);
     if let Some(parent) = report.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -348,9 +368,10 @@ fn check_name(name: &str) -> Result<(), RpcError> {
 
 /// Registers `maps.test.list`, `create`, `load` and `remove` on `agent`.
 /// `calls` is the agent's guest-call queue; without it `load` answers
-/// unavailable.
+/// unavailable. `recipes` builds the maps.
 pub fn install(
     agent: &Agent,
+    recipes: Arc<dyn Recipes>,
     calls: Option<calls::Shared>,
     disc: &Path,
     data_root: &Path,
@@ -359,17 +380,14 @@ pub fn install(
     let paths = Paths {
         disc: disc.to_owned(),
         data_root: data_root.to_owned(),
+        recipes,
     };
     let jobs = Shared::default();
 
     let (p, j) = (paths.clone(), jobs.clone());
     agent.add_method(method::MAPS_TEST_LIST, Access::Read, move |v| {
         let ListParams { name } = params(v)?;
-        let recipes = recipe::built_in()
-            .map_err(|e| unavailable(e.to_string()))?
-            .iter()
-            .map(info)
-            .collect();
+        let recipes = p.recipes.built_in().map_err(unavailable)?;
         let mut maps = all_maps(&p, &j);
         if let Some(n) = &name {
             maps.retain(|m| &m.name == n);
@@ -383,8 +401,8 @@ pub fn install(
     let (p, j, v_create) = (paths.clone(), jobs.clone(), vfs.clone());
     agent.add_method(method::MAPS_TEST_CREATE, Access::Act, move |v| {
         let cp: CreateParams = params(v)?;
-        let r = recipe_of(&cp)?;
-        let dir = r.package_dir();
+        let r = p.recipes.resolve(&cp.recipe, cp.base.as_deref()).map_err(invalid)?;
+        let dir = r.package_dir.clone();
         {
             let mut jobs = lock(&j);
             if jobs
@@ -413,10 +431,11 @@ pub fn install(
         }
         let (p2, j2, vfs) = (p.clone(), j.clone(), v_create.clone());
         let (r2, replace) = (r.clone(), cp.replace);
+        let cp2 = cp.clone();
         let spawned = std::thread::Builder::new()
             .name("test map build".into())
             .spawn(move || {
-                let out = build(&p2, &r2, replace);
+                let out = build(&p2, &cp2, &r2, replace);
                 if out.is_ok() {
                     publish(&p2, vfs.as_ref());
                 }
@@ -427,7 +446,7 @@ pub fn install(
                         eprintln!("test maps: {} built ({id})", r2.name);
                         m.state = State::Ready;
                         m.map_id = Some(id);
-                        m.built = serde_json::to_value(&built).ok();
+                        m.built = Some(built);
                     }
                     Err(e) => {
                         eprintln!("test maps: {} failed: {e}", r2.name);

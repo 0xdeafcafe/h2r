@@ -89,6 +89,7 @@ the moves that put every crate in its domain's directory are in
 | `analyze` | recompiler | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export † |  | done |
 | `clif` | recompiler | *(no description)* † |  |  |
 | `emit` | recompiler | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) † |  | done |
+| `hostfault` | recompiler | The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path |  |  |
 | `ir` | recompiler | Backend-independent semantic IR for lifted code, with a reference interpreter † |  | done for integer, x87, SSE1 and MMX |
 | `lift` | recompiler | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](lifter/LIFTER.md)) † | [LIFTER.md](lifter/LIFTER.md) | done for integer, x87, SSE1 and MMX |
 | `opt` | recompiler | IR-to-IR optimisation passes between lifting and emission † |  | done |
@@ -97,7 +98,6 @@ the moves that put every crate in its domain's directory are in
 | `sse-oracle` (bin `sse-oracle`) | recompiler | SSE1/MMX results from x86-64 hardware under Rosetta 2 ([sse-oracle.md](lifter/sse-oracle.md)) † | [sse-oracle.md](lifter/sse-oracle.md) | done |
 | `symbols` | recompiler | Identify statically linked Xbox SDK library functions in an XBE using OOVPA signatures | [xdk-libraries.md](lifter/xdk-libraries.md) | done |
 | `x87` | recompiler | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](lifter/FLOAT-ABI.md)) † | [FLOAT-ABI.md](lifter/FLOAT-ABI.md) | done |
-| `hostfault` | runtime | The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path |  |  |
 | `kernel` | runtime | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md) | in progress: covers the boot to the menu and the first level |
 | `lifted` | runtime | The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md) | [shadow-exec.md](engine/shadow-exec.md) |  |
 | `recomp` | runtime | Build and load: the XBE lifted, emitted and compiled into one host module, its build stamp, the module loaded with the boot bridge, and the interpreter for what the module leaves out (docs/runtime/BOOT.md) | [BOOT.md](runtime/BOOT.md) |  |
@@ -145,7 +145,7 @@ the moves that put every crate in its domain's directory are in
 | `agent-proto` | extensions | The agent API's wire types: JSON-RPC 2.0 over a Unix socket, one JSON object per line (docs/runtime/agent-api.md) | [agent-api.md](runtime/agent-api.md) |  |
 | `debug-menu` | extensions | Our in-game debug menu: a tree of rows over the agent API's registries, its navigation, touchpad and pad input, and the lines the host overlay draws (docs/runtime/debug-menu.md) | [debug-menu.md](runtime/debug-menu.md) |  |
 | `game` | extensions | Our additions to the game: menus and settings screens, skulls, variants, the campaign picker, gameplay hooks and the glue to the platform crates (docs/game/settings-menu.md) | [settings-menu.md](game/settings-menu.md) |  |
-| `h1-runtime` | extensions | Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md) | [README.md](halo1/README.md) | in progress |
+| `h1-runtime` | extensions | Hooks that only converted Halo 1 maps need: projectile velocity curves and the scope zoom (docs/halo1/README.md); the rest of Halo 1 in the game is game's h1_* modules | [README.md](halo1/README.md) | in progress |
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |

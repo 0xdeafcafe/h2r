@@ -14,7 +14,7 @@ x87.workspace = true
 libloading = "0.8"
 # The test host's flat RAM window (src/host.rs, contract slice F3).
 libc = "0.2"
-hostfault = { path = "../../runtime/hostfault" }
+hostfault = { path = "../hostfault" }
 # Independent execution only for opt-in native-lowering validation.
 oracle = { path = "../oracle", optional = true, features = ["unicorn"] }
 

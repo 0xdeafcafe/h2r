@@ -22,7 +22,7 @@ crates = [
 about = "XBE to host code: analysis, lifting, IR, the C and Cranelift back ends, their oracles"
 uses = ["formats"]
 crates = [
-    "analyze", "clif", "emit", "ir", "lift", "opt", "oracle",
+    "analyze", "clif", "emit", "hostfault", "ir", "lift", "opt", "oracle",
     "sim-tier", "simd", "sse-oracle", "symbols", "x87",
 ]
 
@@ -30,7 +30,7 @@ crates = [
 about = "The machine the lifted code runs on: memory, CPU state, kernel, filesystem, snapshots, the build-and-load driver"
 uses = ["formats", "recompiler"]
 crates = [
-    "hostfault", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
+    "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
     "snapshot", "timeline", "vfs",
 ]
 

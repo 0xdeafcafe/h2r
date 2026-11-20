@@ -90,6 +90,8 @@ hot-tags = { path = "../../extensions/hot-tags" }
 serde_json.workspace = true
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.
 perf = { path = "../../tools/perf", optional = true }
+# Test-map recipes built into packages (test_maps_recipes.rs).
+scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io", "test-maps"]
@@ -100,7 +102,7 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["game/test-maps"]
+test-maps = ["game/test-maps", "dep:scenario-edit"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
