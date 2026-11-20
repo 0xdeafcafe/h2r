@@ -1778,7 +1778,7 @@ implementation samples engine texture 3.
 ### Pipelined render
 
 The observer reads the object array and bodies during the render. With
-`H2_PIPELINE_RENDER` the render runs one frame behind the simulation on
+`impl.render.pipelined_frame` the render runs one frame behind the simulation on
 its own thread, while the next tick moves the same bodies and may compact
 the pool. That is already safe: on the render thread the observer's
 memory is the render's copy-on-write snapshot of the frame
@@ -2710,7 +2710,7 @@ The colour pass (`COLOUR_PASS`, `0x000214f0`) and each screen effect
 (`SCREEN_EFFECT`, `0x0002d140`) run their guest bodies. The entry
 hook records the caller, stack frame and plan. The return
 continuation closes the plan before the guest caller resumes. Under
-`H2_PIPELINE_RENDER`, these hooks require the game thread.
+`impl.render.pipelined_frame`, these hooks require the game thread.
 
 ### What the native post draws
 

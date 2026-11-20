@@ -55,7 +55,7 @@ impl UiGpu {
     ) -> Result<ExternalDraws, Refusal> {
         let cache = self.0.entry(target.device.clone()).or_insert_with(|| DeviceCache {
             frame,
-            fetch: FetchMode::from_env(),
+            fetch: FetchMode::Gpu,
             bindings: ProgramBindings::new(&target.device),
             shaders: HashMap::new(),
             pipelines: HashMap::new(),
