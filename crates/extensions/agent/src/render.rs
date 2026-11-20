@@ -709,7 +709,7 @@ pub struct FrameCapture {
     map_source: Mutex<Option<Arc<CaptureMapSource>>>,
 }
 
-type CaptureMapSource = dyn Fn(&str) -> Option<MapId> + Send + Sync;
+type CaptureMapSource = dyn Fn(&str) -> Option<(MapId, String)> + Send + Sync;
 
 struct CaptureState {
     /// The host can write presented frames.
@@ -776,8 +776,11 @@ impl FrameCapture {
         self.lock().writer = true;
     }
 
-    /// The host resolves a drawn map's cache alias to its installed package.
-    pub fn set_map_source(&self, source: impl Fn(&str) -> Option<MapId> + Send + Sync + 'static) {
+    /// The host resolves a drawn map's cache alias to its installed package and base name.
+    pub fn set_map_source(
+        &self,
+        source: impl Fn(&str) -> Option<(MapId, String)> + Send + Sync + 'static,
+    ) {
         *self.map_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(source));
     }
 
@@ -937,7 +940,8 @@ impl FrameCapture {
         // The sources are the host's. Call them without the capture lock.
         let frame = drawn.and_then(|(map, camera)| {
             let source = self.map_source.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-            Some((source(&map)?, map, camera))
+            let (id, base) = source(&map)?;
+            Some((id, base, camera))
         });
         let hash = self.hosted.scene_hash();
         if let Some(j) = &mut self.lock().job
@@ -1547,7 +1551,7 @@ mod frame_scene_tests {
     fn live_capture_binds_the_drawn_map_camera_and_png_to_one_present() {
         let (_, _, c) = rigs();
         let map = MapId([0x1f; 32]);
-        c.set_map_source(move |name| (name == "package-alias").then_some(map));
+        c.set_map_source(move |name| (name == "package-alias").then(|| (map, "lockout".into())));
         c.set_writer();
         c.tick_ended(10);
         let params = FrameCaptureParams {
@@ -1577,7 +1581,7 @@ mod frame_scene_tests {
         let source = capture.source.unwrap();
         assert_eq!(source.game_id, "private-game-id");
         assert_eq!(source.map_id, map.to_string());
-        assert_eq!(source.map, "package-alias");
+        assert_eq!(source.map, "lockout");
         assert_eq!(source.camera, camera);
         assert_eq!(source.digest, digest.to_string());
     }
@@ -1602,7 +1606,7 @@ mod frame_scene_tests {
         assert_eq!(c.wanted(40), None);
         assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
 
-        c.set_map_source(|_| Some(MapId([0x1f; 32])));
+        c.set_map_source(|_| Some((MapId([0x1f; 32]), "lockout".into())));
         let seq = c.arm(&params, dir).unwrap();
         c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
         c.clear_drawn_camera();

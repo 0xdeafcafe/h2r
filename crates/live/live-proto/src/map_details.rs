@@ -69,6 +69,9 @@ pub const MAX_CONTENT_TEXT: usize = 300;
 #[serde(deny_unknown_fields)]
 pub struct MapImage {
     pub sha256: Sha256,
+    /// Live accepts player reports for gallery captures.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reportable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
     /// The page it was found on (an `http`/`https` URL).
@@ -336,6 +339,7 @@ fn tidy_images(images: Vec<MapImage>) -> Vec<MapImage> {
         .into_iter()
         .map(|i| MapImage {
             sha256: i.sha256,
+            reportable: false,
             caption: tidy_text(i.caption),
             source_url: tidy_text(i.source_url),
             credit: tidy_text(i.credit),
@@ -498,6 +502,7 @@ mod tests {
     fn image(n: u8) -> MapImage {
         MapImage {
             sha256: Sha256([n; 32]),
+            reportable: false,
             caption: Some("the hog".into()),
             source_url: None,
             credit: None,

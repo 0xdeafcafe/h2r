@@ -493,13 +493,16 @@ async fn packages_are_signed_checked_and_listed() {
     assert_eq!(map["layers"][0]["kind"], "patch");
     assert_eq!(map["layers"][0]["size"], patch.len());
     assert_eq!(map["size"], patch.len());
-    assert_eq!(map["image"], sha(PNG).to_string());
+    assert!(map["image"].is_null(), "a signed manifest cannot publish an unchecked image");
+    assert_eq!(map["manifest"]["package"]["image"], "preview.png");
     assert_eq!(map["geometry"], Sha256([0x22; 32]).to_string());
     assert_eq!(map["manifest"]["patch"][0]["file"], "snipers.ips");
     let img = h.get(&format!("/v1/maps/{id}/image")).await;
-    assert_eq!(img.status, StatusCode::OK);
-    assert_eq!(img.headers["content-type"], "image/png");
-    assert_eq!(img.body, PNG);
+    assert_eq!(img.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.get(&format!("/v1/content/{}", sha(PNG))).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         h.get(&format!("/v1/maps/{}", MapId([1; 32]))).await.status,
         StatusCode::NOT_FOUND

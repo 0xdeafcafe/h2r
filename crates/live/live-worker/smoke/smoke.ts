@@ -40,7 +40,8 @@
 //      refused; the round trip of a datagram, and datagrams a second at
 //      co-op's rate (30 a second each way, for longer than a ticket lasts,
 //      so it is renewed) and near the relay's limit.
-//  13. OptiMatch QoS queue: four clients submit synthetic measurements,
+//  13. with --admin NAME: the shared screenshot moderation HTTP contract.
+//  14. OptiMatch QoS queue: four clients submit synthetic measurements,
 //      the lowest-worst-RTT peer publishes, and the session exposes its RTT table.
 // It prints one JSON object and exits non-zero if a step fails.
 //
@@ -53,6 +54,7 @@ import { canonicalJson } from "../../../../web/src/state/verify";
 import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../../web/src/state/account";
 import { eventBody, postEvent, TYP_EVENT } from "../../../../web/src/state/sign";
 import { issueToken, randomId } from "../../../../web/src/admin/token";
+import { screenshotParity } from "./screenshot-parity";
 
 const args = process.argv.slice(2);
 const base = (args.find((a) => /^https?:/.test(a)) ?? "http://127.0.0.1:8787").replace(/\/$/, "");
@@ -586,6 +588,8 @@ async function simRun(admin: LocalAccount, other: LocalAccount) {
   // A title file, as an admin.
   if (adminTag) {
     const admin = await createAccount(api, base, aud, adminTag);
+    out.screenshot_moderation = await screenshotParity(api, aud, a!, b!, admin)
+      .catch((e) => fail("screenshot-moderation", e));
     const uri = api + "/admin/replay-archives/" + archiveGame;
     const info = await (await fetch(uri, {headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.read")}`}})).json();
     const verify = async (cursor: string | null) => {

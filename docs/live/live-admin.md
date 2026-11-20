@@ -666,6 +666,28 @@ reports are `ContentReported` (`POST /v1/mod-packs/{id}/report`,
 `ContentUploadsSet` on the account's stream, and pins are `HopperPinsSet`
 on `hopper-<id>`. All of it replays from the log, so it survives restarts.
 
+### Screenshot review
+
+Open **Screenshot review** at `/dash/admin` to see the held images and why
+they entered the queue. **Show image** fetches the private, normalized
+preview. **Approve** makes it public across all assigned galleries.
+**Remove** hides all copies permanently, frees its quota and attempts to
+delete the stored image. The same review page holds approved captures
+that a player reports. Existing uploader gallery images enter the queue
+on replay if their upload predates proof checks.
+
+Three distinct images flagged by the classifier or removed in review
+switch off the uploader's content uploads. Player reports without an
+admin removal do not count. Approval clears a classifier strike on that
+hash. An admin can restore uploads through the account's upload switch.
+
+The Worker and the native server share the review queue and rules.
+Native Live holds captures for review when a local classifier is absent.
+The optional local adapter sends the display WebP in an HTTP POST and
+expects a JSON response such as `{"nsfw":0.25}`, with a numeric score
+between zero and one. The operator supplies the model service on loopback.
+[Classifier setting](../runtime/switches.md#tools) · [Screenshot API](live-api.md#verified-screenshot-uploads)
+
 **Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
 beside it, keyed by the `hopper_id` sessions advertise. A session with
 `hopper` or `ranked` flags may only advertise a retail map or one pinned on

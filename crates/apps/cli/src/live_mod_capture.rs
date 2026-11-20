@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_proto::{Client as Agent, method};
+use agent_proto::{CaptureReply, Client as Agent, method};
 use anyhow::{Context, Result, bail, ensure};
-use content::MapId;
+use content::{MapId, Sha256};
 use live_hle::maps::{Fetch, Got, HttpFetch};
 use live_proto::maps::{MapAnswer, MapSummary, ModPackSummary, pack_id_ok};
+use live_proto::screenshots::{CameraPose, CapturePermit, CaptureProof, PROOF_HEADER};
 use live_proto::{Xuid, lxm};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -85,23 +86,56 @@ impl Owner<'_> {
         Ok((Some(pack.id), pack.members))
     }
 
-    fn upload(&self, target: &str, slot: usize, bytes: &[u8]) -> Result<()> {
-        let url = self
-            .client
-            .url(&format!("{target}/screenshots/capture/{slot}"));
+    fn capture_session(&self, map: MapId) -> Result<CapturePermit> {
+        let url = self.client.url(&format!("/maps/{map}/screenshot-capture-session"));
+        let answer = self
+            .write(|| self.client.agent.post(&url), None)
+            .with_context(|| format!("opening a Live capture for {map}"))?;
+        serde_json::from_str(&answer).context("reading the Live capture permit")
+    }
+
+    fn upload(&self, target: &str, slot: usize, proof: &CaptureProof, bytes: &[u8]) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Receipt {
+            status: Status,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Status {
+            Pending,
+            Approved,
+        }
+
+        let url = self.client.url(&format!("{target}/screenshots/capture/{slot}"));
+        let proof = serde_json::to_string(proof)?;
+        let answer = self
+            .write(
+                || {
+                    self.client.agent.put(&url)
+                        .set("content-type", "image/png")
+                        .set(PROOF_HEADER, &proof)
+                },
+                Some(bytes),
+            )
+            .with_context(|| format!("uploading {target} capture {slot}"))?;
+        let receipt: Receipt =
+            serde_json::from_str(&answer).context("reading the Live capture receipt")?;
+        if matches!(receipt.status, Status::Pending) {
+            eprintln!("{target} capture {} is pending review", slot + 1);
+        }
+        Ok(())
+    }
+
+    fn write(&self, request: impl Fn() -> ureq::Request, body: Option<&[u8]>) -> Result<String> {
         for retry in 0..=4 {
-            let req = self.client.agent.put(&url).set("content-type", "image/png");
             let req = self
                 .client
-                .authorized(req, self.signer.token(self.client, lxm::CONTENT_WRITE)?)?;
-            match call(req, Some(bytes)) {
-                Ok(_) => return Ok(()),
+                .authorized(request(), self.signer.token(self.client, lxm::CONTENT_WRITE)?)?;
+            match call(req, body) {
                 Err(e) if status_of(&e) == Some(429) && retry < 4 => {
                     std::thread::sleep(Duration::from_secs(2 << retry));
                 }
-                Err(e) => {
-                    return Err(e).with_context(|| format!("uploading {target} capture {slot}"));
-                }
+                result => return result,
             }
         }
         unreachable!()
@@ -211,9 +245,11 @@ fn view(slot: usize, count: usize) -> (usize, f64) {
 fn capture(
     mut rpc: impl FnMut(&str, Value) -> Result<Value>,
     id: MapId,
+    base: &str,
+    permit: &CapturePermit,
     frames: &Path,
     process: u32,
-    mut image: impl FnMut(usize, &[u8]) -> Result<()>,
+    mut image: impl FnMut(usize, &CaptureProof, &[u8]) -> Result<()>,
 ) -> Result<()> {
     rpc(method::CLAIM, json!({}))?;
     rpc(method::WAIT, until(json!({"phase":"menu", "map_ticks":10})))?;
@@ -247,7 +283,7 @@ fn capture(
             .and_then(|n| usize::try_from(n).ok())
             .filter(|n| *n > 0)
             .context("no readable spawn points")?;
-        let shot = rpc(method::RENDER_CAPTURE, json!({}))?;
+        let shot = rpc(method::RENDER_CAPTURE, json!({"game_id":permit.game_id}))?;
         let file = Path::new(
             shot["path"]
                 .as_str()
@@ -267,10 +303,30 @@ fn capture(
                 shot["at"]["phase"] == "gameplay" && shot["at"]["map"] == map,
                 "the game left {map} before capture {slot}"
             );
-            image(
-                slot,
-                &fs::read(file).with_context(|| format!("reading {}", file.display()))?,
-            )
+            let capture = CaptureReply::deserialize(&shot).context("reading the frame capture")?;
+            let source = capture.source.context("the game returned no capture provenance")?;
+            let map_id = source.map_id.parse::<MapId>().context("invalid captured map ID")?;
+            ensure!(
+                source.game_id == permit.game_id && map_id == id && source.map.eq_ignore_ascii_case(base),
+                "the game returned a frame for a different capture session or map"
+            );
+            let bytes = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+            let digest = source.digest.parse::<Sha256>().context("invalid capture digest")?;
+            ensure!(digest == Sha256::of(&bytes), "the captured PNG changed before upload");
+            let proof = CaptureProof {
+                game_id: source.game_id,
+                tick: capture.tick,
+                map_id,
+                map: source.map,
+                camera: CameraPose {
+                    position: source.camera.position,
+                    forward: source.camera.forward,
+                    up: source.camera.up,
+                },
+                digest,
+                permit: Some(permit.token.clone()),
+            };
+            image(slot, &proof, &bytes)
         })();
         let _ = fs::remove_file(file);
         result?;
@@ -339,17 +395,20 @@ pub(crate) fn run(mut args: Args) -> Result<()> {
         eprintln!("Capturing {} ({})", map.name, map.map_id);
         {
             let (game, mut agent) = serve(&scratch.0, &data, &disc, image.as_deref())?;
+            let permit = owner.capture_session(map.map_id)?;
             capture(
                 |method, params| Ok(agent.call(method, params)?),
                 map.map_id,
+                &map.base.map,
+                &permit,
                 &agent_proto::cache_dir().join("frames"),
                 game.0.id(),
-                |shot, png| {
-                    owner.upload(&format!("/maps/{}", map.map_id), shot, png)?;
+                |shot, proof, png| {
+                    owner.upload(&format!("/maps/{}", map.map_id), shot, proof, png)?;
                     if let Some(id) = &pack {
                         for slot in 0..SHOTS {
                             if representative(slot, maps.len()) == (member, shot) {
-                                owner.upload(&format!("/mod-packs/{id}"), slot, png)?;
+                                owner.upload(&format!("/mod-packs/{id}"), slot, proof, png)?;
                             }
                         }
                     }
@@ -360,7 +419,7 @@ pub(crate) fn run(mut args: Args) -> Result<()> {
         }
         gate.remove(&map.map_id).map_err(anyhow::Error::msg)?;
     }
-    println!("Captured {SHOTS} views for each of {} maps.", maps.len());
+    println!("Submitted {SHOTS} captured views for each of {} maps.", maps.len());
     Ok(())
 }
 
@@ -374,6 +433,10 @@ mod tests {
         let mut poses = Vec::new();
         let mut slots = Vec::new();
         let id = MapId([0x2b; 32]);
+        let permit = CapturePermit {
+            game_id: "capture-123".into(),
+            token: "test-permit".into(),
+        };
         let rpc = |method: &str, params: Value| -> Result<Value> {
             Ok(match method {
                 method::CLAIM => json!({}),
@@ -392,15 +455,40 @@ mod tests {
                     json!({"count":9})
                 }
                 method::RENDER_CAPTURE => {
+                    assert_eq!(params["game_id"], permit.game_id);
                     let path = scratch.0.join(format!("capture-123-{}.png", poses.len()));
-                    fs::write(&path, [poses.len() as u8])?;
-                    json!({"path":path, "at":{"map":"package-alias", "phase":"gameplay"}})
+                    let bytes = [poses.len() as u8];
+                    fs::write(&path, bytes)?;
+                    json!({
+                        "path": path,
+                        "at": {"map":"package-alias", "phase":"gameplay"},
+                        "tick": 42 + poses.len(),
+                        "present": 25 + poses.len(),
+                        "source": {
+                            "game_id": permit.game_id,
+                            "map_id": id,
+                            "map": "lockout",
+                            "camera": {
+                                "position": [3.0, 4.0, 5.0],
+                                "forward": [1.0, 0.0, 0.0],
+                                "up": [0.0, 0.0, 1.0]
+                            },
+                            "digest": Sha256::of(&bytes)
+                        }
+                    })
                 }
                 other => panic!("unexpected call {other}"),
             })
         };
-        capture(rpc, id, &scratch.0, 123, |slot, bytes| {
+        capture(rpc, id, "lockout", &permit, &scratch.0, 123, |slot, proof, bytes| {
             assert_eq!(bytes, [(slot + 1) as u8]);
+            assert_eq!(proof.game_id, permit.game_id);
+            assert_eq!(proof.map_id, id);
+            assert_eq!(proof.map, "lockout");
+            assert_eq!(proof.tick, 43 + slot as u64);
+            assert_eq!(proof.camera.position, [3.0, 4.0, 5.0]);
+            assert_eq!(proof.digest, Sha256::of(bytes));
+            assert_eq!(proof.permit.as_deref(), Some(permit.token.as_str()));
             slots.push(slot);
             Ok(())
         })

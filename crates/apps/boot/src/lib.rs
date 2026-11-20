@@ -945,7 +945,7 @@ fn run_configured(
             agent::render::CAPTURE.set_map_source(move |name| {
                 let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
                 let path = vfs.content_map_path(name)?;
-                vfs.map_id(&path)
+                Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
             });
         }
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);

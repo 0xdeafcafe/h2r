@@ -51,6 +51,8 @@ pub const SCREENSHOT_SET: &str = "ModScreenshotSet";
 /// them.
 pub const KINDS: &[&str] = &[
     SCREENSHOT_SET,
+    crate::screenshots::SCREENSHOT_REVIEWED,
+    crate::screenshots::SCREENSHOT_REPORTED,
     CONTENT_STORED,
     MAP_PUBLISHED,
     CONTENT_MODERATED,

@@ -166,6 +166,23 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/maps/{map}", get(crate::content::get_map))
         .route("/v1/maps/{map}/image", get(crate::content::get_map_image))
         .route(
+            "/v1/maps/{map}/screenshot-capture-session",
+            post(crate::content::screenshots::proof::create),
+        )
+        .route(
+            "/v1/screenshots/{sha256}/report",
+            post(crate::content::screenshots::report),
+        )
+        .route("/v1/admin/screenshots", get(crate::content::screenshots::list))
+        .route(
+            "/v1/admin/screenshots/{sha256}/image",
+            get(crate::content::screenshots::preview),
+        )
+        .route(
+            "/v1/admin/screenshots/{sha256}/{action}",
+            post(crate::content::screenshots::moderate),
+        )
+        .route(
             "/v1/maps/{map}/screenshots/{kind}/{slot}",
             axum::routing::put(crate::content::screenshots::put_map),
         )

@@ -496,18 +496,16 @@ with the Halo 2 disc's shared maps.
 
 ### Mods
 
-The Mods catalog serves each release's cover and gallery from Live.
-The uploader can supply pack art and member screenshots. On the owner's
-machine, `h2 live mods capture PACK_ID|MAP_ID` starts a private
-headless `h2 serve` session for each member. Supply `--disc` for the
-owner's retail disc, `--out` for the game image directory, and `--server`
-and `--as` to choose the destination and uploader. The CLI uses the
-game agent to load the exact installed package, place the camera at
-player starts and capture three rendered views. For a pack, it also
-selects three member views for the release gallery. Generated shots occupy separate slots so replacing a capture
-preserves an uploaded cover. The site labels retail map art when it
-uses it as a fallback. Gallery bytes live in the server's content
-store. [Pack and map image endpoints](live-api.md#the-mod-repository)
+The Mods catalog serves each release's cover and gallery from Live. On the
+uploader's machine, `h2 live mods capture PACK_ID|MAP_ID` starts a private
+headless game for each member. The CLI gets a Live capture permit and uses
+the game agent to load the installed package, place the camera at player
+starts and capture three rendered views. The game binds the exact package,
+tick, camera and PNG digest to the returned frame. For a pack, the CLI also
+selects three member views for the release gallery. Private captures enter
+the review queue and appear in the gallery after approval. The site labels
+retail map art when it uses it as a fallback.
+[Capture options](../runtime/switches.md#tools) · [Gallery API](live-api.md#verified-screenshot-uploads)
 
 Installed mods, the map packages under `<data>/maps/`
 ([maps.md](../game/maps.md)), get art of their own, extracted from the

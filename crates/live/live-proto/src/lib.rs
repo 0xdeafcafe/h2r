@@ -31,6 +31,7 @@ pub mod recovery;
 pub mod reports;
 #[doc(hidden)]
 pub mod samples;
+pub mod screenshots;
 pub mod session;
 pub mod sign;
 pub mod skulls;

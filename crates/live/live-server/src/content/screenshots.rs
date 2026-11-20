@@ -1,7 +1,13 @@
 //! Uploader-owned gallery slots. A slot update and any new content record
 //! share one append, so replay sees the same gallery as the publishing node.
+mod geometry;
+pub(crate) mod proof;
+pub(super) mod review;
+pub(crate) use review::{list, moderate, preview, report};
+
 use super::*;
 use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageFormat, ImageReader, Limits};
+use live_proto::screenshots::CaptureProof;
 use std::io::Cursor;
 
 const MAX_INPUT: usize = 5 * 1024 * 1024;
@@ -9,6 +15,8 @@ const MAX_SIDE: u32 = 4096;
 const MAX_PIXELS: u64 = 8_000_000;
 const MAX_DECODED: u64 = 32 * 1024 * 1024;
 const DISPLAY_SIDE: u32 = 1280;
+const NSFW_REVIEW_SCORE: f32 = 0.80;
+const NSFW_CLEAR_SCORE: f32 = 0.20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,40 +54,85 @@ struct ScreenshotSet {
     #[serde(flatten)]
     slot: Slot,
     sha256: Sha256,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submission: Option<review::Submission>,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct Galleries(BTreeMap<(Target, String), BTreeMap<Slot, Sha256>>);
+pub(super) struct Galleries {
+    slots: BTreeMap<(Target, String), BTreeMap<Slot, Sha256>>,
+    reviews: review::Reviews,
+}
 
 impl CatalogState {
-    pub(super) fn apply_screenshot(&mut self, data: &serde_json::Value) {
-        if let Ok(event) = serde_json::from_value::<ScreenshotSet>(data.clone()) {
-            self.screenshots
-                .0
-                .entry((event.target, event.id))
-                .or_default()
-                .insert(event.slot, event.sha256);
+    pub(super) fn apply_screenshot(&mut self, event: &RecordedEvent) {
+        let Ok(shot) = serde_json::from_value::<ScreenshotSet>(event.body.data.clone()) else {
+            return;
+        };
+        let submission = shot.submission.or_else(|| {
+            if event.body.stream == review::STREAM {
+                return None;
+            }
+            self.blobs
+                .get(&shot.sha256)
+                .map(|blob| review::Submission::legacy(blob.uploader))
+        });
+        if let Some(submission) = submission
+            && let Some(owner) =
+                self.screenshots
+                    .reviews
+                    .submit(shot.sha256, event.position, submission)
+        {
+            self.uploads_off.insert(owner);
         }
+        self.screenshots
+            .slots
+            .entry((shot.target, shot.id))
+            .or_default()
+            .insert(shot.slot, shot.sha256);
     }
 
-    pub(crate) fn screenshot_hashes(
-        &self,
-        target: Target,
-        id: &str,
-    ) -> impl Iterator<Item = Sha256> + '_ {
+    fn screenshot_hashes(&self, target: Target, id: &str) -> impl Iterator<Item = Sha256> + '_ {
         self.screenshots
-            .0
+            .slots
             .get(&(target, id.to_owned()))
             .into_iter()
             .flat_map(|slots| slots.values().copied())
     }
 
-    pub(crate) fn screenshot_targets<'a>(
+    pub(super) fn screenshot_visible(&self, hash: &Sha256) -> bool {
+        self.screenshots.reviews.visible(hash)
+    }
+
+    pub(super) fn screenshot_standing(&self, hash: &Sha256) -> Standing {
+        match self.screenshots.reviews.get(hash).map(|s| s.status) {
+            Some(review::Status::Pending) => Standing::Hidden,
+            Some(review::Status::Removed) => Standing::Blocked,
+            _ => Standing::Ok,
+        }
+    }
+
+    pub(super) fn cleared_image(&self, hash: &Sha256) -> bool {
+        self.screenshots
+            .reviews
+            .get(hash)
+            .is_some_and(|s| s.status == review::Status::Approved)
+            || self
+                .details
+                .values()
+                .any(|details| details.images.iter().any(|i| i.sha256 == *hash))
+            || self
+                .packs
+                .values()
+                .any(|pack| pack.images.iter().any(|i| i.sha256 == *hash))
+    }
+
+    pub(super) fn screenshot_targets<'a>(
         &'a self,
         hash: &'a Sha256,
     ) -> impl Iterator<Item = (Target, &'a str)> {
         self.screenshots
-            .0
+            .slots
             .iter()
             .filter_map(move |((target, id), slots)| {
                 slots
@@ -89,8 +142,6 @@ impl CatalogState {
             })
     }
 
-    /// Display indices are dense. Stable upload slots are independent of
-    /// index so a capture retry never displaces an uploader's cover.
     pub(crate) fn gallery(
         &self,
         target: Target,
@@ -99,16 +150,16 @@ impl CatalogState {
     ) -> Vec<maps::MapImage> {
         let mut seen = BTreeSet::new();
         self.screenshot_hashes(target, id)
-            .filter(|h| self.blob_standing(h).is_ok())
             .map(|sha256| maps::MapImage {
                 sha256,
+                reportable: true,
                 caption: None,
                 source_url: None,
                 credit: None,
                 licence: None,
             })
             .chain(curated.iter().cloned())
-            .filter(|image| seen.insert(image.sha256))
+            .filter(|image| self.servable(&image.sha256) && seen.insert(image.sha256))
             .collect()
     }
 
@@ -144,7 +195,7 @@ fn image_error(error: image::ImageError) -> ApiError {
     }
 }
 
-fn normalize(bytes: &[u8]) -> ApiResult<Vec<u8>> {
+fn decode(bytes: &[u8]) -> ApiResult<DynamicImage> {
     if bytes.len() > MAX_INPUT {
         return Err(too_large("an image upload is at most 5 MiB"));
     }
@@ -172,11 +223,22 @@ fn normalize(bytes: &[u8]) -> ApiResult<Vec<u8>> {
             "an image must fit within 4096 pixels per side and 8 megapixels",
         ));
     }
-    let mut photo = DynamicImage::from_decoder(decoder).map_err(image_error)?;
-    if w.max(h) > DISPLAY_SIDE {
+    DynamicImage::from_decoder(decoder).map_err(image_error)
+}
+
+fn encode(mut photo: DynamicImage) -> ApiResult<Vec<u8>> {
+    if photo.width().max(photo.height()) > DISPLAY_SIDE {
         photo = photo.thumbnail(DISPLAY_SIDE, DISPLAY_SIDE);
     }
     let mut photo = photo.into_rgba8();
+    // Analyze and serve the same opaque pixels, regardless of the page background.
+    for pixel in photo.pixels_mut() {
+        let alpha = u16::from(pixel.0[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+        }
+        pixel.0[3] = 255;
+    }
     loop {
         let mut out = Vec::new();
         image::codecs::webp::WebPEncoder::new_lossless(&mut out)
@@ -199,17 +261,15 @@ fn normalize(bytes: &[u8]) -> ApiResult<Vec<u8>> {
 impl Live {
     async fn set_screenshot(
         &self,
-        bearer: Option<&str>,
+        headers: &HeaderMap,
         target: Target,
         id: &str,
         kind: &str,
         slot: &str,
         body: Body,
     ) -> ApiResult<Response> {
-        let (_, xuid) = self.uploader(bearer)?;
+        let (_, xuid) = self.uploader(bearer(headers))?;
         let slot = Slot::parse(kind, slot)?;
-        // Map ids are SHA-256 values. Use the canonical spelling everywhere,
-        // including the gallery key and the server-signed event stream.
         let id = match target {
             Target::Map => id
                 .parse::<MapId>()
@@ -218,10 +278,22 @@ impl Live {
             _ => id.to_owned(),
         };
         self.catalog.read().authorize_gallery(target, &id, xuid)?;
+        if slot.kind != Kind::Capture {
+            return Err(invalid("capture screenshots in the game before uploading"));
+        }
+        let proof = proof::read(headers)?;
+        let source = proof::verify(self, xuid, &proof)?;
+        self.catalog
+            .read()
+            .authorize_capture_map(target, &id, &proof)?;
         let input = axum::body::to_bytes(body, MAX_INPUT)
             .await
             .map_err(|_| too_large("image upload exceeds 5 MiB or is incomplete"))?;
-        let output = normalize(&input)?;
+        if Sha256::of(&input) != proof.digest {
+            return Err(invalid("capture digest does not match the uploaded image"));
+        }
+        let photo = decode(&input)?;
+        let output = encode(photo)?;
         let sha256 = Sha256::of(&output);
         let size = output.len() as u64;
         self.meter(
@@ -230,10 +302,30 @@ impl Live {
             input.len() as u64,
         )
         .await;
+
+        // Run inference outside the write lock. Recheck ownership, quotas and
+        // moderation after it returns so a slow classifier cannot undo a report.
+        let new = self
+            .catalog
+            .read()
+            .screenshots
+            .reviews
+            .get(&sha256)
+            .is_none();
+        let evidence = if new {
+            Some(
+                self.capture_evidence(proof.clone(), source, &output, xuid)
+                    .await,
+            )
+        } else {
+            None
+        };
         let _guard = self.content_writes.lock().await;
-        let known = {
+        self.wait_applied(self.store.head().await?).await?;
+        let (known, status, submission, version) = {
             let state = self.catalog.read();
             state.authorize_gallery(target, &id, xuid)?;
+            state.authorize_capture_map(target, &id, &proof)?;
             if state.withheld_by_pack(&sha256) || !state.blob_standing(&sha256).is_ok() {
                 return Err(gone("an admin took this image down"));
             }
@@ -247,16 +339,40 @@ impl Live {
                         "image exceeds this server's layer size or account quota",
                     ));
                 }
-            } else if state
+            }
+            let reviews = &state.screenshots.reviews;
+            let (status, submission) = match reviews.get(&sha256) {
+                Some(record) if record.status == review::Status::Removed => {
+                    return Err(gone("an admin removed this screenshot"));
+                }
+                Some(record) => {
+                    if record
+                        .proof
+                        .as_ref()
+                        .is_some_and(|old| old.map_id != proof.map_id)
+                    {
+                        return Err(conflict(
+                            "this screenshot is already associated with another map",
+                        ));
+                    }
+                    (record.status, None)
+                }
+                None => {
+                    let evidence =
+                        evidence.ok_or_else(|| conflict("screenshot changed, retry the upload"))?;
+                    (evidence.status, Some(evidence))
+                }
+            };
+            if state
                 .screenshots
-                .0
+                .slots
                 .get(&(target, id.clone()))
                 .and_then(|s| s.get(&slot))
                 == Some(&sha256)
             {
-                return Ok(screenshot_response(sha256, self.position()));
+                return Ok(screenshot_response(sha256, self.position(), status));
             }
-            known
+            (known, status, submission, reviews.version)
         };
 
         let mut events = Vec::new();
@@ -282,35 +398,117 @@ impl Live {
                 ),
             );
         }
-        let stream = match target {
-            Target::Map => format!("package-{id}"),
-            Target::Pack => maps::pack_stream(&id),
-            Target::Content => unreachable!("galleries belong to maps and packs"),
-        };
         events.push(
             self.server_event(
-                stream,
+                review::STREAM.into(),
                 maps::SCREENSHOT_SET,
                 serde_json::to_value(ScreenshotSet {
                     id,
                     target,
                     slot,
                     sha256,
+                    submission,
                 })
                 .expect("serializes"),
             ),
         );
-        let recorded = self.store.append(events, &[]).await?;
-        let position = recorded.last().expect("screenshot event").position;
-        self.wait_applied(position).await?;
-        Ok(screenshot_response(sha256, position))
+        let position = review::append(self, events, version).await?;
+        Ok(screenshot_response(sha256, position, status))
+    }
+
+    async fn capture_evidence(
+        &self,
+        mut proof: CaptureProof,
+        source: proof::Source,
+        output: &[u8],
+        uploader: Xuid,
+    ) -> review::Submission {
+        let nsfw = match self.screenshot_classifier() {
+            Some(classifier) => classifier
+                .classify(output)
+                .await
+                .ok()
+                .filter(|s| (0.0..=1.0).contains(s)),
+            None => None,
+        };
+        let shape = match self.outline(&proof.map_id.to_string()).await {
+            Ok(bytes) if bytes.len() <= 2 * 1024 * 1024 => {
+                match (
+                    serde_json::from_slice::<live_proto::game::Outline>(&bytes),
+                    image::load_from_memory_with_format(output, ImageFormat::WebP),
+                ) {
+                    (Ok(outline), Ok(image)) => geometry::compare(&image, &proof.camera, &outline),
+                    _ => geometry::Match::Unavailable,
+                }
+            }
+            _ => geometry::Match::Unavailable,
+        };
+        let reason = match (nsfw, shape, source) {
+            (Some(score), _, _) if score >= NSFW_REVIEW_SCORE => {
+                Some(review::Reason::ClassifierFlag)
+            }
+            (None, _, _) => Some(review::Reason::ClassifierUnavailable),
+            (Some(score), _, _) if score > NSFW_CLEAR_SCORE => {
+                Some(review::Reason::ClassifierUncertain)
+            }
+            (_, geometry::Match::Mismatch, _) => Some(review::Reason::GeometryMismatch),
+            (_, geometry::Match::Unavailable, _) => Some(review::Reason::GeometryUnavailable),
+            (_, _, proof::Source::Private) => Some(review::Reason::PrivateCapture),
+            (_, _, proof::Source::PeerGame) => Some(review::Reason::PeerCapture),
+            (_, _, proof::Source::DedicatedGame) => None,
+        };
+        proof.permit = None;
+        review::Submission {
+            uploader,
+            status: if reason.is_some() {
+                review::Status::Pending
+            } else {
+                review::Status::Approved
+            },
+            reason,
+            nsfw,
+            proof: Some(proof),
+        }
     }
 }
 
-fn screenshot_response(sha256: Sha256, position: u64) -> Response {
+impl CatalogState {
+    fn authorize_capture_map(
+        &self,
+        target: Target,
+        id: &str,
+        proof: &CaptureProof,
+    ) -> ApiResult<()> {
+        if self.refusal(&proof.map_id).is_some() {
+            return Err(gone("the captured map is unavailable"));
+        }
+        let map = self
+            .maps
+            .get(&proof.map_id)
+            .ok_or_else(|| forbidden("the captured map is not published"))?;
+        if !map.doc.manifest.base.map.eq_ignore_ascii_case(&proof.map) {
+            return Err(forbidden(
+                "capture map name does not match the published package",
+            ));
+        }
+        let matches = match target {
+            Target::Map => id.parse::<MapId>().ok() == Some(proof.map_id),
+            Target::Pack => self.mod_pack_id(&proof.map_id).as_deref() == Some(id),
+            Target::Content => false,
+        };
+        if !matches {
+            return Err(forbidden(
+                "the captured map does not belong to this gallery",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn screenshot_response(sha256: Sha256, position: u64, status: review::Status) -> Response {
     crate::http::json(
         StatusCode::OK,
-        &json!({ "ok": true, "sha256": sha256, "position": position }),
+        &json!({ "ok": true, "sha256": sha256, "position": position, "status": status }),
     )
 }
 
@@ -320,15 +518,8 @@ pub(crate) async fn put_map(
     UrlPath((id, kind, slot)): UrlPath<(String, String, String)>,
     req: Request,
 ) -> ApiResult<Response> {
-    live.set_screenshot(
-        bearer(&headers),
-        Target::Map,
-        &id,
-        &kind,
-        &slot,
-        req.into_body(),
-    )
-    .await
+    live.set_screenshot(&headers, Target::Map, &id, &kind, &slot, req.into_body())
+        .await
 }
 
 pub(crate) async fn put_pack(
@@ -337,21 +528,15 @@ pub(crate) async fn put_pack(
     UrlPath((id, kind, slot)): UrlPath<(String, String, String)>,
     req: Request,
 ) -> ApiResult<Response> {
-    live.set_screenshot(
-        bearer(&headers),
-        Target::Pack,
-        &id,
-        &kind,
-        &slot,
-        req.into_body(),
-    )
-    .await
+    live.set_screenshot(&headers, Target::Pack, &id, &kind, &slot, req.into_body())
+        .await
 }
 
 pub(crate) async fn get_pack(
     State(live): Shared,
     headers: HeaderMap,
     UrlPath((id, n)): UrlPath<(String, usize)>,
+    Query(query): Query<ImageQuery>,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     let img = {
@@ -363,15 +548,38 @@ pub(crate) async fn get_pack(
             .and_then(|p| p.info.images.get(n).map(|i| i.sha256))
             .ok_or_else(|| not_found("no such pack image"))?
     };
+    query.check(img)?;
     let (_, bytes) = live.content(&img.to_string()).await?;
     let kind = maps::image_type(&bytes).ok_or_else(|| not_found("no such image"))?;
     Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+pub(super) struct ImageQuery {
+    v: Option<String>,
+}
+
+impl ImageQuery {
+    pub(super) fn check(&self, image: Sha256) -> ApiResult<()> {
+        if self
+            .v
+            .as_ref()
+            .is_some_and(|v| v.parse::<Sha256>().ok() != Some(image))
+        {
+            return Err(not_found("the gallery has changed"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::ImageEncoder;
+
+    fn normalize(bytes: &[u8]) -> ApiResult<Vec<u8>> {
+        encode(decode(bytes)?)
+    }
 
     fn png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();

@@ -815,7 +815,7 @@ h2 agent render.parity '{"arm": true}'
   selecting a spawn view. The method waits for a whole frame that draws
   that view at or after the requested tick. The result includes
   `source: {game_id, map_id, map, camera, digest}`. The game resolves the
-  draw's cache alias to the installed package's full `MapId`.
+  draw's cache alias to the installed package's full `MapId` and base map name.
   `camera` gives the world-space `position`, `forward` and `up` the renderer
   uses. `digest` is the SHA-256 of the exact PNG the display writer saves.
   The Live CLI adds the capture permit when it submits the image.

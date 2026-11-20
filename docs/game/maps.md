@@ -527,8 +527,11 @@ SHA-256.
   whose hash is not the manifest's), signs the manifest with the local
   account's key and publishes it; `h2 live maps list [--base MAP] [--author
   GAMERTAG] [--json]` prints the server's packages.
-- **Pictures and viewer** (web): the package's image (served at
-  `/v1/maps/{id}/image`), then the base map's art. The 3D viewer first
+- **Pictures and viewer** (web): a cleared gallery or package preview
+  (served at `/v1/maps/{id}/image`), then the base map's art. A signed
+  manifest alone does not clear its preview for public display.
+  [Live screenshot rules](../live/live-api.md#verified-screenshot-uploads)
+  The 3D viewer first
   looks for the mod's own art by `map_id` (the server's art has it when
   the mod is installed where the art was extracted: an entry
   `mod-<first 16 hex of the MapId>` carrying `map_id`, `base` and the

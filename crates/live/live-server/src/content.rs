@@ -52,6 +52,7 @@ use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path as UrlPath, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use live_proto::maps::{
     self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
     CONTENT_UPLOADS_SET, ContentStored, Credit, Credited, Detailed, Details, Downloaded,
@@ -437,19 +438,22 @@ impl CatalogState {
     /// The log also carries the original manifest, image hashes and pack
     /// metadata. Its public readers observe the same pack takedowns.
     pub(crate) fn hides_content_stream(&self, stream: &str) -> bool {
+        if stream == screenshots::review::STREAM {
+            return true;
+        }
         match stream.split_once('-') {
             Some(("mappack", pack)) => !self.standing(Target::Pack, pack).is_ok(),
             Some(("package", map)) => map
                 .parse()
                 .is_ok_and(|id| !self.pack_standing_for_map(&id).is_ok()),
-            Some(("content", hash)) => hash.parse().is_ok_and(|h| self.withheld_by_pack(&h)),
+            Some(("content", hash)) => hash.parse().is_ok_and(|h| !self.screenshot_visible(&h) || self.withheld_by_pack(&h)),
             _ => false,
         }
     }
 
     /// A blob that is stored and served.
     pub fn servable(&self, h: &Sha256) -> bool {
-        self.blobs.contains_key(h) && self.blob_standing(h).is_ok()
+        self.blobs.contains_key(h) && self.blob_standing(h).is_ok() && self.screenshot_visible(h)
     }
 
     /// Bytes `xuid` has stored (hidden ones count; deleted ones do not).
@@ -459,6 +463,7 @@ impl CatalogState {
             .filter(|(h, b)| {
                 b.uploader == xuid
                     && matches!(self.blob_standing(h), Standing::Ok | Standing::Hidden)
+                    && self.screenshot_standing(h) != Standing::Blocked
             })
             .map(|(_, b)| b.size)
             .sum()
@@ -528,9 +533,10 @@ impl CatalogState {
     }
 
     fn apply(&mut self, e: &RecordedEvent) {
+        self.advance_screenshot_review(e);
         let b = &e.body;
         match b.kind.as_str() {
-            maps::SCREENSHOT_SET => self.apply_screenshot(&b.data),
+            maps::SCREENSHOT_SET => self.apply_screenshot(e),
             CONTENT_STORED => {
                 if let Ok(d) = serde_json::from_value::<ContentStored>(b.data.clone()) {
                     self.standings
@@ -847,6 +853,9 @@ impl Live {
             if s.withheld_by_pack(&h) {
                 return Err(gone("an admin took down the pack containing this content"));
             }
+            if !s.screenshot_visible(&h) {
+                return Err(gone("this screenshot is withheld"));
+            }
             match s.blob_standing(&h) {
                 Standing::Hidden | Standing::Blocked => {
                     return Err(gone("an admin took this content down"));
@@ -967,7 +976,7 @@ impl Live {
                 }
                 Standing::Deleted => return Err(gone("an admin deleted this content")),
             }
-            if !s.blobs.contains_key(&h) {
+            if !s.blobs.contains_key(&h) || !s.screenshot_visible(&h) {
                 return Err(not_found("no such content"));
             }
         }
@@ -979,7 +988,11 @@ impl Live {
         let h = self.readable_content(sha256)?;
         let key = blob_key(&h);
         match self.content_store()?.get(&key).await {
-            Ok(Some(bytes)) => Ok((h, bytes.to_vec())),
+            Ok(Some(bytes)) => {
+                // A moderation event may have landed while storage was reading.
+                self.readable_content(sha256)?;
+                Ok((h, bytes.to_vec()))
+            }
             Ok(None) => Err(not_found("no such content")),
             Err(e) => {
                 eprintln!("live: content: {key}: {e}");
@@ -1033,7 +1046,8 @@ impl Live {
             },
             size: layers.iter().map(|l| l.size).sum(),
             layers,
-            image: p.doc.image.or_else(|| images.first().map(|i| i.sha256)),
+            image: p.doc.image.filter(|h| s.servable(h) && s.cleared_image(h))
+                .or_else(|| images.first().map(|i| i.sha256)),
             features: details
                 .and_then(|d| d.features.clone())
                 .unwrap_or_else(|| p.doc.features.clone()),
@@ -1266,7 +1280,7 @@ impl Live {
 
     /// `GET /v1/maps/{map_id}/images/{n}`: the admin's `n`th screenshot
     /// (from 0).
-    pub async fn map_detail_image(&self, id: &str, n: &str) -> ApiResult<(&'static str, Vec<u8>)> {
+    async fn map_detail_image(&self, id: &str, n: &str, query: &screenshots::ImageQuery) -> ApiResult<(&'static str, Vec<u8>)> {
         let n: usize = n.parse().map_err(|_| not_found("no such image"))?;
         let img = self
             .map(id)?
@@ -1276,6 +1290,7 @@ impl Live {
             .get(n)
             .map(|i| i.sha256)
             .ok_or_else(|| not_found("no such image"))?;
+        query.check(img)?;
         let (_, bytes) = self.content(&img.to_string()).await?;
         let kind = maps::image_type(&bytes).ok_or_else(|| not_found("no such image"))?;
         Ok((kind, bytes))
@@ -1818,7 +1833,10 @@ impl Live {
                 sha256: *h,
                 size: b.size,
                 uploader: self.who(b.uploader),
-                state: s.blob_standing(h),
+                state: match s.blob_standing(h) {
+                    Standing::Ok => s.screenshot_standing(h),
+                    state => state,
+                },
                 reports: s.reports_of(Target::Content, &h.to_string()),
                 stored_at: b.stored_at.clone(),
             })
@@ -1908,7 +1926,7 @@ pub(crate) async fn get_content(
     live.authorize_read(bearer(&headers))?;
     let h = live.readable_content(&sha256)?;
     let key = blob_key(&h);
-    let (size, stream) = live
+    let (size, mut stream) = live
         .content_store()?
         .get_stream(&key)
         .await
@@ -1917,9 +1935,29 @@ pub(crate) async fn get_content(
             unavailable("the content store cannot read")
         })?
         .ok_or_else(|| not_found("no such content"))?;
+    // Keep the general blob download from exposing images that bypassed the
+    // gallery. Read and replay its first chunks without a second object GET.
+    let mut head = Vec::with_capacity(12);
+    let mut prefix = Vec::new();
+    while head.len() < 12 {
+        let Some(chunk) = stream.next().await else { break };
+        let chunk = chunk.map_err(|_| unavailable("the content store cannot read"))?;
+        let take = chunk.len().min(12 - head.len());
+        head.extend_from_slice(&chunk[..take]);
+        if !chunk.is_empty() {
+            prefix.push(chunk);
+        }
+    }
+    live.readable_content(&sha256)?;
+    if maps::image_type(&head).is_some() && !live.catalog.read().cleared_image(&h) {
+        return Err(not_found("no such content"));
+    }
+    let stream = futures_util::stream::iter(prefix.into_iter().map(Ok)).chain(stream);
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_DISPOSITION, "attachment".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             (header::ETAG, format!("\"{h}\"")),
             (header::CONTENT_LENGTH, size.to_string()),
             (header::CACHE_CONTROL, crate::caching::PRIVATE.to_string()),
@@ -2147,9 +2185,10 @@ pub(crate) async fn get_map_detail_image(
     State(live): Shared,
     headers: HeaderMap,
     UrlPath((id, n)): UrlPath<(String, String)>,
+    Query(query): Query<screenshots::ImageQuery>,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
-    let (kind, bytes) = live.map_detail_image(&id, &n).await?;
+    let (kind, bytes) = live.map_detail_image(&id, &n, &query).await?;
     Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
 }
 

@@ -1298,7 +1298,7 @@ stored: players use their own disc for the base.
 | endpoint | authentication | result |
 |---|---|---|
 | `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
-| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, `private, no-store`); 404; 410 if taken down |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams a download (`ETag` the hash, `private, no-store`); 404 for absent or uncleared images; 410 for general content takedowns |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
 | `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
@@ -1307,14 +1307,19 @@ stored: players use their own disc for the base.
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
 | `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
-| `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none |
+| `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none or optional `?v=sha256` differs |
 | `GET /v1/mod-packs` | read rule | `{items: [pack], position}` |
 | `GET /v1/mod-packs/{id}` | read rule | `{pack, position}` |
 | `PUT /v1/mod-packs/{id}` | uploader, `content.write` | publishes the pack's metadata and complete membership, returns `{pack, position}` |
 | `POST /v1/mod-packs/{id}/report` | account, `content.write`, body `{reason}` | records a report on the pack |
 | `POST /v1/admin/mod-packs/{id}/{action}` | admin or operator, `content.moderate` | applies hide, unhide, delete, block or unblock to the pack |
-| `PUT /v1/mod-packs/{id}/screenshots/{kind}/{slot}`, `PUT /v1/maps/{map_id}/screenshots/{kind}/{slot}` | uploader, `content.write`, raw image body | replaces one slot, returns `{ok, sha256, position}` |
-| `GET /v1/mod-packs/{id}/images/{n}` | read rule | pack gallery image at index `n` (from 0), with its content type |
+| `POST /v1/maps/{map_id}/screenshot-capture-session` | map uploader, `content.write` | 201 `{game_id, token}` for a private capture session |
+| `PUT /v1/mod-packs/{id}/screenshots/capture/{slot}`, `PUT /v1/maps/{map_id}/screenshots/capture/{slot}` | uploader, `content.write`, capture proof header and raw image | 200 `{ok, sha256, position, status}`; 400 for invalid proof or image; 403 for a wrong account, game or map; 410 for a removed image |
+| `GET /v1/mod-packs/{id}/images/{n}` | read rule | pack gallery image at index `n` (from 0), with its content type; 404 if none or optional `?v=sha256` differs |
+| `POST /v1/screenshots/{sha256}/report` | account, `content.write` | hides a visible screenshot and returns `{ok, position}` |
+| `GET /v1/admin/screenshots?cursor=` | admin or operator, `content.moderate` | up to 40 pending items, oldest first, and `next` (a decimal cursor or null) |
+| `GET /v1/admin/screenshots/{sha256}/image` | admin or operator, `content.moderate` | pending WebP, with `private, no-store` |
+| `POST /v1/admin/screenshots/{sha256}/{action}?revision=` | admin or operator, `content.moderate` | `approve` or `remove`; 200 `{ok, position}`; 409 if the review has changed |
 | `GET /v1/mappacks` | read rule | `{items: [{id, name, description?, authors?, released?, source_url?, images?}], position}` |
 | `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
 | `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
@@ -1350,7 +1355,10 @@ like the account's other events: stream `package-<map_id>`, type
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
-`category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
+A signed manifest can retain its preview reference while the repository
+withholds the image. The public summary and downloads expose an image
+only when Live approves it or an admin includes it in curated details
+or pack art. `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
 outside the `MapId` like the manifest's name (400 when malformed). So are
@@ -1395,8 +1403,9 @@ readers that know only that, and `source_url` is the credit's when it
 has one. An admin's details (`PUT /v1/maps/{id}/details`) add `images`
 (`[{sha256, caption?, source_url?, credit?, licence?}]`, served at
 `/v1/maps/{id}/images/{n}`), `contents` (the report's lines) and `pack`
-and `pack_name`; they replace `description` and `features` when set, and
-the first image is `image` when the package has no preview. A list page
+and `pack_name`; they replace `description` and `features` when set.
+The first visible gallery image supplies `image` if the manifest has
+no cleared preview. A list page
 then has `packs: [{id, name, ...}]` for the packs its items name; a
 map's own answer has `report` (the whole contents report:
 `{lines, classes, swaps, stats, placements, scripts}`) and `pack_info`.
@@ -1429,13 +1438,46 @@ available. Otherwise a title of the form `<release>: <map>` groups with
 the same release from the same uploader. A standalone map forms a pack
 of one. Member downloads and lobby joins keep their full MapIds.
 
-Each pack and each map has three uploader image slots (`upload/0`
-through `upload/2`) and five capture slots (`capture/0` through
-`capture/4`). Slot zero of the uploader images is the cover. Send PNG,
-JPEG or WebP, up to 5 MiB, 4096 pixels per side and 8 megapixels.
-The server decodes and re-encodes the image as WebP, scaling it to fit
-1280 pixels per side and 512 KiB. Read published images by their
-dense gallery index, in uploader, capture and curated-image order.
+#### Verified screenshot uploads
+
+Each map and pack has five capture slots, `capture/0` through
+`capture/4`. The game provides
+`{game_id, tick, map_id, map, camera: {position, forward, up}, digest}`
+in the `X-H2-Capture-Proof` JSON header. `digest` is the SHA-256 of the
+request body. The camera uses game coordinates with Z up. For a private
+capture, add `permit` from the capture-session response. Live verifies
+that permit against the account, game ID and exact MapId for 15 minutes.
+The map name is the package's base name.
+For a recorded game, Live checks its roster, exact MapId, map name and
+recorded tick range. A film without a matching game record cannot establish
+its exact MapId. Pack uploads must show a member's map. The
+arbitrary-file `upload` slots do not accept submissions.
+
+Live accepts PNG, JPEG and WebP with valid proof, within 5 MiB, 4096 pixels
+per side and 8 megapixels. It converts the image to opaque WebP, at most
+1280 pixels per side and 512 KiB. The normalized hash in the receipt is
+the ID for reports and review. The uploader's accepted receipt says
+`pending` or `approved`. The gallery uses dense indices in slot order
+followed by curated images. Reportable entries carry `reportable: true`.
+
+Live compares a 48×27 image against projected edges from an admin-supplied
+outline stored under the exact MapId. A mismatch or insufficient geometry
+requires review. The classifier scores the same normalized image that Live
+serves. Scores above 0.20 and unavailable or invalid scores require review.
+Scores of 0.80 or higher flag the image for an upload strike.
+Private and player-hosted captures require manual approval
+even when those checks clear. The permit authorizes the capture session and
+the digest binds the upload bytes. An uploader controls the pixels produced
+by a game running on their own device.
+
+The pending queue's items give `{sha256, revision, uploader, reason, nsfw,
+proof}`. The revision is a decimal string identifying the current review.
+Proof in the queue omits the permit. A report hides the image across its
+map, pack, preview and direct content URLs. Each account can report the same
+image once. Approving restores the image. Removing it permanently blocks
+that hash. [Screenshot review](live-admin.md#screenshot-review)
+
+Implementation: [shared screenshot routes](../../crates/live/live-server/src/content/screenshots.rs).
 
 Clients that select or download individual maps use the paged map list:
 
