@@ -252,7 +252,7 @@ pub fn all_settings() -> impl Iterator<Item = SettingId> {
 }
 
 /// Our names for the settings we can identify (from the community variant
-/// model in `crates/apps/boot/src/community_variants.rs` and the engine fields
+/// model in `crates/extensions/game/src/community_variants.rs` and the engine fields
 /// in docs/live/live-gamestate.md). The editor shows the disc's own labels when
 /// it has them; these are the fallback.
 pub fn symbolic_name(id: SettingId) -> Option<&'static str> {

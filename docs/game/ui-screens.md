@@ -1,13 +1,13 @@
 # Screens of ours: the UI kit
 
 Status: Built. The kit and its static checks and offline preview are tested; the in-game checks are listed under "Not verified".
-Code: `crates/apps/boot/src/ui_kit/`, `crates/apps/boot/src/list_class.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`, `string_ids.rs`.
+Code: `crates/extensions/game/src/ui_kit/`, `crates/extensions/game/src/list_class.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`, `string_ids.rs`.
 Switch: none (a kit screen's texts are the feature `ui-kit-texts.<name>`).
 
 Every screen we add to Halo 2's menus is a list screen of our own class
-(`crates/apps/boot/src/list_class.rs`, [ui.md](../formats/ui.md) "Screen and list
+(`crates/extensions/game/src/list_class.rs`, [ui.md](../formats/ui.md) "Screen and list
 classes"). Each one we built by hand failed in the same few ways first. The
-kit (`crates/apps/boot/src/ui_kit/`) is there so those mistakes can't be made
+kit (`crates/extensions/game/src/ui_kit/`) is there so those mistakes can't be made
 again, and so a screen can be seen and checked before anyone runs the game.
 
 | Module | What it gives a screen |

@@ -63,7 +63,7 @@ Layouts follow player one's state (below). On foot:
 * **Right side: look.** A drag anywhere on the right side turns the camera
   by an angle, the way mouse look feels on the Mac but with no stick in
   between: `crates/platform/input/src/touch_look.rs` turns points into yaw and
-  pitch, and the boot's touch hook (`crates/apps/boot/src/touch_glue.rs`) adds
+  pitch, and the boot's touch hook (`crates/extensions/game/src/touch_glue.rs`) adds
   them to player one's facing in the player-control record once a tick.
   Halo's own stick path (its deadzone, response curve, maximum turn rate)
   is not involved, so slow drags are exact and fast flicks turn far.
