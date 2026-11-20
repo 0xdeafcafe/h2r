@@ -98,6 +98,10 @@ request, rather than started directly.
 The loaded mark wraps activation: after the original returns AL=1, the
 game globals' active options name the scenario that loaded.
 
+The same steps for a multiplayer map run from a game tick for the agent
+API's `maps.test.load`, over an options block of the agent's
+(`test_maps::game_steps`, [test-maps.md](../game/test-maps.md)).
+
 ### Addresses
 
 | Address | Name here | Use |

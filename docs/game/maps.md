@@ -1013,6 +1013,7 @@ fail, such as a base whose hash differs from the disc's):
 
 [map-select.md](map-select.md), [map-pack.md](map-pack.md),
 [live-api.md](../live/live-api.md), [live-custom-games.md](../live/live-custom-games.md),
-[scenario-editor.md](../editor/scenario-editor.md).
+[scenario-editor.md](../editor/scenario-editor.md),
+[test-maps.md](test-maps.md) (packages built from recipes for the agent API).
 
 [formats]: https://connortumbleson.com/2020/04/12/halo-2-patch-format-types/

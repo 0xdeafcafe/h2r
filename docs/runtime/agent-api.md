@@ -59,6 +59,7 @@ connection to hold `session.claim`.
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
+| `maps.test.list`, `create`, `load`, `remove` | read, act, act, act | [Test maps](#test-maps) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -1638,6 +1639,33 @@ want, pass, got}], "kept", "stopped"}`. A failed expect is recorded and
 the script goes on; a failed call stops it. Answers are not printed
 except kept ones, so a long scenario costs a few lines of context.
 
+## Test maps
+
+Purpose-built test maps from recipes: a spawn grid, a weapon range, the
+superbounce patch and more, built from the user's own disc while the game
+runs and queued as the next game. Design, recipe format and the built-in
+rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
+`crates/apps/boot/src/test_maps.rs` (the `test-maps` cargo feature of
+`boot`); wire types `agent_proto::test_maps`.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `maps.test.list` | read | `{name?}` → `{recipes, maps}`: the built-in recipes (`name`, `title`, `base`, `fidelity`, `purpose`, `note`) and each test map (`name`, `base`, `state` `building`/`ready`/`failed`, `dir`, `error`, `map_id`, `listed {id, path}` once it has a multiplayer slot, `built`: the build report with `anchor`, `placed`, `counts`, `notes`, `expect`) |
+| `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread, then the offers are installed again. `base` builds on another disc map (`<recipe>-<base>`) |
+| `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game on the map is queued through the `agent-calls` feature (`Call::QueueGame`, the level boot's steps). Wait for it with `session.wait` or `h2 agent maps load` |
+| `maps.test.remove` | act | `{name}` → `{name, removed}` |
+
+```sh
+h2 agent maps                          # recipes and test maps
+h2 agent maps create superbounce       # waits for the build
+h2 agent maps load superbounce         # waits until the new map is in gameplay
+h2 agent sim expect '/player/0/pos near {"to":[-10.5,3.9,-3.15],"within":1.5}'
+```
+
+`h2 agent maps` (`crates/apps/cli/src/agent_maps.rs`) reads a recipe file
+(`.toml` or `.json`) on the client and sends it as the recipe object; its
+verbs work in `h2 agent -` and `h2 agent run` scripts.
+
 ### Test maps on disk
 
 `h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
@@ -1709,10 +1737,13 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   over synthetic code and memory.
 - `render.compare`, `render.capture`, `render.scene`, `render.parity` and
   `sim.hashes` against a running game.
+- `maps.test.*` against a running game: the build, the slot and the
+  queued load ([test-maps.md](../game/test-maps.md#not-verified)).
 - Not provided: effect, projectile and particle counts; per-subsystem
   guest time; owner attribution of frame cost; kernel I/O seeks and cache
   hits in the load timeline; fade detection; a widget-level UI stack and
-  HUD; setting a feature switch through the API; loading a named level.
+  HUD; setting a feature switch through the API; loading a named level
+  other than a test map (`maps.test.load`).
 
 ## Related
 
