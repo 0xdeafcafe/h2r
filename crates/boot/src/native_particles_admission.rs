@@ -9,7 +9,7 @@ use d3d::{
     DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalTarget, ExternalWrites,
 };
 use engine::memory::GuestMemory;
-use feature::native_particles::{Call, Host, Mode, Producer};
+use feature::native_particles::{Call, Host, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
@@ -37,7 +37,6 @@ impl Source {
 #[derive(Clone)]
 struct Pending {
     source: Source,
-    mode: Mode,
     id: u64,
 }
 #[derive(Default)]
@@ -62,7 +61,7 @@ impl native_render::camera::GuestRead for Read<'_> {
     }
 }
 impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
-    fn arm(&self, source: Source, mode: Mode) -> bool {
+    fn arm(&self, source: Source) -> bool {
         let mut s = self
             .admission
             .scope
@@ -72,7 +71,6 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
         s.issuing = None;
         s.waiting = Some(Pending {
             source,
-            mode,
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         });
         true
@@ -85,7 +83,6 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         let carried = call.emission.attributes.map(|r| r.map(|v| v.map(f32::from_bits)));
         let pending = Pending {
             source: Source::Particle(call.clone()),
-            mode: Mode::Native,
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
         let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
@@ -132,14 +129,14 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         drawn
     }
 
-    fn arm(&self, _: &mut dyn GuestMemory, call: &Call, mode: Mode) -> bool {
-        self.arm(Source::Particle(call.clone()), mode)
+    fn arm(&self, _: &mut dyn GuestMemory, call: &Call) -> bool {
+        self.arm(Source::Particle(call.clone()))
     }
-    fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall, mode: Mode) -> bool {
-        self.arm(Source::Dynamic(*call, Vec::new()), mode)
+    fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall) -> bool {
+        self.arm(Source::Dynamic(*call, Vec::new()))
     }
-    fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site, mode: Mode) -> bool {
-        self.arm(Source::Immediate(site), mode);
+    fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site) -> bool {
+        self.arm(Source::Immediate(site));
         // All vertices are published, but END is not. Drain prior work
         // without ownership, then own only this leaf's completed draw.
         self.publish(mem, Producer::Immediate(site), 0);
@@ -393,21 +390,6 @@ impl Admission {
         stage: Stage,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let result = geometry(snapshot.draw, &pending.source);
-        if pending.mode == Mode::Compare {
-            eprintln!(
-                "native-particles-compare: call={} producer={:?} geometry={:?} target={:#x}/{:#x} primitive={:?} vertices={} textures={:?} final_latch={}",
-                pending.id,
-                pending.source.producer(),
-                result.as_ref().map(|_| ()),
-                snapshot.color_header,
-                snapshot.depth_header,
-                snapshot.draw.primitive,
-                snapshot.draw.vertex_count,
-                snapshot.draw.textures,
-                snapshot.draw.shader.final_combiner_latch
-            );
-            return None;
-        }
         let (vertices, raw_vertices, indices) = match result {
             Ok(geometry) => geometry,
             Err(reason) => {
@@ -773,7 +755,6 @@ mod tests {
         );
         admission.scope.lock().unwrap().issuing = Some(Pending {
             source,
-            mode: Mode::Native,
             id: 1,
         });
         let mut wrong = draw.clone();
