@@ -590,7 +590,7 @@ The server marks what may be cached (live-api.md, "Caching"). By default Cloudfl
 - **When:** hostname is your Live host, the URI path starts with `/v1/`, and the method is `GET`.
 - **Then:** eligible for cache, edge TTL "use cache-control header if present", browser TTL "respect origin".
 
-The rule is safe for signed-in readers. Their reads are `private, no-store`, which Cloudflare never stores, and the web app adds `auth=1` to each one so it never shares a URL with an anonymous read. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
+The rule is safe for signed-in readers. Cloudflare bypasses its cache for any request that carries an `Authorization` header, so a signed-in read is never answered from the anonymous entry, and its `private, no-store` answer is never stored. Cloudflare ignores `Vary: Authorization` unless a Cache Rules Vary setting lists it; the header is for other shared caches. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
 
 Tunnel: `cloudflared` picks QUIC on UDP 7844 and opens 4 connections to the nearest Cloudflare locations it can reach. If its log shows QUIC dials failing ("no route to host"), or the connections land far from your readers, try `--protocol http2` (TCP 443). Argo Smart Routing shortens the path from the reader's edge to the tunnel. The edge cache does more than either, because a cached read never reaches the tunnel.
 

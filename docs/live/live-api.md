@@ -401,8 +401,10 @@ Set by `crates/live/live-server/src/caching.rs` on GET and HEAD responses whose 
 - `/assets/*` (built, named by content hash): `public, max-age=31536000, immutable`.
 - The web app's HTML (`/`, every app route, and a missing asset answered with the app): `no-cache`.
 - Anonymous reads under `/v1/` of `snapshot`, `games`, `accounts`, `presence`, `stats`, `events`, `teams`, `ranks`, `page-meta` and retail map outlines that succeed: `public, max-age=0, s-maxage=5, stale-while-revalidate=30`, with a weak `ETag`. A matching `If-None-Match` gets a 304.
-- Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
+- Everything else under `/v1/` is `private, no-store`: any request with `Authorization`, any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
+
+Every tagged `/v1/` answer also carries `Vary: Authorization`, so a shared cache keyed on the URL never answers a request that bears a token from the anonymous entry. A stray `auth` query mark from an older web client is ignored: the `Authorization` header alone says who reads.
 
 ## Theater
 
