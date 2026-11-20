@@ -442,10 +442,13 @@ Rules for a segment body (the **callout contract**):
    reproduce them. A new body may mark them undefined at a transfer
    (`eflags_defined`) only when slice 0's liveness scan (below) shows no
    reader.
-4. **Memory.** Every guest-visible store retail makes outside the stack is
-   made, with the same value and width. Stores to the dead stack below `ESP`
-   are not reproduced (the same relaxation as the datum adapters, see the
-   engine README, "Fault behaviour").
+4. **Memory.** Every guest-visible store retail makes is made, with the
+   same value and width, stack stores included. That covers the stores a
+   leaf kernel makes below the `ESP` it returns with (its pushes, and the
+   return addresses and arguments of its internal calls): the caller's
+   next deeper frame overlays them, and a slot that frame never writes
+   holds what retail left there. The datum adapters' relaxation (engine
+   README, "Fault behaviour") does not apply to bodies.
 5. **Order.** Stores that a callee can observe happen before the call.
    Between two calls the order of stores is free.
 6. **Float environment.** `supported(cpu)` is checked once per body entry
@@ -885,8 +888,9 @@ the contract page, and its test file section. Shared edits (`BODIES`,
 
 **Risks.**
 
-- **Uninitialised stack reads.** Not reproducing the dead stack is exact
-  only if no guest callee reads a local it did not write. Retail code can.
+- **Uninitialised stack reads.** Rule 4 makes bodies leave the dead stack
+  as retail does. A body that missed a store there is exact only if no
+  guest callee reads a local it did not write. Retail code can.
   The segment harness masks the dead stack, so it would not see it; run
   parity would, as a hash difference with no failing segment. Mitigation: in
   the harness, run each *lifted* callout target twice with two different

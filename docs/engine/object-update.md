@@ -392,6 +392,16 @@ open frames instead of recursing, and reports a fault past `2^16` levels
 (a cycle in the child links, where retail recurses until the guest stack
 runs out).
 
+The leaves leave the stack below their entry `esp` as retail does
+(`sim_objects::wake::Stack`): `b7360` pushes `ebx` and `esi`, `bba20`
+pushes `ebx`, `esi` and `edi` and calls `baf80`, `b7360` and `bc7b0`
+(returning to `bba49`, `bba63`, `bba6d`), and frame `d` of `bc7b0` is
+entered `c × d` below the first and pushes `esi`, then for `b7360` its
+return `bc7e6`, then for each child the handle and the return `bc80c`.
+Those slots are dead when the leaf returns, but the caller's next deeper
+frame overlays them, and a local it never writes holds what the leaf left
+there.
+
 **Early-mover wake** (`wake.rs`). `109580` sets `eax` = `1004` and calls
 the stack probe `320560`, which leaves the caller's `ecx` at the top of
 the new frame and `esp` `1004` lower. After its pushes (`ebx`, `ebp`,
