@@ -324,14 +324,33 @@ the nav mesh, and shared read-only by every bot in the process.
   or without it. `Walls::hit` (a grenade's flight) does not use it.
 - **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
   `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
-  then the cells and the bits. The nav worker builds it with each nav
-  mesh (the game's worker on `background::workers` lowered threads,
-  `h2 bots nav` on half the machine's threads, at most 8; the grid is the
-  same either way,
+  then the cells and the bits. The nav worker writes a map's `.bots`
+  files first, then builds each BSP's grid from them
+  (`vis::rebuild_resumable`; the game's worker on `background::workers`
+  lowered threads, `h2 bots nav` on half the machine's threads, at most
+  8; the grid is the same either way,
   `the_grid_is_the_same_on_any_threads_and_at_background_priority`) and
-  writes it before the `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
-  older, damaged or from another build gets only its grid built
-  (`bots: built the visibility grid for lockout (none yet): ...`).
+  writes each `.vis` as it finishes, BSP 0 last. A map whose `.bots` is
+  fresh but whose `.vis` is missing, older, damaged or from another build
+  gets only its grid built
+  (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
+  whose `.vis` is current (`vis::current`: this version, the `.bots`
+  stamp, its walls) is not built again.
+- **Progress.** A grid is built in about 64 chunks of rows of pairs
+  (`vis::fill`). After a chunk the build saves the grid so far and the
+  first row not done to `<map>.<bsp>.vis.part` (magic `H2VP`) at most
+  every `vis::SAVE_EVERY` (10 s), and the next build of that BSP carries
+  on from it when it was made for the same `.bots` stamp and the same
+  cells (`vis::read_part`); the part goes when the `.vis` is written.
+  The game's worker also stops between chunks when a map is asked for
+  (`Handle::want`) or it is stopped, saves, builds the map asked for, and
+  carries on with the grid once its queue is empty
+  (`bots: visibility grid for lockout: paused after 12.0 s, progress saved`).
+  The game never stops the worker at exit, so a quit loses at most
+  `SAVE_EVERY` of grid work. Tests:
+  `a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid`
+  (`vis/tests.rs`), `a_built_grid_is_saved_where_the_game_loads_it_and_used`
+  (`autonav/tests.rs`: written to `cache::dir`, where the glue loads).
   Bump `vis::VERSION` when the cells, the proof or the margins change.
 - **Loading.** The glue reads the `.vis` with the `.bots` and attaches it
   only when its stamp and walls hash match. Otherwise it logs why and
@@ -3928,7 +3947,8 @@ game checks.
        other BSPs first and `<map>.0.bots` (the one checked) last. A crash
        leaves the old file or the new one, never half of one.
      - **Log**: one line a map built (`bots: built the nav mesh for
-       lockout (none yet): 590 polygons, ... in 0.0 s`), and one summary
+       lockout (none yet): 590 polygons, ... in 0.0 s`), one when its
+       grid is (`bots: built the visibility grid for lockout ...`), and one summary
        after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
      - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
        off when the bots feature is (`H2_FEATURES=-bots`).

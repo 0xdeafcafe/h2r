@@ -233,10 +233,14 @@ fn a_pass_builds_the_current_map_first_then_the_stale_ones_and_skips_the_rest() 
     assert_eq!(sum.built, ["zanzibar", "ascension", "lockout"]);
     assert_eq!((sum.fresh, sum.skipped), (0, 1));
     let lines = lines.lock().unwrap().clone();
-    // One line a map and the summary.
-    assert_eq!(lines.len(), 4, "{lines:?}");
+    // Two lines a map (the nav mesh, then its grid) and the summary.
+    assert_eq!(lines.len(), 7, "{lines:?}");
     assert!(lines[0].starts_with("bots: built the nav mesh for zanzibar (none yet)"), "{}", lines[0]);
-    assert!(lines[3].starts_with("bots: nav meshes: 3 built, 0 up to date"), "{}", lines[3]);
+    assert!(lines[1].starts_with("bots: built the visibility grid for zanzibar (none yet)"), "{}", lines[1]);
+    assert!(lines[6].starts_with("bots: nav meshes: 3 built, 0 up to date"), "{}", lines[6]);
+    for m in ["zanzibar", "ascension", "lockout"] {
+        assert_eq!(crate::vis::status(&dir, m), crate::vis::Status::Fresh, "{m}");
+    }
     assert!(!dir.join(cache::file_name("01a_tutorial", 0)).exists());
 
     // Again: all up to date, nothing built.
@@ -314,6 +318,35 @@ fn the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps() {
         assert!(!dir.join(cache::file_name(n, 0)).exists(), "{n}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The grid the worker builds is saved where the game loads from
+/// (`cache::dir`, as `boot::bot_glue` and `boot::bots_nav_auto` use), and
+/// the game's load (`vis::load` over the `.bots` file's walls and stamp)
+/// takes it; the next pass leaves the map alone.
+#[test]
+fn a_built_grid_is_saved_where_the_game_loads_it_and_used() {
+    let root = tmp("vis-roundtrip");
+    let dir = cache::dir(&root);
+    let builds: Log = Arc::default();
+    let list = maps(&[("lockout", MP, 1)]);
+    let (w, _) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
+    assert_eq!(w.log(|_| {}).run().built, ["lockout"]);
+    // As the game does when the map loads.
+    let bytes = std::fs::read(cache::dir(&root).join(cache::file_name("lockout", 0))).unwrap();
+    let (d, stamp) = MapData::from_bytes(&bytes).unwrap();
+    let line = crate::vis::load(&cache::dir(&root), "lockout", 0, stamp, &d.walls);
+    assert!(line.starts_with("bots: lockout: visibility grid: "), "{line}");
+    let expect = crate::vis::build(&d.nav, &d.walls);
+    assert_eq!(d.walls.vis().map(|v| &**v), Some(&expect));
+    assert!(!dir.join(crate::vis::part_name("lockout", 0)).exists());
+    // Up to date, grid and all: nothing built.
+    builds.lock().unwrap().clear();
+    let (w, _) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
+    let sum = w.log(|_| {}).run();
+    assert!(builds.lock().unwrap().is_empty());
+    assert_eq!((sum.built.len(), sum.fresh), (0, 1));
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

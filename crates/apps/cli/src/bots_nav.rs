@@ -45,9 +45,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     let [map] = positional.as_slice() else {
         bail!("{USAGE}")
     };
-    let out = data
-        .unwrap_or_else(content::store::default_data_root)
-        .join("bots");
+    let out = bots::cache::dir(&data.unwrap_or_else(content::store::default_data_root));
     std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
     let all = map == "all";
     let sources = if all {

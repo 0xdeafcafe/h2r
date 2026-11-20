@@ -11,10 +11,12 @@
 //! A [`Worker`] goes through the maps a `scan` finds ([`Source`]s: a host
 //! file, a region of the disc image, a file the VFS serves), builds each
 //! stale multiplayer map and writes it atomically ([`write_atomic`]): the
-//! other structure BSPs first, `<map>.0.bots` (the one checked) last. Each
-//! BSP's visibility grid (`crate::vis`) is built with it and written
-//! first; a map whose `.bots` is fresh but whose `.vis` is not gets only
-//! the grid built. A map
+//! other structure BSPs first, `<map>.0.bots` (the one checked) last. Then
+//! each BSP's visibility grid (`crate::vis`) is built and written as it
+//! finishes, saving its progress every [`crate::vis::SAVE_EVERY`] so a
+//! build cut short carries on next time; a map whose `.bots` is fresh but
+//! whose `.vis` is not gets only the grid built, and one whose `.vis` is
+//! current gets nothing. A map
 //! asked for with [`Handle::want`] (the map being loaded) goes to the front
 //! of the queue, scanned again so a map installed since boot is found.
 //! `h2 bots nav` runs the same worker once, in the foreground; the game
@@ -462,6 +464,9 @@ pub struct Worker {
     all_kinds: bool,
     stay: bool,
     threads: crate::vis::Threads,
+    /// Grids stopped for a map asked for, to carry on with when the queue
+    /// is empty; `true` when the map is not counted in the summary yet.
+    later: VecDeque<(String, bool)>,
     log: Box<dyn FnMut(&str) + Send>,
     on_built: Box<dyn FnMut(&str, &MapData) + Send>,
     shared: Arc<Shared>,
@@ -482,6 +487,7 @@ impl Worker {
                 all_kinds: false,
                 stay: false,
                 threads: crate::vis::Threads::foreground(),
+                later: VecDeque::new(),
                 log: Box::new(|l| eprintln!("{l}")),
                 on_built: Box::new(|_, _| {}),
                 shared: Arc::clone(&shared),
@@ -593,6 +599,13 @@ impl Worker {
                 self.one(src, &mut sum);
                 continue;
             }
+            if let Some((map, count)) = self.later.pop_front() {
+                match crate::vis::status(&self.dir, &map) {
+                    crate::vis::Status::Fresh => {}
+                    why => self.grids(&map, why, &mut sum, count),
+                }
+                continue;
+            }
             if !summarised {
                 summarised = true;
                 let line = summary_line(&sum, start.elapsed().as_secs_f32());
@@ -637,15 +650,14 @@ impl Worker {
         if !status.stale() && !self.force {
             match crate::vis::status(&self.dir, &header.name) {
                 crate::vis::Status::Fresh => sum.fresh += 1,
-                vis => self.vis_only(&header.name, vis, sum),
+                vis => self.grids(&header.name, vis, sum, true),
             }
             return;
         }
         let t = Instant::now();
+        // The nav files first, on their own: the bots walk on the mesh
+        // while its grids build, and a grid cut short keeps its progress.
         let built = src.build().and_then(|bsps| {
-            for d in &bsps {
-                d.walls.set_vis(Arc::new(crate::vis::build_with(&d.nav, &d.walls, self.threads)));
-            }
             write_map(&self.dir, &header.name, header.fingerprint, &bsps)
                 .map(|_| bsps)
                 .map_err(|e| format!("writing {}: {e}", self.dir.display()))
@@ -654,18 +666,18 @@ impl Worker {
             Ok(bsps) => {
                 let d = &bsps[0];
                 (self.log)(&format!(
-                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{}, visibility grid: {} in {:.1} s",
+                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{} in {:.1} s",
                     header.name,
                     status.why(),
                     d.nav.polys.len(),
                     d.nav.edges.len(),
                     d.walls.tris.len(),
                     if bsps.len() > 1 { format!(", {} BSPs", bsps.len()) } else { String::new() },
-                    d.walls.vis().map_or_else(|| "none".into(), |v| v.summary()),
                     t.elapsed().as_secs_f32()
                 ));
                 (self.on_built)(&header.name, d);
-                sum.built.push(header.name);
+                sum.built.push(header.name.clone());
+                self.grids(&header.name, crate::vis::Status::Missing, sum, false);
             }
             Err(e) => {
                 (self.log)(&format!("bots: nav mesh for {} not built: {e}", header.name));
@@ -676,12 +688,23 @@ impl Worker {
 }
 
 impl Worker {
-    /// A map whose nav files are up to date but whose visibility grid is
-    /// `why` stale: builds only the grid, from the `.bots` files.
-    fn vis_only(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary) {
+    /// Builds `map`'s visibility grids from its `.bots` files, whose grid
+    /// is `why` stale, carrying on from saved progress
+    /// ([`crate::vis::rebuild_resumable`]). A map asked for meanwhile
+    /// ([`Handle::want`]) or a stop cuts it short with its progress saved;
+    /// it goes on the worker's `later` list to carry on once the queue is
+    /// empty.
+    /// `count`: the map goes in the summary when its grid is done (not
+    /// when its nav mesh was just built and counted).
+    fn grids(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary, count: bool) {
         let t = Instant::now();
-        match crate::vis::rebuild_with(&self.dir, map, self.threads) {
-            Ok(d) => {
+        let shared = Arc::clone(&self.shared);
+        let stop = move || {
+            let w = shared.wants.lock().unwrap_or_else(|e| e.into_inner());
+            !w.names.is_empty() || w.stop
+        };
+        match crate::vis::rebuild_resumable(&self.dir, map, self.threads, &stop) {
+            Ok(Some(d)) => {
                 (self.log)(&format!(
                     "bots: built the visibility grid for {map} ({}): {} in {:.1} s",
                     why.why(),
@@ -695,11 +718,24 @@ impl Worker {
                 {
                     (self.log)(&format!("bots: {map}: the new visibility grid is in use"));
                 }
-                sum.built.push(map.to_owned());
+                if count {
+                    sum.built.push(map.to_owned());
+                }
+            }
+            Ok(None) => {
+                (self.log)(&format!(
+                    "bots: visibility grid for {map}: paused after {:.1} s, progress saved",
+                    t.elapsed().as_secs_f32()
+                ));
+                if !self.later.iter().any(|(m, _)| m == map) {
+                    self.later.push_back((map.to_owned(), count));
+                }
             }
             Err(e) => {
                 (self.log)(&format!("bots: visibility grid for {map} not built: {e}"));
-                sum.failed.push(map.to_owned());
+                if count {
+                    sum.failed.push(map.to_owned());
+                }
             }
         }
     }

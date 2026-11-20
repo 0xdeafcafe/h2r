@@ -30,6 +30,11 @@
 //! `H2VS`, [`VERSION`], that file's [`Stamp`], a hash of its walls, then
 //! the grid. A missing, damaged, older or mismatched file is not used and
 //! the log says so ([`load`]); every ray is then cast.
+//!
+//! **Progress.** A build saves the grid so far to `<map>.<bsp>.vis.part`
+//! ([`part_name`]) at most every [`SAVE_EVERY`] and when stopped, and the
+//! next build carries on from it ([`rebuild_resumable`]), so a game quit
+//! mid-build loses at most that much.
 
 use std::io::Read;
 use std::path::Path;
@@ -410,15 +415,32 @@ pub fn load(dir: &Path, map: &str, bsp: usize, stamp: Stamp, walls: &Walls) -> S
 }
 
 /// Builds the grid of every structure BSP whose `.bots` is in `dir` for
-/// `map` and writes it (BSP 0 last), for a map whose nav files are up to
-/// date but whose grid is not. Returns BSP 0's data with its grid.
+/// `map` and whose `.vis` is not current, and writes each as it finishes
+/// (BSP 0 last), for a map whose nav files are up to date but whose grid
+/// is not. Returns BSP 0's data with its grid.
 pub fn rebuild(dir: &Path, map: &str) -> Result<MapData, String> {
     rebuild_with(dir, map, Threads::foreground())
 }
 
 /// [`rebuild`] on `threads`.
 pub fn rebuild_with(dir: &Path, map: &str, threads: Threads) -> Result<MapData, String> {
-    let mut built = Vec::new();
+    rebuild_resumable(dir, map, threads, &|| false)?.ok_or_else(|| "stopped".into())
+}
+
+/// [`rebuild_with`], resumable: each BSP's build carries on from its
+/// `.vis.part` ([`part_name`]) and saves its progress there at least every
+/// [`SAVE_EVERY`], so a build cut short (the game quit, the worker asked
+/// for another map) loses at most that much. A BSP whose `.vis` is
+/// current ([`current`]) is not built again. `stop` is asked between
+/// chunks of pairs; when it says so, the progress is saved and the result
+/// is `Ok(None)`.
+pub fn rebuild_resumable(
+    dir: &Path,
+    map: &str,
+    threads: Threads,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<MapData>, String> {
+    let mut all = Vec::new();
     for k in 0.. {
         let path = dir.join(cache::file_name(map, k));
         let bytes = match std::fs::read(&path) {
@@ -428,22 +450,100 @@ pub fn rebuild_with(dir: &Path, map: &str, threads: Threads) -> Result<MapData, 
         };
         let (d, stamp) =
             MapData::from_bytes(&bytes).ok_or_else(|| format!("{} is damaged", path.display()))?;
-        let vis = build_with(&d.nav, &d.walls, threads);
-        let file = vis.to_bytes(stamp);
-        d.walls.set_vis(Arc::new(vis));
-        built.push((k, file, d));
+        all.push((d, stamp));
     }
-    let mut first = None;
     // BSP 0 last: once its grid is there, so are the rest.
-    built.rotate_left(1);
-    for (k, file, d) in built {
-        let path = dir.join(file_name(map, k));
-        crate::autonav::write_atomic(&path, &file).map_err(|e| format!("writing {}: {e}", path.display()))?;
-        if k == 0 {
-            first = Some(d);
-        }
+    let order = (1..all.len()).chain(0..1);
+    for k in order {
+        let (d, stamp) = &all[k];
+        let vis = match current(dir, map, k, *stamp, &d.walls) {
+            Some(v) => v,
+            None => match build_file(dir, map, k, *stamp, &d.nav, &d.walls, threads, stop)? {
+                Some(v) => v,
+                None => return Ok(None),
+            },
+        };
+        d.walls.set_vis(Arc::new(vis));
     }
-    first.ok_or_else(|| "no BSP".into())
+    Ok(all.into_iter().next().map(|(d, _)| d))
+}
+
+/// `dir/<map>.<bsp>.vis` when it is current for the `.bots` build with
+/// `stamp` and its `walls`: this [`VERSION`], that stamp, those walls.
+pub fn current(dir: &Path, map: &str, bsp: usize, stamp: Stamp, walls: &Walls) -> Option<Vis> {
+    let bytes = std::fs::read(dir.join(file_name(map, bsp))).ok()?;
+    let (vis, built) = Vis::from_bytes(&bytes).ok()?;
+    (built == stamp && vis.fits(walls)).then_some(vis)
+}
+
+/// The progress file of a grid build, beside its `.vis`:
+/// `<map>.<bsp>.vis.part`.
+pub fn part_name(map: &str, bsp: usize) -> String {
+    format!("{}.part", file_name(map, bsp))
+}
+
+/// A progress file's magic: then the first row not done (`u32`), then the
+/// grid so far as a `.vis` file ([`Vis::to_bytes`]).
+pub const PART_MAGIC: &[u8; 4] = b"H2VP";
+
+/// How often a running build saves its progress, at most.
+pub const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn part_bytes(vis: &Vis, stamp: Stamp, row: usize) -> Vec<u8> {
+    let mut o = PART_MAGIC.to_vec();
+    o.extend_from_slice(&(row as u32).to_le_bytes());
+    o.extend_from_slice(&vis.to_bytes(stamp));
+    o
+}
+
+/// The grid so far and the first row not done, from a progress file made
+/// for the `.bots` build with `stamp` with the same cells as `fresh`;
+/// `None` for anything else (it is then built from the start).
+pub fn read_part(path: &Path, stamp: Stamp, fresh: &Vis) -> Option<(Vis, usize)> {
+    let b = std::fs::read(path).ok()?;
+    if b.get(..4)? != PART_MAGIC {
+        return None;
+    }
+    let row = u32::from_le_bytes(b.get(4..8)?.try_into().ok()?) as usize;
+    let (vis, built) = Vis::from_bytes(b.get(8..)?).ok()?;
+    let same = built == stamp
+        && vis.walls == fresh.walls
+        && vis.origin == fresh.origin
+        && vis.size == fresh.size
+        && vis.dims == fresh.dims
+        && vis.voxels == fresh.voxels
+        && row <= vis.cells();
+    same.then_some((vis, row))
+}
+
+/// Builds `dir/<map>.<bsp>.vis` for the `.bots` build with `stamp`,
+/// carrying on from its progress file and saving to it, then writes the
+/// grid and removes the progress file. `Ok(None)`: stopped, progress saved.
+#[allow(clippy::too_many_arguments)]
+pub fn build_file(
+    dir: &Path,
+    map: &str,
+    bsp: usize,
+    stamp: Stamp,
+    nav: &NavMesh,
+    walls: &Walls,
+    threads: Threads,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<Vis>, String> {
+    let path = dir.join(file_name(map, bsp));
+    let part = dir.join(part_name(map, bsp));
+    let fresh = layout(nav, walls);
+    let (start, row) = read_part(&part, stamp, &fresh).unwrap_or((fresh, 0));
+    let mut save = |v: &Vis, row: usize| crate::autonav::write_atomic(&part, &part_bytes(v, stamp, row));
+    let done = fill(start, row, walls, threads, &mut save, stop)
+        .map_err(|e| format!("writing {}: {e}", part.display()))?;
+    let Some(vis) = done else {
+        return Ok(None);
+    };
+    crate::autonav::write_atomic(&path, &vis.to_bytes(stamp))
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    let _ = std::fs::remove_file(&part);
+    Ok(Some(vis))
 }
 
 /// A box, `f64`, for the proof.
@@ -734,8 +834,15 @@ pub fn build(nav: &NavMesh, walls: &Walls) -> Vis {
 /// Builds a structure BSP's grid, spreading the pairs over `threads`; the
 /// result does not depend on how many.
 pub fn build_with(nav: &NavMesh, walls: &Walls, threads: Threads) -> Vis {
-    let Threads { count: threads, background: lower } = threads;
-    let threads = threads.max(1);
+    match fill(layout(nav, walls), 0, walls, threads, &mut |_, _| Ok(()), &|| false) {
+        Ok(Some(v)) => v,
+        // Neither saves nor stops.
+        _ => unreachable!("a build that never stops finishes"),
+    }
+}
+
+/// The grid's cells for `nav`, no pair set yet.
+fn layout(nav: &NavMesh, walls: &Walls) -> Vis {
     let hash = walls_hash(walls);
     let points = samples(nav);
     if points.is_empty() {
@@ -745,46 +852,89 @@ pub fn build_with(nav: &NavMesh, walls: &Walls, threads: Threads) -> Vis {
         };
     }
     let mut size = [FIRST[0], FIRST[0], FIRST[1]];
-    let mut vis = loop {
+    loop {
         if let Some((origin, dims, voxels)) = voxelise(&points, size)
             && voxels.len() <= MAX_CELLS
             && let Some(v) = Vis::with_voxels(origin, size, dims, voxels, hash)
         {
-            break v;
+            return v;
         }
         size = size.map(|s| s * GROW);
-    };
+    }
+}
+
+/// About this many chunks of pairs a grid is built in; progress is saved
+/// and `stop` asked between them.
+const CHUNKS: usize = 64;
+
+/// Proves the pairs of rows `row..` of `vis` (row `i` is the pairs
+/// `(i, j > i)`), a chunk of rows at a time on `threads`. After a chunk it
+/// saves (`save(grid, first row not done)`) when [`SAVE_EVERY`] has passed,
+/// and when `stop` says so it saves and returns `None`. The rows done are
+/// the same whatever the chunks, so a build carried on from a save ends
+/// with the grid a build in one go makes.
+fn fill(
+    mut vis: Vis,
+    mut row: usize,
+    walls: &Walls,
+    threads: Threads,
+    save: &mut dyn FnMut(&Vis, usize) -> std::io::Result<()>,
+    stop: &dyn Fn() -> bool,
+) -> std::io::Result<Option<Vis>> {
+    let Threads { count: threads, background: lower } = threads;
+    let threads = threads.max(1);
     let n = vis.cells();
     let boxes: Vec<Box3> = vis.voxels.iter().map(|&v| vis.voxel_box(v)).collect();
-    let found: Vec<Vec<(u32, u32)>> = std::thread::scope(|s| {
-        let jobs: Vec<_> = (0..threads)
-            .map(|k| {
-                let boxes = &boxes;
-                s.spawn(move || {
-                    // A QoS class does not carry to a spawned thread: each
-                    // lowers itself.
-                    if lower {
-                        background::lower_current();
-                    }
-                    let mut never = Vec::new();
-                    for i in (k..n).step_by(threads) {
-                        for j in i + 1..n {
-                            if never_between(walls, boxes[i], boxes[j]) {
-                                never.push((i as u32, j as u32));
+    let per_chunk = (pairs(n) / CHUNKS).max(1);
+    let mut saved = std::time::Instant::now();
+    while row + 1 < n {
+        let (start, mut end, mut count) = (row, row, 0);
+        while end + 1 < n && count < per_chunk {
+            count += n - 1 - end;
+            end += 1;
+        }
+        let found: Vec<Vec<(u32, u32)>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = (0..threads)
+                .map(|k| {
+                    let boxes = &boxes;
+                    s.spawn(move || {
+                        // A QoS class does not carry to a spawned thread:
+                        // each lowers itself.
+                        if lower {
+                            background::lower_current();
+                        }
+                        let mut never = Vec::new();
+                        for i in (start + k..end).step_by(threads) {
+                            for j in i + 1..n {
+                                if never_between(walls, boxes[i], boxes[j]) {
+                                    never.push((i as u32, j as u32));
+                                }
                             }
                         }
-                    }
-                    never
+                        never
+                    })
                 })
-            })
-            .collect();
-        jobs.into_iter().map(|j| j.join().unwrap_or_default()).collect()
-    });
-    for (i, j) in found.into_iter().flatten() {
-        let bit = pair_bit(n, i as usize, j as usize);
-        vis.bits[bit / 64] |= 1 << (bit % 64);
+                .collect();
+            jobs.into_iter().map(|j| j.join().unwrap_or_default()).collect()
+        });
+        for (i, j) in found.into_iter().flatten() {
+            let bit = pair_bit(n, i as usize, j as usize);
+            vis.bits[bit / 64] |= 1 << (bit % 64);
+        }
+        row = end;
+        if row + 1 >= n {
+            break;
+        }
+        if stop() {
+            save(&vis, row)?;
+            return Ok(None);
+        }
+        if saved.elapsed() >= SAVE_EVERY {
+            save(&vis, row)?;
+            saved = std::time::Instant::now();
+        }
     }
-    vis
+    Ok(Some(vis))
 }
 
 impl Vis {

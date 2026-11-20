@@ -46,7 +46,7 @@ impl Bots {
         Bots {
             film: None,
             phantoms,
-            dir: data_root.join("bots"),
+            dir: bots::cache::dir(data_root),
             map: Arc::default(),
             frame: Arc::default(),
             lobby_said: Arc::default(),

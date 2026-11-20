@@ -82,7 +82,7 @@ pub fn start_with(
         Box::new(move || scan(&disc, &content, &scan_vfs))
             as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
     };
-    let (worker, handle) = Worker::new(data_root.join("bots"), scan);
+    let (worker, handle) = Worker::new(bots::cache::dir(data_root), scan);
     let worker = worker
         .on_demand(move |name| {
             if !played(name) {

@@ -314,3 +314,34 @@ fn a_fresh_nav_file_without_a_grid_gets_one_built() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid() {
+    let dir = tmp("resume");
+    crate::autonav::write_map(&dir, "lockout", 9, &[data()]).unwrap();
+    let full = build(&floor(), &thin_wall());
+    assert!(full.cells() > 2);
+    // Stopped after its first chunk: no grid yet, its progress saved.
+    let stopped = rebuild_resumable(&dir, "lockout", Threads::foreground(), &|| true).unwrap();
+    assert!(stopped.is_none());
+    assert_eq!(status(&dir, "lockout"), Status::Missing);
+    let part = dir.join(part_name("lockout", 0));
+    let fresh = layout(&floor(), &thin_wall());
+    let (_, row) = read_part(&part, Stamp::now(9), &fresh).expect("progress saved");
+    assert!(row > 0 && row + 1 < full.cells(), "row {row} of {}", full.cells());
+    // Progress for another nav build is not used.
+    assert!(read_part(&part, Stamp::now(10), &fresh).is_none());
+    // Carried on: the grid a build in one go makes, written, progress gone.
+    let d = rebuild_resumable(&dir, "lockout", Threads::background(), &|| false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.walls.vis().map(|v| &**v), Some(&full));
+    assert_eq!(status(&dir, "lockout"), Status::Fresh);
+    assert!(!part.exists());
+    // Current: loaded, not built again (no stop is ever asked).
+    let again = rebuild_resumable(&dir, "lockout", Threads::foreground(), &|| panic!("built again"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.walls.vis().map(|v| &**v), Some(&full));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
