@@ -79,8 +79,9 @@ unmapped-argument or mid-walk fixture fail (9 disagreements together). Earlier
 injected bugs (salt wrap, grandparent acceptance, locale bound) were each
 caught by the seeded runs.
 
-The same feature also builds the stage 7a proofs, `render_loop_differential.rs`
-(`render_views`) and `layer_differential.rs` (the layer draw), which stub
+The same feature also builds the stage 7a proofs, `layer_differential.rs`
+(the layer entry loop) and `states_differential.rs` (the render-state
+list), which stub
 every callee on both sides and compare the call logs, the registers at
 return and all of memory ([render-loop.md](../graphics/render-loop.md),
 [layer-draw.md](../graphics/layer-draw.md)).

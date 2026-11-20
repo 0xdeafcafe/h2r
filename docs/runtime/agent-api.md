@@ -540,7 +540,7 @@ named, reversible change, applied live:
 
 | Override | Label | Example |
 |---|---|---|
-| `switch {name, on}` | as the feature says | `impl.render.views=on`, `e3_lighting=off` |
+| `switch {name, on}` | as the feature says | `impl.render.native_world=off`, `e3_lighting=off` |
 | `render.pass {name, off}` | View | drop the shadow pass |
 | `render.lod_bias`, `render.scale` | View | |
 | `effects.cap {class?, max}` | Sim | at most 8 live plasma impacts |
@@ -1093,8 +1093,8 @@ h2 agent render                    # interp, pipelined render, native paths
 Methods `render.frame` and `render.stats` (host methods: boot's agent glue
 adds them; types in `crates/agent-proto/src/render.rs`, logic in
 `crates/agent/src/render.rs`). How it behaves (**Code**, tested in
-`crates/agent`, `crates/boot`'s `d3d_diag` and `render_probe`, and
-`crates/feature/tests/render_loop.rs`; not run against the game):
+`crates/agent` and `crates/boot`'s `d3d_diag` and `render_probe`; not
+run against the game):
 
 - **Recording.** `render.frame {"arm": true, "draws", "max_draws",
   "constants", "snap"}` arms the recorder; the next present starts the frame and the
