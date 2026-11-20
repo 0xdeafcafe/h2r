@@ -187,7 +187,7 @@ h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [-
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE] [--join URL]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
@@ -255,6 +255,7 @@ other way round: on by default (below).
 |---|---|---|
 | none, `--offline`, `--no-live` | offline | ignored |
 | `--live` | signed in to `https://live.forbes.red` | a URL replaces it; `off` (`none`, `0`) plays offline with a line |
+| `--join URL` | opens a [session link](live-custom-games.md#join-in-halo-2) on the service selected by the ordinary Live flags; implies `--live` | as for `--live` |
 | `--live-server URL` | signed in to `URL` | ignored (the flag wins) |
 | `--live-local` | an embedded server in the process | ignored |
 | `--live-listen ADDR`, `--live-tunnel`, `--live-tunnel-name NAME` | as `--live-local` (they imply it) | ignored |

@@ -605,6 +605,7 @@ fn run_configured(
             bots,
         },
         film.clone(),
+        replaying || host_light || sim_mode.is_some(),
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
         core.skulls_on,
@@ -656,6 +657,8 @@ fn run_configured(
     // hopper's title and finds the arbitration round by the session. A
     // clanker hopper's game is a Clankermatch (docs/game/bots.md §8.2).
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let lobby = Arc::clone(hle);
+        t.set_hosted_session_locator(Box::new(move || lobby.hosted_session()));
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
             hle.matchmade().map(|(id, session)| telemetry::Playlist {

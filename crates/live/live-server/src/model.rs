@@ -77,6 +77,8 @@ pub const KEPT_KILLS: usize = 50;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Game {
     pub started: GameStarted,
+    /// Was the advertised session publicly listable when GameStarted was recorded?
+    pub(crate) public_session_at_start: bool,
     pub(crate) sim_report: Option<crate::sim_runs::StoredReport>,
     pub(crate) sim_recorded_bytes: u64,
     pub(crate) sim_recording_limited: bool,
@@ -456,7 +458,11 @@ impl Model {
                     crate::sessions::CoopLink::find(s, &who)
                 })
                 .flatten();
+            let public_session_at_start = started.game.session_id.as_ref()
+                .and_then(|id| s.sessions.get(id))
+                .is_some_and(|session| session.listed_for(None, |_, _| false));
             let mut game = Game {
+                public_session_at_start,
                 all_players_identified: players.iter().all(|p| p.xuid.is_some()),
                 ended_by_host: false,
                 xuids,

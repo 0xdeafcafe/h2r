@@ -183,6 +183,8 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
+    gameJoin: async (id: string, s?: AbortSignal) =>
+      getJson<{ session_id: string | null }>(u("/games/" + encodeURIComponent(id) + "/join"), s, await who()),
     simRuns: async (filters: SimFilter, s?: AbortSignal) => {
       const body = await getJson<Page<SimRun> & { options?: SimFilterOptions }>(
         u("/admin/sim-runs", { ...filters }), s, await who(),

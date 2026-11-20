@@ -343,6 +343,32 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
+    agent.add_method(method::LIVE_JOIN_OPEN, Access::Act, |params| {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Open {
+            url: String,
+        }
+        let open: Open = serde_json::from_value(params)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let link = open.url.parse::<live_proto::JoinLink>()
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let id = live_hle::join_link::submit(link).map_err(|e| {
+            use live_hle::join_link::SubmitError;
+            let code = match e {
+                SubmitError::Busy => code::BUSY,
+                SubmitError::Unavailable => code::UNAVAILABLE,
+            };
+            RpcError::new(code, e.to_string())
+        })?;
+        Ok(json!({ "id": id }))
+    });
+    agent.add_method(method::LIVE_JOIN_STATUS, Access::Read, |params| {
+        if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "Expected no parameters."));
+        }
+        Ok(json!({ "join": live_hle::join_link::status() }))
+    });
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))

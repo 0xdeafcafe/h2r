@@ -162,6 +162,7 @@ pub struct Session {
     current: Option<Match>,
     /// Set while the console is in a matchmaking game.
     playlist: Option<Playlist>,
+    pub(crate) hosted_session: Option<String>,
     /// The server's bot roster the next multiplayer games run with.
     bots: Option<Bots>,
     /// The `MapId` of the map the next game starts on, when a package
@@ -243,6 +244,7 @@ impl Session {
             sim: None,
             current: None,
             playlist: None,
+            hosted_session: None,
             bots: None,
             map_id: None,
             multiplayer_skulls: None,
@@ -443,9 +445,8 @@ impl Session {
             players: players.iter().map(|p| p.wire_player()).collect(),
             kind: Some(kind.into()),
             playlist: playlist.as_ref().and_then(|p| p.name.clone()),
-            // A matchmaking game's session, else the session a bot
-            // roster was given for (the server checks `bot: true` entries
-            // against it, docs/game/bots.md §9.3).
+            // An assigned match and a rostered game retain their existing session.
+            // An ordinary custom host can also advertise a game without bots.
             session_id: playlist
                 .as_ref()
                 .and_then(|p| p.session_id.clone())
@@ -454,6 +455,9 @@ impl Session {
                         .as_ref()
                         .filter(|_| !campaign && sim.is_none())
                         .and_then(|b| b.session_id.clone())
+                })
+                .or_else(|| {
+                    if !campaign && sim.is_none() { self.hosted_session.clone() } else { None }
                 }),
             playlist_id: playlist.map(|p| p.id),
             difficulty,
@@ -3422,6 +3426,17 @@ mod tests {
         assert!(started.data.get("session_id").is_none());
         assert_eq!(started.data["kind"], "custom");
         assert!(started.data["players"][1].get("bot").is_none());
+    }
+
+    #[test]
+    fn a_hosted_custom_game_carries_its_advertisement_without_a_bot_roster() {
+        let mut session = Session::new("test", None);
+        session.hosted_session = Some("0123456789abcdef".into());
+        session.start(&info(), vec![player(0, 0)]);
+        let outputs = session.take_output();
+        let Output::Event(start) = &outputs[0] else { panic!() };
+        assert_eq!(start.data["session_id"], "0123456789abcdef");
+        assert_eq!(start.data["kind"], "custom");
     }
 
     #[test]

@@ -132,6 +132,10 @@ pub mod method {
     // when the game has XAPI input, the rest by boot's agent glue. So
     // `session.methods` lists them only there.
 
+    /// Submit a website join through the same inbox as the OS and CLI.
+    pub const LIVE_JOIN_OPEN: &str = "live.join.open";
+    /// The latest web join and its outcome, if any.
+    pub const LIVE_JOIN_STATUS: &str = "live.join.status";
     /// Queue pad steps for a player ([`crate::PadParams`]).
     pub const INPUT_PAD: &str = "input.pad";
     /// Drop the queued steps and let go of everything.

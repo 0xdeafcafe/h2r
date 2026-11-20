@@ -185,7 +185,9 @@ the menu column drops under the content.
 The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
 shows advertised sessions with the host, map, game type and player count.
 It polls `GET /v1/sessions` every four seconds while the tab is showing
-(`src/state/sessions.ts`). Join sessions from the game.
+(`src/state/sessions.ts`). **Join in Halo 2** opens the installed player.
+The game's detail page and a friend's lobby presence offer the same action
+when the session admits the viewer. [Session links](live-custom-games.md#join-in-halo-2)
 
 ### Custom maps
 

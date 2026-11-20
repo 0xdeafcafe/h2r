@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
           [--movies DIR | --no-movies] [--film FILE]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
-          [--signin-terminal]
+          [--join URL] [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
@@ -82,6 +82,8 @@ With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
 https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
 --live-server URL signs in to that service instead (docs/live/live.md).
+--join URL opens a Halo 2 session link and implies --live. The link must
+belong to your selected Live service.
 The account is one kept in accounts.json for that server; else --gamertag
 NAME, or the gamertag you last played as on another server (keeping its
 key), or one named after your user. A name new to the server is made
@@ -648,6 +650,7 @@ pub(crate) fn run_with_theater(
         }
     }
     live.check()?;
+    let live_choice = live.play_choice(std::env::var("H2_LIVE_SERVER").ok().as_deref())?;
     // Our settings: flags (--fps, --set), then the environment, then
     // <data>/settings.toml, then each default. A bad value is reported and
     // the next source used.
@@ -731,7 +734,10 @@ pub(crate) fn run_with_theater(
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
     // With no Live flag, offline (docs/live/live.md "Playing on Live").
-    let session = start_session(&mut live, &opts.disc)?;
+    let session = start_session(&mut live, &opts.disc, live_choice)?;
+    if let Some(link) = live.join.take() {
+        live_hle::join_link::submit(link).map_err(anyhow::Error::msg)?;
+    }
     // Signed in: the account's saves are merged into U: now, before the
     // game reads them, and pushed as the game writes
     // (docs/live/live-cloud-saves.md).
@@ -885,17 +891,21 @@ fn level_choice(
 fn start_session(
     live: &mut crate::play_live::LiveOpts,
     disc: &std::path::Path,
+    choice: crate::play_live::Choice,
 ) -> Result<Option<crate::play_live::Session>> {
-    use crate::play_live::{Choice, DEFAULT_LIVE_SERVER, choose};
-    let env = std::env::var("H2_LIVE_SERVER").ok();
-    match choose(live, env.as_deref(), DEFAULT_LIVE_SERVER) {
+    use crate::play_live::Choice;
+    match choice {
         Choice::Offline { why } => {
             if let Some(why) = why {
                 eprintln!("{why}");
             }
             Ok(None)
         }
-        Choice::Local => start_live(live, disc).map(Some),
+        Choice::Local => {
+            let session = start_live(live, disc)?;
+            live.check_join_server(&session.server)?;
+            Ok(Some(session))
+        }
         Choice::Server { url, from } => {
             let note = match from {
                 "--live" => " (the default service; --live-server URL names another)",

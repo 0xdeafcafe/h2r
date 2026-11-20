@@ -5,11 +5,14 @@
 // recent games. The windowed numbers come from the server's summary
 // (`GET /v1/stats/summary`); the live parts from the live state.
 
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { For, Index, Show, createMemo, type JSX } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social } from "../state/social";
+import { dedicatedHostLabel } from "../lib/hosts";
+import { JoinLink } from "../components/JoinLink";
+import { canJoinSession, joinHref } from "../lib/join";
 import { useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
@@ -91,18 +94,19 @@ function LiveNow(props: { week: StatsSummary | null }) {
           <div class="s-grid-wrap s-open">
             <table class="s-grid">
               <caption class="sr-only">Open games looking for players</caption>
-              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th></tr></thead>
+              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th><th><span class="sr-only">Join game</span></th></tr></thead>
               <tbody>
-                <For each={open().slice(0, 5)}>
+                <Index each={open().slice(0, 5)}>
                   {(s) => (
                     <tr>
-                      <td><Who xuid={s.host_xuid} name={s.host_gamertag} /> <span class="s-dim">{gametype(s)}</span></td>
-                      <td><Show when={campaignLine(s, mapTitle)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s, mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
-                      <td class="hide-s">{sessionKind(s)}</td>
-                      <td class="num">{seats(s).filled} of {seats(s).max}<Show when={pingText(s)}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                      <td><Show when={dedicatedHostLabel(s())} fallback={<Who xuid={s().host_xuid} name={s().host_gamertag} />}>{(label) => label()}</Show> <span class="s-dim">{gametype(s())}</span></td>
+                      <td><Show when={campaignLine(s(), mapTitle)} fallback={<span class="s-who"><Show when={s().map}><MapPreview map={s().map!} mapId={s().map_id} /></Show>{mapName(s(), mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
+                      <td class="hide-s">{sessionKind(s())}</td>
+                      <td class="num">{seats(s()).filled} of {seats(s()).max}<Show when={pingText(s())}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                      <td><Show when={feed.status() === "ok" && canJoinSession(s(), identity.me()?.xuid) && joinHref(live.server().base, s().session_id)}>{(href) => <JoinLink href={href()} />}</Show></td>
                     </tr>
                   )}
-                </For>
+                </Index>
               </tbody>
             </table>
           </div>

@@ -71,6 +71,7 @@ asf = { path = "../../formats/asf", optional = true }
 wma = { path = "../../platform/wma", optional = true }
 live-hle = { path = "../../live/live-hle", optional = true }
 live-proto.workspace = true
+live-hle = { path = "../../live/live-hle", optional = true }
 live-server.workspace = true
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
 cloud-saves = { workspace = true, optional = true }
@@ -103,6 +104,11 @@ libc = "0.2"
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
 sha2 = { version = "0.10", features = ["asm"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSString"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSAlert", "NSResponder"], optional = true }
 
 [features]
 default = ["desktop"]
@@ -138,6 +144,10 @@ desktop = [
     "dep:studio-proto",
     "dep:timeline",
     "dep:app",
+    "dep:live-hle",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
     "dep:debug-menu",
     "dep:lockstep",
     "dep:d3d",

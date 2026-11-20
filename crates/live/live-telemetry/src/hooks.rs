@@ -19,7 +19,7 @@ use crate::session::{Playlist, Session};
 use crate::sink::Sink;
 #[cfg(test)]
 use crate::sink::JsonlSink;
-use crate::tags::{BotsLocator, MapIdLocator, MapLocator, PlaylistLocator};
+use crate::tags::{BotsLocator, HostedSessionLocator, MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -58,6 +58,7 @@ pub struct Telemetry {
     map_ids: Mutex<Option<MapIdLocator>>,
     /// Names the starting game's playlist; set by the boot with Live.
     playlists: Mutex<Option<PlaylistLocator>>,
+    hosted_session: Mutex<Option<HostedSessionLocator>>,
     /// Names the starting game's bot roster; set by the boot with Live.
     bots: Mutex<Option<BotsLocator>>,
 }
@@ -78,6 +79,7 @@ impl Telemetry {
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
             playlists: Mutex::new(None),
+            hosted_session: Mutex::new(None),
             bots: Mutex::new(None),
         }
     }
@@ -118,6 +120,11 @@ impl Telemetry {
     /// the start, so a ranked game is recorded as one.
     pub fn set_playlist_locator(&self, locator: PlaylistLocator) {
         *self.playlists.lock().unwrap() = Some(locator);
+    }
+
+    /// Reads the current advertisement when a multiplayer game starts.
+    pub fn set_hosted_session_locator(&self, locator: HostedSessionLocator) {
+        *self.hosted_session.lock().unwrap() = Some(locator);
     }
 
     /// Lets each multiplayer game know its Clankers (docs/game/bots.md §6,
@@ -286,6 +293,8 @@ impl Telemetry {
             Default::default()
         };
         if info.mode == "multiplayer" {
+            let hosted = self.hosted_session.lock().unwrap().as_ref().and_then(|get| get());
+            self.configure(move |s| s.hosted_session = hosted);
             let playlist = self
                 .playlists
                 .lock()

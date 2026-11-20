@@ -267,3 +267,61 @@ async fn a_declared_internet_address_is_created_but_never_listed() {
     assert_eq!(s["endpoint"]["addr"], "192.168.1.50");
     assert!(listed(&h, None).await.contains(&id(&s)));
 }
+
+#[tokio::test]
+async fn game_join_uses_the_recorded_lobby_and_the_current_reader() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let friend = h.create("Friend").await;
+    let stranger = h.create("Stranger").await;
+    befriend(&h, &host, &friend).await;
+    let session = id(&create_from(&h, &host, &ad(Some("10.0.0.5"), Visibility::Friends), None).await);
+    let mut game = two_player_game(&host);
+    game["session_id"] = json!(session);
+    let game_id = h.start_game(&host, game).await;
+    let lookup = format!("/v1/games/{game_id}/join");
+    for (reader, expected) in [
+        (None, Value::Null),
+        (Some(&stranger), Value::Null),
+        (Some(&friend), json!(session)),
+        (Some(&host), Value::Null),
+    ] {
+        let headers: Vec<_> = reader.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        let r = h.call(Method::GET, &lookup, &headers, Body::empty()).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.headers["cache-control"], "private, no-store");
+        assert_eq!(r.json()["session_id"], expected);
+    }
+
+    let make_public = EventBody::at_unix(
+        &host.key, &host.author, &session::stream(&session), session::UPDATED,
+        json!({"visibility": "public"}), now(),
+    );
+    let r = h.call(Method::POST, &format!("/v1/sessions/{session}/events"),
+        &[h.bearer(&host, lxm::SESSIONS_WRITE), ("content-type", "application/jose".into())],
+        Body::from(sign_batch(&host.key, &[make_public])),
+    ).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(h.get(&lookup).await.json()["session_id"], session);
+    let log = h.get(&format!("/v1/events?stream=game-{game_id}")).await.json();
+    let start = &log["items"][0];
+    assert!(start["data"].get("session_id").is_none());
+    assert_eq!(start["data"]["redacted"], true);
+    assert_eq!(start["jws"], "");
+
+    let end = h.batch(&host, &game_id, &[("GameEnded", json!({"tick": 30, "reason": "quit"}))]);
+    assert_eq!(h.post_batch(&host, &game_id, end).await.status, StatusCode::CREATED);
+    assert_eq!(h.get(&lookup).await.json()["session_id"], Value::Null);
+}
+
+#[tokio::test]
+async fn unlinked_games_never_offer_another_open_session_by_the_same_host() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let game = h.start_game(&host, two_player_game(&host)).await;
+    create_from(&h, &host, &ad(Some("10.0.0.1"), Visibility::Public), None).await;
+    let reply = h.get(&format!("/v1/games/{game}/join")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json(), json!({"session_id": null}));
+    assert_eq!(h.get("/v1/games/missing/join").await.status, StatusCode::NOT_FOUND);
+}

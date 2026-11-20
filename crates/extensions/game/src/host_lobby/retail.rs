@@ -18,7 +18,7 @@ mod checkpoint;
 
 const CREATE_SQUAD: u32 = 0x0005_9890;
 /// Retail lifecycle teardown, also used before a checkpoint scenario load.
-const LEAVE_SESSIONS: u32 = 0x0005_93e0;
+pub(crate) const LEAVE_SESSIONS: u32 = 0x0005_93e0;
 const SET_VARIANT: u32 = 0x0019_a728;
 const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 /// The pregame stage change the countdown finisher (`0x6e410`) makes once

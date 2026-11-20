@@ -63,6 +63,8 @@ pub struct LocalSession {
     pub variant_ext: Option<live_proto::session::VariantExt>,
 }
 struct Record {
+    // A title may advertise no capacity at all, notably in campaign co-op.
+    needs_squad_slots: bool,
     session: LocalSession,
     key: [u8; 16],
 }
@@ -129,6 +131,7 @@ impl Op {
 #[derive(Default)]
 pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
+    slot_update: Option<([u8; 8], SessionSlots, Pending)>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
     /// The elected host gets an empty search, then publishes using this lease.
@@ -241,6 +244,53 @@ fn hr<T>(value: u32) -> Result<T> {
     Err(Failure::Hr(value))
 }
 impl Sessions {
+    /// Backfill a zero-count advertisement from the actual hosted squad.
+    /// An explicit slot advertisement (including reserved seats) wins.
+    pub fn sync_squad_slots(
+        &mut self,
+        slots: SessionSlots,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        if let Some((id, sent, pending)) = &self.slot_update {
+            let Some(reply) = pending.take() else { return };
+            if reply.is_ok()
+                && let Some(record) = self.records.get_mut(id)
+                && record.needs_squad_slots
+            {
+                record.session.slots = *sent;
+            }
+            self.slot_update = None;
+        }
+        let Some(id) = self.current_id() else { return };
+        let record = &self.records[&id];
+        if !record.needs_squad_slots || record.session.slots == slots || !slots.validate() {
+            return;
+        }
+        // An explicit update queued by the title comes first. Sending guessed
+        // slots after it could override a newly reserved seat on the server.
+        if self.tasks.values().any(|task| {
+            matches!(
+                task, Task::Pending { intent: Intent::Put { session, .. }, .. } if session.id == id
+            )
+        }) {
+            return;
+        }
+        let (Some(service), Some(connection)) = (service, connection) else {
+            return;
+        };
+        let request = MatchRequest::Update {
+            id: live_proto::sign::hex(&id),
+            update: live_proto::session::Update {
+                slots: Some(slots),
+                ..Default::default()
+            },
+        };
+        if let Ok(pending) = service.match_request(connection, request) {
+            self.slot_update = Some((id, slots, pending));
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<LocalSession> {
         self.records.values().map(|r| r.session.clone()).collect()
     }
@@ -573,6 +623,7 @@ impl Sessions {
     }
     pub fn clear(&mut self) {
         self.records.clear();
+        self.slot_update = None;
         self.looked_up.clear();
         self.tasks.clear();
         self.matchmaking = None;
@@ -861,7 +912,12 @@ impl Sessions {
                         MatchRequest::Update {
                             id: live_proto::sign::hex(&id),
                             update: live_proto::session::Update {
-                                slots: Some(data.slots),
+                                // Repeated zero-count updates leave capacity with the
+                                // squad publisher. A pending capacity change may already
+                                // be on the wire ahead of this update.
+                                slots: (data.slots != SessionSlots::default()
+                                    || self.records.get(&id).is_none_or(|r| !r.needs_squad_slots))
+                                .then_some(data.slots),
                                 attributes: Some(data.attributes),
                                 // Only a change is sent, so a server that
                                 // predates visibility sees the same updates.
@@ -924,7 +980,14 @@ impl Sessions {
                     if op == Op::Create {
                         self.advertised(id);
                     }
-                    self.records.insert(id, Record { session, key });
+                    self.records.insert(
+                        id,
+                        Record {
+                            needs_squad_slots: slots == SessionSlots::default(),
+                            session,
+                            key,
+                        },
+                    );
                     self.tasks.insert(h, Task::Session { id, key });
                 }
                 // All guest ranges were checked before submitting. Queue
@@ -1187,6 +1250,7 @@ impl Sessions {
                     self.matchmaking = None;
                 }
                 session.id = id;
+                let needs_squad_slots = session.slots == SessionSlots::default();
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
                 debug("server advertise", &session);
@@ -1202,6 +1266,7 @@ impl Sessions {
                 self.records.insert(
                     id,
                     Record {
+                        needs_squad_slots,
                         session: *session,
                         key,
                     },

@@ -424,12 +424,24 @@ impl Live {
     /// as [`Live::read_caller`] does); the operator and admin accounts are
     /// [`Viewer::Admin`].
     pub fn read_viewer(&self, bearer: Option<&str>) -> Result<Viewer, ApiError> {
+        self.read_viewer_account(bearer).map(|(viewer, _)| viewer)
+    }
+
+    /// Keeps the account identity even when an admin can also read private game reports.
+    pub(crate) fn read_viewer_account(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(Viewer, Option<live_proto::Xuid>), ApiError> {
         if bearer.is_none() {
             self.authorize_read(None)?;
-            return Ok(Viewer::Anonymous);
+            return Ok((Viewer::Anonymous, None));
         }
         let author = self.authenticate(bearer, lxm::READ)?;
-        Ok(self.viewer_of(&author))
+        let account = match &author {
+            Author::Account { xuid, .. } => Some(*xuid),
+            Author::Server(_) => None,
+        };
+        Ok((self.viewer_of(&author), account))
     }
 
     /// The reader behind a `read` token sent on a stream, and the token's
@@ -691,6 +703,20 @@ pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_pro
     let mut w = e.to_wire();
     if viewer == Viewer::Operator {
         return Some(w);
+    }
+    // The game report can be public while the lobby ID is an invitation
+    // capability. Both the original and current lobby must be public to
+    // publish this field in the log. Join links use a separate reader check.
+    if e.body.kind == live_proto::game::GAME_STARTED
+        && let Some(session_id) = w.data["session_id"].as_str()
+    {
+        let game = e.body.stream.strip_prefix("game-").and_then(|id| s.games.get(id));
+        let public = game.is_some_and(|g| g.public_session_at_start)
+            && s.sessions.get(session_id).is_some_and(|session| session.listed_for(None, |_, _| false));
+        if !public && let Some(data) = w.data.as_object_mut() {
+            data.remove("session_id");
+            mark_redacted(&mut w);
+        }
     }
     if strip_addresses(&mut w.data) {
         mark_redacted(&mut w);
