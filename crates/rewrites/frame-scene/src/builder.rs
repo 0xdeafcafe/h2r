@@ -309,9 +309,33 @@ impl SceneBuilder {
         let s = scene.light_steps.len() as u32;
         scene.light_steps.extend_from_slice(steps);
         let index = scene.lights.len() as u32;
-        scene.lights.push(SceneLight { steps: s..scene.light_steps.len() as u32, ..light });
+        scene.lights.push(SceneLight {
+            steps: s..scene.light_steps.len() as u32,
+            guest_selected: true,
+            ..light
+        });
         scene.views[open].lights.end = index + 1;
         Ok(index)
+    }
+
+    /// Merges the visible candidates after the guest's last light pass.
+    /// The guest's groups keep their indices and draw order.
+    pub fn add_light_candidates(&mut self, candidates: Vec<crate::Light>) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let range = &mut scene.views[open].lights;
+        let existing = range.start as usize..range.end as usize;
+        let indices: std::collections::HashMap<_, _> =
+            existing.map(|i| (scene.lights[i].handle, i)).collect();
+        for candidate in candidates {
+            if let Some(&i) = indices.get(&candidate.handle) {
+                scene.lights[i].candidate = candidate.candidate;
+            } else {
+                let end = scene.light_steps.len() as u32;
+                scene.lights.push(crate::Light { steps: end..end, ..candidate });
+            }
+        }
+        range.end = scene.lights.len() as u32;
+        Ok(())
     }
 
     /// Adds a layer draw to the open view, after its others; its items
@@ -359,7 +383,7 @@ impl SceneBuilder {
     pub fn push_light_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let lights = &scene.views[open].lights;
-        if lights.is_empty() {
+        if lights.is_empty() || !scene.lights[lights.end as usize - 1].guest_selected {
             return Err(BuildError::NoLight);
         }
         let light = lights.end - 1;
@@ -571,7 +595,7 @@ mod tests {
         use crate::light::{LightStep, LightTarget, SceneLight};
         let step = |layer, stencil, target| LightStep { layer, stencil, target, draws: true };
         let light = |handle, flags| SceneLight {
-            handle, definition: 0xe300_0000, flags, definition_flags: 0, additional_casters: false, steps: 0..0,
+            handle, definition: 0xe300_0000, flags, definition_flags: 0, additional_casters: false, steps: 0..0, ..Default::default()
         };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());

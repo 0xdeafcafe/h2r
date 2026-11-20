@@ -30,7 +30,7 @@
 //! addresses. `engine/tests/shadow_constants_differential.rs` checks it
 //! against the lifted original.
 
-use crate::light_constants::{Error, Fpu, Sse, X87};
+use crate::light_constants::{Error, Fpu, LightGlobals, Sse, X87};
 use crate::memory::{GuestMemory, MemFault};
 
 /// `0x00048ee0`: ECX the projection volume, EBX the light's frame block
@@ -176,7 +176,32 @@ fn vec3(m: &dyn GuestMemory, at: u32) -> Result<[u32; 3], MemFault> {
 
 /// `0x00048ee0` for `call` under `fpu`. Reads guest memory, writes none.
 pub fn shadow_globals(m: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<ShadowGlobals, Error> {
+    compute(m, call, fpu, None)
+}
+
+/// Computes a candidate's projection with the light setup's outputs in
+/// hand, before either setup has written to the guest.
+pub fn shadow_globals_for_light(
+    m: &dyn GuestMemory,
+    call: &Call,
+    fpu: Fpu,
+    light: &LightGlobals,
+    pass_flags: u32,
+) -> Result<ShadowGlobals, Error> {
+    compute(m, call, fpu, Some((light, pass_flags)))
+}
+
+fn compute(
+    m: &dyn GuestMemory,
+    call: &Call,
+    fpu: Fpu,
+    light: Option<(&LightGlobals, u32)>,
+) -> Result<ShadowGlobals, Error> {
     use constant::*;
+    let falloff = |index: usize| match light {
+        Some((light, _)) => Ok(light.falloff[index]),
+        None => m.u32(global::FALLOFF_1 + (index as u32 - 1) * 4),
+    };
     let mut f = Sse { mxcsr: fpu.mxcsr };
     let mut x = X87::new(fpu.x87_control);
     let ecx = call.context;
@@ -214,7 +239,7 @@ pub fn shadow_globals(m: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Shad
 
     let mode: u32 = if (m.u32(global::SCENE_FLAGS)? >> 10) & 1 == 0 {
         2
-    } else if f.above(m.u32(global::FALLOFF_4)?, 0)? && m.u16(d + 0x14)? == 0 {
+    } else if f.above(falloff(4)?, 0)? && m.u16(d + 0x14)? == 0 {
         1
     } else {
         0
@@ -234,7 +259,10 @@ pub fn shadow_globals(m: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Shad
     } else {
         x.fld(c4)?;
     }
-    let pass = m.u32(global::PASS_FLAGS)?;
+    let pass = match light {
+        Some((_, flags)) => flags,
+        None => m.u32(global::PASS_FLAGS)?,
+    };
     let small = (pass >> 4) & 1 != 0 && (pass >> 5) & 1 == 0;
     let side: i32 = if small { 0x80 } else { 0x200 };
     x.fild(side)?;
@@ -251,7 +279,7 @@ pub fn shadow_globals(m: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Shad
     let min = m.u32(SIZE_MIN)?;
     x.arith_m(x87::abi::arith_op::SUB, min)?;
     x.arith_reg(x87::abi::arith_op::MUL, 1, 0, true)?;
-    x.fmul_m(m.u32(global::FALLOFF_1)?)?;
+    x.fmul_m(falloff(1)?)?;
     x.fadd_m(min)?;
     let extent = x.fst_m32()?;
     x.fld(min)?;
@@ -350,8 +378,13 @@ pub fn shadow_globals(m: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Shad
         let a = f.mul(fi, d2c)?;
         *qi = f.add(a, pi)?;
     }
-    for i in 0..8 {
-        block[24 + i] = m.u32(global::FRAME_COPIES + 4 * i as u32)?;
+    if let Some((light, _)) = light {
+        block[24..28].copy_from_slice(&light.frame_copy_a);
+        block[28..32].copy_from_slice(&light.frame_copy_b);
+    } else {
+        for i in 0..8 {
+            block[24 + i] = m.u32(global::FRAME_COPIES + 4 * i as u32)?;
+        }
     }
     let a = f.mul(fw[2], q[2])?;
     let b = f.mul(fw[1], q[1])?;

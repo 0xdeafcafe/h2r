@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 frame-scene = { path = "../frame-scene" }
 bytemuck = { version = "1", features = ["derive"] }
+engine = { path = "../engine" }

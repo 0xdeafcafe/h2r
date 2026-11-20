@@ -221,6 +221,10 @@ fn scalar(row: &[u8], offset: usize) -> f32 {
     f32::from_bits(word(row, offset))
 }
 
+pub(super) fn candidate_eligible(m: &dyn GuestMemory, light: u32, definition: u32, flags: u32) -> Result<bool> {
+    Ok(active(m, light)? && visible_candidate(m, light, definition, flags)?)
+}
+
 fn visible_candidate(m: &dyn GuestMemory, light: u32, definition: u32, flags: u32) -> Result<bool> {
     let owner = m.u32(at(light, 0x4c)?)?;
     if !visible_from_owner(m, light, flags, owner)? {

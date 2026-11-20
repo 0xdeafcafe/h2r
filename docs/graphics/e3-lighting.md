@@ -368,8 +368,12 @@ which is a lightmapper.
 
 ## Interfaces
 
-**What it needs from the scene.** `frame-scene` gains these when FrameScene
-slice 3 types lights and shadow maps; the E3 fields are added in slice L2.
+**What it needs from the scene.** `FrameScene::lights` holds the visible
+candidates. Each `frame_scene::Light` carries its candidate data and marks
+the guest's selections in their draw order. `scene_extract::lights`
+uses the view's pre-trim eligibility tests and computes both constant sets
+from the unfaded record weight. The guest's faded weight, layer steps and
+gathered groups come from the actual pass.
 
 | Need | In the scene | State |
 |---|---|---|
@@ -377,7 +381,7 @@ slice 3 types lights and shadow maps; the E3 fields are added in slice L2.
 | Instances, model, node matrices, bounding sphere | `Instance`, `FrameScene::nodes` | Built |
 | The object's lighting record (direction, colours) | `Instance::lighting` | Built |
 | Materials per part and layer | `PartDraw::key`, the loaders' templates for layers 10 to 14 | Layer 3 built; the rest with FrameScene slice 3 |
-| Every candidate light: record frame, colours, intensity, bounds, effective volume shape and extent after placement overrides, definition flags, gel, owner instance and per-view eligibility, the guest's choice and weight, constants for both shadow decisions | `FrameScene::lights` | Design |
+| Every candidate light: record frame, colours, intensity, bounds, effective volume shape and extent after placement overrides, definition flags, gel, owner instance and per-view eligibility, the guest's choice and weight, constants for both shadow decisions | `FrameScene::lights` | Built |
 | The guest's shadow lists: casters, receivers, projection, strength | `FrameScene::shadows` | Design (FrameScene slice 3) |
 | First-person parts | `View::first_person` | Design (FrameScene slice 3) |
 | Cluster parts with bounds | the renderer's loaded world (`native_render::world`, `cull`) | Built |
@@ -387,18 +391,20 @@ atlas tiles first, in one pass sequence at the start of the view's stage;
 the sun receivers at the object-shadow point; the lit lights where retail's
 light pass runs.
 
-**The agent API** ([agent-api.md](../runtime/agent-api.md)) is how pictures
-and costs are checked. Three additions, each needed by every slice below
-and by later lighting work, so they are added to the API:
+**The agent API** ([agent-api.md](../runtime/agent-api.md)) reports
+`lights_candidates`, `lights` (the guest selections) and
+`lights_with_constants` per view in `render.scene`. The extraction counters
+report views attempted, elapsed nanoseconds and unread batches.
+
+The capture override, pass rows and drawing counters belong to the later slices.
 
 - `render.capture` takes `lighting: "retail" | "e3"`: the same sealed scene
   drawn in that mode into a private target, the setting untouched. A retail
   and an E3 capture of one tick go to `render.compare`.
 - `render.frame` lists the mode's passes (`e3.tiles`, `e3.sun`, `e3.marks`,
   `e3.lights`) with GPU time where the adapter has timestamp queries.
-- `render.stats` and `render.scene` count `lights_candidates`, `lights_lit`,
-  `lights_shadowed`, `lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn`,
-  `atlas_halved`.
+- `render.stats` and `render.scene` count `lights_lit`, `lights_shadowed`,
+  `lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
 
 `settings.set` with `graphics.lighting` changes the mode live, as the row
 does.
@@ -461,8 +467,8 @@ runs the game.
 | Slice | Work | Testable result | Measure |
 |---|---|---|---|
 | L0 | Static research (`h2 disasm`, `h2 shader`, `h2 lights`): the object-shadow chain's direction, strength and caster tests (`0x000335e0`, `0x00032350`, `0x00033400`); how many templates have a depth-map receiver on layer 11 and a depth pass on layer 10; the receiver programs' vertex gate; the context `0x000c17f0` returns; the candidate list and its trim; which attachment lights are flashlights and headlights | Each **S** in "How it works" becomes **R** or the design changes. Readers of any new record, tested on invented bytes | Counts per map, in the notes |
-| L1 | The Sharp form in `shaders::psh::shadow`, beside Retail and Hard | Golden WGSL for the three forms; a GPU test with a slanted caster at map-to-screen ratios 1:1, 1:2 and 1:4: the lit-to-dark ramp is at most 1.5 pixels wide and its centre within a texel of the caster's outline; retail's golden file unchanged | none |
-| L2 | `frame_scene::Light` with every candidate and both sets of constants; extraction; the counts in `render.scene` | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
+| L1 | `shaders::psh::shadow` provides Sharp beside Retail and Hard. `PixelOptions::sharp_shadow` selects it per stage | Golden WGSL for the three forms; a GPU test with a slanted caster at map-to-screen ratios 1:1, 1:2 and 1:4: the lit-to-dark ramp is at most 1.5 pixels wide and its centre within a texel of the caster's outline; retail's golden file unchanged | none |
+| L2 | `frame_scene::Light` holds each candidate and both constant sets. `scene_extract::lights` reads the view's visibility gather, and `render.scene` reports the counts | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
 | L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
 | L4 | Local-light shadows: atlas tiles for the guest's shadowed lights, the Sharp edge on layer 11 | Synthetic: a tile's shadow has the L1 edge. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, and `e3.tiles` lists one tile per shadowed light | GPU ms of `e3.tiles` and `e3.marks` at 1x and 4x; the first numbers for the budget |
 | L5 | Sun shadows from objects: tiles, receivers, self-shadowing, the tile cache | Synthetic: a box on a plane casts a hard shadow; an L-shaped caster shadows itself; a triangle with three nonpositive normal terms keeps its RGB, and mixed vertex terms interpolate; a still caster's tile is not redrawn; a moved one is. Game: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |

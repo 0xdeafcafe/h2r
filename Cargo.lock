@@ -5763,6 +5763,7 @@ name = "scene-extract"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "engine",
  "frame-scene",
 ]
 

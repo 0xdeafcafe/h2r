@@ -149,6 +149,16 @@ impl Feature for ScaledSceneLists {
     }
 }
 
+/// The existing pre-trim checks, for FrameScene's read-only extraction.
+pub(crate) fn light_candidate_eligible(
+    m: &dyn GuestMemory,
+    record: u32,
+    definition: u32,
+    flags: u32,
+) -> Option<bool> {
+    lights::candidate_eligible(m, record, definition, flags).ok()
+}
+
 pub(crate) fn instruction_entries() -> [u32; 5] {
     [
         points::OBJECT_RECORD_APPEND.base,
