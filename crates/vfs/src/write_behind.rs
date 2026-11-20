@@ -23,19 +23,6 @@ use std::{
 /// once the queue is empty), so memory stays bounded.
 pub(crate) const MAX_IN_FLIGHT: usize = 4 * 1024 * 1024;
 
-/// `H2_VFS_WRITE_BEHIND=0` (or `off`/`false`) makes host writes
-/// synchronous again.
-pub(crate) fn enabled_by_env() -> bool {
-    enabled(std::env::var("H2_VFS_WRITE_BEHIND").ok().as_deref())
-}
-pub(crate) fn enabled(value: Option<&str>) -> bool {
-    !value.is_some_and(|v| {
-        ["0", "off", "false", "no"]
-            .iter()
-            .any(|off| v.trim().eq_ignore_ascii_case(off))
-    })
-}
-
 struct Job {
     path: PathBuf,
     file: Arc<File>,

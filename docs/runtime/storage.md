@@ -389,11 +389,9 @@ back to synchronous speed, never further.
 
 A crash, `process::exit` without `flush_pending_metadata`, or a signal
 loses at most the queued bytes; a process that exits normally or drops
-its backends loses nothing. `H2_VFS_WRITE_BEHIND=0` (or `off`, `false`,
-`no`) restores synchronous writes; so does
-`HostBackend::with_write_behind(false)`, and a failure to spawn the
-thread (logged). A differential test runs the same random sequence of
-creates, overlapping writes, reads, stats, truncations, flushes,
+its backends loses nothing. `HostBackend::with_write_behind(false)` gives
+synchronous writes, as does a failure to spawn the thread (logged). A
+differential test runs the same random sequence of creates, overlapping writes, reads, stats, truncations, flushes,
 cleanups, removals, listings and volume queries with write-behind on and
 off and compares every result and the final host bytes
 (`crates/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs
