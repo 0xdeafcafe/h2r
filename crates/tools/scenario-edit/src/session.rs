@@ -375,23 +375,23 @@ impl Session {
         let mut raw = geometry::RawFiles::new(files);
         let mut map = source.open()?;
         let started = std::time::Instant::now();
-        let (parts, lightmaps, world_failed) =
-            geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
-        let world = geometry::opaque_triangles(&parts);
+        let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
+        let world_failed = lit.failed;
+        let world = geometry::opaque_triangles(&lit.parts);
         let markers = geometry::markers(&scenario);
         let scene = self.build_scenes.then(|| {
             self.scene_for(
-                &source, name, cache_key, &scenario, &markers, &parts, &lightmaps, &mut map,
-                &mut raw,
+                &source, name, cache_key, &scenario, &markers, &lit, &mut map, &mut raw,
             )
         });
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
         let art = match &scene {
             Some(s) => format!(
-                ", {} of {} shaders textured, {} lightmap pages, {} of {} objects modelled ({} ms)",
+                ", {} of {} shaders textured, {} lightmap pages{}, {} of {} objects modelled ({} ms)",
                 s.stats.textured,
                 s.stats.shaders,
                 s.stats.lightmap_pages,
+                s.unlit_note(),
                 s.stats.modelled,
                 s.stats.objects,
                 started.elapsed().as_millis()
@@ -480,8 +480,7 @@ impl Session {
         cache_key: &str,
         scenario: &Scenario,
         markers: &[Marker],
-        parts: &[geometry::WorldPart],
-        lightmaps: &[geometry::LightmapPages],
+        lit: &geometry::LitWorld,
         map: &mut map::Map<R>,
         raw: &mut dyn tags::geometry::RawSource,
     ) -> Arc<Scene> {
@@ -493,8 +492,10 @@ impl Session {
             return scene;
         }
         let mut b = SceneBuilder::new(map, raw, crate::scene::resource_files(source));
-        b.world(parts, lightmaps);
+        b.world(&lit.parts, &lit.lightmaps);
+        b.lighting(&lit.bsps);
         b.sky();
+        b.atmosphere();
         // Every palette entry, so a placement switched to another entry
         // has its model too, and each placement's own reference.
         let objects: Vec<TagId> = scenario

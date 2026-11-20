@@ -478,12 +478,51 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
   lightmaps) where no lightmap lights them.
-- **Lightmaps.** Each cluster's and instance's lightmap page (its `ltmp`
-  group's render info: an image of the lightmap bitmap and a palette) is
-  decoded from `P8` through the group's palette, and its parts draw with
-  their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
-  plus a faint fill light so no texel is pure black. Parts without a page,
-  and object models, keep one sun and the sky, with dark base maps lifted.
+- **Lightmaps.** A BSP is lit by its lightmap's **first** group when that
+  group carries the BSP's checksum and a bitmap, as the engine and the
+  native renderer pick it (`geometry::select_group`, after
+  `native_render::load::load_world`). Each cluster's and instance's
+  lightmap page (the group's render info: an image of the lightmap
+  bitmap and a palette) is decoded from `P8` through the group's
+  palette, and its parts draw with their `1f` lightmap coordinates: base
+  map × lightmap × 2 in gamma space, plus a faint fill light so no texel
+  is pure black. A placed instance's coordinates are its own, from its
+  run in the group's buckets (`native_render::load::{bucket_streams,
+  instance_run, bucket_slice}`), not its definition's, which every
+  placement shares; the definition's only when the instance has none.
+  Each BSP's lighting is reported (`geometry::BspLighting`: lightmapped,
+  no lightmap, an empty group, another BSP's group, or a lightmap that
+  does not decode), in the status line when a BSP is not lightmapped and
+  in `view.stats`.
+- **Unlit BSPs.** mainmenu's one BSP was never lightmapped: its
+  lightmap's one group is empty (checksum 0, no bitmap, no palettes), so
+  its log line reads `0 lightmap pages (mainmenu: empty lightmap group,
+  lit by its sky's sun)`. The game draws such a BSP with each shader's
+  implementation for a BSP without a lightmap group
+  (`native_render::look::UNLIT_BSP_IMPLEMENTATION`, lit from engine
+  vectors). The viewport lights it, and every part without a page, with
+  the map's sun: one sun and the sky, with dark base maps lifted.
+- **The map's sun and fog.** The first of the scenario's skies that
+  reads (`h1_assets::sky::h2::Sky`, `SceneBuilder::atmosphere`) gives
+  them. Its first light with parameters is the sun: its direction from
+  the light's yaw and pitch (`scene::sun_direction`, turned above the
+  horizon) and its hue (`scene::sun_tint`, the colour scaled so its
+  brightest channel is 1; the viewport keeps its own brightness). Its
+  first `fog_a` element is the fog, checked as the engine checks it
+  (`scene::fog_of`, after `0x001301c0`: no density is no fog; colour
+  clamped to 0..1, density to 1, the opaque distance at least a unit past
+  the start), and drawn over the level and its objects, not the sky:
+  none before its start, rising evenly to its density at its opaque
+  distance (`scene::fog_amount`; the shader that consumes the engine's
+  fog state is not traced, so the ramp is the viewport's). A map whose
+  sky has neither keeps the editor's sun and no fog.
+- **Objects.** A placed object is lit by the lightmap of the floor it
+  stands on: the highest lightmapped solid triangle under its origin (at
+  most half a unit above it, 64 below; `scene::LightFloor`, a grid of
+  the world's lightmapped triangles by column), sampled there as the
+  floor itself is (`Scene::light_at`, bilinear, in linear light) and
+  applied as the placement's tint (`render::object_light`). An object
+  with no lightmapped floor under it keeps the sun alone.
 - **Sky.** The scenario's sky (its skies block, `scnr +0x8`: the first
   `sky ` whose render model builds, `scene::scenario_skies` and
   `Scene::sky`) is drawn at infinity in its own pass before the level:
@@ -510,10 +549,27 @@ build), and keeps the last four maps' scenes so reopening one is instant.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
   `overlay` decals and part kind 4 are drawn see-through after everything
   else and are neither framed nor picked; `alpha_test` templates are cut
-  out. A see-through template with `add` as a word of its stem
-  (`one_add`, `one_add_illum_detail`) is `Blend::Additive`: the sky
-  pass adds it (blend one, one), and the level's pass draws it as the
-  other see-through surfaces.
+  out. A see-through shader composites as its material's first blended
+  pass says (`scene::material_blend`: the pass's render states through
+  the native renderer's decoder, `native_render::pass_state::pass_state`,
+  read by `scene::blend_of_state`), else as its template's name says
+  (`scene::template_blend`: the word `add` or `additive` adds, `mult` multiplies,
+  `alpha` blends by the picture's alpha): **additive** (lights, light
+  shafts, glows; without a picture it adds nothing), **alpha** (clouds,
+  glass), **multiply**, **double** (twice the picture times what is
+  behind it, as the game's gamma-space modulation: mid-grey changes
+  nothing), or **translucent** at a fixed opacity (water, and templates
+  neither says). A see-through shader whose bitmaps have no diffuse name
+  draws its first own bitmap. mainmenu's light shafts
+  (`one_add_illum_detail`, about a third of its BSP's materials) add
+  light; drawn at a fixed opacity they would lay grey sheets over its
+  city. The fog fades an added surface to nothing, a multiplied one to
+  white. The sky pass adds an additive layer with its own pipeline
+  (blend one, one), and a mesh's see-through batches keep the order of
+  their parts (`Blend::draw_order`).
+- **Self-illumination.** The `opaque\illum` template's picture is its
+  own light (mainmenu's lit windows): drawn as it is, unshaded
+  (`scene::template_emits`, `Look::emissive`).
 - **Object models.** Every palette entry (and netgame equipment's item
   collection, by its first entry) resolves object → `hlmt` → `mode`
   through `tags::object`; each region's first permutation at its best LOD
@@ -552,12 +608,32 @@ compares the window's pixels with the viewport's own, and
 (ignored; needs the disc) checks that under 2 % of either map's
 viewport is black (a quarter of Coagulation's was).
 
-Not yet: the sky's node transforms, its tag's rotation and scale, and
-skies after the first; the bucket streams (types `2f` and `30`: per-vertex colour and
-light direction, not interpreted); detail and bump maps, animated or
-self-illuminated shaders, model variants and permutations other than the
-first, and node transforms of skinned models (models are drawn in their
-bind pose).
+Colour: base maps and lightmap pages are uploaded as sRGB textures and
+sampled in linear light, and the viewport renders into an sRGB target,
+so a picture's colours come through as stored. Lightmapped surfaces are
+not lifted; only surfaces the sun lights have dark base maps brightened.
+
+`view.stats` (docs/editor/agent-api.md) reports all of the above for the
+open map: lightmap pages and each BSP's lighting, the world's triangles
+by blend and how many solid ones a lightmap lights, every material with
+its template, blend (and whether its passes said it) and picture, and the
+sky's sun and fog. `view.snapshot` renders the same view to a PNG.
+`scene::tests` hold the pure parts (blends from names and states, the
+sun, the fog check, colour conversion and bilinear samples, the floor
+under a point), `tests::the_first_lightmap_group_lights_a_bsp_with_its_checksum`
+the group choice, and `api::view::tests` the stats.
+
+Not yet: the shaders' own passes (the native renderer translates each
+material's layer-3 pass and its unlit-BSP implementation; the viewport
+draws a base map, its detail maps and a lightmap, so bump, environment
+and specular layers, and the engine lighting vectors of an unlit BSP, are
+missing); the bucket streams (types `2f` and `30`: per-vertex colour and
+light direction, not interpreted); the lightmap's light probes and the
+sky's fallback object-lighting colour (reported, not drawn); fog B,
+patchy fog and the BSP's fog planes; the sky's node transforms, its tag's
+rotation and scale, and skies after the first; animated shaders, model
+variants and permutations other than the first, and node transforms of
+skinned models (models are drawn in their bind pose).
 
 ## Play and pair
 

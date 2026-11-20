@@ -139,7 +139,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
-| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}` |
+| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
@@ -189,6 +189,19 @@ Notes on some:
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
+- **Render stats.** `view.stats` (short form `render-stats`) says what the
+  viewport draws for the open map, with no GPU: `lightmap_pages`, each
+  BSP's `lighting` (`lightmapped`, `no lightmap`, `empty lightmap group`,
+  `lightmap of another BSP`, `lightmap does not decode`), the world's
+  `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
+  every material (`shader`, `template`, `blend`, `blend_from_passes`,
+  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  read from it (`sun` direction, colour and power; `fog` colour, density,
+  start and opaque distance; `fallback_rgb`). `{"scene": false}` while
+  the viewport shows the grey world (no art built). What each field means
+  is in [editor.md](editor.md), "What the viewport shows". To check a
+  map: `h2 studio open mainmenu`, `h2 studio render-stats`, then
+  `h2 studio snapshot` and look at the PNG.
 
 ### Errors
 
@@ -377,6 +390,9 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- `view.stats` of an invented scene reports its BSP's lighting, its
+  triangles by blend, its materials and its sky's sun and fog
+  (`api::view::tests`);
 - the window's loop answers a client between frames.
 
 `studio-proto`'s tests cover the short forms and the wire round trip.

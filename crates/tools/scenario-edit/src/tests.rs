@@ -828,7 +828,7 @@ fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
             .world
             .batches
             .iter()
-            .any(|b| b.blend == crate::scene::Blend::Translucent)
+            .any(|b| b.blend.see_through())
     );
 }
 
@@ -2373,4 +2373,87 @@ fn a_package_in_memory_does_not_reuse_its_bases_scene() {
     assert_ne!(edit, scene_key(&with(b"another"), "invented", ""));
     assert_eq!(edit, scene_key(&with(b"one map"), "invented", ""));
     assert_eq!(disc, scene_key(&base.clone(), "invented", ""));
+}
+
+/// The lightmap group lighting a BSP is the lightmap's first, as the
+/// engine and the native renderer pick it, and only with the BSP's
+/// checksum and a bitmap; why not otherwise is said (mainmenu's one group
+/// is empty: checksum 0, no bitmap).
+#[test]
+fn the_first_lightmap_group_lights_a_bsp_with_its_checksum() {
+    use geometry::{BspLighting, select_group};
+    use tags::structure::{Lightmap, LightmapGroup};
+    let group = |checksum: u32, bitmap: Option<map::TagId>| LightmapGroup {
+        structure_checksum: checksum,
+        palettes: Vec::new(),
+        bitmap,
+        cluster_geometry: Vec::new(),
+        cluster_render_info: Vec::new(),
+        instance_geometry: Vec::new(),
+        buckets: Vec::new(),
+        instance_render_info: Vec::new(),
+        instance_bucket_refs: Vec::new(),
+        cluster_bucket_refs: Vec::new(),
+        unsupported_counts: [0; 3],
+        raw: vec![0; LightmapGroup::SIZE],
+    };
+    let lightmap = |groups: Vec<LightmapGroup>| {
+        Some(Ok(Lightmap {
+            tag: map::TagId(7),
+            groups,
+        }))
+    };
+    let bitmap = Some(map::TagId(9));
+    let (g, why) = select_group(lightmap(vec![group(0x1234, bitmap)]), 0x1234);
+    assert_eq!((g.map(|g| g.bitmap), why), (Some(bitmap), BspLighting::Lightmapped));
+    // mainmenu: one group, empty.
+    let (g, why) = select_group(lightmap(vec![group(0, None)]), 0x1c1e_050d);
+    assert!(g.is_none());
+    assert_eq!(why, BspLighting::EmptyGroup);
+    assert_eq!(select_group(lightmap(Vec::new()), 1).1, BspLighting::EmptyGroup);
+    // Only the first group counts, even when a later one matches.
+    let (g, why) = select_group(lightmap(vec![group(5, bitmap), group(6, bitmap)]), 6);
+    assert!(g.is_none());
+    assert_eq!(why, BspLighting::ChecksumMismatch { group: 5, bsp: 6 });
+    assert_eq!(select_group(None, 1).1, BspLighting::NoLightmap);
+    assert_eq!(
+        select_group(Some(Err("bad".into())), 1).1,
+        BspLighting::Unreadable("bad".into())
+    );
+    assert_eq!(BspLighting::EmptyGroup.name(), "empty lightmap group");
+}
+
+/// The map's sun and fog as the scene shader's words: the sun's
+/// direction flagged and its hue, the fog's colour in linear light with
+/// its density and range; none of either leaves the editor's sun and no
+/// fog. An object on a lightmapped floor takes the floor's light, kept in
+/// range.
+#[test]
+fn the_maps_sun_and_fog_reach_the_shader_and_objects_take_the_floors_light() {
+    use crate::render::{AtmosphereUniforms, object_light};
+    use crate::scene::{Atmosphere, Fog, Sun};
+    assert_eq!(AtmosphereUniforms::of(&Atmosphere::default()), AtmosphereUniforms::NONE);
+    let a = Atmosphere {
+        sky: Some("sky".into()),
+        sun: Some(Sun {
+            direction: [0.0, 0.6, 0.8],
+            color: [2.0, 1.0, 0.0],
+            power: 1.0,
+        }),
+        fog: Some(Fog {
+            color: [0.5, 1.0, 0.0],
+            density: 0.25,
+            start: 10.0,
+            opaque: 110.0,
+        }),
+        fallback_rgb: None,
+    };
+    let u = AtmosphereUniforms::of(&a);
+    assert_eq!(u.sun, [0.0, 0.6, 0.8, 1.0]);
+    assert_eq!(u.sun_color, [1.0, 0.5, 0.0, 0.0]);
+    assert!((u.fog_color[0] - 0.5f32.powf(2.2)).abs() < 1e-6);
+    assert_eq!((u.fog_color[1], u.fog_color[3]), (1.0, 0.25));
+    assert_eq!(u.fog_range, [10.0, 110.0, 1.0, 0.0]);
+    assert_eq!(object_light([0.0, 1.0, 9.0]), [0.05, 1.0, 3.0]);
+    assert_eq!(object_light([f32::NAN, 0.5, 0.5]), [1.0, 0.5, 0.5]);
 }

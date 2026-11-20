@@ -128,6 +128,7 @@ pub mod method {
 
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
+    pub const VIEW_STATS: &str = "view.stats";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

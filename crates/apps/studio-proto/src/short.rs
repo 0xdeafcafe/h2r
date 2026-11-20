@@ -52,6 +52,10 @@ pub const FORMS: &[(&str, &str)] = &[
     ("widgets", "ui.widgets"),
     ("render-ui [out.png]", "ui.render"),
     ("snapshot [out.png]", "view.snapshot"),
+    (
+        "render-stats",
+        "view.stats: lightmaps, materials, the sky's sun and fog",
+    ),
     ("huds [map]", "hud.list: open a map in the HUD tool, list its HUDs"),
     ("hud [name]", "hud.read: a HUD's widgets and fields"),
     ("render-hud [out.png]", "hud.render"),
@@ -279,6 +283,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
                 None => Value::Null,
             },
         ),
+        "render-stats" => (m::VIEW_STATS, Value::Null),
         "snapshot" => (
             m::VIEW_SNAPSHOT,
             match a {
@@ -296,7 +301,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
     // Bare forms take nothing more than they use.
     let used = match name {
         "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant"
-        | "playlists" | "screens" | "widgets" => 1,
+        | "playlists" | "screens" | "widgets" | "render-stats" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
         | "objects" | "object" | "delete" | "duplicate" | "select" | "playlist" | "screen"
         | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,
