@@ -497,7 +497,7 @@ points! { ALL;
     RENDER_GAME_VIEWS @ 0x0022_34e0: [opaque]; "docs/engine/engine-map.md";
     /// `render_views`: begin-frame setup, the loop over view records, end of
     /// drawing.
-    RENDER_VIEWS @ 0x0002_b5d0: [opaque]; "docs/engine/engine-map.md";
+    RENDER_VIEWS @ 0x0002_b5d0: [fn(count: eax, context: ecx, arg0: stack 0, arg1: stack 1, views: stack 2) ret 12]; "docs/engine/engine-map.md";
     /// `render_game_view`: one game view (camera, render state, scene
     /// passes, UI composition).
     RENDER_GAME_VIEW @ 0x0002_b790: [fn(view: stack 0, flags: stack 1) ret 8]; "docs/engine/engine-map.md";

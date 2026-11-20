@@ -5,6 +5,8 @@
 //!
 //! - a recent sighting: highest, fading over [`SIGHT_TICKS`];
 //! - a weapon lying in the world worth taking;
+//! - the map's spawn points: on a large map with no sighting for a while,
+//!   the likeliest place to find anyone is where players come from;
 //! - a few polygons picked at random, so it still explores;
 //!
 //! less where it has been lately (fading over [`VISIT_TICKS`]) and less
@@ -32,10 +34,12 @@ pub const NEAR: f32 = 4.0;
 /// Random polygons among the candidates.
 pub const RANDOM_PICKS: usize = 6;
 
-/// The scores: a fresh sighting, a weapon, a random polygon; and the
-/// penalties: a place just visited, a goal under [`NEAR`].
+/// The scores: a fresh sighting, a weapon, a spawn point, a random
+/// polygon; and the penalties: a place just visited, a goal under
+/// [`NEAR`].
 pub const SIGHT_SCORE: f32 = 4.0;
 pub const WEAPON_SCORE: f32 = 1.5;
+pub const START_SCORE: f32 = 1.0;
 pub const RANDOM_SCORE: f32 = 0.5;
 pub const VISITED_PENALTY: f32 = 2.5;
 pub const NEAR_PENALTY: f32 = 2.0;
@@ -133,13 +137,15 @@ impl Roam {
         VISITED_PENALTY * visited + near
     }
 
-    /// The candidates, best first: `(score, point)`.
+    /// The candidates, best first: `(score, point)`. `starts` are the map's
+    /// spawn points.
     pub fn candidates(
         &mut self,
         at: Vec3,
         tick: u32,
         nav: &NavMesh,
         pickups: &[Pickup],
+        starts: &[Vec3],
         skill: Skill,
     ) -> Vec<(f32, Vec3)> {
         let mut c: Vec<(f32, Vec3)> = Vec::new();
@@ -151,6 +157,9 @@ impl Roam {
         }
         for pk in pickups.iter().filter(|pk| pk.useful()) {
             c.push((WEAPON_SCORE, pk.position));
+        }
+        for &s in starts {
+            c.push((START_SCORE, s));
         }
         let n = nav.polys.len();
         if n > 0 {
@@ -176,10 +185,11 @@ impl Roam {
         tick: u32,
         nav: &NavMesh,
         pickups: &[Pickup],
+        starts: &[Vec3],
         skill: Skill,
         ok: &dyn Fn(Vec3) -> bool,
     ) -> Option<Vec3> {
-        self.candidates(at, tick, nav, pickups, skill)
+        self.candidates(at, tick, nav, pickups, starts, skill)
             .into_iter()
             .map(|(_, p)| p)
             .find(|&p| ok(p))

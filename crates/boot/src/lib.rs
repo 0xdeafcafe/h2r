@@ -1480,6 +1480,7 @@ fn run_configured(
             &film_dir(),
             stamp,
             live,
+            _live.clone(),
             open,
         )?;
         Some(theater)
@@ -1916,6 +1917,10 @@ fn run_configured(
             opts.disc.clone(),
             out.to_owned(),
             opts.data_root.clone(),
+            theater::playback_images(xbe_bytes, out)
+                .into_iter()
+                .map(|(_, stamp)| stamp)
+                .collect(),
         );
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).

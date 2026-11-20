@@ -214,7 +214,6 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
             foot_plan_ticks: rate(p.foot_plan_ticks, work.foot_plan_ticks),
             vehicle_plan_ticks: rate(p.vehicle_plan_ticks, work.vehicle_plan_ticks),
             vehicle_lookahead_ticks: rate(p.vehicle_lookahead_ticks, work.vehicle_lookahead_ticks),
-            player_los_ticks: rate(p.player_los_ticks, work.player_los_ticks),
         },
     }
 }
@@ -331,6 +330,25 @@ fn player_of_unit(last: Option<&TickSample>, object: u32) -> Option<u8> {
         .iter()
         .find(|p| p.unit == Some(object))
         .map(|p| p.index)
+}
+
+/// The player a fired weapon's shot counts for. Mounted fire (a vehicle
+/// or turret weapon) is the seated player, resolved at once from the
+/// players array by the weapon's own seat flags
+/// ([`bots::vehicle::read::firing_player`]); a handheld weapon's holder
+/// comes from the last sample, and when it is not in one yet the caller
+/// defers the shot to the next tick's snapshot ([`shooters`]).
+fn shot_of(
+    fired_by: Option<bots::vehicle::read::FiredBy>,
+    last: Option<&TickSample>,
+) -> Option<u8> {
+    match fired_by {
+        Some(bots::vehicle::read::FiredBy::Seated(player)) => u8::try_from(player).ok(),
+        Some(bots::vehicle::read::FiredBy::Holder(unit)) => {
+            player_of_unit(last, unit.raw())
+        }
+        None => None,
+    }
 }
 
 /// A kill's attacker or victim datum as a player index (`None` for none).
@@ -919,17 +937,20 @@ impl feature::Feature for SimMetrics {
         b.raw()
             .observe_before(&points::WEAPON_FIRE, "sim: shots", move |o| {
                 if let Some(w) = o.arg_u32("weapon") {
-                    let g = o.guest();
-                    let parent = engine::view::objects::get(&*g, engine::DatumHandle(w))
-                        .ok()
-                        .flatten()
-                        .and_then(|(_, weapon)| weapon.parent(&*g).ok().flatten());
-                    drop(g);
+                    // Who fires it: the biped that holds it, or the player
+                    // seated at a vehicle or turret weapon (a Ghost's
+                    // plasma, a Warthog's chaingun), so mounted fire
+                    // counts as the seated player's shots too
+                    // (docs/runtime/sim.md §6).
+                    let fired_by = {
+                        let g = o.guest();
+                        bots::vehicle::read::firing_player(&*g, engine::DatumHandle(w))
+                            .ok()
+                            .flatten()
+                    };
                     let mut s = me.lock();
                     if s.phase == Phase::Playing {
-                        if let Some(p) =
-                            parent.and_then(|unit| player_of_unit(s.tally.last(), unit.raw()))
-                        {
+                        if let Some(p) = shot_of(fired_by, s.tally.last()) {
                             s.tally.shot(p);
                         } else if s.fired.len() < MAX_FIRED {
                             s.fired.push(w);
@@ -1111,7 +1132,6 @@ mod tests {
             phantom_jitter_ms: Some(2.5),
             aim_model: Some("net".into()),
             foot_plan_ticks: Some(2),
-            player_los_ticks: Some(4),
             ..BotParams::default()
         };
         let t = tuning(&p);
@@ -1120,7 +1140,6 @@ mod tests {
             t.work,
             bots::tuning::WorkRates {
                 foot_plan_ticks: 2,
-                player_los_ticks: 4,
                 ..Default::default()
             }
         );
@@ -1293,6 +1312,33 @@ mod tests {
         assert_eq!(player_of_unit(None, 0xe002), None);
         assert_eq!(player_of_datum(u32::MAX), None);
         assert_eq!(player_of_datum(0xe5a4_0002), Some(2));
+    }
+
+    #[test]
+    fn mounted_fire_is_the_seated_players_shot_and_handheld_waits_for_its_holder() {
+        // The sample's unit is the holder's own raw datum, so the two
+        // agree by construction (`player_of_unit` compares raws).
+        let holder = engine::DatumHandle::new(0xe, 1);
+        let snap = telemetry::Snapshot {
+            players: vec![
+                player(0, Some(0), holder.raw()),
+                player(1, None, 0xe002),
+            ],
+            objects: vec![Some(object(None, None, 1.0, 0)), Some(object(None, None, 1.0, 0))],
+            ..Default::default()
+        };
+        let s = tick_sample(&snap);
+        use bots::vehicle::read::FiredBy;
+        // A vehicle or turret weapon (a Ghost's plasma, a Warthog's
+        // chaingun): the seated player's shot, resolved without a sample.
+        assert_eq!(shot_of(Some(FiredBy::Seated(1)), None), Some(1));
+        assert_eq!(shot_of(Some(FiredBy::Seated(u32::MAX)), None), None);
+        // A handheld weapon: the holder biped's player from the sample,
+        // else deferred to the next tick's held-weapon snapshot.
+        assert_eq!(shot_of(Some(FiredBy::Holder(holder)), Some(&s)), Some(0));
+        assert_eq!(shot_of(Some(FiredBy::Holder(holder)), None), None);
+        // Nothing readable behind the weapon: deferred as before.
+        assert_eq!(shot_of(None, Some(&s)), None);
     }
 
     #[test]

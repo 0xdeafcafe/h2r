@@ -641,8 +641,17 @@ fight, apart from the aim:
 chase, a bot goes to likely places: each candidate is scored, the best
 it can reach and has not been blacklisted wins.
 
-- a place it saw an enemy in the last 60 s (4.5, fading to 0.5);
+- a place it saw an enemy in the last 60 s (4.5, fading to 0.5). A
+  teammate's contact call is kept as a sighting the moment it is heard,
+  and so is the bot's own guess at where a killed opponent respawned
+  (the kill feed retires the target, §3.3). On a large map these are
+  what make roaming converge on the fight from anywhere — the support
+  walk that answers a call has a reach of tens of units and never
+  crosses a map like Waterworks, but the sighting is scored from
+  wherever the bot stands;
 - a weapon lying in the world worth taking (1.5);
+- the map's spawn points (1.0): on a large map with no sighting for a
+  while, the likeliest place to find anyone is where players come from;
 - six polygons picked at random (0.5), so it still explores;
 - less 2.5 for a place within 5 it was at in the last 40 s (fading), and
   2 for one under 4 away;
@@ -1611,7 +1620,9 @@ and holds X while in range of the seat. The stand-point offsets and the
 uses a closer point covered by the same entry data.
 
 **Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
-(no enemy in view for 1.5 s), not carrying, not going for a weapon, and
+(no enemy in view for 1.5 s), not carrying, not going for a weapon it
+can walk to (one within 20; a further one is the vehicle's errand —
+driven to, and finished on foot within 3 of it), and
 in an objective game only when the objective's point is more than 20
 away. The nearest vehicle by distance (plus 3 per unit of height) within
 the skill's range that:
@@ -1655,12 +1666,21 @@ Warthog by the camera: the left stick says where to go relative to where
 the player looks. The driver:
 
 - goes to the objective's point, else the enemy it fights, else where an
-  enemy was last seen, else a roaming goal (§3.2);
+  enemy was last seen, else the weapon it seeks (the errand it mounted
+  for), else a roaming goal (§3.2);
 - plans over walk edges whose portals fit the vehicle and routes through
   their clear spans. Centre and wheel-line probes check floor, overhead
   room and walls before steering, cutting a corner, reversing or trying
-  to splatter someone. With an objective on an unreachable road it
-  dismounts to finish on foot;
+  to splatter someone. After drifting off the mesh it keeps its goal and
+  looks for nearby ground it can steer back onto. With an objective on
+  an unreachable road it dismounts to finish on foot. A roaming goal the chassis cannot reach
+  (an infantry-only way there) is blacklisted for 10 s like a foot goal
+  it got stuck on, so it is not re-picked at once; and a driver that has
+  had neither usable steering nor a fight for 4 s — each failed roam plan
+  counts 16 of those ticks, and usable steering clears the count — gets
+  out to fight on foot rather than sit in a healthy vehicle going nowhere (the
+  large-map case: a pocket the chassis cannot leave). While it waits it
+  sweeps the view, as an idle bot on foot does;
 - looks at the carrot (or the enemy it fights) and pushes the stick that
   way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
   radians or more;
@@ -1693,11 +1713,14 @@ passenger shoots its own gun as on foot. With nothing to shoot they look
 where the enemy was last seen, else ahead.
 
 **Getting out** (`drive::leave`): the vehicle under 0.2, lying flipped
-for 1 s, stuck for good (driver), nobody driving for 4 s (gunner,
-passenger), or within 3 of an objective point it must reach on foot (the
-flag or ball it is going for). It holds X 15 ticks in every 20, so a press
-and a hold both work, and stops driving. The vehicle it left is left alone
-for 10 s, so it does not get straight back in.
+for 1 s, stuck for good (driver), nowhere to drive for 4 s (driver; see
+above), nobody driving for 4 s (gunner, passenger), or within 3 of an
+objective point it must reach on foot (the flag or ball it is going
+for). It holds X 15 ticks in every 20, so a press and a hold both work,
+and stops driving. The vehicle it left is left alone for 10 s, so it
+does not get straight back in — for 30 s when it left because it had
+nowhere to drive, so it roams and fights on foot rather than parking
+again.
 
 **Seeing it in a game.** Two or three Clankers on a map with vehicles
 (Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
@@ -2759,6 +2782,31 @@ simulated. A local-slot bot also costs the per-user control update and the
 director; its view is skipped. A phantom costs one more remote player's
 distributed updates to each client. That is the real ceiling, and it is the
 same as a full human lobby. Measure in a run (§11).
+
+### 5.4 Waiting for the black screen
+
+Phantoms send a neutral pad while the opening screen fades in and each
+time they respawn. Their brains still observe and plan on every gathered
+tick. The gather drops queued input while the fade is active and publishes
+the current pad on the first clear tick. Configured ping and jitter resume
+on the following tick.
+
+At match opening, the host reads the black overlay's opacity for each
+mapped local user from `[GAME_ENGINE] + 0xe4 + 4 * user`. Map activation
+sets it to 1 (`0x1585a4`), and the renderer draws the overlay while it is
+positive (`0x1599b0`). The opening gate clears once all those views are
+clear. Later spawns use each phantom's own clock.
+
+Retail keeps opacity for local users. A phantom uses its own spawn age
+from the player record at `+0x194`, which starts at the guest tick rate
+(`0x14f68e`) and counts down by one per player update (`0x15bb4f`).
+It models the black fade retail starts at 1 on a local spawn
+(`0x1584e6`) and reduces by `3 / tick_rate` per simulation tick, down
+to zero (`0x15c4d6..0x15c4f9`). At 30 Hz this takes ten updates.
+A dedicated host has no local views, so its opening gate also applies the
+retail hold through `round(1.5 * tick_rate)` (`0x15c4c6`). Since action
+gather precedes the update, that opens at tick 56 at 30 Hz if the phantom's
+own fade has already cleared.
 
 ## 6. Shared and different
 

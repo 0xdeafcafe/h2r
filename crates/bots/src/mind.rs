@@ -431,16 +431,14 @@ impl Mind {
                 .as_ref()
                 .and_then(|g| g.juggernaut_opponent(o.id))
                 .unwrap_or(!p.teams || o.team != me.team);
-            enemy
-                && observed.map_or_else(
-                    || {
-                        let chest = up(o.position, CHEST);
-                        let to = sub(chest, eye);
-                        (len(to) < NOTICE_NEAR || angle_between(to, me.aim) < NOTICE_CONE)
-                            && map.is_none_or(|m| m.walls.clear(eye, chest))
-                    },
-                    |mask| mask & crate::perceive::player_bit(o.id) != 0,
-                )
+            if !enemy || observed.is_some_and(|mask| mask & crate::perceive::player_bit(o.id) == 0)
+            {
+                return false;
+            }
+            let chest = up(o.position, CHEST);
+            let to = sub(chest, eye);
+            (len(to) < NOTICE_NEAR || angle_between(to, me.aim) < NOTICE_CONE)
+                && (observed.is_some() || map.is_none_or(|m| m.walls.clear(eye, chest)))
         }));
     }
 
@@ -565,7 +563,7 @@ impl Mind {
                 .is_none_or(|t| p.tick.wrapping_sub(t) >= self.work.foot_plan_ticks);
             self.damage_tick = Some(p.tick);
             if quiet {
-                self.expedite_routes();
+                self.expedite_vehicle_route();
             }
         }
         Self::visible_into(p, map, observed, seen);
@@ -618,8 +616,16 @@ impl Mind {
         };
         self.experience.visit(me.position, checked);
         let (goal, intent) = self.decide(p, me, seen, map);
+        // Team knowledge (crate::decisions::radio): a teammate's contact
+        // call is where a fight is, at any range. Kept as a roam sighting
+        // it makes roaming converge on it (§3.2), which the support walk
+        // never does on a large map: its reach is tens of units and the
+        // call's sender is usually far over that.
+        for c in &self.decisions.inbox {
+            self.roam.saw(c.at, c.tick);
+        }
         if self.target.is_some() && intent.chosen.is_none() {
-            self.expedite_routes();
+            self.expedite_vehicle_route();
         }
         let chosen = intent
             .chosen
@@ -700,6 +706,16 @@ impl Mind {
         }
         self.fight
             .signal(me.arms.as_ref(), self.kit, self.recovering, enemy_dist);
+
+        // A weapon the plan seeks is the vehicle's errand too (§3.9,
+        // `mount_plan`): held in the memory while it drives, so a far one
+        // is ridden to and finished on foot rather than walked the whole
+        // way across a large map.
+        match self.kit {
+            Kit::Seek(pk) | Kit::Dual(pk) => self.vehicles.errand = Some(pk.position),
+            _ if self.vehicles.sight.riding.is_none() => self.vehicles.errand = None,
+            _ => {}
+        }
 
         // In a vehicle (bots.md, Vehicles; mind::ride): it drives or
         // shoots from its seat, and that is the whole pad.
@@ -1397,9 +1413,7 @@ impl Mind {
         pad
     }
 
-    fn expedite_routes(&mut self) {
-        self.foot_plan.expedite();
-        self.foot_refresh = true;
+    fn expedite_vehicle_route(&mut self) {
         self.vehicles.route_plan.expedite();
         self.vehicles.route_refresh = true;
     }
@@ -1678,7 +1692,14 @@ impl Mind {
                         .is_some_and(|i| i == h || m.nav.corridor(h, i).is_some())
                 })
         };
-        let mut places = self.roam.candidates(at, tick, &m.nav, pickups, self.skill);
+        let mut places = self.roam.candidates(
+            at,
+            tick,
+            &m.nav,
+            pickups,
+            &m.places.starts,
+            self.skill,
+        );
         self.decisions.map.safe_first(&mut places, tick);
         places.into_iter().map(|(_, at)| at).find(|&at| ok(at))
     }
