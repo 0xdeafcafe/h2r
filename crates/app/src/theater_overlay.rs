@@ -21,6 +21,13 @@ pub enum Key {
     Hud,
     Clip,
     Screenshot,
+    Camera,
+    Forward,
+    Backward,
+    StrafeLeft,
+    StrafeRight,
+    Rise,
+    Fall,
     Leave,
 }
 
@@ -29,7 +36,7 @@ pub struct View {
     pub players: Vec<Line>,
     pub camera: Vec<Line>,
     pub transport: Vec<Line>,
-    pub web_url: Option<String>,
+    pub playing: bool,
 }
 
 /// The shell owns pixels and host input. The caller owns playback and
@@ -38,6 +45,9 @@ pub trait Controller: Send + Sync {
     fn update(&self) -> View;
     fn key(&self, key: Key, down: bool, repeat: bool) -> bool;
     fn release_keys(&self);
+    fn mouse_look(&self, dx: f64, dy: f64) -> bool;
+    fn mouse_zoom(&self, amount: f32) -> bool;
+    fn scrub(&self, fraction: f32) -> bool;
     fn take_screenshot(&self) -> Option<PathBuf>;
     fn screenshot_saved(&self, result: Result<PathBuf, String>);
     fn take_leave(&self) -> bool;

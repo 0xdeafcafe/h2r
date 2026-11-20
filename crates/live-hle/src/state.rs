@@ -226,6 +226,15 @@ impl State {
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
         self.accounts = accounts;
     }
+    pub(crate) fn signed_in_account(&self, controller: u32) -> Option<(live_proto::Xuid, String)> {
+        let xuid = *self.user_ids.get(controller as usize)?;
+        let account = self
+            .accounts
+            .iter()
+            .find(|account| account.xuid == xuid && account.key.is_some())?;
+        Some((live_proto::Xuid(xuid), account.gamertag.clone()))
+    }
+
     /// The sign-in prompt now, if a sign-in is waiting for one.
     pub fn signin(&mut self) -> Option<crate::signin::Prompt> {
         self.signin.as_mut().map(|s| s.prompt())
