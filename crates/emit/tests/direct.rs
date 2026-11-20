@@ -56,6 +56,7 @@ const IND_JUMP: u32 = CODE + 0x1300;
 const COLL: u32 = CODE + 0x1213;
 const VEC_CALLER: u32 = CODE + 0x1800;
 const VEC_CALLEE: u32 = CODE + 0x1900;
+const VEC_SCRATCH: u32 = DATA + 0x80;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -342,17 +343,19 @@ fn funcs() -> Vec<IrFunction> {
             a.ret()
         }),
         function(VEC_CALLER, |a| {
-            a.mov(eax, 0x42)?;
-            a.movd(xmm7, eax)?;
+            a.mov(dword_ptr(VEC_SCRATCH), 0x42)?;
+            a.movss(xmm7, dword_ptr(VEC_SCRATCH))?;
             a.call(VEC_CALLEE as u64)?;
-            a.movd(eax, xmm7)?;
-            a.movd(edx, xmm2)?;
+            a.movss(dword_ptr(VEC_SCRATCH), xmm7)?;
+            a.mov(eax, dword_ptr(VEC_SCRATCH))?;
+            a.movss(dword_ptr(VEC_SCRATCH), xmm2)?;
+            a.mov(edx, dword_ptr(VEC_SCRATCH))?;
             a.ret()
         }),
         function(VEC_CALLEE, |a| {
             a.movaps(xmm2, xmm7)?;
-            a.mov(ecx, 0x99)?;
-            a.movd(xmm7, ecx)?;
+            a.mov(dword_ptr(VEC_SCRATCH), 0x99)?;
+            a.movss(xmm7, dword_ptr(VEC_SCRATCH))?;
             a.ret()
         }),
         // An interrupt callback.
