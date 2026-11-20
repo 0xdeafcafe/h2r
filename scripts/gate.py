@@ -2,7 +2,7 @@
 """The gate a branch passes before it merges (docs/dev/build-speed.md).
 
     scripts/gate.py                         gate HEAD against master, here
-    scripts/gate.py --pool ~/Library/Caches/h2recomp/pool
+    scripts/gate.py --pool ~/builds/h2-gate
     scripts/gate.py --dry-run               print the plan; run no cargo
     scripts/gate.py --pool DIR --exec cargo test -p d3d
 

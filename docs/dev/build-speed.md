@@ -238,6 +238,29 @@ checkouts of the same commit with two empty target directories, and
 read `kache explain <crate>`: the second must be a hit. The commands
 are in the plan below.
 
+**Through the `target` links.** On the build machine a post-checkout
+hook (`.git/hooks/post-checkout`, calling `target-on-builds.sh`) makes
+each new worktree's `target` a link to
+`/Volumes/Builds/targets/h2recomp/<worktree name>`. That changes
+nothing for the key: cargo still hands rustc `<worktree>/target/...`,
+which differed per worktree before the links too, and the cache
+already had to see past it. A fixed prefix is still not needed, and
+could not be had from links anyway. On the source side cargo works
+from the real path of the current directory, so a linked source path
+does not survive. On the target side the only way to give every tree
+the same target path is to give them the same target, which is the
+shared directory the next section argues against.
+
+The links do change one thing. The cache restores by cloning, and an
+APFS clone cannot cross volumes. The cache's store is still under
+`~/Library/Caches`, a different volume from `/Volumes/Builds`, so until
+it moves, a restore into a linked target has to be a real copy: slower
+than the 1.2 s above and a second copy on disk. The cache reports this
+as "restored without copying, N copied" in `kache stats`; after the
+first build into a linked target that N should still be 0. If it is
+not, moving the store to the builds volume is worth more than anything
+else in this section.
+
 The cache's own settings were not changed. Its binary names switches for
 the adaptive incremental mode and for caching linked executables; what
 they do should be read from its documentation and measured before any
@@ -245,58 +268,99 @@ is set.
 
 ### 2. Target directories
 
+The layout on the build machine, as of 2026-11-20:
+
+- Every worktree's `target` is a link to
+  `/Volumes/Builds/targets/h2recomp/<worktree name>`, made by the
+  post-checkout hook when the worktree is created. The same hook then
+  removes the targets of worktrees that no longer exist, when nothing
+  has files open in them.
+- The coordinator's sweeps do not use those: they export
+  `CARGO_TARGET_DIR` to one shared directory (`coord-target`, 70 GB,
+  still on the system volume), which every branch is built into in
+  turn.
+- `/Volumes/Builds` is a volume in the same APFS container as the
+  system volume. It keeps Spotlight and file-event logging away from
+  build output, but it shares the container's free space: about 28 GB
+  for both. Moving a directory there frees nothing.
+
 Three ways to give many worktrees somewhere to build:
 
-| | Per-worktree target, shared cache | One shared target, a lock | A pool of leased slots |
+| | Each worktree's own target (the hook's default) | One shared target, a lock (`coord-target`) | A pool of leased slots |
 |---|---|---|---|
 | A stale artifact from another tree | cannot happen | **happens**: same file names, freshness by file time | cannot happen |
-| First build of a new branch | every crate restored from the cache (1.2 s each) or compiled, every test binary linked | whatever has a newer file time, plus what the last tree left wrong | only what differs from the slot's last commit |
+| First build of a new branch | every crate restored from the cache (1.2 s each, more if copied) or compiled, every test binary linked | whatever has a newer file time, plus what the last tree left wrong | only what differs from the slot's last commit |
 | Builds at once | as many as there are worktrees | one | one per slot |
-| Disk | grows with the number of live worktrees; nothing bounds it | one directory that never shrinks (70 GB here) | bounded: slots times one target |
+| Disk | one target per worktree that ever built; the hook removes it with the worktree | one directory that never shrinks | bounded: slots times one target |
 | Edit rebuilds uncached | no | yes, constantly | yes, but the incremental state is reused, because successive commits in a slot are near each other |
 
-The shared target with a lock is the worst of the three: it is the only
-one that can hand a test another tree's code, which is where the bogus
+The shared target is the worst of the three: it is the only one that
+can hand a test another tree's code, which is where the bogus
 missing-symbol errors and one false benchmark result came from. The
 "never build two trees at once" rule does not fix it; building them one
 after the other is enough to go wrong.
 
-**Recommendation: a pool of two slots.** A slot is a lock, a checkout
-that exists only to be built (`tree-N`, moved with
-`git checkout --detach`), and a target directory that only that
-checkout is ever built into (`target-N`). Git rewrites only the files
-that differ between two commits, so cargo's file times are right and it
-rebuilds exactly what changed. Two slots match the existing rule of two
-compiles at once; the lease is that rule. `scripts/gate.py --pool DIR`
-implements it, and `--exec` runs any other command in a leased slot.
+Each worktree's own target is safe, and now the default for anything
+that does not set `CARGO_TARGET_DIR`. It suits agents that build their
+own branch. It does not suit a coordinator that builds 20 branches a
+day: each is a cold start, and each leaves a full set of test
+executables until its worktree is removed.
 
-Disk, with 28 GB free: one target for the whole test sweep is roughly
-12 to 20 GB (the 52 GB of `deps` today holds at least four profile
-variants of everything). Two slots do not fit beside the 70 GB shared
-directory. They replace it: delete it once nothing is using it, and the
-pool costs less than half of what it held.
+**Recommendation: a pool of two slots for the coordinator, on top of
+the hook.** A slot is a lock and a worktree that exists only to be
+built (`gate-N`, moved with `git checkout --detach`). Its target is its
+own `target`: the pool worktree is created with `git worktree add`, so
+the hook fires and links it to `/Volumes/Builds/targets/h2recomp/gate-N`
+like any other. Git rewrites only the files that differ between two
+commits, so cargo's file times are right and it rebuilds exactly what
+changed. Two slots match the existing rule of two compiles at once; the
+lease is that rule. `scripts/gate.py --pool DIR` implements it, and
+`--exec` runs any other command in a leased slot. The gate does not
+pass `CARGO_TARGET_DIR` on, since that would route a slot back into a
+shared directory.
 
-Per-worktree targets remain right for a lane that must build while both
-slots are busy, at the price of a cold start and its own executables.
+Two things about the hook to work with:
+
+- It names a target by the worktree directory's last component. Two
+  worktrees with the same name in different places would share a
+  target. The pool's `gate-1` and `gate-2` must not be reused as
+  worktree names.
+- It prunes only when a worktree is created, and only targets whose
+  worktree is gone. A pool slot's worktree never goes, so its target
+  is never pruned by the hook; see the policy below.
+
+Disk, with 28 GB free in the container: one target for the whole test
+sweep is roughly 12 to 20 GB (the 52 GB of `deps` in `coord-target`
+holds at least four profile variants of everything). Two slots do not
+fit beside `coord-target`. They replace it: once nothing uses it,
+deleting it returns 70 GB, and the pool costs less than half of that.
+Lane worktrees whose agents do not compile keep empty targets and cost
+nothing.
 
 **Prune policy.** Cleaning disk is a job for the machine's cleanup
-tooling, not for this repository, so the gate only refuses to start a
-step under a free-space floor (6 GiB by default) and reports the
-target's volume. The policy the cleanup should follow, per slot:
+tooling and the hook, not for this repository, so the gate only refuses
+to start a step under a free-space floor (6 GiB by default) and prints
+the target's free space. What the cleanup should do:
 
-1. Take the slot's lock (`slot-N.lock`, `flock`, non-blocking). If it
-   is held, leave the slot alone. Holding it makes everything below
-   safe: nothing can be linking against a file while it is deleted.
-2. Delete test executables (files in `debug/deps` whose name ends in a
-   16-digit hash with no extension) and `.dSYM` bundles older than a
-   day. Cargo relinks any it still needs.
-3. Delete `debug/incremental*` entries older than three days.
-4. If the target is still over 25 GB, delete `debug/` whole. The next
-   build is cold for cargo but mostly cache hits.
-5. Delete ledger files (next section but one) older than 14 days.
+1. Lane targets: leave them to the hook. A lane target over a gigabyte
+   means a lane compiled, which the rules say it should not.
+2. Pool slots, one at a time: take the slot's lock (`gate-N.lock` in
+   the pool directory, `flock`, non-blocking). If it is held, leave the
+   slot alone. Holding it makes the rest safe: nothing can be linking
+   against a file while it is deleted.
+3. In the slot's target, delete test executables (files in
+   `debug/deps` whose name ends in a 16-digit hash with no extension)
+   and `.dSYM` bundles older than a day. Cargo relinks any it needs.
+4. Delete `debug/incremental*` entries older than three days.
+5. If the target is still over 25 GB, delete its `debug/` whole. The
+   next build is cold for cargo but mostly cache hits.
+6. Delete gate ledger files (section 4) older than 14 days.
 
 Never prune by file age without the lock: an rlib nothing has rebuilt
-keeps its old time while a running build still links against it.
+keeps its old time while a running build still links against it. The
+hook's own check, that nothing has a file open, covers a removed
+worktree; it does not cover a slot between two cargo commands of one
+gate run. The lock does.
 
 ### 3. Test only what changed
 
@@ -378,7 +442,7 @@ gate for branches.
 
 `scripts/gate.py` is the one command a branch passes before it merges:
 
-    scripts/gate.py --pool ~/Library/Caches/h2recomp/pool
+    scripts/gate.py --pool /Volumes/Builds/h2recomp-gate
     scripts/gate.py --dry-run          # the plan, no cargo
 
 1. `cargo check --locked -p cli`, then again with
@@ -412,8 +476,9 @@ marks the rest `FAIL, not reached`.
 
 State of testing: `affected.py` was run against this repository. The
 gate's plan, ledger, failure, timeout, lease and exit-status paths were
-exercised with a stand-in `cargo` that builds nothing. It has not yet
-run a real build.
+exercised with a stand-in `cargo` that builds nothing, including a
+lease on the builds volume, where the hook linked the slot's target as
+described. It has not yet run a real build.
 
 ## Measurement plan
 
@@ -453,7 +518,7 @@ repeated here in short.
 | 9 | nextest against `cargo test` | `cargo nextest run -p ...` against `cargo test -p ...`, both after `--no-run` | wall time of the run alone |
 | 10 | Where a build's time goes | `cargo build -p cli --timings` | the `boot` and `cli` bars and the link, in `target/cargo-timings` |
 | 11 | The cache ignores the checkout's path | `cargo test --no-run -p xbe` in two checkouts of one commit, each with an empty target directory | `kache explain xbe` after the second: a hit |
-| 12 | A pool slot against a fresh target | gate branch A, then branch B, in one slot; then branch B with an empty target directory | wall time of B's gate both ways, and `du -sh` of both targets |
+| 12 | A pool slot against a fresh target | gate branch A, then branch B, in one slot; then branch B in its own worktree with an empty target | wall time of B's gate both ways, `du -sh` of both targets, and "copied" in `kache stats` |
 | 13 | The ledger | the gate twice on one commit; then on a branch rebased over a master that moved in a crate it does not depend on | second run: every step `LEDGER`; after the rebase: only the steps for crates that changed |
 | 14 | The gate fails loudly | the gate with `--disc /nonexistent` on a branch touching `engine`; with `--timeout-min 0.1`; with `--min-free-gib 10000` | exit status 1 each time, the step `FAIL` with its reason |
 
