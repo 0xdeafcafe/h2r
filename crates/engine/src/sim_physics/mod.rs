@@ -77,9 +77,6 @@ pub const PORTS: &[Port] = {
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
-        // Node evaluators run the native codecs inline under the codec switch.
-        // Other codecs are guest calls that resume at the call's return.
-        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
         port(&OBJECT_CHANGE_COLORS, "sim.native_object_change_colors", Sse, &colors::SITES, colors::update),
         port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
@@ -89,6 +86,19 @@ pub const PORTS: &[Port] = {
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
         port(&OBSERVER_RESULT, "sim.native_observer_camera", Camera, &[], observer::camera),
+    ]
+};
+
+/// Ports kept as test oracles only, never installed: the subsystem that
+/// replaces them owns the switch now (docs/engine/sim-rewrite.md section 8).
+/// The additive-layer node evaluator runs under `0x2798a0`, which
+/// `impl.sim.native.anim` replaces whole (docs/engine/anim-sampling.md).
+pub const ORACLES: &[Port] = {
+    use Controls::*;
+    use points::*;
+    &[
+        // Other codecs are guest calls that resume at the call's return.
+        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]
 };
 
