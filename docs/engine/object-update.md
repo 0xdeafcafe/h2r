@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. The dispatcher, the body table and the installer exist with no bodies; slices 1 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add them.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original, feature `differential`), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake. Slices 3 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, finalize and a leaf on a synthetic pool), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -31,8 +31,10 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
 - `hooks::sim_objects` registers each body's entry and sites under
   `impl.sim.native.objects`. Where the float environment check fails, the
   original runs from the same frame. A per-function port at a point a body
-  owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down and stays
-  a test oracle (`hooks::sim_objects::owns`).
+  owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
+  switch is on (`hooks::sim_objects::owns`). The ports the slice 1 bodies
+  replaced (the two walks and the two per-object updates) are in
+  `sim_physics::ORACLES`: never installed, kept as test oracles.
 
 ## Entries
 
@@ -53,15 +55,17 @@ lists them.
 | `b7150` | `OBJECTS_FINALIZE` | no arguments; restores its saved registers, then `jmp bf380` | segment |
 | `bc470` | `OBJECT_PRE_UPDATE` | `(object: stack 0) -> al`; `ret 4` | segment |
 | `bc820` | `OBJECT_POST_UPDATE` | `(object: stack 0)`; `ret 4` | segment |
-| `108c60` | none yet | `(object: stack 0) -> al`, the OR of every slot result; `ret 4`. Slot `+40`, called `(object)` stdcall | segment (indirect callout) |
-| `108cd0` | none yet | `(object: edi)`; `ret`. Slot `+44`, called `(object)`. `eax` at return is the address of the last ancestry entry, not a result | segment (indirect callout) |
-| `109050` | none yet | `(object: ebx, stack 0, stack 1, stack 2)`; `ret 0c`. Slot `+6c`, called `(object, s0, s1, s2)` | segment (indirect callout) |
-| `1090d0` | none yet | `(object: ebx, matrix: stack 0)`; `ret 4`. Slot `+70`, called `(object, matrix)` | segment (indirect callout) |
-| `b7360` | none yet | `(object: eax)`; `ret` | leaf |
-| `baf80` | none yet | `(object: ecx) -> eax` root ancestor (none in, none out); `ret`; clobbers `ecx`, `edx` | leaf |
-| `bba20` | none yet | `(object: eax)`; `ret` | leaf |
-| `bc7b0` | none yet | `(object: stack 0)`; `ret 4` | leaf |
-| `109580` | none yet | `(mover: stack 0)`; `ret 4`. A `1004`-byte frame made through the stack probe `320560` (`eax` = size) | segment until phase 2's `bb050` is callable from Rust |
+| `108c60` | `OBJECT_TYPE_UPDATE` | `(object: stack 0) -> al`, the OR of every slot result; `ret 4`. Slot `+40`, called `(object)` stdcall | segment (indirect callout) |
+| `108cd0` | `OBJECT_TYPE_POST_UPDATE` | `(object: edi)`; `ret`. Slot `+44`, called `(object)`. `eax` at return is the address of the last ancestry entry, not a result | segment (indirect callout) |
+| `109050` | `OBJECT_TYPE_POSE` | `(object: ebx, stack 0, stack 1, stack 2)`; `ret 0c`. Slot `+6c`, called `(object, s0, s1, s2)` | segment (indirect callout) |
+| `1090d0` | `OBJECT_TYPE_AFTER_ROOT` | `(object: ebx, matrix: stack 0)`; `ret 4`. Slot `+70`, called `(object, matrix)` | segment (indirect callout) |
+| `b7360` | `OBJECT_WAKE` | `(object: eax)`; `ret` | leaf |
+| `baf80` | `OBJECT_ROOT` | `(object: ecx) -> eax` root ancestor (none in, none out); `ret`; clobbers `ecx`, `edx` | leaf |
+| `bba20` | `OBJECT_WAKE_FOR_POST` | `(object: eax)`; `ret` | leaf |
+| `bc7b0` | `OBJECT_WAKE_CHILDREN` | `(object: stack 0)`; `ret 4` | leaf |
+| `109580` | `OBJECT_EARLY_MOVER_WAKE` | `(mover: stack 0)`; `ret 4`. A `1004`-byte frame made through the stack probe `320560` (`eax` = size) | segment until phase 2's `bb050` is callable from Rust |
+
+How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 
 ### Slice 3: functions and colours
 
@@ -278,6 +282,91 @@ preemption points inside a walk are the true callouts. That is
 deterministic. Whether to charge bodies is a decision, not a reading; a run
 with `impl.sim.native.objects` on and off over the same film shows whether
 thread interleaving changes.
+
+## Slice 1 bodies
+
+Each is **C**: read at its address with `h2 disasm`, and compared with
+the lifted original by `tests/sim_objects_differential.rs`.
+
+**Walks** (`engine::sim_objects::walks`). The pre- and post-physics
+bodies are the per-function ports, with each transfer returned to
+`drive` instead of the runtime. The pre-physics entry also clears the
+tick's events. Finalize `b7150` keeps the objects array in `ebp`, read
+once per pass. Its scan is one slot at a time: `test eax, eax; jl`, the
+high-water mark into `esi`, `cmp eax, esi; jge`, the bitmap into `edx`,
+then `ecx` the word index and `edi` the bit of each slot tried, until a
+live slot or the mark. The body reads each bitmap word once and leaves
+`eax`, `ecx`, `edi` and the flags as the last slot tried left them. Pass
+A keeps the slot in `ebx`, the handle in `edi` and the header in `esi`;
+it stores the flags with DEFER cleared (`dl`, so `edx` holds the bitmap
+pointer with that byte), and for a NEW, ACTIVE, AWAKE object without
+DELETE stores them again with NEW cleared, then calls `bc470` and, if
+POST is set after it, `bc820`. Pass B keeps the slot in `edi` and the
+handle in `esi` and calls `b83b0(handle, 1)` then `b8460(handle, 1)` for
+each DELETE object. The phase byte is cleared after `pop edi`, `pop esi`
+and `pop ebp`, before `pop ebx` and the jump to `bf380`.
+
+**Events.** Before finalize's `b83b0` call the body appends
+`ObjectDeleted { id, kind, definition }` (the handle, header `+3`, body
+`+0`) to the tick's buffer (`sim_objects::events`, read through
+`sim_state::events`). The buffer belongs to the thread that runs the
+walks; the pre-physics entry clears it. Those two reads are not retail's,
+so a fault there leaves the field none instead of faulting the guest.
+
+**Per-object updates** (`object.rs`). `bc470` and `bc820` are the ports,
+as above.
+
+**Type dispatchers** (`object.rs`). Each reads the type from body `+aa`
+(`movsx`), the descriptor from `[468630 + 4 × type]`, and walks the
+ancestry at descriptor `+84` (descriptor pointers, null-terminated). Per
+level it loads `eax` from the level's slot and calls it when non-null;
+between levels it keeps the address of the level entry in `eax`, the
+entry in `ecx` and (except `108cd0`) the level number sign-extended from
+16 bits in `edx`.
+
+| Body | Keeps | At the slot call |
+|---|---|---|
+| `108c60` | object `ebp`, descriptor `edi`, level `esi`, result `bl` | `push ebp`; after it `or bl, al` |
+| `108cd0` | address of the level entry `esi` (pushed only when the list is not empty) | `push edi` |
+| `109050` | `s2` `ebp`, descriptor `esi`, level `edi` | `edx` = `s1`, `ecx` = `s0` from the frame, then `push ebp, edx, ecx, ebx` |
+| `1090d0` | matrix `ebp`, descriptor `edi`, level `esi` | `push ebp, ebx` |
+
+The slots resolve per type through the ancestry, so a type without a slot
+of its own gets its parent's: weapons, equipment and garbage get the item
+update `10b4d0`, machines, controls and light fixtures the device update
+`106790` (and the device pose slot `107000`), bipeds and vehicles the
+unit update `c6b30` before their own. Sound scenery has no update slot at
+any level.
+
+**Wake leaves** (`sim_objects::wake`, bodies in `engine::sim_objects::wake`).
+Plain functions over guest memory; the body puts their exit in `eax`,
+`ecx`, `edx` and the flags. They save or never write `ebx`, `ebp`, `esi`
+and `edi`. The header address is `(handle & ffff) × c` (the stride is
+hard-coded, not the array's element size).
+
+| Leaf | `eax` | `ecx` | `edx` | Flags |
+|---|---|---|---|---|
+| `b7360` | the object when it was already AWAKE; else none | the header storage, re-read after each store | `(object & ffff) × 3` | `test` of AWAKE (all clear) when it was AWAKE; else `cmp` with none (ZF, PF) |
+| `baf80` | the root ancestor; none for none | none | the header storage; the caller's for none | `cmp` with none |
+| `bc7b0` | for a leaf, the object or `b7360`'s `eax`; else the last child's body | none | for a leaf, `1 << type` or `b7360`'s `edx`; else the last child's `edx` | `cmp` with none |
+| `bba20` | `bc7b0`'s | `bc7b0`'s | `bc7b0`'s | `bc7b0`'s |
+
+`bc7b0` reads each child's next sibling after the child's subtree,
+through the child's header again. The body keeps an explicit stack of
+open frames instead of recursing, and reports a fault past `2^16` levels
+(a cycle in the child links, where retail recurses until the guest stack
+runs out).
+
+**Early-mover wake** (`wake.rs`). `109580` sets `eax` = `1004` and calls
+the stack probe `320560`, which leaves the caller's `ecx` at the top of
+the new frame and `esp` `1004` lower. After its pushes (`ebx`, `ebp`,
+then `esi`, `edi` once the count is positive) the frame holds the count
+at `[esp+10]`, the result buffer at `[esp+14]` and the mover at
+`[esp+1018]`. `ebx` keeps the objects array from before the visit across
+every call. The visit is `bb050(0, 3f, location, centre, radius bits,
+buffer, 400)`; its `ax` is sign-extended. Per result: `or` body `+c0`
+with 4, then store the mover at `+b8`, then `b7360`; for types 2 to 5,
+`bba20` and `or` the header with NEW.
 
 ## Register liveness
 

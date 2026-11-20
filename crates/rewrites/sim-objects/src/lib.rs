@@ -12,10 +12,13 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod defs;
+pub mod events;
 pub mod view;
+pub mod wake;
 
 #[cfg(any(test, feature = "synth"))]
 pub mod synth;
 
 pub use defs::{Def, DefTable};
+pub use events::SimEvent;
 pub use view::{ObjRef, Objects};

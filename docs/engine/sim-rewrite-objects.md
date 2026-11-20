@@ -1,7 +1,9 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slice 0's scaffolding is built: the dispatcher
-with no bodies and the switch, default off; the contracts it read are in
+Status: design, 2026-11-20. Slices 0 to 2 are built: the dispatcher and
+the switch (default off), the views and `sim-state`, and slice 1's bodies
+(the walks, the per-object updates, the type dispatchers, the wake leaves
+and the early-mover wake). The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
@@ -273,6 +275,7 @@ crates/rewrites/sim-objects/      no `runtime` dependency
   src/synth.rs                    synthetic pools and tags for tests (feature `synth`)
   src/walk.rs                     early-mover list
   src/wake.rs                     b7360, baf80, bba20, bc7b0 (leaf kernels)
+  src/events.rs                   the tick's SimEvent buffer (section 8)
   src/bounds.rs                   bdef0 arithmetic
   src/functions.rs                bab40, ba8c0, 108d90 evaluator
   src/colors.rs                   be8e0
@@ -288,6 +291,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   frame.rs                        retail frame helpers (push, pop, slots)
   walks.rs                        b6f10, b7060, b7150
   object.rs                       bc470, bc820, dispatchers 108c60/108cd0/109050/1090d0
+  wake.rs                         the wake leaves' bodies over src/wake.rs; 109580
   ...                             one file per ported segment body
 crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
@@ -726,6 +730,8 @@ pub struct ObjectIter<'a>;                         // live headers in slot order
   `Damage` and `Kill` from the damage body (slice 8; until then the existing
   hooks at `15ce70` and `d9640` keep feeding them). Events are not persistent
   state: they are read at tick end and are not in keyframes or the hash.
+  The buffer (`sim_objects::events`, read through `sim_state::events`)
+  belongs to the thread that runs the walks.
 - `live-telemetry/src/raw.rs` and `agent/src/raw.rs` move onto these views at
   their owners' pace. This lane does not edit them.
 

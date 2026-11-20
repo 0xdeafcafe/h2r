@@ -124,6 +124,17 @@ pub fn object<M: Mem + ?Sized>(m: &M, id: ObjectId) -> Result<Option<ObjectView<
     Ok(pool.resolve(m, id.datum())?.map(|obj| ObjectView { m, pool, obj }))
 }
 
+/// One event of the tick (`ObjectDeleted` from finalize's delete pass).
+pub use sim_objects::SimEvent;
+
+/// This tick's events so far, in the order they happened. Read at tick end
+/// on the game thread: the buffer belongs to the thread that runs the
+/// walks, and the pre-physics walk clears it when a tick starts. Filled
+/// only while the object update runs in Rust (`impl.sim.native.objects`).
+pub fn events<R>(f: impl FnOnce(&[SimEvent]) -> R) -> R {
+    sim_objects::events::with(f)
+}
+
 /// [`objects`].
 pub struct ObjectIter<'a, M: ?Sized> {
     m: &'a M,

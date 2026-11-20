@@ -95,22 +95,28 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_off_by_default_and_installs_nothing_with_zero_bodies() {
+    fn the_switch_is_off_by_default_and_installs_every_body_when_on() {
         assert!(!on(&Switches::defaults()));
         assert!(on(&Switches::defaults().with(&format!("impl.{OBJECTS}"), true)));
         // `-impl.sim.native` turns every subsystem off.
         assert!(!on(&Switches::defaults().with("impl.sim.native", false)));
-        assert!(objects::TABLE.is_empty());
-        for switches in [
-            Switches::defaults(),
-            Switches::defaults().with(&format!("impl.{OBJECTS}"), true),
-        ] {
-            let mut registry = Registry::new(switches);
-            registry.add(&SimNative::for_tests()).unwrap();
-            let plan = registry.build(&Base).unwrap();
-            assert!(plan.chains.is_empty());
-            assert!(plan.save_sections().is_empty());
+        assert!(!objects::TABLE.is_empty());
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        assert!(plan.chains.is_empty(), "off: nothing installs");
+        assert!(plan.save_sections().is_empty());
+
+        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for body in objects::BODIES {
+            let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
+            assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
+            assert_eq!(implement.resume_sites, body.sites);
         }
+        // The bodies hold no state: no snapshot section.
+        assert!(plan.save_sections().is_empty());
     }
 
     #[test]
@@ -138,13 +144,14 @@ mod tests {
         assert!(!owns_in(true, t, points::OBJECTS_POST_PHYSICS.base));
         // A site is not an entry: the port there is not displaced by it.
         assert!(!owns_in(true, t, PRE_SITES[0]));
-        // With zero bodies nothing stands down.
+        // The slice 1 bodies own the walks while the switch is on.
         let on = Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
-        assert!(!owns(&on, points::OBJECTS_PRE_PHYSICS.base));
+        assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
+        assert!(!owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
     }
 
     /// A feature that installs a given table, so the installer is tested
-    /// before slice 1 adds a body to `BODIES`.
+    /// on bodies of its own.
     struct Installs(&'static Table);
 
     impl crate::Feature for Installs {

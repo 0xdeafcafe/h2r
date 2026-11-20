@@ -16,9 +16,16 @@
 //! Callouts are answered by seeded stubs: a return value, clobbered
 //! caller-saved registers, and changes to the live set between segments
 //! (a slot freed, the high-water mark moved, a body moved by pool
-//! compaction, an object marked for deletion). Nothing here needs a body
-//! to exist: with `BODIES` empty every run is the lifted one, and the
-//! harness checks itself.
+//! compaction, an object marked for deletion). The stack probe and the
+//! spatial visit `109580` calls are stubbed too: the probe moves `esp`
+//! as the real one does, the visit fills the caller's result buffer.
+//!
+//! Roots: the three walks, the two per-object updates, the four type
+//! dispatchers, the wake leaves and the early-mover wake (slice 1 of
+//! docs/engine/sim-rewrite-objects.md). Every body the root reaches is
+//! part of its tree; a callee that is not a body is a callout. The
+//! fused finalize run must also record one `ObjectDeleted` event per
+//! object it deletes.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -116,7 +123,11 @@ fn pool(g: &mut Guest, case: u32) {
             word(g, body + off, u32::MAX);
         }
         word(g, body + 0xb4, u32::MAX);
-        byte(g, body + 0xc0, u8::from(slot % 3 == 1) << 3);
+        // On the early-mover list (bit 3) for some, woken this tick (bit
+        // 2, so the pre-update wakes them for the post walk) for others.
+        byte(g, body + 0xc0, u8::from(slot % 3 == 1) << 3 | u8::from(slot % 4 == 2) << 2);
+        // The dispatchers read the type from the body.
+        byte(g, body + 0xaa, ((slot + case) % 13) as u8);
         g.set_u16(body + 0x12a, u16::MAX).unwrap();
         g.set_u16(body + 0x114, 0).unwrap();
     }
@@ -134,32 +145,84 @@ fn pool(g: &mut Guest, case: u32) {
     word(g, BITS + 12, u32::MAX);
 }
 
-/// Entry state for a root: the planted return, and for the per-object
-/// updates the object argument.
-fn entry(g: &mut Guest, root: u32, case: u32) {
+/// The object a per-object root is called on.
+fn object(case: u32) -> u32 {
+    handle([2, 4, 5, 6, 1, 3][case as usize % 6])
+}
+
+/// Roots that take the object as their first stack argument.
+fn object_on_stack(root: u32) -> bool {
+    [
+        &points::OBJECT_PRE_UPDATE,
+        &points::OBJECT_POST_UPDATE,
+        &points::OBJECT_TYPE_UPDATE,
+        &points::OBJECT_WAKE_CHILDREN,
+        &points::OBJECT_EARLY_MOVER_WAKE,
+    ]
+    .iter()
+    .any(|p| p.base == root)
+}
+
+/// Entry state for a root: the planted return, the stack arguments, and
+/// the register argument of the roots that take one.
+fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     word(g, STACK, EXIT);
-    let object = if root == points::OBJECT_PRE_UPDATE.base || root == points::OBJECT_POST_UPDATE.base {
-        handle([2, 4, 5, 6, 1, 3][case as usize % 6])
-    } else {
-        0xdeaf_0002
+    word(g, STACK + 4, if object_on_stack(root) { object(case) } else { 0xdeaf_0002 });
+    // The pose dispatcher's second and third arguments; the after-root
+    // dispatcher's matrix is the first.
+    word(g, STACK + 8, PHASE + 0x100);
+    word(g, STACK + 12, case);
+    let reg = match root {
+        r if r == points::OBJECT_TYPE_POST_UPDATE.base => Some(7),
+        r if r == points::OBJECT_TYPE_POSE.base || r == points::OBJECT_TYPE_AFTER_ROOT.base => Some(3),
+        r if r == points::OBJECT_WAKE.base || r == points::OBJECT_WAKE_FOR_POST.base => Some(0),
+        r if r == points::OBJECT_ROOT.base => Some(1),
+        _ => None,
     };
-    word(g, STACK + 4, object);
+    if let Some(reg) = reg {
+        cpu.gpr[reg] = object(case);
+    }
 }
 
 /// Functions the roots leave by `jmp` (finalize's tail), whether or not
 /// the lifter marks the jump as a tail call.
 const TAILS: &[u32] = &[0xbf380];
 
+/// The type callbacks the dispatchers reach through the descriptors'
+/// slots (docs/engine/sim-rewrite-objects.md section 2): `+40` and `+44`
+/// take `(object)`, `+6c` four arguments, `+70` two.
+const SLOT_UPDATE: &[u32] = &[
+    0xc6b30, 0xdd360, 0xefde0, 0x10b4d0, 0xfdfb0, 0xf8de0, 0x10a2f0, 0x106790, 0x1152e0, 0x11bce0, 0x118700,
+];
+const SLOT_POST: &[u32] = &[0xdd990, 0x118b80];
+const SLOT_POSE: &[u32] = &[0x112070, 0xf0f50, 0x107000];
+const SLOT_AFTER_ROOT: &[u32] = &[0x112dc0, 0x10a390];
+
+/// The stack probe `109580` makes its frame with.
+const STACK_PROBE: u32 = 0x320560;
+
 /// Callee cleanup (`ret N`) of every function the roots call.
 fn cleanup(target: u32) -> u32 {
     match target {
         0xbc470 | 0xbc820 | 0x109580 | 0x108c60 | 0xd5de0 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
+        t if SLOT_UPDATE.contains(&t) || SLOT_POST.contains(&t) => 4,
         0xb83b0 | 0xb8460 => 8,
+        t if SLOT_AFTER_ROOT.contains(&t) => 8,
         0x1d3920 => 12,
+        t if SLOT_POSE.contains(&t) => 16,
         0xbef30 => 20,
+        0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
+}
+
+/// Callouts after which the live set changes: type callbacks, damage,
+/// deletion, deferred weapon fire and the early-mover record.
+fn mutates(target: u32) -> bool {
+    matches!(target, 0xbc470 | 0xbc820 | 0x109580 | 0xb83b0 | 0xd5de0 | 0xfd910 | 0x109660)
+        || SLOT_UPDATE.contains(&target)
+        || SLOT_POST.contains(&target)
 }
 
 /// The transfer a stub returns: the callee's effects on the state at a
@@ -167,6 +230,32 @@ fn cleanup(target: u32) -> u32 {
 fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     let sp = cpu.gpr[4];
     let ret = g.u32(sp).unwrap();
+    if target == STACK_PROBE {
+        // `eax` bytes below the caller's `esp`: `push ecx` at the top,
+        // `eax` the return address, `ecx` kept.
+        let caller = sp + 4;
+        word(g, caller - 8, cpu.gpr[1]);
+        cpu.gpr[4] = caller - cpu.gpr[0];
+        cpu.gpr[0] = ret;
+        cpu.eip = ret;
+        return;
+    }
+    if target == points::OBJECT_SPATIAL_VISIT.base {
+        // Results into the caller's buffer (argument 5): live slots, a
+        // free one and a child, varying with the case and the call.
+        let out = g.u32(sp + 0x18).unwrap();
+        let found = [1, 2, 9, 3, 6, 7, 10, 5];
+        let count = (case as usize + n) % found.len() + 1;
+        for (i, slot) in found.iter().take(count).enumerate() {
+            word(g, out + 4 * i as u32, handle(*slot));
+        }
+        cpu.gpr[0] = 0xabcd_0000 | count as u32;
+        cpu.gpr[1] = 0x1357;
+        cpu.gpr[2] = 0x2468;
+        cpu.gpr[4] = sp + 4 + cleanup(target);
+        cpu.eip = ret;
+        return;
+    }
     let seed = target.wrapping_mul(0x9127).rotate_left(n as u32 % 32) ^ case;
     cpu.gpr[0] = match target {
         // Per-object updates answer in `al`.
@@ -177,20 +266,23 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     cpu.gpr[1] = seed.rotate_left(9);
     cpu.gpr[2] = !seed;
     // Callbacks change the live set; both sides must re-read it.
-    if matches!(target, 0xbc470 | 0xbc820 | 0x109580 | 0xb83b0) {
+    if mutates(target) {
         match (n + case as usize) % 5 {
             // Free the next slots and move the high-water mark.
             1 => {
                 word(g, BITS + 4, 0b110);
                 word(g, HEADER + 0x38, 35);
             }
-            // Pool compaction: move slot 5's body.
+            // Pool compaction: move slot 5's body. The old copy reads as
+            // none everywhere, so code that kept the old pointer reads
+            // ends of lists, not wild handles, and the difference shows
+            // in what it writes.
             2 => {
                 let from = g.u32(DATA + 12 * 5 + 8).unwrap();
                 let to = RECORDS + BODY * (SLOTS + n as u32 % 8);
                 let bytes = (0..BODY).map(|i| g.u8(from + i).unwrap()).collect::<Vec<_>>();
                 g.write_bytes(to, &bytes, 1).unwrap();
-                g.write_bytes(from, &vec![0xcc; BODY as usize], 1).unwrap();
+                g.write_bytes(from, &vec![0xff; BODY as usize], 1).unwrap();
                 word(g, DATA + 12 * 5 + 8, to);
             }
             // Mark slot 4 for deletion and clear its NEW.
@@ -367,13 +459,13 @@ fn start(ram: &ir::interp::FlatMemory, root: u32, case: u32) -> (Cpu, Guest) {
     g.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
     g.write_bytes(0, &ram.bytes, 1).unwrap();
     pool(&mut g, case);
-    entry(&mut g, root, case);
     let mut cpu = Cpu {
         gpr: [0x1234_5678, 0x9876_5432, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
         eip: root,
         eflags: 0xa93,
         ..Default::default()
     };
+    entry(&mut g, &mut cpu, root, case);
     for (i, reg) in cpu.xmm.iter_mut().enumerate() {
         *reg = (0x1234_u128 + i as u128) << 100;
     }
@@ -405,8 +497,16 @@ fn transcripts(point: &points::Point, cases: u32) {
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
         let (cpu, g) = fresh();
+        ::sim_objects::events::clear();
         let fused = h.run(cpu, g, &|_| true);
         check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        if point.base == points::OBJECTS_FINALIZE.base && table.owns(point.base) {
+            // One `ObjectDeleted` per object finalize deletes, recorded by
+            // the body before `b83b0`.
+            let deletes = reference.callouts.iter().filter(|c| c.target == 0xb83b0).count();
+            let events = ::sim_objects::events::with(|e| e.len());
+            assert_eq!(events, deletes, "{} case {case}: deletion events", point.name);
+        }
         // Mixed frames: at each resume point a body could take, switch
         // from lifted to Rust there, and from Rust to lifted.
         for (k, &pc) in reference.resumes.iter().enumerate() {
@@ -448,6 +548,43 @@ fn object_post_update() {
     transcripts(&points::OBJECT_POST_UPDATE, 6);
 }
 
+#[test]
+fn type_update_dispatch() {
+    transcripts(&points::OBJECT_TYPE_UPDATE, 13);
+}
+
+#[test]
+fn type_post_update_dispatch() {
+    transcripts(&points::OBJECT_TYPE_POST_UPDATE, 13);
+}
+
+#[test]
+fn type_pose_dispatch() {
+    transcripts(&points::OBJECT_TYPE_POSE, 13);
+}
+
+#[test]
+fn type_after_root_dispatch() {
+    transcripts(&points::OBJECT_TYPE_AFTER_ROOT, 13);
+}
+
+#[test]
+fn wake_leaves() {
+    for point in [
+        &points::OBJECT_WAKE,
+        &points::OBJECT_ROOT,
+        &points::OBJECT_WAKE_FOR_POST,
+        &points::OBJECT_WAKE_CHILDREN,
+    ] {
+        transcripts(point, 6);
+    }
+}
+
+#[test]
+fn early_mover_wake() {
+    transcripts(&points::OBJECT_EARLY_MOVER_WAKE, 6);
+}
+
 /// The harness on its own: a run is deterministic, and a changed callee
 /// answer shows up as a different transcript, so equal transcripts mean
 /// something.
@@ -457,6 +594,9 @@ fn the_harness_sees_a_difference() {
     let root = points::OBJECTS_FINALIZE.base;
     let mut code = image.original();
     code.prime(root);
+    for body in sim_objects::TABLE.bodies() {
+        code.prime(body.point.base);
+    }
     let mut h = Harness { code: &mut code, table: &*sim_objects::TABLE, root, case: 1 };
     let (cpu, g) = start(ram, root, 1);
     let a = h.run(cpu, g, &|_| false);

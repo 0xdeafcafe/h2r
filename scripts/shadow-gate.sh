@@ -60,10 +60,6 @@ sim_physics=(
   sim.native_havok_solver
   sim.native_havok_support_vertices
   sim.native_havok_weld
-  sim.native_objects_pre_physics
-  sim.native_objects_post_physics
-  sim.native_object_pre_update
-  sim.native_object_post_update
   sim.native_object_change_colors
   sim.native_spatial_visit
   sim.native_spatial_portal

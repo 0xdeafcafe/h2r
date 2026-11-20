@@ -1925,6 +1925,7 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-objects",
  "simd",
  "tags",
  "x87",

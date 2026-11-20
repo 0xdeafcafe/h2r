@@ -69,24 +69,160 @@ fn guest() -> (CpuAbi, Guest) {
 }
 
 #[test]
-fn zero_bodies_build_an_empty_table_that_owns_nothing() {
-    assert!(BODIES.is_empty());
-    assert!(TABLE.is_empty());
+fn slice_one_bodies_form_a_table_that_owns_their_entries_and_sites() {
+    assert!(!TABLE.is_empty());
+    assert_eq!(TABLE.bodies().len(), BODIES.len());
+    for body in BODIES {
+        assert!(TABLE.owns(body.point.base), "{}", body.point.name);
+        for &site in body.sites {
+            let (at, role) = TABLE.at(site).unwrap();
+            assert_eq!((at.point.base, role), (body.point.base, Role::Site), "{site:#x}");
+            assert!(!TABLE.owns(site));
+        }
+    }
     for point in [
         &crate::points::OBJECTS_PRE_PHYSICS,
         &crate::points::OBJECTS_POST_PHYSICS,
         &crate::points::OBJECTS_FINALIZE,
         &crate::points::OBJECT_PRE_UPDATE,
         &crate::points::OBJECT_POST_UPDATE,
+        &crate::points::OBJECT_TYPE_UPDATE,
+        &crate::points::OBJECT_TYPE_POST_UPDATE,
+        &crate::points::OBJECT_TYPE_POSE,
+        &crate::points::OBJECT_TYPE_AFTER_ROOT,
+        &crate::points::OBJECT_WAKE,
+        &crate::points::OBJECT_ROOT,
+        &crate::points::OBJECT_WAKE_FOR_POST,
+        &crate::points::OBJECT_WAKE_CHILDREN,
+        &crate::points::OBJECT_EARLY_MOVER_WAKE,
     ] {
-        assert!(!TABLE.owns(point.base), "{}", point.name);
-        assert!(TABLE.at(point.base).is_none());
+        assert!(TABLE.owns(point.base), "{}", point.name);
+    }
+    // Callouts that stay guest are not bodies.
+    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0xd5de0, 0xbd090, 0x320560, 0xbb050] {
+        assert!(TABLE.at(callout).is_none(), "{callout:#x}");
     }
     // Driving an address no body owns is an execute fault, not a guess.
     let (mut cpu, mut g) = guest();
     let fault = drive(&mut cpu, &mut g, &TABLE, OUTER.base).unwrap_err();
     assert_eq!(fault.addr, OUTER.base);
     assert_eq!(cpu.esp, STACK);
+}
+
+// A synthetic objects pool in guest memory: the globals the walks read,
+// the datum array, headers and bodies. No game data.
+const POOL_MAP: u32 = 0x004d_0000;
+const PHASE_STATE: u32 = 0x004d_e2f4;
+const PHASE: u32 = 0x0050_0000;
+const ARRAY: u32 = 0x0050_1000;
+const HEADERS: u32 = 0x0050_2000;
+const BITMAP: u32 = 0x0050_3000;
+const BODY_AT: u32 = 0x0051_0000;
+const NONE: u32 = u32::MAX;
+
+fn body_of(slot: u16) -> u32 {
+    BODY_AT + 0x200 * u32::from(slot)
+}
+
+fn handle(salt: u16, slot: u16) -> u32 {
+    u32::from(salt) << 16 | u32::from(slot)
+}
+
+/// `slots`: `(slot, salt, header flags, type)`; each body's definition is
+/// `e000_0000 | slot` and it has no links.
+fn pool(g: &mut Guest, slots: &[(u16, u16, u8, u8)]) {
+    g.map_zeroed(POOL_MAP, 0x6_0000, Permissions::RW).unwrap();
+    g.set_u32(PHASE_STATE, PHASE).unwrap();
+    g.set_u32(crate::points::OBJECTS.base, ARRAY).unwrap();
+    g.set_u32(ARRAY + 0x24, 12).unwrap();
+    g.set_u32(ARRAY + 0x44, HEADERS).unwrap();
+    g.set_u32(ARRAY + 0x48, BITMAP).unwrap();
+    let (mut bits, mut high) = (0u32, 0u32);
+    for &(slot, salt, flags, kind) in slots {
+        let h = HEADERS + 12 * u32::from(slot);
+        g.set_u16(h, salt).unwrap();
+        g.set_u8(h + 2, flags).unwrap();
+        g.set_u8(h + 3, kind).unwrap();
+        g.set_u32(h + 8, body_of(slot)).unwrap();
+        g.set_u32(body_of(slot), 0xe000_0000 | u32::from(slot)).unwrap();
+        for link in [0x0c, 0x10, 0x14] {
+            g.set_u32(body_of(slot) + link, NONE).unwrap();
+        }
+        bits |= 1 << slot;
+        high = high.max(u32::from(slot) + 1);
+    }
+    g.set_u32(BITMAP, bits).unwrap();
+    g.set_u32(ARRAY + 0x38, high).unwrap();
+}
+
+/// Return from a true callout that pops `cleanup` argument bytes.
+fn returned(cpu: &mut CpuAbi, g: &Guest, cleanup: u32) -> u32 {
+    let site = frame::pop(cpu, g).unwrap();
+    cpu.esp += cleanup;
+    site
+}
+
+#[test]
+fn finalize_clears_defer_deletes_and_records_each_deletion() {
+    use ::sim_objects::events::{self, SimEvent};
+    use guest_layout::Datum;
+    let (mut cpu, mut g) = guest();
+    // Slot 0 deferred, 1 marked for deletion, 2 free, 3 both.
+    pool(&mut g, &[(0, 0x8000, 0x21, 6), (1, 0x8001, 0x11, 2), (3, 0x8003, 0x31, 5)]);
+    events::clear();
+    let t = &*TABLE;
+    let fin = crate::points::OBJECTS_FINALIZE.base;
+    // Pass A, then the deferred weapon fire.
+    let out = drive(&mut cpu, &mut g, t, fin).unwrap();
+    assert_eq!(out, TransferAbi::call(0xfd910, 0xb71a0));
+    assert_eq!(g.u8(PHASE + 3).unwrap(), 1);
+    for (slot, flags) in [(0, 0x01), (1, 0x11), (3, 0x11)] {
+        assert_eq!(g.u8(HEADERS + 12 * slot + 2).unwrap(), flags, "slot {slot}");
+    }
+    assert!(events::with(<[SimEvent]>::is_empty));
+    // Pass B: each deleted object goes through b83b0 then b8460, both
+    // `(handle, 1)`, with its event recorded first.
+    let mut site = returned(&mut cpu, &g, 0);
+    for (slot, salt) in [(1, 0x8001), (3, 0x8003)] {
+        for (callee, next) in [(0xb83b0, 0xb7282), (0xb8460, 0xb728a)] {
+            let out = drive(&mut cpu, &mut g, t, site).unwrap();
+            assert_eq!(out, TransferAbi::call(callee, next));
+            assert_eq!(g.u32(cpu.esp + 4).unwrap(), handle(salt, slot));
+            assert_eq!(g.u32(cpu.esp + 8).unwrap(), 1);
+            site = returned(&mut cpu, &g, 8);
+        }
+    }
+    let out = drive(&mut cpu, &mut g, t, site).unwrap();
+    assert_eq!(out, TransferAbi::jump(0xbf380));
+    assert_eq!(g.u8(PHASE + 3).unwrap(), 0);
+    assert_eq!(cpu.esp, STACK, "the frame is gone before the tail jump");
+    let deleted = |slot: u16, salt: u16, kind: u8| SimEvent::ObjectDeleted {
+        id: Datum(handle(salt, slot)),
+        kind,
+        definition: Datum(0xe000_0000 | u32::from(slot)),
+    };
+    assert_eq!(events::with(<[SimEvent]>::to_vec), [deleted(1, 0x8001, 2), deleted(3, 0x8003, 5)]);
+}
+
+#[test]
+fn the_wake_leaf_returns_with_retail_registers() {
+    let (mut cpu, mut g) = guest();
+    // A weapon (slot 2) held by a biped (slot 1).
+    pool(&mut g, &[(1, 0x8001, 0x01, 0), (2, 0x8002, 0x81, 2)]);
+    g.set_u32(body_of(2) + 0x14, handle(0x8001, 1)).unwrap();
+    cpu.eax = handle(0x8002, 2);
+    cpu.ebx = 0x1111;
+    cpu.esi = 0x2222;
+    let out = drive(&mut cpu, &mut g, &TABLE, crate::points::OBJECT_WAKE.base).unwrap();
+    assert_eq!(out, TransferAbi::ret(CALLER));
+    assert_eq!(cpu.esp, STACK + 4);
+    for slot in [1, 2] {
+        assert_ne!(g.u8(HEADERS + 12 * slot + 2).unwrap() & 2, 0, "slot {slot} awake");
+    }
+    assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (NONE, HEADERS, 2 * 3));
+    assert_eq!((cpu.ebx, cpu.esi), (0x1111, 0x2222));
+    // ZF and PF from `cmp eax, -1`.
+    assert_eq!(cpu.eflags & 0x44, 0x44);
 }
 
 #[test]

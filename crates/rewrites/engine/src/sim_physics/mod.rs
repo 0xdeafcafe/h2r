@@ -70,10 +70,6 @@ pub const PORTS: &[Port] = {
         },
         port(&HAVOK_SUPPORT_VERTICES, "sim.native_havok_support_vertices", Mixed, support::SITES, support::vertices),
         port(&HAVOK_WELD_CONTACTS, "sim.native_havok_weld", Weld, weld::SITES, weld::contacts),
-        port(&OBJECTS_PRE_PHYSICS, "sim.native_objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
-        port(&OBJECTS_POST_PHYSICS, "sim.native_objects_post_physics", Integer, &objects::POST_SITES, objects::post),
-        port(&OBJECT_PRE_UPDATE, "sim.native_object_pre_update", Integer, &object_update::PRE, object_update::pre),
-        port(&OBJECT_POST_UPDATE, "sim.native_object_post_update", Integer, &object_update::POST, object_update::post),
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
@@ -93,47 +89,54 @@ pub const PORTS: &[Port] = {
 /// replaces them owns the switch now (docs/engine/sim-rewrite.md section 8).
 /// The additive-layer node evaluator runs under `0x2798a0`, which
 /// `impl.sim.native.anim` replaces whole (docs/engine/anim-sampling.md).
+/// The object walks and per-object updates are bodies under
+/// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*`
+/// names are labels, not switches.
 pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
     &[
+        port(&OBJECTS_PRE_PHYSICS, "oracle.objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
+        port(&OBJECTS_POST_PHYSICS, "oracle.objects_post_physics", Integer, &objects::POST_SITES, objects::post),
+        port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),
+        port(&OBJECT_POST_UPDATE, "oracle.object_post_update", Integer, &object_update::POST, object_update::post),
         // Other codecs are guest calls that resume at the call's return.
         port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]
 };
 
-fn push(c: &mut CpuAbi, g: &mut Guest, word: u32) -> Result<()> {
+pub(crate) fn push(c: &mut CpuAbi, g: &mut Guest, word: u32) -> Result<()> {
     let sp = c.esp.wrapping_sub(4);
     g.set_u32(sp, word)?;
     c.esp = sp;
     Ok(())
 }
 
-fn pop(c: &mut CpuAbi, g: &Guest) -> Result<u32> {
+pub(crate) fn pop(c: &mut CpuAbi, g: &Guest) -> Result<u32> {
     let v = g.u32(c.esp)?;
     c.esp = c.esp.wrapping_add(4);
     Ok(v)
 }
 
-fn byte(word: u32, value: u8) -> u32 {
+pub(crate) fn byte(word: u32, value: u8) -> u32 {
     (word & !0xff) | u32::from(value)
 }
 
 // EFLAGS at externally visible transfers. Undefined bits clear in both
 // EFLAGS and the defined mask, following the IR contract.
-const ARITH: u32 = 0x8d5;
-fn status(result: u32, sign: u32) -> u32 {
+pub(crate) const ARITH: u32 = 0x8d5;
+pub(crate) fn status(result: u32, sign: u32) -> u32 {
     (u32::from(result == 0) << 6)
         | (u32::from((result as u8).count_ones().is_multiple_of(2)) << 2)
         | (u32::from(result & sign != 0) << 7)
 }
 
-fn logic(c: &mut CpuAbi, result: u32, sign: u32) {
+pub(crate) fn logic(c: &mut CpuAbi, result: u32, sign: u32) {
     c.eflags = (c.eflags & !ARITH) | status(result, sign);
     c.eflags_defined = (c.eflags_defined | ARITH) & !0x10;
 }
 
-fn arithmetic(c: &mut CpuAbi, a: u32, b: u32, sub: bool) -> u32 {
+pub(crate) fn arithmetic(c: &mut CpuAbi, a: u32, b: u32, sub: bool) -> u32 {
     let (v, carry) = if sub { a.overflowing_sub(b) } else { a.overflowing_add(b) };
     let overflow = (if sub { a ^ b } else { !(a ^ b) }) & (a ^ v);
     let flags = status(v, 1 << 31) | u32::from(carry)

@@ -16,8 +16,11 @@
 //! it, one row block each.
 
 pub mod frame;
+mod object;
+mod wake;
+mod walks;
 
-use crate::points::Point;
+use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 use std::sync::LazyLock;
 
@@ -55,9 +58,26 @@ pub struct Body {
     pub run: fn(&mut Cx<'_>, u32) -> Result<Next>,
 }
 
-/// Every body, appended to by each slice. Empty until slice 1 lands, so
-/// the switch installs nothing.
-pub const BODIES: &[Body] = &[];
+/// Every body, appended to by each slice: one row block per slice
+/// (docs/engine/sim-rewrite-objects.md section 12).
+pub const BODIES: &[Body] = &[
+    // Slice 1: the walks, the per-object updates, the type dispatchers,
+    // the wake leaves and the early-mover wake.
+    Body { point: &points::OBJECTS_PRE_PHYSICS, sites: &walks::PRE_SITES, run: walks::pre },
+    Body { point: &points::OBJECTS_POST_PHYSICS, sites: &walks::POST_SITES, run: walks::post },
+    Body { point: &points::OBJECTS_FINALIZE, sites: &walks::FINALIZE_SITES, run: walks::finalize },
+    Body { point: &points::OBJECT_PRE_UPDATE, sites: &object::PRE, run: object::pre },
+    Body { point: &points::OBJECT_POST_UPDATE, sites: &object::POST, run: object::post },
+    Body { point: &points::OBJECT_TYPE_UPDATE, sites: &object::UPDATE_SITES, run: object::type_update },
+    Body { point: &points::OBJECT_TYPE_POST_UPDATE, sites: &object::POST_UPDATE_SITES, run: object::type_post_update },
+    Body { point: &points::OBJECT_TYPE_POSE, sites: &object::POSE_SITES, run: object::type_pose },
+    Body { point: &points::OBJECT_TYPE_AFTER_ROOT, sites: &object::AFTER_ROOT_SITES, run: object::type_after_root },
+    Body { point: &points::OBJECT_WAKE, sites: &[], run: wake::wake },
+    Body { point: &points::OBJECT_ROOT, sites: &[], run: wake::root },
+    Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
+    Body { point: &points::OBJECT_WAKE_CHILDREN, sites: &[], run: wake::wake_children },
+    Body { point: &points::OBJECT_EARLY_MOVER_WAKE, sites: &wake::EARLY_MOVER_SITES, run: wake::early_mover_wake },
+];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
 pub static TABLE: LazyLock<Table> =

@@ -430,6 +430,24 @@ points! { ALL;
     UNIT_AIM_UPDATE @ 0x000c_7840: [opaque], Hot; "docs/perf/sim-budget.md";
     UNIT_UPDATE @ 0x000c_6b30: [fn(unit: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
     OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Type update dispatch: slot `+40` of every ancestry level; `al` is the OR of the results.
+    OBJECT_TYPE_UPDATE @ 0x0010_8c60: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Type post-physics dispatch: slot `+44` of every ancestry level.
+    OBJECT_TYPE_POST_UPDATE @ 0x0010_8cd0: [fn(object: edi) ret 0], Hot; "docs/engine/object-update.md";
+    /// Type pose dispatch: slot `+6c` of every ancestry level.
+    OBJECT_TYPE_POSE @ 0x0010_9050: [fn(object: ebx, a: stack 0, b: stack 1, c: stack 2) ret 12], Hot; "docs/engine/object-update.md";
+    /// Type after-root dispatch: slot `+70`, called with the root node matrix.
+    OBJECT_TYPE_AFTER_ROOT @ 0x0010_90d0: [fn(object: ebx, matrix: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Set AWAKE on an object and its parent chain.
+    OBJECT_WAKE @ 0x000b_7360: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// The root ancestor of an object.
+    OBJECT_ROOT @ 0x000b_af80: [fn(object: ecx) -> eax ret 0], Hot; "docs/engine/object-update.md";
+    /// Wake an object (its root ancestor) for the post-physics walk.
+    OBJECT_WAKE_FOR_POST @ 0x000b_ba20: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Wake the bipeds, vehicles and creatures in an object's subtree.
+    OBJECT_WAKE_CHILDREN @ 0x000b_c7b0: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Wake what an early mover's sphere touches.
+    OBJECT_EARLY_MOVER_WAKE @ 0x0010_9580: [fn(mover: stack 0) ret 4], Hot; "docs/engine/object-update.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
