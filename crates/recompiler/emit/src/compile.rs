@@ -953,7 +953,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
 }
 
 /// [`build_in`] with the optimisation tiers given instead of read from
-/// `H2_OPT_COLD` and `H2_HOT`: with `tiers`, a source holding none of its
+/// `H2_OPT_COLD`, `H2_HOT` and `H2_OPT` ([`Tiers::from_env`]): with `tiers`, a source holding none of its
 /// hot addresses compiles at its cold level ([`Tiers`]). Each tier has its
 /// own flags in its objects' keys and its own dependency and driver probes.
 pub fn build_tiered(

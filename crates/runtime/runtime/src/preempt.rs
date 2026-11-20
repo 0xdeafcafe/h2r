@@ -45,9 +45,9 @@
 //!
 //! The leave word (docs/runtime/contract-thin-transfers-flat-ram.md,
 //! section 4.2). A direct call between generated handlers may go ahead only
-//! where the runner's safe point would do nothing: today that is two loads,
-//! this word and the runtime's queued-interrupt count. [`IRQ_QUEUED`] folds
-//! the second into the first. Once [`Runtime::enable_leave_word`] has been
+//! where the runner's safe point would do nothing: this word is zero and
+//! the runtime's interrupt queue is empty. [`IRQ_QUEUED`] folds the second
+//! into the first, so a direct call loads the word alone. Once [`Runtime::enable_leave_word`] has been
 //! called, every context's word has [`IRQ_QUEUED`] set exactly while the
 //! interrupt queue holds anything: it is set and cleared under the queue's
 //! lock, and a word registered later starts with it if the queue is not
@@ -55,10 +55,12 @@
 //! "the word is zero and nothing is queued" meant. It is not a wake reason:
 //! [`ExecCtx::take_preempt`] and both `preempt_pending`s leave it out.
 //!
-//! The runtime sets it only once asked, because generated code built before
-//! it polls loop headers with `word != 0`: such a loop would leave on every
-//! trip while an interrupt for another thread waits. A module whose loop
-//! polls and `h2_fast_movs` mask [`IRQ_QUEUED`] out turns it on.
+//! The runtime sets it only once asked, because a loop that polled with
+//! `word != 0` would leave on every trip while an interrupt for another
+//! thread waits. A module with an entry table
+//! ([`FEATURE_ENTRY_TABLE`](crate::generated::FEATURE_ENTRY_TABLE)) masks
+//! it out of its loop polls and `h2_fast_movs`, and the runtime turns it on
+//! when dispatch first has such a module ([`crate::direct`]).
 
 use crate::{ExecCtx, Runtime, TransferAbi};
 use std::sync::atomic::{AtomicU32, Ordering};

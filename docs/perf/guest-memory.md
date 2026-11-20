@@ -74,14 +74,18 @@ A `RETURN` to exactly the continuation, with ESP above the return slot,
 continues inline. Everything else goes to the runner.
 
 The direct path runs only where the runner would have done nothing else:
-the preempt word and interrupt queue are empty, `max_transfers` has a
-transfer left, the nesting is under the context's cap (`DEFAULT_DEPTH` 32,
-at most `MAX_DEPTH` 64, `crates/runtime/runtime/src/direct.rs`), the context's slot
-says the runner resolved the target to this handler at the current dispatch
-generation (any `edit_dispatch` stops direct calls until the runner resolves
-again), and the page is executable in the inline view. The runtime counters
-keep `transfers` as every guest transfer and `direct_transfers` as the part
-made in C.
+the whole preempt word is 0 (its `IRQ_QUEUED` bit stands for the interrupt
+queue), `max_transfers` has a transfer left, the nesting is under the
+context's cap (`DEFAULT_DEPTH` 32, at most `MAX_DEPTH` 64,
+`crates/runtime/runtime/src/direct.rs`), and the runtime's entry table
+holds this handler for the callee's entry index. A static call names the
+index as a constant; an indirect one reads it from the module's `pcmap`.
+The table (`direct::Live`) holds a handler only for a function entry with
+no enabled override (`edit_dispatch` rewrites it before returning) whose
+address is guarded lifted code with the execute bit, checked when the
+guest's code identity moves, so no call reads the page. The runtime
+counters keep `transfers` as every guest transfer and `direct_transfers`
+as the part made in C.
 
 A direct callee runs on its caller's view. The caller lends it through the
 last word of the direct-call block (`H2Direct.view`); the callee takes and

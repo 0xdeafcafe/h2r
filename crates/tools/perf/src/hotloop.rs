@@ -268,6 +268,9 @@ pub fn build_in(work: &Path, objects: &Path) -> Result<Module> {
         memory.set_u32(DATA + 16 + 4 * i as u32, v.to_bits())?;
     }
     memory.map_zeroed(CODE, 0x1_0000, Permissions::RWX)?;
+    // Lifted code, as the loader guards an XBE's: direct calls need it
+    // (runtime direct.rs).
+    memory.guard_code(CODE, 0x1_0000)?;
     memory.map_zeroed(STACK_BOTTOM, STACK_TOP - STACK_BOTTOM, Permissions::RW)?;
     let rt = Runtime::new(memory, Dispatch::default());
     // SAFETY: bridge.c copies the table after its layout is checked; the

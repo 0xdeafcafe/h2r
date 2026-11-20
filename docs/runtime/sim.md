@@ -392,7 +392,8 @@ RETURNs, STOPs and FAULTs that native generated handlers hand back to the
 runner. HLE entries and slice or host-request preemptions are counted
 alongside those exits. A loop resume can also cause a preemption, so
 these counts can overlap. `H2_ENTRY_STATS=1` adds a separate, more
-expensive census of direct-slot misses and hot runner targets on stderr.
+expensive census of hot runner targets on stderr, split by why a call or
+jump reached the runner (entry table live, null, or no entry).
 
 At `WEAPON_FIRE`, a handheld shot is credited to the player who owns
 the parent biped. The next tick's held-weapon snapshot provides a
