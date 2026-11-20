@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use live_telemetry::layout::{
-    BIPED_AIRBORNE_TICKS, BODY_PARENT, BODY_POSITION, BODY_VELOCITY, UNIT_SEAT,
+    BIPED_AIRBORNE_TICKS, BODY_PARENT, BODY_POSITION, BODY_VELOCITY, UNIT_FLAGS, UNIT_SEAT,
 };
 use map::{
     H1_DIALOGUE_AIRBORNE_PASSENGERS, H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL, H1_FREEFALL_LINE,
@@ -216,7 +216,8 @@ pub(super) fn falling(
     let parent = m.u32(body + BODY_PARENT)?;
     let airborne = i32::from(m.u8(body + BIPED_AIRBORNE_TICKS)? as i8);
     if rate == 0
-        || (parent == NONE && airborne <= rate as i32)
+        || (parent == NONE
+            && (airborne <= rate as i32 || m.u32(body + UNIT_FLAGS)? & (1 << 9) != 0))
         || (parent != NONE && !reactions::ai_vocalizes(m)?)
         || dialogue::source_offset_row(m, unit, H1_FREEFALL_LINE)?.is_none()
     {

@@ -837,8 +837,9 @@ out in `0xfe618`.
 **Built.** Halo 1's active Flood revival passes involuntary speech type 5 at
 `0x4508c` after the revival timer expires with positive body vitality.
 That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
-path calls `0xcaf00` to clear depletion and restore the unit. Converted
-units with that authored slot queue it there.
+path checks for a depleted parent at `0x28fedc` and calls `0xcaf00`
+through `0x1e0dc0` to clear depletion and restore the unit. Converted
+units with that authored slot queue it on this transition.
 
 **Built.** The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
 sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
@@ -854,10 +855,12 @@ vertical speed on impact. The vehicle rider branch at `0x4b580`
 requires more than four seconds in an eligible seat, more than one
 second airborne, and no floor below or in the projected path. Both
 source branches gate probes at half-second intervals and suppress them
-during custom animation. The boot hook uses Halo 2's biped and vehicle
-airborne counters, the animation manager predicate at `0x11b930`, and
-the BSP ray at `0x1697c0`. It queues the original scream in the
-speaker's speech cache.
+during custom animation. The biped branch also respects the converted
+command list's falling-damage exemption. The boot hook uses Halo 2's
+biped and vehicle airborne counters, the animation manager predicate at
+`0x11b930`, and the BSP ray at `0x1697c0`. It queues the original
+scream in the speaker's speech cache. The retail scheduler also lists
+the same slot for stimulus 46 at `0x1ef9f8`. Its emitter remains untraced.
 
 **Built.** Halo 1's collision damage accumulates applied body damage in
 a byte for each collision region at `0x9512f`. It destroys that region

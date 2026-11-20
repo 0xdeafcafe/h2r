@@ -140,7 +140,6 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) {
                 if dialogue::source_offset_row(m, unit, map::H1_REVIVAL_LINE)?.is_some()
                     && let Some(body) = object_address(m, unit)?
                     && m.u8(body + 0x10a)? & 4 != 0
-                    && m.f32(body + 0xec)? > 0.0
                 {
                     reactions.push(m, unit, map::H1_REVIVAL_LINE, 14)?;
                 }
