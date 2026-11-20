@@ -330,6 +330,9 @@ the nav mesh, and shared read-only by every bot in the process.
   (perception, aim, decisions, incoming grenades, nav probes) gets the
   same answer with fewer rays, and a match plays the same with the grid
   or without it. `Walls::hit` (a grenade's flight) does not use it.
+  On a light host the dense voxel lookup has a 256 KiB budget. Larger
+  grids find the same cell by binary search in the file's sorted list
+  of occupied voxels.
 - **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
   `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
   then the cells and the bits. The nav worker writes a map's `.bots`

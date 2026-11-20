@@ -52,7 +52,8 @@ a moment (a lowered holder would stall the game):
 - `vfs-metadata` (`crates/runtime/vfs/src/host.rs`): idle, and it takes
   the lock the game's writes take.
 - `fallback-analysis` (`crates/runtime/recomp/src/fallback.rs`): the
-  runner waits for it on an unresolved entry.
+  runner waits for it on an unresolved entry. A light host invokes
+  analysis on demand in the runner.
 - `gfx compile` (`crates/platform/gfx/src/compile.rs`) and `nv2a prewarm`
   (`crates/platform/d3d/src/nv2a.rs`): the render thread waits for a
   pipeline or program it needs.

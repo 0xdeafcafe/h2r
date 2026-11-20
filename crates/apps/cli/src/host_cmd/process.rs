@@ -155,6 +155,16 @@ impl Game {
         }
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            // Match the image entrypoint for a native Linux host. glibc
+            // reads these at process startup. Preserve the operator's A/B.
+            for (name, default) in [("MALLOC_ARENA_MAX", "2"), ("MALLOC_TRIM_THRESHOLD_", "131072")] {
+                if std::env::var_os(name).is_none_or(|value| value.is_empty()) {
+                    cmd.env(name, default);
+                }
+            }
+        }
         #[cfg(target_os = "linux")]
         stop_on_parent_death(&mut cmd);
 

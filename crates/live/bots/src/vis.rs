@@ -37,8 +37,10 @@
 //! mid-build loses at most that much.
 
 use std::io::Read;
+use std::mem::size_of;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cache::{self, MapData, Stamp};
 use crate::los::{V3, Walls};
@@ -61,6 +63,22 @@ const FIRST: [f32; 2] = [1.0, 0.5];
 const GROW: f32 = 1.25;
 /// The voxel table's largest size, entries.
 const MAX_VOXELS: usize = 1 << 22;
+/// A light host budgets the dense lookup at the size of its largest
+/// generated pair matrix (2048 * 2047 / 2 bits, rounded up to 256 KiB).
+const LIGHT_INDEX_BYTES: usize = 256 * 1024;
+static INDEX_BUDGET: AtomicUsize = AtomicUsize::new(MAX_VOXELS * size_of::<u16>());
+
+/// Set before the game starts its map loaders. The index is optional:
+/// the file already contains the same cell numbers in sorted voxel order.
+pub fn set_light_index_budget(light: bool) {
+    let bytes = if light {
+        LIGHT_INDEX_BYTES
+    } else {
+        MAX_VOXELS * size_of::<u16>()
+    };
+    INDEX_BUDGET.store(bytes, Ordering::Relaxed);
+}
+
 /// A walkable surface makes the space from this far below it to this far
 /// above it part of the grid: feet to above the eye (`mind::EYE` is 0.6).
 const BELOW: f32 = 0.3;
@@ -99,7 +117,8 @@ pub struct Vis {
     /// Cell size: x, y, z.
     size: V3,
     dims: [u32; 3],
-    /// Each voxel's cell, [`NONE`] for none; x fastest.
+    /// Each voxel's cell, [`NONE`] for none; x fastest. Empty when a
+    /// dense table exceeds the profile's budget.
     index: Vec<u16>,
     /// The occupied voxels, ascending; cell `i` is voxel `voxels[i]`.
     voxels: Vec<u32>,
@@ -153,6 +172,9 @@ impl Vis {
         }
         let i = (v[2] as usize * self.dims[1] as usize + v[1] as usize) * self.dims[0] as usize
             + v[0] as usize;
+        if self.index.is_empty() {
+            return self.voxels.binary_search(&(i as u32)).ok().map(|cell| cell as u32);
+        }
         let c = *self.index.get(i)?;
         (c != NONE).then_some(u32::from(c))
     }
@@ -211,16 +233,27 @@ impl Vis {
     }
 
     fn with_voxels(origin: V3, size: V3, dims: [u32; 3], voxels: Vec<u32>, walls: u64) -> Option<Self> {
+        Self::with_index_budget(origin, size, dims, voxels, walls, INDEX_BUDGET.load(Ordering::Relaxed))
+    }
+
+    fn with_index_budget(
+        origin: V3, size: V3, dims: [u32; 3], voxels: Vec<u32>, walls: u64, budget: usize,
+    ) -> Option<Self> {
         let total = dims.iter().try_fold(1usize, |a, &d| a.checked_mul(d as usize))?;
         if total == 0 || total > MAX_VOXELS || voxels.len() >= usize::from(NONE) {
             return None;
         }
-        let mut index = vec![NONE; total];
-        for (c, &v) in voxels.iter().enumerate() {
-            *index.get_mut(v as usize)? = c as u16;
-        }
-        if !voxels.windows(2).all(|w| w[0] < w[1]) {
+        if voxels.last().is_some_and(|&v| v as usize >= total)
+            || !voxels.windows(2).all(|w| w[0] < w[1])
+        {
             return None;
+        }
+        let mut index = Vec::new();
+        if total * size_of::<u16>() <= budget {
+            index.resize(total, NONE);
+            for (cell, &voxel) in voxels.iter().enumerate() {
+                index[voxel as usize] = cell as u16;
+            }
         }
         Some(Vis {
             origin,

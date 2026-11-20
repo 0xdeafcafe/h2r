@@ -210,6 +210,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
+    bots::vis::set_light_index_budget(host_light);
     let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
@@ -271,7 +272,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        fallback::start_analysis(&loaded.runtime);
+        fallback::configure_analysis(&loaded.runtime, !host_light);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",

@@ -173,13 +173,15 @@ phantom peers' host state in the snapshot, which is missing today. A pack
 keeps at most two level templates, least recently used first out, and only
 while a batch is queued.
 
-**Heap.** The 39 MiB of large and 35 MiB of small allocations have no
-census. The slice takes one (`smaps` by mapping, and a heap profile of one
-match) and sets budgets for what it finds. Known candidates: nav meshes
-decoded per process where a read-only mapping of the built file would be
-shared, film and telemetry buffers held for the whole match, the
-interpreter's analysis cache on a slim host, and XNet and tunnel queues
-sized for 16 peers on a 2-player lease.
+**Heap.** Light hosts start interpreter analysis on the first miss and a slim
+host retains one lifted cold owner. The optional dense bot visibility index
+is capped at 256 KiB. Larger grids look up cells in the sorted list already
+present in the navigation data. Linux lease children and the glibc image
+default to two malloc arenas and a 128 KiB trim threshold.
+
+The heap census and footprint gate still need a 2v2 match. Collect a heap
+profile and Linux mapping totals, then check the macOS Waterworks
+`wall.footprint_mib` against 80 MiB before budgeting additional consumers.
 
 ## How it works
 
@@ -416,7 +418,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
-| 5 | Heap census, budgets and allocator | the owners the census names; `deploy/host/entrypoint.sh` for allocator settings | a budget test per cache that gets one | `footprint_mib` ≤ 80 on a 2v2 |
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
 | 7 | Stores and the slim module in the staged image | `deploy/host/build.sh`, `crates/live/host-data`, `docs/live/dedicated-host-build.md` | the store's `NotInStore` tests; the coverage export's checks | Zero fallbacks and zero store misses over the light-host corpus; image and bundle bytes recorded |
 | 8 | Admission defaults, lateness and pack sizes | `host_cmd/pack.rs`, `pack_measure.rs`, `crates/live/live-worker/wrangler.toml`, `live-worker/src/settings.rs` | `pack_tests.rs`: a fourth 5 ms match is admitted, a late pack refuses | Four matches on 1 vCPU / 1,536 MiB for 30 minutes, none late |

@@ -290,6 +290,11 @@ charged per container. Three changes cut that, all behaviour-identical:
 - The descriptor-only D3D path creates no vertex or index caches (was:
   128 + 32 MiB of LRU budget).
 
+Light hosts build interpreter analysis on demand. Slim hosts keep one lifted
+cold owner. A bot visibility grid uses its sorted cell list when a dense
+index would exceed 256 KiB. Linux glibc lease children default to two
+allocator arenas and a 128 KiB trim threshold.
+
 **Sim stores** ([Sim stores](../runtime/sim.md#61-sim-stores-the-map-without-the-map))
 take it further: with `H2_SIM_STORE` naming a directory of built
 stores, the host serves each `maps\<map>.map` from the store — only the

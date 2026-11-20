@@ -189,7 +189,9 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   continues on a cache miss; an unsupported instruction or a transfer that
   needs the fallback can still wait for the analysis. The run reports waits
   over 100 ms, and `H2_BOOT_VERBOSE=1` shows when analysis finishes.
-  Compare warm runs.
+  A light host loads the full analysis on its first interpreter or
+  unresolved-target lookup that needs it. Its slim-module interpreter
+  retains one lifted cold owner across calls and resumes. Compare warm runs.
 - Numbers mean something only on a quiet machine, and only from the same
   data directory state: use `--fresh-data` (or a new `--data`) and never
   share one between two runs at once.
