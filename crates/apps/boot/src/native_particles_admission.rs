@@ -10,7 +10,7 @@ use d3d::{
 };
 use d3d::backend::{ExternalAttachments, ExternalDraws};
 use engine::memory::GuestMemory;
-use hooks::native_particles::{Call, Host, Producer};
+use render_bridge::native_particles::{Call, Host, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
@@ -202,7 +202,7 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
 }
 
 pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    if !hooks::Switches::from_env().is_ok_and(|s| hooks::native_particles::on(&s)) {
+    if !hooks::Switches::from_env().is_ok_and(|s| render_bridge::native_particles::on(&s)) {
         return;
     }
     let admission = Arc::new(Admission {
@@ -214,7 +214,7 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .add_draw_admission(admission.clone());
-    hooks::native_particles::set_host(Arc::new(ImmediateAdmission {
+    render_bridge::native_particles::set_host(Arc::new(ImmediateAdmission {
         device: device.clone(),
         admission,
     }));

@@ -653,7 +653,7 @@ Boot registers the render features in every run, with their
 `impl.render.*` switches off by default. Each declares its policy before
 any early return for a switch that is off, so a run with all of them off
 is not `Unaudited` and `state.save` is not refused. The other `native-*`
-features (`crates/hooking/hooks/src/native_*.rs`) are `Stateless`.
+features (`crates/rewrites/render-bridge/src/native_*.rs`) are `Stateless`.
 
 None of them changes simulation state. A save runs between slices, with
 the D3D render thread drained and the pipelined render not in flight

@@ -9,8 +9,12 @@
 //! field read is a bounds check and a load; through `dyn` memory (what
 //! engine code holds) it is one virtual call, as before.
 //!
-//! What sits on top: `engine::view` keeps its datum-array and builder
-//! machinery and takes these offsets; `sim-state` (docs/engine/sim-review.md
+//! The guest-memory boundary ([`memory`], [`testing`]), datum arrays and
+//! handles ([`datum`], [`handle`]), the tag index ([`tags`]), typed views
+//! ([`view`], `record!`) and the one table of named guest functions and
+//! globals ([`points`]) live here too; `engine` re-exports them.
+//!
+//! What sits on top: `sim-state` (docs/engine/sim-review.md
 //! lane 6) builds `ObjectView`/`UnitView` and `SimRead` over [`object`],
 //! [`unit`], [`player`] and [`game`] (docs/engine/sim-rewrite-objects.md
 //! section 8). Bots, telemetry and the agent API read the same
@@ -19,10 +23,26 @@
 //! No game data here: offsets and addresses are research notes, each with
 //! its evidence. Tests use synthetic memory.
 
+// The moved engine modules say `guest_layout::` (S2, docs/dev/crate-structure.md).
+extern crate self as guest_layout;
+
 #[macro_use]
 mod macros;
 mod field;
 mod mem;
+
+// The guest boundary and the named points, from `engine`, which
+// re-exports them (docs/dev/crate-structure.md, S2).
+pub mod datum;
+pub mod handle;
+pub mod memory;
+pub mod points;
+pub mod tags;
+pub mod testing;
+pub mod view;
+
+pub use handle::DatumHandle;
+pub use memory::{FlatMemory, GuestMemory, MemFault};
 
 pub mod datum_array;
 pub mod game;

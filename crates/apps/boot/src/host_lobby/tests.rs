@@ -30,7 +30,7 @@ fn validate_config_before_asking_retail() {
         parse("LOCKOUT", None, 1, false).unwrap(),
         Config {
             map: 50,
-            variant: Variant::Stock(sim::config::GameType::Slayer),
+            variant: Variant::Stock(sim_bench::config::GameType::Slayer),
             max_players: 1,
             live: false,
         }

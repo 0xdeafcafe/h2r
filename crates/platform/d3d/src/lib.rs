@@ -65,11 +65,11 @@ pub mod vertex_cache;
 
 pub use backend::{
     DrawAdmission, DrawSnapshot, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
-    Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthClip, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
+    Backend, ChannelMask, DepthClip, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{
-    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal, SceneReservation,
+    Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };

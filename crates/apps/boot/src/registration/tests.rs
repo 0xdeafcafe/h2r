@@ -13,7 +13,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_fo
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,occlusion";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
@@ -124,7 +124,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         replay: None,
     };
     let pipeline = super::pipeline_for(
-        hooks::pipeline_render::PipelineRender::with(true, hooks::pipeline_render::Addrs::HALO2),
+        render_bridge::pipeline_render::PipelineRender::with(true, render_bridge::pipeline_render::Addrs::HALO2),
         lockstep.enabled(),
         false,
     );
@@ -188,7 +188,6 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
         assert_eq!(ids.contains(&"native-scene-lists"), profile == Gpu);
         assert_eq!(ids.contains(&"native-light-walk"), profile == Gpu);
         assert!(ids.contains(&"h1-scope-zoom"));
-        assert!(ids.contains(&"occlusion"));
         if profile == Slim {
             assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
                 h.feature != "render-loop" && !h.feature.starts_with("native-")
@@ -199,7 +198,7 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 
 #[test]
 fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
-    use hooks::pipeline_render::{Addrs, PipelineRender, SWITCH};
+    use render_bridge::pipeline_render::{Addrs, PipelineRender, SWITCH};
 
     for (switches, lockstep, light, expected) in [
         ("", false, false, false),

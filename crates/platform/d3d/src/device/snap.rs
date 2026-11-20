@@ -568,9 +568,6 @@ impl<B: Backend> Device<B> {
                 cb.function, cb.context
             ));
         }
-        if self.pending_grid.is_some() {
-            why.push("an occlusion depth grid is asked for".into());
-        }
         if !self.pending_external.is_empty() {
             why.push("an external pass is asked for".into());
         }
@@ -745,7 +742,6 @@ impl<B: Backend> Device<B> {
             queued_external_stats: _,
             hw,
             // Quiesce.
-            pending_grid: _,
             pending_external: _,
             admissions: _, // Host services, retained across guest loads.
             opaque_world_admission: _,

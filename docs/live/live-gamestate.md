@@ -25,7 +25,7 @@ The pending options at `0x004ed3a8` are not the active match. `0x00137dd0` copie
 
 ### Generic datum-array header (used by players and objects)
 
-Recovered in `crates/rewrites/engine/src/datum.rs` and `docs/engine/datum_new.md`.
+Recovered in `crates/hooking/guest-layout/src/datum.rs` and `docs/engine/datum_new.md`.
 
 | Field | Offset | Type | Confidence | Evidence |
 |---|---:|---|---|---|---|
@@ -558,4 +558,4 @@ Consistency rules:
 
 ## References
 
-- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/rewrites/engine/src/datum.rs`, `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`, `crates/tools/viewer/src/bin/bsp.rs`.
+- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/hooking/guest-layout/src/datum.rs`, `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`, `crates/tools/viewer/src/bin/bsp.rs`.

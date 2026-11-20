@@ -10,7 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
-pub use hooks::scene_effect_instruction_entries;
+pub use render_bridge::scene_entries::scene_effect_instruction_entries;
 
 pub mod account_screen;
 mod agent_frames;
@@ -1844,7 +1844,7 @@ fn run_configured(
     }
     if sim_mode.is_some() || host_light {
         features
-            .add(&hooks::sim_native::SimNative::new(&loaded.runtime))
+            .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
             .map_err(anyhow::Error::msg)?;
     }
     registration::register_viewer_skips(&mut features, host_light)?;
@@ -1853,7 +1853,7 @@ fn run_configured(
             Some(sim) => sim.frame().clone(),
             // A playerless v2 film presents a separate viewer. Its recorded
             // guest skipped every world render, including the shared RNG draws.
-            None => hooks::sim_frame::SimFrame::new(
+            None => sim_bridge::sim_frame::SimFrame::new(
                 if film.as_ref().is_some_and(|s| s.has_engine_track()) { 0 } else { render_every }
             ).on_skip(d3d_diag::note_skipped_present),
         };
@@ -1940,7 +1940,7 @@ fn run_configured(
     {
         bail!("film event observer unavailable: {why}");
     }
-    if host_light && let Some(why) = installed.off_reason(hooks::sim_frame::ID) {
+    if host_light && let Some(why) = installed.off_reason(sim_bridge::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {

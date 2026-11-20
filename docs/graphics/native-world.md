@@ -1,7 +1,7 @@
 # Native renderer stage 1: the static world
 
 Status: Built. The static world draws natively in the default configuration.
-Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/hooking/hooks/src/native_world.rs`, `crates/apps/boot/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/hooking/hooks/tests/native_world.rs`.
+Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/native_world.rs`, `crates/apps/boot/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 1 of [native-renderer.md](native-renderer.md). The structure BSP's opaque
@@ -215,8 +215,7 @@ painted over with bare world while the walls looked right. Drawing it would have
 
 ### Where the native pass goes, and depth
 
-The ask is recorded in order with the draws, like the occlusion depth
-grid (`d3d::Device::request_depth_grid`): the device issues it at the next
+The ask is recorded in order with the draws: the device issues it at the next
 drain of the push buffer, which is the first D3D entry inside the layer
 draw, so it lands after layer 1's draws and before layer 3's object
 draws. At that moment the device knows the bound colour surface, depth
@@ -342,7 +341,7 @@ there is no hand-written look in between.
   push-buffer drain. `crates/platform/d3d/tests/external_pass.rs` covers both entry
   points, direct and threaded recording, scaled attachment refusal, and
   replay.
-- **The feature `native-world`** (`crates/hooking/hooks/src/native_world.rs`).
+- **The feature `native-world`** (`crates/rewrites/render-bridge/src/native_world.rs`).
   `LAYER_DRAW` is an opaque point, so the hook is one observer before it:
   it first sets back the bits the last layer 3 cleared (on items that
   still hold the mask it left), then, with layer 3 current, reads the
@@ -358,7 +357,7 @@ there is no hand-written look in between.
   device's current targets, which the render owns while it is in flight.
   The host drains previous commands, previews the list and confirms one
   batched reservation for the view before applying masks.
-  Tests: `crates/hooking/hooks/tests/native_world.rs` (the plan with
+  Tests: `crates/rewrites/render-bridge/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; on by default, keeping pipelining;
   `impl.render.native=off` places nothing; the skip and its restore at the

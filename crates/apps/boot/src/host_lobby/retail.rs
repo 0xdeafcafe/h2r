@@ -495,7 +495,7 @@ impl Machine {
         &mut self,
         cx: &Cx,
         map: u32,
-        matched: &sim::config::Match,
+        matched: &sim_bench::config::Match,
         scratch: u32,
     ) -> Result<bool, RpcError> {
         let config = Config {

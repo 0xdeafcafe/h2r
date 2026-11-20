@@ -122,23 +122,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_native_master_switch_gates_every_stage_and_walk() {
-        let enabled = |spec| {
-            let switches = Switches::parse(spec).unwrap();
-            [
-                native_render_on(&switches),
-                crate::native_world::on(&switches),
-                crate::native_transparents::on(&switches),
-                crate::native_decals::on(&switches),
-                crate::native_particles::on(&switches),
-                crate::native_first_person::on(&switches),
-                crate::native_hud::on(&switches),
-                crate::native_post::on(&switches),
-            ]
-        };
-        assert_eq!(enabled(""), [true; 8]);
-        assert_eq!(enabled("impl.render=off"), [true; 8]);
-        assert_eq!(enabled("impl.render.native=off"), [false; 8]);
+    fn the_native_master_switch_is_looked_up_exactly() {
+        let on = |spec| native_render_on(&Switches::parse(spec).unwrap());
+        assert!(on(""));
+        assert!(on("impl.render=off"));
+        assert!(!on("impl.render.native=off"));
     }
 
     #[test]

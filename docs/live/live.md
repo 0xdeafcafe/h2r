@@ -297,7 +297,7 @@ URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
 
-**The app builds** (tvOS and iOS, `crates/apps/apple-host`; the Xbox app when
+**The app builds** (tvOS and iOS, `crates/apps/h2host`; the Xbox app when
 there is one, docs/runtime/windows.md) are on by default against the same
 service (`live_hle::platform`). `live.toml` in the app's data root is the
 switch:

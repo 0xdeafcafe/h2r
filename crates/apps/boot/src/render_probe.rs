@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 static INTERP: Mutex<Option<Arc<Mutex<d3d::interp::InterpStats>>>> = Mutex::new(None);
 #[cfg(feature = "gpu")]
 static HOLDS: Mutex<Option<Arc<Mutex<d3d::interp::HoldLog>>>> = Mutex::new(None);
-static PIPELINE: Mutex<Option<hooks::pipeline_render::PipelineRender>> = Mutex::new(None);
+static PIPELINE: Mutex<Option<render_bridge::pipeline_render::PipelineRender>> = Mutex::new(None);
 
 #[cfg(feature = "gpu")]
 /// The interpolated replay's counters (`d3d::InterpBackend::stats`).
@@ -31,7 +31,7 @@ pub fn set_interp_holds(holds: Arc<Mutex<d3d::interp::HoldLog>>) {
 }
 
 /// The pipelined render feature (a handle onto the same state).
-pub fn set_pipeline(p: hooks::pipeline_render::PipelineRender) {
+pub fn set_pipeline(p: render_bridge::pipeline_render::PipelineRender) {
     *PIPELINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(v["holds"]["frames"], 5, "the hold log beside the counters");
         assert_eq!(v["holds"]["kinds"], serde_json::json!([]));
         assert_eq!(v["frames"], 12);
-        set_pipeline(hooks::pipeline_render::PipelineRender::new());
+        set_pipeline(render_bridge::pipeline_render::PipelineRender::new());
         assert_eq!(pipeline().unwrap()["pipelined"], 0);
     }
 }

@@ -1,4 +1,4 @@
-// The tvOS and iOS apps' Rust half (crates/apps/apple-host). All calls on the
+// The tvOS and iOS apps' Rust half (crates/apps/h2host). All calls on the
 // main thread.
 #ifndef H2HOST_H
 #define H2HOST_H

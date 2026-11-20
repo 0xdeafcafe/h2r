@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
 Status: Partly built. The dispatcher, the body table and the installer exist with no bodies; slices 1 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add them.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original, feature `differential`), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original, feature `differential`), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -28,11 +28,11 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
 - `engine::sim_objects::drive` is the one local dispatcher: a call or
   return between two enabled bodies stays in Rust; anything else returns a
   `TransferAbi` to the runtime.
-- `hooks::sim_objects` registers each body's entry and sites under
+- `sim_bridge::sim_objects` registers each body's entry and sites under
   `impl.sim.native.objects`. Where the float environment check fails, the
   original runs from the same frame. A per-function port at a point a body
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down and stays
-  a test oracle (`hooks::sim_objects::owns`).
+  a test oracle (`sim_bridge::sim_objects::owns`).
 
 ## Entries
 
@@ -271,8 +271,8 @@ guest accesses. The slice is counted in guest memory accessor calls
 `spend_access`); a port reads and writes through the memory guard
 (`ExecCtx::memory`, `runtime::Guest`), which does not spend; only a few hooks
 charge explicitly with `ExecCtx::charge_accesses`
-(`crates/hooking/hooks/src/pipeline_render.rs`,
-`crates/hooking/hooks/src/pipeline_scene.rs`, `crates/apps/boot/src/fallback.rs`).
+(`crates/rewrites/render-bridge/src/pipeline_render.rs`,
+`crates/rewrites/render-bridge/src/pipeline_scene.rs`, `crates/apps/boot/src/fallback.rs`).
 So a long Rust segment runs without expiring its slice, and the only
 preemption points inside a walk are the true callouts. That is
 deterministic. Whether to charge bodies is a decision, not a reading; a run

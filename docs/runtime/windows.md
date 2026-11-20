@@ -126,7 +126,7 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
-| perf sampler, fastmem-proto, HID | Mach and IOKit | compiled out |
+| perf sampler, HID | Mach and IOKit | compiled out |
 | Ctrl-C in `h2 play` | signal watcher | none |
 | live-server identity files | mode 0600 | the profile directory's ACL |
 

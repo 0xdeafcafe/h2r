@@ -17,63 +17,11 @@
 pub mod arena;
 pub mod bridge;
 pub mod entry;
-pub mod h1_projectiles;
-pub mod h1_scope_zoom;
 pub mod install;
 pub mod leaves;
 pub mod locale;
-#[cfg(feature = "native-render")]
-pub mod native_decals;
-#[cfg(feature = "native-render")]
-pub mod native_first_person;
-#[cfg(feature = "native-render")]
-pub mod native_fog;
-#[cfg(feature = "native-render")]
-pub mod native_gels;
-#[cfg(feature = "native-render")]
-pub mod native_hud;
-#[cfg(feature = "native-render")]
-pub mod native_lights;
-#[cfg(feature = "native-render")]
-pub mod native_map_work;
-#[cfg(feature = "native-render")]
-pub mod native_objects;
-#[cfg(feature = "native-render")]
-pub mod native_particles;
-#[cfg(feature = "native-render")]
-mod native_effects;
-#[cfg(feature = "native-render")]
-pub mod native_post;
-#[cfg(feature = "native-render")]
-pub mod native_scene_lists;
-#[cfg(feature = "native-render")]
-pub mod native_shadows;
-#[cfg(feature = "native-render")]
-pub mod native_transparents;
-#[cfg(feature = "native-render")]
-pub mod native_water;
-#[cfg(feature = "native-render")]
-pub mod native_world;
-#[cfg(feature = "native-render")]
-pub mod native_world_layers;
-pub mod occlusion;
 pub mod plan;
-mod verify;
-pub mod pipeline_render;
-pub mod render_census;
-#[cfg(feature = "native-render")]
-pub mod render_loop;
-pub mod render_timing;
-pub mod shadow;
-#[cfg(feature = "native-render")]
-pub mod scene_step;
-pub mod sim_frame;
-pub mod sim_native;
-pub mod sim_objects;
-pub mod sim_physics;
-pub mod sim_observer;
-pub mod sim_static_light;
-pub mod sim_submix;
+pub mod verify;
 pub mod snapshot;
 pub mod switches;
 
@@ -92,37 +40,6 @@ pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
-
-/// Retail instruction boundaries that the emitter must route through entry
-/// dispatch. Hook bodies keep working on images with only a subset present.
-#[cfg(not(feature = "native-render"))]
-pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
-    std::iter::empty()
-}
-
-/// Retail instruction boundaries that the emitter must route through entry
-/// dispatch. Hook bodies keep working on images with only a subset present.
-#[cfg(feature = "native-render")]
-pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
-    let mut seen = std::collections::HashSet::new();
-    [
-        native_decals::DECAL_ITEM_GEOMETRY.base,
-        native_decals::DECAL_RENDER_END.base,
-        native_transparents::GEOMETRY_RANGE_READY.base,
-        native_transparents::SCENE_TRANSPARENTS_END.base,
-        native_hud::HUD_QUAD_READY.base,
-        native_post::SCREEN_STRIP_READY.base,
-        native_particles::EMIT_READY.base,
-        native_particles::EMIT_PUBLISH.base,
-        native_particles::EMIT_END.base,
-        native_particles::DYNAMIC_QUAD_READY.base,
-        native_particles::DYNAMIC_PUBLISH.base,
-        native_particles::DYNAMIC_END.base,
-    ].into_iter().chain(native_effects::instruction_entries())
-        .chain(native_scene_lists::instruction_entries())
-        .chain(native_hud::instruction_entries())
-        .filter(move |&address| seen.insert(address))
-}
 
 /// Log the full startup plan and first use of each hook. Read once.
 pub fn plan_verbose() -> bool {

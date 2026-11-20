@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use d3d::device::IndexedGeometry;
 use d3d::{CachedBytes, ResolvedDraw, StreamBytes, StreamData};
-use hooks::native_transparents::{self, MapGeneration};
+use render_bridge::native_transparents::{self, MapGeneration};
 use gfx::renderer::VertexStream;
 use gfx::vertex::{PrimitiveType, VertexLayout};
 use native_render::camera::GuestRead;

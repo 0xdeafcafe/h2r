@@ -396,7 +396,7 @@ fn guest_alloc_hands_out_arena_pages() {
 /// render stage on both sides with no conflict.
 #[test]
 fn render_timing_is_off_by_default_and_observes_every_stage() {
-    use hooks::render_timing::RenderTiming;
+    use render_bridge::render_timing::RenderTiming;
     let mut r = Registry::new(Switches::defaults());
     assert!(!r.add(&RenderTiming::new()).unwrap());
     let text = r.build(&hooks::Base).unwrap().text();
@@ -447,17 +447,17 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         .lines()
         .filter(|l| l.contains("[render-timing:scene call] -> original"))
         .count();
-    assert_eq!(calls, hooks::render_timing::SCENE_CALLEES.len() - 1);
+    assert_eq!(calls, render_bridge::render_timing::SCENE_CALLEES.len() - 1);
     // And every shader-draw callee.
     let calls = text
         .lines()
         .filter(|l| l.contains("[render-timing:shader call] -> original"))
         .count();
-    assert_eq!(calls, hooks::render_timing::SHADER_CALLEES.len());
+    assert_eq!(calls, render_bridge::render_timing::SHADER_CALLEES.len());
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
     assert_eq!(
         shadows,
-        hooks::render_timing::STAGES,
+        render_bridge::render_timing::STAGES,
         "only the stages run something after the body"
     );
 }

@@ -613,7 +613,7 @@ commands are for the coordinator.
   becomes a remainder, not a part). `frame-scene`: builder sealing,
   range integrity, recycling. `native-render`: its existing GPU tests,
   fed scenes. `cargo test -p frame-scene -p scene-extract -p
-  native-render -p hooks`.
+  native-render -p render-bridge`.
 - **Gate.** Pixels identical to the commit before (`max_channel == 0`)
   on the gate corpus; hashes identical; fps within noise;
   `rg GuestRead crates/rewrites/native-render/src/{gpu,objects,instances,world}*`
@@ -856,7 +856,7 @@ uses move to `native-render` or `scene-extract` and stay.
 | Slice 7 | nothing yet: the old stack is still what `native=off` selects | |
 | Slice 8 | `d3d/src/interp/` and its three switches | 5,600 |
 | Slice 10, step 1 | `impl.render.native` itself and everything only `=off` reaches: `d3d/src/threaded.rs`, `scaled.rs` and `scaled/` except the view mapping, the `Backend` implementations other than `SceneSink`, `gfx_backend.rs`'s surface, write-back and present code, `device/{mirror,display,snap}.rs`'s render-target half, lazy depth, alias mirrors, the visibility poll, and the "old-behaviour opt-out" variables of render-switches.md that configure them; `render.parity` | 8,000 |
-| Slice 10, step 2 | `impl.render.pipelined_frame`, `feature/src/pipeline_{render,scene,snapshot}.rs`, `H2_PIPELINE_*`; `impl.render.occlusion` and the depth grid; what is left of `engine/src/render_loop` that no typed stage uses | 6,000 |
+| Slice 10, step 2 | `impl.render.pipelined_frame`, `feature/src/pipeline_{render,scene,snapshot}.rs`, `H2_PIPELINE_*`; what is left of `engine/src/render_loop` that no typed stage uses | 6,000 |
 | Slice 10, step 3 | the `Backend` trait, reduced to what `SceneSink` implements, then folded into `Device` | |
 | Later, not scheduled | `viewer`'s and `scenario-edit`'s own world renderers, onto `native-render` through `frame-scene` | |
 

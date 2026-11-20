@@ -726,7 +726,7 @@ Runtime only. Old images keep running on the paged path.
 
 - Remove `H2_HELD_TRY`, `H2_PAGED_TRY`, `H2Gate`, `h2_access_cold`'s gate
   half, the gate word and `GATE_*`, `H2MemoryData`, `fast_acquire` and
-  `fast_release`, view lending, `crates/recompiler/fastmem-proto`, the `fastmem-4k`
+  `fast_release`, view lending, the `fastmem-4k`
   branch's doc, and the flags `H2_FASTMEM`, `H2_FLAT_RAM`,
   `H2_RAM_PAGE_CACHE`, `H2_ENTRY_GATE`, `H2_DIRTY_INLINE`,
   `H2_DIRECT_GATE`, `H2_DIRECT_COUNT`, `H2_DIRECT_VIEW`, `H2_VIEW_CHARGE`,

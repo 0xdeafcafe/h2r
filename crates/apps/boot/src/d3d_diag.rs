@@ -46,7 +46,7 @@ pub fn presents() -> u64 {
 }
 
 /// Counts a present sim mode skipped with the world render
-/// (`hooks::sim_frame`), so what counts presents (`H2_BOOT_STOP_AT_PRESENT`,
+/// (`sim_bridge::sim_frame`), so what counts presents (`H2_BOOT_STOP_AT_PRESENT`,
 /// the input script, the agent's stamps) moves on as in a rendered run. No
 /// frame time is kept for it.
 pub fn note_skipped_present() {
@@ -744,14 +744,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
-    }
-    fn request_depth_grid(
-        &mut self,
-        surface: Self::Surface,
-        request: d3d::DepthGridRequest,
-        sink: d3d::DepthGridSink,
-    ) -> Result<bool, String> {
-        self.inner.request_depth_grid(surface, request, sink)
     }
     #[cfg(feature = "gpu")]
     fn external_attachments(

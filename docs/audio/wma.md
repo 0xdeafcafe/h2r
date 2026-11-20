@@ -159,15 +159,15 @@ alignment, gain fitting, or concealment is used for oracle comparisons.
 
 ## Running the oracle
 
-The oracle runs the game's own decoder in Unicorn (`--features unicorn`,
-see [oracle.md](../lifter/oracle.md); Unicorn can crash in host cache initialisation
+The oracle runs the game's own decoder in Unicorn (`wma`'s `oracle`
+feature, `crates/platform/wma/src/oracle.rs`; Unicorn can crash in host cache initialisation
 inside some macOS sandboxes, before any guest code runs). Write the outputs
 to a directory of your own outside the repository (`$KEEP` below). The
 disc and output paths must be absolute. Pass the same zero-based stream
 index to each tool:
 
 ```sh
-cargo run -p oracle --features unicorn --example wma_oracle -- "$PWD/disc/halo2.iso" 5 "$KEEP/oracle-5.pcm"
+cargo run -p wma --features oracle --example wma_oracle -- "$PWD/disc/halo2.iso" 5 "$KEEP/oracle-5.pcm"
 cargo run -p wma --example native_pcm -- "$PWD/disc/halo2.iso" 5 "$KEEP/native-5.pcm"
 ```
 
@@ -222,11 +222,11 @@ the last quarter of the 2n folded output (i >= 3n/2) when saving overlap
 (`fchs` at `0x38d918`). That broke time-domain aliasing cancellation in the
 second half of every following block.
 
-An ignored test, `crates/recompiler/oracle/tests/wma_disc.rs`, reruns 128 kbps stream 0
+An ignored test, `crates/platform/wma/tests/oracle_disc.rs`, reruns 128 kbps stream 0
 (the shortest of 0 to 4; about 25 s in release) and 96 kbps streams 5, 38, 154 and 226
 against the guest decoder and requires at most 1 LSB. It reads the disc
 by absolute path:
-`cargo test -p oracle --features unicorn --release --test wma_disc -- --ignored`.
+`cargo test -p wma --features oracle --release --test oracle_disc -- --ignored`.
 
 Live playback goes through the runtime boundary below.
 
