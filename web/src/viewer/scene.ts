@@ -2,7 +2,7 @@
 // none) under a sun, with players as their species' model in their team or
 // own colour, holding their weapon (a capsule when the server has no
 // models), an aim ray from the head, name labels, muzzle flashes and
-// tracers when they fire, damage drawn from attacker to victim, grenades
+// tracers when they fire, damage drawn from attacker to victim, projectiles
 // in flight, every vehicle in the world, and fading knockout marks. A
 // skinned model plays its clips (standing, walking, running, crouching, in
 // the air, throwing, hitting, reloading, firing) as the frames say; a
@@ -1479,8 +1479,9 @@ export class ViewerScene {
         t.flash.rotation.x = shot.id * 1.9;
         t.group.visible = true;
         const look = this.shotLook(shot.index);
-        // The shot itself flies on its own; a model's beam stays only for a capsule.
-        const drawShot = !frame.filmWorld || look.kind === "bullet" || look.kind === "beam";
+        // Draw fast shots as muzzle tracers. Slower projectiles come from
+        // the frame census or the film object stream.
+        const drawShot = look.kind === "bullet" || look.kind === "beam";
         t.beam.visible = !p.biped && drawShot;
         if (look.kind === "melee") t.flash.visible = false;
         else if (p.biped && drawShot) {
@@ -1718,7 +1719,7 @@ export class ViewerScene {
     this.drawShots(now, frame);
     if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
     if (this.projectiles.update(now)) this.dirty = true;
-    if (this.effects.update(this.feed.liveHits(now), still || frame.filmWorld ? [] : this.feed.liveGrenades(now), S, still)) this.dirty = true;
+    if (this.effects.update(this.feed.liveHits(now), still ? [] : frame.projectileTrails ?? [], S, still)) this.dirty = true;
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));

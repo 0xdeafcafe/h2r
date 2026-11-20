@@ -1,10 +1,10 @@
 // Things that happen at a moment and are drawn for a moment after: actions
-// (a grenade thrown, with its arc), and damage (a line from attacker to
+// and damage (a line from attacker to
 // victim, a hit marker and a number). Like map/shots.ts, a view watches the
 // sampled frames go by, notes each frame's events once and fades them out.
 // Pure: the 2D maps and the 3D scene draw them their own way.
 
-import { actorIndex, aimOf, type Action, type Aim, type SampledHit, type SampledPlayer, type SampledVehicle } from "../state/frames";
+import { actorIndex, type Action, type SampledHit, type SampledPlayer, type SampledVehicle } from "../state/frames";
 
 // ---- actions ----
 
@@ -29,73 +29,6 @@ export class ActionWatch {
   }
 
   clear(): void { this.seen.clear(); }
-}
-
-// ---- grenades ----
-
-/** How long a thrown grenade is drawn in flight (ms). */
-export const GRENADE_MS = 1150;
-/** The throw, game units and seconds: speed along the aim, extra lift, and the pull down. */
-export const GRENADE_SPEED = 6.5;
-export const GRENADE_LOFT = 2.4;
-export const GRENADE_GRAVITY = 8;
-/** It leaves the hand this far above the feet. */
-export const GRENADE_HAND = 0.55;
-export const MAX_LIVE_GRENADES = 16;
-
-export interface Grenade {
-  id: number;
-  index: number;
-  born: number;
-  /** Where the thrower's feet were, and where they were looking. */
-  x: number; y: number; z: number;
-  aim: Aim;
-  /** "frag", "plasma", or null when the frame didn't say. */
-  type: string | null;
-}
-
-/** Where a grenade is `ageMs` after the throw: a plain ballistic arc from
- *  the hand along the aim, resting where it comes back down to the
- *  thrower's footing. The frames don't carry the grenade itself, so this
- *  shows the throw, not where it really went. */
-export function grenadeAt(g: Pick<Grenade, "x" | "y" | "z" | "aim">, ageMs: number): [number, number, number] {
-  const vz = g.aim[2] * GRENADE_SPEED + GRENADE_LOFT;
-  // When it is back at foot height: the positive root of hand + vz t - g t²/2 = 0.
-  const land = (vz + Math.sqrt(vz * vz + 2 * GRENADE_GRAVITY * GRENADE_HAND)) / GRENADE_GRAVITY;
-  const t = Math.min(Math.max(0, ageMs) / 1000, land);
-  return [
-    g.x + g.aim[0] * GRENADE_SPEED * t,
-    g.y + g.aim[1] * GRENADE_SPEED * t,
-    g.z + GRENADE_HAND + vz * t - (GRENADE_GRAVITY * t * t) / 2,
-  ];
-}
-
-/** The path flown so far, as `n` points from the hand to where it is now. */
-export function grenadeTrail(g: Pick<Grenade, "x" | "y" | "z" | "aim">, ageMs: number, n = 12): [number, number, number][] {
-  return Array.from({ length: n }, (_, i) => grenadeAt(g, (ageMs * i) / (n - 1)));
-}
-
-export class GrenadeQueue {
-  private list: Grenade[] = [];
-  private nextId = 1;
-
-  /** A throw seen now. */
-  add(p: SampledPlayer, now: number): void {
-    this.list.push({ id: this.nextId++, index: p.index, born: now, x: p.x, y: p.y, z: p.z, aim: aimOf(p), type: p.grenade ?? null });
-    if (this.list.length > MAX_LIVE_GRENADES) this.list.shift();
-  }
-
-  /** The grenades in flight, each with its age and a fade over its last fifth. */
-  live(now: number): Array<Grenade & { age: number; alpha: number }> {
-    this.list = this.list.filter((g) => now - g.born < GRENADE_MS);
-    return this.list.map((g) => {
-      const age = now - g.born;
-      return { ...g, age, alpha: Math.min(1, (GRENADE_MS - age) / (GRENADE_MS * 0.2)) };
-    });
-  }
-
-  get busy(): boolean { return this.list.length > 0; }
-  clear(): void { this.list = []; }
 }
 
 // ---- who and where ----
@@ -253,10 +186,9 @@ export class HitQueue {
 
 // ---- all of it, for one view ----
 
-/** What a view watches go by: actions, the grenades they throw, and damage. */
+/** What a view watches go by: actions and damage. */
 export class EventFeed {
   readonly actions = new ActionWatch();
-  readonly grenades = new GrenadeQueue();
   readonly hits = new HitQueue();
   private where: (id: string) => Where | null = () => null;
 
@@ -265,18 +197,15 @@ export class EventFeed {
     this.where = locator(f.players, f.actors, f.vehicles);
     const events = this.actions.observe(f.players, opts);
     if (f.actors?.length) events.push(...this.actions.observe(f.actors, opts));
-    for (const e of events) if (e.action === "grenade" && e.player.alive) this.grenades.add(e.player, now);
     this.hits.observe(f.hits, now, this.where, opts);
     return events;
   }
 
   liveHits(now: number): LiveHit[] { return this.hits.live(now, this.where); }
-  liveGrenades(now: number) { return this.grenades.live(now); }
-  get busy(): boolean { return this.hits.busy || this.grenades.busy; }
+  get busy(): boolean { return this.hits.busy; }
 }
 
 /** The colours damage is drawn in: a kill red, a hit on a shield blue-white, anything else warm white. */
 export function hitColour(h: Pick<Hit, "kill" | "kind">): string {
   return h.kill ? "#ff5a4d" : h.kind === "shield" ? "#9fd8ff" : "#ffe9a8";
 }
-export const grenadeColour = (type: string | null) => (type === "plasma" ? "#6fd0ff" : "#d8e86a");

@@ -6,7 +6,8 @@ import type { SampledPlayer, SampledVehicle } from "../state/frames";
 import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
 import type { LiveShot } from "./shots";
-import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "./events";
+import { hitColour, type LiveHit } from "./events";
+import { projectileColour, type ProjectileTrail } from "../state/projectile-trails";
 import { LIFT_COLOUR, TELEPORTER_COLOUR, linkEnds, type MapFeatures, type TeleporterRole } from "./features";
 
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
@@ -52,8 +53,8 @@ export interface Scene {
   still?: boolean;
   /** Damage on screen now: a line from attacker to victim, a marker and a number. */
   hits?: LiveHit[];
-  /** Grenades in flight: the arc of the throw. */
-  grenades?: Array<Grenade & { age: number; alpha: number }>;
+  /** Recorded projectile paths up to the frame's render tick. */
+  projectileTrails?: ProjectileTrail[];
 }
 
 type Px = readonly [number, number];
@@ -94,25 +95,23 @@ export function drawHit(ctx: CanvasRenderingContext2D, from: Px | null, to: Px, 
   ctx.globalAlpha = 1;
 }
 
-/** A thrown grenade on a 2D map: the path flown so far as a dashed line,
- *  and the grenade at its end. `pts` are canvas points along the arc. */
-export function drawGrenade(ctx: CanvasRenderingContext2D, pts: readonly Px[], alpha: number, type: string | null) {
-  if (pts.length < 2 || !(alpha > 0)) return;
-  const colour = grenadeColour(type);
-  ctx.globalAlpha = Math.min(1, alpha);
+/** Recorded positions projected into a 2D map, with a dot at the head. */
+export function drawProjectileTrail(ctx: CanvasRenderingContext2D, pts: readonly Px[], colour: string) {
+  if (!pts.length) return;
   ctx.lineCap = "round";
-  ctx.setLineDash([3, 4]);
-  for (const [style, w] of [["rgba(0, 0, 0, 0.6)", 3], [colour, 1.5]] as const) {
-    ctx.strokeStyle = style; ctx.lineWidth = w;
-    ctx.beginPath();
-    pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
-    ctx.stroke();
+  if (pts.length > 1) {
+    ctx.setLineDash([3, 4]);
+    for (const [style, w] of [["rgba(0, 0, 0, 0.6)", 3], [colour, 1.5]] as const) {
+      ctx.strokeStyle = style; ctx.lineWidth = w;
+      ctx.beginPath();
+      pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
   }
-  ctx.setLineDash([]);
   const [x, y] = pts[pts.length - 1]!;
   ctx.fillStyle = colour; ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.globalAlpha = 1;
 }
 
 /** A teleporter on a 2D map: a ring; a sender has a dot in it, a receiver is open, a two-way has both rings. */
@@ -462,9 +461,9 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   }
   ctx.globalAlpha = 1;
 
-  // Over everyone: grenades in flight, then damage.
+  // Over everyone: recorded projectile paths, then damage.
   if (!s.mini) {
-    for (const g of s.grenades ?? []) drawGrenade(ctx, grenadeTrail(g, g.age).map(([gx, gy]) => [sx(gx), sy(gy)] as const), g.alpha, g.type);
+    for (const p of s.projectileTrails ?? []) drawProjectileTrail(ctx, p.points.map(([x, y]) => [sx(x), sy(y)] as const), projectileColour(p.kind));
     for (const hit of s.hits ?? []) drawHit(ctx, hit.from ? [sx(hit.from.x), sy(hit.from.y)] : null, [sx(hit.x), sy(hit.y)], hit, s.still);
   }
 }

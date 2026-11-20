@@ -214,18 +214,20 @@ optional; a frame without them draws as before.
   for a minute, at most 24 of them, all cleared on a seek. AI bodies come
   in the frames as actors with the `dead` stance and lie until the game
   clears them away.
-- *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
-  A hit draws a line from attacker to victim that fades in a quarter of a
-  second, and a hit marker with the damage floating up from the victim for
-  under a second (the amount is a share of the victim's vitality, shown in
-  percent); sustained fire on one victim is one marker with a rising
-  number; the last hit before a victim is found dead is the kill: red,
-  ringed, bigger, and it stays longer. A grenade throw draws the arc of the
-  throw from the hand along the aim (the frames don't carry the grenade
-  itself, so it shows the throw, not where it bounced). The 3D view
-  (`viewer/effects3d.ts`) and both 2D maps draw them; with reduced motion
-  the numbers stay put, the line holds instead of flashing, and no grenade
-  flies.
+- *Damage* (`map/events.ts`). A hit draws a line from attacker to victim
+  that fades in a quarter of a second and a marker that shows damage as
+  a percent of the victim's vitality. Sustained fire on a victim adds to
+  the same marker. A finishing hit gets a larger red ring that stays
+  longer. With reduced motion, the numbers stay put and the line holds.
+- *Projectile trails* (`state/projectile-trails.ts`). The 2D and 3D viewers
+  use consecutive `Frame.projectiles` positions for each projectile ID. The
+  projectile's recorded type sets its colour. Interpolation stays between
+  observations for the same projectile and parent, so a trail can follow a
+  recorded bounce. A disappearance, cut or seek clears the trail. A
+  grenade action still animates the throw. Reduced motion hides the trails.
+  Recordings without projectile samples still show the throw animation,
+  muzzle flashes and fast shot effects. Host-film objects use their own
+  playback path.
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
   faint grey outline (2D) and has no label. Once the frames carry
   vehicles the level's own copies (`vehi` placements and multiplayer

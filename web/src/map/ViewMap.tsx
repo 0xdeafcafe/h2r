@@ -8,10 +8,11 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawFeatures, drawActor, drawGrenade, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
+import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawFeatures, drawActor, drawProjectileTrail, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
 import { actorColour, vehicleBox } from "../viewer/models";
 import { ShotQueue } from "./shots";
-import { EventFeed, grenadeTrail } from "./events";
+import { EventFeed } from "./events";
+import { projectileColour } from "../state/projectile-trails";
 import type { MapFeatures } from "./features";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
@@ -281,11 +282,11 @@ export default function ViewMap(props: {
         const info = roster.get(q.p.index);
         if (info && (hover === q.p.index || highlight === q.p.index)) label(ctx, pal, q.x, q.y, r, info.name);
       }
-      // Over everyone: grenades in flight and damage, plotted in the world like the shots.
+      // Over everyone: recorded projectile paths and damage, plotted in the world.
       if (!props.mini) {
         feed.observe(f, now);
         const at = (x: number, y: number, z: number) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)] as const; };
-        if (!still) for (const g of feed.liveGrenades(now)) drawGrenade(ctx, grenadeTrail(g, g.age).map((q) => at(...q)), g.alpha, g.type);
+        if (!still) for (const p of f.projectileTrails ?? []) drawProjectileTrail(ctx, p.points.map((q) => at(...q)), projectileColour(p.kind));
         for (const hit of feed.liveHits(now)) drawHit(ctx, hit.from ? at(hit.from.x, hit.from.y, hit.from.z + 0.5) : null, at(hit.x, hit.y, hit.z), hit, still);
       }
     });

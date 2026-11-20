@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { FilmWorld, FrameObject, MapOutline } from "../api/types";
 import type { SampledHit, SampledMachine, SampledMachinePosition, SampledPlayer, SampledVehicle } from "../state/frames";
+import type { ProjectileTrail } from "../state/projectile-trails";
 import type { MapFeatures } from "../map/features";
 import { onAnimationFrame } from "../map/scheduler";
 import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type RosterEntry } from "../map/render";
@@ -18,6 +19,8 @@ export interface MapFrame {
   vehicles?: SampledVehicle[];
   /** Damage in the frame behind this moment, with that frame's tick. */
   hits?: { tick: number; hits: SampledHit[] } | null;
+  /** Recorded projectile paths up to the frame's render tick. */
+  projectileTrails?: ProjectileTrail[];
   /** The level zone (structure BSP) loaded now, when the frames say. */
   bsp?: number | null;
   /** Machines that move (lift platforms, doors, big scripted things), when the frames have them. */
@@ -125,7 +128,7 @@ export default function MapCanvas(props: {
         shots: props.mini || still ? undefined : shots.live(now),
         firing: props.mini || !still ? undefined : shots.firingNow(now),
         hits: props.mini ? undefined : feed.liveHits(now),
-        grenades: props.mini || still ? undefined : feed.liveGrenades(now),
+        projectileTrails: props.mini || still ? undefined : f.projectileTrails,
         still,
         features: props.mini ? null : props.features?.() ?? null,
         players: f.players,

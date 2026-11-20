@@ -4,7 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame } from "../src/api/types";
 import { FrameBuffer, sampleBsp, sampleFrames, sampleHits, sampleVehicles, type SampledHit, type SampledPlayer } from "../src/state/frames";
 import { ACTOR_MAX_PITCH, ACTOR_MAX_TWIST, BipedAnim, HELD, ONE_SHOT_MS, actorAim, RUN_SPEED, SpeedMeter, WALK_SPEED, actionShot, clipFor, locomotion, paceScale, weaponClass } from "../src/viewer/anim";
-import { ActionWatch, EventFeed, GRENADE_MS, GrenadeQueue, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_MARK_MS, entityIndex, grenadeAt, grenadeTrail, hitColour, hitText, locator, mergeHits } from "../src/map/events";
+import { ActionWatch, EventFeed, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_MARK_MS, entityIndex, hitColour, hitText, locator, mergeHits } from "../src/map/events";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "../src/viewer/zones";
 import { parseModels } from "../src/viewer/models";
 import { BipedAnimator, ModelLibrary, prepareBiped, upperBody } from "../src/viewer/players3d";
@@ -219,7 +219,7 @@ describe("stances, actions, hits and the zone in sampled frames", () => {
   });
 });
 
-describe("actions and grenades as a view sees them", () => {
+describe("actions as a view sees them", () => {
   test("each frame's actions are reported once, and a seek notes them silently", () => {
     const w = new ActionWatch();
     const p = player({ actions: ["grenade", "melee"], actionTick: 30 });
@@ -229,40 +229,6 @@ describe("actions and grenades as a view sees them", () => {
     expect(w.observe([player({ actions: ["reload"], actionTick: 60 })])).toEqual([]);
     expect(w.observe([player({ actions: ["reload"], actionTick: 90 })])).toHaveLength(1);
     expect(w.observe([player()])).toEqual([]);
-  });
-
-  test("a grenade flies an arc from the hand along the aim and comes to rest", () => {
-    const g = { x: 10, y: 5, z: 2, aim: [1, 0, 0] as [number, number, number] };
-    const start = grenadeAt(g, 0);
-    expect(start[0]).toBe(10);
-    expect(start[2]).toBeGreaterThan(2.3);
-    const mid = grenadeAt(g, 250), end = grenadeAt(g, GRENADE_MS), after = grenadeAt(g, GRENADE_MS * 3);
-    // Up and out, then down to the thrower's footing, and it stays there.
-    expect(mid[2]).toBeGreaterThan(start[2]);
-    expect(mid[0]).toBeGreaterThan(11);
-    expect(end[2]).toBeCloseTo(2, 5);
-    expect(after).toEqual(end);
-    expect(end[1]).toBe(5);
-    // Thrown upwards it goes higher and lands later.
-    expect(grenadeAt({ ...g, aim: [0.7, 0, 0.7] }, 400)[2]).toBeGreaterThan(grenadeAt(g, 400)[2]);
-    const trail = grenadeTrail(g, 600, 7);
-    expect(trail).toHaveLength(7);
-    expect(trail[0]).toEqual(start);
-    expect(trail[6]).toEqual(grenadeAt(g, 600));
-  });
-
-  test("the queue holds a throw for its flight, in the thrower's grenade type", () => {
-    const q = new GrenadeQueue();
-    q.add(player({ x: 1, aim: [0, 1, 0], grenade: "plasma" }), 1000);
-    q.add(player({ index: 3, yaw: Math.PI / 2 }), 1100);
-    const live = q.live(1200);
-    expect(live.map((g) => [g.index, g.type, g.age])).toEqual([[0, "plasma", 200], [3, null, 100]]);
-    // No aim in the frame: level along the yaw.
-    expect(live[1]!.aim[1]).toBeCloseTo(1, 6);
-    expect(live[0]!.alpha).toBe(1);
-    expect(q.live(1000 + GRENADE_MS - 50)[0]!.alpha).toBeLessThan(0.3);
-    expect(q.live(1100 + GRENADE_MS)).toEqual([]);
-    expect(q.busy).toBe(false);
   });
 });
 
@@ -365,19 +331,14 @@ describe("damage as a view draws it", () => {
     expect(hitText(0)).toBe("0");
   });
 
-  test("one feed for a view: actions throw grenades, hits find their people in the frame", () => {
+  test("one feed for a view: actions animate players and hits find their people", () => {
     const feed = new EventFeed();
     const thrower = player({ index: 0, actions: ["grenade", "reload"], actionTick: 30, grenade: "frag" });
     const f = { players: [thrower, player({ index: 1, x: 5 })], hits: { tick: 30, hits: [hit()] } };
     expect(feed.observe(f, 1000).map((e) => e.action)).toEqual(["grenade", "reload"]);
     expect(feed.observe(f, 1016)).toEqual([]);
-    expect(feed.liveGrenades(1100).map((g) => g.type)).toEqual(["frag"]);
     expect(feed.liveHits(1100)[0]).toMatchObject({ from: { x: 0 }, x: 5 });
     expect(feed.busy).toBe(true);
-    // The dead throw nothing.
-    const other = new EventFeed();
-    other.observe({ players: [player({ alive: false, actions: ["grenade"], actionTick: 30 })] }, 0);
-    expect(other.liveGrenades(10)).toEqual([]);
   });
 });
 

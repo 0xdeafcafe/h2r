@@ -1,8 +1,7 @@
 // Momentary things in the 3D view: damage (a beam from attacker to victim,
 // a hit marker that keeps its size on screen, and the amount floating up)
-// and grenades in flight (the arc of the throw). What to draw and for how
-// long comes from map/events.ts; this only puts it in the scene, from
-// pools, so a firefight makes no garbage.
+// and recorded projectiles in flight. The clock supplies each projectile
+// path, and pools keep geometry and materials reusable.
 //
 // This file pulls in three.js, so it is only ever loaded lazily.
 
@@ -10,13 +9,13 @@ import * as THREE from "three";
 import { CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import type { VisibleFilmEffect } from "./film-world";
 import { gameToGl } from "../map/views";
-import { grenadeColour, grenadeTrail, hitColour, type Grenade, type LiveHit } from "../map/events";
+import { hitColour, type LiveHit } from "../map/events";
+import { MAX_TRAIL_POINTS, projectileColour, type ProjectileTrail } from "../state/projectile-trails";
 
 interface HitObj { group: THREE.Group; beam: THREE.Mesh; beamMat: THREE.MeshBasicMaterial; mark: THREE.Sprite; markMat: THREE.SpriteMaterial; label: CSS2DObject; el: HTMLDivElement }
-interface NadeObj { group: THREE.Group; ball: THREE.Mesh; mat: THREE.MeshBasicMaterial; trail: THREE.Line; trailMat: THREE.LineBasicMaterial }
+interface TrailObj { group: THREE.Group; ball: THREE.Mesh; mat: THREE.MeshBasicMaterial; trail: THREE.Line; trailMat: THREE.LineBasicMaterial }
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
-const TRAIL_POINTS = 14;
 /** A hit lands about chest height on whoever it names (game units above their feet). */
 export const CHEST = 0.45;
 
@@ -42,8 +41,8 @@ export class Effects3D {
   private sparks: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[] = [];
   private hits = new Map<number, HitObj>();
   private spareHits: HitObj[] = [];
-  private nades = new Map<number, NadeObj>();
-  private spareNades: NadeObj[] = [];
+  private trails = new Map<string, TrailObj>();
+  private spareTrails: TrailObj[] = [];
   private geoBeam = new THREE.CylinderGeometry(1, 1, 1, 5, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
   private geoBall = new THREE.SphereGeometry(1, 10, 8);
   private texHit: THREE.Texture | null = null;
@@ -120,13 +119,13 @@ export class Effects3D {
     return { group, beam, beamMat, mark, markMat, label, el };
   }
 
-  private nade(): NadeObj {
-    const old = this.spareNades.pop();
+  private trail(): TrailObj {
+    const old = this.spareTrails.pop();
     if (old) { old.group.visible = true; return old; }
     const mat = new THREE.MeshBasicMaterial({ transparent: true, fog: false });
     const ball = new THREE.Mesh(this.geoBall, mat);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(TRAIL_POINTS * 3), 3));
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(MAX_TRAIL_POINTS * 3), 3));
     const trailMat = new THREE.LineBasicMaterial({ transparent: true, depthWrite: false, fog: false });
     const trail = new THREE.Line(geo, trailMat);
     trail.frustumCulled = false;
@@ -137,11 +136,11 @@ export class Effects3D {
     return { group, ball, mat, trail, trailMat };
   }
 
-  /** Draws this moment's damage and grenades. `S` is the scene's marker
+  /** Draws this moment's damage and recorded projectiles. `S` is the scene's marker
    *  scale; `still` (reduced motion) keeps numbers in place. Returns
    *  whether anything is (or just stopped being) on screen. */
-  update(hits: readonly LiveHit[], grenades: ReadonlyArray<Grenade & { age: number; alpha: number }>, S: number, still: boolean): boolean {
-    let changed = hits.length > 0 || grenades.length > 0;
+  update(hits: readonly LiveHit[], trails: readonly ProjectileTrail[], S: number, still: boolean): boolean {
+    let changed = hits.length > 0 || trails.length > 0;
     const kept = new Set<number>();
     for (const h of hits) {
       let o = this.hits.get(h.id);
@@ -185,27 +184,30 @@ export class Effects3D {
       changed = true;
     }
 
-    kept.clear();
-    for (const g of grenades) {
-      let o = this.nades.get(g.id);
-      if (!o) { o = this.nade(); this.nades.set(g.id, o); }
-      kept.add(g.id);
-      const pts = grenadeTrail(g, g.age, TRAIL_POINTS);
-      const pos = o.trail.geometry.getAttribute("position") as THREE.BufferAttribute;
-      pts.forEach((p, i) => { const [x, y, z] = gameToGl(...p); pos.setXYZ(i, x, y, z); });
-      pos.needsUpdate = true;
-      const end = pts[pts.length - 1]!;
+    const activeProjectiles = new Set<string>();
+    for (const p of trails) {
+      const end = p.points.at(-1);
+      if (!end) continue;
+      let o = this.trails.get(p.id);
+      if (!o) { o = this.trail(); this.trails.set(p.id, o); }
+      activeProjectiles.add(p.id);
+      const positions = o.trail.geometry.getAttribute("position") as THREE.BufferAttribute;
+      p.points.forEach((point, i) => positions.setXYZ(i, ...gameToGl(...point)));
+      o.trail.geometry.setDrawRange(0, p.points.length);
+      o.trail.visible = p.points.length > 1;
+      positions.needsUpdate = true;
       o.ball.position.set(...gameToGl(...end));
       o.ball.scale.setScalar(Math.max(0.035 * S, this.camera.position.distanceTo(o.ball.position) * 0.0045));
-      const colour = grenadeColour(g.type);
-      o.mat.color.set(colour); o.trailMat.color.set(colour);
-      o.mat.opacity = g.alpha; o.trailMat.opacity = g.alpha * 0.8;
+      const colour = projectileColour(p.kind);
+      o.mat.color.set(colour);
+      o.trailMat.color.set(colour);
+      o.trailMat.opacity = 0.8;
     }
-    for (const [id, o] of this.nades) {
-      if (kept.has(id)) continue;
+    for (const [id, o] of this.trails) {
+      if (activeProjectiles.has(id)) continue;
       o.group.visible = false;
-      this.nades.delete(id);
-      this.spareNades.push(o);
+      this.trails.delete(id);
+      this.spareTrails.push(o);
       changed = true;
     }
     return changed;
@@ -215,7 +217,7 @@ export class Effects3D {
     for (const mark of this.sparks) { mark.removeFromParent(); mark.material.dispose(); }
     this.sparks.length = 0;
     for (const o of [...this.hits.values(), ...this.spareHits]) { o.label.removeFromParent(); o.el.remove(); o.beamMat.dispose(); o.markMat.dispose(); }
-    for (const o of [...this.nades.values(), ...this.spareNades]) { o.trail.geometry.dispose(); o.mat.dispose(); o.trailMat.dispose(); }
+    for (const o of [...this.trails.values(), ...this.spareTrails]) { o.trail.geometry.dispose(); o.mat.dispose(); o.trailMat.dispose(); }
     this.geoBeam.dispose(); this.geoBall.dispose();
     this.texHit?.dispose(); this.texKill?.dispose();
   }
