@@ -48,7 +48,7 @@ connection to hold `session.claim`.
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
-| `audio.voices` | read | [`audio`](#audio-voice-routing) |
+| `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -1188,6 +1188,49 @@ and path gain. These are routing settings before spatial panning, master
 gain and the reverb return. A disabled environment or unconnected bus can
 have a configured send gain and deliver silence. Plain stereo routing has
 `bins: null`.
+
+### `audio.loops`
+
+`h2 agent audio.loops` takes no parameters. With DirectSound installed it
+reports the guest's active looping sounds and the host's playout health.
+Each row in `loops` gives the salted `loop_datum`, `tag_datum`, resolved
+`tag_name` when the map names the tag, zero-based `track`, `segment`,
+`sound_instance` and `sound_datum`. `segment` is `in`, `loop`, `out`, `alt`,
+`alt_in`, `alt_transition_out`, `alt_out` or `unknown`. Overlapping instances
+of a track get separate rows. `pitch_range`, `permutation` and `chunk` come
+from the engine's source state. `play_packet` and `play_position_frames`
+give the DirectSound stream's current packet and its source-frame offset.
+They are null while no queued stream packet can be resolved. The playback
+cursor is at the mixer. The guest can select the next segment while PCM
+from its predecessor is still queued.
+
+`transitions` keeps the last 64 changes in starts, stops, segments and
+permutation selection, sampled after the sound frame service. A null
+`from` denotes a start and a null `to` denotes a stop. The stamp includes
+the retail `tick` when available, the guest `present` counter,
+`logical_100ns` and `elapsed_us`. The last field uses a monotonic wall clock
+from audio-output creation. History starts over with a new map or a
+rewound guest clock. `records_transitions` says whether the observer runs.
+
+In the main menu, `menu` gives `ui_ms`, `idle_ms`, the music gate and
+requested and applied music state, the attract timeout, the music stop
+threshold from the current map, and whether a movie is active.
+`menu_changes` keeps the last 64 changes in the gate, music state, movie
+state or timer reset. The threshold applies on the screens eligible for
+the attract movie. See [the attract timer](../audio/bink-hle.md#attract-timer).
+
+`output` reports cumulative sink underruns and silent frames, playout
+starves, dropped frames and mixer stream starves. Their last-change times
+use the same `elapsed_us` clock as the transitions. The output thread
+samples the sink counters as it services the device. Stream starves are
+counted when a dry stream receives data again. Optional WMA counters show
+codec restarts, errors and dropped partials. The playout fill and target
+give the approximate delay between the mixer and the device.
+
+Sample the main menu before and after an audible change. Compare present
+numbers in `transitions` and `menu_changes` with the output counters and
+their last-change times to identify the selection change, idle-triggered
+restart or gap at the device.
 
 ## HaloScript state
 

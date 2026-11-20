@@ -361,6 +361,8 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     let mut rig = Rig::new();
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 8, 0, 0);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
+    assert_eq!(rig.ds.stream_playhead(rig.ds_ptr), None);
     // The guest's virtual calls land on the override addresses.
     assert_eq!(
         rig.h.read_u32(stream).unwrap(),
@@ -383,6 +385,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
         let data = pcm16(&vec![8192; *n]);
         slots.push(rig.process(stream, &data, 0x101 + i as u32));
     }
+    assert_eq!(rig.ds.stream_playhead(stream), Some((1, 0)));
     for (status, done) in &slots {
         assert_eq!(
             rig.h.read_u32(*status).unwrap(),
@@ -395,6 +398,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     // Mix 5 frames: packet 0 (4 frames) is done, packet 1 is half played.
     let out = rig.render(5);
     assert_eq!(out[0], 0.25);
+    assert_eq!(rig.ds.stream_playhead(stream), Some((2, 1)));
     rig.call(DO_WORK, &[]);
     assert_eq!(
         rig.h.read_u32(slots[0].0).unwrap(),
@@ -409,6 +413,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
 
     // Finish the rest: completion order is submission order.
     rig.render(16);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
     rig.call(DO_WORK, &[]);
     assert_eq!(rig.h.signalled, vec![0x101, 0x102, 0x103]);
     for (i, (status, done)) in slots.iter().enumerate() {
@@ -456,14 +461,16 @@ fn stream_flush_pause_and_capacity() {
     let pkt = rig.put(&[0u8; 24]);
     assert_eq!(rig.call(PROCESS, &[stream, pkt, 0]).eax, DSERR_INVALIDCALL);
 
-    // Paused streams consume nothing.
+    // Paused streams consume nothing and retain their cursor.
+    rig.render(2);
     rig.call(STREAM_PAUSE, &[stream, 1]);
     assert!(rig.render(4).iter().all(|&v| v == 0.0));
+    assert_eq!(rig.ds.stream_playhead(stream), Some((1, 2)));
     rig.call(STREAM_PAUSE, &[stream, 0]);
-    rig.render(2);
 
     // Flush completes both with the flushed status and signals both events.
     assert_eq!(rig.call(FLUSH, &[stream]).eax, S_OK);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
     for (st, done) in [a, b] {
         assert_eq!(rig.h.read_u32(st).unwrap(), XMEDIAPACKET_STATUS_FLUSHED);
         // Verified in the binary (0x37f850 -> 0x37f3a8): a flushed packet

@@ -141,6 +141,21 @@ End-of-movie and skip are entirely wrapper logic: `0x155f80` sets
 `ST_FINISHED` when `FrameNum == Frames`, or `0x156ab0` reports a button on a
 skippable movie, and the next tick runs the stop path.
 
+### Attract timer
+
+The idle timer at `0x223976` compares the UI clock with the newer of the
+last input and the attract reset. On the title and main-menu screens, the
+timer closes the music gate a map-configured lead time before the movie
+deadline. The shared UI tag supplies that lead at `wigl +0x1c0` via
+`0x235ca9`. The menu-music controller at `0x235b9c` applies the gate subject
+to its six-second change guard. When frame limiting is active, the same
+screen check (`0x14a224`) makes frame timing at `0x12b0e0` use at least two
+vblanks per guest frame. On a movie start that leaves the wrapper
+idle, `0x223a21` resets the timer. On the next eligible update the gate
+opens and the controller can start the looping sound again. This includes
+skip mode. [`audio.loops`](../runtime/agent-api.md#audioloops) reports the
+timer, gate, movie state and looping-sound history.
+
 ## Behaviour
 
 `register(&mut dispatch, &hle)` picks a mode by whether a `MovieSource` is

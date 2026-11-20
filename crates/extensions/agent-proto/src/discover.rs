@@ -1,4 +1,4 @@
-//! Finding running games (docs/runtime/agent-api.md, "Finding a game").
+//! Finding running games (docs/runtime/agent-api.md, "Connecting").
 //!
 //! A game that isn't told where to listen (`h2 play` with `H2_AGENT`
 //! unset) opens one socket per process in [`dir`]: `<pid>.sock`. A client

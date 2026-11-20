@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::list_class::{MAIN_MENU_KIND, UI_GAME_KIND};
 use crate::ui_watch::{SHARED, channel};
 
-const UI_NOW: u32 = 0x0054_d5b8;
+const UI_NOW: u32 = engine::points::UI_CLOCK.base;
 const FADE_START: u32 = 0x0054_d5c0;
 const SCENE_MODE: u32 = 0x0048_5870;
 const SCENE_WEIGHT: u32 = 0x0048_5874;

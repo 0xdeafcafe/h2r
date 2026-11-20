@@ -50,6 +50,7 @@ pub mod game;
 pub mod global;
 pub mod object;
 pub mod player;
+pub mod sound;
 pub mod tag;
 pub mod unit;
 
