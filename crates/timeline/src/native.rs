@@ -4,9 +4,9 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects }
+pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects, Ui }
 
-const STAGES: [&str; 14] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects"];
+const STAGES: [&str; 15] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects", "ui"];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
@@ -34,7 +34,34 @@ const OBJECT_WALK_COLUMNS: [&str; 9] = [
     "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
     "walk_model", "walk_inputs", "walk_state", "walk_reservation",
 ];
-pub(crate) const COLUMNS: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
+const UI_COLUMNS: [&str; 10] = [
+    "items", "item_refused", "fallback_geometry", "fallback_order", "fallback_target",
+    "fallback_state", "fallback_shader", "fallback_texture", "fallback_upload",
+    "fallback_reservation",
+];
+const UI_OFFSET: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
+pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
+
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum Ui {
+    Items,
+    ItemRefused,
+    Geometry,
+    Order,
+    Target,
+    State,
+    Shader,
+    Texture,
+    Upload,
+    Reservation,
+}
+
+impl Ui {
+    pub fn count(self) {
+        phase::count_index(phase::Counter::ALL.len() + UI_OFFSET + self as usize, 1);
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
@@ -73,6 +100,7 @@ pub(crate) fn labels() -> &'static [String] {
             }
         }
         out.extend(OBJECT_WALK_COLUMNS.map(|name| format!("native_objects_{name}")));
+        out.extend(UI_COLUMNS.map(|name| format!("native_ui_{name}")));
         out
     })
 }

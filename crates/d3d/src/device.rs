@@ -6142,6 +6142,18 @@ impl<B: Backend> Device<B> {
         if !d.inline.is_empty() {
             return self.inline_array_draw(mem, entry, d);
         }
+        let words = self.pushed_state(mem)?;
+        let parts = self.immediate_parts(mem, entry, d, words)?;
+        self.submit(mem, parts)
+    }
+
+    fn immediate_parts(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        d: ImmediateDraw,
+        words: Arc<StateWords>,
+    ) -> Result<DrawParts, D3dError> {
         let (layout, vertex) = if self.vertex_shader & 1 == 0 {
             let (l, v, _) = self.vertex_setup(mem, entry)?;
             (l, v)
@@ -6222,21 +6234,17 @@ impl<B: Backend> Device<B> {
                 stride: s.stride,
             });
         }
-        let words = self.pushed_state(mem)?;
-        self.submit(
-            mem,
-            DrawParts {
-                entry,
-                indexed_esp: None,
-                primitive: d.primitive,
-                vertex_count: d.vertices.len() as u32,
-                layout,
-                vertex,
-                streams,
-                indices: None,
-                words,
-            },
-        )
+        Ok(DrawParts {
+            entry,
+            indexed_esp: None,
+            primitive: d.primitive,
+            vertex_count: d.vertices.len() as u32,
+            layout,
+            vertex,
+            streams,
+            indices: None,
+            words,
+        })
     }
 }
 
@@ -6412,7 +6420,7 @@ pub(crate) fn inline_array_layout(
 /// stencil test that can store something (the format has stencil, the
 /// write mask is not zero, and some outcome's operation is not `KEEP`). A
 /// read-only test changes nothing.
-fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bool {
+pub(crate) fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bool {
     use gfx::state::{DepthBufferMode, StencilOp};
     let Some(f) = depth else {
         return false;

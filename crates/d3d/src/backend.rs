@@ -1025,6 +1025,13 @@ pub struct ResolvedDraw {
     pub glyph_cache: u8,
 }
 
+impl ResolvedDraw {
+    /// Whether submission can change the attached guest depth or stencil.
+    pub fn writes_depth_stencil(&self) -> bool {
+        crate::device::writes_depth_or_stencil(&self.state.render, self.target.depth_format)
+    }
+}
+
 /// Predicts a backend's [`Backend::draw`] outcomes without running it, so
 /// a backend that renders on another thread (`crate::threaded`) answers
 /// each draw exactly when it is issued: skipped where the backend would

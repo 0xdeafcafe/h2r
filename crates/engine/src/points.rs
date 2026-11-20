@@ -122,6 +122,43 @@ impl Point {
     }
 }
 
+/// Entry points of the UI render walk. The feature asks image analysis
+/// to expose the interior sites before lifting.
+pub mod ui_render {
+    use super::{Point, Sig};
+
+    const DOC: &str = "docs/graphics/native-renderer.md";
+    pub const LAYERS_RETURN: Point = Point::new("UI_LAYERS_RETURN", 0x0014_7cb9, Sig::Site, DOC);
+    pub const ITEM_CALL: Point = Point::new("UI_ITEM_CALL", 0x0023_5445, Sig::Site, DOC);
+    pub const ITEM_RETURN: Point = Point::new("UI_ITEM_RETURN", 0x0023_544d, Sig::Site, DOC);
+    pub const HUD_DRAW: Point = Point::new("UI_HUD_DRAW", 0x0019_17eb, Sig::Opaque, DOC);
+    pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
+    pub const HUD_HIDDEN_RETURN: Point =
+        Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
+    pub const FADE_DRAW: Point = Point::new("UI_FADE_DRAW", 0x0004_0890, Sig::Opaque, DOC);
+    pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
+    pub const OVERLAY_RECT_DRAW: Point =
+        Point::new("UI_OVERLAY_RECT_DRAW", 0x0013_c050, Sig::Opaque, DOC);
+    pub const OVERLAY_RECT_RETURN: Point =
+        Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
+    pub const LOADING_DRAW: Point = Point::new("UI_LOADING_DRAW", 0x0002_89e0, Sig::Opaque, DOC);
+    pub const LOADING_RETURN: Point = Point::new("UI_LOADING_RETURN", 0x0002_906d, Sig::Site, DOC);
+    pub const LOADING_EMPTY_RETURN: Point =
+        Point::new("UI_LOADING_EMPTY_RETURN", 0x0002_9075, Sig::Site, DOC);
+    pub const LOADING_SPINNER_READY: Point =
+        Point::new("UI_LOADING_SPINNER_READY", 0x0002_a1f4, Sig::Site, DOC);
+    pub const LOADING_SPINNER_TAIL: u32 = 0x0002_a2dc;
+    pub const LOADING_BITMAP_READY: Point =
+        Point::new("UI_LOADING_BITMAP_READY", 0x0002_ae60, Sig::Site, DOC);
+    pub const LOADING_BITMAP_TAIL: u32 = 0x0002_af87;
+    /// Return from the common inline quad uploader to the overlay/bitmap helper.
+    pub const RECT_SUBMIT_RETURN: u32 = 0x0005_2ce7;
+    pub const SCREEN_QUAD_READY: Point =
+        Point::new("UI_SCREEN_QUAD_READY", 0x0003_63c4, Sig::Site, DOC);
+    pub const FADE_FAN_READY: Point = Point::new("UI_FADE_FAN_READY", 0x0004_0d86, Sig::Site, DOC);
+    pub const FADE_FAN_TAIL: u32 = 0x0004_0db8;
+}
+
 /// A named guest global (a word or a structure at a fixed address).
 #[derive(Debug, PartialEq, Eq)]
 pub struct Global {

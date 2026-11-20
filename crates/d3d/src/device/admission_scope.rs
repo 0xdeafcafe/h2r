@@ -170,9 +170,8 @@ impl<B: Backend> Device<B> {
         result
     }
 
-    /// Record programmable immediate geometry before its vertex setters.
-    /// The caller supplies the per-vertex register writes in issue order,
-    /// including position (register 0) as the final write of each vertex.
+    /// Record immediate geometry before an API Begin and its vertex setters.
+    /// Each vertex supplies its writes in order, with position last.
     pub fn try_native_immediate_draw<const N: usize>(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -180,59 +179,58 @@ impl<B: Backend> Device<B> {
         vertices: &[[(u8, [f32; 4]); N]],
         admission: &dyn crate::DrawAdmission,
     ) -> Result<bool, D3dError> {
-        const ENTRY: &str = "D3DDevice_End";
-        if !self.native_producer_ready(mem)? || self.vertex_shader & 1 == 0 {
+        self.try_native_register_draw(mem, primitive, vertices, admission, false)
+    }
+
+    /// As above, for a producer that would write Begin, vertices and End
+    /// directly into the push buffer. It observes pushed render state.
+    pub fn try_native_pushed_draw<const N: usize>(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: PrimitiveType,
+        vertices: &[[(u8, [f32; 4]); N]],
+        admission: &dyn crate::DrawAdmission,
+    ) -> Result<bool, D3dError> {
+        self.try_native_register_draw(mem, primitive, vertices, admission, true)
+    }
+
+    fn try_native_register_draw<const N: usize>(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: PrimitiveType,
+        vertices: &[[(u8, [f32; 4]); N]],
+        admission: &dyn crate::DrawAdmission,
+        pushed: bool,
+    ) -> Result<bool, D3dError> {
+        let entry = if pushed { "inline Begin/End" } else { "D3DDevice_End" };
+        if !self.native_producer_ready(mem)? {
             return Ok(false);
         }
         if vertices.is_empty() || vertices.iter().any(|vertex| {
-            vertex.last().is_none_or(|&(reg, _)| reg != 0)
-                || vertex[..N - 1].iter().any(|&(reg, _)| !(1..16).contains(&reg))
+            vertex.split_last().is_none_or(|(&(reg, _), attrs)| {
+                reg != 0 || attrs.iter().any(|&(reg, _)| !(1..16).contains(&reg))
+            })
         }) {
             return Ok(false);
         }
-        let count = u32::try_from(vertices.len())
-            .map_err(|_| D3dError::invalid(ENTRY, "too many immediate-mode vertices"))?;
-        vertex_limit(ENTRY, count)?;
-        let words = Arc::new(self.state(mem)?);
+        let words = if pushed { self.pushed_state(mem)? } else { Arc::new(self.state(mem)?) };
         let initial = *self.immediate.registers();
-        let mut written = 0u16;
-        let mut registers = initial;
-        let mut data = Vec::with_capacity(vertices.len() * 256);
+        let mut scratch = Immediate::with_registers(initial);
+        scratch.begin(primitive, 0)?;
         for vertex in vertices {
             for &(reg, value) in vertex {
-                written |= 1 << reg;
-                registers[usize::from(reg)] = value;
-            }
-            for register in registers {
-                data.extend(register.into_iter().flat_map(f32::to_le_bytes));
+                scratch.set(0, usize::from(reg), &value, 0, true)?;
             }
         }
-        let attributes = (0..16u8)
-            .filter(|&reg| written & (1 << reg) != 0)
-            .map(|reg| VertexAttribute {
-                register: VertexRegister(reg),
-                data_type: VertexDataType::Float4,
-                offset: u32::from(reg) * 16,
-            })
-            .collect();
-        self.immediate = Immediate::with_registers(registers);
-        let parts = DrawParts {
-            entry: ENTRY,
-            indexed_esp: None,
-            primitive,
-            vertex_count: count,
-            layout: VertexLayout {
-                streams: vec![StreamLayout { stream: 0, attributes, stride: 256 }],
-                pretransformed: false,
-            },
-            vertex: VertexProcessing::Program { start: self.program_start, microcode: self.microcode() },
-            streams: vec![StreamBytes { data: data.into(), stride: 256 }],
-            indices: None,
-            words: words.clone(),
-        };
+        let draw = scratch.end(0)?;
+        let parts = self.immediate_parts(mem, entry, draw, words.clone())?;
+        // The unwritten defaults must be resolved against the live carry.
+        self.immediate = scratch;
         let result = self.try_native_producer(mem, parts, admission);
         if matches!(result, Ok(true)) {
-            self.pushed = Some(words);
+            if !pushed {
+                self.pushed = Some(words);
+            }
         } else {
             self.immediate = Immediate::with_registers(initial);
         }
