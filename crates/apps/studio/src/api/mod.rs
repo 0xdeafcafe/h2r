@@ -27,6 +27,8 @@ use crate::App;
 
 mod docs;
 mod hud;
+mod mirror;
+mod nav;
 mod pair;
 mod params;
 mod playlists;
@@ -130,9 +132,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SOURCE_MAPS,
-        "The source's maps, the map loaded, and the packages under the data root",
+        "The source maps and library entries with their picker groups, and the map loaded",
         "{}",
-        r#"{"source":"string|null","maps":"[string]","loaded":"string|null","packages":"[{key,label}]"}"#,
+        r#"{"source":"string|null","maps":"[string]","map_entries":"[{map,label,group}]","halo1_maps":"[{map,label,group}]","map_pack":"[{map,label,group}]","loaded":"string|null","packages":"[{key,map,label,group}]"}"#,
         "null",
     ),
     def(
@@ -305,9 +307,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCENARIO_SELECT,
-        "Select a placement in the window (and frame it with focus)",
-        r#"{"block?":"string","index?":"integer","focus?":"boolean"}"#,
-        r#"{"selected":"{block,index}|null"}"#,
+        "Select a placement (and frame it with focus), select a tag as the inspector's root, or clear the selection",
+        r#"{"block?":"string","index?":"integer","focus?":"boolean","tag?":"string|integer"}"#,
+        r#"{"selected":"{block,index}|{tag}|null"}"#,
         r#"{"block":"netgame_flags","index":0}"#,
     ),
     def(

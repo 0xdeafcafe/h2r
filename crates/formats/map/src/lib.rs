@@ -97,6 +97,7 @@ pub const H1_DEATH_FLYING_LINE: usize = 0x140;
 
 /// The periodic query and its reply in Halo 1's wait behaviour.
 pub const H1_SEARCH_QUERY_LINE: usize = 0x850;
+/// The reply to the periodic search query.
 pub const H1_SEARCH_REPLY_LINE: usize = 0x860;
 
 /// Attacker and victim utterances for the original nonlethal damage stimuli.
@@ -118,13 +119,21 @@ pub const H1_WEAPON_KILL_LINES: &[(u16, usize)] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum H1DialogueClass {
+    /// No other class applies.
     Other = 0,
+    /// A player's unit.
     Player = 1,
+    /// A human actor.
     Human = 2,
+    /// A Covenant actor.
     Covenant = 4,
+    /// A Flood combat form.
     CombatForm = 8,
+    /// A Flood carrier form.
     Carrier = 16,
+    /// A Flood infection form.
     InfectionForm = 32,
+    /// A Sentinel.
     Sentinel = 64,
 }
 
@@ -143,6 +152,8 @@ impl H1DialogueClass {
         }
     }
 
+    /// The attacker's cheer for killing a hostile of this class, as a
+    /// source udlg byte offset.
     pub const fn hostile_kill_line(self) -> Option<usize> {
         match self {
             Self::Player => Some(0x380),
@@ -180,6 +191,7 @@ pub const fn h1_kill_witness_line(offset: usize) -> bool {
 
 /// The original multikill trigger and the nearby reply to a player.
 pub const H1_KILLING_SPREE_LINE: usize = 0x4d0;
+/// The nearby reply to a player's killing spree.
 pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
 
 /// Exchanges based on perception, cover and group movement.
@@ -226,8 +238,11 @@ pub const fn h1_unselected_dialogue_line(offset: usize) -> bool {
 
 /// Marker on rebuilt hlmt tags that carry Halo 1 physical speech rules.
 pub const H1_PHYSICAL_DIALOGUE: u32 = 0x4831_0000;
+/// Flag: the unit screams while in freefall.
 pub const H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL: u32 = 1;
+/// Flag: passengers speak while their vehicle is airborne.
 pub const H1_DIALOGUE_AIRBORNE_PASSENGERS: u32 = 2;
+/// Involuntary speech while falling.
 pub const H1_FREEFALL_LINE: usize = 0x0b0;
 
 /// Involuntary speech when damage destroys a collision region.

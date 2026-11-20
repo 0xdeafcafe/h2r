@@ -158,9 +158,10 @@ Legendary levels and time played; most played maps, most used weapons, an
 activity heatmap by day and hour in your time, game types and playlists,
 skull use, medals from loaded games (derived), the weapon and map of the
 week, clan standings and recent games), games (`/games/halo2/games`: the featured
-live map and the games spotlight), game details (`/games/halo2/games/:id`: overview, the Game
-Viewer with the live tactical map or the replay, and the post game carnage
-report with Overview / Carnage / Medals / Weapons tabs), players and
+live map and the games spotlight), game details (`/games/halo2/games/:id`:
+the match hero below the breadcrumbs, the Game Viewer with the live
+tactical map or the replay, and the post game carnage report with Overview /
+Carnage / Medals / Weapons tabs), players and
 leaderboards (`/games/halo2/players`), a player's service record, game history
 with its preview pane, and career stats with Tool of Destruction, the Medal
 Chest and compare (`/games/halo2/players/:tag`, `/history`,
@@ -210,18 +211,23 @@ id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
 
 ### Mods
 
-The stats site's Mods tab (`/games/halo2/mods`, `stats/Mods.tsx`)
-browses the server's map packages (`GET /v1/maps`): Newest or Most
-Downloaded, filtered by base map, category and a search box, paged with the
-server's `next` cursor (the earlier cursors are kept in the page so
-"Previous" works). The query lives in the URL (`?sort=popular&base=teacup&category=&q=&author=`).
-A mod's page (`/games/halo2/mods/:id`) shows its picture (else the base map's),
-author and credit, description, source link (http and https only), size,
-downloads, files, and Report for signed-in players. Downloading happens in
-the game. The page asks for the package without a token, because a token
-there counts a download. The pure rules are in `src/lib/mods.ts`. The mock serves eight more invented mods beside
-the three above, with categories, credits, source links and download
-counts, and sorts, filters and pages them as the server does.
+The Mods tab (`/games/halo2/mods`, `web/src/stats/Mods.tsx`) reads the
+pack catalog from `GET /v1/mod-packs`. One row shows the release, its
+makers, uploader, version, year, online-play advisory, source, map count
+and download size when available. Expand **View maps** to reach the
+individual map pages. Newest and Most Downloaded, base map, category,
+text and uploader filters apply to whole packs. The filters stay in the
+URL, and each results page holds up to twenty packs.
+
+A pack page (`/games/halo2/mods/packs/:id`) shows its cover, credits,
+description, source and gallery. With no pack artwork it uses its members'
+screenshots. A stock map preview is labelled **Stock map picture**.
+Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
+contents and layer sizes. Signed-in players can report a pack or a
+member. Its uploader can edit the release metadata and upload PNG, JPEG
+or WebP screenshots to a cover and two additional slots on either page.
+The Live server validates and stores the images. Installation runs in
+the game. The mock serves invented pack metadata and member artwork.
 
 ### Server stats
 
@@ -243,8 +249,10 @@ Destruction"), EXP and rank are computed in the browser from the games'
 events (`src/state/derive.ts`); the API does not serve them. They are
 marked with a `*` and a tooltip. They only cover games this browser has
 loaded, and a game's snapshot carries at most its recent kills, so they are
-estimates for long histories. The Tool of Destruction pairs each weapon's
-"kills with" (gold bar) with "killed by" (blue bar). Medals (original names;
+estimates for long histories. A game report with no recorded kill weapons
+shows a message in Tool of Destruction. With partial data, the "Not recorded"
+row gives the share of kills without a weapon. A player's Tool of
+Destruction pairs each weapon's "kills with" (gold bar) with "killed by" (blue bar). Medals (original names;
 the badges are raster art from `public/art/medals`, named after the medal
 ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat
@@ -362,19 +370,19 @@ and CPU budget for a 1200 x 630 render.
 
 ### The game page's header, pre-rendered
 
-Both homes write the game title,
-map, status, result, and standings into the initial HTML above `#root`,
-at the `<!-- game-header -->` marker. The Worker uses the same model
-from its existing `GET /v1/page-meta` call to the hub. The header can load
-each player's real emblem before the app starts because its 16×16
-`<img>` uses the same appearance URL as the game report. The browser
-uses the original art pack only if the image fails.
+Both homes write the game's title, map, status, result and standings into
+the `game-header-source` template in the initial HTML. The Worker gets the
+same model from its `GET /v1/page-meta` call to the hub. `Game.tsx` mounts the
+matching template content as the hero below the site header and
+breadcrumbs. The template stays inert on other routes. Each player's
+16×16 image uses the same appearance URL as the game report, with the
+original art pack as a fallback.
 
-The embedded JSON model lets `Game.tsx` keep the existing header when
-its own model matches byte for byte. It updates the header on a changed
-game or score and hides it outside the game page. The TypeScript and Rust
-renderers share the goldens in `test/fixtures/game-header.{json,html}`.
-Regenerate them with `bun test/fixtures/gen-game-header.ts`. The PNG
+The embedded JSON model lets the client keep the hero markup when its own
+model matches. It replaces the markup when the game or score changes.
+The TypeScript and Rust renderers share the goldens in
+`test/fixtures/game-header.{json,html}`. Regenerate them with
+`bun test/fixtures/gen-game-header.ts`. The PNG
 pixel and palette fixtures are generated by
 `H2_UPDATE_EMBLEM_GOLDEN=1 bun test test/emblem.test.ts`.
 

@@ -524,7 +524,14 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
         },
         HostPadState::default(),
     ];
-    for (ping, delay) in [(0., 0), (80., 2)] {
+    // A scripted source already supplies this tick's report in pipeline
+    // mode too, so it must pay its full configured wire delay.
+    let pipeline = crate::think::Mode::Batched { threads: 0, pipeline: true };
+    for (ping, delay, mode) in [
+        (0., 0, crate::think::Mode::Serial),
+        (80., 2, crate::think::Mode::Serial),
+        (80., 2, pipeline),
+    ] {
         let (ph, mut g, slot) = game_with_latency(
             move |f| pads[(f.tick as usize - 100) % 3],
             PhantomLatency {
@@ -532,6 +539,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
                 jitter_ms: 0.,
             },
         );
+        ph.lock().thinker = crate::think::Thinker::on_radio(mode, Box::leak(Box::default()));
         for tick in [100, 101, 102, 102, 103, 104, 105] {
             at_tick(&mut g, tick);
             g = gather(&ph, g, slot);

@@ -175,8 +175,9 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent: {e}"),
         }
         // render.capture's tick marks and sim.hashes' rows.
-        match registry.add(&crate::agent_frames::AgentFrames) {
-            Ok(true) => {}
+        let frames = crate::agent_frames::AgentFrames::default();
+        match registry.add(&frames) {
+            Ok(true) => frames.views.install_method(&agent),
             Ok(false) => eprintln!(
                 "agent: agent-frames switched off by H2_FEATURES; render.capture and sim.hashes see no ticks"
             ),
@@ -339,6 +340,9 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: u
 
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
+    agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
+        crate::sim_bots::stats(v, bots::phantom::global())
+    });
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))
@@ -470,6 +474,28 @@ impl crate::layout_glue::Gm for Mem<'_> {
     }
 }
 
+/// Called on an external Live service, at gameplay boundaries. Matchmaking plays
+/// in its target session, custom games in the squad. Refuse an unreadable
+/// session until the next probe can positively identify its network class.
+pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
+    use bots::lobby;
+    use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+
+    let local = || -> Option<bool> {
+        if m.u8(lobby::NETWORKING).ok()? == 0 {
+            return Some(true);
+        }
+        let cycle = m.u32(lobby::SESSION_TYPE).ok()?;
+        let session = m.u32(lobby::game_session_at(cycle)).ok()?;
+        if session == 0 || m.u32(session.checked_add(lobby::STATE)?).ok()? == 0 {
+            return Some(true);
+        }
+        let class = m.u32(session.checked_add(SESSION_NETWORK_CLASS)?).ok()?;
+        Some(matches!(class, 0 | SYSTEM_LINK))
+    };
+    local() != Some(true)
+}
+
 /// The session kind from the simulation mode, and the squad session
 /// (`coop_probe::read_sim`, `read_session`).
 pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionView {
@@ -549,6 +575,31 @@ mod tests {
     }
 
     #[test]
+    fn remote_live_probe_uses_the_active_session_and_refuses_unreadable_state() {
+        use bots::lobby;
+        use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+        let mut g = engine::testing::FakeGuest::new();
+        assert!(remote_live_game(&g));
+        let squad = 0x4000;
+        let target = 0x14000;
+        g.map(lobby::NETWORKING, 0x80)
+            .put_u8(lobby::NETWORKING, 1)
+            .put_u32(lobby::SESSION, squad)
+            .put_u32(lobby::TARGET_SESSION, target);
+        for (addr, class) in [(squad, SYSTEM_LINK), (target, 2)] {
+            g.map(addr, 0x8000)
+                .put_u32(addr + lobby::STATE, 5)
+                .put_u32(addr + SESSION_NETWORK_CLASS, class);
+        }
+        g.put_u32(lobby::SESSION_TYPE, 3);
+        assert!(!remote_live_game(&g));
+        g.put_u32(lobby::SESSION_TYPE, 8);
+        assert!(remote_live_game(&g));
+        g.put_u8(lobby::NETWORKING, 0);
+        assert!(!remote_live_game(&g));
+    }
+
+    #[test]
     fn the_sim_session_kind_comes_from_the_simulation_mode() {
         use agent_proto::sim::SessionKind;
         let mut g = engine::testing::FakeGuest::new();
@@ -597,6 +648,8 @@ mod tests {
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(agent_proto::sim::method::BOT_STATS, json!({}));
+        assert!(r["result"]["bots"].is_array(), "{r}");
         let r = call(method::RENDER_STATS, Value::Null);
         assert!(r["result"].as_object().is_some_and(|o| o.contains_key("counters")), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));

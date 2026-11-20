@@ -358,9 +358,16 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             bots: bots.clone(),
             deferred,
         };
+        let samples = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = samples.clone();
+        let feed = crate::hooks::CombatFeed::default();
+        assert!(feed.set(Box::new(move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+            vec![game::SimCombatSample { index: 0, tick: 4, ..Default::default() }]
+        })).is_ok());
         let mut sink = ServerSink::new(live.embedded.url.clone(), account.clone())
             .unwrap()
-            .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")));
+            .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")), feed);
         let id = start_session(&mut sink, Session::new("test", None).with_sim(metadata));
         let mut live_frames = live.embedded.live.frames();
         let stopped = game::MachinePosition { i: 7, p: 0 };
@@ -391,6 +398,7 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
                 assert_eq!(d.frame.cut, None);
             }
         }
+        assert_eq!(samples.load(Ordering::Relaxed), usize::from(!deferred));
         if deferred {
             assert!(live_frames.try_recv().is_err());
         }
@@ -401,23 +409,41 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             "result": {"end": "tick_limit"}, "ticks": 6, "wall": {"speedup": 2.8}, "players": [],
         }))
         .unwrap();
+        assert_eq!(samples.load(Ordering::Relaxed), usize::from(!deferred));
         if deferred {
             assert!(live_frames.try_recv().is_err());
         } else {
             assert_eq!(live_frames.try_recv().unwrap().frame.tick, 4);
         }
         assert_eq!(live.kinds(&id), [game::GAME_STARTED, game::GAME_ENDED]);
-        let token = sign::issue_token(
-            &live.operator,
-            &format!("server:{}", live.discovery.id),
-            &live.discovery.id,
-            lxm::READ,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        );
+        let read_token = || {
+            sign::issue_token(
+                &live.operator,
+                &format!("server:{}", live.discovery.id),
+                &live.discovery.id,
+                lxm::READ,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+        };
+        let list: serde_json::Value = live
+            .agent
+            .get(&format!(
+                "{}/v1/admin/sim-runs?include_options=1&tuning_choice=custom",
+                live.embedded.url,
+            ))
+            .set("authorization", &format!("Bearer {}", read_token()))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(list["items"][0]["game_id"].as_str(), Some(id.as_str()));
+        assert_eq!(list["items"][0]["sim"]["seed"], "42");
+        assert_eq!(list["items"][0]["has_report"], true);
+        assert_eq!(list["options"]["custom_tuning"], true);
         let detail: serde_json::Value = live
             .agent
             .get(&format!("{}/v1/admin/sim-runs/{id}", live.embedded.url))
-            .set("authorization", &format!("Bearer {token}"))
+            .set("authorization", &format!("Bearer {}", read_token()))
             .call()
             .unwrap()
             .into_json()
@@ -562,4 +588,20 @@ fn an_account_the_server_refuses_stops_the_sink_after_a_few_tries() {
     assert_eq!(sink.auth_refusals, MAX_AUTH_REFUSALS);
     // It stays stopped.
     assert!(sink.frame(frame(&local, 2)).is_err());
+}
+
+#[test]
+fn large_sim_upload_retains_bot_stats_and_small_reports_keep_their_traces() {
+    let stats = serde_json::json!([{"combat":{"melee_presses":3},
+        "weapon_accuracy":[{"damage_code":8,"range":"close","shots":4,"hits":2,"accuracy":0.5}]}]);
+    let small = serde_json::json!({"players":stats, "state_hashes_v1":[{"tick":5,"hash":"abc"}]});
+    let decode = |r| serde_json::from_slice::<serde_json::Value>(&super::encode_sim_report(r).unwrap()).unwrap();
+    assert_eq!(decode(small.clone()), small);
+    let mut large = small.clone();
+    large["state_components_v1"] = serde_json::json!(["x".repeat(game::MAX_SIM_REPORT_BYTES)]);
+    let saved = decode(large);
+    assert_eq!(saved["players"], stats);
+    assert!(saved.get("state_hashes_v1").is_none());
+    assert!(saved.get("state_components_v1").is_none());
+    assert!(saved["notes"][0].as_str().unwrap().contains("determinism"));
 }

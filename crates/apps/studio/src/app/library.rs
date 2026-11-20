@@ -159,6 +159,7 @@ impl App {
             return false;
         };
         self.h1_maps = src.map_names();
+        self.h1_map_groups = src.map_groups();
         self.info(format!(
             "opened Halo 1 {} ({} maps, read only)",
             path.display(),

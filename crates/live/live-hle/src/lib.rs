@@ -673,7 +673,7 @@ impl Hle {
     pub fn check_mod_list(&self) -> Result<(), mods::ModsError> {
         self.lock().check_mod_list()
     }
-    /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
+    /// A page of the mod repository, newest pack first (`GET /v1/mod-packs`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
     /// at once; `done` is called on the Live worker with the page, or why
     /// there is none. Never touches guest memory.

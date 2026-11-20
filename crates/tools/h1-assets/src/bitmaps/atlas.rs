@@ -235,14 +235,14 @@ pub fn to_halo2_light(texels: &mut [u8], format: h1map::bitmap::PixelFormat) -> 
     let half = |v: u16| v.div_ceil(2);
     match format {
         F::R5G6B5 => {
-            for t in texels.chunks_exact_mut(2) {
+            for t in texels.as_chunks_mut::<2>().0 {
                 let v = u16::from_le_bytes([t[0], t[1]]);
                 let (r, g, b) = (half(v >> 11), half((v >> 5) & 0x3f), half(v & 0x1f));
                 t.copy_from_slice(&((r << 11) | (g << 5) | b).to_le_bytes());
             }
         }
         F::A8R8G8B8 | F::X8R8G8B8 => {
-            for t in texels.chunks_exact_mut(4) {
+            for t in texels.as_chunks_mut::<4>().0 {
                 for c in &mut t[..3] {
                     *c = half(u16::from(*c)) as u8;
                 }

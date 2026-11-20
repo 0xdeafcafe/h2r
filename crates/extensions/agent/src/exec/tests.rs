@@ -684,6 +684,7 @@ fn methods_and_features_list() {
         method::ALL.len()
             + agent_proto::trace::method::ALL.len()
             + agent_proto::state::method::ALL.len()
+            + agent_proto::live::METHODS.len()
     );
     assert_eq!(next(&rx)["result"]["plan"][1], "agent: on");
 }
@@ -1467,4 +1468,36 @@ fn captures_are_refused_when_badly_asked_busy_or_without_frame_stats() {
         (v["id"].as_u64(), &v["error"]["code"]),
         (Some(8), &json!(code::SHUTDOWN))
     );
+}
+
+#[test]
+fn live_game_closes_menu_subscriber_and_refuses_a_new_stream() {
+    let agent = Agent::new();
+    // This synthetic reader has no guest. Without proof that the
+    // running match is local, a protected host refuses capture.
+    agent.set_live_session_probe(|_| true);
+    let mut game = level();
+    game.status.mode = Some("main_menu".into());
+    let (tx, output) = sync_channel(4);
+    let stream = agent.connect_socket(tx);
+    ask(&agent, stream, 1, agent_proto::live::SUBSCRIBE, json!({"layers": ["objects"]}));
+    agent.on_tick(&mut game);
+    let crate::server::Output::Upgrade { line, frames: _frames } = output.try_recv().unwrap() else {
+        panic!("menu subscription should open")
+    };
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["stream"], stream);
+
+    let (tx, denied) = sync_channel(4);
+    let second = agent.connect_socket(tx);
+    ask(&agent, second, 2, agent_proto::live::SUBSCRIBE, json!({"layers": ["objects"]}));
+    let (control, replies) = client(&agent);
+    game.status.mode = Some("multiplayer".into());
+    agent.on_tick(&mut game);
+    let crate::server::Output::Line(line) = denied.try_recv().unwrap() else {
+        panic!("Live match must refuse the subscription")
+    };
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["error"]["code"], code::UNAVAILABLE);
+    ask(&agent, control, 3, agent_proto::live::STATUS, json!({}));
+    agent.on_tick(&mut game);
+    assert_eq!(next(&replies)["result"]["streams"], json!([]));
 }

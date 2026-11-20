@@ -78,6 +78,7 @@ pub(crate) fn observe_for_brain(
     p.observations.contacts.retain(|c| seen_player(c.id));
     p.others
         .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen_player(o.id));
+    p.observations.ground_grenades.retain(|(at, _)| visible(*at, 0.2));
     p.pickups.retain(|pk| visible(pk.position, 0.2));
     for pk in &mut p.pickups {
         // Someone looking at a dropped gun knows its model, not its rounds.
@@ -176,6 +177,27 @@ pub(crate) mod honesty {
                 brains[0].mind.decisions.report,
                 brains[1].mind.decisions.report
             );
+        }
+    }
+
+    #[test]
+    fn every_skill_turns_toward_a_blip_without_firing_or_learning_an_identity() {
+        for skill in Skill::ALL {
+            let mut mind = crate::mind::Mind::new(skill, 15);
+            let mut p = Perception {
+                me: Some(Me::default()),
+                observations: Observations { radar: Some([0., 4., 0.]), ..Default::default() },
+                ..Default::default()
+            };
+            let mut turned = false;
+            for tick in 0..300 {
+                p.tick = tick;
+                let pad = mind.step(&p, None);
+                turned |= pad.right_stick.0 < -0.1;
+                assert_eq!((pad.right_trigger, pad.left_trigger), (0., 0.));
+                assert!(!matches!(mind.doing, crate::mind::Doing::Fight(_)));
+            }
+            assert!(turned, "{skill:?}");
         }
     }
 

@@ -105,6 +105,8 @@ impl std::fmt::Display for BuildError {
     }
 }
 
+impl std::error::Error for BuildError {}
+
 /// Where a hook sits relative to the others of its kind at one point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Order {

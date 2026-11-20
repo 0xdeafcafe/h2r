@@ -226,17 +226,18 @@ export function texturesSharing(texture: THREE.Texture, materials: Iterable<THRE
 export async function streamTextures(
   pending: readonly PendingTexture[],
   arrived: (p: PendingTexture, picture: Picture) => void,
-  opts: { concurrency?: number; load?: (url: string) => Promise<Picture | null>; stopped?: () => boolean } = {},
+  opts: { concurrency?: number; load?: (url: string) => Promise<Picture | null>; stopped?: () => boolean; progress?: (done: number, total: number) => void } = {},
 ): Promise<number> {
   const load = opts.load ?? ((u: string) => fetchPicture(u));
   const stopped = opts.stopped ?? (() => false);
-  let next = 0, count = 0;
+  let next = 0, count = 0, done = 0;
   const worker = async () => {
     while (next < pending.length && !stopped()) {
       const p = pending[next++]!;
       const picture = await load(p.url);
       if (stopped()) return;
       if (picture) { arrived(p, picture); count++; }
+      opts.progress?.(++done, pending.length);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, opts.concurrency ?? 6) }, worker));

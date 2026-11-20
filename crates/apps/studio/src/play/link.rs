@@ -2,8 +2,8 @@
 //! the UI never waits on the game.
 //!
 //! The thread connects (retrying while a launched game starts), then runs
-//! the calls it is sent in order and, when idle, polls `session.status`
-//! and `world.query` a few times a second. Everything comes back as
+//! the calls it is sent in order and, when idle, polls `session.status`.
+//! The binary mirror has its own connection. Control replies come back as
 //! [`Event`]s that the UI drains once a frame ([`Link::drain`]).
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -11,14 +11,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_proto::{CallError, Client, Endpoint, method};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// How often the idle link polls the game.
 pub const POLL: Duration = Duration::from_millis(250);
 /// How long one call may take before the link is taken as lost.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
-/// The most world objects one poll lists.
-pub const OBJECTS: usize = 300;
 
 /// What a call was for, so its answer finds its way back.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +25,8 @@ pub enum Purpose {
     Scenario,
     /// `sim.session`: whether host writes are allowed.
     SessionKind,
+    /// Stream counters on the JSON control connection.
+    LiveStatus,
     /// An `edit.set` of a placement field (the diff's index).
     Edit(u64),
     Teleport,
@@ -49,11 +49,8 @@ pub enum Event {
     Connected,
     /// Connecting failed for good, or the connection broke.
     Lost(String),
-    /// One poll: `session.status` and `world.query`'s answers.
-    Poll {
-        status: Value,
-        world: Value,
-    },
+    /// The control connection's latest session status.
+    Poll(Value),
     Answer {
         purpose: Purpose,
         method: String,
@@ -187,27 +184,11 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {
                 next_poll = Instant::now() + options.poll;
-                let status = c.call(method::STATUS, Value::Null);
-                let world = c.call(
-                    method::WORLD_QUERY,
-                    json!({
-                        "fields": ["pos", "forward", "team", "name", "mounted_on"],
-                        "limit": OBJECTS,
-                    }),
-                );
-                match (status, world) {
-                    (Ok(status), Ok(world)) => {
-                        let _ = events.send(Event::Poll { status, world });
+                match c.call(method::STATUS, Value::Null) {
+                    Ok(status) => {
+                        let _ = events.send(Event::Poll(status));
                     }
-                    // World reads may be refused for a moment (a load): the
-                    // status still says where the game is.
-                    (Ok(status), Err(e)) if !lost(&e) => {
-                        let _ = events.send(Event::Poll {
-                            status,
-                            world: Value::Null,
-                        });
-                    }
-                    (Err(e), _) | (_, Err(e)) => {
+                    Err(e) => {
                         let _ = events.send(Event::Lost(e.to_string()));
                         return;
                     }

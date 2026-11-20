@@ -2,7 +2,7 @@
 
 use h1map::{Group, H1Map, Tag, TagRef};
 use map::FourCC;
-use map::build::{Block, FixupKind, TagPayload, TagSet};
+use map::build::{FixupKind, TagPayload, TagSet};
 
 use crate::text::Result;
 use crate::text::h1::{Hmt, HudMessage, MessagePart, Ustr};
@@ -236,7 +236,7 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                 let Some(seats) = h1map::Block::read(bytes, 0x2e4) else {
                     continue;
                 };
-                for (i, seat) in map.block(seats, 0x11c)?.chunks_exact(0x11c).enumerate() {
+                for (i, seat) in map.block(seats, 0x11c)?.as_chunks::<0x11c>().0.iter().enumerate() {
                     let Some(label) = short(seat, 0xec).and_then(|i| icons.get(i)) else {
                         continue;
                     };
@@ -264,7 +264,7 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
     if custom_device.is_some() {
         let scenario = map.tag_data(map.scenario())?;
         if let Some(controls) = h1map::Block::read(scenario, 0x2ac) {
-            for control in map.block(controls, 0x40)?.chunks_exact(0x40) {
+            for control in map.block(controls, 0x40)?.as_chunks::<0x40>().0 {
                 // 0x118f16 reads a one-based scenario-string row
                 // from the placement.
                 let phrase = short(control, 0x34)

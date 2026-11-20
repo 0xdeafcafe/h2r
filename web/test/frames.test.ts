@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Frame } from "../src/api/types";
-import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleActors, sampleFrames, sampleObjects, sampleVehicles } from "../src/state/frames";
+import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleActors, sampleFrames, sampleHits, sampleObjects, sampleVehicles } from "../src/state/frames";
 
 const f = (tick: number, players: Array<[number, number, number, boolean?, number?]>): Frame => ({
   game_id: "g", tick,
@@ -12,6 +12,27 @@ describe("interpolation", () => {
     const out = interpolateFrames(f(0, [[0, 0, 0]]), f(10, [[0, 10, -4]]), 5);
     expect(out[0]!.x).toBeCloseTo(5);
     expect(out[0]!.y).toBeCloseTo(-2);
+  });
+
+  test("holds player and actor vitality on the observed tick", () => {
+    const withVitals = (tick: number, body: number, shield: number): Frame => {
+      const frame = f(tick, [[0, tick, 0]]);
+      Object.assign(frame.players[0]!, { body, shield });
+      frame.actors = [{ id: "guard", species: "elite", pos: [tick, 3, 0], yaw: 0, body, shield }];
+      return frame;
+    };
+    const frames = [withVitals(10, 1, 2), withVitals(20, 0.5, 0), f(30, [[0, 30, 0]])];
+    for (const sample of [sampleFrames, sampleActors]) {
+      expect(sample(frames, 19.5)[0]).toMatchObject({ body: 1, shield: 2, vitalsTick: 10, x: 19.5 });
+      expect(sample(frames, 20)[0]).toMatchObject({ body: 0.5, shield: 0, vitalsTick: 20 });
+    }
+    expect(sampleFrames(frames, 30)[0]?.body).toBeUndefined();
+    expect(sampleFrames(frames, 30)[0]?.shield).toBeUndefined();
+  });
+
+  test("the sampled hit retains its offset from the frame tick", () => {
+    const frame: Frame = { ...f(10, []), hits: [{ to: "p0", pos: [1, 2, 3], ago: 2 }] };
+    expect(sampleHits([frame], 10)?.hits[0]?.ago).toBe(2);
   });
 
   test("irregular samples keep elapsed time and hold the last pose until a checkpoint cut", () => {

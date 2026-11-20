@@ -168,7 +168,8 @@ pub fn install_film(
     {
         session = session.with_sim(game.clone());
     }
-    let sink = transport_sink(config);
+    let combat = super::CombatFeed::default();
+    let sink = transport_sink(config, &combat);
     let (sink, transport) = match sink {
         Ok(sink) => (sink, config.enabled),
         Err(error) if observer.is_some() => {
@@ -191,6 +192,7 @@ pub fn install_film(
     } else {
         Telemetry::new(session, sink)
     };
+    telemetry.combat = combat;
     telemetry.hooks = hooks;
     // Replay needs the same hook addresses for scheduler parity. Its viewer
     // consumes the film: no second live telemetry session needs to observe it.
@@ -207,7 +209,7 @@ pub fn install_film(
     }
 }
 
-fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
+fn transport_sink(config: &TelemetryConfig, combat: &super::CombatFeed) -> Result<Box<dyn Sink>, String> {
     if !config.enabled {
         return Ok(Box::new(crate::sink::Discard));
     }
@@ -224,7 +226,7 @@ fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
         } => {
             let sink = ServerSink::for_host(base_url.clone(), token.clone())?;
             Box::new(match game {
-                Some(game) => sink.with_sim(game, None),
+                Some(game) => sink.with_sim(game, None, combat.clone()),
                 None => sink,
             })
         }
@@ -235,7 +237,7 @@ fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
             deferred_lock,
         } => Box::new(
             ServerSink::new(base_url.clone(), account.clone())?
-                .with_sim(game, deferred_lock.clone()),
+                .with_sim(game, deferred_lock.clone(), combat.clone()),
         ),
     })
 }

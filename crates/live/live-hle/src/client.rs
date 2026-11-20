@@ -1940,9 +1940,15 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.values().next().ok_or(NO_USER)?;
-                let path = crate::mods::list_path(*limit, cursor.as_deref());
-                self.team_json::<crate::mods::ModPage>(user, &path)
-                    .map(Reply::Mods)
+                let page = match self.team_json::<crate::mods::PackPage>(user, "/mod-packs") {
+                    Ok(packs) => Ok(packs.page(*limit, cursor.as_deref())),
+                    Err(Error::Status(404)) => {
+                        let path = crate::mods::list_path(*limit, cursor.as_deref());
+                        self.team_json::<crate::mods::ModPage>(user, &path)
+                    }
+                    Err(error) => Err(error),
+                };
+                page.map(Reply::Mods)
                     .map_err(Error::result)
             }
             Work::ClankerHoppers => {

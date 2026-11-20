@@ -39,6 +39,9 @@
 //! here by [`Catalog`]. So it is kept by whichever store the server runs
 //! on (the `events` table in Postgres), and replayed at startup.
 
+pub(crate) mod screenshots;
+pub(crate) mod mod_packs;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -322,6 +325,8 @@ pub struct Report {
 /// What the content events say, in memory.
 #[derive(Debug, Default)]
 pub struct CatalogState {
+    screenshots: screenshots::Galleries,
+    mod_index: mod_packs::PackIndex,
     pub blobs: HashMap<Sha256, Blob>,
     pub maps: HashMap<MapId, Package>,
     /// Moderated targets (blocks may come before any upload); absent: ok.
@@ -357,6 +362,91 @@ impl CatalogState {
         self.standing(Target::Map, &id.to_string())
     }
 
+    fn pack_standing_for_map(&self, id: &MapId) -> Standing {
+        self.mod_pack_id(id)
+            .map_or(Standing::Ok, |pack| self.standing(Target::Pack, &pack))
+    }
+
+    /// A pack takedown covers the blobs it exposes, except when another
+    /// accessible map or pack independently references the same content.
+    fn withheld_by_pack(&self, h: &Sha256) -> bool {
+        if !self
+            .standings
+            .keys()
+            .any(|(target, _)| *target == Target::Pack)
+        {
+            return false;
+        }
+
+        let map_refs = self.maps.iter().filter_map(|(id, p)| {
+            let m = &p.doc.manifest;
+            let uses = m
+                .patches
+                .iter()
+                .chain(&m.packs)
+                .any(|layer| layer.sha256 == *h)
+                || p.doc.image == Some(*h)
+                || self.details_of(id).is_some_and(|d| {
+                    d.images.iter().any(|i| i.sha256 == *h)
+                        || d.pack
+                            .as_ref()
+                            .and_then(|pack| self.packs.get(pack))
+                            .is_some_and(|pack| pack.images.iter().any(|i| i.sha256 == *h))
+                });
+            uses.then(|| (self.pack_standing_for_map(id), self.refusal(id).is_none()))
+        });
+        let pack_ref = |id: &str| {
+            let state = self.standing(Target::Pack, id);
+            (state, state.is_ok())
+        };
+        let pack_refs = self
+            .packs
+            .iter()
+            .filter(|(_, p)| p.images.iter().any(|i| i.sha256 == *h))
+            .map(|(id, _)| pack_ref(id));
+        let screenshots = self
+            .screenshot_targets(h)
+            .filter_map(|(target, id)| match target {
+                Target::Map => {
+                    let id = id.parse::<MapId>().ok()?;
+                    Some((
+                        self.pack_standing_for_map(&id),
+                        self.maps.contains_key(&id) && self.refusal(&id).is_none(),
+                    ))
+                }
+                Target::Pack => Some(pack_ref(id)),
+                Target::Content => None,
+            });
+
+        let mut taken_down = false;
+        for (pack_state, accessible) in map_refs.chain(pack_refs).chain(screenshots) {
+            if accessible {
+                return false;
+            }
+            taken_down |= !pack_state.is_ok();
+        }
+        taken_down
+    }
+
+    fn uses_withheld_content(&self, doc: &MapDocument) -> bool {
+        doc.manifest.patches.iter().chain(&doc.manifest.packs)
+            .any(|layer| self.withheld_by_pack(&layer.sha256))
+            || doc.image.is_some_and(|hash| self.withheld_by_pack(&hash))
+    }
+
+    /// The log also carries the original manifest, image hashes and pack
+    /// metadata. Its public readers observe the same pack takedowns.
+    pub(crate) fn hides_content_stream(&self, stream: &str) -> bool {
+        match stream.split_once('-') {
+            Some(("mappack", pack)) => !self.standing(Target::Pack, pack).is_ok(),
+            Some(("package", map)) => map
+                .parse()
+                .is_ok_and(|id| !self.pack_standing_for_map(&id).is_ok()),
+            Some(("content", hash)) => hash.parse().is_ok_and(|h| self.withheld_by_pack(&h)),
+            _ => false,
+        }
+    }
+
     /// A blob that is stored and served.
     pub fn servable(&self, h: &Sha256) -> bool {
         self.blobs.contains_key(h) && self.blob_standing(h).is_ok()
@@ -387,7 +477,7 @@ impl CatalogState {
     /// Who made `p` (published as `id`): an admin's credit, else the
     /// publisher's ([`MapDocument::credit`]).
     pub fn credit_of(&self, id: &MapId, p: &Package) -> Option<Credit> {
-        self.credits.get(id).cloned().or_else(|| p.doc.credit())
+        self.release_credit(id, p)
     }
 
     /// The admin's details of `id`, if any.
@@ -397,11 +487,7 @@ impl CatalogState {
 
     /// The pack `id` names, with its info, if the server has it.
     pub fn pack_of(&self, id: &MapId) -> Option<PackListed> {
-        let pack = self.details_of(id)?.pack.as_ref()?;
-        self.packs.get(pack).map(|info| PackListed {
-            id: pack.clone(),
-            info: info.clone(),
-        })
+        self.pack_metadata_for_map(id)
     }
 
     pub fn reports_of(&self, target: Target, id: &str) -> usize {
@@ -415,6 +501,12 @@ impl CatalogState {
     /// layers down. A `MapId` the server never saw is not refused here
     /// (retail maps and local edits have ids too).
     pub fn refusal(&self, id: &MapId) -> Option<String> {
+        if self.staged(id) {
+            return Some("member is awaiting its pack publication".into());
+        }
+        if !self.pack_standing_for_map(id).is_ok() {
+            return Some(format!("an admin took down the pack containing map {id}"));
+        }
         match self.map_standing(id) {
             Standing::Ok => {}
             Standing::Hidden => return Some(format!("map {id} is hidden by an admin")),
@@ -438,6 +530,7 @@ impl CatalogState {
     fn apply(&mut self, e: &RecordedEvent) {
         let b = &e.body;
         match b.kind.as_str() {
+            maps::SCREENSHOT_SET => self.apply_screenshot(&b.data),
             CONTENT_STORED => {
                 if let Ok(d) = serde_json::from_value::<ContentStored>(b.data.clone()) {
                     self.standings
@@ -465,6 +558,12 @@ impl CatalogState {
                             position: e.position,
                         },
                     );
+                    self.index_mod_member(id);
+                }
+            }
+            maps::MOD_PACK_PUBLISHED => {
+                if let Ok(release) = serde_json::from_value(b.data.clone()) {
+                    self.apply_mod_pack(release);
                 }
             }
             CONTENT_MODERATED => {
@@ -536,6 +635,7 @@ impl CatalogState {
                             self.details.remove(&d.map_id);
                         }
                     }
+                    self.index_mod_member(d.map_id);
                 }
             }
             MAP_PACK_SET => {
@@ -744,6 +844,9 @@ impl Live {
         let store = self.content_store()?;
         let limits = self.policy().content.clone();
         let known = |s: &CatalogState| -> ApiResult<Option<Stored>> {
+            if s.withheld_by_pack(&h) {
+                return Err(gone("an admin took down the pack containing this content"));
+            }
             match s.blob_standing(&h) {
                 Standing::Hidden | Standing::Blocked => {
                     return Err(gone("an admin took this content down"));
@@ -854,6 +957,9 @@ impl Live {
         let h: Sha256 = sha256.parse().map_err(|_| not_found("no such content"))?;
         {
             let s = self.catalog.read();
+            if s.withheld_by_pack(&h) {
+                return Err(gone("an admin took down the pack containing this content"));
+            }
             match s.blob_standing(&h) {
                 Standing::Ok => {}
                 Standing::Hidden | Standing::Blocked => {
@@ -910,8 +1016,10 @@ impl Live {
             .collect();
         let credit = s.credit_of(id, p);
         let details = s.details_of(id);
-        let images = details.map(|d| d.images.clone()).unwrap_or_default();
+        let images = s.gallery(Target::Map, &id.to_string(), details.map_or(&[], |d| d.images.as_slice()));
+        let pack = s.pack_of(id);
         MapSummary {
+            mod_pack: s.mod_pack_id(id),
             map_id: *id,
             name: m.package.name.clone(),
             description: details
@@ -947,11 +1055,8 @@ impl Live {
                 .map(|c| c.lines.clone())
                 .unwrap_or_default(),
             images,
-            pack: details.and_then(|d| d.pack.clone()),
-            pack_name: details
-                .and_then(|d| d.pack.as_ref())
-                .and_then(|p| s.packs.get(p))
-                .map(|p| p.name.clone()),
+            pack: pack.as_ref().map(|p| p.id.clone()).or_else(|| details.and_then(|d| d.pack.clone())),
+            pack_name: pack.map(|p| p.info.name),
         }
     }
 
@@ -1020,6 +1125,17 @@ impl Live {
         let _guard = self.content_writes.lock().await;
         {
             let s = self.catalog.read();
+            if let Some(pack) = &doc.staged_for {
+                if !s.standing(Target::Pack, pack).is_ok() {
+                    return Err(gone("an admin took down this pack"));
+                }
+                if s.mod_pack_owner(pack).is_some_and(|owner| owner != xuid) {
+                    return Err(forbidden("only the pack uploader can stage a member"));
+                }
+            }
+            if !s.pack_standing_for_map(&id).is_ok() {
+                return Err(gone("an admin took down the pack containing this map"));
+            }
             match s.map_standing(&id) {
                 Standing::Hidden | Standing::Blocked => {
                     return Err(gone("an admin took this map down"));
@@ -1033,8 +1149,20 @@ impl Live {
                         self.who(p.author).gamertag
                     )));
                 }
-                let answer = self.answer(&s, &id, p);
-                return Ok((StatusCode::OK, answer));
+                // A retry normally reads its original publication. If
+                // the owner abandoned an unpublished import, a newly
+                // signed manifest can instead stage the member elsewhere.
+                if !s.staged(&id) || p.doc.staged_for == doc.staged_for {
+                    return Ok((StatusCode::OK, self.answer(&s, &id, p)));
+                }
+                if p.doc.staged_for.as_ref().is_some_and(|old|
+                    !s.standing(Target::Pack, old).is_ok())
+                {
+                    return Err(gone("an admin took down the original pack"));
+                }
+            }
+            if s.uses_withheld_content(&doc) {
+                return Err(gone("an admin took down the pack containing this content"));
             }
             let missing: Vec<String> = m
                 .patches
@@ -1246,7 +1374,7 @@ impl Live {
         }
     }
 
-    /// `POST /v1/maps/{map_id}/report`, `POST /v1/content/{sha256}/report`.
+    /// Report a map, mod pack or content blob.
     pub async fn report(
         &self,
         bearer: Option<&str>,
@@ -1269,6 +1397,12 @@ impl Live {
         let (stream, id) = {
             let s = self.catalog.read();
             match target {
+                Target::Pack => {
+                    if !s.mod_pack_exists(id) {
+                        return Err(not_found("no such mod pack"));
+                    }
+                    (maps::pack_stream(id), id.to_owned())
+                }
                 Target::Map => {
                     let id: MapId = id.parse().map_err(|_| not_found("no such map"))?;
                     if !s.maps.contains_key(&id) {
@@ -1313,7 +1447,7 @@ impl Live {
         })
     }
 
-    /// `POST /v1/admin/{maps|content}/{id}/{action}`.
+    /// `POST /v1/admin/{maps|mod-packs|content}/{id}/{action}`.
     pub async fn moderate(
         &self,
         bearer: Option<&str>,
@@ -1328,6 +1462,13 @@ impl Live {
         let (stream, id, known) = {
             let s = self.catalog.read();
             match target {
+                Target::Pack => {
+                    if !maps::pack_id_ok(id) {
+                        return Err(invalid("invalid mod pack ID"));
+                    }
+                    let known = s.mod_pack_exists(id) || !s.standing(Target::Pack, id).is_ok();
+                    (maps::pack_stream(id), id.to_owned(), known)
+                }
                 Target::Map => {
                     let id: MapId = id
                         .parse()
@@ -1511,15 +1652,8 @@ impl Live {
 
     /// `GET /v1/mappacks`.
     pub fn packs(&self) -> Vec<PackListed> {
-        self.catalog
-            .read()
-            .packs
-            .iter()
-            .map(|(id, info)| PackListed {
-                id: id.clone(),
-                info: info.clone(),
-            })
-            .collect()
+        let s = self.catalog.read();
+        s.packs.keys().filter_map(|id| self.legacy_pack(&s, id)).collect()
     }
 
     /// The packs `items` name, for a list page.
@@ -1527,25 +1661,15 @@ impl Live {
         let s = self.catalog.read();
         let ids: BTreeSet<&String> = items.iter().filter_map(|m| m.pack.as_ref()).collect();
         ids.into_iter()
-            .filter_map(|id| {
-                s.packs.get(id).map(|info| PackListed {
-                    id: id.clone(),
-                    info: info.clone(),
-                })
-            })
+            .filter_map(|id| self.legacy_pack(&s, id))
             .collect()
     }
 
     /// `GET /v1/mappacks/{id}/images/{n}`.
     pub async fn pack_image(&self, id: &str, n: &str) -> ApiResult<(&'static str, Vec<u8>)> {
         let n: usize = n.parse().map_err(|_| not_found("no such image"))?;
-        let img = self
-            .catalog
-            .read()
-            .packs
-            .get(id)
-            .and_then(|p| p.images.get(n))
-            .map(|i| i.sha256)
+        let img = self.legacy_pack(&self.catalog.read(), id)
+            .and_then(|p| p.info.images.get(n).map(|i| i.sha256))
             .ok_or_else(|| not_found("no such image"))?;
         let (_, bytes) = self.content(&img.to_string()).await?;
         let kind = maps::image_type(&bytes).ok_or_else(|| not_found("no such image"))?;
@@ -1630,11 +1754,20 @@ impl Live {
 /// The admin's view (`GET /v1/admin/content`).
 #[derive(Debug, Serialize)]
 struct AdminView {
+    packs: Vec<AdminPack>,
     maps: Vec<AdminMap>,
     blobs: Vec<AdminBlob>,
     reports: Vec<AdminReport>,
     uploads_off: Vec<String>,
     position: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminPack {
+    #[serde(flatten)]
+    summary: maps::ModPackSummary,
+    state: Standing,
+    reports: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1708,7 +1841,21 @@ impl Live {
             .iter()
             .map(|x| self.who(*x).gamertag)
             .collect();
+        let packs = self.mod_packs_in(&s, false)
+            .into_iter()
+            .map(|summary| {
+                let member_reports = summary.members.iter()
+                    .map(|m| s.reports_of(Target::Map, &m.map_id.to_string()))
+                    .sum::<usize>();
+                AdminPack {
+                    state: s.standing(Target::Pack, &summary.id),
+                    reports: s.reports_of(Target::Pack, &summary.id) + member_reports,
+                    summary,
+                }
+            })
+            .collect();
         AdminView {
+            packs,
             maps,
             blobs,
             reports,
@@ -1775,10 +1922,7 @@ pub(crate) async fn get_content(
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (header::ETAG, format!("\"{h}\"")),
             (header::CONTENT_LENGTH, size.to_string()),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable".to_string(),
-            ),
+            (header::CACHE_CONTROL, crate::caching::PRIVATE.to_string()),
         ],
         Body::from_stream(stream),
     )
@@ -1884,6 +2028,15 @@ pub(crate) async fn report_map(
     report(&live, &headers, Target::Map, &id, body).await
 }
 
+pub(crate) async fn report_pack(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    report(&live, &headers, Target::Pack, &id, body).await
+}
+
 pub(crate) async fn report_content(
     State(live): Shared,
     headers: HeaderMap,
@@ -1905,6 +2058,16 @@ pub(crate) async fn moderate_map(
 ) -> ApiResult<Response> {
     Ok(ok(live
         .moderate(bearer(&headers), Target::Map, &id, &action)
+        .await?))
+}
+
+pub(crate) async fn moderate_pack(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath((id, action)): UrlPath<(String, String)>,
+) -> ApiResult<Response> {
+    Ok(ok(live
+        .moderate(bearer(&headers), Target::Pack, &id, &action)
         .await?))
 }
 

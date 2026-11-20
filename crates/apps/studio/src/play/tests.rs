@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use agent::{Access, Agent, GameStatus, Reader, Server};
 use agent_proto::sim::SessionKind;
-use agent_proto::{Endpoint, Kind, Object, RpcError, code};
+use agent_proto::live;
+use agent_proto::{Endpoint, Object, RpcError, code};
 use scenario_edit::{BlockKind, Command, Value as FieldValue};
 use serde_json::{Value, json};
 
@@ -19,48 +20,68 @@ use super::testing::Temp;
 use super::*;
 use crate::app::{Action, App};
 
-const PLAYER_AT: [f64; 3] = [10.0, -4.0, 2.0];
+const PLAYER_AT: [f32; 3] = [10.0, -4.0, 2.0];
+const VEHICLE: u32 = 0x0010_0002;
+const UNIT: u32 = 0x0010_0001;
 const SCNR: &str = "0xe1780003";
 
 struct World {
     map: String,
+    tick: u64,
+    moved: Arc<AtomicBool>,
 }
 
 impl Reader for World {
     fn status(&mut self) -> GameStatus {
         GameStatus {
-            tick: Some(100),
+            tick: Some(self.tick),
             map: Some(self.map.clone()),
             mode: Some("multiplayer".into()),
             bsp: Some(0),
         }
     }
+
     fn objects(&mut self) -> Result<Vec<Object>, String> {
-        Ok(vec![
-            Object {
-                id: "player.0".into(),
-                kind: Kind::Player,
-                pos: Some(PLAYER_AT),
-                forward: Some([0.0, 1.0, 0.0]),
-                team: Some(0),
-                name: Some("Tester".into()),
-                ..Object::default()
-            },
-            Object {
-                id: "vehicle.e0010002".into(),
-                kind: Kind::Vehicle,
-                pos: Some([1.0, 2.0, 3.0]),
-                ..Object::default()
-            },
-            // A turret, relative to its vehicle: not drawn.
-            Object {
-                id: "vehicle.e0020003".into(),
-                kind: Kind::Vehicle,
-                pos: Some([0.0, 0.0, 1.0]),
-                mounted_on: Some("vehicle.e0010002".into()),
-                ..Object::default()
-            },
-        ])
+        panic!("the editor must read the mirror, not poll world.query")
+    }
+
+    fn live_capture(&mut self, layers: live::Layers, world: &mut live::World) -> bool {
+        world.objects.clear();
+        world.players.clear();
+        if layers.objects {
+            let unit = live::Object {
+                id: UNIT,
+                tag: Some(0x1234),
+                kind: 0,
+                position: PLAYER_AT,
+                scale: 1.0,
+                forward: [0.0, 1.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                ..Default::default()
+            };
+            world.objects.push(unit);
+            world.objects.push(live::Object {
+                id: VEHICLE,
+                kind: 1,
+                position: if self.moved.load(Ordering::Relaxed) {
+                    [5.0, 2.0, 3.0]
+                } else {
+                    [1.0, 2.0, 3.0]
+                },
+                ..unit
+            });
+        }
+        if layers.players {
+            world.players.push(live::Player {
+                index: 0,
+                name: "Tester".into(),
+                unit: Some(UNIT),
+                local_user: Some(0),
+                aim: [0.0, 1.0, 0.0],
+                ..Default::default()
+            });
+        }
+        true
     }
 }
 
@@ -70,6 +91,7 @@ struct Game {
     agent: Agent,
     _server: Server,
     stop: Arc<AtomicBool>,
+    moved: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
 }
@@ -121,12 +143,15 @@ impl Game {
         let stop = Arc::new(AtomicBool::new(false));
         let (s, a) = (Arc::clone(&stop), agent.clone());
         let map = map.to_owned();
+        let moved = Arc::new(AtomicBool::new(false));
+        let game_moved = Arc::clone(&moved);
         let thread = thread::spawn(move || {
-            let mut w = World { map };
+            let mut w = World { map, tick: 100, moved: game_moved };
             while !s.load(Ordering::Relaxed) {
+                w.tick += 1;
                 a.on_tick(&mut w);
                 a.between_slices(&mut w, 0);
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_millis(5));
             }
         });
         Game {
@@ -134,6 +159,7 @@ impl Game {
             agent,
             _server: server,
             stop,
+            moved,
             thread: Some(thread),
             calls,
         }
@@ -153,6 +179,7 @@ impl Game {
 impl Drop for Game {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.agent.shutdown();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -191,8 +218,8 @@ fn paired(tag: &str, map: &str, kind: SessionKind) -> (Temp, Game, App, Play) {
     let mut app = editor(&t);
     let mut play = Play::new();
     play.pair(&mut app, Endpoint::Unix(game.path.clone()));
-    until(&mut play, &mut app, "the first poll", |p, _| {
-        p.is_paired() && p.session.is_some() && p.scenario_tag.is_some() && !p.objects.is_empty()
+    until(&mut play, &mut app, "the paired stream", |p, a| {
+        p.is_paired() && p.session.is_some() && p.scenario_tag.is_some() && a.pairing.player().is_some()
     });
     (t, game, app, play)
 }
@@ -217,10 +244,10 @@ fn pairing_shows_the_game_and_its_objects() {
         "{}",
         play.chip()
     );
-    // The turret rides its vehicle: only the player and the vehicle.
-    let ids: Vec<&str> = play.objects.iter().map(|o| o.id.as_str()).collect();
-    assert_eq!(ids, ["player.0", "vehicle.e0010002"]);
-    assert_eq!(play.player().unwrap().name.as_deref(), Some("Tester"));
+    let sample = app.pairing.shown.as_ref().unwrap();
+    let ids: Vec<u32> = sample.objects.iter().map(|o| o.id).collect();
+    assert_eq!(ids, [UNIT, VEHICLE]);
+    assert_eq!(app.pairing.player().unwrap().0.name, "Tester");
     assert_eq!(play.edits_blocked(&app), None);
     // Go to player: the camera's focus is on them, looking their way (+y).
     play.go_to_player(&mut app);
@@ -231,6 +258,60 @@ fn pairing_shows_the_game_and_its_objects() {
     // Unpairing ends it.
     play.unpair(&mut app);
     assert_eq!(play.chip(), "Game: not paired");
+    assert!(app.pairing.mirror.is_none() && app.pairing.shown.is_none());
+}
+
+#[test]
+fn map_identity_tracks_the_frame_epoch_and_the_loaded_file() {
+    let t = Temp::new("map-identity");
+    let mut app = editor(&t);
+    let sample = live_mirror::Sample {
+        tick: 100, epoch: 2, stale: false, objects: Vec::new(), players: Vec::new()
+    };
+    let checksum = app.session.source_checksum().unwrap();
+    app.pairing.stream_map = json!({"name": "example", "epoch": 1, "checksum": checksum});
+    assert!(!app.pairing.matches_sample(&app, &sample));
+    app.pairing.stream_map["epoch"] = json!(2);
+    assert!(app.pairing.matches_sample(&app, &sample));
+    move_flag(&mut app, [2.0, 4.0, 8.0]);
+    assert!(app.pairing.matches_sample(&app, &sample));
+    let other = !checksum;
+    app.pairing.stream_map["checksum"] = json!(other);
+    assert!(!app.pairing.matches_sample(&app, &sample));
+    app.pairing.play_copy = Some((app.session.world_rev(), other));
+    assert!(app.pairing.matches_sample(&app, &sample));
+    app.pairing.stream_map["name"] = json!("another");
+    assert!(!app.pairing.matches_sample(&app, &sample));
+}
+
+#[test]
+fn a_moved_game_object_reaches_mirror_objects_within_two_frames() {
+    let (_t, game, mut app, mut play) = paired("motion", "example", SessionKind::Local);
+    let mut api = crate::api::Api::new();
+    let mut read = |app: &mut App| {
+        let answer = api.call(app, studio_proto::method::MIRROR_OBJECTS, json!({"kind":"vehi"})).unwrap();
+        assert_eq!(answer["objects"].as_array().unwrap().len(), 1);
+        assert_eq!(answer["objects"][0]["id"], agent_proto::sim::objects::handle(VEHICLE));
+        (answer["tick"].as_u64().unwrap(), answer["objects"][0]["pos"].clone())
+    };
+    // Hold the fake game, so the test controls how many frames it can send.
+    play.pause();
+    until(&mut play, &mut app, "the paused tick", |p, a| {
+        p.status.as_ref().is_some_and(|s| s.at.paused &&
+            s.at.tick == a.pairing.shown.as_ref().map(|shown| shown.tick))
+    });
+    let (before, old) = read(&mut app);
+    assert_eq!(old, json!([1.0, 2.0, 3.0]));
+    game.moved.store(true, Ordering::Relaxed);
+    play.step(2);
+    until(&mut play, &mut app, "two game ticks", |_, a| {
+        a.pairing.shown.as_ref().is_some_and(|s| s.tick == before + 2)
+    });
+    let (after, moved) = read(&mut app);
+    assert_eq!(after, before + 2);
+    assert_eq!(moved, json!([5.0, 2.0, 3.0]));
+    play.resume();
+    until(&mut play, &mut app, "the resume", |p, _| !p.paused);
 }
 
 #[test]

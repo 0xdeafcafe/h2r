@@ -454,8 +454,8 @@ impl TunnelHost {
 
     fn destination(&self, id: u32) -> Option<SocketAddrV4> {
         let channel = lock(&self.channels).get(&id)?.clone();
-        let target = *lock(&channel.destination);
-        target
+        
+        *lock(&channel.destination)
     }
 
     fn reap_addresses(&self, network: &Network) {

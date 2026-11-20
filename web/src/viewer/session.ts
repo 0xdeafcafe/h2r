@@ -11,6 +11,7 @@ import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
 import { frameHub, live } from "../state/live";
 import { identity } from "../state/identity";
 import type { GameState } from "../state/reducer";
+import { sampleProjectileTrails } from "../state/projectile-trails";
 import { ReplayTimeline, fetchRecording, inTickRange, playbackRange, type ReplayKill, type TickRange } from "../state/replay";
 import { Movie } from "../api/film-ticks";
 import type { HostFilm } from "../api/host-film";
@@ -80,6 +81,7 @@ export function createReplaySession(
   let liveEdge = (_now: number) => 0;
   let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
+  let trailsFrom = -Infinity;
   type Window = Pick<ReplayWindow<TimelineSegment>, "segments" | "at" | "ready" | "frames" | "events">;
   let archive: Window | undefined;
   let seekArchive: ((tick: number) => void) | undefined;
@@ -88,6 +90,7 @@ export function createReplaySession(
     const tick = playback.tickAt(now, playback.followingLive ? liveEdge(now) : 0);
     if (loops !== playback.clock?.loops) {
       sought = now;
+      trailsFrom = tick;
       seekArchive?.(tick);
     }
     return tick;
@@ -114,6 +117,7 @@ export function createReplaySession(
     const openedLive = isLive();
     playback = new ViewerPlayback(openedLive, options.range);
     activeMovie = null;
+    trailsFrom = -Infinity;
     setSavedRange(options.range);
     liveFrame = liveFrameSource(id, roster);
     liveEdge = (now) => frameHub.get(id).renderTick(now);
@@ -135,6 +139,7 @@ export function createReplaySession(
         // The live buffer was reset on a checkpoint/restart or reconnect.
         playback = new ViewerPlayback(true);
         sought = now;
+        trailsFrom = -Infinity;
       }
       lastFrames = frames;
       newest = last;
@@ -187,7 +192,11 @@ export function createReplaySession(
       const open = (recording: ReplayTimeline) => {
         const now = performance.now();
         if (recordingOpen) playback.updateRecording(recording, now);
-        else { playback.openRecording(recording, now, time, resumeTick); sought = now; }
+        else {
+          playback.openRecording(recording, now, time, resumeTick);
+          sought = now;
+          trailsFrom = tickAt(now);
+        }
         recordingOpen = true;
         setError(null);
         reflect(now);
@@ -221,7 +230,11 @@ export function createReplaySession(
           if (signal.aborted) return;
           playback.range = clip;
           setSavedRange(clip);
-          if (recordingOpen && resumeTick !== undefined && Boolean(activeMovie) !== Boolean(segments?.length)) playback.seek(resumeTick, performance.now());
+          if (recordingOpen && resumeTick !== undefined && Boolean(activeMovie) !== Boolean(segments?.length)) {
+            const now = performance.now();
+            playback.seek(resumeTick, now);
+            trailsFrom = tickAt(now);
+          }
           activeMovie = segments?.length ? movie : null;
           archive = window;
           if (segments?.length) {
@@ -264,6 +277,7 @@ export function createReplaySession(
           if (clockAgrees(clock, m.state, now)) return;
           applyClock(clock, m.state, now);
           sought = now;
+          trailsFrom = tickAt(now);
           reflect(now);
         };
       }, (e: Error) => {
@@ -293,15 +307,16 @@ export function createReplaySession(
   }));
 
   const frame = (now: number): MapFrame => {
-    if (playback.followingLive && liveFrame) return liveFrame(now);
+    if (playback.followingLive && liveFrame) return liveFrame(now, trailsFrom);
     const tl = playback.clock?.timeline;
     const tick = tickAt(now);
     if (!tl || (options.range && !playback.clock?.loop) || (archive && !archive.ready(tick))) return { players: [], markers: [], seen: null };
-    return replayFrame(tl, tick, roster());
+    return replayFrame(tl, tick, roster(), trailsFrom);
   };
 
-  const changed = (now: number) => {
+  const changed = (now: number, jumped = true) => {
     sought = now;
+    if (jumped) trailsFrom = tickAt(now);
     reflect(now);
     if (options.range) seekArchive?.(tick());
     announce(now);
@@ -321,10 +336,12 @@ export function createReplaySession(
       const clock = playback.clock;
       if (!clock) return;
       const now = performance.now();
-      if (playback.followingLive) playback.seek(tickAt(now), now);
+      const at = tickAt(now);
+      const restarting = !playback.followingLive && at >= (clock.loop?.to_tick ?? clock.timeline.endTick);
+      if (playback.followingLive) playback.seek(at, now);
       else if (clock.playing) clock.pause(now);
       else clock.play(now);
-      changed(now);
+      changed(now, restarting);
     },
     seek(t) {
       if (!playback.clock) return;
@@ -378,13 +395,14 @@ export function createReplaySession(
 /** The map frame of a recording at tick `at`: players, actors, vehicles
  *  and the knockouts of the last six seconds, fading. The game page's
  *  replay and the stats home's "last game" loop both draw from it. */
-export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, RosterEntry>): MapFrame {
+export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, RosterEntry>, trailsFrom?: number): MapFrame {
   const fade = 6 * tl.ticksPerSecond;
   return {
     players: tl.sample(at),
     actors: tl.sampleActors(at),
     vehicles: tl.sampleVehicles(at),
     hits: tl.sampleHits(at),
+    projectileTrails: sampleProjectileTrails(tl.frames, tl.clamp(at), trailsFrom, tl.cuts),
     bsp: tl.sampleBsp(at),
     machines: tl.sampleMachines(at),
     machinePositions: tl.sampleMachinePositions(at),

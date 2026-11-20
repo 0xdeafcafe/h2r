@@ -61,7 +61,7 @@ class Stage {
       scene.setAo(true);
       // Teleporter and lift markers are the viewer's own drawing, not the level's.
       scene.setFeatures(false);
-      if (!(await scene.loadMap(glb))) throw new Error(`could not load ${glb}`);
+      if (await scene.loadMap(glb) !== "ok") throw new Error(`could not load ${glb}`);
       await scene.texturesReady;
       await scene.skyReady();
       if (!scene.levelBounds()) throw new Error("the level has no bounds");

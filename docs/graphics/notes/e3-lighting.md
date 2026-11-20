@@ -6,6 +6,147 @@ The page's text was recorded at docs revision `af931e2fe`; the shadow
 prototype is `crates/tools/viewer/src/bin/shadowlab` (last changed at `25c47e967`).
 Both read the owner's disc at run time and write nothing from it into Git.
 
+## 2026-11-20: object shadows, template coverage and attached lights
+
+Read on the owner's Xbox disc at source revision `ad498abc7`. The
+guest-record readers are in `b9344dc5e` and the template census in
+`66892e770`. These are static counts. A template is counted once in a map
+even when several shader instances use it.
+
+**Coverage.** Of 2,581 map-local templates, 987 have a layer-10 model
+depth writer and the same 987 have a BSP depth writer. In 975, a
+layer-11 multiplying depth receiver and both writers occur at the same
+LOD. Only 142 have all three at every LOD. Across maps these groups
+represent 72, 69 and 15 distinct names respectively out of 165. This
+includes unreferenced templates. The counts come from the template LOD
+mask and pass ranges, the vertex-program reference, render states and
+texture sources. A layer-11 alpha-only draw or a filtered-colour-mask
+draw cannot qualify as a depth-map RGB receiver.
+
+- `00a_introduction`: of 72 templates, 31 write depth, 30 pair at one or more LODs and 2 pair at every LOD.
+- `01a_tutorial`: of 60 templates, 21 write depth, 21 pair at one or more LODs and 2 pair at every LOD.
+- `01b_spacestation`: of 100 templates, 39 write depth, 37 pair at one or more LODs and 4 pair at every LOD.
+- `03a_oldmombasa`: of 101 templates, 41 write depth, 41 pair at one or more LODs and 5 pair at every LOD.
+- `03b_newmombasa`: of 107 templates, 46 write depth, 46 pair at one or more LODs and 6 pair at every LOD.
+- `04a_gasgiant`: of 96 templates, 38 write depth, 37 pair at one or more LODs and 5 pair at every LOD.
+- `04b_floodlab`: of 88 templates, 34 write depth, 34 pair at one or more LODs and 7 pair at every LOD.
+- `05a_deltaapproach`: of 100 templates, 42 write depth, 42 pair at one or more LODs and 6 pair at every LOD.
+- `05b_deltatowers`: of 99 templates, 40 write depth, 40 pair at one or more LODs and 6 pair at every LOD.
+- `06a_sentinelwalls`: of 101 templates, 42 write depth, 40 pair at one or more LODs and 5 pair at every LOD.
+- `06b_floodzone`: of 93 templates, 38 write depth, 38 pair at one or more LODs and 6 pair at every LOD.
+- `07a_highcharity`: of 100 templates, 37 write depth, 35 pair at one or more LODs and 5 pair at every LOD.
+- `07b_forerunnership`: of 104 templates, 42 write depth, 40 pair at one or more LODs and 6 pair at every LOD.
+- `08a_deltacliffs`: of 87 templates, 30 write depth, 30 pair at one or more LODs and 5 pair at every LOD.
+- `08b_deltacontrol`: of 107 templates, 41 write depth, 40 pair at one or more LODs and 6 pair at every LOD.
+- `ascension`: of 78 templates, 28 write depth, 27 pair at one or more LODs and 5 pair at every LOD.
+- `beavercreek`: of 80 templates, 28 write depth, 28 pair at one or more LODs and 4 pair at every LOD.
+- `burial_mounds`: of 75 templates, 26 write depth, 26 pair at one or more LODs and 4 pair at every LOD.
+- `coagulation`: of 79 templates, 27 write depth, 27 pair at one or more LODs and 4 pair at every LOD.
+- `colossus`: of 78 templates, 29 write depth, 29 pair at one or more LODs and 5 pair at every LOD.
+- `cyclotron`: of 81 templates, 29 write depth, 29 pair at one or more LODs and 4 pair at every LOD.
+- `foundation`: of 81 templates, 27 write depth, 27 pair at one or more LODs and 4 pair at every LOD.
+- `headlong`: of 87 templates, 33 write depth, 33 pair at one or more LODs and 5 pair at every LOD.
+- `lockout`: of 77 templates, 29 write depth, 29 pair at one or more LODs and 4 pair at every LOD.
+- `mainmenu`: of 49 templates, 17 write depth, 17 pair at one or more LODs and 2 pair at every LOD.
+- `midship`: of 75 templates, 27 write depth, 27 pair at one or more LODs and 4 pair at every LOD.
+- `shared`: of 72 templates, 26 write depth, 26 pair at one or more LODs and 4 pair at every LOD.
+- `single_player_shared`: of 85 templates, 33 write depth, 33 pair at one or more LODs and 5 pair at every LOD.
+- `waterworks`: of 84 templates, 34 write depth, 34 pair at one or more LODs and 6 pair at every LOD.
+- `zanzibar`: of 85 templates, 32 write depth, 32 pair at one or more LODs and 6 pair at every LOD.
+
+**Attachments.** Every map has both `flashlight_1p` and `flashlight_3p`
+on the Chief's flashlight marker. The 12 multiplayer maps and the two
+shared caches also attach both to the multiplayer biped. That gives
+two attachment relationships per campaign or menu map and four per
+multiplayer or shared map, 88 in total. All 14 multiplayer or shared
+maps have one Warthog and one Scorpion headlight attachment each. In
+campaign, `01b_spacestation` and `03a_oldmombasa` have the Warthog
+only. `03b_newmombasa`, `05a_deltaapproach` and `06b_floodzone`
+have both. The other campaign maps and the menu have neither.
+The totals are 19 Warthog attachments and 17 Scorpion attachments.
+Every attached beam is a gelled frustum flagged against shadow casting.
+The unsuffixed flashlight tag on `04a_gasgiant` and `04b_floodlab`
+has no placement, attachment or effect-part source in either map.
+
+**Shadow direction and gate.** The ordinary object-mask draw uses a
+normalized caster lighting direction. The depth receiver compares the
+vertex normal with its opposite, towards the source. All six populated
+classifications of the multiplying receiver write this dot product to
+diffuse RGB. Classification 0 uses the incoming normal directly and the
+model programs first transform it by the rigid or skinning rows. The
+combiner blends the projected comparison with unity by the interpolated
+vertex colour, then applies the strength constants and corner fade.
+All-zero vertex weights leave the destination RGB untouched. In the
+one- and three-tap alpha-only receivers the vertex alpha is the
+homogeneous dot of the posed position with hardware `c[36]`. The caster's final fade
+includes the lighting sample, object fade and history fade. The creature
+ground shadow bypasses that calculation. [Object chain](../native-shadows.md#object-chain).
+
+**Reproduction.** Use a CLI containing the template census. The validator
+walks all disc maps including the two shared caches. The individual material
+command shows the vertex-program name, render state and first RGB combiner
+of each implementation.
+
+```sh
+h2 shader --all all --disc "$H2_DISC"
+h2 shader zanzibar 'objects\weapons\rifle\battle_rifle\shaders\battle_rifle_lod' --disc "$H2_DISC"
+```
+
+Extract the shader corpus to private scratch. In the generated manifest,
+column four identifies the vertex program and classification. Inspect the
+six files for the multiplying receiver and compare the upload of hardware
+constant 41 with the shadow direction. The same procedure on the rigid
+`lightmap_perpixel_tex_detail` program shows that the tangent frame rotates
+into world space before the dot with incident input `v5`.
+
+```sh
+h2 extract-shaders --disc "$H2_DISC" --out "$TMPDIR/e3-vsh"
+awk -F '\t' '$4 ~ /shadow_buffer_application_lightmap:[0-9]+$/ {print $1}' "$TMPDIR/e3-vsh/manifest.tsv" |
+  while read -r file; do cargo run -p shaders --example corpus -- "$TMPDIR/e3-vsh" --dump "$file"; done
+h2 disasm 0x00048ee0 110
+```
+
+For attachments, enumerate map names with `h2 maps "$H2_DISC"`. Run
+`h2 lights <map> --disc "$H2_DISC"` for each. Count attached-to lines
+under each definition, keeping the marker and owner together. Use
+`h2 effect <map> '<light tag name>' ligh --disc "$H2_DISC"` to check
+the gel reference and flags. For the camera/owner test, volume shape,
+caster gather and both ranking budgets, read these entries from the same
+disc. The disassembler reads `H2_DISC`.
+
+```sh
+h2 disasm 0x00031520 40
+h2 disasm 0x0003e9c0 40
+h2 disasm 0x000c17f0 410
+h2 disasm 0x00132190 750
+h2 disasm 0x00031910 470
+h2 disasm 0x0004a7c0 900
+h2 disasm 0x000335e0 43
+h2 disasm 0x00033400 118
+h2 disasm 0x00032350 410
+h2 disasm 0x0003d7f0 208
+h2 disasm 0x0003dc90 38
+h2 disasm 0x00032ce0 395
+```
+
+### Dynamic-lighting census on the same disc
+
+The installed lighting validator completed all 30 maps with zero failures.
+It counted 78 lightmap groups, 13,658 pages and 5,196,110 vector entries
+in lightmap buckets. That bucket count is independent of which vertices
+the world geometry references. The validator used for this reading did
+not emit per-BSP densities or angular shares.
+
+The measurement command at `4ccd7f264` reports the page-size histogram,
+density, cluster skies, sky-light flags and alignment per BSP. The
+matching, denominator and checksum rules are in
+[the lighting format](../../formats/lighting.md#cli-validation-and-limits).
+The per-BSP output from that revision has not been measured here.
+
+```sh
+cargo run -p cli --bin h2 -- lighting --all --disc "$H2_DISC" > "$TMPDIR/e3-lighting-census.txt"
+```
+
 ## 2026-11-20: budget arithmetic for the native design
 
 Read at `00dd7430f`. No run: arithmetic on the 2026-11-16 prototype results

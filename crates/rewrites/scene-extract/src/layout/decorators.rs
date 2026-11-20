@@ -514,7 +514,7 @@ pub fn set_geometry(mem: &dyn GuestRead, set: u32) -> Result<SetGeometry, Refusa
         return Err(Refusal::Unread);
     }
     let raw = bytes(mem, word(mem, def, SET_INDICES)?, 2 * count)?;
-    let indices: Vec<u16> = raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    let indices: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
     let stream = word(mem, def, SET_STREAM)?;
     let stream_type = byte(mem, stream, 0)?;
     let stride = byte(mem, stream, STREAM_STRIDE)?;
@@ -817,7 +817,7 @@ pub(crate) mod tests {
         assert_eq!(position(&k, 16 | 32 << 10 | 4095 << 20), [1.0, 2.0, 4095.0 / 16.0]);
         // 2 · 1024/1024 − 1 = 1; 512 is 0; z 0 is −1.
         assert_eq!(normal(&k, 1024 | 512 << 11), [1.0, 0.0, -1.0]);
-        assert_eq!(nibbles(&k, 8 | 0 << 4 | 8 << 8), [1.0, -1.0, 1.0]);
+        assert_eq!(nibbles(&k, 8 | 8 << 8), [1.0, -1.0, 1.0]);
         assert_eq!(colour(&k, 0x00ff_0033), [255.0 * k.byte, 0.0, 51.0 * k.byte]);
     }
 
@@ -890,6 +890,6 @@ pub(crate) mod tests {
         assert!(u.iter().all(|&c| close(c, s)), "{u:?}");
         // Step 0: forward is the perpendicular (0, 1, −1), left up × it.
         assert_eq!(f, [0.0, 1.0, -1.0]);
-        assert_eq!(l, [1.0 * -1.0 - 1.0 * 1.0, 1.0 * 0.0 - 1.0 * -1.0, 1.0 * 1.0 - 1.0 * 0.0]);
+        assert_eq!(l, [-1.0 - 1.0 * 1.0, 1.0 * 0.0 - -1.0, 1.0 * 1.0 - 1.0 * 0.0]);
     }
 }

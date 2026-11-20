@@ -26,8 +26,7 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 0,
             difficulty: 1,
-            taunts: true,
-            glitches: 0,
+            ..Want::OFF
         },
         "off by default"
     );
@@ -37,8 +36,7 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 2,
             difficulty: 3,
-            taunts: true,
-            glitches: 0,
+            ..Want::OFF
         }
     );
 }
@@ -60,33 +58,33 @@ fn the_driver_seats_that_many_phantoms() {
     let log = d.apply(Want {
         count: 5,
         difficulty: MIXED,
-        taunts: true,
-        glitches: 0,
+        ..Want::OFF
     });
     let l = ph.list();
     let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
-    assert_eq!(tags, ["Clanker 1", "Clanker 2", "Clanker 3", "Clanker 4", "Clanker 5"]);
+    assert_eq!(tags, d.local_names[..5]);
+    let distinct: std::collections::BTreeSet<_> = d.local_names.iter().collect();
+    assert_eq!(distinct.len(), live_proto::bots::MAX_BOTS);
+    assert!(tags.iter().all(|name| live_proto::Gamertag::new(name).is_ok()));
     assert!(
         l.iter()
             .all(|p| live_proto::bots::is_local_xuid(live_proto::Xuid(p.identity.xuid))),
         "host-made xuids, never a server account's"
     );
     assert!(
-        log.iter().any(|l| l.contains("Clanker 4 (phantom) on")),
+        log.iter().any(|line| line.starts_with(&format!("{} (phantom) on", tags[3]))),
         "{log:?}"
     );
     d.apply(Want {
         count: 3,
         difficulty: MIXED,
-        taunts: true,
-        glitches: 0,
+        ..Want::OFF
     });
     assert_eq!(ph.list().len(), 3, "the last added go first");
     d.apply(Want {
         count: 0,
         difficulty: MIXED,
-        taunts: true,
-        glitches: 0,
+        ..Want::OFF
     });
     assert!(ph.list().is_empty());
 }
@@ -110,8 +108,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
     d.apply(Want {
         count: 2,
         difficulty: 0,
-        taunts: true,
-        glitches: 0,
+        ..Want::OFF
     });
     let skills = |d: &Driver| -> Vec<u8> {
         d.own
@@ -125,10 +122,52 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
     d.apply(Want {
         count: 2,
         difficulty: MIXED,
-        taunts: true,
-        glitches: 0,
+        ..Want::OFF
     });
     assert_eq!(skills(&d), vec![1, 2], "Normal then Heroic in turn");
+}
+
+#[test]
+fn custom_combat_choices_reach_the_next_look_without_reseating_or_retuning_identity() {
+    let (store, live, _, driver) = rostered_driver(Some("0123456789abcdef"));
+    on(&store, 1, 2);
+    live.answer(0, Ok(roster("0123456789abcdef", 1, 0.67)));
+    let seats = driver.seats();
+    assert_eq!(seats.len(), 1);
+    let (mut source, _) = driver.clanker(Skill::Heroic, 99, "Rusty Lugnut");
+    let identity = source.brain.view();
+    source.follow_page();
+    assert!(source.brain.tuning().is_none());
+    store.set(AGGRESSION.key, Value::Int(2)).unwrap();
+    store.set(AIM_STYLE.key, Value::Int(1)).unwrap();
+    source.follow_page();
+    let wild = source.brain.tuning().unwrap();
+    assert!(wild.push_bias > 0.0 && wild.twitchy);
+    let wild_view = source.brain.view();
+    assert_eq!(wild_view.profile, identity.profile);
+    assert!(wild_view.weights.unwrap().aggression > identity.weights.unwrap().aggression);
+    store.set(AGGRESSION.key, Value::Int(0)).unwrap();
+    source.follow_page();
+    let calm = source.brain.tuning().unwrap();
+    assert!(calm.push_bias < 0.0 && calm.twitchy);
+    store.set(AGGRESSION.key, Value::Int(1)).unwrap();
+    store.set(AIM_STYLE.key, Value::Int(0)).unwrap();
+    source.follow_page();
+    assert!(source.brain.tuning().is_none());
+    assert_eq!(source.brain.view(), identity);
+    assert_eq!(driver.seats(), seats);
+    assert_eq!(live.requests().len(), 1);
+}
+
+#[test]
+fn a_clankermatch_fill_ignores_the_hosts_custom_combat_rows() {
+    let (_live, _, driver) = clankermatch("00000000000000c5", hopper(8, 8, 0));
+    driver.tick_match(std::time::Instant::now());
+    driver.apply(Want { aggression: 2, twitchy: true, ..Want::OFF });
+    let (mut source, _) = driver.clanker(Skill::Legendary, 15, "Rusty Lugnut");
+    source.follow_page();
+    assert_eq!(source.brain.mind.skill, Skill::Legendary);
+    assert!(source.brain.tuning().is_none());
 }
 
 #[test]
@@ -231,7 +270,7 @@ fn a_roster_becomes_phantom_identities_and_brains() {
     assert_eq!(a.team, None, "null: the host balances");
     assert_eq!(seats[1].team, Some(1), "the roster's team when it has one");
     assert_eq!(a.skill, Skill::Heroic);
-    assert_eq!((a.seed, a.taunt), (1001, 0.1));
+    assert_eq!(a.seed, 1001);
 }
 
 #[test]
@@ -472,7 +511,7 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
     live.answer(0, Err("refused".into()));
     let phantoms = ph.list();
     assert_eq!(phantoms.len(), 4);
-    assert_eq!(phantoms[0].identity.gamertag, "Clanker 1");
+    assert_eq!(phantoms[0].identity.gamertag, d.local_names[0]);
     let bots = d.bots_in_force().expect("still bots");
     assert_eq!(bots.session_id, None);
     assert_eq!(
@@ -486,7 +525,7 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
     assert!(
         ph.list()
             .iter()
-            .all(|p| p.identity.gamertag.starts_with("Clanker"))
+            .all(|p| d.local_names.contains(&p.identity.gamertag))
     );
 }
 
@@ -891,18 +930,7 @@ fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)) && p.team.is_none())
     );
     let names: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "Clanker 1",
-            "Clanker 2",
-            "Clanker 3",
-            "Clanker 4",
-            "Clanker 5",
-            "Clanker 6",
-            "Clanker 7"
-        ]
-    );
+    assert_eq!(names, d.local_names[..7]);
 }
 
 /// A on a row opens the value picker on it (the On/Off row too, as
@@ -1026,9 +1054,11 @@ fn every_row_has_an_icon_a_line_and_real_picker_copy() {
 }
 
 #[test]
-fn a_rostered_phantom_uses_the_server_seed_and_taunt() {
+fn a_rostered_phantom_uses_the_same_profile_as_every_other_seat_with_its_name() {
     let driver = Driver::new(Phantoms::default());
-    let (source, _) = driver.clanker(Skill::Heroic, 99, 0.4);
-    assert_eq!(source.brain_view(), Some(bots::Brain::new(Skill::Heroic, 99).view()));
-    assert_eq!(source.taunt, 0.4);
+    let (first, _) = driver.clanker(Skill::Heroic, 99, "Rusty Lugnut");
+    let (second, _) = driver.clanker(Skill::Heroic, 15, "Rusty Lugnut");
+    assert_eq!(first.brain.view(), second.brain.view());
+    let profile = bots::name_profile::NameProfile::for_name("Rusty Lugnut");
+    assert_eq!(first.brain.view().profile, Some(profile));
 }

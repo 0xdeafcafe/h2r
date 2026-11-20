@@ -109,6 +109,21 @@ impl Mind {
         {
             return Doing::Supply(at);
         }
+        // Loose grenades are collected by walking across them. A short
+        // detour is worth taking when this hand's stock is zero or one.
+        if calm && self.kit == Kit::Fine && let Some(arms) = me.arms
+            && let Some((at, _)) = p.observations.ground_grenades.iter()
+                .filter(|(at, kind)| {
+                    (0..=1).contains(&arms.grenades[kind.index()])
+                        && len(sub(*at, me.position)) <= arms::TOP_UP_RANGE
+                        && !self.stuck.blocked(*at, p.tick)
+                })
+                .min_by(|(a, _), (b, _)| {
+                    len(sub(*a, me.position)).total_cmp(&len(sub(*b, me.position)))
+                })
+        {
+            return Doing::Supply(*at);
+        }
         if let Some((id, at, tick)) = self.last_seen
             && !behavior.wants_revenge(id)
             && p.tick.wrapping_sub(tick) < behavior.hold_ticks()

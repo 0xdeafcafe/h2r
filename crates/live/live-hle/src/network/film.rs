@@ -57,7 +57,7 @@ impl Network {
             }
             let count = a[0] + a[4];
             let mut offset = 8 + count * 24;
-            for row in body[8..offset as usize].chunks_exact(24) {
+            for row in body[8..offset as usize].as_chunks::<24>().0 {
                 let size = u32::from(u16::from_le_bytes([row[6], row[7]]));
                 let ptr = u32::from_le_bytes(row[8..12].try_into().unwrap());
                 let expected = if size == 0 {
@@ -162,7 +162,7 @@ fn qos_size(table: &[u8], a: &[u32]) -> Result<usize> {
     }
     let end = 8 + n as usize * 24;
     let mut size = end;
-    for row in table.get(8..end).ok_or(10022u32)?.chunks_exact(24) {
+    for row in table.get(8..end).ok_or(10022u32)?.as_chunks::<24>().0 {
         let bytes = u16::from_le_bytes([row[6], row[7]]) as usize;
         if bytes > 1020 {
             return Err(10022);

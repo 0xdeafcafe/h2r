@@ -1,7 +1,7 @@
 //! `GET /v1/ingest`: the game's WebSocket (docs/live/live-api.md, Streams). The
 //! first message is `{kind: "auth", token}` with `games.write` for accounts
 //! or `telemetry.ingest` for a leased host. It then accepts
-//! `frame`, `events` (one batch JWS) and `ping` messages, and binary
+//! `frame`, private training `sim_combat`, `events` (one batch JWS) and `ping` messages, and binary
 //! messages of packed frames (docs/live/live-telemetry.md, Packed frames). Each `events`
 //! batch is answered with `appended` or `error`; frames are answered only
 //! when refused. The socket closes when the token expires unless the client
@@ -141,6 +141,10 @@ impl IngestSession {
                     .await
                     .err()
                     .map(Err)
+            }
+            Ok(ClientMessage::SimCombat { game_id, sample }) => {
+                live.meter(author.xuid(), crate::usage::metric::UP_FRAMES, text.len() as u64).await;
+                live.ingest_sim_combat(author, &game_id, *sample).err().map(Err)
             }
             Ok(ClientMessage::Events { game_id, jws }) => Some(
                 live.append_publisher_batch(author, &game_id, &jws)

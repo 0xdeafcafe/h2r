@@ -1,45 +1,57 @@
-import { For, Show } from "solid-js";
-import type { GameState, Kill } from "../state/reducer";
+import { For, Show, createMemo, onMount } from "solid-js";
+import type { GameState } from "../state/reducer";
 import { colourFor } from "../lib/game";
 import { killVerb } from "../lib/format";
 import { VerifyMark } from "./bits";
+import { killFeedRows, type FeedKill } from "./killFeedRows";
 
-export default function KillFeed(props: { game: GameState; kills: Kill[]; limit?: number }) {
-  const shown = () => props.kills.slice(-(props.limit ?? 12)).reverse();
-  const who = (i: number | null) => (i === null ? null : props.game.players[i]);
-  // The team colour rides a custom property, so the stats side can restyle
-  // the names (plain link colour, a small team square) while the dashboard
-  // keeps its coloured names.
+export default function KillFeed(props: { game: GameState; kills: FeedKill[]; limit?: number }) {
+  const shown = createMemo(() => killFeedRows(props.kills, props.limit ?? 12));
+  const byKey = createMemo(() => new Map(shown().map(({ key, kill }) => [key, kill])));
+  const seen = new Set<string>();
+  let mounted = false;
+  onMount(() => { mounted = true; });
+
+  // The dashboard and stats site style the name and team square separately.
   const Name = (p: { i: number | null }) => {
-    const pl = who(p.i);
-    const colour = pl ? colourFor(props.game, pl.team, pl.index) : null;
+    const player = () => p.i === null ? null : props.game.players[p.i];
+    const colour = () => {
+      const pl = player();
+      return pl ? colourFor(props.game, pl.team, pl.index) : undefined;
+    };
     return (
-      <span class="kf-name" style={{ "--kf-colour": colour ?? undefined }}>
-        <Show when={colour}><span class="kf-team" style={{ background: colour ?? undefined }} aria-hidden="true" /></Show>
-        {pl?.name ?? (p.i === null ? "the world" : `player ${p.i}`)}
+      <span class="kf-name" style={{ "--kf-colour": colour() }}>
+        <Show when={colour()}><span class="kf-team" style={{ background: colour() }} aria-hidden="true" /></Show>
+        {player()?.name ?? (p.i === null ? "the world" : `player ${p.i}`)}
       </span>
     );
   };
-  // One signature mark for the whole feed (shown in the stats-side header),
-  // standing in for the per-row marks that side hides.
-  const signed = () => shown().find((k) => k.position > 0);
+  const signed = () => shown().find(({ kill }) => kill.position > 0)?.kill.position;
   return (
     <>
-      <Show when={signed()}>{(k) => <div class="killfeed__head"><VerifyMark position={k().position} compact /></div>}</Show>
-      <ol class="killfeed" aria-live="polite">
-        <For each={shown()} fallback={<li class="killfeed__empty">No knockouts yet. Everyone's being nice.</li>}>
-          {(k) => (
-            <li class={`kf kf--${k.kind}`}>
-              <Show
-                when={(k.kind === "kill" && k.killer !== null) || k.kind === "betrayal"}
-                fallback={<><Name i={k.victim} /> <span class="kf-verb">{k.kind === "kill" ? "was killed" : killVerb(k.kind, k.position)}</span></>}
-              >
-                <Name i={k.killer} /> <span class="kf-verb">{killVerb(k.kind, k.position)}</span> <Name i={k.victim} />
-              </Show>
-              <Show when={k.weapon}><span class="kf-weapon">{k.weapon}</span></Show>
-              <Show when={k.position > 0}><VerifyMark position={k.position} compact /></Show>
-            </li>
-          )}
+      <Show when={signed()}>{(position) => <div class="killfeed__head"><VerifyMark position={position()} compact /></div>}</Show>
+      <ol class="killfeed" aria-live="polite" aria-relevant="additions">
+        <For each={shown().map(({ key }) => key)} fallback={<li class="killfeed__empty">No knockouts yet. Everyone's being nice.</li>}>
+          {(key, index) => {
+            // Solid keys <For> by item identity. Keep the primitive key as
+            // the item and look up its data independently as the clock moves.
+            const kill = createMemo((previous: FeedKill) => byKey().get(key) ?? previous, byKey().get(key)!);
+            const animate = mounted && index() === 0 && !seen.has(key);
+            seen.add(key);
+            const verb = () => killVerb(kill().kind, kill().position);
+            return (
+              <li class={`kf kf--${kill().kind}`} classList={{ "kf--new": animate }}>
+                <Show
+                  when={(kill().kind === "kill" && kill().killer !== null) || kill().kind === "betrayal"}
+                  fallback={<><Name i={kill().victim} />{" "}<span class="kf-verb">{kill().kind === "kill" ? "was killed" : verb()}</span></>}
+                >
+                  <Name i={kill().killer} />{" "}<span class="kf-verb">{verb()}</span>{" "}<Name i={kill().victim} />
+                </Show>
+                <Show when={kill().weapon}><span class="kf-weapon">{kill().weapon}</span></Show>
+                <Show when={kill().position > 0}><VerifyMark position={kill().position} compact /></Show>
+              </li>
+            );
+          }}
         </For>
       </ol>
     </>

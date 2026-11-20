@@ -75,7 +75,7 @@ fn read(ctx: &gfx::GfxContext, output: &native_render::gels_gpu::Output) -> Vec<
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     let data = buffer.slice(..).get_mapped_range().unwrap();
-    data.chunks_exact(256)
+    data.as_chunks::<256>().0.iter()
         .flat_map(|row| row[..16].iter().copied())
         .collect()
 }

@@ -1,7 +1,7 @@
 # Dynamic lighting: a live sun over the baked lightmaps
 
-Status: Design (investigation). Nothing is built. The recommendation is go, in stages, for the hybrid in "How it works"; slices 0 and 1 decide whether the rest is built.
-Code: none. The data it reads is decoded by `crates/formats/tags/src/lighting.rs` and `crates/formats/tags/src/structure.rs` and loaded by `crates/rewrites/native-render/src/load.rs`. Tests: none.
+Status: Design (investigation). The static BSP census is implemented. The recommendation is go, in stages, for the hybrid in "How it works"; slices 0 and 1 decide whether the rest is built.
+Code: `crates/apps/cli/src/lighting/census.rs`. The data it reads is decoded by `crates/formats/tags/src/lighting.rs` and `crates/formats/tags/src/structure.rs` and loaded by `crates/rewrites/native-render/src/load.rs`. Tests: the census module and `crates/formats/tags/src/lighting_tests.rs`.
 Switch: none. The design adds the value `dynamic` to the Lighting row (`H2_LIGHTING`), listed in [switches.md](../runtime/switches.md).
 
 An opt-in mode that takes the sun out of Halo 2's baked lightmaps and
@@ -93,8 +93,10 @@ where that design's checkpoint stops it or its fit refuses a level.
   (**V**). That it is the sun's disc, which would set the width of a
   baked penumbra, is **S**; slice 1's edge fit checks it.
 - **The sky light flags.** Four values occur (**V**); none is named.
-- **Lightmap resolution per level.** Not recorded in any doc here. Slice
-  0 measures it.
+- **Lightmap resolution per BSP.** `h2 lighting --all` measures linear
+  texel density over opaque geometry and reports full-resolution page
+  sizes, cluster skies, light flags and incident-vector alignment.
+  [Census definitions](../formats/lighting.md#cli-validation-and-limits).
 
 ## Approaches
 

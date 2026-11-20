@@ -35,7 +35,7 @@
 
 use crate::memory::{GuestMemory, MemFault};
 
-/// `0x0004a1e0`: EAX the light's frame block, ECX the view context, EDX
+/// `0x0004a1e0`: EAX the light's frame block, ECX the light volume, EDX
 /// the light datum (or -1), stack `(definition, unused, shadow, weight)`.
 pub const SET_LIGHT: u32 = 0x0004_a1e0;
 pub const SET_LIGHT_CLEANUP: u32 = 0x10;
@@ -140,7 +140,7 @@ pub const FRAME_COLOUR_B: usize = 28;
 pub struct Call {
     /// EAX: the light's frame block (`record + 0x84` from `0x00031170`).
     pub frame: u32,
-    /// ECX: the view context.
+    /// ECX: the light volume.
     pub context: u32,
     /// EDX: the light datum, or `u32::MAX` for none.
     pub light: u32,

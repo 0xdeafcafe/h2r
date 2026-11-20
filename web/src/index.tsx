@@ -12,7 +12,7 @@ import StatsLayout, { Title } from "./stats/Layout";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 import { ThemeColor } from "./themeColor";
-import { GAMES_ROOT, LIVE_ADMIN, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, statsPath } from "./routes";
+import { GAMES_ROOT, LIVE_ADMIN, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, movedTheaterPath, statsPath } from "./routes";
 
 // The dashboard (the front page) is in the main chunk; the stats pages,
 // admin and sign-in are chunks of their own that come in once the browser
@@ -25,7 +25,6 @@ const parts = {
   players: () => import("./stats/Players"),
   player: () => import("./stats/Player"),
   campaign: () => import("./stats/CampaignRecord"),
-  theater: () => import("./theater/Theater"),
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
   ranks: () => import("./stats/Ranks"),
@@ -46,13 +45,13 @@ const HistoryPage = lazy(() => parts.player().then((m) => ({ default: m.HistoryP
 const CareerPage = lazy(() => parts.player().then((m) => ({ default: m.CareerPage })));
 const CampaignRecordPage = lazy(parts.campaign);
 const FilmsPage = lazy(() => parts.player().then((m) => ({ default: m.FilmsPage })));
-const Theater = lazy(parts.theater);
 const Events = lazy(parts.events);
 const Ranks = lazy(parts.ranks);
 const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Mods = lazy(parts.mods);
+const ModPackPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPackPage })));
 const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
@@ -85,6 +84,11 @@ const Old3dView = () => {
 // Clans were called teams here first (the protocol still says team).
 const OldTeam = () => <Navigate href={statsPath(`/clans/${useParams().id}`)} />;
 const OldPlayer = () => <Navigate href={statsPath(`/players/${useParams().tag}`)} />;
+const OldTheater = () => {
+  const at = useLocation();
+  return <Navigate href={movedTheaterPath(at.pathname, at.search) ?? statsPath("/games")} />;
+};
+
 // The stats site was at /stats first: the same page where it is now, in
 // place of the old entry (the servers answer these with a 301 too).
 const OldStats = () => {
@@ -121,13 +125,15 @@ render(
         <Route path="/teams" component={() => <Navigate href={statsPath("/clans")} />} />
         <Route path="/teams/:id" component={OldTeam} />
         <Route path="/mods" component={Mods} />
+        <Route path="/mods/packs/:id" component={ModPackPage} />
         <Route path="/mods/:id" component={ModPage} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
-      <Route path="/theater" component={StatsLayout}>
-        <Route path={["/:game", "/:game/clip/:clip"]} component={Theater} />
+      <Route path="/theater/:id" component={OldTheater} />
+      <Route path="/theater/:id/clip" component={StatsLayout}>
+        <Route path="/:clip" component={Game} />
       </Route>
       <Route path={statsPath("/games/:id/3d")} component={Old3dView} />
       <Route path={[OLD_STATS_ROOT, `${OLD_STATS_ROOT}/*rest`]} component={OldStats} />

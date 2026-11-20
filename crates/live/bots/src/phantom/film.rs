@@ -59,6 +59,7 @@ impl Phantoms {
                 made: *made,
                 buttons: buttons.restore()?,
                 uplink: action::Uplink::new(info.identity.xuid),
+                shot_range: None,
                 samples: 0,
                 waiting: None,
             });

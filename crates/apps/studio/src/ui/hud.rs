@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use dear_imgui_rs::{MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
+use editor_core::map_groups::MapGroup;
 
 use hud_edit::checks::Severity;
 use hud_edit::layout::{Field, Kind, Mode};
@@ -26,10 +27,13 @@ use hud_edit::{HudState, Value, WidgetKey, WidgetKind};
 
 use tags::registry::Kind as RegKind;
 
+use crate::app::map_cards::MapEntry;
 use crate::app::{Action, App, HudTool, TagAction};
 use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
+
+use super::map_list;
 
 const RECT: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
 const SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
@@ -86,44 +90,53 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
         ui.input_text("##hud-filter", &mut st.filter)
             .hint(format!("{} filter maps", icon::SEARCH))
             .build();
-        let filter = st.filter.to_ascii_lowercase();
-        let keep = |s: &str| filter.is_empty() || s.to_ascii_lowercase().contains(&filter);
+        let filter = st.filter.to_lowercase();
+        let keep = |s: &str| filter.is_empty() || s.to_lowercase().contains(&filter);
         if app.maps().is_empty() && app.packages().is_empty() {
             ui.text_disabled("Open a disc, a map or a folder of maps (File > Open).");
         }
-        for name in app.maps().to_vec() {
-            if !keep(&name) {
-                continue;
+        let mut entries = app.halo2_map_entries();
+        let shared = MapEntry::take_shared(&mut entries);
+        let mut last = None;
+        let draw_source = |entries: &[MapEntry<'_>],
+                           last: &mut Option<MapGroup>,
+                           actions: &mut Vec<Action>| {
+            for entry in entries {
+                let name = entry.stem;
+                let label = entry.label;
+                if !keep(name) && !keep(label) {
+                    continue;
+                }
+                map_list::section(ui, last, entry.group);
+                let glyph = map_list::map_icon(entry.group);
+                if ui
+                    .selectable_config(format!("{glyph}  {label}##hud-map-{name}"))
+                    .selected(opened.as_deref() == Some(name))
+                    .build()
+                {
+                    actions.push(Action::HudOpenMap(name.to_owned()));
+                }
             }
-            let on = opened.as_deref() == Some(name.as_str());
-            if ui
-                .selectable_config(format!("{}  {name}##hud-map-{name}", icon::MAP))
-                .selected(on)
-                .build()
-            {
-                actions.push(Action::HudOpenMap(name.clone()));
-            }
-        }
-        // Converted Halo 1 maps (their sandbox HUDs) and other packages.
-        let packages: Vec<_> = app
-            .packages()
-            .iter()
-            .map(|e| (e.key(), e.label(), e.halo1.is_some()))
-            .collect();
-        for (key, label, halo1) in packages {
+        };
+        draw_source(&entries, &mut last, actions);
+        for entry in app.packages() {
+            let label = entry.label();
             if !keep(&label) {
                 continue;
             }
-            let on = opened.as_deref() == Some(label.as_str());
-            let glyph = if halo1 { icon::MOUNTAIN } else { icon::PACKAGE };
+            let group = entry.map_group();
+            map_list::section(ui, &mut last, group);
+            let key = entry.key();
+            let glyph = map_list::map_icon(group);
             if ui
                 .selectable_config(format!("{glyph}  {label}##hud-pkg-{key}"))
-                .selected(on)
+                .selected(opened.as_deref() == Some(label.as_str()))
                 .build()
             {
-                actions.push(Action::HudOpenPackage(key.clone()));
+                actions.push(Action::HudOpenPackage(key));
             }
         }
+        draw_source(&shared, &mut last, actions);
     }
     ui.separator();
     let Some(s) = app.hud.session.as_ref() else {

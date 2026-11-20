@@ -195,23 +195,21 @@ function emblemImg(player: HeaderPlayer, size: number): string {
   return `<img ${image} width="${size}" height="${size}" alt="" decoding="async" draggable="false">`;
 }
 
-/** The header's markup. One line, no whitespace between tags, so the
- *  client's render and the servers' are the same bytes (the parity test
- *  holds them to that). */
+/** The hero's markup, byte-identical on the client and the server. */
 export function gameHeaderHtml(m: GameHeaderModel): string {
   const e = escapeHtml;
   const title = `<b>${e(m.title)}</b>${m.campaign ? "" : ` on ${e(m.map)}`}`;
   const sub = `<i class="s-gamehead-flag${m.live ? " s-gamehead-flag--live" : ""}">${e(m.status)}</i>`
-    + (m.result ? `<span>${e(m.result)}</span>` : "")
-    + `<small>${e(m.type)}</small>`;
+    + (m.result ? ` <span>${e(m.result)}</span>` : "")
+    + ` <small>${e(m.type)}</small>`;
   const player = (p: HeaderPlayer) =>
     `<li class="s-gamehead-player" style="--row:${e(p.colour)}">${emblemImg(p, 16)}<span>${e(p.name)}</span>`
-    + (p.bot ? `<i class="s-gamehead-bot">bot</i>` : "")
-    + (p.score !== undefined ? `<b class="s-gamehead-pscore">${p.score}</b>` : "")
+    + (p.bot ? ` <i class="s-gamehead-bot">bot</i>` : "")
+    + (p.score !== undefined ? ` <b class="s-gamehead-pscore">${p.score}</b>` : "")
     + `</li>`;
   const side = m.teams
     ? `<ul class="s-gamehead-teams">${m.teams.map((t) =>
-        `<li class="s-gamehead-team" style="--row:${e(t.colour)}"><header><span>${e(t.name)}</span><b>${t.score}</b></header>`
+        `<li class="s-gamehead-team" style="--row:${e(t.colour)}"><header><span>${e(t.name)}</span> <b>${t.score}</b></header>`
         + `<ul class="s-gamehead-players">${t.players.map(player).join("")}</ul></li>`).join("")}</ul>`
     : `<ul class="s-gamehead-players s-gamehead-players--solo">${(m.players ?? []).map(player).join("")}</ul>`;
   return `<div class="s-gamehead" data-game="${e(m.game)}">`
@@ -227,69 +225,23 @@ export function gameHeaderJson(m: GameHeaderModel): string {
   return JSON.stringify(m).replace(/</g, "\\u003c");
 }
 
-// ---- the page's node (client only) ----
-
-/** The pre-rendered header's node, which the servers write into the page
- *  above the app (`index.html`'s `<!-- game-header -->` block) and the
- *  client keeps as it is. */
-export const HEADER_ID = "game-header";
-export const MODEL_ID = "game-header-model";
-
-function node(): HTMLElement | null {
-  return typeof document === "undefined" ? null : document.getElementById(HEADER_ID);
+// The initial HTML stages the server render in an inert template. Only the
+// matching Game Details route can move that node into its hero slot.
+export function adoptGameHeader(slot: HTMLElement, source: ParentNode, game: string): void {
+  const header = source.querySelector<HTMLElement>("#game-header");
+  if (header?.dataset.game === game) slot.appendChild(header);
 }
 
-/** The header's node, made if the page shipped none (a dev server, or a
- *  client-side arrival at a game page): the same shape the servers write
- *  — the shell, the model's script, the column — above the app. */
-function ensureNode(): HTMLElement | null {
-  if (typeof document === "undefined") return null;
-  let n = node();
-  if (n) return n;
-  n = document.createElement("div");
-  n.id = HEADER_ID;
-  n.className = "s-gamehead-shell";
-  n.innerHTML = `<script type="application/json" id="${MODEL_ID}"></script><div class="s-gamehead-col"></div>`;
-  document.body.insertBefore(n, document.getElementById("root"));
-  return n;
-}
-
-/** The model the page shipped, as the client finds it beside the header. */
-export function embeddedModel(): GameHeaderModel | null {
-  const s = typeof document === "undefined" ? null : document.getElementById(MODEL_ID)?.textContent;
-  if (!s) return null;
-  try { return JSON.parse(s) as GameHeaderModel; } catch { return null; }
-}
-
-/** Shows `m` in the page's header node: the pre-rendered markup is kept as
- *  it is when it already is this model (a page load — nothing repaints, so
- *  no flicker), and only rewritten when the game has actually moved on (a
- *  navigation, or a live game's score). `null` hides it; `undefined`
- *  leaves it alone (the game is still loading, and whatever the page
- *  shipped stays up). Returns what it did, for the tests. */
-export function showGameHeader(m: GameHeaderModel | null | undefined): "hid" | "kept" | "wrote" {
-  if (m === undefined) return "kept";
-  const found = node();
-  if (!found && m === null) return "hid";
-  const n = found ?? ensureNode();
-  if (!n) return "hid";
-  if (m === null) {
-    n.hidden = true;
-    return "hid";
+export function showGameHeader(slot: HTMLElement, model: GameHeaderModel | null): void {
+  if (!model) {
+    slot.replaceChildren();
+    delete slot.dataset.model;
+    return;
   }
-  n.hidden = false;
-  const json = gameHeaderJson(m);
-  if (n.dataset.game === m.game && embeddedJson(n) === json) return "kept";
-  n.dataset.game = m.game;
-  const script = n.querySelector(`#${MODEL_ID}`);
-  const col = n.querySelector(".s-gamehead-col");
-  if (!script || !col) return "wrote";
-  script.textContent = json;
-  col.innerHTML = gameHeaderHtml(m);
-  return "wrote";
-}
-
-/** The model beside the node itself, as a string, adoption's comparison. */
-function embeddedJson(n: HTMLElement): string | null {
-  return n.querySelector(`#${MODEL_ID}`)?.textContent ?? null;
+  const header = slot.firstElementChild as HTMLElement | null;
+  const json = gameHeaderJson(model);
+  if (slot.dataset.model === json) return;
+  slot.dataset.model = json;
+  if (header?.dataset.game === model.game && header.querySelector("#game-header-model")?.textContent === json) return;
+  slot.innerHTML = gameHeaderHtml(model);
 }

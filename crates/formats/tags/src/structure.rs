@@ -170,6 +170,8 @@ pub struct Cluster {
     pub geometry: GeometryHeader,
     /// Axis bounds at +0x54: x min, x max, y min, y max, z min, z max.
     pub bounds: [f32; 6],
+    /// Scenario sky selector at +0x6e, read by the view at 0x0014b38d.
+    pub sky_index: i8,
     /// All 0xb0 bytes.
     pub raw: Vec<u8>,
 }
@@ -303,6 +305,7 @@ impl StructureRender {
                 Ok(Cluster {
                     geometry: GeometryHeader::decode(view, b, tag)?,
                     bounds,
+                    sky_index: b[0x6e] as i8,
                     raw: b.to_vec(),
                 })
             })

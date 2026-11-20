@@ -1,8 +1,9 @@
 //! Extensions to the Xbox v4 recording stream used by converted campaigns.
 //! Event widths, delays and dispatch remain those of the Xbox reader.
-//! A single-weapon recording carries this pair in the two otherwise
-//! inapplicable inventory fields. The playback adapter consumes the hints
-//! before applying the controls to the unit.
+
+/// A single-weapon recording carries this pair in the two otherwise
+/// inapplicable inventory fields. The playback adapter consumes the hints
+/// before applying the controls to the unit.
 pub const WEAPON_SET: u16 = 0xfffe;
 /// The second slot in a single-weapon recording.
 pub const SECOND_WEAPON: u8 = 0xfe;

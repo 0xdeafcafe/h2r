@@ -688,3 +688,33 @@ fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
+    let mut cat = sample();
+    let lockout = content::MapId([1; 32]);
+    let warlock = content::MapId([2; 32]);
+    let index: PackIndex = serde_json::from_value(serde_json::json!({
+        "release-one": {"name":"After Hours", "members": {
+            (lockout.to_string()): "lockout", (warlock.to_string()): "warlock"
+        }}
+    })).unwrap();
+    let a = 0x2_0001;
+    let b = 0x2_0002;
+    cat.package_slots.insert(lockout, a);
+    assert!(index.installed(&cat).is_empty(), "an incomplete install cannot become active");
+    cat.package_slots.insert(warlock, b);
+    cat.packs = index.installed(&cat);
+    assert_eq!(list_for(&cat, Mode::Maps(Category::Mods), &|_| 0), [(a, 0)]);
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), a).unwrap().1, "After Hours");
+    assert_eq!(list_for(&cat, Mode::Pack(a), &|_| 0), [(a, 0), (b, 0)]);
+    assert_eq!(row_label(&cat, Mode::Pack(a), b).unwrap().1, "Warlock");
+    cat.active_pack = Some("release-one".into());
+    let disc = list_for(&cat, Mode::Maps(Category::Halo2), &|id| u8::from(id == 0x0a));
+    assert!(disc.contains(&(a, 1)), "the pack maps onto the retail row with its lock flag");
+    assert!(disc.contains(&(0x14, 0)), "uncovered bases stay on disc");
+    assert!(list_for(&cat, Mode::Maps(Category::MapPack), &|_| 0).contains(&(b, 0)));
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), a).unwrap().1, "Lockout (After Hours)");
+    let original = cat.original_row().unwrap();
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), original).unwrap().1, "Use original maps");
+}

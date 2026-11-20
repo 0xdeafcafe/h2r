@@ -123,6 +123,33 @@ async fn sim_reports_are_admin_only_and_survive_in_the_local_blob_store() {
         );
     }
 
+    let listed = read(
+        &h,
+        &boss,
+        &format!("{RUNS}?include_options=1&tuning_choice=arm:aggressive"),
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.json()["items"][0]["game_id"], ID);
+    let filtered = read(
+        &h,
+        &boss,
+        &format!("{RUNS}?include_options=1&tuning_choice=arm:aggress"),
+    )
+    .await;
+    assert_eq!(filtered.status, StatusCode::OK);
+    assert_eq!(filtered.json()["items"], json!([]));
+    assert_eq!(
+        filtered.json()["options"],
+        json!({
+            "maps": ["lockout"],
+            "batches": ["a-batch"],
+            "arms": ["aggressive"],
+            "custom_tuning": false,
+            "default_tuning": false,
+        })
+    );
+
     let report = json!({
         "format": "h2-sim-report/1",
         "match": { "map": "lockout", "seed": u64::MAX, "game_type": "slayer", "bot": bots() },
@@ -361,4 +388,84 @@ async fn sim_streams_to_admin_and_archives_faster_than_the_wall_clock() {
 #[tokio::test]
 async fn sim_deferred_ingest_archives_without_broadcasting() {
     stream_test(true).await;
+}
+
+#[tokio::test]
+async fn private_live_combat_keeps_the_newest_sample_per_bot() {
+    use live_proto::game::{SimCombatCounters, SimCombatSample};
+    use live_server::stream::Out;
+
+    let h = start_driven(Arc::new(MemoryStore::new()), policy()).await;
+    let boss = h.create("Boss").await;
+    let other = h.create("Other Admin").await;
+    let player = h.create("Player").await;
+    let mut body = game(false);
+    body["players"].as_array_mut().unwrap().push(json!({
+        "index": 3, "name": "Nut", "team": 0, "bot": true
+    }));
+    body["sim"]["bots"].as_array_mut().unwrap().push(json!({"name": "Nut"}));
+    let start = h.call(Method::POST, RUNS, &[h.bearer(&boss, lxm::GAMES_WRITE)], body.to_string()).await;
+    assert_eq!(start.status, StatusCode::CREATED);
+    let sample = |index, tick, melees| {
+        serde_json::to_string(&ClientMessage::SimCombat {
+            game_id: ID.into(),
+            sample: Box::new(SimCombatSample {
+                index,
+                tick,
+                combat: SimCombatCounters { melee_presses: melees, ..Default::default() },
+                ..Default::default()
+            }),
+        }).unwrap()
+    };
+    let refused = |reply: &[Out], code: &str| {
+        let [Out::Text(text)] = reply else { panic!("expected one refusal") };
+        let reply: Value = serde_json::from_str(text.as_ref()).unwrap();
+        assert_eq!(reply["error"], code);
+    };
+    let mut ingest = IngestSession::new(h.live.clone());
+    assert!(matches!(ingest.on_text(&sample(0, 1, 0)).await.as_slice(), [Out::Close(_, _)]));
+    assert!(ingest.on_text(&auth(&h, &other, lxm::GAMES_WRITE)).await.is_empty());
+    refused(&ingest.on_text(&sample(0, 10, 1)).await, "forbidden");
+
+    let mut ingest = IngestSession::new(h.live.clone());
+    assert!(ingest.on_text(&auth(&h, &boss, lxm::GAMES_WRITE)).await.is_empty());
+    let mut deferred = game(true);
+    deferred["sim"]["run_id"] = json!("deferred-sample");
+    let deferred = h.call(Method::POST, RUNS, &[h.bearer(&boss, lxm::GAMES_WRITE)],
+        deferred.to_string()).await;
+    assert_eq!(deferred.status, StatusCode::CREATED);
+    let mut ordinary = game(false);
+    ordinary.as_object_mut().unwrap().remove("sim");
+    let ordinary = h.call(Method::POST, "/v1/games", &[h.bearer(&boss, lxm::GAMES_WRITE)],
+        ordinary.to_string()).await;
+    assert_eq!(ordinary.status, StatusCode::CREATED);
+    for game in [deferred.json(), ordinary.json()] {
+        let mut message: Value = serde_json::from_str(&sample(0, 10, 1)).unwrap();
+        message["game_id"] = game["game_id"].clone();
+        refused(&ingest.on_text(&message.to_string()).await, "invalid");
+    }
+    refused(&ingest.on_text(&sample(2, 10, 1)).await, "invalid");
+    refused(&ingest.on_text(&sample(0, u32::MAX, 1)).await, "invalid");
+    let mut malformed: Value = serde_json::from_str(&sample(0, 12, 0)).unwrap();
+    malformed["sample"]["combat"]["range"] = json!(-1);
+    refused(&ingest.on_text(&malformed.to_string()).await, "invalid");
+    let mut frames = h.live.frames();
+    for (index, tick, melee) in [(3, 11, 3), (0, 10, 1), (0, 11, 2), (0, 10, 9), (0, 11, 8)] {
+        assert!(ingest.on_text(&sample(index, tick, melee)).await.is_empty());
+    }
+    assert!(frames.try_recv().is_err());
+    let detail = format!("{RUNS}/{ID}");
+    assert_eq!(h.get(&detail).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(read(&h, &player, &detail).await.status, StatusCode::FORBIDDEN);
+    let rows = read(&h, &other, &detail).await.json()["live_combat"].as_array().unwrap().clone();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["index"], 0);
+    assert_eq!(rows[0]["tick"], 11);
+    assert_eq!(rows[0]["combat"]["melee_presses"], 2);
+    assert_eq!(rows[1]["index"], 3);
+    let summary = read(&h, &boss, &format!("/v1/games/{ID}")).await.json();
+    assert!(summary.get("live_combat").is_none());
+    end_game(&h, &boss).await;
+    refused(&ingest.on_text(&sample(0, 12, 9)).await, "conflict");
+    assert_eq!(read(&h, &boss, &detail).await.json()["live_combat"], json!([]));
 }

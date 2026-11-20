@@ -1,6 +1,7 @@
 import type { GameState } from "../state/reducer";
 import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
+import { sampleProjectileTrails } from "../state/projectile-trails";
 import { frameHub } from "../state/live";
 import { playerColour, readPalette, type MapPalette } from "../map/palette";
 
@@ -23,7 +24,7 @@ export const MARKER_TTL_MS = 6000;
 
 /** A live game's map frame: interpolated players plus fading death marks. */
 export function liveFrameSource(gameId: string, roster: () => Map<number, RosterEntry>) {
-  return (now: number): MapFrame => {
+  return (now: number, trailsFrom?: number): MapFrame => {
     const buf = frameHub.get(gameId);
     const r = roster();
     return {
@@ -31,6 +32,7 @@ export function liveFrameSource(gameId: string, roster: () => Map<number, Roster
       actors: buf.sampleActors(now),
       vehicles: buf.sampleVehicles(now),
       hits: buf.sampleHits(now),
+      projectileTrails: sampleProjectileTrails(buf.frames, buf.renderTick(now), trailsFrom),
       bsp: buf.sampleBsp(now),
       machines: buf.sampleMachines(now),
       machinePositions: buf.sampleMachinePositions(now),

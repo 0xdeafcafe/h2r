@@ -642,7 +642,8 @@ header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
 model from the matching game detail. The hub's generic metadata response
 skips the fallback, and the detail read enforces the same anonymous
 visibility rules. Both homes use the same renderer to put the header
-and its emblem URLs above the app's root in the initial HTML.
+and its emblem URLs in an inert template in the initial HTML. Game Details
+mounts it below the breadcrumbs.
 [Worker page rendering](../../crates/live/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable

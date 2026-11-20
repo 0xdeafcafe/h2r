@@ -107,6 +107,11 @@ fn valid_map_exits_zero() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(text.contains("stem 1 tags"), "{text}");
+    assert!(
+        text.contains(
+            "shadow templates: total=1 unresolved=0 model_depth=0 bsp_depth=0 receiver=0"
+        )
+    );
     assert!(text.contains("0 failures"), "{text}");
 }
 

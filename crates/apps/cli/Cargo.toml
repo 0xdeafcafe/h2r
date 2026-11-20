@@ -69,6 +69,7 @@ vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"], optional = true }
 asf = { path = "../../formats/asf", optional = true }
 wma = { path = "../../platform/wma", optional = true }
+live-hle = { path = "../../live/live-hle", optional = true }
 live-proto.workspace = true
 live-server.workspace = true
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
@@ -151,6 +152,7 @@ desktop = [
     "dep:cloud-saves",
     "dep:image",
     "dep:flate2",
+    "dep:live-hle",
     "dep:sha2",
 ]
 perf = ["desktop", "dep:perf", "boot/perf"]

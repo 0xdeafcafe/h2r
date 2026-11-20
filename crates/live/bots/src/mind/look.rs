@@ -55,9 +55,10 @@ impl Handling {
             Skill::Heroic => (0.22, 0.08, 0.073, 0.004),
             Skill::Legendary => (0.25, 0.065, 0.055, 0.002),
         };
+        let twitchy = crate::tuning::current().is_some_and(|t| t.twitchy);
         Self {
-            engage,
-            overshoot,
+            engage: if twitchy { 1.45 * engage } else { engage },
+            overshoot: if twitchy { 1.35 * overshoot } else { overshoot },
             lag,
             misread,
         }

@@ -3,44 +3,18 @@
 
 use agent_proto::theater::{Camera, CameraMode};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
+use crate::spectator_view::{Pose, PITCH_LIMIT, draw_world_view};
+#[cfg(test)]
+use crate::spectator_view::{blank_view, put_view};
 use hooks::{Builder, Flow};
 use serde::{Deserialize, Serialize};
 
 use super::{Mode, Session};
 
-const PITCH_LIMIT: f32 = 1.55;
 const DEFAULT_RADIUS: f32 = 4.0;
-const RENDER_CAMERA_BYTES: usize = 0x74;
-const WORLD_VIEW_RETURN: u32 = 0x0022_3719;
-const NEAR_CLIP: u32 = 0x0048_5ad4;
-const FAR_CLIP: u32 = 0x0048_5ad8;
 const RANDOM_STATE: u32 = 0x004e_7408;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-struct Pose {
-    position: [f32; 3],
-    yaw: f32,
-    pitch: f32,
-}
-
 impl Pose {
-    fn looking(position: [f32; 3], direction: [f32; 3]) -> Option<Self> {
-        let [x, y, z] = direction;
-        let planar = x.hypot(y);
-        (position.into_iter().chain(direction).all(f32::is_finite) && planar.hypot(z) > 0.0001)
-            .then(|| Self {
-                position,
-                yaw: y.atan2(x),
-                pitch: z.atan2(planar).clamp(-PITCH_LIMIT, PITCH_LIMIT),
-            })
-    }
-
-    fn axes(self) -> ([f32; 3], [f32; 3]) {
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
-        ([cy * cp, sy * cp, sp], [-cy * sp, -sy * sp, cp])
-    }
-
     fn rotate(&mut self, look: [f32; 2]) {
         self.yaw = (self.yaw + look[0]).rem_euclid(std::f32::consts::TAU);
         self.pitch = (self.pitch + look[1]).clamp(-PITCH_LIMIT, PITCH_LIMIT);
@@ -217,52 +191,6 @@ fn subject(guest: &runtime::Guest, name: Option<&str>) -> Option<live_telemetry:
     (!unit.vitality.is_some_and(|(body, _)| body <= 0.0)).then_some(unit)
 }
 
-fn put_view(record: &mut [u8; VIEW_STRIDE as usize], pose: Pose, clip: [f32; 2]) {
-    let (forward, up) = pose.axes();
-    let put = |bytes: &mut [u8], at: usize, values: &[f32]| {
-        for (slot, value) in bytes[at..].chunks_exact_mut(4).zip(values) {
-            slot.copy_from_slice(&value.to_le_bytes());
-        }
-    };
-    for at in [0x0c, 0x80] {
-        let camera = &mut record[at..at + RENDER_CAMERA_BYTES];
-        put(camera, 0, &pose.position);
-        put(camera, 0x0c, &forward);
-        put(camera, 0x18, &up);
-        put(camera, 0x40, &clip);
-    }
-}
-
-fn blank_view() -> [u8; VIEW_STRIDE as usize] {
-    // View kind and slot are zero. The player index must be -1: the
-    // retail view reader otherwise indexes the local player's object.
-    let mut record = [0u8; VIEW_STRIDE as usize];
-    record[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-    let screen = [0i16, 0, 480, 640];
-    let fov = 2.0 * ((35.0f32.to_radians()).tan() / (640.0 / 480.0)).atan();
-    for at in [0x0c, 0x80] {
-        record[at + 0x28..at + 0x2c].copy_from_slice(&fov.to_le_bytes());
-        record[at + 0x2c..at + 0x30].copy_from_slice(&1.0f32.to_le_bytes());
-        for viewport in [0x30, 0x38] {
-            for (i, edge) in screen.into_iter().enumerate() {
-                let offset = at + viewport + i * 2;
-                record[offset..offset + 2].copy_from_slice(&edge.to_le_bytes());
-            }
-        }
-    }
-    record
-}
-
-fn clip_distances(guest: &dyn GuestMemory) -> [f32; 2] {
-    let near = guest.f32(NEAR_CLIP).unwrap_or_default();
-    let far = guest.f32(FAR_CLIP).unwrap_or_default();
-    if near.is_finite() && far.is_finite() && near > 0.0 && far > near {
-        [near, far]
-    } else {
-        [0.06, 1024.0]
-    }
-}
-
 pub(super) fn install(
     b: &mut Builder,
     replay: &std::sync::Arc<Session>,
@@ -275,43 +203,13 @@ pub(super) fn install(
     let session = replay.clone();
     b.raw()
         .before(&points::RENDER_VIEWS, "draw Theater camera", move |call| {
-            let mut guest = call.ctx.memory();
-            let esp = call.cpu.esp;
-            if GuestMemory::u32(&*guest, esp).ok() != Some(WORLD_VIEW_RETURN) {
-                return Ok(Flow::Continue);
-            }
-            let mut state = session.lock();
-            if state.presentation.camera.mode == CameraMode::Default {
-                return Ok(Flow::Continue);
-            }
-            let arg = esp.wrapping_add(12);
-            let original = GuestMemory::u32(&*guest, arg)
-                .ok()
-                .filter(|&addr| addr != 0);
-            let template = original.filter(|&addr| {
-                call.cpu.eax > 0
-                    && GuestMemory::u32(&*guest, addr).ok() == Some(0)
-                    && GuestMemory::u32(&*guest, addr.wrapping_add(4)).ok() == Some(0)
-            });
-            let retail = template.and_then(|addr| {
-                Pose::looking(
-                    guest.vec3(addr.wrapping_add(0x0c)).ok()?,
-                    guest.vec3(addr.wrapping_add(0x18)).ok()?,
-                )
-            });
-            if let Some(pose) = state.presentation.camera.pose(&guest, retail) {
-                let mut record = template
-                    .and_then(|addr| guest.read::<{ VIEW_STRIDE as usize }>(addr).ok())
-                    .unwrap_or_else(blank_view);
-                // A private view is never associated with a local user.
-                record[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-                put_view(&mut record, pose, clip_distances(&*guest));
-                if GuestMemory::write(&mut *guest, scratch, &record).is_ok()
-                    && GuestMemory::set_u32(&mut *guest, arg, scratch).is_ok()
-                {
-                    call.cpu.eax = 1;
+            draw_world_view(call, scratch, |guest, retail| {
+                let mut state = session.lock();
+                if state.presentation.camera.mode == CameraMode::Default {
+                    return None;
                 }
-            }
+                state.presentation.camera.pose(guest, retail)
+            });
             Ok(Flow::Continue)
         });
 

@@ -60,17 +60,26 @@ manifest's `maps` table. When a map has them, the game page's Tactical Map
 lays players over the picture using the view's `world_to_pixel` matrix
 (`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
 and pan and zoom; without them it is the fitted grid as before. The game
-page's viewer (`src/viewer/GameViewer.tsx`) sits at the top of the page,
-across the content column, about 16:9 and short enough that the scoreboard
-under it still shows on a laptop, with the scoreboard, field report and
-overview below. Its **2D map** / **3D view** switch shows the tactical map or
-the level in 3D (`src/viewer/`): three.js, loaded as its
-own chunk only then, with a sun and soft shadows, ambient occlusion (turned
-off by itself on a machine that can't keep up), orbit, top-down,
+page's viewer (`src/viewer/GameViewer.tsx`) sits under the match hero,
+with the scoreboard, field report and overview below. The Field Report
+keeps visible rows keyed by kill event as the replay advances. A new row
+can enter once, with motion disabled when the browser requests reduced
+motion. The viewer switches between the tactical map and the 3D view
+(`src/viewer/`). The 3D view loads three.js when selected and draws a sun,
+soft shadows and ambient occlusion that switches off if the device can't
+keep up. It offers orbit, top-down,
 follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
-screen, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
+screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
+map has no geometry. The [map uplink](viewer-overlay.md#the-overlay)
+shows geometry load progress, offers **Retry** after a failed load and
+puts level settings in the 3D view's **View** panel. [Name tags](viewer-overlay.md#name-tags)
+give priority to the followed player and reduce crowded labels to pips.
+The level [appears in a sweep](viewer-overlay.md#progressive-reveal) from
+the opening focus, with a cross-fade when the browser requests reduced motion. The [opening camera](viewer-overlay.md#opening-camera)
+follows the player selected by `?player=`, the signed-in player or the
+embedding page when present, or frames the playable area. The
 **Full screen** button puts the viewer's box full screen with the Fullscreen
 API (Escape leaves), or lays it over the window where there is none (an
 iPhone; Escape leaves that too); the canvas and the 2D map refit either way
@@ -79,7 +88,11 @@ iPhone; Escape leaves that too); the canvas and the 2D map refit either way
 focus or the pointer is over it, so the page keeps them otherwise. The 2D
 map, the 3D view and the scrubber share one session (`src/viewer/session.ts`).
 Finished games autoplay without audio from the first recorded frame.
-Use `?t=12.5` to start playing 12.5 seconds into the recording. Playback
+**Watch in Theater**, links from the film library, and legacy
+`/theater/:id` links open Game Details at `#game-viewer`. The same viewer
+offers playback, camera controls, the HUD and clip creation. A shared
+`/theater/:id/clip/:clip` link opens the requested range on a loop.
+Use `?t=12.5` to start playing 12.5 seconds into a full recording. Playback
 controls used in one replay tab also apply to other open tabs on that game.
 Live games open at the live edge. Scrub back through up to 450 recent
 frames (about 30 seconds at 15 frames per second), or select **Live** to
@@ -124,35 +137,23 @@ glb says and it can be looked into from outside; meshes under a `machines`
 node are ordinary models and keep the side they came with. Every mesh is
 found by walking the glb, so one `structure` node or many `bsp_<n>` ones
 are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
-`c`, `[` and `]` or the slider) hides the level above a height, and while
-following a player keeps to just over their head; **See-through** (key `x`
-steps off, *in focus* and *everyone*; *in focus* by default) cuts away
-whatever of the level, its machines (doors, lifts, platforms) and its
-placed objects lies between the camera and the
-player being followed (or pointed at in the scoreboard), else every player
-(up to 8, nearest the camera first), a cone to each with a clean edge,
-leaving the floor they stand on, so a player inside a building is seen
-through its walls and roof. Only a surface that is in the way is cut: one
-the line of sight passes through, near where it crosses, with the player
-behind it (its normal is the triangle's own, from the shader's
-derivatives; floors, terrain and ceilings count as level). Ground under or
-beside the line, a step near the player and a wall running alongside stay,
-so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
-one in focus. Machines and placed objects are cut exactly as the level
-is, in world space (an instanced batch through each instance's own
-matrix), so a lift in front of a player goes with the wall behind it
-instead of standing whole in the hole; players and vehicles (the frames'
-and the level's parked ones, which a player may be riding) are never cut.
-The rim is a hard edge, not a dither: a per-pixel dither speckled the
-boundary, crawled as the camera moved, and the occlusion, which reads the
-scene's own depth, picked the speckle up as dark freckles. The occlusion
-takes both cuts because it reads that depth (and, without a depth texture,
-its own normal pass is patched the same way); the see-through leaves
-shadows alone, so a room seen through its roof keeps the shade the roof
-gives it. Both are a clipping
-plane and a few lines in the map materials' shaders, shared by all of
-them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
-pop-out page set them from a link. (Culling front faces instead was
+`c`, `[` and `]` or the slider) hides the level above a height. While following
+a player it keeps to just above their head. **See-through** (key `x` to
+cycle through off, *in focus* and *everyone*) opens a window around each
+target's displayed body. *In focus* uses the followed or highlighted
+player, or the nearest players when no one is selected. *Everyone* uses
+up to eight targets.
+
+The same shader tests each pixel ray against the player's body volume.
+Fragments in front of the body that block the window are discarded.
+BSP sections and clusters, instanced scenery, and doors, lifts and
+platforms take the same cut, including machines drawn from frames and
+scenery drawn from the film. The cut leaves the player's supporting floor
+and geometry outside the window visible. Bipeds and vehicles draw whole.
+The cut applies to both colour and depth, so the remaining fragments
+keep their normal depth ordering. Ambient occlusion uses that same depth,
+and shadows stay in place. `?cut=<height>` and `?see=0` set the initial
+view from a link. (Culling front faces instead was
 tried: Halo's levels are thick-walled and faced inwards, so it shows the
 inside of the near walls and ceilings rather than what is beyond them.)
 
@@ -220,18 +221,22 @@ optional; a frame without them draws as before.
   for a minute, at most 24 of them, all cleared on a seek. AI bodies come
   in the frames as actors with the `dead` stance and lie until the game
   clears them away.
-- *Damage and grenades* (`map/events.ts`, pure; one `EventFeed` per view).
-  A hit draws a line from attacker to victim that fades in a quarter of a
-  second, and a hit marker with the damage floating up from the victim for
-  under a second (the amount is a share of the victim's vitality, shown in
-  percent); sustained fire on one victim is one marker with a rising
-  number; the last hit before a victim is found dead is the kill: red,
-  ringed, bigger, and it stays longer. A grenade throw draws the arc of the
-  throw from the hand along the aim (the frames don't carry the grenade
-  itself, so it shows the throw, not where it bounced). The 3D view
-  (`viewer/effects3d.ts`) and both 2D maps draw them; with reduced motion
-  the numbers stay put, the line holds instead of flashing, and no grenade
-  flies.
+- *Damage* ([viewer-effects.md](viewer-effects.md#damage)). The 3D tags
+  and tactical map show shield and body from the sampled frame. A hit with
+  a known attacker draws a direction tick. A focused exchange or a kill
+  draws the attacker-to-victim line, and a kill adds a confirm. The
+  **Damage** control defaults to **Bars**. **Bars and numbers** prints the
+  loss from this burst beside the victim's name. `?dmg=` overrides the
+  stored preference.
+- *Projectile trails* (`state/projectile-trails.ts`). The 2D and 3D viewers
+  use consecutive `Frame.projectiles` positions for each projectile ID. The
+  projectile's recorded type sets its colour. Interpolation stays between
+  observations for the same projectile and parent, so a trail can follow a
+  recorded bounce. A disappearance, cut or seek clears the trail. A
+  grenade action still animates the throw. Reduced motion hides the trails.
+  Recordings without projectile samples still show the throw animation,
+  muzzle flashes and fast shot effects. Host-film objects use their own
+  playback path.
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
   faint grey outline (2D) and has no label. Once the frames carry
   vehicles the level's own copies (`vehi` placements and multiplayer
@@ -247,9 +252,9 @@ optional; a frame without them draws as before.
   someone, moves to frame it. With nothing to go on it shows every zone
   not marked cinematic-only in its node's extras, and never none at all.
   A `backdrop` node (far scenery) is hidden. When the level has several,
-  the toolbar's zone picker offers "Zone in play", "All zones", and each zone by its
+  the **View** panel's zone picker offers "Zone in play", "All zones", and each zone by its
   BSP's name (`extras.name`; cutscene zones too when "Cutscene zones" is
-  ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
+  ticked); its **Level layers** picker switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones
   only (`viewer/level3d.ts`).
 - *Mods* (`map/views.ts` `mapFilesFor`, `map/geometry.ts`). A game on a

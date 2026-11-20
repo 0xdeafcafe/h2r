@@ -19,6 +19,7 @@ pub mod expect;
 pub mod havok;
 pub mod host_lobby;
 pub mod hot;
+pub mod live;
 mod load;
 mod pad;
 pub mod raw;
@@ -29,7 +30,7 @@ pub mod state;
 pub mod test_maps;
 pub mod theater;
 pub mod trace;
-pub use client::{CallError, Client};
+pub use client::{CallError, Client, ConnectionShutdown};
 pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
@@ -38,7 +39,7 @@ pub use render::{
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
     PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
     SceneSideTarget, SceneViewRecord,
-    SnapRecord,
+    SnapRecord, SpawnViewParams,
 };
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,8 @@ pub mod method {
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Queue an installed multiplayer package by its complete MapId.
+    pub const MAPS_LOAD: &str = "maps.load";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
@@ -210,6 +213,8 @@ pub mod method {
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
     pub const RENDER_CAPTURE: &str = "render.capture";
+    /// Position the world camera at a loaded player starting location.
+    pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
     /// Arm the in-process two-path comparison for one frame
@@ -221,6 +226,8 @@ pub mod method {
     pub const AUDIO_VOICES: &str = "audio.voices";
     /// Active guest listeners and their local-user mappings.
     pub const AUDIO_LISTENERS: &str = "audio.listeners";
+    /// Active guest looping sounds, their transitions and host output health.
+    pub const AUDIO_LOOPS: &str = "audio.loops";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.

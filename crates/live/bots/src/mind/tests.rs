@@ -339,18 +339,11 @@ fn a_dead_bot_lets_go_of_everything() {
 }
 
 #[test]
-fn grenades_are_rare_and_spaced() {
+fn unknown_grenade_stock_never_pulls_the_left_trigger() {
     let mut m = Mind::new(Skill::Legendary, 5);
-    let mut throws = Vec::new();
     for t in 0..(60 * 30u32) {
         let pad = look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], t, None);
-        if pad.left_trigger > 0.0 && throws.last().is_none_or(|&l: &u32| t > l + 3) {
-            throws.push(t);
-        }
-    }
-    assert!(throws.len() <= 8, "{throws:?}");
-    for w in throws.windows(2) {
-        assert!(w[1] - w[0] >= GRENADE_COOLDOWN, "{throws:?}");
+        assert_eq!(pad.left_trigger, 0.0);
     }
 }
 
@@ -1487,4 +1480,33 @@ fn a_killed_targets_respawn_guess_hunts_past_the_search_window() {
     m.step(&late, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
     assert_eq!(m.goal, Some(far), "the sighting carries the hunt");
+}
+
+#[test]
+fn radar_use_is_sampled_per_glance_with_the_names_probability() {
+    let scans = |chance: f32| {
+        let mut mind = Mind::new(Skill::Normal, 41);
+        let mut p = Perception::default();
+        let at = [0., 4., 0.];
+        let mut seen = 0;
+        for scan in 0..256 {
+            p.tick = 10 * scan;
+            p.observations.radar = Some(at);
+            mind.glance_at_tracker(&p, 10, chance);
+            let looked = mind.radar;
+            seen += usize::from(looked.is_some());
+            // A different dot between glances gives no extra rolls.
+            p.observations.radar = Some([4., 0., 0.]);
+            for _ in 1..10 {
+                p.tick += 1;
+                mind.glance_at_tracker(&p, 10, chance);
+                assert_eq!(mind.radar, looked);
+            }
+        }
+        seen
+    };
+    let low = scans(0.2);
+    let high = scans(0.8);
+    assert!(low > 0 && high > low + 80 && high < 256, "{low} vs {high}");
+    assert_eq!(scans(0.8), high);
 }

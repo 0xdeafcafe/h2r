@@ -10,7 +10,7 @@ use crate::save::{self, MapSource};
 use crate::scenario::{Changes, Scenario, Value};
 use crate::scene::{Scene, SceneBuilder};
 use crate::{Error, Result};
-use map::{ResourceFile, TagId};
+use map::TagId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,6 +20,7 @@ pub use multi::FieldEdit;
 /// An open map.
 struct Doc {
     source: MapSource,
+    source_checksum: u32,
     /// The map's name (`maps\\<name>.map`), the base a package names.
     name: String,
     /// The package directory this state came from or was last saved to.
@@ -366,14 +367,7 @@ impl Session {
     fn open_keyed(&mut self, source: MapSource, name: &str, cache_key: &str) -> Result<()> {
         let mut map = source.open()?;
         let scenario = Scenario::read(&mut map)?;
-        let mut files = vec![(ResourceFile::Local, map)];
-        for (file, s) in geometry::shared_sources(&source) {
-            if let Ok(m) = s.open() {
-                files.push((file, m));
-            }
-        }
-        let mut raw = geometry::RawFiles::new(files);
-        let mut map = source.open()?;
+        let mut raw = geometry::RawFiles::open(&source)?;
         let started = std::time::Instant::now();
         let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
         let world_failed = lit.failed;
@@ -409,6 +403,7 @@ impl Session {
             markers.len()
         );
         self.doc = Some(Doc {
+            source_checksum: map.header().checksum,
             source,
             name: name.to_owned(),
             package: None,
@@ -450,6 +445,11 @@ impl Session {
     pub fn scenario(&self) -> Option<&Scenario> {
         self.doc.as_ref().map(|d| &d.scenario)
     }
+    /// Cache-header checksum of the loaded bytes, stable across edits in memory.
+    pub fn source_checksum(&self) -> Option<u32> {
+        self.doc.as_ref().map(|d| d.source_checksum)
+    }
+
     /// The open map's source.
     pub fn source(&self) -> Option<&MapSource> {
         self.doc.as_ref().map(|d| &d.source)

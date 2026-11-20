@@ -126,7 +126,7 @@ impl Header {
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
         use live_proto::film::TelemetryHooks;
         self.telemetry_hooks
-            .unwrap_or_else(|| match (self.telemetry, self.version) {
+            .unwrap_or(match (self.telemetry, self.version) {
                 (false, _) => TelemetryHooks::OFF,
                 (true, 1 | 2) => TelemetryHooks::EVENTS,
                 (true, _) => TelemetryHooks::UNIFIED,

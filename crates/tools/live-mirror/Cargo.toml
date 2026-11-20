@@ -1,0 +1,10 @@
+[package]
+name = "live-mirror"
+description = "The editor's live object and player stream, sample store and interpolation"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-proto = { path = "../../extensions/agent-proto" }
+serde_json.workspace = true

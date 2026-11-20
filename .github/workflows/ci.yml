@@ -32,5 +32,12 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Style lints the workspace doesn't follow: guest-shaped code keeps wide
+      # signatures, tuple results and index loops that mirror the original.
+      - run: >-
+          cargo clippy --workspace --all-targets -- -D warnings
+          -A clippy::type_complexity -A clippy::too_many_arguments
+          -A clippy::needless_range_loop -A clippy::identity_op
+          -A clippy::chunks_exact_to_as_chunks -A clippy::manual_is_multiple_of
+          -A clippy::large_enum_variant -A clippy::collapsible_if
       - run: cargo test --workspace --no-fail-fast

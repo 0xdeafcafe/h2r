@@ -11,8 +11,9 @@
 //! the resolver streams over the disc's map without copying, else BPS),
 //! and wraps it as a package over that base: the only blob is the delta.
 //! A mod that is already a PPF, IPS or BPS patch is checked against the
-//! base and kept as it is. The result may not be any retail map of either
-//! disc.
+//! base and kept as it is. Super PPF and VCDIFF reconstruct the target locally
+//! and produce a standard delta over the retail map. A result matching any
+//! retail map on either disc is refused.
 //!
 //! The package's display data comes from a `mod.toml` beside the file
 //! (or `--info PATH`), every field optional:
@@ -26,7 +27,7 @@
 //! notes = "..."                   # anything else about the credit
 //! description = "..."
 //! source_url = "https://..."      # where it came from
-//! format = "map"                  # map, ppf, ips or bps; else sniffed
+//! format = "map"                  # map, ppf, ips, bps, sppf or xdelta
 //! base_map = "lockout"            # else --base
 //! category = "weapons"            # live_proto::maps::CATEGORIES
 //! image = "preview.png"           # beside mod.toml, PNG or JPEG
@@ -46,6 +47,9 @@
 //! publish DIR` reads. `features` is what the mod changes as read off the
 //! patched map against its base (`crate::live_mod_features`), with the
 //! sidecar's own added.
+mod sppf;
+mod xdelta;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -55,6 +59,9 @@ use content::{Manifest, Sha256};
 use live_proto::maps::Credit;
 use serde::{Deserialize, Serialize};
 use vfs::Backend;
+
+/// Upper bound on a decoded third-party patch before making the Live layer.
+const MAX_CONVERTED_MAP: usize = 512 << 20;
 
 /// The sidecar's file name, beside the mod and in the package.
 pub const MOD_FILE: &str = "mod.toml";
@@ -158,6 +165,16 @@ pub enum InputKind {
     Ppf,
     Ips,
     Bps,
+    Xdelta,
+    Sppf,
+    Serenity,
+}
+
+fn unsupported_serenity() -> anyhow::Error {
+    anyhow!(
+        "unsupported_serenity: Serenity patches (including v3.3) have no documented delta decoder. \
+         Import a locally patched multiplayer map or build."
+    )
 }
 
 impl InputKind {
@@ -167,6 +184,9 @@ impl InputKind {
             "ppf" => Some(Self::Ppf),
             "ips" => Some(Self::Ips),
             "bps" => Some(Self::Bps),
+            "xdelta" | "xdelta3" | "vcdiff" => Some(Self::Xdelta),
+            "sppf" => Some(Self::Sppf),
+            "serenity" => Some(Self::Serenity),
             _ => None,
         }
     }
@@ -181,9 +201,41 @@ impl InputKind {
             Some(Self::Ips)
         } else if bytes.starts_with(b"BPS1") {
             Some(Self::Bps)
+        } else if bytes.starts_with(&[0xd6, 0xc3, 0xc4, 0]) {
+            Some(Self::Xdelta)
+        } else if bytes.starts_with(&[0x14, 0, 0, 0xf]) {
+            Some(Self::Serenity)
         } else {
             None
         }
+    }
+
+    /// Serenity's public header describes credits and map names. There is
+    /// no public specification for its three methods of rebuilding tags.
+    pub fn ensure_supported(self) -> Result<()> {
+        if self == Self::Serenity {
+            return Err(unsupported_serenity());
+        }
+        Ok(())
+    }
+
+    fn detect(path: &Path, format: Option<&str>, bytes: &[u8]) -> Result<Self> {
+        let kind = if let Some(f) = format {
+            Self::named(f).ok_or_else(|| anyhow!("unknown patch format {f:?}"))?
+        } else {
+            // An SPPF has no signature. Honor an identified legacy extension
+            // before sniffing, so arbitrary section lengths cannot be magic.
+            let legacy = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(Self::named)
+                .filter(|k| matches!(k, Self::Sppf | Self::Serenity));
+            legacy.or_else(|| Self::sniff(bytes)).ok_or_else(|| {
+                anyhow!("{}: unrecognised map or patch format (use .sppf for Super PPF)", path.display())
+            })?
+        };
+        kind.ensure_supported()?;
+        Ok(kind)
     }
 }
 
@@ -205,6 +257,24 @@ pub fn apply(base: &[u8], patch: &[u8]) -> Result<Vec<u8>> {
     })
 }
 
+/// Convert a reconstructed map into the same verified delta as a whole-map
+/// import. Only this layer and its manifest are eligible for publication.
+fn checked_delta(
+    base: &[u8],
+    target: &[u8],
+    description: &str,
+) -> Result<(String, Vec<u8>, Vec<u8>)> {
+    if !live_proto::maps::is_whole_map(target) {
+        bail!("this is not a map file (no cache header)");
+    }
+    let w = patch::diff(base, target, description);
+    let made = apply(base, &w.bytes).context("checking the patch made")?;
+    if made != target {
+        bail!("the patch made does not give the mod back");
+    }
+    Ok((format!("mod.{}", w.format.extension()), w.bytes, made))
+}
+
 /// The layer a mod becomes over `base`: its file name and bytes, and the
 /// map it makes. A whole map becomes a patch from `base` (checked by
 /// applying it); a patch is checked and kept. A mod that changes nothing
@@ -216,17 +286,10 @@ pub fn layer_for(
     description: &str,
 ) -> Result<(String, Vec<u8>, Vec<u8>)> {
     let (file, layer, target) = match kind {
-        InputKind::Map => {
-            if !live_proto::maps::is_whole_map(input) {
-                bail!("this is not a map file (no cache header)");
-            }
-            let w = patch::diff(base, input, description);
-            let made = apply(base, &w.bytes).context("checking the patch made")?;
-            if made != input {
-                bail!("the patch made does not give the mod back");
-            }
-            (format!("mod.{}", w.format.extension()), w.bytes, made)
-        }
+        InputKind::Map => checked_delta(base, input, description)?,
+        InputKind::Sppf => checked_delta(base, &sppf::apply(base, input)?, description)?,
+        InputKind::Xdelta => checked_delta(base, &xdelta::apply(base, input)?, description)?,
+        InputKind::Serenity => return Err(unsupported_serenity()),
         InputKind::Ppf | InputKind::Ips | InputKind::Bps => {
             let ext = match kind {
                 InputKind::Ppf => "ppf",
@@ -367,16 +430,7 @@ pub fn mod_bytes_over_base(
     base: &str,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let input = Path::new(what);
-    let kind = match format {
-        Some(f) => InputKind::named(f)
-            .ok_or_else(|| anyhow!("format {f:?} is not map, ppf, ips or bps"))?,
-        None => InputKind::sniff(&bytes).ok_or_else(|| {
-            anyhow!(
-                "{}: not a map, PPF, IPS or BPS file (give --format)",
-                input.display()
-            )
-        })?,
-    };
+    let kind = InputKind::detect(input, format, &bytes)?;
     let base = base.to_ascii_lowercase();
     if !is_map_name(&base) {
         bail!("{base:?} is not a map name (lockout, midship, ...)");
@@ -396,6 +450,9 @@ pub fn mod_bytes_over_base(
             }
             bytes
         }
+        InputKind::Sppf => sppf::apply(&base_bytes, &bytes)?,
+        InputKind::Xdelta => xdelta::apply(&base_bytes, &bytes)?,
+        InputKind::Serenity => return Err(unsupported_serenity()),
         _ => apply(&base_bytes, &bytes)
             .context("the patch does not apply to the base map: is --base the right map?")?,
     };
@@ -405,7 +462,7 @@ pub fn mod_bytes_over_base(
 /// What `h2 live maps import` was asked.
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
-    /// The mod: a `.map`, `.ppf`, `.ips` or `.bps`.
+    /// A modded map or patch over its retail base.
     pub input: PathBuf,
     /// The disc: an image or a directory of its files.
     pub disc: PathBuf,
@@ -445,20 +502,7 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
         .clone()
         .unwrap_or_else(|| input_path.parent().unwrap_or(Path::new(".")).join(MOD_FILE));
     let info = ModInfo::read(&info_path)?.unwrap_or_default();
-    let kind = match ModInfo::text(&info.format) {
-        Some(f) => InputKind::named(&f).ok_or_else(|| {
-            anyhow!(
-                "{}: format {f:?} is not map, ppf, ips or bps",
-                info_path.display()
-            )
-        })?,
-        None => InputKind::sniff(&input).ok_or_else(|| {
-            anyhow!(
-                "{}: not a map, PPF, IPS or BPS file (give format in {MOD_FILE})",
-                input_path.display()
-            )
-        })?,
-    };
+    let kind = InputKind::detect(input_path, ModInfo::text(&info.format).as_deref(), &input)?;
     let base = opts
         .base
         .clone()

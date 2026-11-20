@@ -84,52 +84,14 @@ pub enum Conn {
     Lost(String),
 }
 
-/// An object the game reported.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Live {
-    pub id: String,
-    pub kind: String,
-    pub pos: Vec3,
-    pub forward: Option<Vec3>,
-    pub team: Option<i32>,
-    pub name: Option<String>,
-}
-
-impl Live {
-    fn from(v: &Value) -> Option<Live> {
-        // A turret's position is relative to its vehicle: not drawn.
-        if v.get("mounted_on").is_some_and(|m| !m.is_null()) {
-            return None;
-        }
-        let vec = |k: &str| -> Option<Vec3> {
-            let a = v.get(k)?.as_array()?;
-            Some([
-                a.first()?.as_f64()? as f32,
-                a.get(1)?.as_f64()? as f32,
-                a.get(2)?.as_f64()? as f32,
-            ])
-        };
-        Some(Live {
-            id: v.get("id")?.as_str()?.to_owned(),
-            kind: v.get("kind")?.as_str()?.to_owned(),
-            pos: vec("pos")?,
-            forward: vec("forward"),
-            team: v.get("team").and_then(Value::as_i64).map(|t| t as i32),
-            name: v.get("name").and_then(Value::as_str).map(str::to_owned),
-        })
-    }
-}
-
 /// A pairing with a game, launched or attached.
 pub struct Play {
     link: Option<Link>,
     pub conn: Conn,
     /// The last `session.status`.
     pub status: Option<Status>,
-    /// The last poll's objects.
-    pub objects: Vec<Live>,
-    /// When the last poll came.
-    pub polled: Option<Instant>,
+    /// Next read of the binary stream's writer counters over the control link.
+    next_live_status: Instant,
     /// The game's scenario datum (`edit.tags`), for `edit.set`.
     scenario_tag: Option<String>,
     /// The map the datum and session kind were read on.
@@ -151,6 +113,8 @@ pub struct Play {
     pub paused: bool,
     /// The launched game, its log, and the spawn it waits for.
     child: Option<Child>,
+    /// Identity of the editor's launch copy, including when it pairs again.
+    launched_copy: Option<(Endpoint, u64, u32)>,
     pub log_path: Option<PathBuf>,
     pending_spawn: Option<Vec3>,
     pub spawn: Spawn,
@@ -182,8 +146,7 @@ impl Play {
             link: None,
             conn: Conn::Off,
             status: None,
-            objects: Vec::new(),
-            polled: None,
+            next_live_status: Instant::now(),
             scenario_tag: None,
             read_on: None,
             session: None,
@@ -198,6 +161,7 @@ impl Play {
             controller: false,
             paused: false,
             child: None,
+            launched_copy: None,
             log_path: None,
             pending_spawn: None,
             spawn: Spawn::Level,
@@ -316,12 +280,15 @@ impl Play {
         ));
     }
 
-    fn start(&mut self, _app: &mut App, endpoint: Endpoint, options: Options) {
+    fn start(&mut self, app: &mut App, endpoint: Endpoint, options: Options) {
+        app.pairing.clear_mirror();
+        app.pairing.play_copy = self.launched_copy.as_ref()
+            .filter(|(game, _, _)| game == &endpoint)
+            .map(|(_, revision, checksum)| (*revision, *checksum));
         self.link = Some(Link::open(endpoint, options));
         self.conn = Conn::Connecting;
         self.status = None;
-        self.objects.clear();
-        self.polled = None;
+        self.next_live_status = Instant::now();
         self.scenario_tag = None;
         self.read_on = None;
         self.session = None;
@@ -339,6 +306,7 @@ impl Play {
         if self.link.take().is_some() {
             app.info("unpaired from the game");
         }
+        app.pairing.clear_mirror();
         self.conn = Conn::Off;
         self.controller = false;
         self.paused = false;
@@ -432,9 +400,17 @@ impl Play {
                 self.child = Some(child);
                 self.log_path = Some(log.clone());
                 self.last_command = Some(line.clone());
+                let endpoint = Endpoint::Unix(l.socket.clone());
+                self.launched_copy = l.map_dir.as_ref().and_then(|dir| {
+                    // The checksum of the saved launch copy includes unsaved
+                    // edits to the document. Later edits keep this identity.
+                    let source = scenario_edit::MapSource::file(dir.join(format!("{}.map", l.level)));
+                    let checksum = source.open().ok()?.header().checksum;
+                    Some((endpoint.clone(), app.session.world_rev(), checksum))
+                });
                 self.start(
                     app,
-                    Endpoint::Unix(l.socket.clone()),
+                    endpoint,
                     Options {
                         wait: LAUNCH_WAIT,
                         ..Options::default()
@@ -451,6 +427,7 @@ impl Play {
     /// End the game this editor started.
     pub fn stop_game(&mut self, app: &mut App) {
         if let Some(mut c) = self.child.take() {
+            self.launched_copy = None;
             if matches!(c.try_wait(), Ok(None)) {
                 let _ = c.kill();
                 app.info("stopped the game");
@@ -489,12 +466,27 @@ impl Play {
                     .unwrap_or_default()
             ));
             self.child = None;
+            self.launched_copy = None;
             self.link = None;
+            app.pairing.clear_mirror();
             self.conn = Conn::Off;
         }
         let events = self.link.as_ref().map(Link::drain).unwrap_or_default();
         for e in events {
             self.on_event(app, e);
+        }
+        if let Some(stream) = &app.pairing.mirror {
+            let previous_epoch = app.pairing.shown.as_ref().map(|sample| sample.epoch);
+            app.pairing.shown = stream.sample(app.pairing.latest || self.paused);
+            if let Some(sample) = &app.pairing.shown
+                && (previous_epoch != Some(sample.epoch) || Instant::now() >= self.next_live_status)
+            {
+                if app.pairing.stream_map.is_null() {
+                    app.pairing.stream_map = stream.status(false)["map"].clone();
+                }
+                self.next_live_status = Instant::now() + Duration::from_secs(1);
+                self.call(agent_proto::live::STATUS, Value::Null, Purpose::LiveStatus);
+            }
         }
         self.maybe_spawn(app);
         if Instant::now() >= self.next_push {
@@ -587,6 +579,7 @@ impl Play {
         match e {
             Event::Connected => {
                 self.conn = Conn::Connected;
+                app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
                 app.info(format!(
                     "paired with the game at {}",
                     self.endpoint().map(ToString::to_string).unwrap_or_default()
@@ -596,9 +589,10 @@ impl Play {
                 app.error(format!("game link: {why}"));
                 self.conn = Conn::Lost(why);
                 self.link = None;
+                app.pairing.clear_mirror();
                 self.controller = false;
             }
-            Event::Poll { status, world } => {
+            Event::Poll(status) => {
                 if let Ok(s) = serde_json::from_value::<Status>(status) {
                     self.paused = s.at.paused;
                     self.controller = s.controller;
@@ -621,10 +615,6 @@ impl Play {
                         );
                     }
                 }
-                if let Some(objs) = world.get("objects").and_then(Value::as_array) {
-                    self.objects = objs.iter().filter_map(Live::from).collect();
-                }
-                self.polled = Some(Instant::now());
             }
             Event::Answer {
                 purpose,
@@ -642,6 +632,15 @@ impl Play {
         result: Result<Value, String>,
     ) {
         match (purpose, result) {
+            (Purpose::LiveStatus, result) => {
+                let stream_id = app.pairing.mirror.as_ref()
+                    .map(|stream| stream.status(false)["stream"].clone());
+                app.pairing.counters = result.ok().and_then(|reply| {
+                    let id = stream_id?;
+                    app.pairing.stream_map = reply["map"].clone();
+                    reply["streams"].as_array()?.iter().find(|s| s["stream"] == id).cloned()
+                });
+            }
             (Purpose::Scenario, Ok(v)) => {
                 self.scenario_tag = v.get("scenario").and_then(Value::as_str).map(str::to_owned);
             }
@@ -791,33 +790,41 @@ impl Play {
         }
     }
 
-    /// The local player (player one), from the last poll.
-    pub fn player(&self) -> Option<&Live> {
-        let players = self.objects.iter().filter(|o| o.kind == "player");
-        players
-            .clone()
-            .find(|o| o.id == "player.0")
-            .or_else(|| players.into_iter().next())
-    }
-
     /// Move the editor camera to the player, looking the way they face.
     pub fn go_to_player(&self, app: &mut App) {
-        let Some(p) = self.player() else {
+        if let Some(sample) = &app.pairing.shown
+            && !app.pairing.matches_sample(app, sample)
+        {
+            app.error("open the streamed map to position its editor camera");
+            return;
+        }
+        let Some((player, object)) = app.pairing.player() else {
             app.error("no player in the game to go to");
             return;
         };
-        let (pos, fwd) = (p.pos, p.forward);
+        let pos = if object.parent.is_some() {
+            let Some(pos) = app.pairing.shown.as_ref().and_then(|s| {
+                crate::viewport::mirror::WorldPoses::new(s).position(object.id)
+            }) else {
+                app.error("the player's parent transform is unavailable");
+                return;
+            };
+            pos
+        } else {
+            object.position
+        };
+        let (index, fwd) = (player.index, player.aim);
         let cam = app.session.camera_mut();
         cam.target = [pos[0], pos[1], pos[2] + 0.6];
-        if let Some(f) = fwd.filter(|f| f[0] != 0.0 || f[1] != 0.0) {
+        if fwd[0] != 0.0 || fwd[1] != 0.0 {
             // Camera::forward is (-cos yaw cos pitch, -sin yaw cos pitch, -sin pitch).
-            cam.yaw = (-f[1]).atan2(-f[0]);
+            cam.yaw = (-fwd[1]).atan2(-fwd[0]);
         }
         cam.pitch = 0.3;
         cam.distance = 3.0;
         app.info(format!(
-            "camera at {} ({:.1}, {:.1}, {:.1})",
-            p.id, pos[0], pos[1], pos[2]
+            "camera at player.{index} ({:.1}, {:.1}, {:.1})",
+            pos[0], pos[1], pos[2]
         ));
     }
 
@@ -828,13 +835,18 @@ impl Play {
             app.error("not paired with a game");
             return;
         }
+        if self.map_match(app) != MapMatch::Same
+            || app.pairing.shown.as_ref().is_some_and(|s| !app.pairing.matches_sample(app, s))
+        {
+            app.error("open the streamed map to teleport the player to an editor position");
+            return;
+        }
         if let Some(Err(e)) = self.session.map(SessionKind::writes) {
             app.error(format!("not moving the player: {e}"));
             return;
         }
-        let player = self
-            .player()
-            .map_or("player.0".to_owned(), |p| p.id.clone());
+        let index = app.pairing.player().map_or(0, |(player, _)| player.index);
+        let player = format!("player.{index}");
         self.call(
             agent_proto::sim::method::STATE_SET,
             json!({"player": player, "pos": [pos[0], pos[1], pos[2]]}),

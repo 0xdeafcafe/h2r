@@ -405,11 +405,10 @@ fn index_stripped(dir: Option<&Path>) -> Result<BTreeMap<String, PathBuf>, Error
     for e in entries {
         let e = e.map_err(|e| Error::Bundle(format!("{}: {e}", dir.display())))?;
         let Ok(name) = e.file_name().into_string() else { continue };
-        if name.to_ascii_lowercase().ends_with(".map") {
-            if out.insert(name.to_ascii_lowercase(), e.path()).is_some() {
+        if name.to_ascii_lowercase().ends_with(".map")
+            && out.insert(name.to_ascii_lowercase(), e.path()).is_some() {
                 return Err(Error::Bundle(format!("{} has more than one {name}", dir.display())));
             }
-        }
     }
     Ok(out)
 }

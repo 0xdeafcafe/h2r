@@ -224,6 +224,8 @@ Reading and converting Halo 1 data:
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [web-app.md](live/web-app.md): the Live web app: its pages, the mock server and its `H2_MOCK_*` knobs, derived stats, sign-up, social features, link previews and the state architecture
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
+- [viewer-overlay.md](live/viewer-overlay.md): the 3D view's opening camera, Halo 2-style overlay, name tags and progressive reveal (design only, not built)
+- [viewer-effects.md](live/viewer-effects.md): how damage reads in the viewer, and its combat effects: shields, explosions, impacts, melee, teleporters and deaths, what each derives from and the new telemetry two need (design only, not built)
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
@@ -250,6 +252,8 @@ Reading and converting Halo 1 data:
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens
+- [live-mirror.md](editor/live-mirror.md): design for the paired editor showing the running game live (the world-state stream over the agent socket, its cost, poses, projectile arcs, cameras, the timeline and recordings) and for edits reaching the game by apply class, with the session rules, the agent API methods and the slices
+- [click-to-edit.md](editor/click-to-edit.md): design for one Map tool in place of Scenario and Tags: click a placement or live object to edit its tag chain, navigation, "where is this used", unique copies, and Halo 1 tags (converted maps with source overrides, and Halo 1 maps in their own format)
 - [modeling.md](editor/modeling.md): design for mesh, BSP and texture editing: the mesh kernel and its ops, the round trip for structure and model geometry, collision, lightmaps and `bitm`, the tools, the agent API methods and the slices
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
 
