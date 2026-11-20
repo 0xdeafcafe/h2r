@@ -5,9 +5,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use d3d::backend::{ExternalAttachments, ExternalDraws};
 use d3d::{
-    DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalSlot, ExternalTarget,
-    ExternalWrites,
+    DrawAdmission, DrawSnapshot, ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSlot,
+    ExternalTarget, ExternalWrites,
 };
 use gfx::state::{DepthBufferMode, FillMode, ShadeMode, TextureAddress};
 use gfx::translate::{Capabilities, SamplerKey};
@@ -352,6 +353,46 @@ fn vertices(
     Ok(vertices)
 }
 
+impl Replacement {
+    fn owned_program(&self) -> Program {
+        Program {
+            wgsl: self.program.wgsl.clone(),
+            dims: self.program.dims,
+            samplers: self.program.samplers,
+            state: self.program.state,
+        }
+    }
+
+    /// Whether a target copy is the admitted quad's: its guest size, the
+    /// whole target the viewport, single-sampled in the bound format, and
+    /// every sampled stage resolved.
+    fn check_copy(
+        &self,
+        guest_size: (u32, u32),
+        viewport: [f32; 4],
+        size: (u32, u32),
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<(), &'static str> {
+        if guest_size != self.target.size
+            || viewport != [0.0, 0.0, size.0 as f32, size.1 as f32]
+            || color.texture().sample_count() != 1
+            || color.texture().format() != color_format
+        {
+            return Err("gel target copy does not match the admitted quad");
+        }
+        for n in 0..4 {
+            if self.program.dims[n].is_some()
+                && (self.program.dims[n] != Some(TextureDim::D2) || stages[n].is_none())
+            {
+                return Err("gel sampled stage is unresolved on a required copy");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ExternalPass for Replacement {
     fn colour_only(&self) -> bool {
         true
@@ -363,32 +404,67 @@ impl ExternalPass for Replacement {
         }
     }
     fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        if t.guest_size != self.target.size
-            || t.viewport != [0.0, 0.0, t.size.0 as f32, t.size.1 as f32]
-            || t.color.texture().sample_count() != 1
-            || t.color.texture().format() != t.color_format
-        {
-            return Err("gel target copy does not match the admitted quad");
+        self.check_copy(
+            t.guest_size,
+            t.viewport,
+            t.size,
+            t.color,
+            t.color_format,
+            t.stages,
+        )
+    }
+    /// The quad draws into exactly the bound colour, loading it, with no
+    /// copy around it: one packet appended to the D3D pass already open
+    /// on that target, no pass or command buffer of its own.
+    fn record_draws(
+        &mut self,
+        t: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let stages = t.stages.each_ref().map(Option::as_ref);
+        let viewport = d3d::external_viewport(&request, t.size);
+        if let Err(reason) = self.check_copy(
+            request.surface_size,
+            viewport,
+            t.size,
+            &t.color,
+            t.color_format,
+            stages,
+        ) {
+            return Some(Err(reason));
         }
-        for n in 0..4 {
-            if self.program.dims[n].is_some()
-                && (self.program.dims[n] != Some(TextureDim::D2) || t.stages[n].is_none())
-            {
-                return Err("gel sampled stage is unresolved on a required copy");
+        let packet = self
+            .cache
+            .producer(&t.device, self.generation, self.owned_program(), stages)
+            .and_then(|producer| {
+                producer.packet(
+                    &t.device,
+                    &t.queue,
+                    &t.uploads,
+                    &self.frame,
+                    t.color_format,
+                    request.surface_size,
+                    t.size,
+                )
+            });
+        Some(match packet {
+            Ok(packet) => Ok(ExternalDraws {
+                ranges: 1,
+                packets: vec![packet],
+                // A gel's combiner may kill pixels.
+                discards: true,
+                writes: Vec::new(),
+            }),
+            Err(reason) => {
+                eprintln!("native-gels {:?}: record refused: {reason}", self.key);
+                Err("gel packet refused")
             }
-        }
-        Ok(())
+        })
     }
     fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
-        let program = Program {
-            wgsl: self.program.wgsl.clone(),
-            dims: self.program.dims,
-            samplers: self.program.samplers,
-            state: self.program.state,
-        };
         let result = self
             .cache
-            .producer(t.device, self.generation, program, t.stages)
+            .producer(t.device, self.generation, self.owned_program(), t.stages)
             .and_then(|producer| {
                 producer.encode_into(
                     t.device,

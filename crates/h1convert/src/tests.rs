@@ -282,7 +282,7 @@ fn a_plan_replaces_the_base_scenarios_spawns_flags_and_items() {
                 respawn: 0,
             },
         ],
-        dropped: vec![],
+        ..Default::default()
     };
     let done = apply(&mut s, &plan, &tags, &mut vec![]).unwrap();
     assert_eq!(done.counts, [5, 1, 1]);
@@ -383,7 +383,7 @@ fn vehicles_without_a_collection_name_a_new_one_for_the_bases_vehicle() {
             at(3.0, H2Item::Vehicle("scorpion")),
             at(4.0, H2Item::Vehicle("ghost")),
         ],
-        dropped: vec![],
+        ..Default::default()
     };
     // Two slots of tags the conversion frees; one is left over.
     let (a, b) = (TagId(0xe000_0011), TagId(0xe001_0012));

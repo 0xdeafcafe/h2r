@@ -189,6 +189,35 @@ pub fn hash_sim_buffered(guest: &Guest, region: SimRegion, bytes: &mut Vec<u8>) 
     Some(hash_bytes(u64::from(len), bytes))
 }
 
+/// [`hash_sim_buffered`], plus one hash per `block` bytes (the last block
+/// may be shorter) appended to `blocks` after clearing it. Returns the
+/// region's guest base address and the same whole-region hash. A divergence
+/// report names the first differing block rather than the whole region.
+pub fn hash_sim_blocks(
+    guest: &Guest,
+    region: SimRegion,
+    block: usize,
+    bytes: &mut Vec<u8>,
+    blocks: &mut Vec<u64>,
+) -> Option<(u32, u64)> {
+    let (base, len) = match region {
+        SimRegion::Fixed { base, len } => (base, len),
+        SimRegion::Indirect { pointer, len } => (guest.u32(pointer).ok()?, len),
+    };
+    if base == 0 || block == 0 {
+        return None;
+    }
+    bytes.resize(len as usize, 0);
+    guest.read_bytes(base, bytes, 1).ok()?;
+    blocks.clear();
+    blocks.extend(
+        bytes
+            .chunks(block)
+            .map(|c| hash_bytes(c.len() as u64, c)),
+    );
+    Some((base, hash_bytes(u64::from(len), bytes)))
+}
+
 /// What a record marks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

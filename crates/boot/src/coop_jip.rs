@@ -335,7 +335,10 @@ impl feature::Feature for CoopJip {
         // lifted check's call is a continuation the machine check sees.
         let arm = Arc::clone(&self.arm);
         b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
-            arm.snapshot_live()
+            // The conversation with the peer is on the film network tape.
+            // Remaining Track fields affect log messages only. In-flight
+            // guest calls are still rejected by the machine quiescence test.
+            if arm.film && crate::theater::in_keyframe() { None } else { arm.snapshot_live() }
         }));
 
         if stages.lift {

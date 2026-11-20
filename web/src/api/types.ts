@@ -220,13 +220,46 @@ export interface Frame {
   cinematic?: boolean;
   /** Projectiles in flight (version 6). */
   projectiles?: FrameProjectile[];
+  /** Full object census from an indexed film chunk. */
+  film_world?: FilmWorld;
+  film_effects?: FilmEffect[];
   /** Loose weapons and equipment (version 6). */
   items?: FrameItem[];
+}
+
+export type FilmVector = [number, number, number];
+
+export interface FilmProp {
+  id: string;
+  /** Engine object class, e.g. proj, bloc, eqip. */
+  class: string;
+  kind: string;
+  pos: FilmVector;
+  forward: FilmVector;
+  up: FilmVector;
+}
+
+export interface FilmEffect {
+  /** Tick on the film playback clock. */
+  tick: number;
+  kind: "barrel" | "impact" | "blast" | "terminal";
+  pos: FilmVector;
+  /** Shooter aim, impact direction or terminal velocity as supplied by the engine. */
+  direction?: FilmVector;
+  unit?: string;
+}
+
+export interface FilmWorld {
+  /** World poses for objects rendered separately from the level and units. */
+  props: FilmProp[];
+  hill: { index: number; corners: FilmVector[] } | null;
 }
 
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's
  *  `scenario` child `{kind: k, index: i}`. */
 export interface FrameObject {
+  /** Film object occupying this placement, including its salt across respawns. */
+  source?: Pick<FilmProp, "id" | "kind" | "class">;
   /** The placement's kind, as map.glb's scenario extras name it: "bipd",
    *  "vehi", "weap", "eqip", "scen", "mach", "ctrl", "lifi", "ssce", "bloc",
    *  "crea", or "netgame" (a multiplayer spawn). */

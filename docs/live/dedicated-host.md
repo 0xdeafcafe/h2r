@@ -166,11 +166,82 @@ use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
 `h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
 `default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
 
-The entrypoint passes `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
-`H2_DATA_SHA` and optional `H2_REGION` to `h2 host run`. The host verifies
-the bundle hash and caches the data in `/var/cache/h2`. The image exposes
-UDP ports 31000–31006 for the game and TCP 31100 for the datagram tunnel. Each
-container serves one lease and exits when that lease ends.
+With `H2_PACK=1` the entrypoint runs `h2 host pack`, which starts empty
+and takes matches over a private control port. This is how Cloudflare
+runs it. [Packed hosts](#packed-hosts) Otherwise it passes `H2_LEASE`,
+`H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and optional
+`H2_REGION` to `h2 host run` for a single lease, as in a local Docker
+smoke test. The host verifies the bundle hash and caches the data in
+`/var/cache/h2`. The image exposes UDP 31000–31020 for three slots of game
+ports, TCP 31099 for pack control and TCP 31100–31102 for the slots'
+datagram tunnels.
+
+## Packed hosts
+
+One light match costs about 6–10 ms of CPU per 33 ms tick and about
+340 MB RSS, much of it the shared module and maps. A container that runs
+one match leaves its vCPU 70–80% idle. A pack runs several matches in one
+container, each a separate `h2 host run` child with its own guest RAM,
+writable data and ports. The module and maps are memory-mapped from the
+same files, so the page cache shares them.
+
+**Supervisor.** `h2 host pack` listens on `H2_PACK_CONTROL` (default
+`0.0.0.0:31099`). Live adds a match with `POST /v1/pack/matches`, removes
+one with `DELETE /v1/pack/matches/<lease>`, reads one with
+`GET /v1/pack/matches/<lease>` and reads the whole pack with
+`GET /v1/pack`. Each slot *n* uses UDP `31000 + 7n` to `31006 + 7n`,
+tunnel `31100 + n` and private agent `14720 + n`. The add request carries
+the lease, its token and the signed bundle URL. The supervisor passes them
+to its child and never writes them down. Each child is its own process
+group. A removal sends SIGTERM to the group, so `h2 host run` reports
+`Stopped` to Live, and sends SIGKILL after 15 seconds. The children watch
+a pipe from the supervisor and stop if it dies. A pack that has run
+nothing for `H2_PACK_LINGER_S` (default 60 s) exits.
+
+**Admission.** The supervisor samples each child's process group every
+2 seconds from `/proc`: CPU time per 33 ms of wall time and proportional
+resident memory (`Pss`). After three samples a match's cost is the higher
+of its smoothed and latest value. Until then it counts at 10 ms per tick
+and 340 MiB. A new match is refused when the pack already runs
+`H2_PACK_MAX_MATCHES` (default 3), when the summed cost plus 10 ms for the
+new match would pass 70% of 33.3 ms per vCPU, or when memory plus 340 MiB
+would pass the container limit less 256 MiB. Memory comes from the cgroup's
+`memory.current` less inactive file pages. Without a cgroup, it uses the
+matches' own figures. `H2_PACK_VCPUS` and `H2_PACK_MEMORY_MIB` set the
+size; otherwise the cgroup's `cpu.max` and `memory.max` do. On one vCPU,
+two matches measured at 6 ms leave room for a third (22 ms of a 23.3 ms
+budget). Two at 9 ms do not. Off Linux nothing is measured, so the
+defaults and the match cap decide.
+
+**Routing.** On Cloudflare the hub still calls one room per lease. That
+room asks the class's pool room for its location
+(`pool-<hint>`, or `pool-any` when the region is not a Cloudflare location
+hint) to place the lease. The pool sends the match to the fullest pack
+with room and starts a new pack room (`pool-<hint>/pack-<n>`) only when
+none has room. A refusal marks that pack full until one of its leases
+ends, and the pool tries the next pack, up to three new packs per lease.
+The pack room starts its container with only the pack's size in the
+environment and waits up to 30 seconds for the control port. The lease
+room forwards each tunnel upgrade to its pack room, which connects it to
+the match's tunnel port. When Live stops a lease, the pool removes the
+match from its pack. When that was the pack's last lease, the pack room
+destroys the container instead. Pack names are never reused. Each room
+keeps an alarm at its latest lease deadline as a backstop for a lost stop.
+`LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
+(default 3, at most 8).
+
+Native Live uses the same pool logic and supervisor when
+`LIVE_HOST_PACK_MATCHES` is set. It starts one local `h2 host pack` per
+pack with its control port on loopback from `LIVE_HOST_PACK_CONTROL_PORT`
+(default 32000) plus the pack's window. Each later window shifts its UDP,
+tunnel and agent ports past the previous pack's slots. Its provider
+references are `pack:<pack>/<lease>`. Unset, each lease runs its own
+`h2 host run` as before.
+
+Live's cost estimate still counts a full container for each lease, and
+`LIVE_MAX_HOSTS` still counts leases. Packing three matches per container
+lets the same `max_instances` serve three times the leases. The estimate
+does not yet reflect that saving.
 
 ## Light host
 
@@ -188,7 +259,8 @@ machine-only lobby and remote join lifecycle above still need a game run.
 | Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/vfs/src/disc.rs) · [Directory reads](../../crates/vfs/src/dir_disc.rs) · [Cache copy](../../crates/boot/src/map_copy.rs) · [Codec](../../crates/dsound/src/xwma.rs) |
 | Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/src/guest.rs) · [Module loading and boot](../../crates/boot/src/lib.rs) |
 | Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/kernel/src/pacer.rs) · [XNet sockets](../../crates/live-hle/src/network.rs) |
-| Bots and telemetry | `--host-bots` enables bot support for explicit adds. `H2_BOTS` also opts in and supplies the roster. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
+| Bots and telemetry | `--host-bots` enables explicit phantom adds. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
+| Completed match archive | `h2 host run --archive dual\|film` or `H2_HOST_ARCHIVE`. For provisioned leases, set `LIVE_HOST_ARCHIVE` on native Live or the Worker. A pack passes the archive mode to each lease and keeps each match’s film in its own directory. The default `dual` sends live telemetry and uploads the sealed film. In `film` mode the host uploads one film at match end, and Live derives the stats and web replay from that upload. [Cutover](live-api.md#switching-a-host-to-film-ingestion) |
 
 For a quiet, low-population game, use **12 ms of game-thread CPU per tick**
 as the first sizing target (about **0.36 of one core** at 30 Hz) and
@@ -360,8 +432,8 @@ When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
 commands, state and controller claim. The child reports a bind failure
 as a startup error. Cloudflare sets `tcp://127.0.0.1:14720` for
-container-local diagnostics. HostRoom forwards the game tunnel on port
-31100. The Local provider drops any inherited `H2_AGENT` from Live so
+container-local diagnostics. A pack gives each slot its own agent port
+from 14720 and tunnel port from 31100. The Local provider drops any inherited `H2_AGENT` from Live so
 its leases use their own Unix sockets.
 
 For UDP, the child uses the default route's IPv4 or the IP from
@@ -663,7 +735,10 @@ The first expected profile-specific refusal is the controller countdown
 at `0x19a78e`. It reads the pressing controller's local-user index,
 which is −1 on the playerless host. The machine fallback requests stage
 2 through `0x5a220` after the remote roster, map properties, ownership
-and retail start check pass. Set `H2_HOST_LOBBY_MACHINE_START=0` to
+and retail start check pass. It calls `0x5a220` as the countdown
+finisher does at `0x6e4d7`: the session in ESI, the stage in EDI, no
+stack arguments, plain `ret`. The map check is the finisher's: every
+peer's status above 2. `host.lobby.state` reports `ready` only then. Set `H2_HOST_LOBBY_MACHINE_START=0` to
 observe the original refusal with the same roster. Remote-view
 handshakes still have to finish before the match can run.
 
@@ -672,7 +747,7 @@ handshakes still have to finish before the match can run.
 | Tick `0x137fe0`, profile sign-in `0x18fb34` (callee pops 12 bytes) | Main-menu ticks service RPCs before a profile is chosen. Networking byte `[0x527330]` and lobby byte `[0x4d8ba0]` become nonzero. All four slots from `0x54e8e0` (stride `0xc70`, profile flag `0x10`, local-user index at `+4`) remain signed out through reopen and postgame. |
 | System Link Create `0x199df9(0,0)`, Live preparation `0x199e2e(1)` and Create `0x59890(2,0,0)`, custom mode `0x199a03(2)` | Creation returns success in AL. Verify that the post-create squad pointer `S = [0x527364]` identifies the same session through close. Check host state 5 (`S+0x741c`), class 1 or 2 (`+0x18`), peer count (`+0x54`), and that the machine index (`+0x72d8`) equals both host and leader (`+0x40/+0x50`). Confirm discovery and a remote join on each transport. |
 | Map setter `0x19a6f2` (ESI = map ID, stack = −1), default variant `0x19d220(out,type)`, variant setter `0x19a728(out)` | Check map (`S+0x4d0c`), distributed protocol 2 (`+0x4dac`), and the full `0x130`-byte rules at `+0x4db0`. Check the limit at variant `+0x78` and session `+0x4994`. Verify that bumping parameter revision `+0x4978` publishes the limit to the client and that retail refuses an extra join. |
-| Start check `0x19a2ce(0)`, countdown `0x19a78e` (EAX = port 0, stack = 10, 3), machine request `0x5a220(2)` | Verify start state 9 with a remote player and map status 3 or 4 for every peer (`S+0x58+peer*0x10c+0x88`). Check the fallback's calling convention and the stage change at `S+0x4980` against retail's countdown finisher `0x6e410`. Exercise both flag settings and verify remote controls move a unit. |
+| Start check `0x19a2ce(0)`, countdown `0x19a78e` (EAX = port 0, stack = 10, 3), machine request `0x5a220` (ESI = session, EDI = 2) | Verify start state 9 with a remote player and map status 3 or 4 for every peer (`S+0x58+peer*0x10c+0x88`). Check the fallback's calling convention and the stage change at `S+0x4980` against retail's countdown finisher `0x6e410`. Exercise both flag settings and verify remote controls move a unit. |
 | Roster and phase | Verify count/mask at `S+0x1118/+0x111c`, records at `S+0x1120+slot*0x13c`, peer at `+0x0c`, and effective UTF-16 name at `+0xa8`. Cross-check lifecycle `[0x527334]` (1/2 lobby, 3 game, 4 postgame), countdown `S+0x49a8`, and game globals `[0x4e6948]` (mode `+8`, active `+0x1120`, ended `+0x1128`). Confirm world `[0x4cf77c]` reaches distributed-server mode 4 at `+8` and running state 5 at `+0x18` before gameplay is reported. |
 | Leave sessions `0x593e0()` and return to menu `0x18f1c0(0)` | The target pointer `[0x52736c]` must hold no separate active matchmaking session. Check that remote clients leave, the network squad retires, the host returns to the menu, and the specific Live listing disappears. Repeat open and join on System Link. Use a fresh lease for each Live match. Exercise close during countdown and during play. |
 
@@ -774,7 +849,7 @@ Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image.
 ```sh
 H2_BIN=${H2_BIN:-"$HOME/.cargo/bin/h2"}
 export H2_OPT=2 H2_UI_WATCH=1
-unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT H2_BOTS
+unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT
 "$H2_BIN" build "${H2_DISC:?set the disc path}" --out "${H2_IMAGE:?set the image directory}" --tier clang --check
 ```
 

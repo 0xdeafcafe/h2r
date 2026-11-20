@@ -455,6 +455,30 @@ impl MpSkulls {
         self.set_profiles(profiles);
         let hle = self.hle.clone();
         let (set, line) = at_start(role, &own, || match &hle {
+            Some(h) if h.film_service_taped() => {
+                let bits = h.game_setting("HostSkulls", &[], || {
+                    match Heard::from_hle(h.host_skulls(HOST_WAIT)) {
+                        Heard::Set { skulls, .. } => Some(
+                            skulls
+                                .into_iter()
+                                .filter(|s| live_proto::skulls::MULTIPLAYER.contains(s))
+                                .fold(0u32, |bits, s| bits | (1 << s))
+                                .to_le_bytes(),
+                        ),
+                        Heard::Nothing(_) => None,
+                    }
+                });
+                match bits {
+                    Some(bits) => Heard::Set {
+                        skulls: live_proto::skulls::MULTIPLAYER
+                            .into_iter()
+                            .filter(|s| u32::from_le_bytes(bits) & (1 << s) != 0)
+                            .collect(),
+                        fresh: false,
+                    },
+                    None => Heard::Nothing("no host skulls".into()),
+                }
+            }
             Some(h) => Heard::from_hle(h.host_skulls(HOST_WAIT)),
             None => Heard::Nothing("Live is off here; System Link shares no skulls".into()),
         });
@@ -662,7 +686,7 @@ impl feature::Feature for SkullsMp {
 }
 
 /// Adds the multiplayer skulls to `registry`. Says why when they are left
-/// out: no store (a headless run), `H2_NO_SKULLS`, or switched off
+/// out: no store (a headless run), or switched off
 /// (`H2_FEATURES=skulls-mp=off`). With Live, advertisements carry the
 /// host's set from now on.
 pub fn install(
@@ -675,10 +699,6 @@ pub fn install(
         eprintln!("skulls-mp: off: no settings store (a headless run)");
         return Ok(false);
     };
-    if std::env::var_os("H2_NO_SKULLS").is_some() {
-        eprintln!("skulls-mp: off: H2_NO_SKULLS is set");
-        return Ok(false);
-    }
     let shared = Arc::new(MpSkulls::new(store, hle.clone(), telemetry));
     let added = registry
         .add(&SkullsMp(Arc::clone(&shared)))

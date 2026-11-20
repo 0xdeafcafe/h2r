@@ -51,7 +51,7 @@ const MACHINE: [u8; 4] = *b"mach";
 const DAMAGE_EFFECT: [u8; 4] = *b"jpt!";
 const PROJECTILE: [u8; 4] = *b"proj";
 const EQUIPMENT: [u8; 4] = *b"eqip";
-const KEPT: [[u8; 4]; 7] = [
+const KEPT: &[[u8; 4]] = &[
     BIPED,
     WEAPON,
     VEHICLE,
@@ -59,9 +59,16 @@ const KEPT: [[u8; 4]; 7] = [
     DAMAGE_EFFECT,
     PROJECTILE,
     EQUIPMENT,
+    *b"garb",
+    *b"scen",
+    *b"ctrl",
+    *b"lifi",
+    *b"ssce",
+    *b"bloc",
+    *b"crea",
 ];
 
-/// Names of a map's biped, weapon, vehicle, machine and damage-effect tags
+/// Names of a map's object and damage-effect tags
 /// by full salted datum, as the frame ids made from them: worked out once
 /// when the table is made, not for every entity of every frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,8 +100,7 @@ struct Named {
 
 impl TagNames {
     /// A table for the map whose scenario tag is `scenario`, from
-    /// (datum, group, name) rows. Only biped, weapon, vehicle, machine and
-    /// damage-effect rows are kept.
+    /// (datum, group, name) rows. Only object and damage-effect rows are kept.
     pub fn new(scenario: u32, rows: impl IntoIterator<Item = (u32, [u8; 4], String)>) -> Self {
         Self {
             scenario,
@@ -182,6 +188,16 @@ impl TagNames {
     /// tag index holds.
     pub fn is_for(&self, guest_scenario: u32) -> bool {
         self.scenario == guest_scenario
+    }
+
+    /// Resolve definitions with this map's verified name table before publishing a film sample.
+    pub fn name_film_scene(&self, scene: &mut live_proto::film::objects::Scene) {
+        for object in &mut scene.objects {
+            object.name = object
+                .definition
+                .and_then(|tag| self.names.get(&tag))
+                .and_then(|tag| tag.id.clone());
+        }
     }
 
     fn named(&self, datum: u32, group: [u8; 4]) -> Option<&Named> {

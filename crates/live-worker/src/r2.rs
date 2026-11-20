@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::stream::{self, BoxStream, StreamExt};
+use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{
     Attribute, AttributeValue, Attributes, CopyOptions, Error, GetOptions, GetRange, GetResult,
@@ -378,14 +378,40 @@ impl ObjectStore for R2 {
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         let bucket = Arc::clone(&self.bucket);
-        let prefix = prefix.map(Path::to_string);
-        stream::once(SendWrapper::new(async move {
-            list_all(&bucket, prefix, false).await
-        }))
-        .flat_map(|listed| match listed {
-            Ok(l) => stream::iter(l.objects.into_iter().map(Ok)).boxed(),
-            Err(e) => stream::once(async { Err(e) }).boxed(),
+        let prefix = prefix.map(|p| format!("{p}/")).filter(|p| p != "/");
+        // A caller taking a small batch of obsolete objects should never
+        // fetch every R2 page in the directory before receiving the first.
+        stream::try_unfold(Some(None::<String>), move |next| {
+            let bucket = bucket.clone();
+            let prefix = prefix.clone();
+            SendWrapper::new(async move {
+                let Some(cursor) = next else {
+                    return Ok(None);
+                };
+                let mut request = bucket.list().limit(128);
+                if let Some(p) = prefix {
+                    request = request.prefix(p);
+                }
+                if let Some(c) = &cursor {
+                    request = request.cursor(c.clone());
+                }
+                let page = request.execute().await.map_err(generic)?;
+                let next = if page.truncated() {
+                    let c = page
+                        .cursor()
+                        .ok_or_else(|| generic("R2 listing lost its cursor"))?;
+                    if cursor.as_ref() == Some(&c) {
+                        return Err(generic("R2 listing cursor did not advance"));
+                    }
+                    Some(Some(c))
+                } else {
+                    None
+                };
+                let keys = page.objects().iter().map(meta).collect::<Vec<_>>();
+                Ok(Some((stream::iter(keys.into_iter().map(Ok)), next)))
+            })
         })
+        .try_flatten()
         .boxed()
     }
 

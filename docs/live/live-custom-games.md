@@ -256,8 +256,6 @@ rows stand closer together:
   retail four rows and the gap under them take, keeping at least 5 units
   above the hint block: 43 for four rows, 36 for five, 29 for six. The
   skin's text is 20 units tall, so it fits in a row of 29.
-- `H2_LIVE_MENU_PITCH=N` overrides the pitch (22 to 43) to tune it in
-  game without a build.
 - The screen-tag hook (`0x22f871`) gives the tag copies of its panes
   (`custom_games::extend_tag`). They move nothing. They raise the list's
   visible count to the rows, and add a pane per row of ours: a copy of the
@@ -267,8 +265,9 @@ rows stand closer together:
 Not seen in game yet: whether the background bar of one row shows behind
 the next row's text at a pitch under 43. Both the text and the bar are
 about 20 units tall, and they sit one above the other within the 43-unit
-item. If they overlap visibly, raise `H2_LIVE_MENU_PITCH` towards 32 (the
-last row then ends level with the hint block's top).
+item. If they overlap visibly, raise `custom_games::MIN_PITCH` or the
+pitch rule towards 32 (the last row then ends level with the hint block's
+top).
 
 The copies (about 2.7 KB) live in our data page. The retail arrays are not
 written, and the copies are reused when a map load brings the tag back.
@@ -348,16 +347,13 @@ label is not shortened.
 | Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
 | Web "Find a game" shows "open to", hides invite-only | `web/src/lib/sessions.ts`, `web/src/dash/Sessions.tsx` | `web/test/sessions.test.ts` |
 
-`H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
-Content Download as retail.
-
 With Live on, a further row, **Co-op Campaign**, sits directly above Custom
 Game (the rows read Quickmatch, OptiMatch, Clankermatch, Co-op Campaign,
 Custom Game, Custom Game Browser, Content Download; the co-op row was
 moved up from below the browser), with its own pane (the Custom Game pane with
 its help text); the list keeps five item widgets, so Content Download
 scrolls into view ([live-coop.md](live-coop.md) section 10).
-`H2_NO_COOP_ROW=1` takes it out (five rows, as above).
+`H2_NO_COOP_ROW=1` takes it out (five rows).
 
 With the co-op row the list has six rows. The add-items hook links one
 item widget of ours per row of ours (two), so all six show with no scroll
@@ -366,7 +362,7 @@ bar, 29 units apart (above, "Positions").
 With the mod repository on (Live and the map gate), Content Download reads
 "Mods" or "Mods (N new)", its pane's help text is ours, and it opens the
 Mods screen instead of the Map Pack dialog ([maps.md](../game/maps.md) §5,
-"Mod downloads (in game)"). `H2_NO_MODS_ROW=1` gives Content Download back.
+"Mod downloads (in game)").
 
 ## 7. To check in game
 

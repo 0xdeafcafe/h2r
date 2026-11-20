@@ -14,6 +14,24 @@ use crate::{Error, Result, wire::TagBlock};
 use map::{FourCC, Map, RawPointer, TagId};
 use std::io::{Read, Seek};
 
+/// Converted Halo 1 impulse admission rule appended to the native snd! header.
+/// The final two words are map-local mixer state, initially zero.
+pub mod h1_promotion {
+    pub const SIGNATURE: u32 = 0x14;
+    pub const TARGET: u32 = 0x18;
+    pub const COUNT: u32 = 0x1c;
+    pub const MILLIS: u32 = 0x20;
+    pub const CREDIT: u32 = 0x24;
+    pub const LAST_TIME: u32 = 0x28;
+    pub const SIZE: u32 = 0x2c;
+    pub const MAGIC: u32 = u32::from_le_bytes(*b"H1PR");
+
+    pub fn present(bytes: &[u8]) -> bool {
+        bytes.len() == SIZE as usize
+            && bytes[SIGNATURE as usize..TARGET as usize] == MAGIC.to_le_bytes()
+    }
+}
+
 fn u16_at(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
 }

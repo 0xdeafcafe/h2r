@@ -16,7 +16,6 @@ use super::{Entry, Theater};
 
 const REFRESH: Duration = Duration::from_millis(150);
 const LONG_PRESS: Duration = Duration::from_millis(500);
-const TICKS_PER_SECOND: u64 = 30;
 const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,6 +77,8 @@ struct AgentState {
     #[serde(default)]
     camera_player: Option<String>,
     #[serde(default)]
+    camera_seat: Option<u8>,
+    #[serde(default)]
     kills: Option<Vec<u64>>,
     #[serde(default)]
     bookmarks: Option<Vec<u64>>,
@@ -94,6 +95,8 @@ pub(super) struct Track {
     pub players: Vec<Player>,
     pub camera: CameraMode,
     source: Source,
+    local_viewports: bool,
+    tick_rate: u64,
     pub selected_player: usize,
     pub hud: bool,
     pub visible: bool,
@@ -113,8 +116,14 @@ impl Track {
             paused: false,
             speed: 2,
             players: entry.film.scoreboard.clone(),
-            camera: CameraMode::Free,
+            camera: if entry.film.source == Source::Host {
+                CameraMode::Free
+            } else {
+                CameraMode::Default
+            },
             source: entry.film.source,
+            tick_rate: entry.film.tick_rate(),
+            local_viewports: entry.film.version.is_some_and(|v| v >= 3),
             selected_player: 0,
             hud: true,
             visible: true,
@@ -135,7 +144,7 @@ impl Track {
     }
 
     fn skip(&self, seconds: i64) -> u64 {
-        let delta = seconds.saturating_mul(TICKS_PER_SECOND as i64);
+        let delta = seconds.saturating_mul(self.tick_rate as i64);
         let (lo, hi) = self.bounds();
         self.tick.saturating_add_signed(delta).clamp(lo, hi)
     }
@@ -148,23 +157,31 @@ impl Track {
         }
     }
 
-    fn cycle_camera(&mut self) {
-        let index = CAMERAS.iter().position(|(mode, _)| *mode == self.camera);
-        self.camera = CAMERAS
-            .iter()
-            .cycle()
-            .skip(index.map_or(0, |i| i + 1))
-            .take(CAMERAS.len())
-            .map(|&(mode, _)| mode)
-            .find(|&mode| camera_unavailable(self.source, mode).is_none())
-            .unwrap_or(CameraMode::Default);
+    fn cameras(&self) -> &'static [(CameraMode, &'static str)] {
+        match self.source {
+            Source::Host => &CAMERAS,
+            Source::Local if self.local_viewports => &LOCAL_CAMERAS,
+            Source::Local => &LOCAL_CAMERAS[..1],
+            Source::Archive => &[],
+        }
     }
 
-    fn camera_target(&self) -> Option<&str> {
+    fn cycle_camera(&mut self) {
+        let available = self.cameras();
+        if available.is_empty() {
+            return;
+        }
+        let next = available
+            .iter()
+            .position(|(mode, _)| *mode == self.camera)
+            .map_or(0, |i| (i + 1) % available.len());
+        self.camera = available[next].0;
+    }
+
+    fn camera_target(&self) -> Option<&Player> {
         self.players
             .get(self.selected_player)
-            .map(|p| p.name.as_str())
-            .filter(|name| !name.is_empty())
+            .filter(|p| p.seat.is_some() || !p.name.is_empty())
     }
 
     fn mark(&mut self) -> Option<Clip> {
@@ -206,9 +223,14 @@ impl Track {
         }
         if let Some(camera) = s.camera {
             self.camera = camera;
-            if let Some(player) = s.camera_player
-                && let Some(index) = self.players.iter().position(|p| p.name == player)
-            {
+            let selected = s
+                .camera_seat
+                .and_then(|seat| self.players.iter().position(|p| p.seat == Some(seat)))
+                .or_else(|| {
+                    s.camera_player
+                        .and_then(|name| self.players.iter().position(|p| p.name == name))
+                });
+            if let Some(index) = selected {
                 self.selected_player = index;
             }
         }
@@ -270,13 +292,15 @@ impl Track {
             players.push(line("No players", Tone::Greyed));
         }
         let mut top_right = vec![line("Camera", Tone::Title)];
-        for (mode, label) in CAMERAS {
-            let camera = match camera_unavailable(self.source, mode) {
-                Some(reason) => line(format!("{label} - {reason}"), Tone::Greyed),
-                None if self.camera == mode => line(label, Tone::Selected),
-                None => line(label, Tone::Normal),
-            };
-            top_right.push(camera);
+        for &(mode, label) in self.cameras() {
+            top_right.push(line(
+                label,
+                if self.camera == mode {
+                    Tone::Selected
+                } else {
+                    Tone::Normal
+                },
+            ));
         }
         top_right.push(line(
             if self.hud { "HUD on" } else { "HUD off" },
@@ -287,8 +311,8 @@ impl Track {
             line(
                 format!(
                     "{transport}   {} / {}   {}x",
-                    time(self.tick),
-                    time(self.length),
+                    super::selector::clock(self.tick, self.tick_rate),
+                    super::selector::clock(self.length, self.tick_rate),
                     SPEEDS[self.speed]
                 ),
                 Tone::Title,
@@ -301,8 +325,17 @@ impl Track {
             line("X Mark clip   Back/H Hide   B/Esc Leave", Tone::Hint),
         ];
         if let Some(start) = self.marks.0 {
-            let end = self.marks.1.map_or_else(|| "--".into(), time);
-            bottom.push(line(format!("Clip  {} - {end}", time(start)), Tone::Normal));
+            let end = self.marks.1.map_or_else(
+                || "--".into(),
+                |tick| super::selector::clock(tick, self.tick_rate),
+            );
+            bottom.push(line(
+                format!(
+                    "Clip  {} - {end}",
+                    super::selector::clock(start, self.tick_rate)
+                ),
+                Tone::Normal,
+            ));
         }
         if let Some(notice) = notice {
             bottom.push(line(
@@ -349,19 +382,10 @@ const CAMERAS: [(CameraMode, &str); 4] = [
     (CameraMode::FirstPerson, "First person"),
 ];
 
-fn camera_unavailable(source: Source, mode: CameraMode) -> Option<&'static str> {
-    match (source, mode) {
-        (Source::Host, _) | (_, CameraMode::Default) => None,
-        (_, CameraMode::FirstPerson) => Some("Host film only"),
-        (Source::Archive, _) => Some("Recording unavailable"),
-        _ => None,
-    }
-}
-
-fn time(t: u64) -> String {
-    let seconds = t / TICKS_PER_SECOND;
-    format!("{}:{:02}", seconds / 60, seconds % 60)
-}
+const LOCAL_CAMERAS: [(CameraMode, &str); 2] = [
+    (CameraMode::Default, "Recorded view"),
+    (CameraMode::FirstPerson, "First person"),
+];
 
 fn line(text: impl Into<String>, tone: Tone) -> Line {
     Line {
@@ -761,7 +785,8 @@ impl Session {
                 api::CAMERA,
                 json!({
                     "mode": track.camera,
-                    "player": player,
+                    "player": player.map(|p| &p.name),
+                    "seat": player.and_then(|p| p.seat),
                     "movement": movement,
                     "look": look,
                     "zoom": zoom
@@ -999,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn theater_first_person_requires_a_host_film() {
+    fn first_person_uses_host_recordings_or_recorded_local_viewports() {
         let mut track = sample_track();
         assert_eq!(track.view(None).top_right[1], line("Fly", Tone::Selected));
         for mode in [
@@ -1011,17 +1036,18 @@ mod tests {
             assert_eq!(track.camera, mode);
         }
         track.source = Source::Local;
-        track.camera = CameraMode::Follow;
+        track.camera = CameraMode::Default;
         track.cycle_camera();
-        assert_eq!(track.camera, CameraMode::Free);
+        assert_eq!(track.camera, CameraMode::Default);
         assert_eq!(
-            track.view(None).top_right[4],
-            line("First person - Host film only", Tone::Greyed)
+            track.view(None).top_right[1],
+            line("Recorded view", Tone::Selected)
         );
-        assert_eq!(
-            camera_unavailable(Source::Archive, CameraMode::Orbit),
-            Some("Recording unavailable")
-        );
+        track.local_viewports = true;
+        track.cycle_camera();
+        assert_eq!(track.camera, CameraMode::FirstPerson);
+        track.cycle_camera();
+        assert_eq!(track.camera, CameraMode::Default);
     }
 
     #[cfg(unix)]

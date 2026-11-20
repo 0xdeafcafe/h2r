@@ -3,7 +3,7 @@
 use super::*;
 
 const ACTIVE_BSP: u32 = 0x004e_0348;
-const COLLISION_TEST_VECTOR: u32 = 0x0016_97c0;
+pub(super) const COLLISION_TEST_VECTOR: u32 = 0x0016_97c0;
 const SIGHT_FLAGS: u32 = 0x27;
 
 pub(super) fn in_pvs(m: &dyn GuestMemory, from: i16, to: i16) -> Result<bool, MemFault> {

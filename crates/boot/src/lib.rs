@@ -34,10 +34,8 @@ pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
 pub mod dsound_glue;
-pub mod effect_census;
 pub mod fallback;
 pub mod fov_row;
-pub mod game_glue;
 pub mod game_setup_help;
 mod h1_recordings;
 mod h1_conversation;
@@ -45,6 +43,10 @@ mod h1_drive;
 pub mod h1_options;
 pub mod h1_options_row;
 mod h1_particle_physics;
+mod h1_flag;
+mod h1_glow;
+mod h1_lightning;
+mod h1_sound_promotion;
 mod h1_cinematics;
 mod h1_script_builtins;
 mod h1_squad_storage;
@@ -90,8 +92,6 @@ pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
 #[cfg(feature = "gpu")]
-mod native_gels_load;
-#[cfg(feature = "gpu")]
 mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
@@ -103,8 +103,6 @@ mod native_map;
 mod native_shadows_draw;
 #[cfg(feature = "gpu")]
 mod native_shadows_scope;
-#[cfg(feature = "desktop-runtime")]
-mod native_shadows_probe;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_glue;
 #[cfg(feature = "gpu")]
@@ -184,7 +182,6 @@ pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
-pub mod wrappers;
 pub mod x87;
 pub mod xapi_glue;
 
@@ -750,61 +747,35 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
             Err(_) => None,
         };
-        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
-        anyhow::ensure!(!trampoline || cold.is_none(), "slim host modules require registry dispatch");
         if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
-            anyhow::ensure!(!trampoline, "host audit requires registry dispatch");
             anyhow::ensure!(cold.is_none(), "host audit requires a full generated module");
             rt.enable_guest_coverage(entries, resumes);
         }
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
-            let (Some(f), Some(v)) = (e.handler, e.abi_version) else {
+            let (Some(_), Some(v)) = (e.handler, e.abi_version) else {
                 bail!("entry {:#x}: null row", e.addr)
             };
             if v() != runtime::cpu::ABI_VERSION {
                 bail!("entry {:#x}: object ABI {}", e.addr, v());
             }
-            rows.push((e.addr, f));
+            rows.push(e.addr);
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
-        let conflicts = fallback::init_with_cold(xbe_bytes, &rows, &res, cold)
-            .map_err(anyhow::Error::msg)?;
-        // Each row is registered as itself, and the runtime hands its STOPs
-        // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
-        // row through the old trampoline instead, for comparison: that also
-        // turns the module's direct calls off in effect, since a direct call
-        // needs the registered handler to be the callee's own.
-        if trampoline {
-            eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
-            // The trampoline finds a resume's handler by selector alone.
-            if conflicts != 0 {
-                eprintln!("warning: {conflicts} selectors map to more than one handler");
-            }
-        }
+        fallback::init_with_cold(xbe_bytes, &rows, &res, cold).map_err(anyhow::Error::msg)?;
+        // Each row is registered as itself, a slim module's left-out owners
+        // go to the interpreter, and the runtime hands every generated STOP
+        // to the fallback (fallback.rs).
         rt.edit_dispatch(|d| -> Result<()> {
-            if !trampoline {
-                d.register_generated_module(m, *version)
-                    .context("registering generated module")?;
-                return Ok(());
-            }
-            for &(addr, _) in &rows {
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
-                    .with_context(|| format!("entry {addr:#x}"))?;
-            }
-            for r in resumes {
-                d.register_resume(r.pc, r.owner, r.start)
-                    .with_context(|| format!("resume {:#x}", r.pc))?;
-            }
+            d.register_generated_module(m, *version)
+                .context("registering generated module")?;
             if let Some(cold) = cold {
                 fallback::register_cold(d, cold, fallback::interpret_cold)
                     .context("registering slim host interpreter routes")?;
             }
             Ok(())
         })?;
-        if !trampoline {
-            fallback::install_stop_recovery(rt);
-        }
+        fallback::install_stop_recovery(rt);
         Ok(Module {
             _lib: lib,
             entries: entries.len(),
@@ -904,6 +875,8 @@ pub struct RunReport {
 /// fills these in; see docs/runtime/BOOT.md "Hosted runs".
 #[derive(Default)]
 pub struct Host {
+    /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
+    pub film_out: Option<PathBuf>,
     /// Dedicated System Link profile, with no screen or speakers.
     pub host_light: bool,
     /// Opt in to bot support on a light host.
@@ -912,6 +885,9 @@ pub struct Host {
     /// D3D renders here (present hook attached) instead of the headless
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
+    /// Independent desktop observer for re-simulated playerless films.
+    #[cfg(feature = "gpu")]
+    pub film_view: Option<theater::HostView>,
     #[cfg(feature = "gpu")]
     /// With `gfx`: a second backend on the same device that renders the
     /// frame buffers at this scale and presents, while `gfx` stays at the
@@ -1054,14 +1030,24 @@ pub fn run_theater(
     xbe: &[u8],
     image: &Path,
     opts: &RunOpts,
-    host: Host,
+    mut host: Host,
     replay: theater::Replay,
 ) -> Result<RunReport> {
+    let mut reader = film::Reader::open(&replay.path)?;
     let lan = LiveConfig {
-        enabled: true,
+        enabled: !reader.header.xnet_addr.is_empty(),
         ..LiveConfig::default()
     };
-    run_configured(xbe, image, opts, host, (&lan, None), None, Some(replay))
+    let mut opts = opts.clone();
+    let sim = match theater::Startup::read(&mut reader)? {
+        Some(start) => start.restore(&mut opts, &mut host)?,
+        None => {
+            anyhow::ensure!(reader.header.meta.source == film::Source::Host,
+                "v1 local films lack the controller input stream");
+            None
+        }
+    };
+    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some(replay))
 }
 
 fn run_configured(
@@ -1077,7 +1063,8 @@ fn run_configured(
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env(&opts.data_root)?, None),
+        None if replay.is_some() => (None, None),
+        None => (sim_glue::from_env()?, None),
     };
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
@@ -1088,10 +1075,6 @@ fn run_configured(
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
-        anyhow::ensure!(
-            std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
-            "H2_HOST_MODULE requires registry dispatch"
-        );
     }
     if host.host_light {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
@@ -1117,11 +1100,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
-    let bots = opts.xapi
-        && (!host_light
-            || sim_mode.is_some()
-            || host.host_bots
-            || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
+    let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let slim_stamp = host_light.then(|| current_slim_stamp(xbe_bytes, dylib)).flatten();
@@ -1170,7 +1149,7 @@ fn run_configured(
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
     let t = Instant::now();
-    // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
+    // Shadow pages: trace 0xa0ff0000, d3d 0xa0ff2000,
     // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
     // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
     // take theirs from the feature arena (`feature::arena`).
@@ -1199,13 +1178,17 @@ fn run_configured(
         .then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
     let sim_network = sim_mode
         .as_ref()
-        .filter(|s| s.matched().distributed())
+        .filter(|_| !replaying)
         .map(|_| sim_glue::hosted::Network::reserve())
         .transpose()?;
     let _live = if let Some(r) = &replay {
         let header = film::Reader::open(&r.path)?.header;
-        let network = live_hle::NetworkConfig::new(header.xnet_addr.parse()?);
-        live_glue::install_film(&loaded.runtime, &k, network, header.live_service)?
+        if header.xnet_addr.is_empty() {
+            None
+        } else {
+            let network = live_hle::NetworkConfig::new(header.xnet_addr.parse()?);
+            live_glue::install_film(&loaded.runtime, &k, network, header.live_service)?
+        }
     } else if let Some(net) = &sim_network {
         let lan = LiveConfig {
             enabled: true,
@@ -1215,9 +1198,9 @@ fn run_configured(
     } else {
         live_glue::install_configured(&loaded.runtime, &k, live, None, map_gate.clone(), publisher)?
     };
-    let film_path = std::env::var_os("H2_FILM_OUT")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
+    let film_path = host.film_out.take().or_else(|| {
+        std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
+    });
     let film = if replaying || film_path.is_some() {
         let stamp = running_stamp();
         let clock = k.clock();
@@ -1229,7 +1212,9 @@ fn run_configured(
                 title_id: x.certificate.title_id,
                 epoch: clock.system_time() - clock.counter(),
                 light: host_light,
-                bots: host.host_bots,
+                bots,
+                telemetry_hooks: telemetry::image_film_hooks(&loaded.runtime),
+                render_hooks: registration::compiled_render_hooks(),
                 live_service: live.server_url.is_some(),
                 address: _live
                     .as_ref()
@@ -1283,6 +1268,10 @@ fn run_configured(
     cfg.variants = h1_variants::mp_variants();
     cfg.content_maps = new_maps::mounted_packages();
     let uploading_sim = upload.is_some();
+    let film_only_sim = upload.as_ref().filter(|config| config.film_only_host()).cloned();
+    if film_only_sim.is_some() && film.is_none() {
+        anyhow::bail!("a film-only simulation lease requires a film output");
+    }
     #[cfg(not(feature = "desktop-runtime"))]
     if opts.xapi && host.input.is_none() {
         host.input = Some(input::InputManager::new(Default::default())?);
@@ -1290,7 +1279,7 @@ fn run_configured(
     #[cfg(feature = "desktop-runtime")]
     if opts.xapi && host.input.is_none() {
         if sim_mode.is_some() || !cfg!(feature = "local-io") {
-            // Start without a local pad. Sim can attach its bots below.
+            // A simulated host starts playerless. Its bots are network peers.
             host.input = Some(input::InputManager::new(Default::default())?);
         } else {
             let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
@@ -1343,11 +1332,12 @@ fn run_configured(
             .iter()
             .flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone())))
             .collect();
-        campaign_cards::CardRewrite::new(
-            campaign_cards::read_cards(&opts.data_root, &levels),
-            s.cards.clone(),
-        )
-        .map(|r| r.with_cache(&opts.data_root))
+        let mut cards = campaign_cards::read_cards(&opts.data_root, &levels);
+        if let Err(e) = campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards) {
+            eprintln!("campaigns: game picker artwork unavailable: {e:#}");
+        }
+        campaign_cards::CardRewrite::new(cards, s.cards.clone())
+            .map(|r| r.with_cache(&opts.data_root))
     });
     // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
     // the icon sets.
@@ -1408,31 +1398,13 @@ fn run_configured(
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
-    if let Some(u) = &uses {
-        // Retired with the kernel round: the class-34 wrapper
-        // (wrappers::install), XeLoad/UnloadSection (install_sections) and
-        // the FILE_SYNCHRONOUS_IO_ALERT rewrite. H2_BOOT_OLD_GLUE=1 brings
-        // them back.
-        wrappers::map_shadow(&loaded.runtime)?;
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            wrappers::install(&loaded.runtime, u)?;
-            stopgaps::install_sections(&loaded.runtime, xbe_bytes.to_vec(), u);
-        }
-        if !opts.xapi {
-            xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
-        }
-        // Retired with kernel round 3, XAPI round 2 and DSound round 2
-        // (docs/runtime/BOOT.md "Retired"); H2_BOOT_OLD_GLUE=1 brings them back.
-        if std::env::var_os("H2_BOOT_OLD_GLUE").is_some() {
-            game_glue::install(&loaded.runtime, u);
-            wrappers::install_alertable(&loaded.runtime, u);
-            wrappers::install_eeprom_all(&loaded.runtime, u);
-            wrappers::install_mutants(&loaded.runtime, u);
-            wrappers::install_top_down(&loaded.runtime, u);
-            wrappers::install_free_virtual(&loaded.runtime, u);
-            wrappers::install_set_allocation(&loaded.runtime, u);
-            wrappers::install_full_attributes(&loaded.runtime, u);
-        }
+    // The kernel, XAPI and DSound rounds retired the boot's wrappers and
+    // game overrides (docs/runtime/BOOT.md "Retired"); only the
+    // XMountUtilityDrive override stays, for --no-xapi.
+    if let Some(u) = &uses
+        && !opts.xapi
+    {
+        xapi_glue::install_no_xapi_mount(&loaded.runtime, &k, 5, u);
     }
     // Community variants and the dedicated-host matchmaking status text.
     community_variants::install_with_live(&loaded.runtime, _live.clone())
@@ -1443,21 +1415,27 @@ fn run_configured(
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::from_env())
+            video_screen::model(store, video_screen::Switches::PLATFORM)
                 .map_err(anyhow::Error::msg)?,
         )),
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
     // installed under <data>/campaigns get their level lists and the
-    // picker in front of the level select. None installed: nothing is
+    // picker ahead of Campaign Options. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     let level = match (host.level.take(), &sim_mode) {
         (Some(l), _) => Some(l),
-        (None, Some(s)) => s.level_request(&opts.disc, &opts.data_root)?,
+        (None, Some(s)) => {
+            s.select_map(&opts.disc, &opts.data_root)?;
+            None
+        }
         (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
+    if let Some(session) = &film {
+        session.record_startup(opts, &host, level.as_ref(), sim_mode.as_ref());
+    }
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
     let perf_from = perf_from_var
         .as_deref()
@@ -1473,12 +1451,17 @@ fn run_configured(
             .map(PathBuf::from)
             .unwrap_or_else(|| opts.data_root.join("films"))
     };
+    let film_out = {
+        let parent = dylib.parent().unwrap_or(Path::new("."));
+        if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
+    };
+    let film_stamps = || theater::playback_images(xbe_bytes, film_out)
+        .into_iter().map(|(_, stamp)| stamp).collect::<Vec<_>>();
     let theater = if let Some((theater, open)) = host.theater.take() {
-        let stamp = running_stamp();
         theater.install(
             &mut features,
             &film_dir(),
-            stamp,
+            film_stamps(),
             live,
             _live.clone(),
             open,
@@ -1487,19 +1470,13 @@ fn run_configured(
     } else {
         None
     };
-    let core = registration::register_core(
+    let core = registration::register_core_film(
         &mut features,
         registration::CoreInputs {
             rt: &loaded.runtime,
             telemetry: match upload {
                 Some(config) => Ok(config),
-                None if replaying => Ok(if film.as_ref().is_some_and(|f| f.has_telemetry()) {
-                    telemetry::TelemetryConfig::file(
-                        opts.data_root.join("replayed-telemetry.jsonl"),
-                    )
-                } else {
-                    telemetry::TelemetryConfig::default()
-                }),
+                None if replaying => Ok(telemetry::TelemetryConfig::playback()),
                 None => telemetry::TelemetryConfig::from_live(
                     live.enabled,
                     live.accounts_path.as_deref(),
@@ -1518,6 +1495,7 @@ fn run_configured(
             perf_level: perf_from == Some(level_boot::PerfFrom::Level),
             bots,
         },
+        film.clone(),
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
         core.skulls_on,
@@ -1540,7 +1518,11 @@ fn run_configured(
     }
     let _telemetry = core.telemetry;
     if let Some(f) = &film {
-        f.record_telemetry(_telemetry.is_some());
+        #[cfg(feature = "gpu")]
+        if let Some(view) = host.film_view.take() {
+            f.attach_host_view(view, k.vfs().context("Theater observer requires a mounted map")?)?;
+        }
+        f.set_match_sources(k.vfs(), _live.clone(), sim_mode.as_ref().map(|s| s.matched()));
     }
     if uploading_sim && _telemetry.is_none() {
         anyhow::bail!("sim upload requires the telemetry feature");
@@ -1615,14 +1597,11 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && let Some(b) = &mut host.gfx {
-        native_shadows_glue::configure(b, "reference");
-        if let Some((view, _)) = &mut host.gfx_view {
-            native_shadows_glue::configure(view, "display");
-        } else if interp.is_none() {
-            native_shadows_glue::configure_single(b);
-        }
+    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+        native_shadows_glue::configure_single(b);
     }
+    let render_hooks = film.as_ref()
+        .map_or_else(registration::compiled_render_hooks, |s| s.render_hooks());
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
@@ -1644,29 +1623,31 @@ fn run_configured(
                 }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
-                    d3d_glue::install_threaded(&loaded.runtime, b, report, interp)?
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
                 } else {
-                    d3d_glue::install_with_report(&loaded.runtime, b, report)?
+                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)?
                 }
             }
             None if host.render_thread => {
-                d3d_glue::install_threaded(&loaded.runtime, b, None, interp)?
+                d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)?
             }
-            None => d3d_glue::install_with(&loaded.runtime, b)?,
+            None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
-        (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
-        (true, None) => Some(d3d_glue::install_headless_with_settings(&loaded.runtime, interp, host.settings.as_deref())?),
+        (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
+        (true, None) => Some(d3d_glue::install_headless_for_profile(
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(),
+        )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     let mut d3d_calls = opts.d3d.then(|| {
         if host_light {
-            d3d_glue::install_light(&loaded.runtime)
+            d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)
         } else {
-            d3d_glue::install(&loaded.runtime)
+            d3d_glue::install_headless_cpu_for_profile(&loaded.runtime, render_hooks)
         }
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
-    let mut d3d_calls = Some(d3d_glue::install_light(&loaded.runtime)?);
+    let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -1726,10 +1707,6 @@ fn run_configured(
             mixer.set_distance_reverb(features.switches().distance_reverb());
         }
     }
-    if bots && let Some(input) = host.input.as_mut() {
-        // Local bots' pads (docs/game/bots.md): after the host's own.
-        input.add_backend(Box::new(bots::local::global().backend()));
-    }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
     let host_pads = host.input.as_ref().map(input::InputManager::host_report);
@@ -1767,7 +1744,8 @@ fn run_configured(
     });
     #[cfg(feature = "desktop-runtime")]
     if let Some(keyboard) = pad.as_ref() {
-        keyboard_glue::install(&loaded.runtime, keyboard.clone())
+        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
+            film.as_ref().and_then(|session| session.keyboard_tape()))
             .context("installing host keyboard entry")?;
     }
     #[cfg(feature = "desktop-runtime")]
@@ -1779,6 +1757,7 @@ fn run_configured(
     // the debug menu talks to a local one with no socket.
     let agent_source = match agent_glue::socket_from_env() {
         Some(path) => registration::AgentSource::Socket(path),
+        None if film.is_some() => registration::AgentSource::Recording,
         None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,
         None => registration::AgentSource::None,
     };
@@ -1795,7 +1774,7 @@ fn run_configured(
     native_map::set_vfs(k.vfs());
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
-    let late = registration::register_late(
+    let late = registration::register_late_for_profile(
         &mut features,
         registration::LateInputs {
             rt: &loaded.runtime,
@@ -1811,6 +1790,7 @@ fn run_configured(
             disc: &opts.disc,
             data_root: &opts.data_root,
         },
+        render_hooks,
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
@@ -1864,8 +1844,11 @@ fn run_configured(
     if host_light {
         let frame = match &sim_mode {
             Some(sim) => sim.frame().clone(),
-            None => feature::sim_frame::SimFrame::new(render_every)
-                .on_skip(d3d_diag::note_skipped_present),
+            // A playerless v2 film presents a separate viewer. Its recorded
+            // guest skipped every world render, including the shared RNG draws.
+            None => feature::sim_frame::SimFrame::new(
+                if film.as_ref().is_some_and(|s| s.has_engine_track()) { 0 } else { render_every }
+            ).on_skip(d3d_diag::note_skipped_present),
         };
         anyhow::ensure!(
             features.add(&frame).map_err(anyhow::Error::msg)?,
@@ -1885,12 +1868,16 @@ fn run_configured(
     }
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
-        s.install(&mut features)?;
+        let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
+        s.install_with_film(&mut features, playback)?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }
     }
     if let Some(film) = &film {
+        if let Some(x) = &xa {
+            film.install_local_pads(x)?;
+        }
         anyhow::ensure!(
             features
                 .add(&theater::Observer(
@@ -1905,22 +1892,13 @@ fn run_configured(
         }
     }
     if !replaying && let Some(a) = &agent {
-        let parent = dylib.parent().unwrap_or(Path::new("."));
-        let out = if tier == tier::Tier::Fast {
-            parent.parent().unwrap_or(parent)
-        } else {
-            parent
-        };
         theater::library_methods(
             &a.agent,
             film_dir(),
             opts.disc.clone(),
-            out.to_owned(),
+            film_out.to_owned(),
             opts.data_root.clone(),
-            theater::playback_images(xbe_bytes, out)
-                .into_iter()
-                .map(|(_, stamp)| stamp)
-                .collect(),
+            film_stamps(),
         );
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
@@ -1933,6 +1911,9 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if let Some(session) = &film {
+        session.check_simulation_hooks(&plan, &installed)?;
+    }
     for line in plan.startup_text(&installed, verbose_plan).lines() {
         eprintln!("feature plan: {line}");
     }
@@ -1946,6 +1927,11 @@ fn run_configured(
         && let Some(why) = installed.off_reason("theater-film")
     {
         bail!("film observer unavailable: {why}");
+    }
+    if film.as_ref().is_some_and(|f| f.telemetry_plan().enabled())
+        && let Some(why) = installed.off_reason("live-telemetry")
+    {
+        bail!("film event observer unavailable: {why}");
     }
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
@@ -1984,7 +1970,7 @@ fn run_configured(
         } else {
             movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
         };
-        let (_, hle) = movies_glue::install(
+        let (mode, hle) = movies_glue::install(
             &loaded.runtime,
             &opts.movies,
             &opts.disc,
@@ -1996,6 +1982,9 @@ fn run_configured(
             #[cfg(not(feature = "local-io"))]
             None,
         );
+        if let Some(session) = &film {
+            session.record_movies(opts, mode);
+        }
         Some(hle)
     } else {
         eprintln!("movies: off (--no-bink: the original player runs)");
@@ -2057,14 +2046,20 @@ fn run_configured(
     if let Some(tr) = &tr {
         rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(tr));
     }
-    let shelf = agent.as_ref().and_then(|a| {
-        // The running tier's own stamp: a fast-tier snapshot is not a clang one's.
-        let stamp = running_stamp();
-        let key = snapshot_glue::build_key(stamp, &switch_spec, &plan, &snap_host.names());
-        let shelf = snapshot_glue::Shelf::from_env(key)?;
-        a.agent.set_snapshots(Box::new(shelf.clone()));
-        Some(shelf)
-    });
+    let shelf = if agent.is_some() || film.is_some() {
+        let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
+        // A film embeds snapshots. Its build key is needed even when the
+        // user has no standalone snapshot directory.
+        let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
+            film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
+        });
+        if let (Some(a), Some(shelf)) = (&agent, &shelf) {
+            a.agent.set_snapshots(Box::new(shelf.clone()));
+        }
+        shelf
+    } else {
+        None
+    };
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT")
         .ok()
@@ -2085,16 +2080,6 @@ fn run_configured(
     if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
         eprintln!("{note}");
     }
-    // H2_EFFECT_CENSUS=1: a line per new timed light (EXPLOSION for a
-    // grenade-sized one) and an exit summary (effect_census.rs).
-    let mut effect_census =
-        effect_census::requested_by(std::env::var(effect_census::ENV).ok().as_deref()).then(|| {
-            eprintln!(
-                "effects: census on ({}): a line per new timed light, a summary at exit",
-                effect_census::ENV
-            );
-            (effect_census::Census::new(), u64::MAX)
-        });
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
     // H2_PERF_FROM=level at the first present after the level loaded
@@ -2120,9 +2105,31 @@ fn run_configured(
     if sampling::seconds_from_env().is_some() {
         sampling::set_game_thread();
     }
-    let mut film_slices = 0;
-    for slice in 0..opts.max_slices {
+    let mut film_slices = if let Some(f) = &film
+        && let Some(frame) = f.take_keyframe()
+    {
+        let shelf = shelf.as_ref().context("film keyframe requires a snapshot build key")?;
+        let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+        f.restore_keyframe(frame, &mut machine, agent.as_ref())?
+    } else {
+        0
+    };
+    for slice in film_slices..opts.max_slices {
         if let Some(f) = &film {
+            f.observe_pause(&loaded.runtime.memory());
+            if replaying {
+                if let Some(shelf) = &shelf {
+                    f.replay_device_barrier(slice, &snap_host, shelf)?;
+                }
+            } else {
+                if let Some(shelf) = &shelf && f.keyframe_due() {
+                    let lobby = agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
+                    let mut machine = snap_host.machine(
+                        &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                    );
+                    f.try_keyframe(slice, lobby, &mut machine);
+                }
+            }
             if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
                 host_stop = true;
                 break;
@@ -2198,16 +2205,6 @@ fn run_configured(
         {
             input_errors += 1;
         }
-        if let Some((census, last)) = &mut effect_census {
-            let present = d3d_diag::presents();
-            if present != *last {
-                *last = present;
-                let mem = loaded.runtime.memory();
-                for line in census.at_present(&*mem, present) {
-                    eprintln!("{line}");
-                }
-            }
-        }
         if let Some(h) = &harness {
             h.after_slice(&loaded.runtime, d3d_diag::presents());
         }
@@ -2242,12 +2239,12 @@ fn run_configured(
             host_stop = true;
             break;
         }
-        if let Some(f) = &film {
+        if !uploading_sim && let Some(f) = &film {
             f.finish(film_slices, false)?;
         }
         // Sim mode: the match is over (its end, its limits, match.stop).
         if let Some(s) = &sim_mode
-            && !s.keep_running()
+            && !replaying && !s.keep_running()
         {
             host_stop = true;
             break;
@@ -2256,7 +2253,10 @@ fn run_configured(
     if let Some(audit) = &audit {
         audit.finish(&loaded.runtime)?;
     }
-    if let Some(f) = &film {
+    if !uploading_sim && let Some(f) = &film {
+        if let Some(t) = &_telemetry {
+            t.close_film();
+        }
         f.finish(film_slices, true)?;
     }
     // A shared copy-on-write guest RAM base (`state.load` with
@@ -2273,25 +2273,32 @@ fn run_configured(
         s.note_cow(cow);
     }
     let sim_upload_result = match &sim_mode {
+        Some(_) if replaying => Ok(()),
         Some(s) => match s.finish() {
             Ok(report) if uploading_sim => serde_json::to_value(report)
                 .map_err(anyhow::Error::from)
                 .and_then(|report| {
-                    _telemetry
-                        .as_ref()
-                        .expect("upload telemetry installed")
-                        .finish_sim(report)
-                        .map_err(anyhow::Error::msg)
+                    let telemetry = _telemetry.as_ref().expect("upload telemetry installed");
+                    if let Some(config) = &film_only_sim {
+                        // A tick-limited training job may have no retail GAME_END.
+                        // Film ingestion must see the final scoreboard before the
+                        // run's separate private performance report is accepted.
+                        telemetry.close_film();
+                        film.as_ref().context("missing simulation film")?
+                            .finish_uploaded_sim(film_slices, true)?;
+                        config.publish_sim_report_after_film(report).map_err(anyhow::Error::msg)
+                    } else {
+                        telemetry.finish_sim(report).map_err(anyhow::Error::msg)
+                    }
                 }),
-            Err(error) if uploading_sim || s.matched().distributed() => Err(error),
-            Err(error) => {
-                eprintln!("sim: {error:#}");
-                Ok(())
-            }
+            Err(error) => Err(error),
             Ok(_) => Ok(()),
         },
         None => Ok(()),
     };
+    if uploading_sim && (film_only_sim.is_none() || sim_upload_result.is_err()) && let Some(f) = &film {
+        f.finish_uploaded_sim(film_slices, sim_upload_result.is_ok())?;
+    }
     if let Some(a) = &ds {
         a.output.halt();
     }
@@ -2393,20 +2400,6 @@ fn run_configured(
     if let Some(tr) = &tr {
         trace::flush(tr);
     }
-    if std::env::var_os("H2_BOOT_MAPS").is_some() {
-        let mem = loaded.runtime.memory();
-        let mut ms: Vec<_> = mem.mappings().to_vec();
-        ms.sort_by_key(|m| m.physical_start);
-        for m in ms {
-            eprintln!(
-                "map phys {:#010x}..{:#010x} va {:#010x} {:?}",
-                m.physical_start,
-                m.physical_start as u64 + m.len as u64,
-                m.virtual_start,
-                m.permissions
-            );
-        }
-    }
     if let Some(h) = &ds {
         eprintln!("{}", dsound_glue::describe(h));
         if !audio_errors.is_empty() {
@@ -2418,9 +2411,6 @@ fn run_configured(
     }
     if let Some(i) = &d3d_calls {
         eprintln!("{}", d3d_glue::describe(i));
-    }
-    if let Some((census, _)) = &effect_census {
-        eprintln!("{}", census.summary());
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
@@ -2458,46 +2448,6 @@ fn run_configured(
                 c.result.map_or("(open)".into(), |r| format!("{r:#x}")),
                 c.detail
             );
-        }
-    }
-    // H2_BOOT_DUMP=addr:len[,addr:len...]: guest words at the end of the run.
-    if let Ok(spec) = std::env::var("H2_BOOT_DUMP") {
-        let mem = loaded.runtime.memory();
-        for item in spec.split(',') {
-            let Some((a, n)) = item.split_once(':') else {
-                continue;
-            };
-            let parse = |v: &str| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok();
-            let (Some(a), Some(n)) = (parse(a), parse(n)) else {
-                continue;
-            };
-            let words: Vec<String> = (0..n.div_ceil(4))
-                .map(|i| {
-                    mem.u32(a + 4 * i)
-                        .map_or("????????".into(), |w| format!("{w:08x}"))
-                })
-                .collect();
-            for (i, row) in words.chunks(8).enumerate() {
-                eprintln!("dump {:#010x}: {}", a + 32 * i as u32, row.join(" "));
-            }
-        }
-    }
-    // H2_BOOT_DUMP_RAW=addr:len:file[;...]: raw guest bytes to host files.
-    if let Ok(spec) = std::env::var("H2_BOOT_DUMP_RAW") {
-        let mem = loaded.runtime.memory();
-        for item in spec.split(';') {
-            let mut it = item.splitn(3, ':');
-            let parse = |v: Option<&str>| {
-                v.and_then(|v| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok())
-            };
-            let (Some(a), Some(n), Some(path)) = (parse(it.next()), parse(it.next()), it.next())
-            else {
-                continue;
-            };
-            let bytes: Vec<u8> = (0..n).map(|i| mem.u8(a + i).unwrap_or(0)).collect();
-            if let Err(e) = std::fs::write(path, bytes) {
-                eprintln!("dump {a:#x}: {e}");
-            }
         }
     }
     let stops: BTreeMap<u32, &str> = k.stop_reasons().into_iter().collect();
@@ -2722,7 +2672,6 @@ mod tests {
             "{:?}",
             emit::Codegen {
                 accounting: on("H2_ACCESS_COUNT"),
-                reg_homes: on("H2_REG_HOMES")
             }
         );
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
@@ -2732,30 +2681,12 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!(
-            "{:?}",
-            emit::Codegen {
-                accounting: true,
-                ..emit::Codegen::default()
-            }
-        );
-        let all_locals = format!(
-            "{:?}",
-            emit::Codegen {
-                reg_homes: false,
-                ..emit::Codegen::default()
-            }
-        );
+        let on = format!("{:?}", emit::Codegen { accounting: true });
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(
             base,
             stamp_with(b"synthetic", "all", &on, &flags),
             "H2_ACCESS_COUNT"
-        );
-        assert_ne!(
-            base,
-            stamp_with(b"synthetic", "all", &all_locals, &flags),
-            "H2_REG_HOMES"
         );
         assert_ne!(
             base,

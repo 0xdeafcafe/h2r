@@ -866,9 +866,18 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         let tables = Tables::read(map).unwrap();
         let requests = h1scripts::aicontrol::requests(&tables, &catalog);
         let source = h1ai::h1::H1Ai::read(map).unwrap();
-        let opts = h1ai::convert::Options::default();
-        let mut plan = h1ai::convert::convert(&source, &opts);
-        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let opts = h1ai::convert::Options {
+            platoon_groups: source
+                .encounters
+                .iter()
+                .enumerate()
+                .flat_map(|(ei, e)| (0..e.platoons.len()).map(move |pi| (ei, pi)))
+                .collect(),
+            ..Default::default()
+        };
+        let mut plan = h1ai::convert::convert(&source, &opts).unwrap();
+        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests).unwrap();
+        controls.bind_script_indices(&plan);
         let subjects = h1scripts::aicontrol::retained_subjects(&tables, &catalog);
         h1ai::control::install_teleport_starts(
             &source, &mut controls, subjects.teleport_subjects.as_ref(),
@@ -1009,4 +1018,82 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
     }
     assert!(counted_spawn > 0 && vehicle > 0 && grenades);
     assert!(explicit_distance);
+}
+
+fn xbe_bytes(var: &str, name: &str) -> Vec<u8> {
+    let path = disc(var, name);
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let e = iso.find("/default.xbe").unwrap();
+    iso.read(&e).unwrap()
+}
+
+/// Halo 1's `(ai <boolean>)` binds to Halo 2's unnamed 278: both evaluators
+/// store the boolean at their AI globals +0, and both `ai_update` loops gate
+/// actor work on that byte. a30 and b30 call it and compile no stub.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn ai_binds_halo2_s_global_ai_switch() {
+    use h1scripts::aicontrol::{AI_ENABLE, AI_ENABLE_EVALUATOR};
+    use h1scripts::compile::{Missing, compile};
+    use h1scripts::translate::{Kind, Table};
+
+    let (catalog, maps) = h1();
+    let h1_bytes = xbe_bytes("H1_ISO", "halo1.iso");
+    let h1x = xbe::Xbe::parse(&h1_bytes).unwrap();
+    let index = catalog.index_of("ai").unwrap();
+    let f = catalog.function(index).unwrap();
+    assert_eq!(f.evaluate, 0x000f_08c0);
+    assert_eq!(catalog.type_name(f.return_type).unwrap(), "void");
+    assert_eq!(f.parameters.len(), 1);
+    assert_eq!(catalog.type_name(f.parameters[0]).unwrap(), "boolean");
+    // mov cl,[eax]; mov edx,[0x2fa248]; mov [edx],cl
+    assert_eq!(
+        h1x.bytes_at(0x000f_08e5, 10).unwrap(),
+        [0x8a, 0x08, 0x8b, 0x15, 0x48, 0xa2, 0x2f, 0x00, 0x88, 0x0a]
+    );
+    // ai_update: mov esi,[0x2fa248]; cmp byte [esi],0
+    assert_eq!(
+        h1x.bytes_at(0x0014_a174, 9).unwrap(),
+        [0x8b, 0x35, 0x48, 0xa2, 0x2f, 0x00, 0x80, 0x3e, 0x00]
+    );
+
+    let h2_bytes = xbe_bytes("H2_DISC", "halo2.iso");
+    let h2x = xbe::Xbe::parse(&h2_bytes).unwrap();
+    let descriptors = h2_catalog();
+    let switch = descriptors.function(AI_ENABLE).unwrap();
+    assert_eq!(switch.evaluate(), AI_ENABLE_EVALUATOR);
+    assert_eq!(
+        h2x.bytes_at(0x002a_4d29, 10).unwrap(),
+        [0x8a, 0x08, 0x8b, 0x15, 0xd0, 0x55, 0x4f, 0x00, 0x88, 0x0a]
+    );
+    // The getter 279 reads the same byte: mov eax,[0x4f55d0]; mov cl,[eax]
+    assert_eq!(
+        h2x.bytes_at(0x002a_4d41, 7).unwrap(),
+        [0xa1, 0xd0, 0x55, 0x4f, 0x00, 0x8a, 0x08]
+    );
+    // ai_update: mov eax,[0x4f55d0]; ... cmp byte [eax],0
+    assert_eq!(h2x.bytes_at(0x001c_83c0, 5).unwrap(), [0xa1, 0xd0, 0x55, 0x4f, 0x00]);
+    assert_eq!(h2x.bytes_at(0x001c_83d8, 3).unwrap(), [0x80, 0x38, 0x00]);
+
+    let target = h2();
+    assert_eq!(target.builtins["ai"].index, AI_ENABLE);
+    let table = Table::build(&catalog, &target);
+    let tr = table.builtin(index).unwrap();
+    assert_eq!(tr.kind, Kind::Direct, "{tr:?}");
+    let mut calls = 0;
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let c = compile(&t, &catalog, &table, &target, Missing::Stub, &[])
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(c.missing.iter().all(|u| u.name != "ai"), "{name}: {:?}", c.missing);
+        const BASE: u32 = 0x8010_0000;
+        let s = hs::Scenario::decode(&c.scenario_bytes(BASE), BASE).unwrap();
+        for n in s.nodes().iter().filter(|n| !n.atom() && !n.script_call() && n.opcode() == AI_ENABLE) {
+            let head = s.node(hs::Datum(n.data())).unwrap();
+            let arg = s.node(head.next()).unwrap();
+            assert_eq!(descriptors.type_name(arg.value_type()).unwrap(), "boolean");
+            calls += 1;
+        }
+    }
+    assert!(calls > 0, "no level calls ai");
 }

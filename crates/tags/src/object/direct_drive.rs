@@ -123,3 +123,125 @@ mod tests {
         }
     }
 }
+
+/// The wheel phantom holds at most sixteen contacts (two inline shapes).
+/// The loader at 0x205550 only touches the shapes counted at +0x38.
+pub const CONTACT_DATA: u32 = 0x180;
+pub const CONTACT_MAGIC: u32 = u32::from_le_bytes(*b"H1cf");
+pub const CONTACT_HEADER: u32 = 8;
+pub const WHEEL_BYTES: u32 = 16;
+pub const SURFACE_BYTES: u32 = 24;
+pub const POWER_DATA: u32 = 0x288;
+pub const POWER_MAGIC: u32 = u32::from_le_bytes(*b"H1pw");
+pub const HAS_SOURCE_GRAVITY: u32 = 1 << 8;
+/// H1 0x1fb648 in units/tick², H2 0x4455d8 in units/second².
+pub const SOURCE_GRAVITY: f32 = 0.0035651792 * 900.0;
+pub const GRAVITY_RATIO: f32 = SOURCE_GRAVITY / 4.1712594;
+pub const CONTACT_END: u32 = POWER_DATA;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelDrag {
+    /// Low two bits select the friction axis. Bit two enables drive.
+    pub mode: u32,
+    /// Point's share of total mass times ground friction, in inverse seconds.
+    pub rate: f32,
+    pub parallel: f32,
+    pub perpendicular: f32,
+}
+
+pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+pub fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// H1 0x12360 accepts either endpoint order. For equal endpoints the
+/// descending branch returns one at the boundary.
+fn grip(z: f32, cutoff: f32, full: f32) -> f32 {
+    if full == cutoff {
+        return if z <= full { 1.0 } else { 0.0 };
+    }
+    ((z - cutoff) / (full - cutoff)).clamp(0.0, 1.0)
+}
+
+impl WheelDrag {
+    /// H1 0x83e30..0x83f9f and 0x80f80. Slope and alignment scale
+    /// powered motion only. Neither friction axis has a slip threshold.
+    pub fn force(
+        self,
+        velocity: [f32; 3],
+        forward: [f32; 3],
+        up: [f32; 3],
+        normal: [f32; 3],
+        speed: f32,
+        full: f32,
+        cutoff: f32,
+        mass: f32,
+    ) -> [f32; 3] {
+        let drive = if self.mode & 4 != 0 {
+            speed * (grip(normal[2], cutoff, full) * dot(up, normal).clamp(0.0, 1.0)).powi(2)
+        } else {
+            0.0
+        };
+        let slip = std::array::from_fn(|i| forward[i] * drive - velocity[i]);
+        let vn = dot(slip, normal);
+        let force = std::array::from_fn(|i| (slip[i] - normal[i] * vn) * self.rate * mass);
+        let axis = match self.mode & 3 {
+            0 => return force,
+            1 => forward,
+            2 => cross(up, forward),
+            _ => up,
+        };
+        let along = dot(axis, force);
+        std::array::from_fn(|i| {
+            let parallel = along * axis[i];
+            parallel * self.parallel + (force[i] - parallel) * self.perpendicular
+        })
+    }
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    #[test]
+    fn velocity_error_on_each_axis_and_no_force_at_wheel_speed() {
+        let w = WheelDrag {
+            mode: 5,
+            rate: 2.0,
+            parallel: 0.75,
+            perpendicular: 0.5,
+        };
+        let (f, up) = ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let run = |v, speed| w.force(v, f, up, up, speed, 0.7, 0.5, 4.0);
+        assert_eq!(run([1.0, 2.0, -8.0], 3.0), [12.0, -8.0, 0.0]);
+        assert_eq!(run([3.0, 0.0, 9.0], 3.0), [0.0; 3]);
+        assert_eq!(run([0.0, 2.0, 0.0], 0.0), [0.0, -8.0, 0.0]);
+        assert_eq!(run([-10.0, -20.0, 0.0], 0.0), [60.0, 80.0, 0.0]);
+    }
+
+    #[test]
+    fn slope_scales_only_drive_and_axis_zero_ignores_directional_coefficients() {
+        let w = WheelDrag {
+            mode: 4,
+            rate: 1.0,
+            parallel: 0.0,
+            perpendicular: 0.0,
+        };
+        let normal = [0.0, 0.8, 0.6];
+        let forward = [1.0, 0.0, 0.0];
+        let up = [0.0, 0.0, 1.0];
+        let drag = w.force(forward, forward, up, normal, 10.0, 0.7, 0.5, 1.0);
+        // Half slope grip and 0.6 alignment give 0.09 of the drive speed.
+        assert!((drag[0] + 0.1).abs() < 1e-5);
+        assert_eq!(grip(0.5, 0.5, 0.5), 1.0);
+        assert_eq!(grip(0.5f32.next_up(), 0.5, 0.5), 0.0);
+        assert_eq!(grip(0.5, 1.0, 0.0), 0.5);
+    }
+}

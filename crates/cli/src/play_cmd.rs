@@ -20,7 +20,7 @@ const USAGE: &str = "usage:
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
-          [--movies DIR | --no-movies]
+          [--movies DIR | --no-movies] [--film FILE]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
           [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
@@ -37,6 +37,7 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 --tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
 else the Cranelift fast tier (built in seconds) with clang's build started in
 the background for the next start. --slices is unlimited by default.
+--film FILE records guest inputs and the simulation to a new .h2film file.
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --frame-stats (or
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
@@ -319,14 +320,9 @@ fn hosted(
     store: Arc<settings::Store>,
     steam: Option<input::steam_pad::SteamPads>,
 ) -> boot::Host {
-    let configure = |mut gfx: d3d::GfxBackend| {
-        // As for `h2 run`: passes are merged by default (the fast rule;
-        // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
-        // exact one), and H2_GFX_MERGE_PASSES=0 gives one render pass per
-        // draw (docs/runtime/BOOT.md).
-        if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-            gfx.set_merge_passes(false);
-        }
+    let configure = |gfx: d3d::GfxBackend| {
+        // As for `h2 run`: passes are merged under the loose rule
+        // (docs/graphics/graphics.md).
         // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE;
         // docs/graphics/graphics.md).
         match d3d::pipeline_store::default_path() {
@@ -372,6 +368,8 @@ fn hosted(
         eprintln!("play: field of view {fov} degrees");
     }
     boot::Host {
+        film_out: None,
+        film_view: None,
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),
@@ -534,6 +532,7 @@ pub(crate) fn run_with_theater(
     let mut no_watermark = false;
     let mut flags: Vec<settings::Flag> = Vec::new();
     let mut live = crate::play_live::LiveOpts::default();
+    let mut film_out = None;
     let mut level_flag: Option<String> = None;
     let mut difficulty_flag: Option<String> = None;
     let mut tier: Option<boot::tier::Choice> = None;
@@ -615,6 +614,7 @@ pub(crate) fn run_with_theater(
                 });
             }
             "--set" => flags.push(crate::settings_cmd::set_flag(&val()?)?),
+            "--film" => film_out = Some(PathBuf::from(val()?)),
             "--level" => level_flag = Some(val()?),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
@@ -795,6 +795,7 @@ pub(crate) fn run_with_theater(
             store,
             steam,
         );
+        host.film_out = film_out;
         host.level = level;
         host.on_vfs = on_vfs;
         // The menu sees every pad first, and hides them from the game while

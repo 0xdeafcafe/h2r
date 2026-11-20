@@ -61,15 +61,11 @@ fn animation(modifier: i16, graph: Expr, name: Expr) -> Expr {
     )
 }
 
-fn sound_for_slot<'a>(
-    slots: &'a [Option<String>],
-    fallback: &[i16],
-    mut index: i16,
-) -> Option<&'a str> {
+fn authored_slot(slots: &[Option<String>], fallback: &[i16], mut index: i16) -> Option<u16> {
     for _ in 0..slots.len() {
         let i = usize::try_from(index).ok()?;
-        if let Some(name) = slots.get(i)?.as_deref() {
-            return Some(name);
+        if slots.get(i)?.is_some() {
+            return Some(index as u16);
         }
         index = *fallback.get(i)?;
     }
@@ -80,7 +76,7 @@ fn vocalize(t: &Tables, h1: &Catalog, slot: i16) -> Expr {
     let voice = || var("h1_cmd_voice_tag");
     let mut lines = Vec::new();
     for (name, slots) in &t.commands.voices {
-        if let Some(sound) = sound_for_slot(slots, &h1.dialogue_fallback, slot) {
+        if let Some(authored) = authored_slot(slots, &h1.dialogue_fallback, slot) {
             lines.push(call(
                 "if",
                 [
@@ -90,14 +86,7 @@ fn vocalize(t: &Tables, h1: &Catalog, slot: i16) -> Expr {
                         voice(),
                         Symbol(h2t::LONG, name.clone(), "command_voice_tag".into()),
                     ),
-                    call(
-                        "sound_impulse_start",
-                        [
-                            Symbol(32, sound.into(), "command_voice_sound".into()),
-                            unit(),
-                            real(1.0),
-                        ],
-                    ),
+                    native(16, authored, 0.0, 0),
                 ],
             ));
         }
@@ -563,15 +552,15 @@ mod tests {
             Some("grunt/other".to_string()),
         ];
         assert_eq!(
-            sound_for_slot(&slots, &[1, 2, -1, 2], 0),
-            Some("grunt/line")
+            authored_slot(&slots, &[1, 2, -1, 2], 0),
+            Some(2)
         );
         assert_eq!(
-            sound_for_slot(&slots, &[1, 2, -1, 2], 3),
-            Some("grunt/other")
+            authored_slot(&slots, &[1, 2, -1, 2], 3),
+            Some(3)
         );
         for index in [-1, 0, 1, 4] {
-            assert_eq!(sound_for_slot(&slots, &[1, 0, -1, -1], index), None);
+            assert_eq!(authored_slot(&slots, &[1, 0, -1, -1], index), None);
         }
     }
 

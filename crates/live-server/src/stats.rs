@@ -839,6 +839,8 @@ pub async fn get_summary(
 
 #[cfg(test)]
 mod tests {
+    include!("stats/film_events.rs");
+
     use live_proto::sign::{EventBody, KeyPair};
 
     use super::*;

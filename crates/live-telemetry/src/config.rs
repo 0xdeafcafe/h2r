@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use live_proto::hosts::HostArchive;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -34,6 +35,8 @@ impl fmt::Debug for HostToken {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TelemetrySinkConfig {
+    /// Install the recorded hooks during playback without producing files.
+    Discard {},
     File(PathBuf),
     Server {
         base_url: String,
@@ -76,6 +79,11 @@ struct StoredAccount {
 }
 
 impl TelemetryConfig {
+    /// Reuse the film's dispatch hooks with all outbound transport disabled.
+    pub fn playback() -> Self {
+        Self { enabled: false, sink: TelemetrySinkConfig::Discard {} }
+    }
+
     pub fn file(path: PathBuf) -> Self {
         Self {
             enabled: true,
@@ -90,6 +98,17 @@ impl TelemetryConfig {
         token: String,
         game: Option<live_proto::game::SimGame>,
     ) -> Result<Self, String> {
+        let archive = std::env::var("H2_HOST_ARCHIVE")
+            .map_or(Ok(HostArchive::default()), |value| HostArchive::parse(&value))?;
+        Self::host_archive(base_url, token, game, archive)
+    }
+
+    fn host_archive(
+        base_url: String,
+        token: String,
+        game: Option<live_proto::game::SimGame>,
+        archive: HostArchive,
+    ) -> Result<Self, String> {
         if !live_proto::bearer_allowed(&base_url) {
             return Err("host telemetry requires HTTPS or a loopback URL".into());
         }
@@ -97,13 +116,29 @@ impl TelemetryConfig {
             return Err("missing host telemetry credential".into());
         }
         Ok(Self {
-            enabled: true,
+            enabled: archive == HostArchive::Dual,
             sink: TelemetrySinkConfig::Host {
                 base_url,
                 token: HostToken(token),
                 game,
             },
         })
+    }
+
+    /// The local observer still uses the host's mode and simulation metadata
+    /// when the separate live transport is switched off.
+    pub fn film_only_host(&self) -> bool {
+        !self.enabled && matches!(self.sink, TelemetrySinkConfig::Host { .. })
+    }
+
+    /// Training metrics have their own private endpoint. In film-only mode
+    /// the film has already created and ended the game when we reach it.
+    pub fn publish_sim_report_after_film(&self, report: serde_json::Value) -> Result<(), String> {
+        let TelemetrySinkConfig::Host { base_url, token, game: Some(game) } = &self.sink else {
+            return Err("the host report needs a leased simulation".into());
+        };
+        let sink = crate::server::ServerSink::for_host(base_url.clone(), token.clone())?;
+        sink.report_after_film(&live_proto::game::sim_game_id(&game.run_id), &report)
     }
 
     /// Boot-only configuration boundary. `H2_TELEMETRY_FILE` selects offline
@@ -191,6 +226,30 @@ mod tests {
         }]);
         std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
         (path, key)
+    }
+
+    #[test]
+    fn archive_cutover_preserves_sim_identity_and_disables_only_legacy_transport() {
+        let game = live_proto::game::SimGame {
+            run_id: "training-1".into(),
+            batch_id: None,
+            seed: "9".into(),
+            gametype: "Slayer".into(),
+            pace: "unpaced".into(),
+            bots: vec![],
+            deferred: false,
+        };
+        for archive in [HostArchive::default(), HostArchive::Film] {
+            let config = TelemetryConfig::host_archive(
+                "https://live.example".into(), "lease".into(), Some(game.clone()), archive,
+            ).unwrap();
+            assert_eq!(HostArchive::parse(archive.as_str()), Ok(archive));
+            assert_eq!(config.film_only_host(), archive == HostArchive::Film);
+            assert_eq!(config.enabled, archive == HostArchive::Dual);
+            assert!(matches!(config.sink, TelemetrySinkConfig::Host { game: Some(stored), .. } if stored == game));
+        }
+        assert!(HostArchive::parse("films").is_err());
+        assert!(!TelemetryConfig::default().film_only_host());
     }
 
     #[test]

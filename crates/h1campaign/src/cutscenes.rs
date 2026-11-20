@@ -114,8 +114,12 @@ pub(crate) fn install_graph_hooks<'a>(
             continue;
         }
         let Some(tag) = h1.find(antr, &name) else {
-            out.dropped.push(format!("{name}: not in the level"));
-            continue;
+            return Err(h1convert::Error::no_rebuild(
+                &h1.header().name,
+                &name,
+                "missing source animation graph",
+            )
+            .into());
         };
         let graph = h1models::h1::Graph::read(h1, tag.data_address)?;
         for (a, (n, _)) in graph
@@ -128,11 +132,7 @@ pub(crate) fn install_graph_hooks<'a>(
                 n.full(),
             );
         }
-        let have = set.slots.iter().any(|s| {
-            s.name.as_deref() == Some(name.as_str())
-                && s.tag.as_ref().is_some_and(|t| t.group == jmad)
-        });
-        if have {
+        if set.converted(jmad, &name).is_some() {
             out.shared.push(name);
             continue;
         }
@@ -150,7 +150,7 @@ pub(crate) fn install_graph_hooks<'a>(
                     .map_err(|e| invalid(format!("{name}: {e}")))?;
                 out.converted.push((name, g.animations.len()));
             }
-            Err(e) => out.dropped.push(format!("{name}: {e}")),
+            Err(e) => return Err(h1convert::Error::no_rebuild(&h1.header().name, &name, e).into()),
         }
     }
     Ok(out)
@@ -170,7 +170,12 @@ pub(crate) fn install_video(h1: &H1Map, set: &mut TagSet, c: &mut Compiled) -> R
         let (_, converted, _) = h1bitmaps::convert_bitmap(h1, tag)
             .map_err(|e| invalid(format!("{}: {e}", tag.name)))?;
         converted.install(set, name)?;
-        c.references.push((reference.group, name.to_owned()));
+        // At the front: the perception table's weapon and character rows
+        // are the last references (`install_perception_state`), and the
+        // runtime finds them by their place from the end. Appended here,
+        // c10's video bitmaps pushed two character rows into the weapon
+        // section.
+        c.references.insert(0, (reference.group, name.to_owned()));
     }
     Ok(())
 }

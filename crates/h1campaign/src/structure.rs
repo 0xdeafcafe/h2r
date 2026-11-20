@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 
-use h1convert::shaders::{self, BaseShader};
 use h1convert::structure::{self, Mesh, Section, Structure, Templates};
 use h1map::H1Map;
 use map::build::{TagPayload, TagSet};
@@ -16,7 +15,6 @@ use map::{Map, TagId};
 use tags::collision::Bsp;
 use tags::pathfinding::PathfindingData;
 
-use crate::scenario::BaseScenario;
 use crate::{Report, Result, invalid};
 
 /// `sbsp+0xc4`: the pathfinding data block (one `0x74` element).
@@ -125,24 +123,17 @@ fn fnv(sections: &[Section]) -> u32 {
 }
 
 /// Prepares every Halo 1 BSP, in Halo 1's order, so `switch_bsp`, zone
-/// and placement BSP indices keep their meaning. BSP `i` takes its
-/// templates from the base's BSP `i`, or the base's first past its count.
+/// and placement BSP indices keep their meaning.
 pub fn prepare_all<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
-    scnr: &BaseScenario,
     ambience: &h1convert::ambience::Ambience,
     report: &mut Report,
 ) -> Result<Vec<Prepared>> {
     let refs = h1.structure_bsps()?;
     let mut out = Vec::new();
     for (i, r) in refs.iter().enumerate() {
-        let d = scnr
-            .descriptors
-            .get(i)
-            .or(scnr.descriptors.first())
-            .ok_or_else(|| invalid("the base has no BSP"))?;
-        let p = prepare(h1, r, i, base, d.sbsp, ambience)?;
+        let p = prepare(h1, r, i, base, ambience)?;
         report.bsps.push(BspReport {
             index: i,
             clusters: p.sections.len().max(1),
@@ -173,7 +164,6 @@ fn prepare<R: Read + Seek>(
     r: &h1map::BspRef,
     index: usize,
     base: &mut Map<R>,
-    sbsp: TagId,
     ambience: &h1convert::ambience::Ambience,
 ) -> Result<Prepared> {
     let src = h1.structure_bsp(r)?;
@@ -189,9 +179,16 @@ fn prepare<R: Read + Seek>(
         .filter(|&m| m != u16::MAX)
         .max()
         .map_or(0, |m| usize::from(m) + 1);
-    let collision_materials = src.collision_materials()?.len().max(largest).max(1);
+    let collision_materials = src.collision_materials()?.len();
+    if largest > collision_materials {
+        return Err(invalid("surface outside source collision material palette"));
+    }
 
-    let name_of = |r: h1map::TagRef| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default();
+    let name_of = |r: h1map::TagRef| -> h1convert::Result<String> {
+        h1.tag(r.id).map(|t| t.name.clone()).map_err(|e| {
+            h1convert::Error::no_rebuild(&h1.header().name, "structure", format!("lightmap material shader: {e}"))
+        })
+    };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     structure::fix_winding(&mut meshes);
     let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
@@ -215,56 +212,10 @@ fn prepare<R: Read + Seek>(
             ambience.index(index, z, written)
         })?;
 
-    let sbsp_at = base
-        .tag(sbsp)?
-        .location
-        .ok_or_else(|| invalid("base sbsp has no data"))?
-        .address;
-    let mut templates = Templates::from_base(&base.read_tag_bytes(sbsp)?, sbsp_at)?;
-    let mut base_shaders = Vec::new();
-    for i in 0..templates.material_heads.len() {
-        let id = templates.shader(i);
-        let name = base
-            .tag(id)
-            .ok()
-            .and_then(|t| t.name.clone())
-            .unwrap_or_default();
-        let template = scenario_edit::scene::shader_bitmaps(base, id)
-            .map(|(t, _)| t)
-            .unwrap_or_default();
-        templates.part_kinds[i] = h1convert::structure::base_part_kind(base, id, &template);
-        base_shaders.push(BaseShader { name, template });
-    }
-    let h1_shaders: Vec<(String, String)> = names
-        .iter()
-        .map(|n| {
-            let group = h1
-                .tags()
-                .iter()
-                .find(|t| &t.name == n)
-                .map(|t| t.group.to_string())
-                .unwrap_or_default();
-            (n.clone(), group)
-        })
-        .collect();
-    let materials = if base_shaders.is_empty() {
-        vec![0; names.len()]
-    } else {
-        shaders::pick(&h1_shaders, &base_shaders)
-    };
-    // Halo 1's own textures on copies of the picked shaders; a base whose
-    // shaders can't be read keeps its own (with a note saying why).
-    let picks: Vec<(usize, String)> = materials
-        .iter()
-        .copied()
-        .zip(names.iter().cloned())
-        .collect();
-    let textures = h1convert::textures::plan(h1, base, &templates, &picks).unwrap_or_else(|e| {
-        h1convert::textures::Retexture {
-            notes: vec![format!("the base's textures kept: {e}")],
-            ..Default::default()
-        }
-    });
+    let templates = Templates::default();
+    let picks: Vec<_> = names.into_iter().enumerate().collect();
+    let materials = (0..picks.len()).collect();
+    let textures = h1convert::textures::plan_bsp(h1, base, &picks, &src.collision_materials()?)?;
 
     let skyless = h1convert::clusters::skyless(&src)?;
     let lightmap = h1convert::clusters::lightmap_bitmap(h1, &src, &laid.pages)?

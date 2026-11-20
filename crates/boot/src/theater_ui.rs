@@ -166,7 +166,7 @@ impl State {
 struct Location {
     open: OpenLibrary,
     dir: PathBuf,
-    stamp: String,
+    stamps: Vec<String>,
     live: live_hle::LiveConfig,
     signed_in: Option<Arc<live_hle::Hle>>,
 }
@@ -181,7 +181,7 @@ struct Shared {
     library: Mutex<Option<Box<dyn Library>>>,
     location: Mutex<Option<Location>>,
     playback: Mutex<overlay::Session>,
-    archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<(), String>)>>,
+    archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<Option<Clip>, String>)>>,
     playback_dir: Option<PathBuf>,
 }
 
@@ -223,7 +223,7 @@ impl Theater {
         &self,
         registry: &mut feature::Registry,
         dir: &Path,
-        stamp: String,
+        stamps: Vec<String>,
         live: &live_hle::LiveConfig,
         signed_in: Option<Arc<live_hle::Hle>>,
         open: OpenLibrary,
@@ -231,7 +231,7 @@ impl Theater {
         *self.0.location.lock().unwrap_or_else(|e| e.into_inner()) = Some(Location {
             open,
             dir: dir.to_owned(),
-            stamp,
+            stamps,
             live: live.clone(),
             signed_in,
         });
@@ -291,7 +291,7 @@ impl Theater {
             .clone();
         let Some(location) = location else { return };
         let local = (location.open)(&location.dir).and_then(|library| {
-            let films = library.list(&location.stamp)?;
+            let films = library.list(&location.stamps)?;
             Ok((library, films))
         });
         let (opened, films, local_error) = match local {
@@ -501,13 +501,19 @@ impl Theater {
                         .ok_or("Live archives are unavailable")?;
                     let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
                     match action {
-                        pages::Action::Watch => {
-                            adapter::download_film(&archive, &location.dir, game)
+                        pages::Action::Watch => adapter::download_film(
+                            &archive,
+                            &location.dir,
+                            game,
+                            entry.archive_clip.as_ref().and(entry.clip.as_ref()),
+                            entry.film.live_start_tick,
+                        ),
+                        pages::Action::Save => {
+                            archive.set_saved(game, !entry.film.saved).map(|()| None)
                         }
-                        pages::Action::Save => archive.set_saved(game, !entry.film.saved),
                         pages::Action::Delete => {
                             let (id, _) = entry.archive_clip.as_ref().ok_or("Missing clip ID")?;
-                            archive.delete_clip(id)
+                            archive.delete_clip(id).map(|()| None)
                         }
                     }
                 })();
@@ -532,9 +538,12 @@ impl Theater {
         generation: u64,
         action: pages::Action,
         entry: Entry,
-        result: Result<(), String>,
+        result: Result<Option<Clip>, String>,
     ) {
-        let result = if action == pages::Action::Watch && result.is_ok() {
+        let result = result.and_then(|playback_clip| {
+            if action != pages::Action::Watch {
+                return Ok(());
+            }
             let state = self.state();
             let still_selected = state.open_generation == generation
                 && state
@@ -543,13 +552,15 @@ impl Theater {
                     .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
             drop(state);
             if still_selected {
-                self.session().play(&entry)
+                let mut playback = entry.clone();
+                if playback_clip.is_some() {
+                    playback.clip = playback_clip;
+                }
+                self.session().play(&playback)
             } else {
                 Ok(())
             }
-        } else {
-            result
-        };
+        });
         let mut state = self.state();
         if state.open_generation != generation {
             return;

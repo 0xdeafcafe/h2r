@@ -70,6 +70,26 @@ pub(super) fn intercept_cold_reads(rt: &Runtime) -> ColdRead {
 }
 
 impl AnimationRead {
+    pub(super) fn for_film(self) -> [u8; 12] {
+        let mut bytes = [0; 12];
+        for (dest, word) in
+            bytes
+                .chunks_exact_mut(4)
+                .zip([self.record, self.animation, self.owner.raw()])
+        {
+            dest.copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+    pub(super) fn from_film(b: &[u8; 12]) -> Self {
+        let word = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        Self {
+            record: word(0),
+            animation: word(4),
+            owner: DatumHandle(word(8)),
+        }
+    }
+
     /// Reconstruct both arguments from the live jmad. A stale owner, an
     /// animation outside the graph, or a different resource gets no live call.
     pub(super) fn live_call(self, m: &dyn GuestMemory) -> Option<GuestCall> {
@@ -179,6 +199,87 @@ mod tests {
     }
 
     #[test]
+    fn taped_cold_read_calls_the_validated_live_resource_then_uses_the_recorded_reply() {
+        struct Replay(Mutex<Vec<film::tape::Call>>);
+        impl film::tape::Tap for Replay {
+            fn replaying(&self) -> bool {
+                true
+            }
+            fn next(&self, op: &str, args: &[u32], _: u32) -> Option<film::tape::Call> {
+                let c = self.0.lock().unwrap().pop()?;
+                assert_eq!(op, c.op);
+                assert_eq!(args, c.args);
+                Some(c)
+            }
+            fn record(&self, _: film::Tag, _: film::tape::Call) {
+                panic!("record on playback")
+            }
+            fn fault(&self, why: String) {
+                panic!("{why}")
+            }
+        }
+        let seat = SeatInput {
+            player: DatumHandle::new(3, 1),
+            player_addr: 0x550800,
+            unit: DatumHandle::new(4, 5),
+            tick: 7,
+            dt: 1. / 30.,
+            pad: Default::default(),
+            reset: false,
+        };
+        let report = |refresh, kind, data: Vec<u8>| film::tape::Call {
+            index: 0,
+            op: "Bot.BuildAction".into(),
+            args: vec![7, seat.player.raw(), seat.unit.raw(), refresh],
+            thread: 0,
+            result: Ok(kind),
+            outputs: vec![data],
+        };
+        let cold = AnimationRead {
+            record: RECORD,
+            animation: ANIM,
+            owner: OWNER,
+        };
+        let tape = Arc::new(Replay(Mutex::new(vec![
+            report(1, 1, vec![7; ACTION_SIZE]),
+            report(0, 2, cold.for_film().to_vec()),
+        ])));
+        let observed = tape.clone();
+        let main = Runtime::new(Guest::new(), Dispatch::default());
+        let run = entry::testing::run(
+            &move |cx| {
+                let main = main.clone();
+                let tape = tape.clone();
+                Box::pin(async move {
+                    let builder = Mutex::new(None);
+                    let bytes = gather(
+                        &builder,
+                        &main,
+                        WORK,
+                        CpuAbi::default(),
+                        seat,
+                        &cx,
+                        Some(tape.as_ref()),
+                    )
+                    .await;
+                    assert_eq!(bytes, Some([7; ACTION_SIZE]));
+                    assert!(builder.lock().unwrap().is_none());
+                    Ok(Ret::new(1, 8))
+                })
+            },
+            graph(),
+            Regs::default(),
+            |call, _| {
+                assert_eq!(call, &GuestCall::new(RESOURCE_GET).eax(RECORD).args([NAME]));
+                Regs::default()
+            },
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        assert_eq!(run.calls.len(), 1);
+        assert!(observed.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn cold_animation_read_runs_on_the_host_and_retries_from_fresh_ram() {
         let mut g = Guest::new();
         g.map_zeroed(0x120000, 0x100000, Permissions::RX).unwrap();
@@ -250,7 +351,7 @@ mod tests {
                             ..Default::default()
                         };
                         assert_eq!(
-                            gather(&input, &main, WORK, cpu, seat, &cx).await,
+                            gather(&input, &main, WORK, cpu, seat, &cx, None).await,
                             fill.then_some([42; ACTION_SIZE])
                         );
                         Ok(Ret::new(1, 8))

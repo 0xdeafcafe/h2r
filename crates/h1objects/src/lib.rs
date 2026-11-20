@@ -13,22 +13,12 @@
 //! - [`physics`] cuts a collision BSP into its solid convex cells, which
 //!   [`rebuild::physics_model`] writes as a Halo 2 physics model for
 //!   vehicles and devices.
-//! - [`convert`] builds each object as a Halo 2 tag on a **retail Halo 2
-//!   template** of the same role, read from the base map ([`base::Base`]):
-//!   the template's root is copied, the fields this crate knows in both
-//!   games are overwritten with Halo 1's values, the model chain is
-//!   replaced by converted tags (`hlmt` -> `mode`, `coll`, `jmad`, with the
-//!   template's `phmo`), and everything else (effects, sounds, HUD, first
-//!   person, physics) stays the template's, listed in the report.
-//! - [`rebuild`] writes objects from typed definitions ([`tags::defs`])
-//!   with no template bytes instead: every vehicle, machine, control,
-//!   light fixture and scenery object, and bipeds with a role
-//!   ([`convert::Options::rebuild_bipeds`]).
+//! - [`convert`] resolves Halo 1 object dependencies and builds the model,
+//!   animation, collision and physics tags used by each object.
+//! - [`rebuild`] writes the objects from typed definitions ([`tags::defs`]).
 //!
-//! The output is a [`convert::Tree`] of [`h1models::Converted`] tags,
-//! installed together into a [`map::build::TagSet`] made from the base map
-//! (`TagSet::from_map`): template child blocks that are not rewritten stay
-//! where the pinned base has them, so the tree needs that base.
+//! [`convert::Tree`] installs the resulting [`h1models::Converted`] tags
+//! together into the destination [`map::build::TagSet`].
 //!
 //! Layouts, evidence and the tuning table: `docs/halo1/objects.md`. No
 //! game data is in this crate or its tests; real maps are read only by the
@@ -37,6 +27,7 @@
 
 pub mod arsenal;
 pub mod base;
+mod biped_hits;
 pub mod coll;
 pub mod functions;
 pub mod convert;
@@ -46,6 +37,7 @@ pub mod health_hud;
 mod particle_movement;
 pub mod particles;
 pub mod physics;
+mod player_damage;
 pub mod provenance;
 pub mod query;
 pub mod ragdoll;

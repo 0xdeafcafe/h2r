@@ -318,7 +318,6 @@ fn every_level_converts_fresh() {
         let mut base = h2_map(h1campaign::base_for(level));
         let mut opts = h1campaign::Options {
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };

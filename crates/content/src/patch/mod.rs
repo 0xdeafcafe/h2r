@@ -101,6 +101,8 @@ pub struct FileSource {
     len: u64,
 }
 impl FileSource {
+    /// The opened file, including after an atomic replacement of its pathname.
+    pub fn file(&self) -> &std::fs::File { &self.file }
     pub fn new(file: std::fs::File) -> io::Result<Self> {
         let len = file.metadata()?.len();
         Ok(Self { file, len })

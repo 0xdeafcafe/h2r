@@ -141,6 +141,7 @@ impl Guest {
         self.check_fixed(layout)?;
         Self::check_mappings(&layout.mappings)?;
         self.ram.cow_base = None;
+        self.invalidate_hle_capture();
         if let Err(e) = fill(&mut self.ram) {
             return Ok(Err(e));
         }
@@ -159,6 +160,14 @@ impl Guest {
         self.ram
             .become_private_of(image)
             .map_err(|e| RestoreError::RamBase(format!("{}: {e}", file.display())))?;
+        // The gate excludes generated code throughout the restore. Retire
+        // both alias sets before rebuilding page entries and publishing the
+        // private canonical pointer. A failed file restore retains the view.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            self.flat = None;
+            self.flat_requested = false;
+        }
         self.adopt(layout);
         Ok(())
     }

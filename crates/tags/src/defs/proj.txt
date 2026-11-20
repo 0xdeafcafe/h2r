@@ -41,9 +41,8 @@ group proj 0x1a4
   0x180 unknown 0x4 seen=18 -- floats
   0x184 unknown 0x4 seen=6 -- floats
   0x188 unknown 0x4 seen=7 -- floats
-  0x18c unknown 0x4 seen=5 -- floats
-  0x190 unknown 0x4 seen=7 -- floats
-  0x194 unknown 0x4 seen=7 -- floats
+  0x18c f32[2] velocity_change_distance -- E 0x000f9527 subtracts the lower bound from travelled distance; V the rocket's 0..20
+  0x194 f32 inverse_velocity_change_distance -- E 0x000f954e and 0x000fbf61 multiply the difference by this
   0x198 unknown 0x4 seen=4 -- floats
   0x19c block material_responses 0x58 align 4 -- V: one element per global material the projectile meets differently; the field order is Halo 1's proj +0x240 element (0xa0) with the padding gone (weapon_rebuild_disc)
     0x0 u16 flags -- V: zero on every retail element seen

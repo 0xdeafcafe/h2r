@@ -269,8 +269,8 @@ Providers:
 
 | impl | file | owner |
 |---|---|---|
-| `LocalProvider`: spawns `h2 host run` with its own `--data` dir under the server's data root | `crates/live-server/src/hosts/local.rs` (native only, `cfg(not(target_arch = "wasm32"))`) | `dh-provider` |
-| `CloudflareProvider`: a `HostRoom` Durable Object per lease that starts a Container | `crates/live-worker/src/hostroom.rs` + `wrangler.toml` `[[containers]]` | `dh-cf` |
+| `LocalProvider`: spawns `h2 host run` with its own `--data` dir under the server's data root, or with `LIVE_HOST_PACK_MATCHES` set, `h2 host pack` processes routed by the shared `Pool` | `crates/live-server/src/hosts/local.rs` (native only, `cfg(not(target_arch = "wasm32"))`) | `dh-provider` |
+| `CloudflareProvider`: a `HostRoom` Durable Object per lease, routed by a pool room to pack rooms that each own a Container running several matches ([Packed hosts](dedicated-host.md#packed-hosts)) | `crates/live-worker/src/hostroom.rs` + `wrangler.toml` `[[containers]]` | `dh-cf` |
 | `FlyProvider`: Machines API, `auto_destroy`, region from the lease | `crates/live-server/src/hosts/fly.rs` (HTTP through the crate's existing fetch abstraction so it builds for both homes) | `dh-fly` |
 
 ### 4. Host credential and host-signed telemetry (owned by `dh-identity`)

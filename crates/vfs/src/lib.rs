@@ -9,6 +9,8 @@ mod content_maps;
 mod dir_disc;
 mod disc;
 mod host;
+mod film_map;
+pub use film_map::{FilmMap, FilmMapSource};
 mod map_override;
 mod packages;
 mod path;
@@ -805,6 +807,12 @@ impl Vfs {
         let (mount, path) = self.resolve(path)?;
         self.mounts[mount].backend.stat(&path)
     }
+    /// For recording a sparse sim store: the exact ranges it can serve.
+    pub fn map_ranges(&mut self, name: &str) -> Result<Option<Vec<(u64, u64)>>> {
+        let (mount, path) = self.resolve(name)?;
+        Ok(self.mounts[mount].backend.map_ranges(&path))
+    }
+
     pub fn query_volume_information(&mut self, handle: Handle) -> Result<VolumeInfo> {
         let mount = self.object(handle)?.mount;
         self.mounts[mount].backend.volume_info()

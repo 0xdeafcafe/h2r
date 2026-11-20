@@ -97,7 +97,7 @@ Each `Backend` method falls in one of three classes
    landed and never waits. A count is the same either way; only whether
    it is back yet depends on timing, and the device turns that into
    `D3DERR_TESTINCOMPLETE` only where the hardware could (docs/graphics/d3d.md,
-   "Visibility tests"; `H2_D3D_VISIBILITY_POLL=0` waits instead).
+   "Visibility tests"; `Device::set_visibility_poll(false)` waits instead).
 2. **Handles** (`create_surface`, `create_texture_target`,
    `upload_texture`, `snapshot_surface`, `surface_texture`,
    `report_pixel_count`): the guest side hands out a proxy id at once; the
@@ -141,8 +141,7 @@ Each `Backend` method falls in one of three classes
    2026-11-15 `GfxBackend` makes the texture itself, on the GPU
    (`gfx::guest_words::GuestWords::depth_alias`, docs/graphics/d3d.md "Depth
    aliases on the GPU"), so neither thread reads the depth buffer back
-   for the formats that pass covers; `H2_D3D_GPU_DEPTH_ALIAS=0` restores
-   the read-back.
+   for the formats that pass covers.
 
 Against the requirements:
 
@@ -304,9 +303,9 @@ last ~25 s).
 
 | run | load | fps | p50 / p90 / p99 / max ms |
 |---|---|---|---|
-| sync, `H2_D3D_LAZY_DEPTH=0` | 31 | 12.88 | 76.2 / 86.9 / 123.0 / 165.1 |
+| sync, lazy depth off | 31 | 12.88 | 76.2 / 86.9 / 123.0 / 165.1 |
 | sync, defaults | 88 | 10.58 | 83.3 / 137.5 / 213.7 / 270.7 (loaded) |
-| render thread, `H2_D3D_LAZY_DEPTH=0` | 18 | 14.78 | 59.1 / 81.4 / 178.6 / 265.0 |
+| render thread, lazy depth off | 18 | 14.78 | 59.1 / 81.4 / 178.6 / 265.0 |
 | render thread, defaults | 9 | **17.07** | **57.0** / 67.4 / 75.6 / 77.0 |
 
 Every run has the same schedule (56,572 slices) and the same frame-4215
@@ -326,7 +325,7 @@ Lazy depth therefore saves nothing here (the shadow map's read-back moves
 from its binding change to the overlap). Moving pixels between
 overlapping levels on the GPU, with per-byte tracking of which level
 wrote last, was the next fix: the alias mirror (2026-11-15, docs/graphics/d3d.md
-"Overlapping levels on the GPU", `H2_D3D_ALIAS_MIRROR=0` turns it off).
+"Overlapping levels on the GPU").
 
 ## Risks and next steps
 
@@ -359,7 +358,7 @@ wrote last, was the next fix: the alias mirror (2026-11-15, docs/graphics/d3d.md
   without waiting (`Waits::pending_counts`), as the hardware may; the
   miss hands the pending batch over so the count lands. Halo keeps last
   frame's value for that flare. An older test, or every test with
-  `H2_D3D_VISIBILITY_POLL=0`, still waits for the queue. In the Old
+  `Device::set_visibility_poll(false)`, still waits for the queue. In the Old
   Mombasa profile at `183781e` that wait was 8.3% of the game thread.
 - **Memory and latency.** At most two presents in flight. Under load the
   limit is what holds the guest (6.30 fps run).
@@ -393,8 +392,8 @@ Cut since, same values:
 
 - `PixelShaderDef::from_words`: the judge built the PSDEF through a byte
   array and a collected `Vec<u32>` per draw; now from the words.
-- **Draw sharing** (`Device::set_draw_sharing`, on unless
-  `H2_D3D_DRAW_SHARING=0`): a draw whose state arrays read the same as
+- **Draw sharing** (`Device::set_draw_sharing`, on by
+  default): a draw whose state arrays read the same as
   the pushed snapshot shares it instead of allocating a copy, and a
   vertex program the game switches back to (A, B, A) gets its earlier
   `Microcode` (64 kept), so the judge's and the provider's keys compare

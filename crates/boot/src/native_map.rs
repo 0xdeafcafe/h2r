@@ -5,7 +5,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use std::sync::{Arc, Mutex};
 
 use assets::{Region, ResourceFiles};
-use map::{Map, ResourceFile};
+use map::{Map, ResourceFile, TagId};
 use native_render::load::Error;
 use vfs::{FileSource, Vfs};
 
@@ -15,6 +15,17 @@ pub(crate) trait MapReader: Read + Seek + Send {}
 impl<R: Read + Seek + Send> MapReader for R {}
 
 pub(crate) type NativeMap = Map<Box<dyn MapReader>>;
+
+/// Resolve a live datum by its map tag index when the salt differs.
+pub(crate) fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
+    if let Ok(tag) = map.tag(TagId(datum)) {
+        return Some(tag.id);
+    }
+    map.tags()
+        .iter()
+        .find(|tag| tag.id.0 & 0xffff == datum & 0xffff)
+        .map(|tag| tag.id)
+}
 
 static VFS: Mutex<Option<Arc<Mutex<Vfs>>>> = Mutex::new(None);
 
@@ -35,9 +46,19 @@ pub(crate) fn open_from_vfs(
     vfs: &Mutex<Vfs>,
     name: &str,
 ) -> Result<(NativeMap, ResourceFiles), Error> {
+    open_source_from_vfs(vfs, name, None)
+}
+
+pub(crate) fn open_source_from_vfs(
+    vfs: &Mutex<Vfs>,
+    name: &str,
+    slot_source: Option<&str>,
+) -> Result<(NativeMap, ResourceFiles), Error> {
     let (local, shared) = {
         let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
-        let local = if let Some(path) = vfs.content_map_path(name) {
+        let local = if let Some(path) = slot_source {
+            vfs.file_source(path)
+        } else if let Some(path) = vfs.content_map_path(name) {
             vfs.file_source(&path)
         } else {
             let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);

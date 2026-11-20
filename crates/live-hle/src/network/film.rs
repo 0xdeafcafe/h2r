@@ -84,7 +84,7 @@ impl Network {
         }
         // Registered keys are also consumed by the local session and stats HLE.
         if matches!(op, Op::RegisterKey | Op::UnregisterKey) && c.result.is_ok() {
-            self.run(op, a, c.thread, rt)?;
+            self.register_key(op, a, rt)?;
         }
         let slots = slots(op, a, c.result)?;
         if slots.len() != c.outputs.len() {
@@ -325,4 +325,83 @@ pub(crate) fn service_qos(
         }
     }
     value
+}
+
+/// Only data used by the disconnected network dispatcher survives a seek.
+/// The call tape supplies socket outcomes, including last error. Only key IDs
+/// are needed by local consumers. Exchange keys never enter this section.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FilmState {
+    claims: Vec<(u32, u32)>,
+    view: crate::film_service::View,
+    net: u32,
+    wsa: u32,
+    key_ids: Vec<[u8; 8]>,
+    qos: QosMemory,
+}
+
+impl crate::Hle {
+    pub fn film_service_taped(&self) -> bool {
+        self.service_taped.get().copied().unwrap_or(false)
+    }
+
+    pub fn save_film_network(&self, g: &runtime::Guest) -> std::result::Result<Vec<u8>, String> {
+        if !self.film_service_taped() {
+            return Err("live service calls are not taped".into());
+        }
+        let side = self.film_side.lock().unwrap_or_else(|e| e.into_inner());
+        if side.pending() {
+            return Err("Live has an outstanding asynchronous guest output buffer".into());
+        }
+        let net = lock(&self.network.state);
+        let saved = FilmState {
+            claims: crate::film_service::claims(g),
+            view: side.view.clone(),
+            net: net.net,
+            wsa: net.wsa,
+            key_ids: net.keys.keys().copied().collect(),
+            qos: net.qos.clone(),
+        };
+        serde_json::to_vec(&saved).map_err(|e| e.to_string())
+    }
+
+    pub fn load_film_network(
+        &self,
+        data: &[u8],
+        g: &mut runtime::Guest,
+    ) -> std::result::Result<(), String> {
+        if !self.offline_film
+            || !self
+                .network
+                .tap
+                .get()
+                .is_some_and(|t| t.service_calls() && t.replaying())
+        {
+            return Err("Live film state needs the isolated Theater HLE".into());
+        }
+        if data.len() > 4 << 20 {
+            return Err("oversized Live film state".into());
+        }
+        let saved: FilmState = serde_json::from_slice(data).map_err(|e| e.to_string())?;
+        if saved.claims.len() > 8 || saved.key_ids.len() > 64 {
+            return Err("invalid Live film state".into());
+        }
+        saved.qos.validate(&saved.claims)?;
+        let claims = crate::film_service::claims(g);
+        let missing = saved
+            .claims
+            .strip_prefix(claims.as_slice())
+            .ok_or("Live claim layout differs")?;
+        crate::film_service::add_claims(g, missing)?;
+        self.film_side
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .view = saved.view;
+        let mut net = lock(&self.network.state);
+        net.net = saved.net;
+        net.wsa = saved.wsa;
+        net.keys = saved.key_ids.into_iter().map(|id| (id, [0; 16])).collect();
+        net.qos = saved.qos;
+        Ok(())
+    }
 }

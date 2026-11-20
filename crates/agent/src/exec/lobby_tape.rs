@@ -17,6 +17,14 @@ impl Agent {
     pub fn set_lobby_tape(&self, tape: Arc<dyn LobbyTape>) {
         self.lock().lobby_tape = Some(tape);
     }
+    /// Number of lobby dispatch boundaries completed at a film keyframe.
+    pub fn film_lobby_boundary(&self) -> u64 {
+        self.lock().lobby_boundary
+    }
+
+    pub fn restore_film_lobby_boundary(&self, boundary: u64) {
+        self.lock().lobby_boundary = boundary;
+    }
     /// A film pause holds the machine between slices. Only its host controls
     /// need service, and polling them must not advance the lobby tape cursor.
     pub fn poll_theater(&self, reader: &mut dyn Reader) {

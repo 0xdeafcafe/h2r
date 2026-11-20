@@ -29,6 +29,7 @@ coop = { path = "../coop" }
 h1text = { path = "../h1text" }
 map.workspace = true
 h1convert = { path = "../h1convert" }
+h1map = { path = "../h1map" }
 # Our settings (setting_defs, the ui model).
 settings = { path = "../settings" }
 feature = { path = "../feature", default-features = false }
@@ -63,7 +64,7 @@ live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
 live-proto.workspace = true
 input = { path = "../input", default-features = false }
-# Local bots (docs/game/bots.md).
+# Phantom bots (docs/game/bots.md).
 bots = { path = "../bots" }
 # Sim mode's match, tuning and report files (docs/runtime/sim.md).
 sim = { path = "../sim" }

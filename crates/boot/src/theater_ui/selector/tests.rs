@@ -83,3 +83,36 @@ fn a_clip_row_uses_match_metadata_and_its_own_duration() {
         "System Link\nOne Flag\n01 Jan 70   0:45\n1 player   4 pts\nHost film"
     );
 }
+
+#[test]
+fn live_host_rows_use_the_sealed_summary_and_recorded_rate() {
+    let remote = serde_json::from_value::<live_hle::films::RecentFilm>(serde_json::json!({
+        "game_id":"canonical", "started_at":"2026-11-20T00:00:00Z",
+        "mode":"multiplayer", "map":"old", "ticks_per_second":60, "start_tick":400,
+        "duration_s":90, "has_host_film":true,
+        "players":[{"index":2, "name":"Chief", "team":0}],
+        "scoreboard":[{"index":2, "score":40, "kills":12, "deaths":2, "assists":1}],
+        "summary":{"level":"lockout","game_type":"ctf","mode":"system_link",
+            "variant_name":"One Flag","duration_ticks":1800,"players":[
+                {"seat":2,"name":"Chief","team":1,"score":3,"medals":{"double_kill":2}}]}
+    }))
+    .unwrap();
+    let row = Entry {
+        film: FilmMeta::try_from(remote).unwrap(),
+        clip: None,
+        archive_clip: None,
+    };
+    assert_eq!(row.film.id, "live:canonical");
+    assert_eq!(row.film.live_start_tick, Some(400));
+    assert_eq!(row.film.source, Source::Host);
+    assert!(row.film.watch_unavailable().is_none());
+    assert_eq!(row.film.mode.as_deref(), Some("System Link"));
+    assert_eq!(row.row_title(), "Lockout / CTF");
+    assert_eq!(row.duration(), "0:30");
+    let p = &row.film.scoreboard[0];
+    assert_eq!(
+        (p.seat, p.score, p.kills, p.deaths),
+        (Some(2), Some(3), Some(12), Some(2))
+    );
+    assert_eq!(p.medals["double_kill"], 2);
+}

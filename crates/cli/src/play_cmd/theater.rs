@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use app::theater_overlay as shell;
+use boot::theater::playable_entry;
 use boot::theater_ui::{
     Key, Theater,
     adapter::{FilmMeta, Library, Player, Source, game_type},
@@ -15,11 +16,14 @@ pub(super) fn open_library(dir: &Path) -> Result<Box<dyn Library>, String> {
 struct FilmLibrary(film::Library);
 
 impl Library for FilmLibrary {
-    fn list(&self, stamp: &str) -> Result<Vec<FilmMeta>, String> {
+    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String> {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
-            .map(|entry| film_meta(entry.meta, entry.saved, stamp, entry.lease_id))
+            .map(|entry| {
+                let selected = stamps.iter().find(|stamp| playable_entry(&entry, stamp));
+                film_entry(entry, selected.map_or("", String::as_str))
+            })
             .collect())
     }
 
@@ -36,44 +40,43 @@ impl Library for FilmLibrary {
     }
 }
 
-pub(crate) fn film_meta(
-    meta: film::FilmMeta,
-    saved: bool,
-    stamp: &str,
-    lease_id: Option<String>,
-) -> FilmMeta {
-    let host_film = meta.source == film::Source::Host;
-    let playable_here = host_film && meta.playable_here(stamp);
-    FilmMeta {
+/// Both the library selector and the playback transport use the sealed header
+/// for tape length and identity and the match summary for match-only results.
+pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
+    let playable_here = playable_entry(&entry, stamp);
+    let meta = entry.meta;
+    let host = meta.source == film::Source::Host;
+    let mut row = FilmMeta {
         id: meta.id,
         map: meta.map,
         game_type: game_type(&meta.variant),
-        mode: (host_film && lease_id.is_none()).then(|| "System Link".into()),
+        mode: (host && entry.lease_id.is_none()).then(|| "System Link".into()),
         variant_name: meta.variant,
         started_ms: meta.started_ms,
         length_ticks: meta.length_ticks,
         scoreboard: meta
             .players
             .into_iter()
-            .map(|player| Player {
-                name: player.name,
-                team: (player.team >= 0).then(|| player.team.to_string()),
-                score: i32::try_from(player.score).ok(),
+            .map(|p| Player {
+                name: p.name,
+                team: (p.team >= 0).then(|| p.team.to_string()),
+                score: Some(p.score),
                 ..Player::default()
             })
             .collect(),
-        source: match meta.source {
-            film::Source::Host => Source::Host,
-            film::Source::Local => Source::Local,
-        },
+        source: if host { Source::Host } else { Source::Local },
+        version: Some(entry.version),
         image_stamp: meta.image_stamp,
         playable_here,
-        saved,
-        result: None,
-        host: None,
-        live_game_id: lease_id.filter(|_| host_film),
+        saved: entry.saved,
+        live_game_id: entry.game_id.filter(|_| host),
+        ticks_per_second: entry.ticks_per_second,
         ..FilmMeta::default()
+    };
+    if let Some(summary) = entry.summary {
+        row.apply_summary(summary);
     }
+    row
 }
 
 pub(crate) fn overlay(theater: Theater, screenshots: PathBuf) -> (shell::Overlay, Arc<Controller>) {
@@ -193,12 +196,77 @@ mod tests {
             source: film::Source::Host,
             image_stamp: "image stamp".into(),
         };
-        let playable = film_meta(meta.clone(), false, "image stamp", Some("hl-game".into()));
+        let entry = film::LibraryEntry {
+            meta,
+            summary: None,
+            version: 1,
+            ticks_per_second: None,
+            runtime_stamp: String::new(),
+            xbe_sha256: String::new(),
+            guest_image: None,
+            saved: false,
+            lease_id: Some("lease".into()),
+            game_id: Some("hl-game".into()),
+            path: "host.h2film".into(),
+        };
+        let playable = film_entry(entry.clone(), "image stamp");
         assert!(playable.playable_here);
         assert_eq!(playable.id, "local-file-id");
         assert_eq!(playable.live_game_id.as_deref(), Some("hl-game"));
-        let other = film_meta(meta, false, "other image", None);
-        assert!(!other.playable_here);
-        assert!(other.live_game_id.is_none());
+        assert!(!film_entry(entry, "other image").playable_here);
+    }
+
+    #[test]
+    fn engine_row_uses_match_results_and_preserves_the_tape_clock() {
+        let entry = film::LibraryEntry {
+            meta: film::FilmMeta {
+                id: "file".into(),
+                map: "menu".into(),
+                variant: "old variant".into(),
+                started_ms: 100,
+                length_ticks: 9000,
+                players: vec![],
+                source: film::Source::Local,
+                image_stamp: "local image".into(),
+            },
+            summary: Some(film::blam::Summary {
+                level: "a30".into(),
+                mode: film::blam::Mode::CoopCampaign,
+                game_type: "campaign".into(),
+                variant_name: "Co-operative".into(),
+                duration_ticks: 3600,
+                players: vec![film::blam::PlayerSummary {
+                    seat: 3,
+                    name: "Chief".into(),
+                    team: 1,
+                    score: i64::MAX,
+                    medals: [("double_kill".into(), 2)].into_iter().collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ticks_per_second: Some(60),
+            version: 3,
+            runtime_stamp: "h2-sim/1".into(),
+            xbe_sha256: String::new(),
+            guest_image: None,
+            lease_id: None,
+            game_id: None,
+            saved: true,
+            path: "local.h2film".into(),
+        };
+        let row = film_entry(entry, "local image");
+        assert!(row.playable_here && row.saved);
+        assert_eq!(row.map, "a30");
+        assert_eq!(row.mode.as_deref(), Some("Co-op"));
+        assert_eq!(row.game_type.as_deref(), Some("Campaign"));
+        assert_eq!(row.variant_name, "Co-operative");
+        assert_eq!(
+            (row.length_ticks, row.duration_ticks, row.ticks_per_second),
+            (9000, Some(3600), Some(60))
+        );
+        assert_eq!(row.scoreboard[0].seat, Some(3));
+        assert_eq!(row.scoreboard[0].score, Some(i64::MAX));
+        assert_eq!(row.scoreboard[0].medals["double_kill"], 2);
     }
 }

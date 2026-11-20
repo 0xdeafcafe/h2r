@@ -50,6 +50,11 @@ pub mod material;
 /// `docs/formats/shader-instances.md`.
 pub mod shader;
 pub mod scope_zoom;
+pub mod weapon_hud;
+
+/// Marks converted variable-speed H1 projectiles in the numerically
+/// zero guidance scalar at +0x198 (H2 tests it against zero at 0xf88df).
+pub const H1_PROJECTILE_VELOCITY_CURVE: u32 = (-0.0_f32).to_bits();
 /// Lightmap, sky and atmosphere tags; see `docs/formats/lighting.md`.
 pub mod lighting;
 #[cfg(test)]

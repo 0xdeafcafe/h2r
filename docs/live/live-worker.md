@@ -29,6 +29,13 @@ without the crate's `native` feature, so the routes are not forked.
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
 
+Anonymous web Theater reads of a complete public time chunk use the Worker
+Cache API. The key includes the origin, game, immutable upload revision and
+exact byte span. A miss goes to LiveHub. A successful 206 carrying the hub's
+immutable film policy can populate the cache at that edge location. The Worker
+restores the original Content-Range on a hit. Private homes, bearer and cookie
+requests, mutable visibility and metadata reads continue through LiveHub.
+
 ### Decision: the hub's own SQLite, not D1
 
 Decided in slice 2. The log lives in `LiveHub`'s own SQLite storage. That
@@ -410,8 +417,11 @@ member, and accepts a current ticket for renewal.
 ## Dedicated host containers
 
 When Live grants a Cloudflare lease, the hub calls the room named by the
-lease ID. Its private `start` request launches the image entrypoint, which
-configures the module and cache and executes `/opt/h2/h2 host run`. The
+lease ID. Its private `start` request asks the class's pool room to place
+the match on a pack container with room. Only when no pack has room does a
+new pack room launch the image entrypoint with `H2_PACK=1`, which executes
+`/opt/h2/h2 host pack`. The pack starts the match's `h2 host run`.
+[Packed hosts](dedicated-host.md#packed-hosts) The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
 and SHA-256. `H2_HOST_LEASE_JSON` carries the complete lease so the
 supervisor can check its ID and configure the map and lobby before registration. It fetches the private bundle and registers with Live over
@@ -431,6 +441,7 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 | Worker setting | Purpose |
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
+| `LIVE_HOST_PACK_MATCHES` | Matches per host container. Defaults to 3, at most 8. Each container still admits a match only when its measured load leaves room. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
 | `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |

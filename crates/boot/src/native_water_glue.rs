@@ -1,20 +1,14 @@
-//! The native water's load-side census (docs/graphics/native-renderer.md,
-//! "Stage 4b: water and the rest"): with the world loaded (the world's
-//! worker calls [`census`]), one line per material with a pass in a
-//! census layer — water (6), active camouflage (18, 19) and the hologram
-//! (21) — naming its template's stage sources: the instance bitmaps, the
-//! lightmap, and the engine textures with what each is
-//! (`native_render::screen_look::engine_texture`'s table: render targets,
-//! the view's bound target, the screen effects' slots), which is the
-//! scene-copy and reflection input census. Read-only: nothing is kept
-//! and nothing is skipped.
+//! The native water's host (docs/graphics/native-renderer.md, "Stage 4b:
+//! water and the rest"): over the native world's loaded BSP, it compiles
+//! the transparent parts' layer-6 passes at the load ([`load`]), and at
+//! the layer-6 call asks the D3D device for one external pass per view
+//! (`feature::native_water`).
 //!
 //! Sampled render targets use the texture header embedded at `+4` in the
 //! target descriptor (`0x004b4b58`, stride `0x98`). The resolver at
 //! `0x0001dcc0` requires a live surface at `+0x88` and a clear byte at
 //! `+0x95`. Engine texture 5 samples a copy of the bound colour for the
-//! view's own target. `H2_NATIVE_WATER_PROBE=1` logs the first
-//! committed recording for each target copy.
+//! view's own target.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,10 +21,8 @@ use map::{Map, TagId};
 use native_render::fog_gpu::{FogProgram, FogWords};
 use native_render::look::{self, Stage};
 use native_render::program::ViewInputs;
-use native_render::screen_look::{engine_texture, EngineTexture};
 use native_render::water_gpu::{self, Supply, WaterSet, WATER_LAYER};
 use native_render::world::{LightmapKey, Owner, World};
-use tags::material::{Material, TextureSource};
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
@@ -55,102 +47,6 @@ pub struct WaterData {
     pub targets: Vec<u32>,
     /// Whether any pass samples the view's own target.
     pub samples_view: bool,
-}
-
-/// The census layers ([`feature::native_water`]'s).
-pub const CENSUS_LAYERS: [usize; 4] = [6, 18, 19, 21];
-/// One stage's source, named.
-fn source_of(s: TextureSource) -> String {
-    match s {
-        TextureSource::None => "none".into(),
-        TextureSource::Bitmap { bitmap, image, .. } => format!("bitmap {} image {image}", bitmap.0 as u16),
-        TextureSource::Default => "the rasterizer default".into(),
-        TextureSource::UnsetSlot(n) => format!("unset (slot {n}'s last texture)").into(),
-        TextureSource::Lightmap => "the lightmap".into(),
-        TextureSource::Engine(id) => {
-            let what = match engine_texture(id) {
-                EngineTexture::Rasterizer(off) => format!("a rasterizer bitmap (+{off:#x})"),
-                EngineTexture::Target(t) => format!("render target {t} (texture header at 0x98 * {t} + 4 in the target table)"),
-                EngineTexture::View => "the view's bound target (a scene copy)".into(),
-                EngineTexture::Slot(word) => format!("the screen effects' slot at {word:#x}"),
-                EngineTexture::Cleared => "a cleared stage".into(),
-                EngineTexture::Light => "the light's texture".into(),
-                EngineTexture::Dynamic => "chosen at run time".into(),
-                EngineTexture::Invalid => format!("invalid id {id}").into(),
-            };
-            format!("engine texture {id}: {what}")
-        }
-    }
-}
-
-/// Prints the census for `world`'s materials (by BSP index, `shaders` the
-/// shader of each) over the census layers. Read-only.
-pub fn census<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, shaders: &[TagId], world: &World) {
-    let materials: Vec<u16> = world
-        .draws
-        .iter()
-        .map(|d| d.material)
-        .chain(world.transparents.iter().map(|t| {
-            // The transparents are the water surfaces themselves: census
-            // them too (their layer-15 passes may also read the scene).
-            t.material
-        }))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    if materials.is_empty() {
-        return;
-    }
-    let Ok(mut lib) = tags::material::ShaderLibrary::read(map) else {
-        eprintln!("native-water: the shader tags do not read; no census");
-        return;
-    };
-    let mut lines = 0;
-    for &m in &materials {
-        let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-        let Ok(mat) = lib.material(shader, None) else { continue };
-        for &layer in &CENSUS_LAYERS {
-            let Some(passes) = layer_passes_of(&mat, layer) else { continue };
-            for (imp, n) in passes {
-                let stages: Vec<String> = imp
-                    .textures
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(s, t)| t.map(|t| format!("stage {s}: {}", source_of(t.source))))
-                    .collect();
-                if feature::native_verbose() {
-                    eprintln!(
-                        "native-water: material {m} (shader {:#010x}) layer {layer} pass {n}: {}",
-                        shader.0,
-                        stages.join(", ")
-                    );
-                }
-                lines += 1;
-            }
-        }
-    }
-    if lines == 0 {
-        eprintln!("native-water: no material of this world has a pass in layers 6, 18, 19 or 21");
-    } else if !feature::native_verbose() {
-        eprintln!("native-water: {lines} census passes in layers 6, 18, 19 or 21 over {} materials", materials.len());
-    }
-}
-
-/// The layer's passes' implementations that draw (one per pass, with its
-/// index), or `None` when the template draws nothing in `layer` at the
-/// first level of detail.
-fn layer_passes_of(mat: &Material, layer: usize) -> Option<Vec<(&tags::material::ResolvedImplementation, usize)>> {
-    let l = mat.layers.iter().find(|l| l.lod == 0 && l.layer == layer)?;
-    if l.passes.is_empty() {
-        return None;
-    }
-    let mut out = Vec::new();
-    for (n, p) in l.passes.iter().enumerate() {
-        if let Some(imp) = p.implementations.first() {
-            out.push((imp, n));
-        }
-    }
-    (!out.is_empty()).then_some(out)
 }
 
 /// The embedded texture header returned by `0x0001dcc0` for a live target.
@@ -391,6 +287,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             w_clip: None,
             writes_depth,
+            run: u64::from(d.swap_count()).wrapping_add(1),
         });
         drop(planning);
         let reservation = d
@@ -434,9 +331,81 @@ struct WaterViewPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
+    /// The swap the view is in: the run's key, so attachments are pinned
+    /// once when no render target is sampled
+    /// (`d3d::ExternalPass::batch_key`).
+    run: u64,
+}
+
+impl WaterViewPass {
+    /// What a copy must hold for the pass to draw there: the sampled
+    /// render targets (live, not attachments, filterable) and, when a
+    /// material samples the view, a bound colour that can be copied and
+    /// filtered.
+    fn preflight(
+        &self,
+        sampled: &[Option<d3d::backend::SampledLevel>],
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        size: (u32, u32),
+        features: wgpu::Features,
+    ) -> Result<(), &'static str> {
+        if self.view.is_none() || self.w_clip.is_none() {
+            return Err("water view constants or W-buffer clip unavailable");
+        }
+        if sampled.len() != self.headers.len() {
+            return Err("a water target sample is unavailable on this copy");
+        }
+        for level in sampled {
+            let level = level.as_ref().ok_or("a water target sample is unavailable on this copy")?;
+            let texture = level.view.texture();
+            if texture == color.texture() || texture == depth.texture() {
+                return Err("a water sample aliases an attachment");
+            }
+            if !gfx::program::filterable(texture.format(), features) {
+                return Err("a water sample is not filterable");
+            }
+        }
+        if self.samples_view {
+            if !gfx::program::filterable(color_format, features) {
+                return Err("the bound colour is not filterable for the scene stages");
+            }
+            if color.texture().format() != color_format || !WaterSet::can_copy(color, size) {
+                return Err("the bound colour cannot be copied for the scene stages");
+            }
+        }
+        Ok(())
+    }
+
+    /// The view inputs and sampled views of a pinned copy, after its
+    /// preflight.
+    fn inputs(
+        &self,
+        t: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Result<(ViewInputs, Vec<Option<wgpu::TextureView>>), &'static str> {
+        self.preflight(&t.sampled, &t.color, t.color_format, &t.depth, t.size, t.device.features())?;
+        let constants = self.view.ok_or("water view constants unavailable")?;
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            w_clip: self.w_clip,
+        };
+        let sampled = t.sampled.iter().map(|s| s.as_ref().map(|s| s.view.clone())).collect();
+        Ok((view, sampled))
+    }
 }
 
 impl d3d::ExternalPass for WaterViewPass {
+    /// Pinned attachments only when no render target is sampled: the pin
+    /// carries no sampled levels (`d3d::ThreadedBackend`).
+    fn batch_key(&self) -> Option<u64> {
+        self.headers.is_empty().then_some(self.run)
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -453,31 +422,7 @@ impl d3d::ExternalPass for WaterViewPass {
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() || self.w_clip.is_none() {
-            return Err("water view constants or W-buffer clip unavailable");
-        }
-        if t.sampled.len() != self.headers.len() {
-            return Err("a water target sample is unavailable on this copy");
-        }
-        let features = t.device.features();
-        for level in t.sampled {
-            let level = level.as_ref().ok_or("a water target sample is unavailable on this copy")?;
-            let texture = level.view.texture();
-            if texture == t.color.texture() || texture == t.depth.texture() {
-                return Err("a water sample aliases an attachment");
-            }
-            if !gfx::program::filterable(texture.format(), features) {
-                return Err("a water sample is not filterable");
-            }
-        }
-        if self.samples_view {
-            if !gfx::program::filterable(t.color_format, features) {
-                return Err("the bound colour is not filterable for the scene stages");
-            }
-            if t.color.texture().format() != t.color_format || !WaterSet::can_copy(t.color, t.size) {
-                return Err("the bound colour cannot be copied for the scene stages");
-            }
-        }
+        self.preflight(t.sampled, t.color, t.color_format, t.depth, t.size, t.device.features())?;
         let guard = crate::native_world_glue::upload(&self.ready, t);
         let gpu = guard.as_ref().ok_or("world geometry unavailable")?;
         let set = gpu.water().ok_or("water materials unavailable")?;
@@ -491,6 +436,46 @@ impl d3d::ExternalPass for WaterViewPass {
 
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: self.writes_depth }
+    }
+
+    /// Without a scene copy the water's draws join the D3D render pass
+    /// already open on these attachments, their uniforms written ahead of
+    /// them (`ExternalDraws::writes`). A set that samples the view's own
+    /// target needs a copy first: [`WaterViewPass::record_encoded`].
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        if self.samples_view {
+            return None;
+        }
+        let (view, sampled) = match self.inputs(t, request) {
+            Ok(inputs) => inputs,
+            Err(why) => return Some(Err(why)),
+        };
+        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        Some(gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &sampled, &view, &self.fogs))
+    }
+
+    /// The set that samples the view: the scene copy and the pass as
+    /// commands in the frame's open encoder, their uniforms staged now
+    /// (`GpuWorld::water_encoded`): no command buffer of their own.
+    fn record_encoded(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if !self.samples_view {
+            return None;
+        }
+        let (view, sampled) = match self.inputs(t, request) {
+            Ok(inputs) => inputs,
+            Err(why) => return Some(Err(why)),
+        };
+        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
+        Some(gpu.water_encoded(
+            &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
+            t.size, t.copy, &self.selected, &sampled, &view, &self.fogs,
+        ))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -509,28 +494,10 @@ impl d3d::ExternalPass for WaterViewPass {
             let mut uploads = t.encoder_uploads();
             gpu.prepare_water(&mut uploads, &view, &self.fogs);
         }
-        let ranges = gpu.encode_water(
+        gpu.encode_water(
             t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format,
             t.size, t.copy, &self.selected, &sampled,
-        );
-        if std::env::var_os("H2_NATIVE_WATER_PROBE").is_some_and(|v| v == "1")
-            && let Some(on_submit) = t.on_submit
-        {
-            let copy = t.copy;
-            let size = t.size;
-            on_submit.push(Box::new(move || {
-                static REFERENCE: AtomicBool = AtomicBool::new(false);
-                static DISPLAY: AtomicBool = AtomicBool::new(false);
-                let logged = match copy {
-                    d3d::TargetCopy::Reference => &REFERENCE,
-                    d3d::TargetCopy::Display => &DISPLAY,
-                };
-                if !logged.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-water probe: {copy:?} {size:?}, committed {ranges} parts");
-                }
-            }));
-        }
-        ranges
+        )
     }
 }
 
@@ -597,6 +564,7 @@ mod tests {
                     view: Some([[0.0; 4]; d3d::VIEW_CONSTANTS]),
                     w_clip: Some(([0.0, 1.0], false)),
                     writes_depth: false,
+                    run: 0,
                 };
                 pass.prepare_copy(&d3d::ExternalTarget {
                     device: &ctx.device,

@@ -147,6 +147,19 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
     fn map_changed(&mut self, path: &str) -> bool {
         self.inner.map_changed(path)
     }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        if let Some(bytes) = self.rewritten(path)? {
+            return Ok(Some(crate::FilmMapSource::memory(bytes.clone())));
+        }
+        self.inner.film_source(path)
+    }
+    fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
+        if self.rewrite.wants(path) && self.rewritten(path).ok().flatten().is_some() {
+            None
+        } else {
+            self.inner.map_ranges(path)
+        }
+    }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         self.inner.map_id(path)
     }

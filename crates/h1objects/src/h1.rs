@@ -38,7 +38,7 @@ fn vec3(b: &[u8], at: usize) -> [f32; 3] {
 fn bounds(b: &[u8], at: usize) -> [f32; 2] {
     [f32_at(b, at), f32_at(b, at + 4)]
 }
-fn name32(b: &[u8], at: usize) -> String {
+pub(crate) fn name32(b: &[u8], at: usize) -> String {
     let s = &b[at..at + 32];
     let end = s.iter().position(|&c| c == 0).unwrap_or(32);
     String::from_utf8_lossy(&s[..end]).into_owned()
@@ -83,6 +83,8 @@ pub struct Object {
     pub object_type: u16,
     pub flags: u16,
     pub bounding_radius: f32,
+    /// Object texture override (+0x13e), zero selects each model shader permutation.
+    pub texture_override: i16,
     pub acceleration_scale: f32,
     pub bounding_offset: [f32; 3],
     /// `0x28` render model (`mode`), `0x38` animation graph (`antr`),
@@ -108,14 +110,25 @@ pub struct Object {
 /// darken by and `+2` scale by (i16 function sources), `+4` flags, `+8`
 /// and `+0x14` the lower and upper bound (RGB) a function scales
 /// between, `+0x20` its permutations (`0x1c` each). Only the
-/// permutations are kept: they are the colour an object starts with.
+/// permutations set the initial colour. Devices also update it from their function sources.
 /// V (docs/halo1/objects.md "Change colours"): the boulders' and trees'
 /// one permutation or three, the campaign cyborg's C (the Chief's green,
 /// lower and upper bound equal); the multiplayer cyborg's A and B have a
 /// function and no permutation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChangeColour {
+    pub function: Option<ColourFunction>,
     pub permutations: Vec<ColourPermutation>,
+}
+
+/// The device colour evaluator interpolates its two RGB bounds, then darkens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourFunction {
+    pub darken: Option<&'static str>,
+    pub scale: Option<&'static str>,
+    pub flags: u32,
+    pub lower: [f32; 3],
+    pub upper: [f32; 3],
 }
 
 /// A change colour's permutation (`0x1c`): `+0` weight, `+4` lower and
@@ -134,7 +147,7 @@ impl ChangeColour {
     /// Stride of its permutations (`+0x20`).
     pub const PERMUTATION_SIZE: usize = 0x1c;
 
-    fn read(map: &H1Map, e: &[u8]) -> Result<Self> {
+    fn read(map: &H1Map, e: &[u8], device: Option<&FunctionInputs>) -> Result<Self> {
         let permutations = elements(map, e, 0x20, Self::PERMUTATION_SIZE)?
             .into_iter()
             .map(|p| ColourPermutation {
@@ -143,7 +156,35 @@ impl ChangeColour {
                 upper: vec3(p, 0x10),
             })
             .collect();
-        Ok(Self { permutations })
+        let function = if let Some(inputs) = device.filter(|_| u32_at(e, 0) != 0) {
+            let name = |selector: u16| match selector {
+                0 => Ok(None),
+                1..=4 => {
+                    let slot = usize::from(selector - 1);
+                    // d20's small end door explicitly selects an unassigned input.
+                    // This input slot starts at zero in H1.
+                    if inputs.object[slot] == 0 && inputs.device[slot] == 0 {
+                        Ok(Some("zero"))
+                    } else {
+                        crate::functions::input_import(inputs, slot).map(Some).ok_or_else(|| {
+                            Error::Invalid(format!("unmapped device colour input {selector}"))
+                        })
+                    }
+                }
+                5..=8 => Ok(Some(crate::functions::OUTPUT_NAMES[usize::from(selector - 5)])),
+                _ => Err(Error::Invalid(format!("invalid device colour source {selector}"))),
+            };
+            Some(ColourFunction {
+                darken: name(u16_at(e, 0))?,
+                scale: name(u16_at(e, 2))?,
+                flags: u32_at(e, 4),
+                lower: vec3(e, 8),
+                upper: vec3(e, 0x14),
+            })
+        } else {
+            None
+        };
+        Ok(Self { permutations, function })
     }
 
     /// `h1` (A to D, as read) in Halo 2's four slots: slot `k` holds the
@@ -181,8 +222,11 @@ impl Object {
                 .map(|e| reference(map, e, 0))
                 .collect())
         };
+        let object_type = u16_at(b, 0);
+        let device_inputs = matches!(object_type, 7..=9).then(|| FunctionInputs::read(b, object_type));
         Ok(Self {
-            object_type: u16_at(b, 0),
+            object_type,
+            texture_override: i16_at(b, 0x13e),
             flags: u16_at(b, 2),
             bounding_radius: f32_at(b, 4),
             acceleration_scale: f32_at(b, 0x20),
@@ -197,7 +241,7 @@ impl Object {
             widgets: refs(0x14c, 0x20)?,
             change_colours: elements(map, b, 0x164, ChangeColour::SIZE)?
                 .into_iter()
-                .map(|e| ChangeColour::read(map, e))
+                .map(|e| ChangeColour::read(map, e, device_inputs.as_ref()))
                 .collect::<Result<_>>()?,
         })
     }
@@ -246,7 +290,7 @@ pub struct Trigger {
     /// `+0x38`, `+0x3c` seconds.
     pub error_acceleration_time: f32,
     pub error_deceleration_time: f32,
-    /// `+0x50` charging effect.
+    /// `+0x5c` charging effect.
     pub charging_effect: Option<TagId>,
     /// `+0x6c` distribution function, `+0x6e` projectiles per shot, `+0x70`
     /// distribution angle (radians).
@@ -393,7 +437,7 @@ impl Weapon {
                     firing_noise: i16_at(t, 0x2e),
                     error_acceleration_time: f32_at(t, 0x38),
                     error_deceleration_time: f32_at(t, 0x3c),
-                    charging_effect: reference(map, t, 0x50),
+                    charging_effect: reference(map, t, 0x5c),
                     distribution_function: i16_at(t, 0x6c),
                     projectiles_per_shot: i16_at(t, 0x6e),
                     distribution_angle: f32_at(t, 0x70),
@@ -436,7 +480,31 @@ impl Weapon {
             bend_angle: f32_at(b, 0x3f4),
             first_person_model: reference(map, b, 0x45c),
             first_person_animations: reference(map, b, 0x46c),
-            hud: reference(map, b, 0x480),
+            hud: {
+                let r = TagRef::read(b, 0x480).ok_or(Error::Truncated("weapon HUD reference"))?;
+                if r.id.is_none() {
+                    None
+                } else {
+                    let hud = map.tag(r.id).map_err(|e| {
+                        Error::Invalid(format!(
+                            "{} {} HUD {:?}: {e}",
+                            map.header().name,
+                            tag.name,
+                            r.id
+                        ))
+                    })?;
+                    if hud.group != h1map::Group::new(b"wphi") {
+                        return Err(Error::Invalid(format!(
+                            "{} {} HUD {} is {}",
+                            map.header().name,
+                            tag.name,
+                            hud.name,
+                            hud.group
+                        )));
+                    }
+                    Some(hud.id)
+                }
+            },
             pickup_sound: reference(map, b, 0x490),
             weapon_type: i16_at(b, 0x4e2),
             magazines,
@@ -1234,10 +1302,17 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
 pub struct Function {
     /// `+0`: bit 0 invert, bit 1 additive, bit 2 always active.
     pub flags: u32,
+    /// `+4`: period in seconds.
+    pub period: f32,
+    /// Authored wobble shape, period or magnitude at +0xe..+0x18.
+    pub wobble: bool,
     /// `+0xa`: 0 one, 1 zero, then the periodic shapes.
     pub function: u16,
     /// `+0xc`: 0 none, 1 to 4 A to D in, 5 to 8 A to D out.
     pub scale_function_by: u16,
+    /// +0x18 thresholds the signal before mapping, +0x38 scales the mapped result before bounds.
+    pub square_threshold: f32,
+    pub result_scale: f32,
     /// `+0x8` scale period by, `+0x1e` map to (0 linear), `+0x22` add,
     /// `+0x24` scale result by: any nonzero one is a shape this
     /// conversion doesn't carry.
@@ -1262,9 +1337,13 @@ pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
         .into_iter()
         .map(|f| Function {
             flags: u32_at(f, 0),
+            period: f32_at(f, 4),
+            wobble: f[0xe..0x18].iter().any(|&b| b != 0),
             scale_period_by: u16_at(f, 8),
             function: u16_at(f, 0xa),
             scale_function_by: u16_at(f, 0xc),
+            square_threshold: f32_at(f, 0x18),
+            result_scale: f32_at(f, 0x38),
             step_count: i16_at(f, 0x1c),
             map_to: u16_at(f, 0x1e),
             sawtooth_count: i16_at(f, 0x20),
@@ -1417,6 +1496,22 @@ impl Decal {
     }
 }
 
+/// One authored voice selector and its voice tag. Repeated selectors are
+/// alternatives in author order (H1 0x468d0, stride 0x18).
+pub fn dialogue_variants(map: &H1Map, unit: &[u8]) -> Result<Vec<(i16, TagId)>> {
+    elements(map, unit, 0x2b4, 0x18)?
+        .into_iter()
+        .map(|v| {
+            let reference = TagRef::read(v, 8).expect("voice row");
+            let tag = map.tag(reference.id)?;
+            if reference.group != Group::new(b"udlg") || tag.group != reference.group {
+                return Err(Error::WrongGroup(tag.group.to_string(), *b"udlg"));
+            }
+            Ok((i16_at(v, 0), tag.id))
+        })
+        .collect()
+}
+
 /// `udlg`: `0x1010` bytes, a fixed table of `snd!` references, one per
 /// line a character can say, `0x10` apart from `+0x10`. V: all 102
 /// distinct dialogue tags on the disc are `0x1010` bytes and hold only
@@ -1438,11 +1533,21 @@ impl Dialogue {
     pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
         let b = tag_bytes(map, tag, b"udlg", UDLG_SIZE)?;
         let snd = Group::new(b"snd!");
-        let lines = (0x10..UDLG_SIZE)
-            .step_by(0x10)
-            .filter(|at| TagRef::read(b, *at).is_some_and(|r| r.group == snd))
-            .filter_map(|at| reference(map, b, at).map(|t| (at, t)))
-            .collect();
+        let mut lines = Vec::new();
+        for at in (0x10..UDLG_SIZE).step_by(0x10) {
+            let reference = TagRef::read(b, at).expect("dialogue slot");
+            if reference.id.is_none() || b[at..at + 0x10] == [0; 0x10] {
+                continue;
+            }
+            let line = map.tag(reference.id)?;
+            if reference.group != snd || line.group != snd {
+                return Err(Error::Invalid(format!(
+                    "{} dialogue slot {at:#x} names {} {}",
+                    tag.name, line.group, line.name
+                )));
+            }
+            lines.push((at, line.id));
+        }
         Ok(Self { lines })
     }
 
@@ -1492,5 +1597,119 @@ impl Foot {
             })
             .collect::<Result<_>>()?;
         Ok(Self { kinds })
+    }
+}
+
+/// H1 0x45880 and 0x4592e address the powered-seat array with stride
+/// 0x44. The two transition times are authored in seconds.
+pub fn powered_seats(map: &H1Map, root: &[u8]) -> Result<Vec<[f32; 2]>> {
+    elements(map, root, 0x2cc, 0x44)?
+        .into_iter()
+        .map(|p| {
+            let times = [f32_at(p, 4), f32_at(p, 8)];
+            if times.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err(Error::Invalid(format!(
+                    "invalid powered-seat times {times:?}"
+                )));
+            }
+            Ok(times)
+        })
+        .collect()
+}
+
+/// H1 0x83cbf..0x83f9f. Ignore nonpositive multipliers, as the source
+/// solver does. Two source materials can share a destination index only
+/// when their responses agree.
+#[derive(Debug)]
+pub struct GroundContacts {
+    pub wheels: Vec<(String, tags::object::direct_drive::WheelDrag)>,
+    pub surfaces: Vec<(u16, [f32; 5])>,
+    pub equal_slopes: bool,
+}
+
+impl GroundContacts {
+    pub fn read(map: &H1Map, physics: &[u8], materials: &[String]) -> Result<Self> {
+        use tags::object::direct_drive::WheelDrag;
+        let groups = elements(map, physics, 0x68, 0x80)?;
+        let mass = f32_at(physics, 8);
+        let mut wheels = Vec::new();
+        for p in elements(map, physics, 0x74, 0x80)? {
+            let group = i16_at(p, 0x20);
+            if group < 0 {
+                continue;
+            }
+            let name = name32(p, 0);
+            let flags = groups.get(group as usize).ok_or_else(|| {
+                Error::Invalid(format!("wheel {name} has missing powered group {group}"))
+            })?;
+            let axis = u16_at(p, 0x5c);
+            if axis > 3 || vec3(p, 0x44) != [1.0, 0.0, 0.0] || vec3(p, 0x50) != [0.0, 0.0, 1.0] {
+                return Err(Error::Invalid(format!(
+                    "wheel {name} has unsupported friction frame or axis {axis}"
+                )));
+            }
+            if !(mass.is_finite() && mass > 0.0) {
+                return Err(Error::Invalid(format!(
+                    "wheel {name} has invalid vehicle mass {mass}"
+                )));
+            }
+            let rate = 30.0 * f32_at(physics, 0x20) * (f32_at(p, 0x2c) / mass);
+            wheels.push((
+                crate::coll::sid_name(&name),
+                WheelDrag {
+                    mode: u32::from(axis) | ((u32_at(flags, 0x20) & 1) << 2),
+                    rate,
+                    parallel: f32_at(p, 0x60),
+                    perpendicular: f32_at(p, 0x64),
+                },
+            ));
+        }
+        let globals = map
+            .find(Group::new(b"matg"), r"globals\globals")
+            .ok_or_else(|| Error::Invalid("missing globals material responses".into()))?;
+        let mut mapped = std::collections::BTreeMap::new();
+        for (i, bytes) in elements(map, map.tag_data(globals)?, 0x194, 0x374)?
+            .into_iter()
+            .enumerate()
+        {
+            let mut factors = [0x94, 0x98, 0x9c, 0xa0, 0xa4].map(|offset| {
+                let value = f32_at(bytes, offset);
+                if value > 0.0 { value } else { 1.0 }
+            });
+            // 0x83d26 compares the source phys mass. 0x83d31 skips the
+            // multiplier above 7500 (unordered values cannot occur here).
+            if mass > 7500.0 {
+                factors[0] = 1.0;
+            }
+            let (_, global) = h1convert::materials::MATERIALS
+                .get(i)
+                .ok_or_else(|| Error::Invalid(format!("unknown ground material {i}")))?;
+            let mut indices = materials
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| name.as_str() == *global)
+                .peekable();
+            if indices.peek().is_none() && factors != [1.0; 5] {
+                return Err(Error::Invalid(format!(
+                    "no target ground material {global}"
+                )));
+            }
+            for (index, _) in indices {
+                let index = u16::try_from(index)
+                    .map_err(|_| Error::Invalid(format!("ground material index {index}")))?;
+                if let Some(old) = mapped.insert(index, factors)
+                    && old != factors
+                {
+                    return Err(Error::Invalid(format!(
+                        "ambiguous ground response for {global}"
+                    )));
+                }
+            }
+        }
+        Ok(Self {
+            wheels,
+            surfaces: mapped.into_iter().filter(|(_, v)| *v != [1.0; 5]).collect(),
+            equal_slopes: f32_at(physics, 0x2c) == f32_at(physics, 0x30),
+        })
     }
 }

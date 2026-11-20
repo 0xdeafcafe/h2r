@@ -716,7 +716,7 @@ fn failed_writeback_keeps_exact_guest_stores_for_retry() {
 /// its guest bytes only when they may have changed since its match (the
 /// stores between visits are merged when it is bound again, which makes a
 /// new match); the backend calls and the bytes written back are the same
-/// as reading them at every leave (`H2_D3D_LEAVE_READ=1`).
+/// as reading them at every leave (`Device::set_leave_read`).
 fn revisits(leave_read: bool) -> (Vec<d3d::Recorded>, Vec<u8>, d3d::Stats) {
     let (mut d, mut m, surf) = recorded();
     d.set_leave_read(leave_read);

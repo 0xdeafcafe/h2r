@@ -65,12 +65,8 @@ pub fn from_scratch(input: &Input) -> Result<Built, h1convert::Error> {
     };
     let mopp = h1convert::convert::structure_mopp(&prepared.collision)?;
     let fresh = prepared.build_fresh(&mut retail, &mopp)?;
-    let mut notes = Vec::new();
-    if let Some(why) = &fresh.report.scratch_failed {
-        notes.push(format!(
-            "not every tag could be laid out from scratch ({why}); the pruned map was written"
-        ));
-    }
+    // A map that cannot be built from scratch is `build_fresh`'s error.
+    let notes = Vec::new();
     let converted = Converted {
         manifest: prepared.manifest_fresh(&fresh),
         name: fresh.name,

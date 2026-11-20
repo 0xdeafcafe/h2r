@@ -1,3 +1,6 @@
+mod film;
+pub use film::{FilmSceneReader, film_scene};
+
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
@@ -400,12 +403,13 @@ fn pose(guest: &Guest, body: u32) -> ReadResult<[[f64; 3]; 3]> {
 /// The unit's aiming vector, normalised, or `None` unless it is finite and
 /// within 10% of unit length (the "likely" offset must not send garbage).
 fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
-    let v = vector(guest, body + layout::UNIT_AIM)?;
+    Ok(normalised_aim(vector(guest, body + layout::UNIT_AIM)?))
+}
+
+fn normalised_aim(v: [f64; 3]) -> Option<[f64; 3]> {
     let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    Ok(
-        (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
-            .then(|| [v[0] / len, v[1] / len, v[2] / len]),
-    )
+    (v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len))
+        .then(|| [v[0] / len, v[1] / len, v[2] / len])
 }
 
 /// The weapon the unit holds: current weapon index `+0x212` into the four
@@ -702,6 +706,11 @@ fn havok_body(guest: &Guest, body: u32) -> ReadResult<Option<([f64; 3], [f64; 3]
 /// manager's first channel. `None` without a manager, a graph or an
 /// animation, or when the frame reads as nonsense.
 pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
+    Ok(channel_animation(guest, body)?.filter(|a| (0.0..32768.0).contains(&a.frame)))
+}
+
+// Distinguish a missing graph from an active channel containing a damaged sample.
+fn channel_animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     let offset = guest.u16(body + layout::OBJECT_ANIMATION_MANAGER)? as i16;
     if !layout::MANAGER_OFFSETS.contains(&offset) {
         return Ok(None);
@@ -713,9 +722,7 @@ pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     let frame = guest.f32(channel + layout::CHANNEL_FRAME)?;
     Ok((graph != u32::MAX
         && index >= 0
-        && inherited >= -1
-        && frame.is_finite()
-        && (0.0..32768.0).contains(&frame))
+        && inherited >= -1)
     .then_some(Animation {
         graph,
         inherited,
@@ -782,28 +789,44 @@ fn clear(world: &mut World) {
     world.items.clear();
 }
 
-fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
+/// Fetch the allocated object headers once while the simulation is stopped.
+fn object_headers(guest: &Guest, headers: &mut Vec<u8>) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
-    let high_water = guest
-        .u32(array + layout::DATUM_HIGH_WATER)?
-        .min(layout::OBJECT_CAPACITY);
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    let field = |offset| array.checked_add(offset)
+        .ok_or_else(|| fault(engine::MemFault { addr: array, len: 4, write: false }));
+    let high_water = guest.u32(field(layout::DATUM_HIGH_WATER)?)?;
+    if high_water > layout::OBJECT_CAPACITY {
+        return Err(fault(engine::MemFault {addr: array, len: 4, write: false}));
+    }
+    let data = ptr(guest, field(layout::DATUM_DATA)?)?;
+    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
+    guest.read_bytes(data, headers, 1)
+}
+
+/// Allocated salted datum, header type and body pointer in slot order.
+/// A missing body in an allocated slot is distinguishable from a free slot.
+fn object_rows(headers: &[u8]) -> impl Iterator<Item = (u32, u8, u32)> + '_ {
+    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    headers
+        .as_chunks::<HEADER>()
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, header)| {
+            let salt = u16::from_le_bytes([header[0], header[1]]);
+            let at = layout::OBJECT_BODY as usize;
+            let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+            let datum = (u32::from(salt) << 16) | slot as u32;
+            (salt != 0).then_some((datum, header[layout::OBJECT_TYPE as usize], body))
+        })
+}
+
+fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
     let ScanBuffers { headers, ridden } = buffers;
     let objects = Objects::new(guest);
-    headers.clear();
-    headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
-    guest.read_bytes(data, headers, 1)?;
+    object_headers(guest, headers)?;
     ridden.clear();
-    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
-    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
-        let salt = u16::from_le_bytes([header[0], header[1]]);
-        let at = layout::OBJECT_BODY as usize;
-        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let kind = header[layout::OBJECT_TYPE as usize];
-        if salt == 0 || body == 0 {
-            continue;
-        }
-        let datum = (u32::from(salt) << 16) | slot as u32;
+    for (datum, kind, body) in object_rows(headers).filter(|&(_, _, body)| body != 0) {
         // Not from a placement or a spawn, and no parent: loose.
         let mut loose = false;
         if let Some(kind) = placed_kind(kind) {
@@ -1011,30 +1034,19 @@ pub struct ThingState {
 /// API's object kinds the telemetry scan does not follow (scenery, items
 /// on the ground, device controls, crates).
 pub fn things(guest: &Guest, wanted: impl Fn(u8) -> bool) -> ReadResult<Vec<ThingState>> {
-    let array = ptr(guest, layout::OBJECTS_PTR)?;
-    let high_water = guest
-        .u32(array + layout::DATUM_HIGH_WATER)?
-        .min(layout::OBJECT_CAPACITY);
-    let data = ptr(guest, array + layout::DATUM_DATA)?;
-    let mut headers = vec![0u8; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
-    guest.read_bytes(data, &mut headers, 1)?;
-    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    let mut headers = Vec::new();
+    object_headers(guest, &mut headers)?;
     let mut out = Vec::new();
-    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
-        let salt = u16::from_le_bytes([header[0], header[1]]);
-        let at = layout::OBJECT_BODY as usize;
-        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
-        let object_type = header[layout::OBJECT_TYPE as usize];
-        if salt == 0 || body == 0 || !wanted(object_type) {
-            continue;
-        }
+    for (datum, object_type, body) in
+        object_rows(&headers).filter(|&(_, kind, body)| body != 0 && wanted(kind))
+    {
         let read = || -> ReadResult<ThingState> {
             let (definition, [pos, forward, up]) = transform(guest, body)?;
             let parent = Some(guest.u32(body + layout::BODY_PARENT)?).filter(|p| *p != u32::MAX);
             let placement =
                 Some(guest.u16(body + layout::BODY_PLACEMENT_INDEX)?).filter(|p| (*p as i16) >= 0);
             Ok(ThingState {
-                datum: (u32::from(salt) << 16) | slot as u32,
+                datum,
                 object_type,
                 definition,
                 parent,
@@ -1808,19 +1820,15 @@ mod tests {
         assert!(object(&guest, 0x90020000).unwrap().is_none());
     }
 
-    /// A Clanker signed into a local slot (docs/game/bots.md §4.2) reads
-    /// as any local player, with its own name and its controller port,
-    /// which is how telemetry knows it for a bot; a remote player has no
-    /// port.
     #[test]
-    fn reads_a_local_bot_slot_with_its_controller_port() {
+    fn reads_local_players_with_their_controller_ports() {
         let mut guest = fixture::memory();
         fixture::put_player(&mut guest, 0, "Halo0001", 0, true, u32::MAX);
-        fixture::put_player(&mut guest, 1, "Clanker 2", 1, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "Guest 2", 1, true, u32::MAX);
         fixture::put_player(&mut guest, 2, "Remote", 0, false, u32::MAX);
-        let bot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
-        guest.set_u16(bot + layout::PLAYER_LOCAL_USER, 1).unwrap();
-        guest.set_u32(bot + layout::PLAYER_CONTROLLER, 2).unwrap();
+        let guest_slot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
+        guest.set_u16(guest_slot + layout::PLAYER_LOCAL_USER, 1).unwrap();
+        guest.set_u32(guest_slot + layout::PLAYER_CONTROLLER, 2).unwrap();
         // A remote player's controller field is -1; any value reads as none.
         guest
             .set_u32(
@@ -1837,7 +1845,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 ("Halo0001", Some(0), Some(0)),
-                ("Clanker 2", Some(1), Some(2)),
+                ("Guest 2", Some(1), Some(2)),
                 ("Remote", None, None),
             ]
         );
@@ -1845,7 +1853,7 @@ mod tests {
         assert_eq!(players[1].player.local, Some(true));
         // An unbound local controller (-1) reads as none.
         guest
-            .set_u32(bot + layout::PLAYER_CONTROLLER, u32::MAX)
+            .set_u32(guest_slot + layout::PLAYER_CONTROLLER, u32::MAX)
             .unwrap();
         assert_eq!(players_after(&guest, &mut []).unwrap()[1].controller, None);
     }

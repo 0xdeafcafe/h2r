@@ -17,6 +17,7 @@
 pub mod arena;
 pub mod bridge;
 pub mod entry;
+pub mod h1_projectiles;
 pub mod h1_scope_zoom;
 pub mod install;
 pub mod leaves;
@@ -43,8 +44,6 @@ pub mod native_particles;
 mod native_effects;
 #[cfg(feature = "native-render")]
 pub mod native_post;
-#[cfg(feature = "native-render")]
-pub mod native_residual;
 #[cfg(feature = "native-render")]
 pub mod native_scene_lists;
 #[cfg(feature = "native-render")]
@@ -130,7 +129,7 @@ pub fn plan_verbose() -> bool {
 }
 
 /// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
-/// and per-material load lines, and its comparison dumps, print. Without
+/// and per-material load lines print. Without
 /// it each stage prints one summary line per level load (the environment
 /// table in `docs/runtime/BOOT.md`). Read once.
 pub fn native_verbose() -> bool {
@@ -378,6 +377,12 @@ pub struct Hook {
 impl Hook {
     pub fn kind(&self) -> Kind {
         self.run.kind()
+    }
+
+    /// Base-image PCs that resume this implementation and PCs at which it
+    /// hands control back to the generated image, respectively.
+    pub fn continuation_sites(&self) -> (&[u32], &[u32]) {
+        (self.resume_sites, self.generated_sites)
     }
 }
 

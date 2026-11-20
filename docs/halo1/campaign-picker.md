@@ -1,15 +1,11 @@
 # More than one campaign in the menus
 
-Status: **built, and confirmed in the game by the owner (2026-11-17).** The level-list records, the
-picker, the campaign of a started level and per-campaign progress are
-proven by unit tests and an ignored test against the user's disc. Nothing
-here has been run in the game. Started 2026-11-16. Part of
-[campaign.md](campaign.md) (step 8, §4).
-
-The goal: a campaign picker (Halo 2, Halo 1, ...) in front of the campaign
-level list, and progress kept per campaign. With no second campaign
-installed, the game is exactly retail: nothing is hooked, nothing is
-written and the disc isn't read for it.
+**Built (2026-11-20).** With Halo: Combat Evolved installed, Campaign on
+the main menu opens a game picker. Each game has its own Campaign Options,
+level list and Resume. With no installed Halo 1 mission, Campaign uses
+the retail path and no campaign hooks or artwork rewrite are installed.
+The owner confirmed the previous level picker on 2026-11-17. The new flow
+and checkpoint isolation await the coordinator's integration run.
 
 Labels: **E** read from the retail XBE with `h2 disasm` (a full linear
 disassembly of `.text`), **V** measured on the user's disc (the ignored
@@ -148,9 +144,7 @@ picture = "01b_spacestation"  # optional: a Halo 2 level whose picture it shows
 `campaign_list::HALO1` is Halo 1's: a10, a30, a50, b30, b40, c10, c20,
 c40, d20, d40 with their names; their pictures are Halo 1's own ("Pictures", below). `campaign_list::FIXTURE`
 is a **test campaign** of three retail Halo 2 levels (Outskirts, Delta
-Halo, Gravemind, named "(2)", each with its own picture), so the picker
-can be seen before any converted map exists. At boot
-(`campaigns::boot_state`) a campaign is listed when its manifest parses,
+Halo, Gravemind, named "(2)", each with its own picture), for use alongside an installed Halo 1 campaign. At boot the Halo 1 manifest must parse, match the folder key and have at least one listed local map. Only then does `campaigns::boot_state` read the Halo 2 disc. An additional campaign is listed when its manifest parses,
 its key is its folder's name, and at least one level has a map (in its
 folder, or on the disc); levels with no map yet are left out and the log
 says how many. The picker uses the files on disk and does not read the
@@ -269,8 +263,8 @@ on.
 | `NEXT_LEVEL` `0x19c440` | before | the lists (in the level's own globals): the game-won path (`0x18e960`, through `0x1388e0`) and `0x163610` find the next level here; the campaign argument becomes the map's campaign (`0x24a9e9` passes 1) |
 | `CAMPAIGN_LEVEL_LOOKUP` `0x19c270` | before | the lists; the campaign argument becomes the map's campaign (`State::lookup_campaign`): the level select's press (`0x2c5118`) and Continue (`0x199ab7`, `0x199ac5`) pass 1 for any map |
 | `PROGRESS_RAISE` `0x19043f` | before | a map id of ours: kept in our progress for that slot's profile, and the original skipped, so the profile keeps Halo 2's progress only |
-| `LAST_LEVEL_SET` `0x19040d` | before | a map id of ours: kept as that campaign's last level for each signed-in profile; the original skipped |
-| `SCREEN_REQUEST` `0x149f49` | before | the main menu's level-select request (return address `0x2b16f3`, loader `0x2b130a`): the loader becomes the picker's |
+| `LAST_LEVEL_SET` `0x19040d` | before | For an imported map, bypass the Halo 2 profile write. Record map, basename and difficulty on launch (return to `0x18f0b7`). Backing out of difficulty retains the previous launch. |
+| `SCREEN_REQUEST` `0x149f49` | before | The main menu requests Campaign Options (return to `0x2308d1`, loader `0x230616`). Open the kit picker on the shared menu stack. |
 
 ### The picker (`campaign_menu::PickerRows`, screen `campaigns`)
 
@@ -278,12 +272,25 @@ Our own list class ([feature-engine.md](../engine/feature-engine.md) "UI
 step b", as the Skulls screen is), titled "Campaign": the campaigns whose
 `order` is below 20 (`campaign_list::HALO2_ORDER`; Halo 1's is 10), then
 "Halo 2", then the rest, so Halo: Combat Evolved is first and Halo 2
-second. A press sets the picked campaign, rebuilds the level
-select's list with the game's own `0x19c6d0([0x4ee4e8], id)`, and opens
-the retail level select (`0x2b130a`). This needed one new press result in
-`ui::Chosen`, `Retail { calls, loader }`, made by
-`list_class::open_retail`. The labels are our strings (`ID_BASE +
-0x0200_0000`), served with the layouts'.
+second. A press sets the game, refreshes its level array through
+`0x19c6d0`, then opens its Campaign Options with the kit's `Chosen::Retail`
+and `open_retail` on window 5, slot 4. B returns to the picker. The
+retail restricted-Campaign dialog at `0x230895` keeps its original path.
+
+### Game-specific Campaign Options
+
+**Built.** Main menu row zero calls `0x230888`. Its normal branch opens
+screen `0xda` before any profile-dependent solo choice. Its list
+constructor at `0x2b14dc` creates four-byte records with the action at
++2. We retain its item widgets, scroll behavior, localized checkpoint and
+co-op labels, and expand the data array from three records to four.
+
+| Action | Behavior and XBE evidence |
+|---|---|
+| Resume | Halo 2 offers the native checkpoint action exactly when its constructor does. For Halo 1 a saved checkpoint uses that same action. Without a checkpoint, a previous launch restarts the recorded level at its saved difficulty. A new game/profile has no Resume row. |
+| New Game | Select the first installed mission of this game (The Heretic for Halo 2). Preload its scenario like `0x2c514d`, then open the native difficulty loader `0x2bb3ed`. |
+| Select Level | Open `0x2b130a` with this game's level array. The level-select constructor and per-difficulty unlock rules still apply. |
+| Co-op | The retail action at `0x2b16a1` opens player selection. Lobby Continue at `0x199a92` uses this game's last or first level. The session map setter at `0x19a6f2` receives that level's campaign. |
 
 ### The picker's detail pane (`campaign_info`, 2026-11-18)
 
@@ -291,13 +298,21 @@ The picker is laid out as the level select is (its list, bracket, picture
 box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
 `DESCRIPTION_TEXT`, as Game Options is). For the focused campaign:
 
-- **the picture**: its first level's, from the level select's records in
-  the loaded map (`campaigns::first_pictures`; Halo 1's is a10's framed
-  card). The widget is a copy of the level select's own picture block
-  (`campaign_menu::PICTURE`); a bitmap widget reads its block's `bitm`
-  reference (`[widget + 0x70] + 0x1c`) at every draw (`0x2b05bb`,
-  `0x2b0b26`, E), so on a focus change `list_class::set_picture` writes
-  the row's datum there (`Rows::picture`);
+- **Built — two-game artwork.** The detail pane shows a 220×207 collage
+  with Halo 1 on the left and Halo 2 on the right. The focused game's
+  image widens and the other dims. Halo 1 uses its own `ui.map` bitmap
+  `ui\shell\bitmaps\sp_levels`, cropped to the 139×113 picture during
+  import. For a full import the source is image 0 (The Pillar of Autumn).
+  A partial import uses its earliest available card in disc mission
+  order. If an older import has no cards, read image 0 directly from
+  `H1_ISO` or the sibling `halo1.iso`. Halo 2 uses Cairo Station,
+  `ui\code_global_bitmaps\campaign2` in the Halo 2 disc's
+  `maps/mainmenu.map`, trimming 16 pixels on each edge before the cover
+  crop. Boot writes both focus states under
+  `<data>/campaigns/game-picker/{halo1,halo2}.png`, adds them as separate
+  framed bitmaps in the rewritten mainmenu, and assigns the focused
+  bitmap through the UI kit's `Rows::picture`. Missing artwork is
+  reported in the boot log. Game artwork is generated locally.
 - **the text** (`campaign_info::Info::text`): an original line about the
   campaign, the release year and studio as plain facts (Halo 2: 2004,
   Bungie; Halo 1: 2001, Bungie), the level count, the progress of the
@@ -327,10 +342,40 @@ per campaign key:
 [Chief.halo1]
 finished = [-1, 4099, -1, -1]   # highest map id finished, easy .. legendary
 last = 4100                     # last level started
+last_map = "b30"                # stable when a partial import gains maps
+difficulty = 2                  # last launch, 0 easy through 3 legendary
+checkpoint = true               # this profile saved a checkpoint for this game
 ```
 
 Written whole through a rename when it changes; an unreadable file is
 reported and never overwritten.
+
+**Built — independent saves.** Halo 2's native Resume reads its profile's
+checkpoint flag (`0x1904cb`), loads and validates the header
+(`0x2b170f`), then starts with its saved map and difficulty and sets the
+restore flag (`0x2b17c3`). Retail's profile and `auxilary.bin` keep
+their original meanings. For an imported campaign the read and write
+helpers (`0x2174b0`, `0x217520`) queue a sibling file in the same profile
+container. Its name is `cp-<first 32 hex digits of SHA-256(campaign key)>.bin`.
+The queue copies the filename before returning. The accepted save path's
+`0x19048c` records checkpoint presence for that profile and game.
+Beginning a level clears that game's previous checkpoint marker, except
+when restoring it. Older progress with only a numeric last level resumes
+the level on Normal. The UI resolves newer records by map basename, and
+omits Resume if that mission has been removed.
+
+A profile created before the split can have a converted mission in its
+retail checkpoint file. **Built:** on entering Campaign Options, resolve
+the signed-in profile's local U: directory using the same record as
+`0x216800`. Read the campaign, scenario and difficulty from the saved
+options at header +0x130 (`0x124520`, `0x2b17c3`). For a recognized
+imported mission, preserve its signed bytes in the game's scoped file
+and recover its progress before offering Resume. The original stays in
+place, newer scoped saves take precedence, and Halo 2 omits the foreign
+checkpoint. At `0x2b178e` the native completion also rejects a foreign
+campaign header if it arrived through an unmigrated retail slot. Recovery
+of historical files covers the local hard disk. New checkpoints on other
+profile devices use the same per-game guest filename routing.
 
 ### The lookups by `(campaign, map)`
 
@@ -397,7 +442,7 @@ reads the multiplayer list, which campaign ids never reach.
   finds nothing without the rewrite and Halo 1's record or next level with
   it; `the_picker_lists_halo_1_then_halo_2_then_the_rest`.
 - `boot` `campaign_menu::tests` (2): a press picks the campaign and asks
-  for `0x19c6d0([0x4ee4e8], id)` then the level select; the hooks are on
+  for `0x19c6d0([0x4ee4e8], id)` then Campaign Options; the hooks are on
   the plan where the table says.
 - `boot` `campaigns::tests::real_disc_lists_take_both_campaigns`
   (ignored): `mainmenu.map`'s real lists, laid into a fake guest at their
@@ -408,34 +453,27 @@ reads the multiplayer list, which campaign ids never reach.
   user's disc. `H2_DISC=disc/halo2.iso cargo test -p boot --lib
   campaigns::tests::real_disc -- --ignored --nocapture`
 
-## To check in game
+## Coordinator verification
 
-Only a run can show the screen flow, the pictures, and that the engine
-starts and chains levels from records it was never shipped with.
+The synthetic tests cover picker navigation, native row allocation,
+separate game/profile saves, old progress, tile focus
+and agent menu state. The ignored disc test reads both owner discs and
+checks the generated PNGs against the two in-memory bitmaps. Supply
+absolute disc paths when the test checkout lacks a local disc directory.
 
-1. Install the test campaign: copy `FIXTURE` from
-   `crates/content/src/campaign_list.rs` to
-   `<data>/campaigns/test/campaign.toml` (the data root `h2 play` uses,
-   `~/Library/Application Support/h2recomp/data` by default).
-2. `h2 play`. The console says `campaigns: test is campaign 2 with 3
-   levels (map ids 0x1001..=0x1003)`.
-3. Sign in with a profile, choose **Campaign** in the main menu and go
-   to where the level list would open. Expected: `campaigns: opening the
-   campaign picker before the level select`, and a "Campaign" screen with
-   **Halo 2** and **Second Campaign (test)**.
-4. Pick **Halo 2**: the retail level list, unchanged. Back out, pick
-   **Second Campaign (test)**: `campaigns: level lists extended ...`, then
-   a level list with **Outskirts (2)** only (nothing finished yet), with
-   Outskirts' picture.
-5. Choose it and a difficulty. Expected: `campaigns: starting a level of
-   campaign 2`, and Outskirts loads.
-6. Finish it (or use the level's own end), and expect `campaigns: <you>
-   finished test level 0x1001 on difficulty N`, the next level
-   (Delta Halo) to follow, and afterwards both levels listed under the test
-   campaign while Halo 2's list is as before. `progress.toml` has the
-   entry.
-7. Remove the folder and start again: no `campaigns:` lines, the main
-   menu as retail.
+```sh
+cargo test -p boot --lib campaign
+cargo test -p agent-proto --lib sim::menu
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test -p boot --lib picker_collage_from_both_discs -- --ignored
+```
+
+With both games installed, verify a fresh profile and one with an existing
+Halo 2 checkpoint. Use `ui.campaign` and pad presses to choose each game,
+check its actions and missions, and back out. Start a Halo 1 mission,
+save a checkpoint, then reload and resume each game in turn. Verify the
+restored position as well as the displayed mission. Repeat the main-menu
+press with only Halo 2 installed. The agent method and response fields are
+documented in [the agent API](../runtime/agent-api.md).
 
 ## Open questions
 
@@ -446,8 +484,6 @@ starts and chains levels from records it was never shipped with.
   array: after picking Halo 1 in the main menu, it lists Halo 1 until
   Halo 2 is picked again or the main menu reloads. The lobby gets no
   picker yet.
-- **Continue** (`0x199a92`) resumes Halo 2 only: our campaigns' last level
-  is kept but nothing reads it yet.
 - Where a level ends the campaign: Halo 2's last level is followed by the
   credits through scripts; a campaign's last level (no next id) returns to
   the menu as `0x163610` returns 0. Unchecked in a run.

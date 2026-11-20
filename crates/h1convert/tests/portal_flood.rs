@@ -43,7 +43,7 @@ fn load(h1: &H1Map) -> Level {
             vertices: p.vertices.clone(),
         })
         .collect();
-    let meshes = h1convert::structure::meshes(&s, |_| String::new()).unwrap();
+    let meshes = h1convert::structure::meshes(&s, |_| Ok(String::new())).unwrap();
     let mut geometry = vec![(Vec::new(), Vec::new()); n];
     for m in &meshes {
         let (vs, ts): &mut (Vec<[f32; 3]>, Vec<[u32; 3]>) = &mut geometry[usize::from(m.cluster)];
@@ -377,7 +377,7 @@ fn a10_clusters_no_sky_reaches_show_none() {
 fn bloodgulch_and_a10_skies() {
     for name in ["bloodgulch", "a10"] {
         let h1 = level(name);
-        let reach = h1sky::convert::level_reach(&h1);
+        let reach = h1sky::convert::level_reach(&h1).unwrap();
         for r in h1.multiplayer().unwrap().skies {
             let tag = h1.tag(r.id).unwrap();
             let sky = h1convert::sky::Sky::from_map(&h1, tag).unwrap();
@@ -520,7 +520,7 @@ fn bloodgulch_render_shaders() {
     let bsp = &h1.structure_bsps().unwrap()[0];
     let s = h1.structure_bsp(bsp).unwrap();
     let meshes = h1convert::structure::meshes(&s, |r| {
-        h1.tag(r.id).map(|t| format!("{} {}", t.group, t.name)).unwrap_or_else(|_| "none".into())
+        Ok(h1.tag(r.id).map(|t| format!("{} {}", t.group, t.name)).unwrap_or_else(|_| "none".into()))
     })
     .unwrap();
     let mut by: std::collections::BTreeMap<String, (usize, f32, f32)> = Default::default();

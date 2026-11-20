@@ -7,8 +7,10 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::{LiveConfig, account_setup, config::Account};
 
-const MAX_LIST: u64 = 2 << 20;
-const MAX_FILM: u64 = 64 << 20;
+// Recent contains 25 entries. Keep the same page size for saved films and clips
+// so a page of maximum-size summaries fits the bounded response reader.
+const PAGE_SIZE: usize = 25;
+const MAX_LIST: u64 = (2 << 20) + (PAGE_SIZE * live_proto::film::MAX_SUMMARY_BYTES) as u64;
 
 #[derive(Debug, Deserialize)]
 pub struct RecentFilm {
@@ -17,10 +19,16 @@ pub struct RecentFilm {
     pub mode: String,
     pub variant: Option<String>,
     pub started_at: String,
+    #[serde(default)]
+    pub start_tick: Option<u64>,
     pub duration_s: Option<u64>,
+    #[serde(default)]
+    pub ticks_per_second: Option<u16>,
     pub result: Option<String>,
     #[serde(default)]
     pub has_host_film: bool,
+    #[serde(default)]
+    pub summary: Option<live_proto::film::Summary>,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -68,7 +76,8 @@ impl Archive {
             .ok_or("Sign in to Live to see account films")?;
         let (api, server_id) = account_setup::discover(server).map_err(|e| e.to_string())?;
         let agent = ureq::AgentBuilder::new()
-            .timeout(account_setup::TIMEOUT)
+            .timeout_connect(account_setup::TIMEOUT)
+            .timeout_read(std::time::Duration::from_secs(60))
             .redirects(0)
             .build();
         Ok(Some(Self {
@@ -113,27 +122,28 @@ impl Archive {
     }
 
     fn list<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>, String> {
-        // A screen can display up to forty films. Read additional pages
-        // so a filter can still find an older pinned film.
+        // Filters also need older pinned films and clips.
         let mut rows = Vec::new();
         let mut after = None;
         loop {
             let mut url = format!("{}/films?player={}&kind={kind}", self.api, self.xuid());
             if kind != "recent" {
-                url.push_str("&limit=100");
+                url.push_str(&format!("&limit={PAGE_SIZE}"));
                 if let Some(after) = after {
                     url.push_str(&format!("&cursor={after}"));
                 }
             }
             let page = read_list::<T>(self.request("GET", &url, lxm::READ))?;
+            let next = page.next;
             rows.extend(page.items);
-            let next = page.next.and_then(|cursor| cursor.parse::<u64>().ok());
-            match next {
-                Some(next) if after.is_none_or(|previous| previous > next) => {
-                    after = Some(next);
-                }
-                _ => return Ok(rows),
+            let Some(next) = next else { return Ok(rows) };
+            let next = next
+                .parse::<u64>()
+                .map_err(|_| "Invalid film list cursor")?;
+            if kind == "recent" || after.is_some_and(|previous| previous <= next) {
+                return Err("Invalid film list cursor".into());
             }
+            after = Some(next);
         }
     }
 
@@ -145,6 +155,7 @@ impl Archive {
             &url,
             lxm::FILMS_WRITE,
         )
+        .timeout(account_setup::TIMEOUT)
         .call()
         .map(|_| ())
         .map_err(http_error)
@@ -154,6 +165,7 @@ impl Archive {
         check_id(clip)?;
         let url = format!("{}/clips/{clip}", self.api);
         self.request("DELETE", &url, lxm::FILMS_WRITE)
+            .timeout(account_setup::TIMEOUT)
             .call()
             .map(|_| ())
             .map_err(http_error)
@@ -164,16 +176,40 @@ impl Archive {
         let url = format!("{}/games/{game}/film", self.api);
         let response = self
             .request("GET", &url, lxm::READ)
-            .timeout(std::time::Duration::from_secs(60))
             .call()
             .map_err(http_error)?;
-        let len = std::io::copy(&mut response.into_reader().take(MAX_FILM + 1), &mut out)
-            .map_err(|e| format!("Could not download host film: {e}"))?;
-        if len == 0 || len > MAX_FILM {
-            return Err("Invalid host film size".into());
+        if response.status() != 200 || response.header("Content-Range").is_some() {
+            return Err("Live returned a partial host film".into());
         }
-        Ok(())
+        let expected = response
+            .header("Content-Length")
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(|_| "Invalid host film size")?;
+        copy_film(
+            response.into_reader(),
+            &mut out,
+            expected,
+            live_proto::film::MAX_UPLOAD_BYTES,
+        )
     }
+}
+
+fn copy_film(
+    input: impl Read,
+    out: &mut impl Write,
+    expected: Option<u64>,
+    limit: u64,
+) -> Result<(), String> {
+    if expected.is_some_and(|n| n == 0 || n > limit) {
+        return Err("Invalid host film size".into());
+    }
+    let size = std::io::copy(&mut input.take(limit + 1), out)
+        .map_err(|e| format!("Could not download host film: {e}"))?;
+    if size == 0 || size > limit || expected.is_some_and(|n| n != size) {
+        return Err("Invalid host film size".into());
+    }
+    Ok(())
 }
 
 fn check_id(id: &str) -> Result<(), String> {
@@ -191,7 +227,10 @@ fn http_error(error: ureq::Error) -> String {
 }
 
 fn read_list<T: DeserializeOwned>(request: ureq::Request) -> Result<Page<T>, String> {
-    let response = request.call().map_err(http_error)?;
+    let response = request
+        .timeout(account_setup::TIMEOUT)
+        .call()
+        .map_err(http_error)?;
     let mut body = Vec::new();
     response
         .into_reader()
@@ -201,7 +240,12 @@ fn read_list<T: DeserializeOwned>(request: ureq::Request) -> Result<Page<T>, Str
     if body.len() as u64 > MAX_LIST {
         return Err("Live films response is too large".into());
     }
-    serde_json::from_slice(&body).map_err(|_| "Invalid Live films response".to_owned())
+    let page: Page<T> =
+        serde_json::from_slice(&body).map_err(|_| "Invalid Live films response".to_owned())?;
+    if page.items.len() > PAGE_SIZE {
+        return Err("Too many films in Live response".into());
+    }
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -211,6 +255,45 @@ mod tests {
         io::{BufRead, BufReader, Write},
         net::TcpListener,
     };
+
+    #[test]
+    fn summary_and_game_listing_can_coexist() {
+        let clip: ClipWithFilm = serde_json::from_value(serde_json::json!({
+            "clip": {"id": "clip", "title": "Finish", "from_tick": 120, "to_tick": 160},
+            "film": {
+                "game_id": "recorded-game", "map": "lockout", "mode": "multiplayer",
+                "started_at": "2026-11-20T02:26:06Z", "kind": "matchmaking",
+                "has_host_film": true, "ticks_per_second": 60,
+                "players": [{"index": 0, "name": "Guest", "team": 1}],
+                "scoreboard": [{"index": 0, "score": 4, "kills": 4, "deaths": 1, "assists": 0}],
+                "summary": {"level": "lockout", "game_type": "Slayer", "mode": "matchmaking",
+                    "variant_name": "Team Slayer", "duration_ticks": 162, "players": []}
+            }
+        }))
+        .unwrap();
+        assert!(clip.film.has_host_film);
+        assert_eq!(clip.film.ticks_per_second, Some(60));
+        assert_eq!(clip.film.players[0].name, "Guest");
+        assert_eq!(clip.film.scoreboard[0].score, 4);
+        assert_eq!(clip.film.summary.unwrap().duration_ticks, 162);
+    }
+
+    #[test]
+    fn full_download_checks_declared_and_streamed_lengths() {
+        let bytes = b"recording".as_slice();
+        let len = bytes.len() as u64;
+        for declared in [None, Some(len)] {
+            let mut out = Vec::new();
+            copy_film(bytes, &mut out, declared, len).unwrap();
+            assert_eq!(out, bytes);
+        }
+        let mut out = Vec::new();
+        assert!(copy_film(bytes, &mut out, Some(len + 1), len).is_err());
+        assert!(out.is_empty());
+        assert!(copy_film(bytes, &mut out, None, len - 1).is_err());
+        assert!(copy_film(&bytes[1..], &mut out, Some(len), len).is_err());
+        assert!(copy_film(&bytes[..0], &mut out, None, len).is_err());
+    }
 
     #[test]
     fn recent_uses_the_accounts_archive_even_without_a_host_film() {
@@ -261,5 +344,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].game_id, "archived-game");
         assert_eq!(rows[0].map, "h1_bloodgulch");
+        assert!(!rows[0].has_host_film);
+        assert!(rows[0].summary.is_none());
     }
 }

@@ -309,6 +309,20 @@ pub(crate) fn lock(input: &Mutex<Input>) -> MutexGuard<'_, Input> {
 }
 
 impl InputTap for AgentTap {
+    fn sync(&mut self, input: &mut input::InputManager) {
+        match &mut self.inner {
+            Some((tap, _)) => tap.sync(input),
+            None => input.sync(),
+        }
+    }
+
+    fn restore_input(&mut self, cursor: u64, input: &mut input::InputManager) -> Result<(), String> {
+        match &mut self.inner {
+            Some((tap, _)) => tap.restore_input(cursor, input),
+            None => Ok(()),
+        }
+    }
+
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
         if let Some((t, Chain::Before)) = &mut self.inner {
             t.read(handle, status, packet);

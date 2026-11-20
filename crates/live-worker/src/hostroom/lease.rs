@@ -1,11 +1,13 @@
 //! Shared by the Worker and its native helper tests.
 
+use std::collections::BTreeMap;
+
+use live_proto::host_pack::{AddMatch, DEFAULT_MAX_MATCHES, valid_pack};
 use live_proto::hosts::{HostClass, HostLease, HostState, ProviderKind, Transport};
 use live_proto::{ErrorCode, Xuid};
 use live_server::{ApiError, hosts::HostBoot};
-use serde::{Deserialize, Serialize};
 
-pub(crate) const TUNNEL_PORT: u16 = 31100;
+pub(crate) use live_proto::host_pack::{CONTROL_PORT, TUNNEL_PORT};
 
 pub(crate) fn tunnel_lease(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/v1/hosts/")?.strip_suffix("/tunnel")?;
@@ -58,37 +60,98 @@ pub(crate) fn admit(lease: &HostLease, state: &HostState, xuid: Xuid) -> Result<
     Ok(())
 }
 
-/// The complete environment handed to h2. This travels on the private
-/// start request and is never written to room storage.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) struct HostEnv {
-    pub(crate) h2_lease: String,
-    h2_host_lease_json: String,
-    h2_live: String,
-    h2_token: String,
-    h2_data_url: String,
-    h2_data_sha: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    h2_region: Option<String>,
-    h2_agent: String,
-    h2_tunnel_listen: String,
+/// One lease's match for its pack. This travels on private room-to-room
+/// and room-to-container requests and is never written to storage.
+pub(crate) fn add_match(lease: &HostLease, boot: &HostBoot) -> serde_json::Result<AddMatch> {
+    Ok(AddMatch {
+        lease: lease.id.clone(),
+        lease_json: serde_json::to_string(lease)?,
+        live: boot.live_url.clone(),
+        token: boot.token.clone(),
+        data_url: boot.data_url.clone(),
+        data_sha: boot.data_sha256.clone(),
+        archive: boot.archive,
+        region: lease.region.clone(),
+    })
 }
 
-impl HostEnv {
-    pub(crate) fn new(lease: &HostLease, boot: &HostBoot) -> serde_json::Result<Self> {
-        Ok(Self {
-            h2_lease: lease.id.clone(),
-            h2_host_lease_json: serde_json::to_string(lease)?,
-            h2_live: boot.live_url.clone(),
-            h2_token: boot.token.clone(),
-            h2_data_url: boot.data_url.clone(),
-            h2_data_sha: boot.data_sha256.clone(),
-            h2_region: lease.region.clone(),
-            // Port 31100 is reserved for the WebSocket tunnel. The diagnostic
-            // agent is private even inside the container network.
-            h2_agent: "tcp://127.0.0.1:14720".into(),
-            h2_tunnel_listen: format!("0.0.0.0:{TUNNEL_PORT}"),
-        })
+/// Cloudflare Durable Object location hints. Other providers also put
+/// region names in leases, including three-letter airport codes.
+pub(crate) fn location_hint(region: Option<&str>) -> Option<&'static str> {
+    const HINTS: [&str; 9] = ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"];
+    let region = region?;
+    HINTS.into_iter().find(|hint| *hint == region)
+}
+
+/// The room that routes a class's leases in one location to its packs.
+/// Packs only share matches placed in the same location.
+pub(crate) fn pool_name(region: Option<&str>) -> String {
+    format!("pool-{}", location_hint(region).unwrap_or("any"))
+}
+
+pub(crate) fn pool_hint(pool: &str) -> Option<&'static str> {
+    location_hint(pool.strip_prefix("pool-"))
+}
+
+pub(crate) fn valid_pool(name: &str) -> bool {
+    name == "pool-any" || pool_hint(name).is_some()
+}
+
+/// The room that owns one pack's container.
+pub(crate) fn pack_room(pool: &str, pack: &str) -> String {
+    format!("{pool}/{pack}")
+}
+
+pub(crate) fn parse_pack_room(name: &str) -> Option<(&str, &str)> {
+    let (pool, pack) = name.split_once('/')?;
+    (valid_pool(pool) && valid_pack(pack)).then_some((pool, pack))
+}
+
+/// What a room named `name` does.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// The hub's handle for one lease.
+    Lease,
+    /// Routes leases to packs.
+    Pool,
+    /// Owns one container of several matches.
+    Pack,
+}
+
+pub(crate) fn role(name: &str) -> Option<Role> {
+    if valid_id(name) {
+        Some(Role::Lease)
+    } else if valid_pool(name) {
+        Some(Role::Pool)
+    } else if parse_pack_room(name).is_some() {
+        Some(Role::Pack)
+    } else {
+        None
     }
+}
+
+/// Matches per container, from `LIVE_HOST_PACK_MATCHES`. Eight slots of
+/// seven UDP ports from 31000 stay below the control port.
+pub(crate) fn pack_matches(setting: Option<&str>) -> usize {
+    setting
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_MAX_MATCHES)
+        .clamp(1, 8)
+}
+
+/// The container's environment: no lease, only the pack's shape. Sizes
+/// match each class's `instance_type` in wrangler.toml.
+pub(crate) fn pack_env(class: &HostClass, max_matches: usize) -> BTreeMap<&'static str, String> {
+    let (vcpus, memory_mib) = match class {
+        HostClass::Small => (1, 3072),
+        HostClass::Large => (2, 6144),
+    };
+    BTreeMap::from([
+        ("H2_PACK", "1".to_owned()),
+        ("H2_PACK_MAX_MATCHES", max_matches.to_string()),
+        ("H2_PACK_VCPUS", vcpus.to_string()),
+        ("H2_PACK_MEMORY_MIB", memory_mib.to_string()),
+        ("H2_PACK_CONTROL", format!("0.0.0.0:{CONTROL_PORT}")),
+        ("H2_TUNNEL_LISTEN", format!("0.0.0.0:{TUNNEL_PORT}")),
+    ])
 }

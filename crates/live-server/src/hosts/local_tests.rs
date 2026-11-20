@@ -30,6 +30,7 @@ fn boot() -> HostBoot {
         token: "lease-token".into(),
         data_url: "https://private.example/bundle?sig=abc&expires=42".into(),
         data_sha256: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Film,
     }
 }
 
@@ -52,6 +53,9 @@ fn command_passes_boot_values_verbatim_and_isolates_writable_data() {
                 .any(|(name, value)| name == OsStr::new("H2_HOST_PARENT_PIPE")
                     && value == Some(OsStr::new("1")))
         );
+        assert!(cmd.get_envs().any(|(name, value)| {
+            name == OsStr::new("H2_HOST_ARCHIVE") && value == Some(OsStr::new("film"))
+        }));
         let data = root.join("hosts").join(id);
         assert!(data.is_dir());
         let args: Vec<&OsStr> = cmd.get_args().collect();

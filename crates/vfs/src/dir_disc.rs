@@ -132,6 +132,14 @@ impl Backend for DirDiscBackend {
     fn read_only(&self) -> bool {
         true
     }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        let key = path.to_ascii_lowercase();
+        let file = match &self.open {
+            Some((opened, file, _)) if *opened == key => file.try_clone()?,
+            _ => File::open(&self.entry(path)?.host)?,
+        };
+        Ok(Some(crate::FilmMapSource::region(file, 0)))
+    }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let e = self.entry(path).ok().filter(|e| !e.is_dir)?;
         Some(HostFile {
@@ -275,6 +283,12 @@ impl Backend for AnyDisc {
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         either!(self, d => d.host_file(path))
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        match self {
+            Self::Image(d) => d.film_region(path),
+            Self::Dir(d) => d.film_source(path),
+        }
     }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         either!(self, d => d.map_id(path))

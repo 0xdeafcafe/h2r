@@ -59,7 +59,7 @@ impl Guest {
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
             flat: None,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-            flat_requested: crate::flat::enabled(),
+            flat_requested: false,
             ram,
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| Default::default()),
@@ -70,6 +70,7 @@ impl Guest {
             code: Vec::new(),
             next_id: 1,
             watch: Default::default(),
+            hle_writes: None,
             layout: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
@@ -89,11 +90,14 @@ impl Guest {
     /// guard, and with `source` borrowed under its own, so no store to
     /// either is in flight.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
+        self.invalidate_hle_capture();
         let (ram, kind) = source.ram.cow_copy();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         {
             self.flat = None;
-            self.flat_requested = crate::flat::enabled();
+            // A refreshed executor view keeps its ordinary page table and
+            // spends no time installing aliases of a short-lived copy.
+            self.flat_requested = false;
         }
         self.ram = ram;
         self.watch_revision = self.watch_revision.wrapping_add(1);
@@ -142,6 +146,7 @@ impl Guest {
     pub fn restore_from(&mut self, base: &FrozenRam, physical: u32, len: u32) {
         let start = (physical as usize).min(RAM_SIZE);
         let end = (physical as usize + len as usize).min(RAM_SIZE);
+        self.invalidate_hle_capture();
         self.ram[start..end].copy_from_slice(&base.bytes()[start..end]);
         self.watch_revision = self.watch_revision.wrapping_add(1);
     }
@@ -179,6 +184,7 @@ impl Guest {
         written: &[WrittenPage],
         owned: &[(u32, u32)],
     ) -> HandBack {
+        self.invalidate_hle_capture();
         let base = base.bytes();
         let mut out = HandBack::default();
         for page in written {
@@ -296,6 +302,7 @@ impl Guest {
         if start >= RAM_SIZE || reference.len() != PAGE_SIZE as usize {
             return out;
         }
+        self.invalidate_hle_capture();
         let end = start + PAGE_SIZE as usize;
         let skip: Vec<(usize, usize)> = skip
             .iter()

@@ -90,7 +90,7 @@ fn blood_gulchs_ring_draws_as_halo_1_draws_it() {
     let mut map = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
 
     // Halo 1's side: the level's sky, its model, the ring's shader.
-    let skies = h1convert::sky::read(&h1);
+    let skies = h1convert::sky::read(&h1).unwrap();
     let sky = skies.skies.first().expect("Blood Gulch has a sky");
     let (model_name, _) = sky.model.as_ref().expect("its sky has a model");
     let k = sky

@@ -374,7 +374,7 @@ fn the_gpu_renders_the_same_pixels_with_the_cache_on_and_off() {
 }
 
 /// Snapshots in slab regions (the default) and in a buffer each
-/// (`H2_GFX_VERTEX_SLABS=0`) draw the same pixels, frame by frame.
+/// (`Renderer::set_vertex_slabs(false)`) draw the same pixels, frame by frame.
 #[test]
 fn the_gpu_renders_the_same_pixels_with_slab_regions_and_own_buffers() {
     if context().is_none() {

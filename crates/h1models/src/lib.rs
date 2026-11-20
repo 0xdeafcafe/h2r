@@ -103,6 +103,15 @@ pub fn graph_weapon_types(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Vec<(S
     h1::weapon_types(map, tag_address(map, tag, b"antr")?)
 }
 
+/// Standing weapon types and classes from the cyborg's slot tables.
+pub fn player_weapon_types(map: &h1map::H1Map) -> Result<Vec<(String, String)>> {
+    let Some(tag) = map.find(h1map::Group::new(b"antr"), r"characters\cyborg\cyborg") else {
+        return Ok(Vec::new());
+    };
+    h1::player_types(map, tag_address(map, tag, b"antr")?)
+        .map_err(|e| Error::Invalid(format!("{}: {}: {e}", map.header().name, tag.name)))
+}
+
 /// [`graph_from_map`] with what the animated object adds
 /// ([`jmad::GraphOptions`]: a vehicle's mass point markers).
 pub fn graph_from_map_with(
@@ -111,7 +120,8 @@ pub fn graph_from_map_with(
     model: Option<&h1map::Tag>,
     opts: &jmad::GraphOptions,
 ) -> Result<(h1::Graph, jmad::GraphReport, Converted)> {
-    let graph = h1::Graph::read(map, tag_address(map, tag, b"antr")?)?;
+    let context = |e: Error| Error::Invalid(format!("{}: {}: {e}", map.header().name, tag.name));
+    let graph = h1::Graph::read(map, tag_address(map, tag, b"antr")?).map_err(context)?;
     let skeleton = match model {
         Some(t) if graph.nodes.is_empty() => Some(h1::AnimNode::from_model(&h1::Model::read(
             map,
@@ -119,9 +129,39 @@ pub fn graph_from_map_with(
         )?)),
         _ => None,
     };
-    let sentinel = tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel");
-    let (out, report) = jmad::convert_graph_for(&graph, skeleton.as_deref(), opts, sentinel)?;
+    let weapon_classes;
+    let role = if tag.name.eq_ignore_ascii_case(r"characters\cyborg\cyborg") {
+        if map.header().cache_type == h1map::CacheType::Campaign {
+            jmad::GraphRole::CampaignPlayer
+        } else {
+            jmad::GraphRole::Player
+        }
+    } else if tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel") {
+        jmad::GraphRole::Sentinel
+    } else if map.header().cache_type == h1map::CacheType::Campaign
+        && biped_uses_graph(map, tag.id).map_err(context)?
+    {
+        weapon_classes = player_weapon_types(map)?;
+        jmad::GraphRole::Biped(&weapon_classes)
+    } else {
+        jmad::GraphRole::Other
+    };
+    let (out, report) = jmad::convert_graph_for(&graph, skeleton.as_deref(), opts, role)
+        .map_err(context)?;
     Ok((graph, report, out))
+}
+
+// Crew and armored/unarmed marines all name the same graph. The pilot
+// names a cinematic graph outside the character directory.
+fn biped_uses_graph(map: &h1map::H1Map, graph: h1map::TagId) -> Result<bool> {
+    for biped in map.tags().iter().filter(|t| t.group == h1map::Group::new(b"bipd")) {
+        let header = map.read(biped.data_address, 0x48)?;
+        let reference = h1map::TagRef::read(header, 0x38).expect("object animation reference");
+        if reference.id == graph {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

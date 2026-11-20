@@ -88,6 +88,7 @@ impl Game {
                 .arg(film_path(opts.film.as_deref(), socket))
                 .env("H2_HOST_LEASE_JSON", serde_json::to_string(lease)?)
                 .env("H2_HOST_LOBBY", "1")
+                .env("H2_FILM_GAME_ID", &lease.id)
                 .env("H2_XNET_ADDR", address.to_string());
             if !lease.bots.is_empty() {
                 cmd.arg("--host-bots");
@@ -109,12 +110,8 @@ impl Game {
     ) -> Result<Self> {
         Self::spawn_with(opts, live, lease, |cmd, data, socket| {
             sim_run::configure(cmd, lease, disc, &opts.out, data, socket)?;
-            if let Some(path) = &opts.film {
-                cmd.env("H2_FILM_OUT", path);
-                if std::env::var_os("H2_FILM_GAME_ID").is_none() {
-                    cmd.env("H2_FILM_GAME_ID", &lease.assignment_id);
-                }
-            }
+            cmd.env("H2_FILM_OUT", film_path(opts.film.as_deref(), socket))
+                .env("H2_FILM_GAME_ID", &lease.assignment_id);
             Ok(())
         })
     }
@@ -137,6 +134,7 @@ impl Game {
             .env("H2_LEASE", &lease.id)
             .env("H2_HOST_LIVE_URL", live.base())
             .env("H2_HOST_TOKEN", &opts.token)
+            .env("H2_HOST_ARCHIVE", opts.archive.as_str())
             .env_remove("H2_TOKEN")
             .env_remove("H2_DATA_URL")
             .env_remove("H2_DATA_SHA")
@@ -145,8 +143,16 @@ impl Game {
             .env_remove("H2_FILM_OUT")
             .env_remove("H2_SIM")
             .env_remove("H2_BOOT_INPUT")
-            .env_remove("H2_INPUT_REPLAY")
-            .env_remove("H2_BOTS");
+            .env_remove("H2_INPUT_REPLAY");
+        if opts.archive == live_proto::hosts::HostArchive::Film {
+            // The lease's film is the host's archive for this child.
+            cmd.env_remove("H2_TELEMETRY_FILE").env_remove("H2_TELEMETRY");
+        }
+        // Only the supervisor's ephemeral output needs rescue on a failed upload.
+        cmd.env_remove("H2_FILM_PENDING_RECEIPT");
+        if opts.film.is_none() {
+            cmd.env("H2_FILM_PENDING_RECEIPT", scratch.0.join("film.pending"));
+        }
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
         #[cfg(target_os = "linux")]
@@ -218,7 +224,7 @@ impl Drop for Game {
 }
 
 #[cfg(target_os = "linux")]
-fn stop_on_parent_death(cmd: &mut Command) {
+pub(super) fn stop_on_parent_death(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the child uses only syscalls and constructs errors without allocation.
@@ -251,6 +257,17 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        if self.0.join("film.pending").exists() {
+            let film = self.0.join("match.h2film");
+            let recovery = agent_proto::cache_dir().join("pending-films");
+            let dest = recovery.join(format!("{}.h2film", live_proto::sign::random_id()));
+            if fs::create_dir_all(&recovery).and_then(|_| fs::rename(&film, &dest)).is_err() {
+                // The cache may be on another volume or full. Keep the original.
+                eprintln!("h2 host: unpublished film retained at {}", film.display());
+                return;
+            }
+            eprintln!("h2 host: unpublished film retained at {}", dest.display());
+        }
         let _ = fs::remove_dir_all(&self.0);
     }
 }

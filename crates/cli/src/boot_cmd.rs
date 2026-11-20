@@ -18,15 +18,15 @@ prebuilt game module. Use the same H2_OPT the module was built with.
 --socket sets the agent API socket (default H2_AGENT or the agent's default).
 --host-light skips steady-state world rendering, uses a silent sound clock,
 disables kernel tracing and paces to real time. Requires --system-link.
---host-bots enables bot support on a light host. H2_BOTS also enables it.";
+--host-bots enables bot support on a light host.";
 
 #[cfg(feature = "desktop")]
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
            [--profile host --coverage FILE]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
-           [--movies DIR | --no-movies] [--settings DIR]
-  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots] [--film FILE]]] [run's options]
+           [--movies DIR | --no-movies] [--settings DIR] [--film FILE]
+  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, and the game module).
 --arch selects a single build target and overrides H2_EMIT_TARGET. Use
@@ -74,7 +74,7 @@ H2_OPT the image was built with.
   Link in the normal menus. No Live account or service URL is required.
 --host-light skips steady-state world rendering, uses a silent sound clock,
   disables kernel tracing and paces to real time. Requires --system-link.
---host-bots enables bot support on a light host. H2_BOTS also enables it.";
+--host-bots enables bot support on a light host.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -144,7 +144,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
             "--host-light" => host_light = true,
-            "--film" if serve => film = Some(PathBuf::from(val()?)),
+            "--film" if cmd != "build" => film = Some(PathBuf::from(val()?)),
             "--host-bots" => host_bots = true,
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
@@ -173,12 +173,6 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     let mut live = headless_live_config(serve, system_link)?;
     check_host_options(serve, system_link, host_light, host_bots)?;
-    if let Some(path) = film {
-        anyhow::ensure!(host_light, "--film requires a light host");
-        // SAFETY: CLI startup, before signal, agent, or device threads start.
-        unsafe { std::env::set_var("H2_FILM_OUT", path) };
-    }
-
     let publisher = if host_light {
         leased_publisher(&mut live, |key| std::env::var_os(key))?
     } else {
@@ -305,6 +299,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         crate::h1_import::auto_import(&disc, &data);
     }
     let host = boot::Host {
+        film_out: film,
         #[cfg(unix)]
         between_slices,
         host_light,

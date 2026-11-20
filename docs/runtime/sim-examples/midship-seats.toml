@@ -10,6 +10,7 @@ pace = "unpaced"
 name = "Red 1"
 skill = "legendary"
 team = 0
+kind = "phantom"
 
 [[bot]]
 name = "Blue 1"
@@ -21,6 +22,7 @@ kind = "phantom"
 name = "Red 2"
 skill = "legendary"
 team = 0
+kind = "phantom"
 
 [[bot]]
 name = "Blue 2"

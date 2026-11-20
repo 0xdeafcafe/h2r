@@ -58,7 +58,6 @@ pub(crate) fn spawn_worker(
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
-    compare: Option<u16>,
 ) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
     std::thread::Builder::new()
@@ -90,9 +89,6 @@ pub(crate) fn spawn_worker(
                         set.parts.extend(parts.into_iter().map(|((section, part), native)| {
                             ((definition as u16, section, part), native)
                         }));
-                        if compare == Some(definition as u16) {
-                            set.shadowed.insert(definition as u16);
-                        }
                         s.set = Arc::new(set);
                         drop(st);
                         loaded += 1;
@@ -172,16 +168,6 @@ fn open(
     })
 }
 
-fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
-    if let Ok(tag) = map.tag(TagId(datum)) {
-        return Some(tag.id);
-    }
-    map.tags()
-        .iter()
-        .find(|tag| tag.id.0 & 0xffff == datum & 0xffff)
-        .map(|tag| tag.id)
-}
-
 fn material(opened: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
     if opened.lib.is_none() {
         let lib = tags::material::ShaderLibrary::read(&mut opened.map);
@@ -240,7 +226,7 @@ const SHADER_VALUES: u32 = 0x44;
 /// permutation and LOD. Any refused material or absent program leaves the
 /// whole mode on D3D.
 fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Error> {
-    let mode = tag_of(&opened.map, definition).ok_or("no such mode tag")?;
+    let mode = native_map::tag_of(&opened.map, definition).ok_or("no such mode tag")?;
     let geometry = RenderModelGeometry::read(&mut opened.map, mode, &mut opened.raw)?;
     let nodes = geometry.nodes.len();
     let inverse_binds = geometry

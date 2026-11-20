@@ -104,7 +104,8 @@ range for its graph or inheritance list.
 | `+0x16` | flags; `0x10`: data lives in a cache resource | E |
 | `+0x24`, `+0x28` | resource index, byte offset of the animation's blob inside it | E |
 | `+0x2c` | static pose index, -1 for none | E |
-| `+0x30`, `+0x32` | two animation indices the engine preloads (S: parent, next) | E |
+| `+0x2e` | loop start frame, signed i16 | E: `0x1c6810..0x1c6835` adds it to elapsed time after wrapping. Coagulation Chief's 79-frame rifle airborne loop starts at 40 |
+| `+0x30`, `+0x32` | permutation head (−1 on the head) and next clip; cumulative weight at `+0x1c` | E: `0x1dd6b9` selects a weighted variant; V: Coagulation Chief |
 | `+0x34`, `+0x38` | inline data size and pointer, used when flag `0x10` is clear | E; never taken on the disc |
 | `+0x3c..+0x4c` | data sizes, below | E |
 | `+0x4c` | frame events, stride 4: type i16, frame i16 | E |

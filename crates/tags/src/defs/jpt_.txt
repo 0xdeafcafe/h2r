@@ -13,7 +13,9 @@ group jpt! 0xc8
   0x28 unknown 0x4 seen=7 -- floats
   0x2c unknown 0x4 seen=6 -- floats
   0x30 unknown 0x4 seen=11 -- floats
-  0x34 unknown 0xc seen=zero
+  0x34 u32 h1_damage_category -- zero in retail H2; converted H1 damage keeps its source dialogue category here
+  0x38 f32 h1_death_impulse -- source Halo 1 damage impulse for the deathflying line
+  0x3c unknown 0x4 seen=zero
   0x40 unknown 0x4 seen=25 -- floats
   0x44 unknown 0x4 seen=8 -- floats
   0x48 unknown 0x4 seen=10 -- floats

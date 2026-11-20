@@ -1,0 +1,356 @@
+use super::measure::{
+    Usage, parse_cpu_max, parse_memory_max, parse_pss_kib, parse_stat, used_mib,
+};
+use super::*;
+
+fn add(lease: &str) -> AddMatch {
+    AddMatch {
+        lease: lease.into(),
+        lease_json: json!({ "id": lease }).to_string(),
+        live: "http://127.0.0.1:8074".into(),
+        token: "lease-token".into(),
+        data_url: "https://data.example/bundle?sig=a".into(),
+        data_sha: "ab".repeat(32),
+        archive: live_proto::hosts::HostArchive::Dual,
+        region: None,
+    }
+}
+
+/// A pack whose matches are `sleep`s in their own process groups.
+fn pack(limits: Limits) -> (Pack, Arc<Mutex<Vec<(String, u16, SlotPorts)>>>) {
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&launched);
+    let launch: Launch = Box::new(move |add: &AddMatch, slot: u16, ports: SlotPorts| {
+        record.lock().unwrap().push((add.lease.clone(), slot, ports));
+        Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+    });
+    let pack = Pack::new(
+        limits,
+        (host_pack::BASE_PORT, host_pack::TUNNEL_PORT, host_pack::AGENT_PORT),
+        Duration::from_secs(60),
+        launch,
+        Instant::now(),
+    );
+    (pack, launched)
+}
+
+fn roomy() -> Limits {
+    Limits::new(3, 8.0, 64 * 1024)
+}
+
+fn usage(cpu_ms: f64) -> Usage {
+    Usage {
+        cpu_ms,
+        pss_mib: 300,
+    }
+}
+
+// -- Options --------------------------------------------------------------------
+
+#[test]
+fn options_default_to_three_matches_on_the_container_ports() {
+    let opts = Options::parse_with(std::iter::empty::<String>(), |_| None).unwrap();
+    assert_eq!(opts.max_matches, 3);
+    assert_eq!(opts.control.port(), host_pack::CONTROL_PORT);
+    assert_eq!(opts.tunnel.port(), host_pack::TUNNEL_PORT);
+    assert_eq!(opts.base_port, host_pack::BASE_PORT);
+    assert_eq!(opts.linger, Duration::from_secs(60));
+    assert!(opts.vcpus.is_none() && opts.memory_mib.is_none());
+}
+
+#[test]
+fn options_read_the_environment_and_prefer_flags() {
+    let env = |name: &str| {
+        Some(
+            match name {
+                "H2_PACK_MAX_MATCHES" => "2",
+                "H2_PACK_VCPUS" => "1",
+                "H2_PACK_MEMORY_MIB" => "3072",
+                "H2_PACK_CONTROL" => "127.0.0.1:41099",
+                _ => return None,
+            }
+            .to_owned(),
+        )
+    };
+    let args = ["--max-matches", "4", "--linger-s", "5"].map(str::to_owned);
+    let opts = Options::parse_with(args.into_iter(), env).unwrap();
+    assert_eq!(opts.max_matches, 4);
+    assert_eq!(opts.vcpus, Some(1.0));
+    assert_eq!(opts.memory_mib, Some(3072));
+    assert_eq!(opts.control.to_string(), "127.0.0.1:41099");
+    assert_eq!(opts.linger, Duration::from_secs(5));
+    let limits = opts.limits();
+    assert_eq!((limits.max_matches, limits.vcpus, limits.memory_mib), (4, 1.0, 3072));
+}
+
+#[test]
+fn options_reject_bad_values() {
+    for args in [
+        &["--max-matches", "0"][..],
+        &["--vcpus", "-1"],
+        &["--bogus", "1"],
+        &["--max-matches", "3", "--max-matches", "3"],
+        // Slot 2's UDP range would pass 65535.
+        &["--base-port", "65520"],
+    ] {
+        let owned = args.iter().map(|s| s.to_string());
+        assert!(Options::parse_with(owned, |_| None).is_err(), "{args:?}");
+    }
+}
+
+// -- Measurement ----------------------------------------------------------------
+
+#[test]
+fn parses_proc_and_cgroup_files() {
+    let stat = "4242 (h2 (host) run) S 1 4242 4242 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 9 0";
+    assert_eq!(parse_stat(stat), Some((4242, 300)));
+    assert_eq!(parse_stat("garbage"), None);
+    assert_eq!(
+        parse_pss_kib("Rss:  9000 kB\nPss:   4096 kB\nPss_Anon: 1 kB\n"),
+        Some(4096)
+    );
+    assert_eq!(parse_cpu_max("200000 100000\n"), Some(2.0));
+    assert_eq!(parse_cpu_max("max 100000\n"), None);
+    assert_eq!(parse_memory_max("3221225472\n"), Some(3072));
+    assert_eq!(parse_memory_max("max\n"), None);
+    assert_eq!(
+        used_mib("1073741824\n", "anon 1\ninactive_file 536870912\nactive_file 2\n"),
+        Some(512)
+    );
+}
+
+#[test]
+fn meter_reports_cpu_per_tick_after_warmup() {
+    let start = Instant::now();
+    let mut meter = Meter::default();
+    // 240 ms of CPU per second of wall time is 8 ms per 33.3 ms tick.
+    for i in 0..=2u32 {
+        meter.observe(start + Duration::from_secs(u64::from(i)), usage(240.0 * f64::from(i)));
+    }
+    assert_eq!(meter.load().ms_per_tick, None, "two intervals are still warmup");
+    assert_eq!(meter.load().rss_mib, Some(300));
+    meter.observe(start + Duration::from_secs(3), usage(720.0));
+    let ms = meter.load().ms_per_tick.unwrap();
+    assert!((ms - 8.0).abs() < 1e-6, "{ms}");
+    // A burst shows at once; the smoothed value then decays.
+    meter.observe(start + Duration::from_secs(4), usage(720.0 + 480.0));
+    let burst = meter.load().ms_per_tick.unwrap();
+    assert!((burst - 16.0).abs() < 1e-6, "{burst}");
+    meter.observe(start + Duration::from_secs(5), usage(1200.0 + 240.0));
+    let after = meter.load().ms_per_tick.unwrap();
+    assert!(after > 8.0 && after < 16.0, "{after}");
+}
+
+// -- Admission and teardown -----------------------------------------------------
+
+#[test]
+fn admits_up_to_the_cap_with_disjoint_ports_and_refuses_the_next() {
+    let (mut pack, launched) = pack(roomy());
+    let a = pack.add(&add("hl-a")).unwrap();
+    let b = pack.add(&add("hl-b")).unwrap();
+    let c = pack.add(&add("hl-c")).unwrap();
+    assert_eq!((a.slot, b.slot, c.slot), (0, 1, 2));
+    assert_eq!(
+        (a.ports.tunnel_port, b.ports.tunnel_port, c.ports.tunnel_port),
+        (31100, 31101, 31102)
+    );
+    assert!(matches!(
+        pack.add(&add("hl-d")),
+        Err(AddError::Refused(Refusal::Full { running: 3, max: 3 }))
+    ));
+    // Adding a running lease again is idempotent and launches nothing.
+    assert_eq!(pack.add(&add("hl-b")).unwrap(), b);
+    assert_eq!(launched.lock().unwrap().len(), 3);
+    pack.shutdown();
+}
+
+#[test]
+fn measured_cpu_refuses_a_match_that_would_pass_the_budget() {
+    // One vCPU: 23.3 ms per tick. Two matches measured at 9 ms leave no room
+    // for a third assumed at 10 ms.
+    let (mut pack, _) = pack(Limits::new(3, 1.0, 64 * 1024));
+    pack.add(&add("hl-a")).unwrap();
+    // Unmeasured, the first counts at 10 ms: a second fits (20 ms), a third would not.
+    pack.add(&add("hl-b")).unwrap();
+    let start = Instant::now();
+    for i in 0..=4u32 {
+        let at = start + Duration::from_secs(u64::from(i));
+        pack.tick(at, &|_| Some(usage(270.0 * f64::from(i))), Some(1000));
+    }
+    let loads: Vec<_> = pack.status().matches.iter().map(|m| m.load.ms_per_tick).collect();
+    assert!(loads.iter().all(|ms| ms.is_some_and(|ms| (ms - 9.0).abs() < 1e-6)), "{loads:?}");
+    assert!(matches!(
+        pack.add(&add("hl-c")),
+        Err(AddError::Refused(Refusal::Cpu { .. }))
+    ));
+    pack.shutdown();
+}
+
+#[test]
+fn light_measured_matches_let_a_third_in() {
+    let (mut pack, _) = pack(Limits::new(3, 1.0, 64 * 1024));
+    pack.add(&add("hl-a")).unwrap();
+    pack.add(&add("hl-b")).unwrap();
+    let start = Instant::now();
+    for i in 0..=4u32 {
+        let at = start + Duration::from_secs(u64::from(i));
+        // 6 ms per tick each: 6 + 6 + 10 = 22 ms <= 23.3 ms.
+        pack.tick(at, &|_| Some(usage(180.0 * f64::from(i))), Some(1000));
+    }
+    assert!(pack.add(&add("hl-c")).is_ok());
+    pack.shutdown();
+}
+
+#[test]
+fn container_memory_refuses_a_match_that_would_not_fit() {
+    let (mut pack, _) = pack(Limits::new(3, 8.0, 3072));
+    pack.add(&add("hl-a")).unwrap();
+    pack.tick(Instant::now(), &|_| None, Some(2600));
+    assert!(matches!(
+        pack.add(&add("hl-b")),
+        Err(AddError::Refused(Refusal::Memory { .. }))
+    ));
+    pack.shutdown();
+}
+
+#[test]
+fn removing_frees_the_slot_once_reaped_and_the_pack_lingers_then_exits() {
+    let (mut pack, _) = pack(roomy());
+    let start = Instant::now();
+    pack.add(&add("hl-a")).unwrap();
+    pack.add(&add("hl-b")).unwrap();
+    assert!(!pack.should_exit(start + Duration::from_secs(3600)));
+    pack.remove("hl-a", start);
+    // Stopping, still in its slot.
+    assert!(!pack.find("hl-a").unwrap().1.alive());
+    assert!(matches!(pack.add(&add("hl-a")), Err(AddError::Invalid(_))));
+    // Wait for TERM to reap it.
+    let mut reaped = false;
+    for _ in 0..100 {
+        pack.tick(Instant::now(), &|_| None, None);
+        if pack.find("hl-a").is_none() {
+            reaped = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(reaped);
+    // Its slot is the next one used.
+    assert_eq!(pack.add(&add("hl-c")).unwrap().slot, 0);
+    pack.remove("hl-b", Instant::now());
+    pack.remove("hl-c", Instant::now());
+    let mut idle_at = None;
+    for _ in 0..100 {
+        let now = Instant::now();
+        pack.tick(now, &|_| None, None);
+        if pack.status().matches.is_empty() {
+            idle_at = Some(now);
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let idle_at = idle_at.expect("both matches stop");
+    assert!(!pack.should_exit(idle_at + Duration::from_secs(59)));
+    assert!(pack.should_exit(idle_at + Duration::from_secs(60)));
+    // Removing an unknown or gone lease is harmless.
+    pack.remove("hl-zz", Instant::now());
+}
+
+#[test]
+fn a_match_that_ends_by_itself_frees_its_slot() {
+    let launch: Launch = Box::new(|_: &AddMatch, _: u16, _: SlotPorts| {
+        Command::new("true").process_group(0).stdin(Stdio::null()).spawn()
+    });
+    let mut pack = Pack::new(roomy(), (31000, 31100, 14720), Duration::from_secs(1), launch, Instant::now());
+    pack.add(&add("hl-a")).unwrap();
+    for _ in 0..100 {
+        pack.tick(Instant::now(), &|_| None, None);
+        if pack.find("hl-a").is_none() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the finished match kept its slot");
+}
+
+#[test]
+fn rejects_a_lease_body_for_another_lease() {
+    let (mut pack, launched) = pack(roomy());
+    let mut wrong = add("hl-a");
+    wrong.lease_json = json!({ "id": "hl-b" }).to_string();
+    assert!(matches!(pack.add(&wrong), Err(AddError::Invalid(_))));
+    let mut bad = add("hl-a");
+    bad.lease = "../x".into();
+    assert!(matches!(pack.add(&bad), Err(AddError::Invalid(_))));
+    assert!(launched.lock().unwrap().is_empty());
+}
+
+// -- Control requests -------------------------------------------------------------
+
+fn req(method: &str, path: &str, body: &[u8]) -> http::Request {
+    http::Request {
+        method: method.into(),
+        path: path.into(),
+        body: body.to_vec(),
+    }
+}
+
+#[test]
+fn control_routes_add_status_and_remove() {
+    let (mut pack, _) = pack(Limits::new(1, 8.0, 64 * 1024));
+    let now = Instant::now();
+    let body = serde_json::to_vec(&add("hl-a")).unwrap();
+    let (status, added) = handle(&mut pack, &req("POST", host_pack::MATCHES_PATH, &body), now);
+    assert_eq!(status, 200);
+    let added: Added = serde_json::from_slice(&added).unwrap();
+    assert_eq!(added.slot, 0);
+
+    let body = serde_json::to_vec(&add("hl-b")).unwrap();
+    let (status, refused) = handle(&mut pack, &req("POST", host_pack::MATCHES_PATH, &body), now);
+    assert_eq!(status, 409);
+    assert_eq!(
+        serde_json::from_slice::<Refusal>(&refused).unwrap(),
+        Refusal::Full { running: 1, max: 1 }
+    );
+
+    let (status, one) = handle(&mut pack, &req("GET", "/v1/pack/matches/hl-a", b""), now);
+    assert_eq!(status, 200);
+    let one: MatchStatus = serde_json::from_slice(&one).unwrap();
+    assert!(one.alive);
+    assert_eq!(handle(&mut pack, &req("GET", "/v1/pack/matches/hl-b", b""), now).0, 404);
+
+    let (status, all) = handle(&mut pack, &req("GET", host_pack::STATUS_PATH, b""), now);
+    assert_eq!(status, 200);
+    let all: PackStatus = serde_json::from_slice(&all).unwrap();
+    assert_eq!(all.matches.len(), 1);
+    assert_eq!(all.limits.max_matches, 1);
+
+    assert_eq!(handle(&mut pack, &req("DELETE", "/v1/pack/matches/hl-a", b""), now).0, 204);
+    let (_, one) = handle(&mut pack, &req("GET", "/v1/pack/matches/hl-a", b""), now);
+    assert!(!serde_json::from_slice::<MatchStatus>(&one).unwrap().alive);
+    // Idempotent.
+    assert_eq!(handle(&mut pack, &req("DELETE", "/v1/pack/matches/hl-a", b""), now).0, 204);
+
+    assert_eq!(handle(&mut pack, &req("POST", host_pack::MATCHES_PATH, b"{"), now).0, 400);
+    assert_eq!(handle(&mut pack, &req("GET", "/v1/pack/matches/../x", b""), now).0, 404);
+    assert_eq!(handle(&mut pack, &req("PUT", "/elsewhere", b""), now).0, 404);
+    pack.shutdown();
+}
+
+#[test]
+fn explicit_public_ports_shift_with_the_slot() {
+    assert_eq!(slot_public_addr(None, 31000, 31007).unwrap(), None);
+    assert_eq!(
+        slot_public_addr(Some("203.0.113.5"), 31000, 31007).unwrap().as_deref(),
+        Some("203.0.113.5")
+    );
+    assert_eq!(
+        slot_public_addr(Some("203.0.113.5:41000"), 31000, 31014).unwrap().as_deref(),
+        Some("203.0.113.5:41014")
+    );
+    assert!(slot_public_addr(Some("203.0.113.5:65530"), 31000, 31007).is_err());
+}

@@ -450,6 +450,6 @@ Unset, each takes its default.
 | `H2_BENCH_GUEST_ONLY` | `pushbuf` | set: run only the guest-memory dirty-tracking benchmark, then exit |
 | `H2_BENCH_MODES` | `vertex_fetch` | `cpu` or `gpu`: time one fetch mode only, e.g. to profile it |
 | `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | the ignored `render_churn` test in `crates/d3d/tests/render_churn.rs`, its game-frame section | fills per visit (4), small draws per visit (0), rounds, the median reported (3) |
-| `H2_DIFF_SEEDS` | `crates/engine/tests/{differential,render_loop_differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the render-loop and layer tests default to `1,7,99`, `differential` to its first default seed |
+| `H2_DIFF_SEEDS` | `crates/engine/tests/{differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the layer test defaults to `1,7,99`, `differential` to its first default seed |
 | `H2_DIFF_SCALE` | `crates/engine/tests/differential.rs` | a multiplier on the cases per seed (default 1) |
 | `H2_EMIT_FULL` | `crates/emit/tests/entry.rs` (needs `H2_XBE`) | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards) |

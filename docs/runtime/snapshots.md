@@ -540,7 +540,6 @@ the host subsystems. The features are now audited:
 | Feature | Policy | Why |
 |---|---|---|
 | `engine-leaves` | stateless | pure functions of guest memory; string sources fixed at boot |
-| `render-loop` | stateless | a port's state is in its continuation, which the machine check reports |
 | `controls-text` | stateless | an async port: its future is parked in a continuation |
 | `ui-strings` | stateless | strings written and addresses fixed at install |
 | `level-boot` | stateless | `LOADED_AT` is a host mark for perf sessions; the game never reads it |

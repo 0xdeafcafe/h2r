@@ -121,6 +121,7 @@ async fn matchmaking_exposes_first_host_sweep_deadline_in_the_forming_response()
         live_url: "https://live.test".into(),
         data_url: "https://private.test/bundle".into(),
         data_sha256: "ab".repeat(32),
+        archive: "dual".into(),
         max_hosts: 4,
     });
     let provider = Arc::new(GatedProvider::default());

@@ -132,10 +132,11 @@ duplicate marker and runs the wrapper's final solid-offset reset.
 
 ## As built
 
-`impl.render.native_decals` (default off) enables the admission. The
+The admission is on by default and off with the rest of the native renderer
+(`impl.render.native=off`). The
 implementation is split into `native-render/src/decal.rs` (shared mode, vertex
 and quad rules), `native-render/src/decal_gpu.rs` (translation and encoding),
-`feature/src/native_decals.rs` (callback scope, compare and tallies), and
+`feature/src/native_decals.rs` (callback scope and tallies), and
 `boot/src/native_decals_glue.rs` (resolved-draw admission).
 
 All seven mode positions and their depth, bias and blend configurations are
@@ -160,14 +161,9 @@ sealed, so a late refusal cannot leave the decal undrawn. The wgpu viewport is
 target-wide, as in D3D; the resolved clip and disjoint scissor rectangles do
 the clipping at each copy's scale.
 
-## Comparison and remaining runtime evidence
+## Remaining runtime evidence
 
-`H2_NATIVE_DECALS_COMPARE=1` prepares every candidate; `=mode` selects one
-mode, and `=mode:list` one outer-list entry. Compare mode resolves state,
-geometry, shader and live resources but does not queue a native pass or skip
-D3D. Its line identifies the mode, list, quad count, texture headers and whether
-preparation succeeded. The running tally is `(examined, admitted, compared)`
-plus counts by stable refusal reason. The handoff's per-copy decal range and
+The handoff's per-copy decal range and
 invariant counters show actual recording and suppression.
 
 Runtime A/B still needs to prove actual replacement, exact depth/bias and
@@ -179,7 +175,7 @@ static work and was not expanded.
 
 ## Per-record scene walk
 
-`impl.render.native_decals_walk` is on by default with native decals.
+The walk is on whenever native decals are.
 After duplicate marking and bitmap and default-register setup, the hook
 at `0x00044161` reads the record's live allocation and quad count. It
 resolves the same array and native material and reserves that record on

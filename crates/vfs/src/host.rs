@@ -235,7 +235,7 @@ pub struct HostBackend {
     /// Shared with queued write-behind jobs, which close their last copy.
     handles: Vec<(PathBuf, Arc<File>)>,
     /// Host data writes queued off the calling thread; `None` writes
-    /// synchronously (`H2_VFS_WRITE_BEHIND=0`). docs/runtime/storage.md
+    /// synchronously (`with_write_behind(false)`). docs/runtime/storage.md
     /// "Write-behind".
     write_behind: Option<WriteBehind>,
     #[cfg(test)]
@@ -361,11 +361,7 @@ impl HostBackend {
             serial: 1,
             cache: RefCell::new(Cache::default()),
             handles: Vec::new(),
-            write_behind: if write_behind::enabled_by_env() {
-                WriteBehind::spawn()
-            } else {
-                None
-            },
+            write_behind: WriteBehind::spawn(),
             #[cfg(test)]
             next_create_sync_error: std::cell::Cell::new(None),
             #[cfg(test)]
@@ -384,8 +380,8 @@ impl HostBackend {
         self.capacity = capacity / FATX_CLUSTER_SIZE * FATX_CLUSTER_SIZE;
         self
     }
-    /// Queue host data writes on a background thread (`true`, the default
-    /// unless `H2_VFS_WRITE_BEHIND=0`) or write them on the calling thread.
+    /// Queue host data writes on a background thread (`true`, the default)
+    /// or write them on the calling thread.
     /// Guest-visible results are the same either way.
     pub fn with_write_behind(mut self, enabled: bool) -> Self {
         if !enabled {
@@ -1257,6 +1253,11 @@ impl Backend for HostBackend {
         };
         self.update_usage(info.allocation_size, after);
         Ok(())
+    }
+    fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
+        self.host_file(path).map(|h| {
+            Ok(crate::FilmMapSource::region(fs::File::open(h.path)?, h.offset))
+        }).transpose()
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let host = self.resolve(path, false).ok()?;

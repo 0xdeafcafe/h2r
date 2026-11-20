@@ -13,8 +13,7 @@
 //!
 //! S: the layer's earlier draws leave the fields an implementation does
 //! not set as they were at the layer-3 call (as the world's inherited
-//! cull, `look::WorldPass::inherits_cull`); the uniform compare
-//! (`H2_NATIVE_OBJECTS_COMPARE`) prints the D3D draws' own.
+//! cull, `look::WorldPass::inherits_cull`).
 
 use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R, StencilState};
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};

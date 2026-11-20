@@ -16,7 +16,7 @@
 #if H2_SSE_NATIVE
 #if defined(__aarch64__)
 #include <arm_neon.h>
-#elif defined(__x86_64__) && H2_SSE_PACKED_X86
+#elif defined(__x86_64__)
 #include <emmintrin.h>
 #endif
 static inline __attribute__((always_inline)) int h2sn_host_mode(void) {
@@ -59,26 +59,16 @@ static inline __attribute__((always_inline)) uint32_t h2sn_lane(unsigned op, uin
     else if (op == 2u) r = x * y;
     else if (op == 3u) r = x / y;
     else r = sqrtf(y);
-#if H2_SSE_STICKY_PE
     /* PE is sticky. Within h2sn_ok's range it is the only possible
      * exception, and h2sn_mode has checked that it is masked. */
-    if (!*inexact)
-#endif
-    {
+    if (!*inexact) {
         if (op <= 1u) {
-#if H2_SSE_STICKY_PE
             /* FastTwoSum in result precision. For |x| >= |y| the
              * subtraction r-x is exact, so it equals y iff x+y was
              * exact. Even the smallest residual here is normal. */
             if (op) y = -y;
             if (fabsf(x) < fabsf(y)) { float t = x; x = y; y = t; }
             *inexact |= r - x != y;
-#else
-            double u = (double)x, v = op ? -(double)y : (double)y;
-            if (fabs(u) < fabs(v)) { double t = u; u = v; v = t; }
-            double s = u + v, e = v - (s - u);
-            *inexact |= (double)r != s || e != 0.0;
-#endif
         } else if (op == 2u) {
             *inexact |= (double)r != (double)x * (double)y;
         } else if (op == 3u) {
@@ -97,11 +87,7 @@ static inline __attribute__((always_inline)) int h2sn_arith_mode(int host, uint3
     for (unsigned i = 0; i < lanes; ++i)
         if (!h2sn_ok(op, (uint32_t)(a >> (32u * i)), (uint32_t)(b >> (32u * i)))) return 0;
     h2u128 result = lanes == 1u ? a & ~((h2u128)UINT32_MAX) : 0;
-#if H2_SSE_STICKY_PE
     int inexact = (*mx & H2S_PE) != 0;
-#else
-    int inexact = 0;
-#endif
     for (unsigned i = 0; i < lanes; ++i)
         result |= (h2u128)h2sn_lane(op, (uint32_t)(a >> (32u * i)),
                                     (uint32_t)(b >> (32u * i)), &inexact) << (32u * i);
@@ -117,14 +103,6 @@ static inline __attribute__((always_inline)) uint32x4_t h2sn_value4(uint32x4_t v
     uint32x4_t e = vandq_u32(vshrq_n_u32(v, 23), vdupq_n_u32(255u));
     uint32x4_t in = vcleq_u32(vsubq_u32(e, vdupq_n_u32(67u)), vdupq_n_u32(120u));
     return vorrq_u32(vceqzq_u32(mag), in);
-}
-static inline __attribute__((always_inline)) uint64x2_t h2sn_two_sum4(float64x2_t u, float64x2_t v, float64x2_t r) {
-    uint64x2_t keep = vcageq_f64(u, v); /* |u| >= |v|: no swap */
-    float64x2_t big = vbslq_f64(keep, u, v), small = vbslq_f64(keep, v, u);
-    float64x2_t s = vaddq_f64(big, small);
-    float64x2_t e = vsubq_f64(small, vsubq_f64(s, big));
-    uint64x2_t exact = vandq_u64(vceqq_f64(r, s), vceqzq_f64(e));
-    return vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(exact)));
 }
 static inline __attribute__((always_inline)) int h2sn_arith4_mode(int host, uint32_t *mx, unsigned op, h2u128 a, h2u128 b, h2u128 *out) {
     if (!h2sn_mode(*mx, host)) return 0;
@@ -144,7 +122,6 @@ static inline __attribute__((always_inline)) int h2sn_arith4_mode(int host, uint
     else if (op == 2u) r = vmulq_f32(x, y);
     else if (op == 3u) r = vdivq_f32(x, y);
     else r = vsqrtq_f32(y);
-#if H2_SSE_STICKY_PE
     if (*mx & H2S_PE) {
         memcpy(out, &r, 16);
         return 1;
@@ -157,35 +134,29 @@ static inline __attribute__((always_inline)) int h2sn_arith4_mode(int host, uint
         memcpy(out, &r, 16);
         return 1;
     }
-#endif
+    /* mul, div and sqrt: check each lane's product in double. */
     float64x2_t xl = vcvt_f64_f32(vget_low_f32(x)), xh = vcvt_high_f64_f32(x);
     float64x2_t yl = vcvt_f64_f32(vget_low_f32(y)), yh = vcvt_high_f64_f32(y);
     float64x2_t rl = vcvt_f64_f32(vget_low_f32(r)), rh = vcvt_high_f64_f32(r);
     uint64x2_t pl, ph;
-    if (op <= 1u) {
-        if (op) { yl = vnegq_f64(yl); yh = vnegq_f64(yh); }
-        pl = h2sn_two_sum4(xl, yl, rl);
-        ph = h2sn_two_sum4(xh, yh, rh);
+    if (op == 2u) {
+        pl = vceqq_f64(rl, vmulq_f64(xl, yl));
+        ph = vceqq_f64(rh, vmulq_f64(xh, yh));
+    } else if (op == 3u) {
+        pl = vceqq_f64(vmulq_f64(rl, yl), xl);
+        ph = vceqq_f64(vmulq_f64(rh, yh), xh);
     } else {
-        if (op == 2u) {
-            pl = vceqq_f64(rl, vmulq_f64(xl, yl));
-            ph = vceqq_f64(rh, vmulq_f64(xh, yh));
-        } else if (op == 3u) {
-            pl = vceqq_f64(vmulq_f64(rl, yl), xl);
-            ph = vceqq_f64(vmulq_f64(rh, yh), xh);
-        } else {
-            pl = vceqq_f64(vmulq_f64(rl, rl), yl);
-            ph = vceqq_f64(vmulq_f64(rh, rh), yh);
-        }
-        pl = vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(pl)));
-        ph = vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(ph)));
+        pl = vceqq_f64(vmulq_f64(rl, rl), yl);
+        ph = vceqq_f64(vmulq_f64(rh, rh), yh);
     }
+    pl = vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(pl)));
+    ph = vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(ph)));
     uint64x2_t any = vorrq_u64(pl, ph);
     *mx |= (vgetq_lane_u64(any, 0) | vgetq_lane_u64(any, 1)) ? H2S_PE : 0u;
     memcpy(out, &r, 16);
     return 1;
 }
-#elif defined(__x86_64__) && H2_SSE_PACKED_X86
+#elif defined(__x86_64__)
 /* Dedicated x86-64 hosts have SSE2. Test all four input lanes with
  * integer operations before issuing the one packed arithmetic instruction.
  * With PE clear use the ordinary per-lane precision reconstruction. */
@@ -223,7 +194,7 @@ static inline __attribute__((always_inline)) int h2sn_arith4_mode(int host, uint
     return 1;
 }
 #endif
-#if defined(__aarch64__) || (defined(__x86_64__) && H2_SSE_PACKED_X86)
+#if defined(__aarch64__) || defined(__x86_64__)
 #define H2SN_TRY4(op, a, b) \
     if (h2sn_arith4_mode(host, mx, op, a, b, out)) return 0
 #else
@@ -270,7 +241,7 @@ static inline H2SN_FAST uint32_t h2sn_sqrtps_mode(int host, uint32_t *mx, h2u128
 /* A standalone helper checks the host at this operation. A generated
  * register-only run can supply a sample taken at its first arithmetic op.
  * The guest MXCSR and operand guards still run on every instruction. */
-#if H2_SSE_HOST_RUN && H2_SSE_NATIVE
+#if H2_SSE_NATIVE
 #define H2_FP_SAMPLE() h2sn_host_mode()
 #else
 #define H2_FP_SAMPLE() (-1)

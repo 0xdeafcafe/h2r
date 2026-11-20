@@ -1041,6 +1041,20 @@ fn the_lobbys_co_op_check_is_lifted_only_for_two_consoles_in_a_networked_campaig
 }
 
 #[test]
+fn the_lobby_check_stays_retail_for_a_playerless_multiplayer_lobby() {
+    // Four phantoms and a host with no player: 5 peers, 4 players, custom game.
+    let mut s = session(5, 4);
+    s.class = 1;
+    s.max_peers = 16;
+    s.max_players = 4;
+    for state in [START_COOP_OR_TEAMS, START_READY, START_NOT_LOADED] {
+        for max in [coop_probe::MAX_PLAYERS, 4, coop_probe::CEILING] {
+            assert!(!lift_coop_check(state, Some(&s), max), "state {state}, max {max}");
+        }
+    }
+}
+
+#[test]
 fn a_larger_co_op_lifts_the_lobby_check_for_one_player_per_console_up_to_its_limit() {
     let net = |peers, players| {
         let mut s = session(peers, players);

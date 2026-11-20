@@ -181,11 +181,9 @@ Speaker is on; otherwise the routed sounds play on the main output only.
 | `steam_pad.left_pad` | Left Trackpad | `H2_STEAM_LEFT_PAD` | `dpad` (default), `stick` |
 
 The rows sit on the profile's Controls screen, after Controller Speaker.
-All three apply at once. Other switches:
+All three apply at once. The iOS app never shows them; it shows the touch
+rows instead. Other switches:
 
-- `H2_NO_STEAM_ROWS=1`: leave the three rows off the Controls screen (the
-  settings and variables still work). The iOS app never shows them; it
-  shows the touch rows instead.
 - `H2_STEAM_PAD=0`: don't open Steam Controllers at all (lizard mode stays
   as the controller has it).
 - `--no-gamepads`, or a scripted input timeline: no Steam Controllers

@@ -1,12 +1,12 @@
 //! Dynamic light geometry. The gathered walk can build and sort entries
 //! before the original geometry handlers. The resolved-draw path below
-//! admits individual packets when those handlers execute.
-mod reference;
+//! admits individual packets when those handlers execute. On with the
+//! native renderer (`impl.render.native`, on by default).
 pub mod walk;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::handle::DatumHandle;
@@ -22,25 +22,10 @@ use crate::native_map_work::Stage;
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-lights";
-/// The switch, looked up exactly.
-pub const SWITCH: &str = "impl.render.native_lights";
 
-/// Whether the native lights are on (on by default since 2026-11-20;
-/// `impl.render.native_lights=off` turns them off for the comparison
-/// against the D3D path).
+/// Whether the native lights are on.
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
-}
-
-/// A light the host cannot draw whole
-/// (it meets a world surface left to D3D, or a live object) draws its
-/// native world surfaces natively and keeps its D3D passes for the rest.
-/// Off by default; looked up exactly; only with the native lights on.
-pub const SPLIT_SWITCH: &str = "impl.render.native_lights_split";
-
-/// Whether [`SPLIT_SWITCH`] is on (only with the native lights on).
-pub fn split_on(switches: &crate::Switches) -> bool {
-    on(switches) && switches.feature(SPLIT_SWITCH, false)
+    crate::switches::native_render_on(switches)
 }
 
 /// The light's list, which `RENDER_LIGHT_PASSES` makes current for its
@@ -48,11 +33,11 @@ pub fn split_on(switches: &crate::Switches) -> bool {
 /// count at `+4`, the light's first item at `+0xc`, the items at `+0x14`).
 pub const LIGHT_LIST: u32 = 0x004c_1a60;
 
-/// `RENDER_LIGHT_PASSES`' draws of the layers a split light takes from
-/// its native surfaces, by the layer draw's return address: 14
-/// (`0x000313dd`), 12 (`0x0003144a`) and 13 (`0x000314ca`). Layers 10 and
-/// 11 (shadowed lights only) and the first-person lights' draws on the
-/// same list (`0x000404b0`) are not split.
+/// `RENDER_LIGHT_PASSES`' draws of the layers a light can take natively,
+/// by the layer draw's return address: 14 (`0x000313dd`), 12
+/// (`0x0003144a`) and 13 (`0x000314ca`). Layers 10 and 11 (shadowed
+/// lights only) and the first-person lights' draws on the same list
+/// (`0x000404b0`) are not taken.
 pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f), (13, 0x0003_14cf)];
 
 pub struct Dispatch<'a> {
@@ -61,7 +46,6 @@ pub struct Dispatch<'a> {
     pub shader_gel: Option<(u32, u32)>,
     pub view_target: [u32; 8],
     pub sorted: &'a SortedLayer,
-    pub split: bool,
 }
 
 pub trait Host: Send + Sync {
@@ -72,13 +56,10 @@ pub trait Host: Send + Sync {
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);
     fn target(&self) -> Option<[u32; 8]>;
-    fn end_layer(&self, mem: &mut dyn GuestMemory);
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static SERIAL: AtomicU64 = AtomicU64::new(0);
-static SPLIT_ENABLED: AtomicBool = AtomicBool::new(false);
-
 
 struct Candidate {
     light: Light,
@@ -105,15 +86,13 @@ impl GuestRead for Ro<'_> {
 }
 
 fn finish_candidate() {
-    if let Some(c) = CANDIDATE.take() {
+    if CANDIDATE.take().is_some() {
         refused("no eligible sorted geometry dispatch");
-        reference::refused(c.light);
     }
 }
 
 pub fn new_view() {
     finish_candidate();
-    reference::next_light();
     SERIAL.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let target = host.and_then(|h| {
@@ -237,7 +216,6 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
 
 fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     finish_candidate();
-    reference::next_light();
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
@@ -271,7 +249,7 @@ fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     };
     match prepare() {
         Ok((layer, shader_gel)) => CANDIDATE.set(Some(Candidate { light, serial, layer, shader_gel, inside_layer: false })),
-        Err(why) => { refused(why); reference::refused(light); }
+        Err(why) => { refused(why); }
     }
 }
 
@@ -297,10 +275,9 @@ fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: u32, port_caller: impl FnO
     let Some(view_target) = VIEW_TARGET.get() else { refused("light view target unavailable"); return None; };
     let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, c.layer, esp, esi, caller) {
         Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, shader_gel: c.shader_gel, view_target,
-            sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }),
+            sorted: &sorted }),
         Err(why) => refused(why),
     };
-    if !accepted { reference::refused(c.light); }
     accepted.then_some(())
 }
 
@@ -342,7 +319,6 @@ impl Feature for NativeLights {
                     mxcsr: o.cpu.mxcsr, x87_control: o.cpu.x87.control });
             })
             .context_only();
-        SPLIT_ENABLED.store(split_on(b.switches()), Ordering::Relaxed);
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_lights_layer", |o| {
                 if Stage::Lights.standing_down() {
@@ -366,10 +342,7 @@ impl Feature for NativeLights {
                     return Ok(Flow::Continue);
                 }
                 let rt = Arc::clone(c.ctx.runtime());
-                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |pc| {
-                    c.ctx.live_continuations().iter().any(|k| k.token == pc
-                        && k.target == skip::GEOMETRY_DRAW && k.origin == crate::render_loop::SORTED_HANDLER)
-                });
+                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |_| false);
                 Ok(Flow::Continue)
             })
             .context_only();
@@ -385,27 +358,6 @@ impl Feature for NativeLights {
                 }
             })
             .context_only();
-        let compare = std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1");
-        reference::enable(compare);
-        if compare {
-            b.raw()
-                .observe_before(&points::LAYER_END, "native_lights_compare_end", |o| {
-                    if Stage::Lights.standing_down() {
-                        return;
-                    }
-                    let mut guest = o.guest();
-                    let ret = guest.u32(o.cpu.esp).unwrap_or(0);
-                    if !(native_render::lights::RENDER_LIGHT_PASSES..0x0003_1511).contains(&ret) {
-                        return;
-                    }
-                    reference::layer_end(&*guest);
-                    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if let Some(h) = host {
-                        h.end_layer(&mut *guest);
-                    }
-                })
-                .context_only();
-        }
         b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
             forget_runs();
             Ok(())

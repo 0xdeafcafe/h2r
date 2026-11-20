@@ -92,6 +92,46 @@ unrelated operands. Some go-to records also contain unusable targets
 (a10's `moving_1_3` names point 5 in a set of five). The interpreter skips
 that atom and can still run the next one.
 
+### Spawn and control indices
+
+**Built.** The converter preserves the effective actor, starting weapon and
+command list of each authored location. The retail Xbox executables show
+which absent indices actually suppress an action.
+
+| Source field | Retail behavior and v8 representation |
+|---|---|
+| Actor variant | H1 loads the squad default and replaces it only when the start's index differs from -1 (`0x13e390..0x13e3ae`). A negative or out-of-range effective index or a null palette datum skips creation (`0x13e3b0..0x13e3dd`). H2 makes the same checks at `0x2037bf..0x2037fa`. When an explicit empty override shares a squad with valid inherited starts, the converter puts the default on those siblings and leaves both character fields empty for the failed spawn. |
+| Weapon | H1 tests the effective variant's weapon datum at `0x14d6ee`. A null datum skips weapon creation at `0x14d70b`. A mixed squad stores its weapons on individual starts so an explicitly unarmed variant cannot inherit another variant's weapon. An armed source requires a resolved destination weapon palette slot. |
+| Starting command list | H1 forwards start `+0x1a` at `0x14e51b..0x14e540`, stores it at actor `+0x90` at `0x14cd76`, and bypasses the active-list path on -1 at `0x167c6a`. Scripted v8 maps bind every real list to its generated script. Unrepresentable indices and missing source lists are conversion errors. |
+| Conversation cast scope | H1 reads participant `+0x44` at `0x143d69` and passes every non-null selector to the actor iterator at `0x13eda0`. The display text at `+0x24` does not participate. Casting uses the converted numeric squad or group even when the text is empty or duplicated. Of 327 retail roles, 35 specify an encounter and 292 leave this scope open. |
+| Generic voice bank | H1 visits unit `+0x2b4`, takes up to 16 selectors below 100 and leaves the initial voice unchanged if none qualify (`0x46716..0x4675a`). In that case the converted unit has no generic bank. |
+| Squad and platoon | H1 decodes the encounter from the low word and the local squad or platoon from the next byte (`0x13eeee`, `0x13ef34..0x13ef63`). Campaign roster selection records those source ordinals through pruning and generated starts. Ordinary AI script literals and counted spawn controls bind those ordinals. Duplicate display names remain independently addressable. Counted spawn selects the first squad of a platoon and returns without spawning for a bare encounter or an empty platoon (`0x1422ec..0x14236c`). A required squad missing from the converted roster is an error. A squad with no matching platoon is outside that platoon's selection (`0x13e50f..0x13e522`). |
+| Maneuver and trigger targets | A negative or out-of-range maneuver target bypasses migration (`0x13e191..0x13e1be`). A trigger subject outside its platoon table uses the entire encounter's counts and vitality (`0x13af44..0x13af86`). Native order index overflow is a conversion error. |
+
+A read-only census of the 23 playable Xbox maps found 10,129 authored
+starts. Of these, 8,206 inherit the squad actor, 112 have no effective
+actor, and 1,614 specify a starting command list. The ignored
+`retail_spawn_bindings_keep_every_actor_weapon_and_command` check compares
+those bindings with the decoded v8 scenario for every location. The source
+script tables also contain 4,695 literal AI operands: 2,041 encounters,
+235 platoons and 2,419 squads. Each names an existing source row.
+
+#### Coordinator verification
+
+Run from the conversion worktree with `H1_ISO` and `H2_DISC` set to the
+absolute paths of the two retail Xbox discs.
+
+```sh
+cargo test -p h1ai -p h1models -p h1convert -p h1campaign -p h1scripts -p engine --lib
+cargo test -p h1ai --test convert
+cargo test --release -p h1models --lib retail_overlay_defaults_round_trip_on_all_23_maps -- --ignored
+cargo test --release -p h1ai --test disc retail_spawn_bindings_keep_every_actor_weapon_and_command -- --ignored
+cargo test --release -p h1objects --test sandbox_disc halo2_sandbox_places_a_vehicle_without_a_counterpart -- --ignored
+cargo test --release -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
+cargo test --release -p h1scripts --test conversations_disc every_campaign_conversation_compiles_with_its_source_sounds -- --ignored
+cargo test --release -p h1campaign --test disc both_sandboxes_rebuild_every_retail_map -- --ignored
+```
+
 ### `actr` and `actv`
 
 `actr` is `0x4f8` bytes; the converter reads flags `u32` `00`, more flags
@@ -388,10 +428,232 @@ H2 tests seat admission at `0xc8200` and submits the entry behavior at
 `0x16a603` and `0x16b23c`. H2's landing routine tests its counterpart at
 `0xe3727` before applying the distance damage effect.
 
-Vocalize looks up the actor model's converted dialogue and plays its
-source sound on the unit. H1 indexes the dialogue tag at `0x46a40`
-and follows the executable's fallback table when the line is absent.
-None of the retail campaign lists uses this atom.
+**Built.** Voice banks keep the unit definition's selector and every
+authored alternative (`unit +0x2b4` in Halo 1). Halo 1 `0x468d0` draws
+among matching rows. The caller at `0x469ad` tries a positive selector,
+then selector zero, then all rows. The H2 speech initializer at
+`0x114ec0` accepts a model variant name and writes its dialogue datum
+and designator to the unit's speech block at `0x114ff3`. The hook
+selects the matching voice variant for that call. A unique leader
+assigned an existing unit updates the same two speech fields.
+
+**Built.** Native vocalizations use the indexed vocabulary at `adlg +0`.
+Halo 2 reads the chosen unit's indexed sound at `0x1144f4`. The rebuilt
+table keeps explicit Halo 1 slots after its native rows. A command
+atom names a slot and resolves the authored fallback chain from
+`0x1e0720` (read by Halo 1 at `0x46a55`). It plays the exact converted
+sound from the speaking unit's head and passes the sound instance to
+lip sync, using Halo 2 `0x1891d0` and `0x109220`. None of the retail
+campaign lists uses the explicit vocalize atom. In automatic chatter
+the native table also routes sniper praise (H2 `adlg` event 0,
+pattern 27) and flight after a leader dies (event 63, pattern 110).
+
+**Built.** The Halo 1 kill stimulus at `0x149a72` passes the victim,
+killer, relationship and damage category. Its weapon-specific patterns
+select the killer for grenade (3), sniper (5), mounted weapon (8),
+needler (11) and shotgun (12) kills of enemies. Halo 2 event 0
+already has a grenade-category cheer. The other categories keep their
+original value at converted `jpt! +0x34`, including the sniper category
+that the damage converter maps to bullets for Halo 2 gameplay.
+
+Halo 2's damage path calls `0x1c95d0` at `0xca4ed` with the report
+in the caller's EBP. The AI kill wrapper emits event 0 at `0x1c975c`.
+The hook at `0x20d0c0` checks that call chain and applies the original
+category to the winning hostile-killer candidate. It enqueues the
+speaking unit's exact source row through `0x114b60` at the candidate's
+priority. Halo 2 still selects the winning candidate, including any
+witness or player praise.
+
+**Built.** The hostile-killer candidate also picks the line for a
+Covenant victim, a Flood combat or carrier form, or a Sentinel.
+Halo 1 reads the victim's actor type at `0x146089`, then reads its
+dialogue class from the actor descriptor at `0x146095`. The event 0
+patterns match that class at `0x146842`. Halo 2 keeps the actor type
+at `actor +4` for the converted character. The hook reads that type
+on the victim and resolves the result in the killer's voice.
+
+**Built.** The victim's flying-death line is separate from falling.
+Halo 1 tests `jpt! +0x1f4` against 2.0 at `0x4721b`, with falling
+and fire categories taking precedence at `0x47275`. Converted damage
+keeps that impulse at `jpt! +0x38`. Halo 2 calls its victim's damage
+speech at `0xca45d`. The lethal path checks the victim's speech at
+`0x114a06`, where the hook selects the exact flying-death row.
+
+**Built.** Search completion uses the authored search report. In Halo 1
+the search timer reaches zero before stimulus 18 at `0x16a440`. Halo 2
+validates the finished search or pursuit at `0x1b26c1` and emits event
+46 or 48 at `0x1b26e4` or `0x1b2702`.
+
+**Built.** Halo 1 friendly-fire stimulus 3 picks the victim's
+`hurtfriendplayer` line when the attacker is a friendly player.
+Halo 2's event 3 `scld_plr_hrtme` applies the corresponding
+speaker and relationship checks. Halo 1 stimulus 25 at `0x15718c`
+greets a newly sighted friendly player. Halo 2 event 163 uses
+`grt_plr` for that actor and player pairing.
+
+**Built.** The search query is periodic stimulus 17. Halo 1's wait entry
+initializes its timer at `0x167f3a`, and `0x16814b` fires and rearms
+it after 300–599 ticks. The speech update at `0x47073` can trigger
+reply rule 34 (`0x1f00a0`). The reply comes from another allied AI
+actor, within nine world units, in the same encounter when one is set.
+The predicate at `0x1428e0` accepts search mode or uncover mode with
+a target.
+
+The Halo 2 hook at `0x114c60` keeps the query timer in guest memory while
+the actor is waiting in presearch or postsearch. It scales the 10–20
+second interval to the engine tick rate. A completed query can be
+answered by allied actors in search, investigate or targeted uncover,
+using their own voice and the native per-unit speech queue.
+
+**Built.** Nonlethal damage can make the attacker or victim speak. Halo 1
+resolves a vehicle shot to its gunner and a collision to its driver at
+`0x149889`. It sends immediate friendly damage as stimulus 3 and sends
+hostile injury as stimulus 2 after the 0.3 threshold at `0x149440`.
+The latter has victim lines for needler, plasma, melee and mounted
+damage. The host reads the original damage category from the report
+when Halo 2 calls `0x1c9c80` at `0xca512`. A pending line follows the
+salted speaker until its next native speech update.
+
+**Built.** The killer addresses friendly victims and player victims
+using separate source rows. The Halo 1 kill patterns distinguish
+friendly and hostile victims at `0x1467e0` and test the victim's
+class at `0x146842`. Halo 2's lethal damage notification at
+`0x1c95d0` captures friendly kills for the attacker. Hostile kills of
+a player use the same candidate as the other victim-class lines.
+
+**Built.** The allied responses to damage and kill remarks require a
+completed source utterance. Halo 1 dispatches replies at `0x47073`
+through the table at `0x1efbd8`. It first seeks a living AI in the
+speaker's encounter, or on its team if there is no encounter, within
+nine units. The kill replies also test a five-unit unit-contact
+predicate at `0x145140`. The Halo 2 hook keys off the native sound's
+last active tick at `0x114d8a`. The converted vocalization rows retain
+their source slot so that native and source-only remarks can both
+trigger their own replies. Nearby allied actors are selected from the
+same group and BSP visibility region and speak through their own
+cached bank after the half-second reply delay.
+
+**Built.** Ally witnesses speak from the victim's side. The Halo 1
+kill stimulus uses speaker kind 2 for these remarks. Its branch at
+`0x14696b` searches the victim's encounter, or its team when there
+is no encounter, within ten units. The patterns at `0x1eeeb8`
+through `0x1eef80` match friendly or hostile fire and can specialize
+by the killer's class. The Halo 2 lethal damage hook casts a living
+witness at the victim's location and selects the matching player,
+Covenant, Flood, or Sentinel remark from that actor's voice.
+
+**Built.** Halo 1 `0x4154b` tracks successive hostile kills and resets
+the counter when more than 120 ticks have elapsed since the previous
+kill. It dispatches stimulus 1 after three kills for an AI or five
+for a player, then clears the count. The Halo 2 lethal damage hook
+tracks the same count per salted killer, scaling the interval to the
+engine tick rate. An AI can speak its own spree line. The player is a
+silent speaker whose nearby ally can give the dedicated response,
+as in the Halo 1 silent-response dispatch at `0x1472a9`.
+
+**Built.** Friendly injury reply rule 24 at `0x1eff38` selects
+the exact attacker from the victim's damage event. Its salted
+handle is associated with the accepted speech row until that
+utterance finishes or is replaced. Grenade, flame and vehicle
+kill responses use the original damage category. The silent
+player kill takes the nearby allied reply route directly. An AI
+with the generic kill remark can also draw the grenade response.
+As in Halo 1, an interrupted remark does not start a reply.
+
+**Built.** Halo 1's accepted seat exit at `0x42a5b` notifies the
+actor and selects stimulus 37. Halo 2 calls its AI from the
+corresponding accepted dismount action at `0xeac66`. The occupant
+uses its original exit remark there. Halo 1's motion check at
+`0x4b6fb` selects excitement or fright for vehicle riders. Halo 2
+also distinguishes its cheer and dangerous-driving events at
+`0x1c831d` and `0x1c8347`, and selects the converted sounds through
+its rider vocalizations.
+
+**Built.** Halo 1's perception update at `0x15725e` reports an
+alliance change using the new relationship. Halo 2 emits alliance
+break event 194 at `0x25accf` for the observer and emits alliance
+restoration event 196 at `0x1c9958`. The observer can use its exact
+alliance-break row, and the restored alliance uses the native
+forgiveness vocalization.
+
+**Built.** Halo 1 chooses its firing remark at `0x162a82`. It first
+checks berserk mode, then an enemy flagged as a traitor, then five
+or more recognized enemies, and finally whether the actor is seated
+in a vehicle. The Halo 2 burst hook at `0x1fe620` reads those
+conditions from the current actor, seat and perceived objects. Its
+timer follows the source remark's cooldown. The leap calls use a
+separate row. Halo 1 plays it after the leaping attack starts
+(`0x15ba89`), and Halo 2's leaping-melee entry callback at `0x1ab380`
+queues that row only after the action is accepted.
+
+**Built.** Search abandonment is stimulus 19 at `0x166ae3`, after
+a previous search attempt can no longer proceed. The Halo 2
+pursuit failure events distinguish no claimant, no position and no
+usable points. They use the original abandonment remark in the
+actor's current voice.
+
+**Built.** A newly sighted enemy can use the recent-combat remark.
+The source condition at `0x1463f1` keeps a 180-tick combat interval.
+The native sighting call at `0x25b38c` consults the acting unit's
+earlier combat state. Nearby ally alerts follow the source awareness
+rules at `0x157365` and `0x1573c0`. An eligible ally who has not
+acquired the reported target can answer in its own voice, identified
+by the exact salted unit in the alert.
+
+**Built.** Halo 1 dispatches loss of contact at `0x166869` and
+`0x16a419`, group uncover at `0x169b7c`, cover at `0x167356`
+and completion of hiding at `0x16d748`. The Halo 2 control update
+follows the native actor's contact and behavior transitions.
+It uses its guard/search states for loss of contact, entry to uncover
+while tracking the enemy, entry to cover, and exit from hiding with
+a relevant contact. The focused-prop awareness levels come from
+the Halo 1 AI compatibility code.
+
+**Built.** The group responses at `0x1eff5c` onward distinguish
+allies within five units from other audible nearby actors.
+The lost-contact reply requires an alert guard, the uncover
+reply requires the same target, and retreat requires the same
+squad. The flee reply is limited to allies at the source's full
+combat awareness level who are still able to act. These checks
+run after the triggering row has finished in Halo 2's speech cache.
+
+**Built.** A new hostile grenade triggers startle in Halo 1 at
+`0x15000b`. Its danger update at `0x166f31` distinguishes enemy,
+allied and own grenades, with 20- and 30-tick fuse conditions for
+the latter two. Halo 2's projectile danger selection at `0x265119`
+records the projectile, its relationship and its remaining fuse
+for that actor. The hook follows the selected grenade, schedules
+the enemy warning after the initial startle, and uses the original
+fuse limits for ally and self warnings. The exposed actor's retreat
+can select the involuntary grenade line with the original one-half
+chance from `0x46c30`.
+
+**Built.** The blocked remark at `0x16376e` requires 45 consecutive
+source ticks of blocked movement during combat. Halo 2's control
+update compares requested movement and actual velocity and looks
+for the allied unit occupying the requested direction. The reply
+goes to that exact blocker after the request has finished.
+
+**Built.** Postcombat remarks are assigned from the combat
+outcome in Halo 1 at `0x13d66c`–`0x13d760`. That check uses the
+pre-combat and remaining group size and the speaker's original
+and current body vitality. It distinguishes serious wounds,
+an isolated survivor, heavy losses, a rout, and a healthy survivor.
+Halo 2's actor control hook records starting strength and vitality.
+Entry to its postcombat behavior at `0x1b4240` selects the remark
+after contact ends for the group. Three original aftermath rules
+allow nearby allies to answer after the initial line has finished.
+
+**Built.** The source corpse-action stimulus at `0x16d20e` uses
+the body's relationship and class. Halo 2 event 98 at `0x1b3c3e`
+checks an allied body and uses the original allied check remark.
+The actual corpse-firing callback at `0x1b39ce` identifies the
+target. The speaker uses its separate authored line when that
+target is a player unit.
+
+Automatic stimuli without a verified route remain conversion errors
+(see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
+
 
 #### Cinematic bindings (x50 and c40)
 
@@ -494,8 +756,9 @@ comes from 04b when donor maps are supplied.
 with its unit, perception, vitality and weapon properties. a10's tech,
 engineer, security, science and command variants have different RGB
 bounds in the block at `actv+0x22c`. Their rebuilt bipeds share a model
-and graph. Security carries the source pistol. The other five variants
-(including the pilot) have null weapon references.
+and graph. Security carries the source pistol (the retail magnum in the
+Halo 2-assets variant). The other five variants (including the pilot)
+have null weapon references.
 
 **Built — firing positions.** Halo 1 encounter flag `0x20` marks all
 three a30 Banshee encounters (584 points). They keep their altitude and
@@ -518,18 +781,33 @@ encode `0x80000000 | local_squad << 16 | encounter`. The converter uses
 these indices to retain named targets, including on a50 and b40. The
 native migration evaluator requires a squad datum (`0x002a54cc`).
 Direct placements of empty squads with a defined actor use authored
-positions from that squad's movement or firing groups. This site-selection
-rule is an inference. Examples include a50's `marines_initial/marines_a`.
+positions from that squad's movement or firing groups. Examples include
+a50's `marines_initial/marines_a`.
 b40's `a2_top_cov/grunt_sniper` names only firing group Y, and its
-encounter has no position in that group, so it gets no sites. b40's
+encounter has no position in that group, so no site of any kind can be
+authored for it: it converts to a squad datum with zero starting
+locations, stays named and addressable, and a placement of it selects
+no start and spawns nothing. Halo 1 reads the squad's authored start count
+at `0x13b2bb` and indexes the selected 0x1c-byte record at `0x13e397`.
+This squad has zero records. The engine the converted map
+runs proves the outcome: the native selector (Halo 2 `0x002039d0`)
+reads the squad's starting-location count and, with none selectable,
+both passes fall through to `orl $-1, %eax` at `0x00203bb3`; it has no
+move-position or firing-group fallback of its own. b40's
 `a2_bottom_cov/grunts_tub` has no actor or start to instantiate. Both
 remain addressable for migration.
 
+A level converted without its scripts keeps none of these: nothing names
+or places a squad, and the automatic migration orders are written with
+the scripts. Squads of encounters only the scripts create are left out
+while the pool is over (a `dropped` line counts them), so a50 fits its
+386 slots either way.
+
 The campaign squad-pool hook runs before `0x00200b30` initializes the
 arrays. Retail allocates consecutive `0xc760` and `0x163c` buffers
-at `0x00200957` and `0x0020098a`. When necessary, it moves the boundary
-within those buffers using the new scenario's counts. Smaller maps restore
-the retail capacities. The converter uses the same capacity calculation.
+at `0x00200957` and `0x0020098a`. The hook reserves space for 386 squad
+records at startup and sets the active capacity from the scenario on each
+map load. Smaller maps restore the retail squad capacity. The converter uses the same capacity calculation.
 
 The ignored disc tests cover the a30/a10 sector readback, every campaign's
 scripted squad references, and the a10/c40 character-to-animation resource
@@ -611,3 +889,52 @@ out in `0xfe618`.
 - Vehicle actor variants (`warthog gunner`, `banshee` pilots) become plain
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.
+
+**Built.** Halo 1's active Flood revival passes involuntary speech type 5 at
+`0x4508c` after the revival timer expires with positive body vitality.
+That type selects `udlg+0xb80` at `0x46c84`. Halo 2's reanimation
+path checks for a depleted parent at `0x28fedc` and calls `0xcaf00`
+through `0x1e0dc0` to clear depletion and restore the unit. Converted
+units with that authored slot queue it on this transition.
+
+**Built.** The Xbox retail dialogue scheduler never selects slots `0xa90` (partial
+sighting), `0xaa0` (nothing there), or `0xb60` (uncover exclamation).
+They appear in neither the primary or reply tables nor the hard-coded
+involuntary selectors, and no entry in the fallback table selects them.
+The converted bank preserves the original sounds and indices for explicit
+source-slot lookup.
+
+**Built.** The airborne scream at `udlg+0xb0` is separate from damage
+on landing. The Halo 1 biped update at `0x49280` checks more than one
+second airborne, then checks for ground within six units and estimates
+vertical speed on impact. The vehicle rider branch at `0x4b580`
+requires more than four seconds in an eligible seat, more than one
+second airborne, and no floor below or in the projected path. Both
+source branches gate probes at half-second intervals and suppress them
+during custom animation. The biped branch also respects the converted
+command list's falling-damage exemption. The boot hook uses Halo 2's
+biped and vehicle airborne counters, the animation manager predicate at
+`0x11b930`, and the BSP ray at `0x1697c0`. It queues the original
+scream in the speaker's speech cache.
+
+The Xbox retail XBE has a scheduler row for stimulus 46 at
+`0x1ef9f8` that also selects `0xb0`. That row is dormant in this
+executable. The scheduler at `0x145f30` has 43 direct call sites. Only
+the command-list update and the combat-aftermath update pass a
+preselected event ID. The
+command-list update at `0x16c66c` forwards the event at actor `+0xfc`;
+the action switch at `0x16ba93` only writes events 38, 39, 41, 42, 44
+or the no-event sentinel to that field. The aftermath switch feeding
+`0x16d20e` only supplies events 48 through 56. The retail
+`ai_debug_vocalize` evaluator at `0xec990` returns void without
+dispatching an event. Explicit source-slot requests still resolve
+`0xb0` through the unit's converted voice bank.
+
+**Built.** Halo 1's collision damage accumulates applied body damage in
+a byte for each collision region at `0x9512f`. It destroys that region
+after crossing the source `coll +0x28` threshold. The live unit
+notification at `0x3dd10` selects `0xd0` or `0xe0` by collision
+region flag `0x200`. The converted `hlmt` carries these source
+thresholds and flags. The Halo 2 body-damage callback reads the hit
+region that `0xd7e1d` writes and the applied normalized damage that
+`0xd8e5e` writes. Its region history is per salted object handle.

@@ -96,7 +96,7 @@ group weap 0x31c
   0x288 string string_288
   0x28c string string_28c
   0x290 i16 multiplayer_weapon_type -- E/V: 0 ordinary, 1 flag or bomb, 2 ball, 4 juggernaut powerup (0x101280, Zanzibar)
-  0x292 unknown 0x2
+  0x292 i16 weapon_type -- E/V: shotgun 1 (shell reload at 0x10271d), needler 2, plasma pistol 3, plasma rifle 4
   0x294 unknown 0x4
   0x298 unknown 0x4
   0x29c unknown 0x4
@@ -164,7 +164,7 @@ group weap 0x31c
     0x28 unknown 0x4
     0x2c unknown 0x4
     0x30 string string_30
-    0x34 unknown 0x2
+    0x34 i16 prediction_type -- E/V: multiplayer firing at 0x10429b; continuous 1, discrete 2 on the SMG and shotgun
     0x36 i16 firing_noise -- V: equals Halo 1's trigger +0x2e (the AI's hearing of a shot: silent, medium, loud, ...) on eight retail pairs
     0x38 unknown 0x4
     0x3c unknown 0x4
@@ -188,8 +188,7 @@ group weap 0x31c
     0x84 unknown 0x4
     0x88 unknown 0x4
     0x8c tagref projectile -- V2 (halo1/objects.md): a proj reference on every barrel that fires one
-    0x94 unknown 0x4
-    0x98 unknown 0x4
+    0x94 tagref damage_effect groups=jpt! -- E: 0x1053f6 reads its datum after the projectile loop and skips -1
     0x9c unknown 0x4
     0xa0 unknown 0x4
     0xa4 unknown 0x4

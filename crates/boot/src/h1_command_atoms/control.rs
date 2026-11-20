@@ -273,7 +273,11 @@ fn run(m: &mut dyn GuestMemory, index: u16) -> R<()> {
                 m.cstr(def + 40, 31)?.as_slice(),
             ) {
                 (b"h1_cmd_graph_unit", 36, b"h1_cmd_unit_graph") => Some(0x14),
-                (b"h1_cmd_voice_unit", 8, b"h1_cmd_voice_tag") => Some(0x90),
+                (b"h1_cmd_voice_unit", 8, b"h1_cmd_voice_tag") => {
+                    let unit = m.u32(addr)?;
+                    let voice = crate::h1_conversation::dialogue::active(m, unit)?;
+                    return m.set_u32(addr + 8, voice);
+                }
                 _ => None,
             };
             if let Some(offset) = offset {

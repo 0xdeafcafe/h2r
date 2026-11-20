@@ -23,6 +23,7 @@ mod prompts;
 mod silhouettes;
 mod timer;
 mod tint;
+mod weapon;
 
 const HUD: u32 = 0x0050_23f4;
 const HUD_FLAGS: u32 = 0x0051_0c98;
@@ -276,9 +277,12 @@ fn stage(
     Ok(Some(Saved { address, original }))
 }
 
+/// The feature's id, for the features that order their hooks around it.
+pub(crate) const FEATURE: &str = "h1-hud-text";
+
 pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError> {
     let feature = feature::FnFeature {
-        manifest: Manifest::new("h1-hud-text", "Halo 1 help and objectives"),
+        manifest: Manifest::new(FEATURE, "Halo 1 help and objectives"),
         build: |b: &mut Builder| {
             b.snapshot(feature::SnapshotPolicy::Stateless);
             let scratch = b.guest_alloc(
@@ -363,7 +367,8 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
             prompts::register(b);
             silhouettes::register(b);
             timer::register(b);
-            tint::register(b);
+            let rows = weapon::register(b)?;
+            tint::register(b, rows);
             Ok(())
         },
     };
@@ -426,6 +431,40 @@ mod tests {
         assert_eq!(selected_message(&mem, hud).unwrap(), (1, true));
         mem.set_u8(flags + HELP_SHOWN, 0).unwrap();
         assert_eq!(selected_message(&mem, hud).unwrap(), (0, false));
+    }
+
+    /// `display_scenario_help` (slot 903) shows the scenario's converted
+    /// help row in the native help panel, as Halo 1's 0xf2f30 does with
+    /// its help list. Rows past the list, or a tag without the conversion
+    /// marker, change nothing.
+    #[test]
+    fn scenario_help_shows_the_converted_row_in_the_help_panel() {
+        let mut mem = FlatMemory::new(0x0050_0000, 0x0002_0000);
+        let hud = 0x0051_8000;
+        let flags = 0x0051_a000;
+        let tag = 0x0051_c000;
+        let messages = 0x0051_d000;
+        mem.set_u32(HUD, hud).unwrap();
+        mem.set_u32(HUD_FLAGS, flags).unwrap();
+        mem.set_u32(tag + MARKER_AT, MARKER).unwrap();
+        mem.set_u32(tag + 0x10, 12).unwrap();
+        mem.set_u32(tag + 0x14, messages).unwrap();
+        // Five help rows from message 7, after the mission's own messages.
+        mem.set_u16(tag + h1text::hud::SCENARIO_HELP, 7).unwrap();
+        mem.set_u16(tag + h1text::hud::SCENARIO_HELP + 2, 5).unwrap();
+
+        show_scenario_help(&mut mem, tag, 5).unwrap();
+        assert_eq!(mem.u8(flags + HELP_SHOWN).unwrap(), 0);
+        assert_eq!(mem.u32(hud + HELP_MESSAGE).unwrap(), 0);
+
+        show_scenario_help(&mut mem, tag, 3).unwrap();
+        assert_eq!(mem.u8(flags + HELP_SHOWN).unwrap(), 1);
+        assert_eq!(mem.u32(hud + HELP_MESSAGE).unwrap(), messages + 0x40 * 10);
+        assert_eq!(selected_message(&mem, hud).unwrap(), (messages + 0x40 * 10, true));
+
+        mem.set_u32(tag + MARKER_AT, 0).unwrap();
+        show_scenario_help(&mut mem, tag, 4).unwrap();
+        assert_eq!(mem.u32(hud + HELP_MESSAGE).unwrap(), messages + 0x40 * 10);
     }
 
     #[test]

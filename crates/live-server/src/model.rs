@@ -82,6 +82,10 @@ pub struct Game {
     pub(crate) sim_recording_limited: bool,
     pub started_at: String,
     pub(crate) has_host_film: bool,
+    pub(crate) film_blob: Option<String>,
+    pub(crate) film_stats_discrepancy: Option<live_proto::film::StatsDiscrepancy>,
+    pub(crate) film_summary: Option<live_proto::film::Summary>,
+    pub(crate) film_web_ranges: Option<crate::films::WebRanges>,
     pub position: u64,
     pub players: Vec<Player>,
     /// Everyone who was ever in the game (for `recent_games`).
@@ -452,7 +456,7 @@ impl Model {
                     crate::sessions::CoopLink::find(s, &who)
                 })
                 .flatten();
-            let game = Game {
+            let mut game = Game {
                 all_players_identified: players.iter().all(|p| p.xuid.is_some()),
                 ended_by_host: false,
                 xuids,
@@ -465,6 +469,10 @@ impl Model {
                 sim_recording_limited: false,
                 started_at: b.at.clone(),
                 has_host_film: false,
+                film_blob: None,
+                film_summary: None,
+                film_stats_discrepancy: None,
+                film_web_ranges: None,
                 position: e.position,
                 scoreboard: Vec::new(),
                 teams: None,
@@ -474,6 +482,7 @@ impl Model {
                 recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
                 last_activity: at,
             };
+            s.films.attach_standalone(&mut game);
             s.games_by_position.insert(e.position, id.clone());
             s.games.insert(id, game);
             return;
@@ -598,7 +607,7 @@ impl Model {
             Self::apply_game(&mut s, e, at);
             return;
         }
-        if b.stream == crate::films::STREAM {
+        if b.stream == crate::films::STREAM || b.stream.starts_with(crate::films::IMPORT_PREFIX) {
             crate::films::project(&mut s, e);
             return;
         }

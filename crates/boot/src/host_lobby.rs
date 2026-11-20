@@ -16,7 +16,7 @@ use crate::map_select::Catalogue;
 use crate::new_maps::{Disc, IsoDisc};
 
 mod retail;
-pub(crate) use retail::Machine as PlayerlessLobby;
+pub(crate) use retail::{Machine as PlayerlessLobby, SimStart};
 mod variants;
 use self::variants::Variants;
 #[cfg(test)]
@@ -185,8 +185,9 @@ fn methods(agent: &Agent, shared: &Shared, maps: Catalogue, variants: Variants, 
                 ctx.reader
                     .with_guest(&mut |m| observed = Some(q.machine.observe(m)));
                 if let Some(result) = observed {
-                    let (state, needs_retail_check) = result?;
-                    if !needs_retail_check {
+                    let (state, blocker) = result?;
+                    // Only an eligible lobby needs retail's start check.
+                    if blocker.is_some() {
                         return Ok(json!(state));
                     }
                 }
@@ -227,9 +228,28 @@ impl Feature for Lobby {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.snapshot(SnapshotPolicy::forbid_while(|| {
-            Some("dedicated network host".into())
-        }));
+        let (check, save, load) = (self.q.clone(), self.q.clone(), self.q.clone());
+        b.snapshot(SnapshotPolicy::section_forbid_while(
+            move || {
+                // A checkpoint can resume the lobby only in the isolated
+                // film player. Ordinary state.load cannot rewind real peers.
+                if !crate::theater::in_keyframe() {
+                    return Some("dedicated network host".into());
+                }
+                let q = check.lock().unwrap_or_else(|e| e.into_inner());
+                (q.stage != TickStage::Idle || q.job.is_some() || !q.readers.is_empty())
+                    .then(|| "dedicated lobby command in flight".into())
+            },
+            move || save.lock().unwrap_or_else(|e| e.into_inner()).machine.save(),
+            move |bytes, _| {
+                if !crate::theater::in_keyframe() {
+                    return Err("dedicated lobby requires a film keyframe".into());
+                }
+                let machine = retail::Machine::load(bytes).map_err(|e| e.to_string())?;
+                load.lock().unwrap_or_else(|e| e.into_inner()).machine = machine;
+                Ok(())
+            },
+        ));
         exclude_local_profiles(b);
         let scratch = b.guest_alloc(
             crate::level_boot::VARIANT_SIZE,

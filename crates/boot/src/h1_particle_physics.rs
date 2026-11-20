@@ -40,6 +40,7 @@ impl Feature for H1ParticlePhysics {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use feature::points::{EFFECT_STEP_EMITTERS, PARTICLE_INITIALISE, PARTICLE_MOVEMENT_STAGE};
+        b.snapshot(feature::SnapshotPolicy::Stateless);
         b.raw().after(
             &PARTICLE_INITIALISE,
             "apply Halo 1 particle birth velocity",
@@ -105,7 +106,7 @@ impl Feature for H1ParticlePhysics {
     }
 }
 
-fn fault(f: MemFault) -> GuestFault {
+pub(super) fn fault(f: MemFault) -> GuestFault {
     GuestFault {
         addr: f.addr,
         len: f.len as usize,
@@ -223,7 +224,7 @@ fn for_particles(
 /// and medium mass before scaling by radius cubed if the tag requests it.
 const MEDIUM_MASS: [f32; 2] = [0.0011 * 118613.34, 118613.34];
 
-fn point_velocity(p: PointPhysics, v: [f32; 3], liquid: bool, dt: f32) -> [f32; 3] {
+pub(super) fn point_velocity(p: PointPhysics, v: [f32; 3], liquid: bool, dt: f32) -> [f32; 3] {
     let medium = usize::from(liquid);
     let r2 = p.radius * p.radius;
     let mass = (p.mass + MEDIUM_MASS[medium])
@@ -275,7 +276,7 @@ fn apply_forces(
 
 /// Halo 2 finds the cluster with its packed BSP walk (0x0014a280),
 /// then classifies the cluster's liquid plane (0x00178d3b).
-fn in_liquid(m: &dyn GuestMemory, point: [f32; 3]) -> Result<bool, MemFault> {
+pub(super) fn in_liquid(m: &dyn GuestMemory, point: [f32; 3]) -> Result<bool, MemFault> {
     let bsp = m.u32(STRUCTURE_COLLISION)?;
     let structure = m.u32(STRUCTURE)?;
     if bsp == 0 || structure == 0 {

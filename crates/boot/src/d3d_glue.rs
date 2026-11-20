@@ -35,12 +35,24 @@ pub struct Installed {
 pub trait DeviceSnapshot: Send + Sync {
     /// What keeps the device from being saved now.
     fn blockers(&self) -> Vec<String>;
+    /// Pending device operations which prevent an isolated film restore.
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.blockers()
+    }
     /// The `d3d` section. Writes guest memory (render targets written
     /// back), so it runs before guest RAM is saved.
     fn save(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter)
     -> Result<(), String>;
+    /// A film keyframe includes the parameters needed to create a cold device.
+    fn save_film(&self, rt: &runtime::Runtime, out: &mut snapshot::SnapshotWriter) -> Result<(), String> {
+        self.save(rt, out)
+    }
     /// After guest RAM is loaded.
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String>;
+    /// Recreate host resources from a cold film keyframe after guest RAM loads.
+    fn load_film(&self, _rt: &runtime::Runtime, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
+        self.load(snapshot)
+    }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
@@ -48,6 +60,9 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
             .snapshot_blockers()
+    }
+    fn film_load_blockers(&self) -> Vec<String> {
+        self.lock().unwrap_or_else(|e| e.into_inner()).film_load_blockers()
     }
     fn save(
         &self,
@@ -61,9 +76,25 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
             .save_snapshot(&mut mem, out)
             .map_err(|e| e.to_string())
     }
+    fn save_film(
+        &self,
+        rt: &runtime::Runtime,
+        out: &mut snapshot::SnapshotWriter,
+    ) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guest = rt.memory();
+        let mut mem = d3d::runtime_glue::GuestAdapter::new(&mut guest);
+        device.save_film_snapshot(&mut mem, out).map_err(|e| e.to_string())
+    }
     fn load(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
         let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
         device.load_snapshot(snapshot).map_err(|e| e.to_string())
+    }
+    fn load_film(&self, rt: &runtime::Runtime, snapshot: &snapshot::Snapshot<'_>) -> Result<(), String> {
+        let mut device = self.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guest = rt.memory();
+        device.load_film_snapshot(snapshot, &d3d::runtime_glue::GuestAdapter::new(&mut guest))
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -90,7 +121,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     }
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     {
-        install_with(rt, Headless::default())
+        install_headless_cpu_for_profile(rt, crate::registration::compiled_render_hooks())
     }
     #[cfg(not(feature = "desktop-runtime"))]
     {
@@ -98,13 +129,28 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     }
 }
 
+#[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
+pub(crate) fn install_headless_cpu_for_profile(
+    rt: &runtime::Runtime,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
+    install_for_profile(rt, Headless::default(), None, profile)
+}
+
 /// No display backend. Leftover lobby and loading draws carry texture
 /// descriptors and handles through the ABI without copying the pixels.
 pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    install_light_for_profile(rt, crate::registration::compiled_render_hooks())
+}
+
+pub(crate) fn install_light_for_profile(
+    rt: &runtime::Runtime,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
     let backend = d3d::descriptor::DescriptorBackend::default();
     #[cfg(not(feature = "desktop-runtime"))]
     let backend = backend.with_present(crate::d3d_diag::note_descriptor_present);
-    install_with(rt, backend)
+    install_for_profile(rt, backend, None, profile)
 }
 
 #[cfg(feature = "gpu")]
@@ -125,7 +171,7 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
-    install_headless_with_settings(rt, interp, None)
+    install_headless_for_profile(rt, interp, crate::registration::compiled_render_hooks(), None)
 }
 
 #[cfg(feature = "gpu")]
@@ -142,13 +188,14 @@ pub(crate) fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<boo
 }
 
 #[cfg(feature = "gpu")]
-pub(crate) fn install_headless_with_settings(
+pub(crate) fn install_headless_for_profile(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
+    profile: film::RenderHooks,
     settings: Option<&settings::Store>,
 ) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
-        None => install_with(rt, Headless::default()),
+        None => install_for_profile(rt, Headless::default(), None, profile),
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir)?;
@@ -230,7 +277,6 @@ pub(crate) fn install_headless_with_settings(
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
                 // Every shadow-map frame is compared between the views; the
@@ -295,10 +341,9 @@ pub(crate) fn install_headless_with_settings(
                     e3_shots(ctx, store, id, flags, gamma);
                 };
                 let retail = configure_gfx(
-                    "retail",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
-                let e3 = configure_gfx("e3", d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
                     eprintln!(
                         "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
@@ -320,22 +365,20 @@ pub(crate) fn install_headless_with_settings(
                     )
                 });
                 return if render_thread_requested() {
-                    install_with_report(rt, d3d::ThreadedBackend::new(b)?, Some(report))
+                    install_for_profile(rt, d3d::ThreadedBackend::new(b)?, Some(report), profile)
                 } else {
-                    install_with_report(rt, b, Some(report))
+                    install_for_profile(rt, b, Some(report), profile)
                 };
             }
             if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
                         .on_present(shots("-1x", shadow_shots, None))
                         .on_present_replay(|_, _, _, _, _| {}),
                 );
                 let view = configure_gfx(
-                    "display",
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
@@ -349,13 +392,12 @@ pub(crate) fn install_headless_with_settings(
                 );
                 let report = scale_report(&mut b);
                 return if render_thread_requested() {
-                    install_threaded(rt, b, Some(report), interp)
+                    install_threaded_for_profile(rt, b, Some(report), interp, profile)
                 } else {
-                    install_with_report(rt, b, Some(report))
+                    install_for_profile(rt, b, Some(report), profile)
                 };
             }
             let mut backend = configure_gfx(
-                "reference",
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
@@ -368,9 +410,9 @@ pub(crate) fn install_headless_with_settings(
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
             if render_thread_requested() {
-                return install_threaded(rt, backend, None, interp);
+                return install_threaded_for_profile(rt, backend, None, interp, profile);
             }
-            install_with(rt, backend)
+            install_for_profile(rt, backend, None, profile)
         }
     }
 }
@@ -540,16 +582,9 @@ impl BetweenShots {
 
 #[cfg(feature = "gpu")]
 /// `h2 run`'s settings for a headless `GfxBackend`.
-fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
-    crate::native_shadows_glue::configure(&mut backend, copy);
-    // Merged render passes are the default, with the fast rule
-    // (alpha-tested draws merged too; a few edge pixels can differ
-    // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
-    // gives the exact rule (read by GfxBackend::new) and =0 one
-    // render pass per draw (about 3x slower), as escape hatches.
-    if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-        backend.set_merge_passes(false);
-    }
+fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    // Merged render passes under the loose rule are the default (a few
+    // edge pixels can differ from one render pass per draw).
     // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
     // frame N and print what differs.
     backend.set_merge_check(
@@ -645,9 +680,8 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    let legacy = std::env::var(feature::pipeline_render::ENV).ok();
-    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches, legacy.as_deref());
-    if !interpolation_from(true, render_thread, pipeline.then_some("1")) {
+    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches);
+    if !interpolation_from(true, render_thread, pipeline) {
         return None;
     }
     match mode {
@@ -712,12 +746,8 @@ pub fn interp_render_thread(
 
 #[cfg(feature = "gpu")]
 /// [`interpolation`]'s decision: the switch, the render thread, and
-/// `H2_PIPELINE_RENDER` unset or `0`.
-pub fn interpolation_from(
-    switch: bool,
-    render_thread: bool,
-    pipeline_render: Option<&str>,
-) -> bool {
+/// `impl.render.pipelined_frame` off.
+pub fn interpolation_from(switch: bool, render_thread: bool, pipelined: bool) -> bool {
     if !switch {
         return false;
     }
@@ -727,7 +757,7 @@ pub fn interpolation_from(
         );
         return false;
     }
-    if pipeline_render.is_some_and(|v| v != "0") {
+    if pipelined {
         eprintln!(
             "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off with impl.render.pipelined_frame"
         );
@@ -760,15 +790,30 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
+    install_threaded_for_profile(rt, backend, extra, interp, crate::registration::compiled_render_hooks())
+}
+
+#[cfg(feature = "gpu")]
+pub(crate) fn install_threaded_for_profile<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
     match interp {
         Some(Interpolation { rate, mode }) => {
             let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
             // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
-            install_with_report(rt, d3d::ThreadedBackend::new(interp)?, extra)
+            install_for_profile(rt, d3d::ThreadedBackend::new(interp)?, extra, profile)
         }
-        None => install_with_report(rt, d3d::ThreadedBackend::new(backend)?, extra),
+        None => install_for_profile(rt, d3d::ThreadedBackend::new(backend)?, extra, profile),
     }
 }
 
@@ -1272,6 +1317,19 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     backend: B,
     extra: Option<ExtraReport>,
 ) -> anyhow::Result<Installed> {
+    install_for_profile(rt, backend, extra, crate::registration::compiled_render_hooks())
+}
+
+pub(crate) fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed> {
+    anyhow::ensure!(
+        crate::registration::compiled_render_hooks().supports(profile),
+        "unavailable D3D hook profile {profile:?}"
+    );
     #[cfg(feature = "desktop-runtime")]
     let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
@@ -1299,15 +1357,19 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     let device = d3d::runtime_glue::shared(cfg, backend);
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "desktop-runtime")]
-    install_occlusion_capture(&device);
+    if profile != film::RenderHooks::Slim {
+        install_occlusion_capture(&device);
+    }
     #[cfg(feature = "gpu")]
-    let shadow_admission = {
+    let shadow_admission = if profile == film::RenderHooks::Gpu {
         let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
         crate::native_particles_glue::install(&device);
         crate::native_first_person_glue::install(&device);
         shadows
+    } else {
+        None
     };
     let mut out = None;
     rt.edit_dispatch(|d| {
@@ -1332,11 +1394,11 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .collect();
     install_write_barrier(rt, &device, &entries, watch);
     #[cfg(feature = "gpu")]
-    crate::native_world_layers_glue::install(rt, &device);
-    #[cfg(feature = "gpu")]
-    crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
-    #[cfg(feature = "gpu")]
-    crate::native_residual_glue::install(rt, &device, &r.implemented);
+    if profile == film::RenderHooks::Gpu {
+        crate::native_world_layers_glue::install(rt, &device);
+        crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
+        crate::native_residual_glue::install(&device);
+    }
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
@@ -1699,6 +1761,19 @@ mod tests {
     use super::*;
     use d3d::backend::Backend;
 
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn slim_film_keeps_the_dedicated_indexed_draw_dispatch_on_a_gpu_player() {
+        let rt = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+        install_light_for_profile(&rt, film::RenderHooks::Slim).unwrap();
+        rt.edit_dispatch(|dispatch| {
+            assert_eq!(
+                dispatch.override_name(native_render::world_layers::DRAW_INDEXED_VERTICES),
+                Some("boot:d3d write barrier"),
+            );
+        });
+    }
+
     #[test]
     fn light_textures_use_handles_without_retaining_payloads() {
         let mut light = Headless(RecordingBackend::default(), true);
@@ -1773,14 +1848,10 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true, None), "off by default");
-        assert!(interpolation_from(true, true, None));
-        assert!(interpolation_from(true, true, Some("0")));
-        assert!(!interpolation_from(true, false, None), "no render thread");
-        assert!(
-            !interpolation_from(true, true, Some("1")),
-            "pipelined render"
-        );
+        assert!(!interpolation_from(false, true, false), "off by default");
+        assert!(interpolation_from(true, true, false));
+        assert!(!interpolation_from(true, false, false), "no render thread");
+        assert!(!interpolation_from(true, true, true), "pipelined render");
     }
 
     #[cfg(feature = "gpu")]

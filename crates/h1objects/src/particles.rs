@@ -22,6 +22,10 @@ use tags::effects::h1_attachment::{
 use crate::h1::{reference, tag_bytes};
 use crate::{Error, Result};
 
+#[path = "particle_mask.rs"]
+mod particle_mask;
+pub(crate) use particle_mask::{Mask, sprite_sequences};
+
 /// Halo 1 `cont` root size (V: every one is `0x144` plus `0x68` per point,
 /// its point block at `+0x138`).
 pub const H1_CONT_SIZE: usize = 0x144;
@@ -87,8 +91,35 @@ fn spans(r: &mut Record, from: &[u8], list: &[(&str, usize, usize)]) -> Result<(
     Ok(())
 }
 
+/// Rebuild the point-physics tag named by a contrail point.
+pub fn point_physics(source: &[u8]) -> Result<Block> {
+    let b = source
+        .get(..0x34)
+        .ok_or(Error::Truncated("point physics"))?;
+    let word = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("field"));
+    let d = def(b"pphy")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "flags", Val::Int(word(0).into()))?;
+    for (name, at) in [
+        ("mass", 4),
+        ("liquid_buoyancy", 8),
+        ("air_buoyancy", 12),
+        ("density", 0x20),
+        ("air_drag", 0x24),
+        ("liquid_drag", 0x28),
+        ("friction", 0x2c),
+        ("restitution", 0x30),
+    ] {
+        set(&mut r, name, Val::Float(f32::from_bits(word(at))))?;
+    }
+    defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
+}
+
 /// The `cont` root for `c`, its bitmap `bitmap` (converted, or null).
-pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>) -> Result<Block> {
+pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>, physics: &[Option<TagId>]) -> Result<Block> {
+    if physics.len() != c.points.len() {
+        return Err(Error::Invalid("contrail physics count".into()));
+    }
     let d = def(b"cont")?;
     let mut r = defs::default_record(d);
     set(&mut r, "flags", Val::Int(c.flags.into()))?;
@@ -98,8 +129,12 @@ pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>) -> Result<Block> {
     let points = c
         .points
         .iter()
-        .map(|p| {
+        .zip(physics)
+        .map(|(p, physics)| {
             let mut x = defs::default_record(pd);
+            if let Some(id) = physics {
+                set(&mut x, "physics", Val::tag(FourCC(*b"pphy"), *id))?;
+            }
             spans(&mut x, p, CONT_POINT_SPANS)?;
             Ok(x)
         })
@@ -281,10 +316,9 @@ pub fn particle_postprocess(s: &ParticleShader, bitmap: Option<(TagId, u16, u16)
 // `+0xda` holds 0, 3, 6 or 7 (V), and the particles Halo 2 ships again
 // pair them with Halo 2's stems (V: smoke, blood and debris are 0 and
 // alpha blend in Halo 2; flashes and sparks 3 and additive; ice 7 and
-// alpha-multiply-add, `particle_alpha_multiply_add` holding only
-// `solids\ice`). Its bitmap (`+0x4`) is the stem's one bitmap parameter
-// (`alpha_map_texture`, the name every particle stem's parameter has on
-// the disc), its sprite sequences Halo 1's (`+0x98` first, `+0x9a`
+// premultiplied). Blends 6 and 7 build the pass and the secondary-map
+// bindings from the H1 effect shader. Its primary bitmap (`+0x4`) is the
+// stem's `alpha_map_texture`, its sprite sequences Halo 1's (`+0x98` first, `+0x9a`
 // initial and `+0x9c` looping counts: one random sequence per particle
 // among them, prt3 flag `0x10`), its collision and death effects
 // (`+0x48`, `+0x58`) converted. The five properties are constants as the
@@ -349,12 +383,15 @@ impl H1Particle {
 }
 
 /// The Halo 2 stem for a Halo 1 blend function, and whether the pairing
-/// is proven (V for 0, 3, 7; 6 is drawn additive, unproven).
+/// is proven. For 6 and 7 the secondary map selects a compiled program variant.
 pub fn particle_stem(blend: u16) -> (&'static str, bool) {
+    use h1convert::shad::program::glass::{ParticleBlend, ParticleCoordinates};
+    if let Some(program) = ParticleBlend::from_source(blend) {
+        return (program.stem(ParticleCoordinates::Primary), true);
+    }
     match blend {
         0 => ("shaders\\shader_templates\\transparent\\particle_alpha_blend", true),
         3 => ("shaders\\shader_templates\\transparent\\particle_additive", true),
-        7 => ("shaders\\shader_templates\\transparent\\particle_alpha_multiply_add", true),
         _ => ("shaders\\shader_templates\\transparent\\particle_additive", false),
     }
 }
@@ -397,10 +434,30 @@ pub fn particle(
     collision_effect: Option<(FourCC, TagId)>,
     death_effect: Option<(FourCC, TagId)>,
 ) -> Result<Block> {
+    particle_with_mask(p, shader, bitmap, None, 0, collision_effect, death_effect)
+}
+
+pub(crate) fn particle_with_mask(
+    p: &H1Particle,
+    shader: &ParticleShader,
+    bitmap: Option<(TagId, u16, u16)>,
+    mask: Option<Mask<(TagId, u16, u16)>>,
+    orientation: u16,
+    collision_effect: Option<(FourCC, TagId)>,
+    death_effect: Option<(FourCC, TagId)>,
+) -> Result<Block> {
     let d = def(b"prt3")?;
     let mut r = defs::default_record(d);
     let (first, count) = p.sequence_range();
-    set(&mut r, "flags", Val::Int(0x10))?;
+    set(&mut r, "vertex_shader", Val::Int(orientation.into()))?;
+    // H1 0x10e9f9/0x10ea10 randomize each allowed mirror axis. H2
+    // performs the corresponding per-particle U/V mirroring at draw time.
+    let flags = if matches!(p.blend, 6 | 7) {
+        0x30 | ((p.flags >> 9) & 6)
+    } else {
+        0x10
+    };
+    set(&mut r, "flags", Val::Int(flags.into()))?;
     set(&mut r, "flags_2", Val::Int(0))?;
     set(&mut r, "first_sequence", Val::Int(first.into()))?;
     set(&mut r, "sequence_count", Val::Int(count.into()))?;
@@ -409,7 +466,18 @@ pub fn particle(
     let mut x = defs::default_record(pd);
     set(&mut x, "name", Val::text("alpha_map_texture"))?;
     set(&mut x, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.map_or(TagId::NULL, |b| b.0)))?;
-    set(&mut r, "parameters", Val::Block(vec![x]))?;
+    let mut parameters = vec![x];
+    if let Some(m) = mask {
+        let mut secondary = defs::default_record(pd);
+        set(&mut secondary, "name", Val::text("secondary_map"))?;
+        set(
+            &mut secondary,
+            "bitmap",
+            Val::tag(FourCC(*b"bitm"), m.bitmap.0),
+        )?;
+        parameters.push(secondary);
+    }
+    set(&mut r, "parameters", Val::Block(parameters))?;
     // 0x2245ad..0x224caf multiplies these three particle properties by
     // emitter tint, alpha and size. Their neutral values preserve the H1 emitter.
     for (field, scalar, colour) in [
@@ -429,7 +497,11 @@ pub fn particle(
         };
         set(&mut r, f, v)?;
     }
-    set(&mut r, "postprocess", Val::Block(vec![particle_postprocess(shader, bitmap)?]))?;
+    let mut pp = particle_postprocess(shader, bitmap)?;
+    if let Some(m) = mask {
+        m.bind_postprocess(&mut pp)?;
+    }
+    set(&mut r, "postprocess", Val::Block(vec![pp]))?;
     defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 
@@ -536,7 +608,7 @@ fn constant_property(r: &mut Record, field: &str, scalar: f32, colour: Option<u3
     set(r, &format!("{field}.function"), Val::Data(constant_data(scalar, colour)))
 }
 
-fn constant_data(scalar: f32, colour: Option<u32>) -> Vec<u8> {
+pub(crate) fn constant_data(scalar: f32, colour: Option<u32>) -> Vec<u8> {
     let mut data = first_sprite_frame();
     if let Some(argb) = colour {
         data[1] = 0x10;
@@ -1024,6 +1096,24 @@ mod attachment_tests {
             Some(Val::Block(b)) => b,
             _ => &[],
         }
+    }
+
+    #[test]
+    fn contrail_point_physics_preserves_authored_coefficients() {
+        let mut source = vec![0xaa; 0x40];
+        source[..4].copy_from_slice(&5u32.to_le_bytes());
+        for (i, at) in [4usize, 8, 12, 0x20, 0x24, 0x28, 0x2c, 0x30]
+            .into_iter()
+            .enumerate()
+        {
+            source[at..at + 4].copy_from_slice(&(i as f32 * 0.25 - 0.5).to_le_bytes());
+        }
+        let root = super::point_physics(&source).unwrap();
+        assert_eq!(root.bytes.len(), 0x40);
+        assert_eq!(root.bytes[..0x10], source[..0x10]);
+        assert_eq!(root.bytes[0x20..0x34], source[0x20..0x34]);
+        assert_eq!(root.bytes[0x10..0x20], [0; 0x10]);
+        assert!(super::point_physics(&source[..0x30]).is_err());
     }
 
     #[test]

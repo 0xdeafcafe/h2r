@@ -180,6 +180,7 @@ const USAGE: &str = "usage: h2 <command>
   serve <disc> --system-link --host-light
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
+  host pack ...           run several leased matches in one container
   theater play FILM --render-every 0
                           replay a host film headlessly
   sim <run|batch|compare> run or compare bot matches
@@ -1119,12 +1120,7 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
         }
     }
     if opts.stats || (!opts.histogram && !opts.run_entry && opts.dump.is_empty()) {
-        // H2_STATS_ALL=1 lists every unsupported mnemonic, not the top 30.
-        if std::env::var_os("H2_STATS_ALL").is_some() {
-            print!("{:#}", lifter.stats());
-        } else {
-            print!("{}", lifter.stats());
-        }
+        print!("{}", lifter.stats());
     }
     Ok(())
 }

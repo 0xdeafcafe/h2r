@@ -9,13 +9,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late};
+use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_for_profile};
 use crate::lockstep_glue;
 
-/// Every switch that adds hooks, on.
-pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on,impl.render.native_hud=on";
-/// Added to [`ALL_ON`]: the native world (on by default) off.
-pub(crate) const NATIVE_WORLD_OFF: &str = "impl.render.native_world=off";
+/// Every switch that adds hooks, on (the native renderer is on by default).
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,occlusion";
+/// Added to [`ALL_ON`]: the native renderer (on by default) off.
+pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
 /// What a test run has, from nothing (a headless run with no settings) to
 /// everything a test can stand in for.
@@ -83,6 +83,10 @@ impl Case {
 /// The registry boot would hand the plan for `case`, from the same
 /// registration functions.
 pub(crate) fn registry(case: &Case) -> feature::Registry {
+    registry_for_profile(case, super::compiled_render_hooks())
+}
+
+fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Registry {
     let rt = Arc::new(runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default()));
     let settings = case
         .settings
@@ -124,7 +128,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
         lockstep.enabled(),
         false,
     );
-    register_late(
+    register_late_for_profile(
         &mut features,
         LateInputs {
             rt: &rt,
@@ -142,6 +146,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
             disc: nowhere,
             data_root: nowhere,
         },
+        profile,
     )
     .unwrap();
     // Boot's Live branch (registration.rs): the armed co-op hooks, unless
@@ -163,6 +168,32 @@ fn plan(case: &Case) -> Result<feature::Plan, String> {
 fn assert_builds(case: &Case) {
     if let Err(e) = plan(case) {
         panic!("{e}");
+    }
+}
+
+#[test]
+fn a_desktop_player_registers_only_the_films_render_groups() {
+    use film::RenderHooks::{Desktop, Gpu, Slim};
+    for profile in [Slim, Desktop, Gpu] {
+        if !super::compiled_render_hooks().supports(profile) {
+            continue;
+        }
+        let plan = registry_for_profile(&Case::none(ALL_ON), profile)
+            .build(&feature::Base)
+            .unwrap();
+        let ids: Vec<_> = plan.features.iter().map(|f| f.id).collect();
+        assert_eq!(ids.contains(&"native-map-work"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-world"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-hud"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-scene-lists"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-light-walk"), profile == Gpu);
+        assert!(ids.contains(&"h1-scope-zoom"));
+        assert!(ids.contains(&"occlusion"));
+        if profile == Slim {
+            assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
+                h.feature != "render-loop" && !h.feature.starts_with("native-")
+            }));
+        }
     }
 }
 
@@ -207,14 +238,14 @@ fn the_plan_builds_with_default_switches() {
 }
 
 /// Every switch that adds hooks on (the census in a second build, since
-/// pipelining is off with it, and the native world off in a third), with
+/// pipelining is off with it, and the native renderer off in a third), with
 /// everything a test can supply.
 #[test]
 fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::none(ALL_ON));
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},render-census")));
-    assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_WORLD_OFF}")));
+    assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_OFF}")));
 }
 
 /// Each optional piece alone and in every combination, with the default
@@ -225,8 +256,8 @@ fn the_plan_builds_with_every_hook_switch_on() {
 #[test]
 fn the_plan_builds_with_every_combination_of_optional_features() {
     let mut failures = Vec::new();
-    let world_off = format!("{ALL_ON},{NATIVE_WORLD_OFF}");
-    for switches in ["", ALL_ON, world_off.as_str()] {
+    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
+    for switches in ["", ALL_ON, native_off.as_str()] {
         for bits in 0u32..(1 << 9) {
             let on = |n: u32| bits & (1 << n) != 0;
             let case = Case {

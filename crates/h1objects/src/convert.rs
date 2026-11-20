@@ -1,21 +1,11 @@
 //! Halo 1 objects as Halo 2 tags.
 //!
-//! Scenery, vehicles, devices and (by default) bipeds are written from
-//! typed definitions ([`crate::rebuild`]), with no template. Weapons,
-//! equipment, projectiles and bipeds with no rebuilt role still start
-//! from the root of the retail Halo 2 tag that plays the same role
-//! ([`TEMPLATES`]). The fields known in both games are
-//! overwritten with Halo 1's values ([`Tuning`] rows), the model chain is
-//! replaced with converted tags, and the rest stays the template's: its
-//! effects, sounds, HUD, first-person model and physics model are the
-//! stopgaps listed in each [`ObjectReport`]. Template child blocks that are
-//! not rewritten keep their retail addresses, so a [`Tree`] is installed
-//! into a `TagSet` built from the same base map (`TagSet::from_map`), which
-//! pins them in place. Halo 2 offsets and evidence:
-//! `docs/halo1/objects.md`.
+//! Object definitions carry source fields and references. The native program
+//! and physics layouts are described in `docs/halo1/objects.md`.
 
 use std::collections::HashMap;
 
+use h1convert::shad::program::model_defaults::ModelDefaults;
 use h1map::{H1Map, Tag};
 use h1models::Converted;
 use h1models::mode::ModelOptions;
@@ -23,11 +13,13 @@ use map::build::{Block, FixupKind, RawId, RawRef, TagEntry, TagPayload, TagSet};
 use map::{FourCC, TagId};
 
 use crate::base::Base;
-use crate::coll::{convert_collision, put_sid};
+use crate::coll::convert_collision;
 use crate::h1::{self, Unit};
 use crate::{health_hud, scripted_props};
 use crate::{Error, Result};
 
+#[path = "convert_widgets.rs"]
+mod widgets_conv;
 #[path = "convert_attachments.rs"]
 mod attachments_conv;
 #[path = "convert_arsenal.rs"]
@@ -36,6 +28,12 @@ mod arsenal_conv;
 mod scripted_props_conv;
 #[path = "convert_powerups.rs"]
 mod powerups_conv;
+#[path = "convert_model_defaults.rs"]
+mod model_defaults_conv;
+#[path = "convert_model_effects.rs"]
+mod model_effects_conv;
+#[path = "convert_shader_images.rs"]
+mod shader_images;
 #[path = "convert_scope.rs"]
 mod scope_conv;
 #[path = "convert_particles.rs"]
@@ -290,10 +288,8 @@ pub const TICKS_PER_SECOND: f32 = 30.0;
 /// (docs/halo1/health.md).
 pub const POWERUP_HEALTH: i16 = 5;
 
-/// The Chief's emblem material (stem `opaque\emblem_overlay_simple`): the
-/// engine's emblem bitmap, its frame and colours the drawn player's
-/// (`0x0022ace7`). Player bipeds' emblem parts draw with it.
-pub const EMBLEM_SHADER: &str = "objects\\characters\\masterchief\\shaders\\mc_emblem";
+/// The rebuilt player-emblem instance, using Halo 2's emblem draw program.
+pub const EMBLEM_SHADER: &str = r"h1\player_emblem";
 
 /// One value carried from Halo 1 into the Halo 2 tag.
 #[derive(Clone, Debug, PartialEq)]
@@ -326,6 +322,9 @@ pub struct ObjectReport {
 /// Converted tags in install order, with placeholders for each other.
 #[derive(Default)]
 pub struct Tree {
+    /// A failed shader prevents installation even when a placement caller
+    /// collects object errors and continues preparing the rest of the palette.
+    pub model_shader_error: Option<String>,
     pub tags: Vec<(String, Converted)>,
     pub reports: Vec<ObjectReport>,
     /// Halo 1 sounds the tags play (effect parts), converted, by path;
@@ -346,6 +345,8 @@ pub struct Tree {
     /// Per tag (its index in [`Tree::tags`]), the values its builder took
     /// from a role ([`crate::provenance`]), for the role audit.
     pub role_fields: Vec<(usize, Vec<crate::provenance::RoleField>)>,
+    /// Body and shield scale pairs referenced by converted damage effects.
+    pub(crate) player_damage_scales: std::collections::BTreeSet<crate::player_damage::Scales>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -373,13 +374,6 @@ pub fn looping(k: usize) -> TagId {
     TagId(LOOP | k as u32)
 }
 
-/// The stand-in physics model of a vehicle with no solid collision
-/// ([`crate::rebuild::sphere_physics`]): radius (world units), mass (kg),
-/// material. The sphere sits on the model origin (its centre one radius
-/// up), so a vehicle whose origin is on the floor stays put; a
-/// `hard_metal_thin_hum` global material (on the disc).
-pub const STAND_IN_SPHERE: (f32, f32, &str) = (0.05, 1000.0, "hard_metal_thin_hum");
-
 /// Mass per cubic world unit of a built physics model with no Halo 1
 /// mass: water's 1000 kg/m^3 over a world unit of 3.048 m.
 pub const DENSITY: f32 = 28_317.0;
@@ -387,10 +381,9 @@ pub const DENSITY: f32 = 28_317.0;
 /// What a built physics model is for ([`Converter::object_physics`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsKind {
-    /// One body on the object, of Halo 1's `phys` mass; a stand-in
-    /// sphere when the collision gives nothing. `wheels`: its wheels and
+    /// One body from the collision hulls or source mass points. Its wheels and
     /// treads are held in the body above the hull's lowest point
-    /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
+    /// ([`held_wheels`]),
     /// else left out.
     Vehicle { wheels: bool },
     /// A scripted flyer, built from its collision or its own mass
@@ -439,88 +432,47 @@ pub fn local_index(t: TagId) -> Option<usize> {
     (t.0 & 0xffff_0000 == LOCAL).then_some((t.0 & 0xffff) as usize)
 }
 
-fn rewrite(b: &mut Block, ids: &[TagId]) {
-    rewrite_audio(b, LOCAL, ids);
-}
-
-/// Rewrites every placeholder of `kind` (`LOCAL`, `SOUND`, `LOOP`) in `b`
-/// to its datum in `ids`; one past the end becomes null.
-fn rewrite_audio(b: &mut Block, kind: u32, ids: &[TagId]) {
+fn visit_ids(b: &mut Block, resolve: &mut impl FnMut(&mut TagId) -> Result<()>) -> Result<()> {
     for f in &mut b.fixups {
         match &mut f.kind {
             FixupKind::Block { child, .. } | FixupKind::Data(child) | FixupKind::Pointer(child) => {
-                rewrite_audio(child, kind, ids)
+                visit_ids(child, resolve)?;
             }
-            FixupKind::TagId(t) | FixupKind::TagRef(t) if t.0 & 0xffff_0000 == kind => {
-                *t = ids
-                    .get(t.0 as usize & 0xffff)
-                    .copied()
-                    .unwrap_or(TagId::NULL)
-            }
+            FixupKind::TagId(id) | FixupKind::TagRef(id) => resolve(id)?,
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn rewrite_audio(b: &mut Block, kind: u32, ids: &[TagId]) -> Result<()> {
+    visit_ids(b, &mut |id| {
+        if id.0 & 0xffff_0000 == kind {
+            *id = *ids
+                .get(id.index())
+                .ok_or_else(|| Error::Invalid(format!("unresolved tree datum {id:?}")))?;
+        }
+        Ok(())
+    })
 }
 
 impl Tree {
-    /// Adds the tree's sounds and looping sounds to `set` (with its sound
-    /// gestalt) and points the tags' placeholders at them. A set that has
-    /// a tag of the path already keeps it. When the gestalt refuses them
-    /// (16-bit indices full) or `add` is false, none is added and every
-    /// placeholder becomes null ([`Tree::audio_notes`] says why).
-    /// Done once: the sounds are taken out of the tree.
-    pub fn install_audio(&mut self, set: &mut TagSet, add: bool) {
-        let (sounds, loops) = self.audio_ids(set, add);
-        self.resolve_audio(&sounds, &loops);
-    }
-
     /// Install all object audio or return the error to a campaign conversion.
     /// The caller discards its in-progress tag set on failure.
     pub fn try_install_audio(&mut self, set: &mut TagSet) -> Result<()> {
         let (sounds, loops) = self.add_audio(set).map_err(Error::Invalid)?;
-        self.resolve_audio(&sounds, &loops);
+        self.resolve_audio(&sounds, &loops)?;
         self.sounds.clear();
         self.loops.clear();
         Ok(())
     }
 
-    fn resolve_audio(&mut self, sounds: &[TagId], loops: &[TagId]) {
+    fn resolve_audio(&mut self, sounds: &[TagId], loops: &[TagId]) -> Result<()> {
         for (_, t) in &mut self.tags {
-            rewrite_audio(&mut t.root, SOUND, sounds);
-            rewrite_audio(&mut t.root, LOOP, loops);
+            rewrite_audio(&mut t.root, SOUND, sounds)?;
+            rewrite_audio(&mut t.root, LOOP, loops)?;
         }
-    }
-
-    /// Adds the sounds and looping sounds to `set` (all or none) and
-    /// returns their datums, in [`Tree::sounds`] and [`Tree::loops`]
-    /// order; empty when none was added. Takes them out of the tree.
-    fn audio_ids(&mut self, set: &mut TagSet, add: bool) -> (Vec<TagId>, Vec<TagId>) {
-        let got = if self.sounds.is_empty() && self.loops.is_empty() {
-            Ok((Vec::new(), Vec::new()))
-        } else if add {
-            // All or none: a refusal leaves `set` as it was.
-            let mut trial = set.clone();
-            self.add_audio(&mut trial).map(|ids| {
-                *set = trial;
-                ids
-            })
-        } else {
-            Err("the tags take over existing slots: no room for sounds".to_owned())
-        };
-        let (sounds, loops) = match got {
-            Ok(ids) => ids,
-            Err(e) => {
-                self.audio_notes.push(format!(
-                    "{} sounds and {} looping sounds left out: {e}",
-                    self.sounds.len(),
-                    self.loops.len()
-                ));
-                (Vec::new(), Vec::new())
-            }
-        };
-        self.sounds.clear();
-        self.loops.clear();
-        (sounds, loops)
+        Ok(())
     }
 
     fn add_audio(&self, set: &mut TagSet) -> std::result::Result<(Vec<TagId>, Vec<TagId>), String> {
@@ -528,7 +480,7 @@ impl Tree {
         let new: Vec<(String, h1sounds::ConvertedSound)> = self
             .sounds
             .iter()
-            .filter(|(n, _)| set.find(snd, n).is_none())
+            .filter(|(n, _)| set.converted(snd, n).is_none())
             .cloned()
             .collect();
         if !new.is_empty() {
@@ -537,7 +489,7 @@ impl Tree {
         let sounds = self
             .sounds
             .iter()
-            .map(|(n, _)| set.find(snd, n).ok_or(format!("{n}: not installed")))
+            .map(|(n, _)| set.converted(snd, n).ok_or(format!("{n}: not installed")))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let loops = h1sounds::looping::install_looping(set, &self.loops).map_err(|e| e.to_string())?;
         Ok((sounds, loops))
@@ -584,7 +536,7 @@ impl Tree {
     /// datums; then the sounds after them ([`Tree::install_audio_for`]).
     pub fn install(mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
         let ids = self.install_tags(set)?;
-        self.install_audio_for(set, &ids);
+        self.install_audio_for(set, &ids)?;
         Ok(ids)
     }
 
@@ -594,6 +546,10 @@ impl Tree {
     /// sandbox adds its collections between the two, so the tags and the
     /// collections hold the datums its placements name.
     pub fn install_tags(&mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
+        if let Some(reason) = &self.model_shader_error {
+            return Err(Error::Invalid(reason.clone()));
+        }
+        crate::player_damage::install(set, &self.player_damage_scales)?;
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -602,7 +558,7 @@ impl Tree {
             })
             .collect();
         for (k, (name, mut tag)) in std::mem::take(&mut self.tags).into_iter().enumerate() {
-            rewrite(&mut tag.root, &ids);
+            rewrite_audio(&mut tag.root, LOCAL, &ids)?;
             let got = tag.install(set, &name)?;
             if got != ids[k] {
                 return Err(Error::Invalid(format!(
@@ -617,16 +573,19 @@ impl Tree {
     /// Adds the sounds and looping sounds after whatever `set` holds now
     /// and points the placeholders of the tags installed at `ids`
     /// ([`Tree::install_tags`]) at them.
-    pub fn install_audio_for(&mut self, set: &mut TagSet, ids: &[TagId]) {
-        let (sounds, loops) = self.audio_ids(set, true);
+    pub fn install_audio_for(&mut self, set: &mut TagSet, ids: &[TagId]) -> Result<()> {
+        let (sounds, loops) = self.add_audio(set).map_err(Error::Invalid)?;
+        self.sounds.clear();
+        self.loops.clear();
         for id in ids {
             if let Some(TagPayload::Built(root)) =
                 set.slots[id.index()].tag.as_mut().map(|e| &mut e.payload)
             {
-                rewrite_audio(root, SOUND, &sounds);
-                rewrite_audio(root, LOOP, &loops);
+                rewrite_audio(root, SOUND, &sounds)?;
+                rewrite_audio(root, LOOP, &loops)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -640,7 +599,31 @@ impl Tree {
     /// donor now references the converted tag, so donors must be tags the
     /// converted map no longer uses.
     pub fn install_over(mut self, set: &mut TagSet, donors: &[TagId]) -> Result<Vec<TagId>> {
-        self.install_audio(set, false);
+        if let Some(reason) = self.model_shader_error.take() {
+            return Err(Error::Invalid(reason));
+        }
+        if let Some(name) = self
+            .sounds
+            .first()
+            .map(|s| &s.0)
+            .or_else(|| self.loops.first().map(|l| &l.name))
+        {
+            return Err(h1convert::Error::no_rebuild(
+                &set.name,
+                name,
+                "pinned installation needs slots for source audio",
+            )
+            .into());
+        }
+        // No source audio rides along, so a sound or looping-sound
+        // placeholder left in a tag has nothing to point at: a conversion
+        // error naming the tag, never a null reference. Checked before the
+        // set changes.
+        for (name, tag) in &mut self.tags {
+            rewrite_audio(&mut tag.root, SOUND, &[])
+                .and_then(|()| rewrite_audio(&mut tag.root, LOOP, &[]))
+                .map_err(|e| h1convert::Error::no_rebuild(&set.name, name.as_str(), e))?;
+        }
         if donors.len() < self.tags.len() {
             return Err(Error::Invalid(format!(
                 "{} tags but {} donor slots",
@@ -648,6 +631,7 @@ impl Tree {
                 donors.len()
             )));
         }
+        crate::player_damage::install(set, &self.player_damage_scales)?;
         let ids = &donors[..self.tags.len()];
         for (k, (name, tag)) in self.tags.into_iter().enumerate() {
             let id = ids[k];
@@ -658,7 +642,7 @@ impl Tree {
                 .map(|(b, a)| set.add_raw(b, a))
                 .collect();
             let mut root = tag.root;
-            rewrite(&mut root, ids);
+            rewrite_audio(&mut root, LOCAL, ids)?;
             finish(&mut root, &raw, id);
             set.add_group(tag.group, None, None);
             let s = set
@@ -683,7 +667,8 @@ impl Tree {
             {
                 p.unowned.push((address, bytes));
             }
-            s.name = Some(name);
+            s.name = Some(name.clone());
+            set.record_conversion(tag.group, &name, id);
         }
         Ok(ids.to_vec())
     }
@@ -710,34 +695,6 @@ struct PoweredPoint {
     point: crate::rebuild::Point,
     node: i16,
     position: [f32; 3],
-    /// The point's object-space position (x forward, y left).
-    object: [f32; 3],
-}
-
-/// The order to write a vehicle's friction points in: point `i` of the
-/// result corresponds to target position `i`.
-/// Each sphere in turn takes the nearest point not yet taken (object
-/// space); points past the last sphere follow in their own order. V: the
-/// engine reads friction point `i`'s suspension from the phantom's sphere
-/// `i` (the per-point loop at `0x2067dd` takes its compression from
-/// contact slot `i`, `0x207ab0`), so a point paired with a sphere at the
-/// other end of the vehicle pushes up where the other end sinks. Halo 1's
-/// warthog lists its back tires first and the retail spheres run front
-/// first; so paired, the converted warthog pitched onto its nose at spawn
-/// (forward z -0.93) and stood level once paired by position (forward z
-/// 0.08 and 0.14 on Blood Gulch's slopes, both warthogs).
-pub fn sphere_order(points: &[[f32; 3]], spheres: &[[f32; 3]]) -> Vec<usize> {
-    let mut left: Vec<usize> = (0..points.len()).collect();
-    let mut out = Vec::with_capacity(points.len());
-    for s in spheres {
-        let d = |i: &usize| (0..3).map(|a| (points[*i][a] - s[a]).powi(2)).sum::<f32>();
-        let Some(k) = (0..left.len()).min_by(|a, b| d(&left[*a]).total_cmp(&d(&left[*b]))) else {
-            break;
-        };
-        out.push(left.remove(k));
-    }
-    out.extend(left);
-    out
 }
 
 /// Adds a marker per powered point to a Halo 1 model before conversion:
@@ -772,27 +729,6 @@ fn get_f32(b: &[u8], at: usize) -> f32 {
     f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
-/// Writes Halo 1 values into a Halo 2 record, recording each one.
-struct Writer<'r> {
-    rep: &'r mut ObjectReport,
-    prefix: String,
-}
-impl Writer<'_> {
-    fn f32(&mut self, b: &mut [u8], at: usize, field: &str, h1: f32, h2: f32) {
-        let old = get_f32(b, at);
-        put_f32(b, at, h2);
-        self.row(field, format!("{h1}"), format!("{h2}"), format!("{old}"));
-    }
-    fn row(&mut self, field: &str, halo1: String, halo2: String, template: String) {
-        self.rep.tuning.push(Tuning {
-            field: format!("{}{field}", self.prefix),
-            halo1,
-            halo2,
-            template,
-        });
-    }
-}
-
 /// The `hlmt` field a rebuilt biped's converted dialogue goes in: the
 /// model's dialogue (`+0x8c`, `udlg`; V: where retail models name theirs,
 /// `docs/formats/objects.md`).
@@ -806,9 +742,6 @@ pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
 pub struct Options {
     /// The campaign HUD supplies the unit panels' authored tint at draw time.
     pub unit_hud_draw_colour: bool,
-    /// Build from the Halo 1 unit, collision and model. Turn off to compare
-    /// to the historical template path in the disc tests.
-    pub rebuild_bipeds: bool,
     /// The most sample bytes the rebuilt bipeds' dialogue
     /// ([`Converter::dialogue`]) may add in sounds no other object
     /// plays; a line whose sound would pass it is left out. `u64::MAX`
@@ -820,7 +753,6 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             unit_hud_draw_colour: false,
-            rebuild_bipeds: true,
             dialogue_budget: u64::MAX,
         }
     }
@@ -838,8 +770,12 @@ pub struct Converter<'a> {
     /// ([`Self::dialogue`]).
     pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
-    /// Render models by source tag and weapon counter's loaded maximum.
-    render_models: HashMap<(h1map::TagId, Option<i16>), TagId>,
+    /// Per rebuilt machine or light, the variants used by fixture placements.
+    fixture_variants: HashMap<(TagId, [u32; 4]), TagId>,
+    /// Render models by source, weapon counter maximum and object texture override.
+    render_models: HashMap<(h1map::TagId, Option<i16>, i16), TagId>,
+    permuted_shaders: HashMap<(h1map::TagId, i16), TagId>,
+    emblem_shader: Option<TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Per converted `coll`, the `hlmt` materials it needs
@@ -847,11 +783,12 @@ pub struct Converter<'a> {
     coll_materials: HashMap<(u32, bool), Vec<crate::rebuild::ModelMaterial>>,
     /// Each template `nhdt` given the health meter.
     health_huds: HashMap<TagId, TagId>,
+    /// Lower and upper native panels per source flag cloth.
+    flag_panels: HashMap<u32, [TagId; 2]>,
     /// Widgets per converted `unhi` ([`Self::unit_hud`]).
     unit_hud_widgets: HashMap<u32, usize>,
-    /// Per converted `wphi`, its entries with no widget
-    /// ([`Self::weapon_hud`]).
-    weapon_hud_skips: HashMap<u32, Vec<String>>,
+    /// Direct-image sequences for crosshair overlays with source flag 1 set.
+    direct_hud_bitmaps: HashMap<u32, TagId>,
     /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
     hud_bitmaps: HashMap<(u32, u8), TagId>,
     /// Copies of a bitmap whose sequence starts at a later sprite, by
@@ -873,28 +810,26 @@ pub struct Converter<'a> {
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
     /// `schi`, permutation, loaded maximum).
-    counter_shaders: HashMap<(u32, i16, Option<i16>), Option<TagId>>,
-    /// Vehicle role words, per vehicle type and powered point count
-    /// ([`Self::vehicle_role`]).
-    vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
+    counter_shaders: HashMap<(u32, i16, Option<i16>), TagId>,
     /// Converted sounds and looping sounds by Halo 1 tag, as indices
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
-    sound_index: HashMap<u32, Option<usize>>,
-    loop_index: HashMap<u32, Option<usize>>,
+    sound_index: HashMap<u32, usize>,
+    loop_index: HashMap<u32, usize>,
     /// Compiled shader bindings shared by particles on this base.
     particle_shaders: Option<Vec<crate::particles::ParticleShader>>,
-    /// Effects whose particles are being converted (a particle's own
-    /// effects that lead back to one are left out).
-    effects_open: Vec<u32>,
-    /// Objects being converted ([`Self::object`]), so one whose effects
-    /// lead back to it is refused instead of recursed into.
-    objects_open: Vec<u32>,
+    /// Active conversions. A back edge names its source slot until the
+    /// completed tag has a local datum and can resolve that reference.
+    active: HashMap<u32, bool>,
+    /// Projectile detonation effects being converted
+    /// ([`Self::effect_after_detonation`]), so one that leads back to
+    /// itself is a named error instead of a recursion.
+    detonations_open: Vec<u32>,
+    /// Projectile effects whose primary damage is applied by the projectile.
+    detonation_effects: HashMap<(u32, usize), TagId>,
     /// Per Halo 1 `pctl`, its emitter types and converted particle states.
     pctl_done: HashMap<u32, particles_conv::ParticleTypes>,
     /// Looping effects that carry a particle system at a given object marker.
     attached_particles: HashMap<(u32, String), Vec<TagId>>,
-    /// Detect cycles in decal chains.
-    decals_open: Vec<u32>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
     /// under ([`Self::weapon_class`]), computed once.
     weapon_classes: Option<HashMap<String, String>>,
@@ -909,13 +844,17 @@ impl<'a> Converter<'a> {
             tree: Tree::default(),
             coll_reports: Vec::new(),
             done: HashMap::new(),
+            fixture_variants: HashMap::new(),
             render_models: HashMap::new(),
+            permuted_shaders: HashMap::new(),
+            emblem_shader: None,
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             coll_materials: HashMap::new(),
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
-            weapon_hud_skips: HashMap::new(),
+            flag_panels: HashMap::new(),
+            direct_hud_bitmaps: HashMap::new(),
             hud_bitmaps: HashMap::new(),
             sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
@@ -924,51 +863,64 @@ impl<'a> Converter<'a> {
             cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             counter_shaders: HashMap::new(),
-            vehicle_roles: HashMap::new(),
             sound_index: HashMap::new(),
             loop_index: HashMap::new(),
             particle_shaders: None,
-            effects_open: Vec::new(),
-            objects_open: Vec::new(),
+            active: HashMap::new(),
+            detonations_open: Vec::new(),
+            detonation_effects: HashMap::new(),
             pctl_done: HashMap::new(),
             attached_particles: HashMap::new(),
-            decals_open: Vec::new(),
             dialogue_bytes: 0,
             weapon_classes: None,
         }
     }
 
-    /// A Halo 1 dialogue tag as a Halo 2 `udlg`
-    /// ([`crate::rebuild::dialogue`]): one vocalization per slot of
-    /// [`crate::rebuild::DIALOGUE`] holding a sound, the sound converted
-    /// with `h1sounds`, within [`Options::dialogue_budget`]. Converted
-    /// once; `None` when no line converts.
-    pub fn dialogue(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<Option<TagId>> {
+    /// Rebuilds the native vocalization table and the exact source slots.
+    pub fn dialogue(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Result<TagId> {
         if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(Some(*id));
+            return Ok(*id);
         }
-        let d = h1::Dialogue::read(self.h1, tag)?;
+        let d = self.read_dialogue(tag)?;
         let wanted = crate::rebuild::dialogue_lines(&d);
-        let mut lines = Vec::new();
-        let mut over = 0;
-        for (voc, _, s) in &wanted {
-            let st = self.h1_tag(*s)?;
-            match self.dialogue_sound(st, rep) {
-                Some(id) => lines.push((*voc, id)),
-                None => over += 1,
+        for (name, _, _) in &wanted {
+            if !self.base.dialogue_names.iter().any(|entry| entry.as_str() == *name) {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &tag.name,
+                    format!("base dialogue vocabulary lacks {name}"),
+                )
+                .into());
             }
         }
-        rep.no_home.push(format!(
-            "udlg {}: {} of {} slots holding a sound as Halo 2 vocalizations ({} lines; {over} left out)",
-            tag.name,
-            wanted.len(),
-            d.lines.len(),
-            lines.len(),
-        ));
-        if lines.is_empty() {
-            return Ok(None);
+        let mut source = Vec::with_capacity(d.lines.len());
+        for &(offset, id) in &d.lines {
+            let line = self.h1_tag(id)?;
+            let sound = self.dialogue_sound(line)?.ok_or_else(|| {
+                h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &line.name,
+                    "dialogue exceeds the configured sound budget",
+                )
+            })?;
+            source.push((offset, sound));
         }
-        let root = crate::rebuild::dialogue(&lines)?;
+        let native = wanted
+            .iter()
+            .map(|&(name, offset, _)| {
+                let index = source
+                    .binary_search_by_key(&offset, |&(at, _)| at)
+                    .expect("source slot read from this dialogue");
+                (name, offset, source[index].1)
+            })
+            .collect::<Vec<_>>();
+        let root = crate::rebuild::dialogue(&self.base.dialogue_names, &native, &source)?;
+        rep.no_home.push(format!(
+            "{}: {} native vocalizations, {} source slots",
+            tag.name,
+            native.len(),
+            source.len()
+        ));
         let id = self.tree.push(
             &tag.name,
             Converted {
@@ -978,7 +930,41 @@ impl<'a> Converter<'a> {
             },
         );
         self.done.insert(tag.id.0, id);
-        Ok(Some(id))
+        Ok(id)
+    }
+
+    fn read_dialogue(&self, tag: &Tag) -> Result<h1::Dialogue> {
+        h1::Dialogue::read(self.h1, tag)
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e).into())
+    }
+
+    fn biped_dialogue(
+        &mut self,
+        tag: &Tag,
+        bytes: &[u8],
+        rep: &mut ObjectReport,
+    ) -> Result<Vec<(i16, TagId)>> {
+        let variants = h1::dialogue_variants(self.h1, bytes)
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        let mut voices = Vec::with_capacity(variants.len());
+        for (selector, id) in variants {
+            let voice = self.h1_tag(id)?;
+            let source = self.read_dialogue(voice)?;
+            if let Some((slot, id)) = crate::rebuild::unbound_dialogue_line(&source) {
+                let sound = self.h1_tag(id)?;
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &sound.name,
+                    format!(
+                        "{} slot {slot:#x} has no automatic dialogue event on {}",
+                        voice.name, tag.name
+                    ),
+                )
+                .into());
+            }
+            voices.push((selector, self.dialogue(voice, rep)?));
+        }
+        Ok(voices)
     }
 
     /// A Halo 1 `foot` as a Halo 2 one ([`crate::rebuild::foot`]): its
@@ -992,13 +978,17 @@ impl<'a> Converter<'a> {
         }
         let f = h1::Foot::read(self.h1, tag)?;
         let mut kinds = Vec::new();
-        let (mut missing, mut failed) = (Vec::new(), 0usize);
         for k in f.kinds.iter().take(crate::rebuild::FOOT_KINDS) {
             let mut out = crate::rebuild::FootKind::default();
             for (m, (_, name)) in k.iter().zip(crate::arsenal::MATERIALS.iter()) {
                 let Some(index) = self.base.materials.iter().position(|x| x == name) else {
-                    if (m.effect.is_some() || m.sound.is_some()) && !missing.contains(name) {
-                        missing.push(*name);
+                    if m.effect.is_some() || m.sound.is_some() {
+                        return Err(h1convert::Error::no_rebuild(
+                            &self.h1.header().name,
+                            &tag.name,
+                            format!("missing global material {name}"),
+                        )
+                        .into());
                     }
                     continue;
                 };
@@ -1010,27 +1000,18 @@ impl<'a> Converter<'a> {
                 if let Some(s) = m.sound
                     && !out.sounds.iter().any(|l| l.material == *name)
                 {
-                    match self.sound(self.h1_tag(s)?, rep) {
-                        Some(id) => out.sounds.push(line(id)),
-                        None => failed += 1,
-                    }
+                    out.sounds.push(line(self.sound(self.h1_tag(s)?, rep)?));
                 }
                 if let Some(e) = m.effect
                     && !out.effects.iter().any(|l| l.material == *name)
                 {
-                    match self.effect(self.h1_tag(e)?) {
-                        Ok(id) => out.effects.push(line(id)),
-                        Err(err) => {
-                            failed += 1;
-                            rep.no_home.push(format!("foot effect: not converted ({err})"));
-                        }
-                    }
+                    out.effects.push(line(self.effect(self.h1_tag(e)?)?));
                 }
             }
             kinds.push(out);
         }
         rep.no_home.push(format!(
-            "foot {}: {} kinds, {} sounds and {} effects by Halo 2 material; {failed} did not convert; materials not in the base: {missing:?}",
+            "foot {}: {} kinds, {} sounds and {} effects by Halo 2 material",
             tag.name,
             kinds.len(),
             kinds.iter().map(|k| k.sounds.len()).sum::<usize>(),
@@ -1074,20 +1055,13 @@ impl<'a> Converter<'a> {
 
     /// [`Self::sound`] for a dialogue line: a sound not yet converted is
     /// taken only while [`Self::dialogue_bytes`] stays within the budget.
-    fn dialogue_sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
-        if let Some(k) = self.sound_index.get(&tag.id.0) {
-            return k.map(sound);
+    fn dialogue_sound(&mut self, tag: &Tag) -> Result<Option<TagId>> {
+        if let Some(&k) = self.sound_index.get(&tag.id.0) {
+            return Ok(Some(sound(k)));
         }
-        let c = match h1sounds::Sound::read(self.h1, tag)
+        let c = h1sounds::Sound::read(self.h1, tag)
             .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
-        {
-            Ok(c) => c,
-            Err(e) => {
-                rep.no_home.push(format!("snd! {}: not converted ({e})", tag.name));
-                self.sound_index.insert(tag.id.0, None);
-                return None;
-            }
-        };
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
         let size: u64 = c
             .ranges
             .iter()
@@ -1095,37 +1069,24 @@ impl<'a> Converter<'a> {
             .map(|p| p.size() as u64)
             .sum();
         if self.dialogue_bytes + size > self.options.dialogue_budget {
-            return None;
+            return Ok(None);
         }
         self.dialogue_bytes += size;
-        self.tree.sounds.push((tag.name.clone(), c));
-        let k = self.tree.sounds.len() - 1;
-        self.sound_index.insert(tag.id.0, Some(k));
-        Some(sound(k))
+        self.queue_sound(tag, c).map(Some)
     }
 
     /// A Halo 1 decal from the `deca` definition
     /// ([`crate::rebuild::decal`]), converted once, with its next decal and
     /// its bitmap (`h1bitmaps`).
     pub fn decal(&mut self, tag: &Tag) -> Result<TagId> {
-        if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(*id);
-        }
+        self.with_dependencies(tag, |c| c.decal_uncached(tag))
+    }
+
+    fn decal_uncached(&mut self, tag: &Tag) -> Result<TagId> {
         let x = h1::Decal::read(self.h1, tag)?;
-        self.decals_open.push(tag.id.0);
-        let next = match x.next {
-            Some(n) if !self.decals_open.contains(&n.0) => {
-                let t = self.h1_tag(n)?;
-                Some(self.decal(t)?)
-            }
-            _ => None,
-        };
-        self.decals_open.pop();
+        let next = x.next.map(|id| self.decal(self.h1_tag(id)?)).transpose()?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let bitmap = x.bitmap.and_then(|b| self.bitmap(b));
-        if x.bitmap.is_some() && bitmap.is_none() {
-            rep.no_home.push("bitmap: did not convert".into());
-        }
+        let bitmap = self.source_bitmap(x.bitmap)?;
         let root = crate::rebuild::decal(&x, next, bitmap)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
@@ -1149,7 +1110,8 @@ impl<'a> Converter<'a> {
         let l = h1::Light::read(self.h1, tag)?;
         let mut root = crate::rebuild::light(&l)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
+        if let Some(id) = l.lens_flare {
+            let lens = self.lens_flare(self.h1_tag(id)?)?;
             root = flares_conv::light_with_flare(&root, lens)?;
         }
         self.tree.reports.push(rep);
@@ -1168,45 +1130,48 @@ impl<'a> Converter<'a> {
     /// A Halo 1 `snd!` converted with `h1sounds` into [`Tree::sounds`]
     /// (once), as its placeholder ([`sound`]); `None` when it does not
     /// convert (the reason in `rep`).
-    pub fn sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
-        if let Some(k) = self.sound_index.get(&tag.id.0) {
-            return k.map(sound);
+    pub fn sound(&mut self, tag: &Tag, _rep: &mut ObjectReport) -> Result<TagId> {
+        if let Some(&k) = self.sound_index.get(&tag.id.0) {
+            return Ok(sound(k));
         }
-        let got = h1sounds::Sound::read(self.h1, tag)
-            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()));
-        let k = match got {
-            Ok(c) => {
-                self.tree.sounds.push((tag.name.clone(), c));
-                Some(self.tree.sounds.len() - 1)
-            }
-            Err(e) => {
-                rep.no_home.push(format!("snd! {}: not converted ({e})", tag.name));
-                None
-            }
-        };
-        self.sound_index.insert(tag.id.0, k);
-        k.map(sound)
+        let converted = h1sounds::Sound::read(self.h1, tag)
+            .and_then(|s| h1sounds::convert_sound(&s, self.h1.bytes()))
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        self.queue_sound(tag, converted)
     }
 
-    /// A Halo 1 `lsnd` read and converted with `h1sounds::looping` into
-    /// [`Tree::loops`] (once), as its placeholder ([`looping`]).
-    pub fn looping_sound(&mut self, tag: &Tag, rep: &mut ObjectReport) -> Option<TagId> {
-        if let Some(k) = self.loop_index.get(&tag.id.0) {
-            return k.map(looping);
+    fn queue_sound(&mut self, tag: &Tag, converted: h1sounds::ConvertedSound) -> Result<TagId> {
+        let target = converted.promotion.as_ref().and_then(|p| p.target.clone());
+        let dependencies = h1sounds::convert::read_source_sounds(self.h1, target, |name| {
+            self.h1.find(h1sounds::h1::SND, name).is_some_and(|source| {
+                source.id == tag.id || self.sound_index.contains_key(&source.id.0)
+            })
+        })
+        .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        let k = self.tree.sounds.len();
+        self.tree.sounds.push((tag.name.clone(), converted));
+        self.sound_index.insert(tag.id.0, k);
+        for (name, sound) in dependencies {
+            let source = self
+                .h1
+                .find(h1sounds::h1::SND, &name)
+                .expect("read source sound");
+            self.sound_index.insert(source.id.0, self.tree.sounds.len());
+            self.tree.sounds.push((name, sound));
         }
-        let k = match h1sounds::looping::read_looping(self.h1, tag) {
-            Ok(l) => {
-                rep.no_home.extend(l.notes.iter().map(|n| format!("lsnd {}: {n}", tag.name)));
-                self.tree.loops.push(l);
-                Some(self.tree.loops.len() - 1)
-            }
-            Err(e) => {
-                rep.no_home.push(format!("lsnd {}: not converted ({e})", tag.name));
-                None
-            }
-        };
+        Ok(sound(k))
+    }
+
+    pub fn looping_sound(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(&k) = self.loop_index.get(&tag.id.0) {
+            return Ok(looping(k));
+        }
+        let converted = h1sounds::looping::read_looping(self.h1, tag)
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        let k = self.tree.loops.len();
+        self.tree.loops.push(converted);
         self.loop_index.insert(tag.id.0, k);
-        k.map(looping)
+        Ok(looping(k))
     }
 
     /// A Halo 1 effect from the `effe` definition
@@ -1214,73 +1179,99 @@ impl<'a> Converter<'a> {
     /// converts here: sounds, projectiles, decals, lights, debris and
     /// particle systems. Parts without a converter are listed in the report.
     pub fn effect(&mut self, tag: &Tag) -> Result<TagId> {
-        if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(*id);
+        self.with_dependencies(tag, |c| c.effect_uncached(tag, None))
+    }
+
+    fn with_dependencies(
+        &mut self,
+        tag: &Tag,
+        build: impl FnOnce(&mut Self) -> Result<TagId>,
+    ) -> Result<TagId> {
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
         }
-        if self.effects_open.contains(&tag.id.0) {
-            return Err(Error::Invalid(format!(
-                "{}: converting it needs itself",
-                tag.name
-            )));
+        let forward = TagId(0xfffa_0000 | (tag.id.0 & 0xffff));
+        if let Some(referenced) = self.active.get_mut(&tag.id.0) {
+            *referenced = true;
+            return Ok(forward);
         }
-        self.effects_open.push(tag.id.0);
-        let got = self.effect_uncached(tag);
-        self.effects_open.pop();
-        let id = got?;
+        self.active.insert(tag.id.0, false);
+        let result = build(self);
+        let referenced = self.active.remove(&tag.id.0).expect("active source tag");
+        let id = result
+            .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        if referenced {
+            for (_, tag) in &mut self.tree.tags {
+                visit_ids(&mut tag.root, &mut |target| {
+                    if *target == forward {
+                        *target = id;
+                    }
+                    Ok(())
+                })?;
+            }
+        }
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
 
-    fn effect_uncached(&mut self, tag: &Tag) -> Result<TagId> {
+    fn effect_after_detonation(&mut self, tag: &Tag, primary: usize) -> Result<TagId> {
+        let key = (tag.id.0, primary);
+        if let Some(id) = self.detonation_effects.get(&key) {
+            return Ok(*id);
+        }
+        if self.detonations_open.contains(&tag.id.0) {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "detonation effect converts through itself",
+            )
+            .into());
+        }
+        self.detonations_open.push(tag.id.0);
+        let got = self.effect_uncached(tag, Some(primary));
+        self.detonations_open.pop();
+        let id = got.map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e))?;
+        self.detonation_effects.insert(key, id);
+        Ok(id)
+    }
+
+    fn effect_uncached(
+        &mut self,
+        tag: &Tag,
+        primary_detonation_part: Option<usize>,
+    ) -> Result<TagId> {
         let e = h1::Effect::read(self.h1, tag)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let mut left: std::collections::BTreeMap<String, usize> = Default::default();
         let mut targets = Vec::new();
-        for p in e.events.iter().flat_map(|ev| &ev.parts) {
+        for (index, p) in e.events.iter().flat_map(|ev| &ev.parts).enumerate() {
             let g = p.group.0.to_be_bytes();
-            let got = match (p.reference, &g) {
-                (None, _) => None,
-                (Some(id), b"snd!") => {
-                    let t = self.h1_tag(id)?;
-                    self.sound(t, &mut rep)
+            let got = match p.reference {
+                None => None,
+                // The projectile applies its primary damage itself.
+                Some(_) if &g == b"jpt!" && primary_detonation_part == Some(index) => {
+                    targets.push(None);
+                    continue;
                 }
-                (Some(id), b"deca") => {
-                    let t = self.h1_tag(id)?;
-                    match self.decal(t) {
-                        Ok(x) => Some(x),
-                        Err(err) => {
-                            rep.no_home.push(format!("deca {}: not converted ({err})", t.name));
-                            None
+                Some(id) => {
+                    let source = self.h1_tag(id)?;
+                    match &g {
+                        b"snd!" => Some(self.sound(source, &mut rep)?),
+                        b"deca" => Some(self.decal(source)?),
+                        b"ligh" => Some(self.light(source)?),
+                        b"garb" | b"proj" => Some(self.object(source)?),
+                        b"jpt!" => Some(self.damage(id)?),
+                        b"pctl" => None, // Emitted in the event's particle systems below.
+                        _ => {
+                            return Err(h1convert::Error::no_rebuild(
+                                &self.h1.header().name,
+                                &source.name,
+                                format!("unsupported {} effect part", p.group),
+                            )
+                            .into());
                         }
                     }
                 }
-                (Some(id), b"ligh") => {
-                    let t = self.h1_tag(id)?;
-                    match self.light(t) {
-                        Ok(x) => Some(x),
-                        Err(err) => {
-                            rep.no_home.push(format!("ligh {}: not converted ({err})", t.name));
-                            None
-                        }
-                    }
-                }
-                (Some(id), b"garb") => self.effect_garbage(id, &mut rep),
-                (Some(id), b"proj") => {
-                    let t = self.h1_tag(id)?;
-                    match self.object(t) {
-                        Ok(x) => Some(x),
-                        Err(err) => {
-                            rep.no_home.push(format!("proj {}: not converted ({err})", t.name));
-                            None
-                        }
-                    }
-                }
-                _ => None,
             };
-            // Particle systems become the event's (Self::effect_particle_systems).
-            if got.is_none() && p.group != h1map::Group::new(b"pctl") {
-                *left.entry(p.group.to_string()).or_default() += 1;
-            }
             targets.push(got.map(|tag| crate::rebuild::PartTarget {
                 type_group: crate::rebuild::part_type_group(g),
                 group: g,
@@ -1289,15 +1280,17 @@ impl<'a> Converter<'a> {
         }
         let mut next = targets.into_iter();
         let root = crate::rebuild::effect(&e, &mut |_| next.next().flatten())?;
-        for (g, n) in left {
-            rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
-        }
         let (root, roles) =
             crate::provenance::capture(|| self.effect_particle_systems(tag, root, &mut rep));
         let root = root?;
         self.tree.reports.push(rep);
+        let name = if primary_detonation_part.is_some() {
+            format!("{}_detonation", tag.name)
+        } else {
+            tag.name.clone()
+        };
         let id = self.tree.push(
-            &tag.name,
+            &name,
             Converted {
                 group: FourCC(*b"effe"),
                 root,
@@ -1308,36 +1301,17 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    fn template(&self, group: &[u8; 4], path: &str, h2_group: &[u8; 4]) -> Result<(TagId, String)> {
-        let names = template_candidates(group, path);
-        let Some(&first) = names.first() else {
-            return Err(Error::NoTemplate(format!(
-                "{} {path}",
-                String::from_utf8_lossy(group)
-            )));
-        };
-        names
-            .iter()
-            .find_map(|n| Some((self.base.find(h2_group, n)?, (*n).to_owned())))
-            .ok_or_else(|| Error::NoTemplate(format!("{first} is not in the base map")))
-    }
-
     /// Converts any supported object tag (once; later calls return the
     /// same tag).
     pub fn object(&mut self, tag: &Tag) -> Result<TagId> {
-        if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(*id);
-        }
-        // An object whose conversion reaches itself (a projectile whose
-        // detonation effect creates it) is refused there, not recursed into.
-        if self.objects_open.contains(&tag.id.0) {
-            return Err(Error::Invalid(format!(
-                "{}: converting it needs itself",
-                tag.name
-            )));
-        }
-        self.objects_open.push(tag.id.0);
-        let got = match &tag.group.0.to_be_bytes() {
+        self.with_dependencies(tag, |c| c.object_uncached(tag))
+    }
+
+    fn object_uncached(&mut self, tag: &Tag) -> Result<TagId> {
+        let group = tag.group.0.to_be_bytes();
+        if !h1::OBJECT_TYPES.contains(&&group) { return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")); }
+        let widgets = self.native_widgets(tag)?;
+        let id = match &tag.group.0.to_be_bytes() {
             b"weap" => self.weapon(tag),
             b"proj" => self.projectile(tag),
             b"eqip" => self.equipment(tag),
@@ -1350,58 +1324,18 @@ impl<'a> Converter<'a> {
             b"ssce" => self.sound_scenery(tag),
             b"mach" | b"ctrl" | b"lifi" => self.device(tag),
             _ => Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
-        };
-        self.objects_open.pop();
-        let id = got?;
-        self.done.insert(tag.id.0, id);
+        }?;
+        if let Some(field) = widgets {
+            let owner = local_index(id).ok_or_else(|| Error::Invalid("widget owner is not local".into()))?;
+            let root = &mut self.tree.tags[owner].1.root;
+            root.fixups.retain(|f| f.offset != field.offset);
+            root.fixups.push(field);
+        }
         Ok(id)
     }
 
     fn h1_tag(&self, id: h1map::TagId) -> Result<&'a Tag> {
         Ok(self.h1.tag(id)?)
-    }
-
-    /// The shared header: bounds, default variant, and the model chain.
-    fn header(
-        &mut self,
-        rep: &mut ObjectReport,
-        root: &mut Block,
-        obj: &h1::Object,
-        name: &str,
-    ) -> Result<()> {
-        let mut w = Writer {
-            rep,
-            prefix: "obje.".into(),
-        };
-        w.f32(
-            &mut root.bytes,
-            h2::BOUNDING_RADIUS,
-            "bounding_radius",
-            obj.bounding_radius,
-            obj.bounding_radius,
-        );
-        for i in 0..3 {
-            let v = obj.bounding_offset[i];
-            w.f32(
-                &mut root.bytes,
-                h2::BOUNDING_OFFSET + 4 * i,
-                &format!("bounding_offset[{i}]"),
-                v,
-                v,
-            );
-        }
-        // The converted model has no variants; the engine then uses none.
-        root.bytes[h2::DEFAULT_VARIANT..h2::DEFAULT_VARIANT + 4].fill(0);
-        let template_hlmt = self.base.reference(&root.bytes, h2::MODEL);
-        let hlmt = self.model(rep, obj, template_hlmt, name, false, None)?;
-        root.tag_ref(h2::MODEL as u32, hlmt.unwrap_or(TagId::NULL));
-        if obj.physics.is_some() {
-            rep.no_home.push(
-                "phys (Halo 1 vehicle physics): Halo 2 runs its own; the template's phmo is used"
-                    .into(),
-            );
-        }
-        Ok(())
     }
 
     /// The `hlmt` and the converted tags under it. `None` when the Halo 1
@@ -1413,11 +1347,22 @@ impl<'a> Converter<'a> {
         &mut self,
         rep: &mut ObjectReport,
         obj: &h1::Object,
-        template_hlmt: Option<TagId>,
         name: &str,
-        rebuild: bool,
         rounds: Option<i16>,
     ) -> Result<Option<TagId>> {
+        let is_biped = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"bipd");
+        if let Some(id) = obj.modifier_shader.filter(|_| !is_biped) {
+            let dependency = self.h1_tag(id)?;
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &dependency.name,
+                format!(
+                    "object modifier shader {} on {name} has no output binding",
+                    dependency.group
+                ),
+            )
+            .into());
+        }
         let Some(mode_id) = obj.model else {
             return Ok(None);
         };
@@ -1425,7 +1370,7 @@ impl<'a> Converter<'a> {
         let mode_tag = self.h1_tag(mode_id)?;
         let (mut h1_model, _) =
             h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
-        let key = (mode_id, rounds);
+        let key = (mode_id, rounds, obj.texture_override);
         let mode = match self.render_models.get(&key) {
             Some(&mode) => mode,
             None => {
@@ -1435,18 +1380,17 @@ impl<'a> Converter<'a> {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model, rounds);
+                let mut shaders =
+                    self.model_shaders(rep, &h1_model, rounds, obj.texture_override)?;
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
                 let player = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"bipd")
                     && health_hud::is_player_biped(name);
                 if player {
-                    self.emblem(rep, &mut h1_model, &mut shaders);
+                    self.emblem(&rep.source, &mut h1_model, &mut shaders)?;
                 }
                 // One material per Halo 1 shader, as convert_model writes.
-                let mut padded = shaders.clone();
-                padded.resize(h1_model.shaders.len(), TagId::NULL);
                 let opts = ModelOptions {
                     shaders,
                     ..ModelOptions::default()
@@ -1456,52 +1400,24 @@ impl<'a> Converter<'a> {
                     h1models::short_name(&mode_tag.name),
                     &opts,
                 )?;
-                if rebuild {
-                    crate::rebuild::mode_materials(&mut mode.root, &padded)?;
-                }
-                let mode = self.tree.push(&mode_tag.name, mode);
+                crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
+                let render_name = if obj.texture_override == 0 {
+                    mode_tag.name.clone()
+                } else {
+                    format!("{}_texture_{}", mode_tag.name, obj.texture_override)
+                };
+                let mode = self.tree.push(&render_name, mode);
                 self.render_models.insert(key, mode);
                 mode
             }
         };
-        let mut hlmt = match template_hlmt {
-            Some(t) => Block::new(self.base.root(t)?),
-            None => Block::zeroed(
-                tags::object::GroupDef::find(FourCC(*b"hlmt"))
-                    .map_or(0xfc, |d| d.root_size as usize),
-            ),
-        };
-        let (count, nodes) = h1models::mode::hlmt_nodes(&h1_model);
-        let mut has_phmo = false;
-        rep.physics = Some(
-            match self.base.reference(&hlmt.bytes, h2::HLMT_PHYSICS_MODEL) {
-                Some(p) => {
-                    // The physics model writes one matrix per rigid body's node;
-                    // the object holds the hlmt's count. A template whose rigid
-                    // bodies reach past the converted nodes would write past
-                    // them, so it is not borrowed.
-                    let top = self.phmo_top_node(p)?;
-                    let name = self.base.name(p).map_or("?", |n| n.1).to_owned();
-                    if top >= i64::from(count.max(1)) {
-                        hlmt.tag_ref(h2::HLMT_PHYSICS_MODEL as u32, TagId::NULL);
-                        format!(
-                            "none: the template's {name} reaches node {top}, the model has {count}"
-                        )
-                    } else {
-                        has_phmo = true;
-                        format!("borrowed: {name}")
-                    }
-                }
-                None => "none (the template has no phmo)".into(),
-            },
-        );
         // Retail writes the coll's BSP physics slots (crate::coll) exactly
         // for scenery with no phmo: its weapons, equipment, devices and
         // bipeds without a phmo have none. Converted scenery has no phmo:
         // the engine gives scenery no Havok body, so a placed scenery
         // object's collision joins the level's instead
         // (h1convert::scenery_collision).
-        let slots = scenery && !has_phmo;
+        let slots = scenery;
         let coll = match obj.collision {
             Some(c) => {
                 let t = self.h1_tag(c)?;
@@ -1524,13 +1440,20 @@ impl<'a> Converter<'a> {
                                 Vec::new()
                             },
                         };
-                        let (_, report, conv) =
+                        let (_, report, mut conv) =
                             h1models::graph_from_map_with(self.h1, t, Some(mode_tag), &opts)?;
-                        for a in &report.suspension_without_marker {
-                            rep.no_home.push(format!(
-                                "suspension {a:?}: its mass point has no marker; left out"
-                            ));
+                        // Halo 2's suspension names a marker; one whose
+                        // Halo 1 mass point has none (not powered, or out
+                        // of range) has no rebuild yet.
+                        if let Some(a) = report.suspension_without_marker.first() {
+                            return Err(h1convert::Error::no_rebuild(
+                                &self.h1.header().name,
+                                &t.name,
+                                format!("suspension {a:?}: its mass point has no marker"),
+                            )
+                            .into());
                         }
+                        self.graph_sounds(t, &mut conv)?;
                         Some(self.cached(t, conv)?)
                     }
                 }
@@ -1538,108 +1461,7 @@ impl<'a> Converter<'a> {
             None => None,
         };
 
-        if rebuild {
-            return self.rebuilt_model(rep, obj, &h1_model, mode, coll, jmad, has_phmo, name);
-        }
-        hlmt.tag_ref(h2::HLMT_RENDER as u32, mode);
-        hlmt.tag_ref(h2::HLMT_COLLISION as u32, coll.map_or(TagId::NULL, |c| c.0));
-        hlmt.tag_ref(h2::HLMT_ANIMATION as u32, jmad.unwrap_or(TagId::NULL));
-        hlmt.bytes[h2::HLMT_VARIANTS..h2::HLMT_VARIANTS + 8].fill(0);
-        // The materials of the converted coll, not the template's: a
-        // hit's material index reads them (crate::rebuild::HLMT_MATERIALS).
-        // A borrowed phmo's shapes index the template's materials: those
-        // past the coll's stay, each named as its global material.
-        let mut materials = coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone());
-        if has_phmo {
-            let mut k = materials.len();
-            while let Some(e) = self.base.element(&hlmt.bytes, crate::rebuild::HLMT_MATERIALS as usize, crate::rebuild::HLMT_MATERIAL_SIZE, k)? {
-                let i = i16::from_le_bytes([e[0x10], e[0x11]]);
-                let g = usize::try_from(i)
-                    .ok()
-                    .and_then(|i| self.base.materials.get(i))
-                    .ok_or_else(|| Error::Invalid(format!("{name}: template hlmt material {k}: global {i}")))?;
-                materials.push(crate::rebuild::model_material(g, g, &self.base.materials)?);
-                k += 1;
-            }
-        }
-        crate::rebuild::set_model_materials(&mut hlmt, &materials);
-        // One node per render-model node: the engine sizes an object's node
-        // matrices by this count, and the converted model and graph write
-        // one per their node (h1models::mode::hlmt_nodes).
-        if count == 0 {
-            hlmt.bytes[h2::HLMT_NODES..h2::HLMT_NODES + 8].fill(0);
-        } else {
-            hlmt.block(h2::HLMT_NODES as u32, count, nodes);
-        }
-        // Regions and their permutations, named as the converted model's,
-        // each with the collision and physics region and permutation it
-        // uses (-1 none).
-        let render: Vec<(String, Vec<String>)> = h1_model
-            .regions
-            .iter()
-            .map(|r| {
-                (
-                    r.name.clone(),
-                    r.permutations.iter().map(|p| p.name.clone()).collect(),
-                )
-            })
-            .collect();
-        let coll_names = coll.map_or(&[][..], |c| &self.coll_names[&c.1][..]);
-        let map = region_map(&render, coll_names);
-        for (i, name) in coll_names.iter().enumerate() {
-            if !map.iter().any(|(r, _)| *r == i as i8) {
-                rep.no_home.push(format!(
-                    "coll region {} has no render region to select it",
-                    name.0
-                ));
-            }
-        }
-        // Physics bytes stay 0, as before: retail never holds -1 there on
-        // an object with no phmo (the scenery template's statue: 0).
-        let physics: i8 = 0;
-        let mut regions = Block::zeroed(0x10 * h1_model.regions.len());
-        for (i, r) in h1_model.regions.iter().enumerate() {
-            put_sid(&mut regions, 0x10 * i, &r.name);
-            regions.bytes[0x10 * i + h2::HLMT_REGION_COLLISION] = map[i].0 as u8;
-            regions.bytes[0x10 * i + h2::HLMT_REGION_PHYSICS] = physics as u8;
-            let mut perms = Block::zeroed(8 * r.permutations.len());
-            for (j, p) in r.permutations.iter().enumerate() {
-                put_sid(&mut perms, 8 * j, &p.name);
-                perms.bytes[8 * j + h2::HLMT_PERMUTATION_COLLISION] = map[i].1[j] as u8;
-                perms.bytes[8 * j + h2::HLMT_PERMUTATION_PHYSICS] = physics as u8;
-            }
-            if !r.permutations.is_empty() {
-                regions.block((0x10 * i + 8) as u32, r.permutations.len() as u32, perms);
-            }
-        }
-        if h1_model.regions.is_empty() {
-            hlmt.bytes[h2::HLMT_REGIONS..h2::HLMT_REGIONS + 8].fill(0);
-        } else {
-            hlmt.block(
-                h2::HLMT_REGIONS as u32,
-                h1_model.regions.len() as u32,
-                regions,
-            );
-        }
-        if let Some(t) = template_hlmt {
-            for (at, g, n) in self.base.references(&self.base.root(t)?) {
-                if ![h2::HLMT_RENDER, h2::HLMT_COLLISION, h2::HLMT_ANIMATION].contains(&at) {
-                    rep.stopgaps.push((at, format!("hlmt {g}"), n));
-                }
-            }
-        }
-        if obj.animation.is_none() {
-            rep.no_home
-                .push("no Halo 1 animation graph on the object; hlmt animation left null".into());
-        }
-        Ok(Some(self.tree.push(
-            name,
-            Converted {
-                group: FourCC(*b"hlmt"),
-                root: hlmt,
-                raw: Vec::new(),
-            },
-        )))
+        self.rebuilt_model(rep, obj, &h1_model, mode, coll, jmad, name)
     }
 
     /// The `hlmt` from its typed definition ([`crate::rebuild::model`]):
@@ -1654,10 +1476,8 @@ impl<'a> Converter<'a> {
         mode: TagId,
         coll: Option<(TagId, (u32, bool))>,
         jmad: Option<TagId>,
-        has_phmo: bool,
         name: &str,
     ) -> Result<Option<TagId>> {
-        debug_assert!(!has_phmo, "the rebuilt path borrows no physics model");
         let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
         let render: Vec<(String, Vec<String>)> = h1_model
             .regions
@@ -1729,7 +1549,7 @@ impl<'a> Converter<'a> {
         let mut object = h1::Object::read(self.h1, bytes)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &object, &tag.name, None)?;
         rep.physics = Some(match object.collision {
             Some(_) => {
                 "none: the coll's BSP physics slots; placements' collision joins the level's".into()
@@ -1739,12 +1559,6 @@ impl<'a> Converter<'a> {
         let predicted = self.predicted(hlmt);
         let root = crate::rebuild::scenery(&object, hlmt, &predicted)?;
         let root = self.with_object_attachments(*b"scen", "object", root, bytes, &object, &mut rep)?;
-        let widgets = object.widgets.iter().flatten().count();
-        if widgets > 0 {
-            rep.no_home.push(format!(
-                "obje widgets: {widgets} Halo 1 widgets (flags, antennas) not carried"
-            ));
-        }
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1757,12 +1571,8 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The weapon class a Halo 1 weapon `label` (its animation label,
-    /// the units' weapon type) is held under: of every animation of every
-    /// graph on the map named `<unit> <class> <label> <action>`
-    /// ([`h1models::names::map_name`], which names the converted `jmad`
-    /// tree too), the class most of them name (ties: the first by name).
-    /// `None` when no graph holds the label.
+    /// The player graph's standing class for the weapon label. Other units
+    /// supply the classes of weapons the player graph does not list.
     pub fn weapon_class(&mut self, label: &str) -> Result<Option<String>> {
         if self.weapon_classes.is_none() {
             let mut votes: HashMap<(String, String), usize> = HashMap::new();
@@ -1776,14 +1586,7 @@ impl<'a> Converter<'a> {
                 }
             }
             let mut classes = weapon_classes(votes);
-            // A label no animation is named for takes the class whose
-            // slot table lists it as a type (V: the warthog's gun, `cg`,
-            // under the warthog's `fixed`; the converted vehicle graph's
-            // aim overlays are found under that class, h1models
-            // `jmad::vehicle_plan`). Until converter version 84 the gun had
-            // no class, and the warthog no aim. Vehicle graphs' tables only
-            // (`h1models::h1::weapon_types`): a biped's converted graph holds
-            // just the types its animation names hold.
+            // Vehicle-mounted weapons may have no clip named for the gun.
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
                 for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
                     if h1models::names::CLASSES.contains(&class.as_str()) {
@@ -1791,6 +1594,7 @@ impl<'a> Converter<'a> {
                     }
                 }
             }
+            classes.extend(h1models::player_weapon_types(self.h1)?);
             self.weapon_classes = Some(classes);
         }
         Ok(self
@@ -1844,59 +1648,50 @@ impl<'a> Converter<'a> {
         Ok((id, key))
     }
 
-    /// The highest node a `phmo`'s rigid bodies name (`+0x38`, `0x90`
-    /// each, node `i16` first), `-1` with none.
-    fn phmo_top_node(&self, phmo: TagId) -> Result<i64> {
-        let root = self.base.head(phmo, h2::PHMO_RIGID_BODIES as u64 + 8)?;
-        let mut top = -1i64;
-        let mut i = 0;
-        while let Some(e) = self.base.element(&root, h2::PHMO_RIGID_BODIES, 0x90, i)? {
-            top = top.max(i64::from(i16::from_le_bytes([e[0], e[1]])));
-            i += 1;
-        }
-        Ok(top)
-    }
-
-    /// Adds the player's emblem to a player biped's `model`
-    /// ([`h1models::emblem::add_emblem`] at its default, the left
-    /// shoulder) and names its material: the base's [`EMBLEM_SHADER`],
-    /// which draws the emblem of the player being drawn. `shaders` (one
-    /// per Halo 1 shader so far) gains it at the emblem's index. Without
-    /// the shader in the base, or a spot on the model, the model is left
-    /// as it is and the report says so.
+    /// Adds the player's emblem part and builds its material once per tree.
     fn emblem(
         &mut self,
-        rep: &mut ObjectReport,
+        source: &str,
         model: &mut h1models::h1::Model,
         shaders: &mut Vec<TagId>,
-    ) {
-        let Some(shader) = self.base.find(b"shad", EMBLEM_SHADER) else {
-            rep.no_home.push(format!(
-                "emblem: the base has no {EMBLEM_SHADER}; none drawn"
-            ));
-            return;
-        };
+    ) -> Result<()> {
+        use h1convert::shad::{EMBLEM_BITMAP, EMBLEM_STEM, emblem};
+        let error = |why: String| h1convert::Error::no_rebuild(&self.h1.header().name, source, why);
         let at = &h1models::emblem::LEFT_SHOULDER;
-        let Some(index) = h1models::emblem::add_emblem(model, at) else {
-            rep.no_home.push(format!(
-                "emblem: no surface bound to {} met the ray; none drawn",
-                at.node
-            ));
-            return;
+        let index = h1models::emblem::add_emblem(model, at)
+            .ok_or_else(|| error(format!("emblem: no surface bound to {}", at.node)))?;
+        let shader = if let Some(id) = self.emblem_shader {
+            id
+        } else {
+            let stem = self
+                .base
+                .find(b"stem", EMBLEM_STEM)
+                .ok_or_else(|| error(format!("emblem program {EMBLEM_STEM} is missing")))?;
+            let bitmap = self
+                .base
+                .find(b"bitm", EMBLEM_BITMAP)
+                .ok_or_else(|| error(format!("emblem atlas {EMBLEM_BITMAP} is missing")))?;
+            let root = emblem(stem, bitmap).map_err(|e| error(e.to_string()))?;
+            let id = self.tree.push(
+                EMBLEM_SHADER,
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root,
+                    raw: Vec::new(),
+                },
+            );
+            self.emblem_shader = Some(id);
+            id
         };
-        shaders.resize(index, TagId::NULL);
+        debug_assert_eq!(shaders.len(), index);
         shaders.push(shader);
+        Ok(())
     }
 
-    /// A `shad` per Halo 1 shader of `model`: a transparent one rebuilt on
-    /// its own stem ([`Self::transparent_model_shader`]), else a copy of
-    /// the base's model shader ([`Base::model_shader`]) drawing the Halo 1 shader's own
-    /// base and detail maps, converted by `h1bitmaps` (each once). A
-    /// shader with no base map this reads gets the base's model shader
-    /// itself, never null: the shader draw begin `0x1bbf0` does not skip a
-    /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
-    /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
-    /// template at all the materials stay null.
+    /// One rebuilt material per Halo 1 shader. Null-base model shaders
+    /// use the rasterizer defaults and their own colours. Other supported
+    /// shaders use their own maps and the appropriate lighting or transparent
+    /// template. An unresolved material is a conversion error.
     ///
     /// `rounds` is the loaded maximum of the weapon whose model this is
     /// when Halo 1's counters on it count its rounds
@@ -1909,55 +1704,119 @@ impl<'a> Converter<'a> {
         rep: &mut ObjectReport,
         model: &h1models::h1::Model,
         rounds: Option<i16>,
-    ) -> Vec<TagId> {
-        let Some(template) = self.base.model_shader.clone() else {
-            rep.no_home
-                .push("model shaders: the base has no model shader to copy; materials null".into());
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for s in &model.shaders {
-            if let Some(id) = self.counter_shader(&template.library, s.tag, s.permutation, rounds) {
-                out.push(id);
-                continue;
-            }
-            let id = (|| -> Option<TagId> {
-                let tag = self.h1.tag(s.tag).ok()?;
-                if let Some(id) = self.done.get(&tag.id.0) {
-                    return Some(*id);
+        texture_override: i16,
+    ) -> Result<Vec<TagId>> {
+        let mut shaders = Vec::with_capacity(model.shaders.len());
+        for (slot, entry) in model.shaders.iter().enumerate() {
+            // The object's texture override selects the image of every
+            // multi-image material (shader_images::material_permutation).
+            let entry = &h1models::h1::ShaderRef {
+                permutation: shader_images::material_permutation(
+                    texture_override,
+                    entry.permutation,
+                ),
+                ..*entry
+            };
+            let source = self.h1.tag(entry.tag);
+            let result = match source {
+                Ok(tag) => self.model_shader(tag, entry, rounds).map_err(|e| format!(
+                    "{}: {} {}: {e}", self.h1.header().name, tag.group, tag.name
+                )),
+                Err(e) => Err(format!("{}: {} material {slot}, {} {}: {e}",
+                    self.h1.header().name, rep.source, entry.group, entry.tag)),
+            };
+            match result {
+                Ok(id) => shaders.push(id),
+                Err(reason) => {
+                    self.tree.model_shader_error.get_or_insert_with(|| reason.clone());
+                    return Err(Error::Invalid(reason));
                 }
-                if let Some(id) = self.transparent_model_shader(&template.library, tag) {
-                    return Some(id);
-                }
-                let maps = h1convert::textures::h1_maps_of(self.h1, tag)?;
-                let base = self.bitmap(maps.base?)?;
-                let detail = maps.detail.and_then(|d| self.bitmap(d));
-                let scale = h1convert::textures::h1_scales_of(self.h1, tag).detail;
-                let (tree, _) = template.copy(base, detail, scale);
-                let conv = Converted {
-                    group: FourCC(*b"shad"),
-                    root: tree,
-                    raw: Vec::new(),
-                };
-                self.cached(tag, conv).ok()
-            })();
-            if id.is_none() {
-                rep.no_home.push(format!(
-                    "model shader {}: no base map read; the base's model shader stands in",
-                    self.h1.tag(s.tag).map_or("?".into(), |t| t.name.clone())
-                ));
             }
-            out.push(id.unwrap_or(template.shader));
         }
-        out
+        Ok(shaders)
+    }
+
+    fn model_shader(
+        &mut self,
+        tag: &Tag,
+        entry: &h1models::h1::ShaderRef,
+        rounds: Option<i16>,
+    ) -> Result<TagId> {
+        if !h1convert::shad::H1_GROUPS.contains(&tag.group.to_string().as_str()) {
+            return Err(Error::Invalid("unsupported model shader group".into()));
+        }
+        let base = self.base;
+        let template = &base.model_shader;
+        if let Some(id) = self.counter_shader(&template.library, tag, entry.permutation, rounds)? {
+            return Ok(id);
+        }
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
+        }
+        if let Some(id) = self.permuted_shader(tag, entry.permutation, &template.library)? {
+            return Ok(id);
+        }
+        if let Some(source) = ModelDefaults::read(tag.group, self.h1.tag_data(tag)?)? {
+            return self.model_default_shader(&template.library, tag, source);
+        }
+        if let Some(layout) = h1convert::shad::textureless_layout(tag.group, self.h1.tag_data(tag)?)
+        {
+            use h1convert::shad::program::glass;
+            let source = self.h1;
+            let map = &source.header().name;
+            let fail = |why| h1convert::Error::no_rebuild(map, &tag.name, why);
+            let root = if layout.stem == glass::CLEAR.stem {
+                let vertex = base
+                    .find(b"vrtx", glass::GLASS_VERTEX)
+                    .ok_or_else(|| fail(glass::GLASS_VERTEX))?;
+                let pass = self.program_tag(glass::CLEAR.stem, b"spas", glass::clear_pass(vertex)?);
+                let stem =
+                    self.program_tag(glass::CLEAR.stem, b"stem", glass::clear_template(pass)?);
+                glass::clear_instance(stem)?
+            } else {
+                if !template.library.has(layout) {
+                    return Err(fail(layout.stem).into());
+                }
+                template.library.build(layout, &HashMap::new())?
+            };
+            return self.cached(
+                tag,
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root,
+                    raw: vec![],
+                },
+            );
+        }
+        if let Some(id) = self.model_effect_shader(&template.library, tag)? {
+            return Ok(id);
+        }
+        if let Some(id) = self.transparent_model_shader(&template.library, tag)? {
+            return Ok(id);
+        }
+        if !matches!(&tag.group.0.to_be_bytes(), b"soso" | b"senv") {
+            return Err(Error::Invalid("no supported model shader rebuild".into()));
+        }
+        let maps = h1convert::textures::h1_maps_of(self.h1, tag)
+            .ok_or_else(|| Error::Invalid("cannot read shader maps".into()))?;
+        let mut bitmap = |id| {
+            if h1convert::shad::h1_texture_kind(self.h1, id) != Some(h1map::bitmap::ImageKind::D2) {
+                return Err(Error::Invalid(format!("unreadable or non-2D opaque bitmap {id}")));
+            }
+            self.bitmap(id).ok_or_else(|| Error::Invalid(format!("unreadable bitmap {id}")))
+        };
+        let base = bitmap(maps.base.ok_or_else(|| Error::Invalid("missing base map".into()))?)?;
+        let detail = maps.detail.map(bitmap).transpose()?;
+        let scale = h1convert::textures::h1_scales_of(self.h1, tag)?.detail;
+        let root = template.build_opaque(base, detail, scale)?;
+        self.cached(tag, Converted { group: FourCC(*b"shad"), root, raw: Vec::new() })
     }
 
     /// A Halo 1 model shader that isn't `senv` or `soso` (glass, chicago,
     /// generic, meter, plasma, water) rebuilt as the structure's are
     /// ([`h1convert::shad::read_h1`]): its own stem (alpha blended,
-    /// additive or self-illuminated) and maps, converted once. `None` when
-    /// it isn't one, no map of it reads or converts, or `library` lacks
-    /// every stem it could draw with; the tex_bump copy then follows.
+    /// additive or self-illuminated) and maps, converted once. An ordinary
+    /// opaque model material is built by the caller.
     ///
     /// A `soso` whose base is cut out (an alpha Halo 1 tests,
     /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
@@ -1996,27 +1855,18 @@ impl<'a> Converter<'a> {
         &mut self,
         library: &h1convert::shad::Library,
         tag: &Tag,
-    ) -> Option<TagId> {
+    ) -> Result<Option<TagId>> {
         let group = tag.group.to_string();
         if group == "senv" {
-            return None;
+            return Ok(None);
         }
-        let s = h1convert::shad::read_h1(self.h1, tag)?;
-        let mut chosen = s.choose(library)?.clone();
-        // A change colour whose map doesn't bake draws as it did without
-        // one: the change-colour stem's default map would tint by colours
-        // nobody set.
+        let Some(s) = h1convert::shad::read_h1(self.h1, tag) else { return Ok(None) };
+        let mut chosen = s.choose(library)
+            .ok_or_else(|| Error::NoTemplate(s.layout.stem.into()))?.clone();
         let change_colour = h1convert::shad::soso_change_colour(self.h1, tag);
-        if chosen.layout.stem == h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR.stem
-            && change_colour
-                .and_then(|(slot, m)| self.change_colour_bitmap(m, slot))
-                .is_none()
-        {
-            chosen = chosen.fallback.as_deref()?.choose(library)?.clone();
-        }
         // A `soso` is rebuilt for its reflection (converter version 76)
         // or its cut-out base (84, `shad::soso_alpha_tested`): otherwise
-        // the tex_bump copy draws it as before.
+        // the caller builds the ordinary opaque shader.
         let env = [
             h1convert::shad::TEX_BUMP_ENV.stem,
             h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR.stem,
@@ -2025,7 +1875,7 @@ impl<'a> Converter<'a> {
             && !env.contains(&chosen.layout.stem)
             && chosen.layout.stem != h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
         {
-            return None;
+            return Ok(None);
         }
         // On tex_bump_env the base's alpha masks the reflection: a `soso`'s
         // base takes its multipurpose map's red there (converter version
@@ -2040,22 +1890,20 @@ impl<'a> Converter<'a> {
         for (role, m) in &chosen.maps {
             let id = match (role, mask, chosen.extras.brightest_mask) {
                 (h1convert::shad::Role::Base, Some(mask), _) => {
-                    self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
+                    self.masked_bitmap(m.bitmap, mask)
                 }
                 // A plasma's picture with its brightness as alpha
                 // (converter version 90, `shad::plasma_shader`).
-                (h1convert::shad::Role::Mask, _, Some(gain)) => self
-                    .brightest_bitmap(m.bitmap, gain)
-                    .or_else(|| self.bitmap(m.bitmap)),
+                (h1convert::shad::Role::Mask, _, Some(gain)) => self.brightest_bitmap(m.bitmap, gain),
                 // The multipurpose map's blue in the slot's channel; no
-                // change-colour map, no tint (the layout's default).
+                // change-colour map is synthesized without its source.
                 (h1convert::shad::Role::ChangeColour, _, _) => match change_colour {
                     Some((slot, _)) => self.change_colour_bitmap(m.bitmap, slot),
                     None => None,
                 },
                 _ => self.bitmap(m.bitmap),
             };
-            let Some(id) = id else { continue };
+            let id = id.ok_or_else(|| Error::Invalid(format!("cannot convert {role:?} bitmap {}", m.bitmap)))?;
             maps.insert(
                 *role,
                 h1convert::shad::Bound {
@@ -2066,7 +1914,7 @@ impl<'a> Converter<'a> {
             );
         }
         if maps.is_empty() {
-            return None;
+            return Ok(None);
         }
         // The cut-out stem's depth and shadow passes kill by its bump
         // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
@@ -2075,12 +1923,11 @@ impl<'a> Converter<'a> {
         // opaque, and the leaves drew as whole dark cards).
         if chosen.layout.stem == h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
             && !maps.contains_key(&h1convert::shad::Role::Bump)
-            && let Some((_, base)) = chosen
-                .maps
-                .iter()
-                .find(|(r, _)| *r == h1convert::shad::Role::Base)
-            && let Some(id) = self.cutout_bump(base.bitmap)
         {
+            let (_, base) = chosen.maps.iter().find(|(role, _)| *role == h1convert::shad::Role::Base)
+                .ok_or_else(|| Error::Invalid("cutout shader has no base map".into()))?;
+            let id = self.cutout_bump(base.bitmap)
+                .ok_or_else(|| Error::Invalid(format!("cannot convert cutout bitmap {}", base.bitmap)))?;
             maps.insert(
                 h1convert::shad::Role::Bump,
                 h1convert::shad::Bound {
@@ -2091,7 +1938,7 @@ impl<'a> Converter<'a> {
             );
         }
         chosen.extras.cinematic_reflection = group == "soso" && env.contains(&chosen.layout.stem);
-        let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
+        let tree = library.build_with(chosen.layout, &maps, &chosen.extras)?;
         self.cached(
             tag,
             Converted {
@@ -2100,7 +1947,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         )
-        .ok()
+        .map(Some)
     }
 
     /// Rebuild a numeric `schi` as one animated shader per digit using
@@ -2109,52 +1956,64 @@ impl<'a> Converter<'a> {
     fn counter_shader(
         &mut self,
         library: &h1convert::shad::Library,
-        id: h1map::TagId,
+        tag: &Tag,
         permutation: i16,
         loaded: Option<i16>,
-    ) -> Option<TagId> {
-        let tag = self.h1.tag(id).ok()?;
+    ) -> Result<Option<TagId>> {
         if tag.group != h1map::Group::new(b"schi") {
-            return None;
+            return Ok(None);
         }
-        let key = (id.0, permutation, loaded);
-        if let Some(t) = self.counter_shaders.get(&key) {
-            return *t;
+        let key = (tag.id.0, permutation, loaded);
+        if let Some(id) = self.counter_shaders.get(&key) {
+            return Ok(Some(*id));
         }
-        let tag = tag.clone();
-        let out = (|| {
-            let n = h1convert::shad::chicago_numeric(self.h1, &tag)?;
-            let input = n
-                .countdown_digit(permutation)
-                .or_else(|| n.ammunition_digit(permutation, loaded?))?;
-            let s = h1convert::shad::counter_shader(&tag.name, &n, input);
-            let digits = self.bitmap(n.bitmap)?;
-            let maps = HashMap::from([(
-                h1convert::shad::Role::Base,
-                h1convert::shad::Bound {
-                    id: digits,
-                    scale: n.scale,
-                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
-                },
-            )]);
-            let tree = library.build_with(s.layout, &maps, &s.extras).ok()?;
-            let place = input.rsplit('_').next().unwrap_or(input);
-            Some(self.tree.push(
-                &format!("{}_{place}", tag.name),
-                Converted {
-                    group: FourCC(*b"shad"),
-                    root: tree,
-                    raw: Vec::new(),
-                },
-            ))
-        })();
-        self.counter_shaders.insert(key, out);
-        out
+        let flags = self.h1.tag_data(tag)?.get(h1convert::shad::CHICAGO_FLAGS)
+            .ok_or(Error::Truncated("Chicago shader flags"))?;
+        if flags & h1convert::shad::CHICAGO_NUMERIC == 0 {
+            return Ok(None);
+        }
+        let n = h1convert::shad::chicago_numeric(self.h1, tag)
+            .ok_or_else(|| Error::Invalid("unreadable numeric Chicago stage".into()))?;
+        let Some(input) = n.countdown_digit(permutation)
+            .or_else(|| n.ammunition_digit(permutation, loaded?)) else {
+            return Ok(None);
+        };
+        let s = h1convert::shad::counter_shader(&tag.name, &n, input);
+        let digits = self.bitmap(n.bitmap)
+            .ok_or_else(|| Error::Invalid(format!("unreadable counter bitmap {}", n.bitmap)))?;
+        let maps = HashMap::from([(
+            h1convert::shad::Role::Base,
+            h1convert::shad::Bound {
+                id: digits,
+                scale: n.scale,
+                lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
+            },
+        )]);
+        let root = library.build_with(s.layout, &maps, &s.extras)?;
+        let place = input.rsplit('_').next().unwrap_or(input);
+        let id = self.tree.push(
+            &format!("{}_{place}", tag.name),
+            Converted { group: FourCC(*b"shad"), root, raw: Vec::new() },
+        );
+        self.counter_shaders.insert(key, id);
+        Ok(Some(id))
     }
 
     /// The Halo 1 bitmap `id`, converted once.
+    fn source_bitmap(&mut self, id: Option<h1map::TagId>) -> Result<Option<TagId>> {
+        let Some(id) = id else { return Ok(None) };
+        let t = self.h1_tag(id)?;
+        self.bitmap(id).map(Some).ok_or_else(|| {
+            h1convert::Error::no_rebuild(&self.h1.header().name, &t.name, "bitmap conversion")
+                .into()
+        })
+    }
+
     fn bitmap(&mut self, id: h1map::TagId) -> Option<TagId> {
         let tag = self.h1.tag(id).ok()?;
+        if tag.group != h1map::Group::new(b"bitm") {
+            return None;
+        }
         if let Some(t) = self.done.get(&tag.id.0) {
             return Some(*t);
         }
@@ -2163,11 +2022,10 @@ impl<'a> Converter<'a> {
     }
 
     /// The Halo 1 base map `base` with the red channel of `mask` (a
-    /// `soso`'s multipurpose map) as its alpha, DXT5
-    /// (`h1bitmaps::mask::red_into_alpha`), `<base name>_reflection_<mask
-    /// leaf>`, built once per pair. `None` when either does not read or
-    /// decode (the caller then takes the base as it is), or for a base of
-    /// more than one image.
+    /// `soso`'s multipurpose map) as its alpha, DXT5, on every image
+    /// (`h1bitmaps::mask::convert_reflection_mask`), `<base
+    /// name>_reflection_<mask leaf>`, built once per pair. `None` when
+    /// either does not read or decode, or their images do not pair.
     fn masked_bitmap(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let key = (base.0, mask.0);
         if let Some(t) = self.masked_bitmaps.get(&key) {
@@ -2181,7 +2039,7 @@ impl<'a> Converter<'a> {
     /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
     /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
     /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
-    /// it does not read or decode, or has more than one image.
+    /// it does not read or decode.
     fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
         let key = (id.0, gain.to_bits());
         if let Some(t) = self.brightest_bitmaps.get(&key) {
@@ -2201,8 +2059,7 @@ impl<'a> Converter<'a> {
     /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
     /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
     /// name>_alpha_test_bump`, built once per base. `None` when the base
-    /// does not read or decode, or has more than one image: the stem's
-    /// default bump then stands, uncut, as before.
+    /// does not read or decode.
     fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
         if let Some(t) = self.cutout_bumps.get(&base.0) {
             return *t;
@@ -2221,25 +2078,7 @@ impl<'a> Converter<'a> {
     fn bake_mask(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let tag = self.h1.tag(base).ok()?.clone();
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
-        let mm = h1map::bitmap::Bitmap::read(self.h1, &mtag).ok()?;
-        if bm.images.len() != 1 || mm.images.is_empty() {
-            return None;
-        }
-        let (img, px) = h1bitmaps::mask::red_into_alpha(
-            &bm.images[0],
-            bm.pixels(self.h1, 0).ok()?,
-            &mm.images[0],
-            mm.pixels(self.h1, 0).ok()?,
-        )
-        .ok()?;
-        let mut baked = bm.clone();
-        baked.images[0] = img;
-        // Halo 1's format word: compressed with interpolated alpha (DXT5).
-        baked.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
-        let mut px = Some(px);
-        let (conv, _) =
-            h1bitmaps::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default())).ok()?;
+        let conv = h1bitmaps::mask::convert_reflection_mask(self.h1, &tag, &mtag).ok()?;
         let leaf = mtag.name.rsplit('\\').next().unwrap_or(&mtag.name);
         Some(self.tree.push(&format!("{}_reflection_{leaf}", tag.name), conv))
     }
@@ -2285,8 +2124,9 @@ impl<'a> Converter<'a> {
     /// slot `slot` (`h1convert::shad::halo2_change_colour_slot`): its
     /// multipurpose map `mask`'s blue (`SOSO_CHANGE_COLOUR_CHANNEL`) in
     /// channel `slot`, every other channel 0
-    /// (`h1bitmaps::mask::channel_into`), `<mask name>_change_color_<slot>`,
-    /// built once per pair. `None` when the mask does not read or decode.
+    /// on every image (`h1bitmaps::mask::convert_change_colour`), `<mask
+    /// name>_change_color_<slot>`, built once per pair. `None` when the
+    /// mask does not read or decode.
     fn change_colour_bitmap(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
         let key = (mask.0, slot);
         if let Some(t) = self.change_colour_bitmaps.get(&key) {
@@ -2299,23 +2139,13 @@ impl<'a> Converter<'a> {
 
     fn bake_change_colour(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let mm = h1map::bitmap::Bitmap::read(self.h1, &mtag).ok()?;
-        if mm.images.len() != 1 {
-            return None;
-        }
-        let (img, px) = h1bitmaps::mask::channel_into(
-            &mm.images[0],
-            mm.pixels(self.h1, 0).ok()?,
+        let conv = h1bitmaps::mask::convert_change_colour(
+            self.h1,
+            &mtag,
             h1convert::shad::SOSO_CHANGE_COLOUR_CHANNEL,
             slot,
         )
         .ok()?;
-        let mut baked = mm.clone();
-        baked.images[0] = img;
-        baked.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
-        let mut px = Some(px);
-        let (conv, _) =
-            h1bitmaps::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default())).ok()?;
         Some(
             self.tree
                 .push(&format!("{}_change_color_{slot}", mtag.name), conv),
@@ -2389,34 +2219,54 @@ impl<'a> Converter<'a> {
 
     /// A copy of bitmap `id` whose sequence `seq` starts at its sprite
     /// `first`, for a Halo 2 widget, which draws its sequence's first
-    /// sprite, to draw a later one (`h1hud::zoom_widget`). Sprite 0 is the
-    /// bitmap itself; `<name>_seq<seq>_sprite<first>`, built once. None past
-    /// the sequence's sprites.
-    fn sprite_bitmap(&mut self, id: h1map::TagId, seq: i16, first: usize) -> Option<TagId> {
-        if first == 0 {
-            return self.bitmap(id);
-        }
+    /// sprite. Isolate even sprite 0: the native target-colour branch can
+    /// otherwise substitute sprite 1. Cache by source, sequence and frame.
+    /// `Ok(None)` only past the sequence's sprites (the weapon has no such
+    /// zoom level); a bitmap that does not read, decode or convert is an
+    /// error naming it.
+    fn sprite_bitmap(&mut self, id: h1map::TagId, seq: i16, first: usize) -> Result<Option<TagId>> {
+        let tag = self.h1.tag(id)?.clone();
+        let source = self.h1;
+        let fail = |why: String| -> Error {
+            h1convert::Error::no_rebuild(&source.header().name, &tag.name, format!("zoom sprite {first}: {why}")).into()
+        };
         let key = (id.0, seq, first);
         if let Some(t) = self.sprite_bitmaps.get(&key) {
-            return Some(*t);
+            return Ok(Some(*t));
         }
-        let tag = self.h1.tag(id).ok()?.clone();
-        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let bm = h1map::bitmap::Bitmap::read(source, &tag).map_err(|e| fail(e.to_string()))?;
         let mut shifted = bm.clone();
-        let sprites = &mut shifted.sequences.get_mut(usize::try_from(seq).ok()?)?.sprites;
+        let sprites = &mut usize::try_from(seq)
+            .ok()
+            .and_then(|s| shifted.sequences.get_mut(s))
+            .ok_or_else(|| fail(format!("no sequence {seq}")))?
+            .sprites;
         if first >= sprites.len() {
-            return None;
+            return Ok(None);
         }
-        sprites.drain(..first);
+        let selected = sprites[first].clone();
+        *sprites = vec![selected];
         let mut pixels = (0..bm.images.len())
-            .map(|i| bm.pixels(self.h1, i).map(|p| p.to_vec()))
+            .map(|i| bm.pixels(source, i).map(|p| p.to_vec()))
             .collect::<std::result::Result<Vec<_>, _>>()
-            .ok()?;
+            .map_err(|e| fail(e.to_string()))?;
         let (conv, _) =
-            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i])))
+                .map_err(|e| fail(e.to_string()))?;
         let out = self.tree.push(&format!("{}_seq{seq}_sprite{first}", tag.name), conv);
         self.sprite_bitmaps.insert(key, out);
-        Some(out)
+        Ok(Some(out))
+    }
+
+    fn program_tag(&mut self, name: &str, group: &[u8; 4], root: Block) -> TagId {
+        self.tree.push(
+            name,
+            Converted {
+                group: FourCC(*group),
+                root,
+                raw: Vec::new(),
+            },
+        )
     }
 
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
@@ -2445,35 +2295,193 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// Rebuild the placement-specific light on the fixture's original
+    /// markers. Identical overrides share a machine and its light tags.
+    pub fn fixture(
+        &mut self,
+        tag: &Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<TagId> {
+        use tags::defs::{self, Defs, Target, Val};
+
+        if tag.group != h1map::Group::new(b"lifi") {
+            return Err(Error::WrongGroup(tag.group.to_string(), *b"lifi"));
+        }
+        let machine = self.object(tag)?;
+        let Some(lighting) = lighting else {
+            return Ok(machine);
+        };
+        let key = (machine, lighting.key());
+        if let Some(&id) = self.fixture_variants.get(&key) {
+            return Ok(id);
+        }
+        let machine_group = FourCC(*b"mach");
+        let light_group = FourCC(*b"ligh");
+        let machine_def = Defs::builtin()
+            .group(machine_group)
+            .expect("machine definition");
+        let owner = local_index(machine).expect("rebuilt fixture is local");
+        let mut record = defs::from_built(machine_def, &self.tree.tags[owner].1.root)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let Some(Val::Block(attachments)) = record.at_mut("devi.obje.attachments") else {
+            return Err(Error::Invalid(format!(
+                "{}: fixture attachments missing",
+                tag.name
+            )));
+        };
+        let mut light_count = 0;
+        for attachment in attachments {
+            let Some(Val::Ref { group, target }) = attachment.at_mut("type") else {
+                return Err(Error::Invalid(format!(
+                    "{}: invalid fixture attachment",
+                    tag.name
+                )));
+            };
+            if *group != light_group.as_u32() {
+                continue;
+            }
+            let Target::Id(light) = target else {
+                return Err(Error::Invalid(format!(
+                    "{}: fixture light is unresolved",
+                    tag.name
+                )));
+            };
+            let light_key = (*light, lighting.key());
+            let variant = if let Some(&id) = self.fixture_variants.get(&light_key) {
+                id
+            } else {
+                let index = local_index(*light).ok_or_else(|| {
+                    Error::Invalid(format!("{}: fixture light is not rebuilt", tag.name))
+                })?;
+                let (name, existing) = &self.tree.tags[index];
+                let name = format!("{name}_fixture");
+                let root = crate::rebuild::fixture_light(&existing.root, lighting)?;
+                let id = self.tree.push(
+                    &name,
+                    Converted {
+                        group: light_group,
+                        root,
+                        raw: Vec::new(),
+                    },
+                );
+                self.fixture_variants.insert(light_key, id);
+                id
+            };
+            *light = variant;
+            light_count += 1;
+        }
+        if light_count == 0 {
+            return Err(Error::Invalid(format!(
+                "{}: authored fixture lighting has no attached light",
+                tag.name
+            )));
+        }
+        let root = defs::to_built(machine_def, &record, &mut |_| None)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let id = self.tree.push(
+            &format!("{}_placed", tag.name),
+            Converted {
+                group: machine_group,
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.fixture_variants.insert(key, id);
+        Ok(id)
+    }
+
     /// A Halo 1 machine, control or light fixture, from the `mach` or
     /// `ctrl` definition ([`crate::rebuild::device`]); a light fixture is
     /// a machine (Halo 2 has no `lifi` tags). There is no template path.
     fn device(&mut self, tag: &Tag) -> Result<TagId> {
         let mut dev = h1::Device::read(self.h1, tag)?;
         self.halo2_change_colours(&mut dev.object);
-        let lifi = dev.machine.is_none() && dev.control.is_none();
         let group = if dev.control.is_some() {
             b"ctrl"
         } else {
             b"mach"
         };
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &dev.object, &tag.name, None)?;
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(hlmt);
-        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
-        let bytes = self.h1.tag_data(tag)?;
-        let root =
-            self.with_object_attachments(*group, "devi.obje", root, bytes, &dev.object, &mut rep)?;
-        rep.no_home.push(
-            "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
-        );
-        if lifi {
-            rep.no_home.push(
-                "lifi: built as a mach (platform) with its attachments; the placement's colour and intensity are not carried".into(),
-            );
+        // The shader may consume a device function even when it has no attachments.
+        let (attachments, creation, functions) =
+            self.object_attachments(self.h1.tag_data(tag)?, &dev.object, &mut rep)?;
+        // A colour bound to an object output whose Halo 1 function exists
+        // but did not convert is an error. One bound to an output the
+        // device has no function for reads zero in Halo 1: the object is
+        // allocated zeroed (0x8b8d8..0x8b8e6), and only the function loop
+        // writes outputs (0x8c092), for its functions alone (count at def
+        // +0x158, 0x8c0d5). The colour update applies that zero (0x8c162
+        // scale-by, 0x8c1be darken-by). Halo 2 reads an unresolved name as
+        // zero (0xbe9bc; 0xbab40 clears the value first), so it binds
+        // `zero`, which no object exports.
+        let source_functions = h1::functions(self.h1, self.h1.tag_data(tag)?)?.len();
+        for (slot, colour) in dev.object.change_colours.iter_mut().enumerate() {
+            let Some(binding) = colour.function.as_mut() else { continue };
+            for name in [&mut binding.darken, &mut binding.scale].into_iter().flatten() {
+                let Some(k) = crate::functions::OUTPUT_NAMES.iter().position(|o| o == name) else {
+                    continue;
+                };
+                if functions.iter().any(|f| f.export == *name) {
+                    continue;
+                }
+                if k >= source_functions {
+                    *name = "zero";
+                    continue;
+                }
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &tag.name,
+                    format!("change colour {slot}: output {name}'s function did not convert"),
+                )
+                .into());
+            }
         }
+        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        let root = attachments_conv::with_attachments(
+            *group, "devi.obje", root, &attachments, creation, &functions, &dev.object.change_colours,
+        )?;
+        let bytes = self.h1.tag_data(tag)?;
+        let d = tags::defs::Defs::builtin()
+            .group(FourCC(*group))
+            .expect("device definition");
+        let mut record =
+            tags::defs::from_built(d, &root).map_err(|e| Error::Invalid(e.to_string()))?;
+        for (at, field) in [
+            (0x1a0, "sound_ref_dc"),
+            (0x1b0, "sound_ref_e4"),
+            (0x1c0, "effect_ref_ec"),
+            (0x1d0, "effect_ref_f4"),
+            (0x1e0, "effect_ref_fc"),
+            (0x1f0, "effect_ref_104"),
+            (0x20c, "effect_ref_110"),
+        ] {
+            let Some(id) = h1::reference(self.h1, bytes, at) else {
+                continue;
+            };
+            let t = self.h1_tag(id)?;
+            let g = FourCC(t.group.0.to_be_bytes());
+            let id = match &g.0 {
+                b"effe" => self.effect(t)?,
+                b"snd!" => self.sound(t, &mut rep)?,
+                _ => {
+                    return Err(h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        "device transition group",
+                    )
+                    .into());
+                }
+            };
+            record
+                .set(&format!("devi.{field}"), tags::defs::Val::tag(g, id))
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+        }
+        let root = tags::defs::to_built(d, &record, &mut |_| None)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
         self.tree.reports.push(rep);
         Ok(self.tree.push(
             &tag.name,
@@ -2506,32 +2514,57 @@ impl<'a> Converter<'a> {
             None => Vec::new(),
         };
         let scripted = scripted_props::ScriptedVehicle::of(&tag.name);
-        let role = self.vehicle_role(vehicle_type, powered.len())?;
+        if !matches!(vehicle_type, 0 | 1 | 3 | 4 | 5 | 6) {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                format!("vehicle controller for type {vehicle_type}"),
+            )
+            .into());
+        }
+        let hover = powered
+            .iter()
+            .filter(|p| p.point.antigravity.is_some())
+            .count();
+        if hover != 0 && hover != powered.len() {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "mixed antigravity and friction powered points",
+            )
+            .into());
+        }
+        let wheels = vehicle_type == 0;
         let mut rep = Self::report(
             tag,
-            &match &role {
-                Some(r) => format!(
-                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, native controller {})",
-                    r.member
-                ),
-                None => format!(
-                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}; the base has none of the type: turret role)"
-                ),
-            },
+            "none: rebuilt from source vehicle type and powered mass points",
         );
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
-        let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
+        let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
+        let airborne_flags = *b.get(0x17c).ok_or_else(|| {
+            h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "vehicle tag too short for its dialogue flags (+0x17c)",
+            )
+        })?;
+        if airborne_flags & 0x40 != 0 && let Some(h) = hlmt {
+            let bits = map::H1_PHYSICAL_DIALOGUE | map::H1_DIALOGUE_AIRBORNE_PASSENGERS;
+            let root = &mut self.tree.tags[h.0 as usize & 0xffff].1.root;
+            root.bytes[0x80..0x84].copy_from_slice(&bits.to_le_bytes());
+        }
         let kind = match scripted {
             Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
             Some(scripted_props::ScriptedVehicle::Flyer) => PhysicsKind::ScriptedFlyer,
             None => PhysicsKind::Vehicle { wheels },
         };
         let has_physics = self.object_physics(&mut rep, hlmt, &u.object, &tag.name, kind)?;
-        if scripted.is_some() && !has_physics {
-            return Err(Error::Invalid(format!(
-                "{}: no source physics to build",
-                tag.name
-            )));
+        if !has_physics {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "vehicle has no source physics to build",
+            )
+            .into());
         }
         let predicted = self.predicted(hlmt);
         let (markers, bounds) = match u.object.model {
@@ -2567,34 +2600,10 @@ impl<'a> Converter<'a> {
         let mut tracks = 0;
         for (names, seat) in seats.iter_mut().zip(&u.seats) {
             let Some(t) = seat.camera_tracks.first().copied().or(fallback) else { continue };
-            match self.camera_track(self.h1_tag(t)?) {
-                Ok(id) => {
-                    names.camera_track = Some(id);
-                    tracks += 1;
-                }
-                Err(e) => rep
-                    .no_home
-                    .push(format!("seat {}: camera track not converted ({e})", seat.label)),
-            }
+            names.camera_track = Some(self.camera_track(self.h1_tag(t)?)?);
+            tracks += 1;
         }
-        let points: Vec<crate::rebuild::Point> = {
-            // Keep wheels in H1 order for both friction points and spheres.
-            // Hover controls with a coefficient set per marker use the
-            // closest source point to each native marker.
-            let spheres = match &role {
-                Some(r)
-                    if r.friction.is_none()
-                        && r.hover.is_some()
-                        && r.hover_at.len() == powered.len() =>
-                {
-                    r.hover_at.clone()
-                }
-                _ => Vec::new(),
-            };
-            let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
-            let order = sphere_order(&at, &spheres);
-            order.into_iter().map(|i| powered[i].point.clone()).collect()
-        };
+        let points: Vec<_> = powered.into_iter().map(|p| p.point).collect();
         let weapons = self.unit_weapons(b, &mut rep)?;
         let mut references = Vec::new();
         for (path, at) in [("snd_ref_284", 0x3b0), ("ref_28c", 0x3c0),
@@ -2604,7 +2613,7 @@ impl<'a> Converter<'a> {
             let t = self.h1_tag(id)?;
             let group = t.group.0.to_be_bytes();
             let out = match &group {
-                b"snd!" => self.sound(t, &mut rep),
+                b"snd!" => Some(self.sound(t, &mut rep)?),
                 b"foot" => Some(self.foot(t, &mut rep)?),
                 b"effe" => Some(self.effect(t)?),
                 b"jpt!" => Some(self.damage(id)?),
@@ -2617,6 +2626,20 @@ impl<'a> Converter<'a> {
         let physics = u.object.physics.map(|id| {
             h1::tag_bytes(self.h1, self.h1_tag(id)?, b"phys", h1::PHYS_SIZE)
         }).transpose()?;
+        let fail = |e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e);
+        let contacts = if !points.is_empty() && hover == 0 {
+            Some(
+                h1::GroundContacts::read(
+                    self.h1,
+                    physics.ok_or(Error::Truncated("wheel physics"))?,
+                    &self.base.materials,
+                )
+                .map_err(fail)?,
+            )
+        } else {
+            None
+        };
+        let power = h1::powered_seats(self.h1, b).map_err(fail)?;
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 source: b,
@@ -2634,13 +2657,14 @@ impl<'a> Converter<'a> {
                 vehicle_type,
                 flags,
                 weapons: &weapons,
-                role: role.as_ref(),
+                contacts: contacts.as_ref(),
+                seat_power: &power,
                 points: &points,
             }, scripted.and_then(|kind| kind.flight_tuning(b)))
         });
-        let root = root?;
+        let root = root.map_err(fail)?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the native contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; source contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -2679,27 +2703,6 @@ impl<'a> Converter<'a> {
         );
         self.done.insert(tag.id.0, id);
         Ok(id)
-    }
-
-    /// The vehicle type's role over the base's vehicles of that type
-    /// whose friction and hover points are nearest `points`, Halo 1's
-    /// powered mass points ([`crate::rebuild::vehicle_role`]), computed
-    /// once per type and count. The turret type keeps the disc-wide
-    /// seat entry thresholds and an empty phantom: `None`.
-    pub fn vehicle_role(
-        &mut self,
-        vehicle_type: u16,
-        points: usize,
-    ) -> Result<Option<crate::rebuild::VehicleRole>> {
-        if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
-            return Ok(None);
-        }
-        if let Some(w) = self.vehicle_roles.get(&(vehicle_type, points)) {
-            return Ok(w.clone());
-        }
-        let w = crate::rebuild::vehicle_role(self.base, vehicle_type, Some(points))?;
-        self.vehicle_roles.insert((vehicle_type, points), w.clone());
-        Ok(w)
     }
 
     /// Halo 1's powered mass points (`phys` mass points with a powered
@@ -2750,6 +2753,21 @@ impl<'a> Converter<'a> {
         );
         let mut out: Vec<PoweredPoint> = Vec::new();
         for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            let flags = phys
+                .powered_flags
+                .get(m.powered_mass_point as usize)
+                .copied();
+            if !matches!(flags, Some(1 | 0x40)) {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &self.h1_tag(p)?.name,
+                    format!(
+                        "mass point {} has unsupported powered group flags {flags:?}",
+                        m.name
+                    ),
+                )
+                .into());
+            }
             // Every point rides the root node, not its own. A wheel's or
             // tread's node turns and rises with the spin and suspension
             // animations, and a contact point that moves with it pushes
@@ -2766,10 +2784,7 @@ impl<'a> Converter<'a> {
             // The region is unchanged by that: a gripping point's is the
             // root node's collision region (as through version 92), any
             // other point's its own node's.
-            let grips = phys
-                .powered_flags
-                .get(m.powered_mass_point as usize)
-                .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0);
+            let grips = flags == Some(h1::POWERED_GROUND_FRICTION);
             let own = if grips {
                 0
             } else if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
@@ -2803,7 +2818,12 @@ impl<'a> Converter<'a> {
                 .unwrap_or_default();
             let marker = crate::coll::sid_name(&m.name);
             if out.iter().any(|p| p.point.marker == marker) {
-                continue;
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &self.h1_tag(p)?.name,
+                    format!("duplicate powered mass point marker {marker}"),
+                )
+                .into());
             }
             let region_index = model
                 .regions
@@ -2823,7 +2843,6 @@ impl<'a> Converter<'a> {
                 },
                 node,
                 position: local,
-                object: m.position,
             });
         }
         Ok(out)
@@ -2839,15 +2858,12 @@ impl<'a> Converter<'a> {
             .find_map(|n| Some((self.base.find(b"bipd", n)?, n)))
     }
 
-    fn unit_weapons(&mut self, bytes: &[u8], rep: &mut ObjectReport) -> Result<Vec<TagId>> {
+    fn unit_weapons(&mut self, bytes: &[u8], _rep: &mut ObjectReport) -> Result<Vec<TagId>> {
         let mut weapons = Vec::new();
         for entry in h1::elements(self.h1, bytes, 0x2d8, 0x24)? {
             if let Some(id) = h1::reference(self.h1, entry, 0) {
                 let t = self.h1_tag(id)?;
-                match self.object(t) {
-                    Ok(out) => weapons.push(out),
-                    Err(e) => rep.no_home.push(format!("unit weapon {}: {e}", t.name)),
-                }
+                weapons.push(self.object(t)?);
             }
         }
         Ok(weapons)
@@ -2895,8 +2911,8 @@ impl<'a> Converter<'a> {
         ))
     }
 
-    /// Rebuild the biped. The matching H2 model supplies the native damage
-    /// section responses and camouflage shader, and the switchable H2 HUD.
+    /// Rebuild the biped. The matching H2 model supplies shield shaders
+    /// and damage responses for NPCs, and the switchable H2 HUD for the player.
     fn biped_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
         use tags::defs::{self, Defs, Val};
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
@@ -2904,20 +2920,42 @@ impl<'a> Converter<'a> {
         let cid = self.biped_counterpart(&tag.name).map(|c| c.0);
         let counterpart = cid.map(|id| self.base.root(id)).transpose()?;
         let counterpart_hlmt = counterpart.as_deref().and_then(|r| self.base.reference(r, h2::MODEL));
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
-        // Halo 1's dialogue: the first `udlg` the unit names (its
-        // dialogue variants block), in place of the counterpart's. V:
-        // 125 of the 169 bipeds over the campaign and multiplayer maps
-        // name one; 21 name more than one (variants Halo 2's single
-        // model dialogue cannot hold; `every_dialogue_converts`).
-        let dialogue = h1::elements(self.h1, b, 0x2b4, 0x18)?
-            .into_iter().find_map(|v| h1::reference(self.h1, v, 8));
-        let udlg = match dialogue {
-            Some(id) => self.dialogue(self.h1_tag(id)?, &mut rep)?,
-            None => None,
+        let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
+        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
+        let markers = match u.object.model {
+            Some(m) => {
+                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                    .0
+                    .markers
+                    .into_iter()
+                    .filter(|m| !m.instances.is_empty())
+                    .map(|m| m.name)
+                    .collect()
+            }
+            None => Vec::new(),
         };
+        let player = health_hud::is_player_biped(&tag.name);
+        let voices = self.biped_dialogue(tag, b, &mut rep)?;
+        if !voices.is_empty() && hlmt.is_none() {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "unit voices require a model",
+            )
+            .into());
+        }
         let source_damage = u.object.collision.map(|id| -> Result<_> {
             h1::tag_bytes(self.h1, self.h1_tag(id)?, b"coll", h1::COLL_SIZE)
+        }).transpose()?;
+        let shield = u.object.modifier_shader.map(|id| -> Result<TagId> {
+            let shader = self.h1_tag(id)?;
+            if hlmt.is_none() || source_damage.is_none() {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name, &shader.name, "shield has no destination damage record",
+                ).into());
+            }
+            let entry = h1models::h1::ShaderRef { group: shader.group, tag: shader.id, permutation: 0 };
+            self.model_shader(shader, &entry, None)
         }).transpose()?;
         let mut blood = None;
         if let Some(h) = hlmt {
@@ -2926,15 +2964,64 @@ impl<'a> Converter<'a> {
             let mut r = defs::from_built(hd, &self.tree.tags[h.0 as usize & 0xffff].1.root)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
             let mut copied = Vec::new();
+            if player {
+                crate::biped_hits::write_player_targets(hd, &mut r, &markers, &tag.name)?;
+            }
+            if !voices.is_empty() {
+                let biped_flags = *b.get(0x2f4).ok_or_else(|| {
+                    h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &tag.name,
+                        "biped tag too short for its dialogue flags (+0x2f4)",
+                    )
+                })?;
+                let freefall = if biped_flags & 0x84 == 0 {
+                    map::H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL
+                } else {
+                    0
+                };
+                r.set("h1_dialogue_flags", Val::Int(i64::from(map::H1_PHYSICAL_DIALOGUE | freefall)))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
             if let Some(v) = native.as_ref().and_then(|c| c.at("shad_ref_94")) {
                 r.set("shad_ref_94", v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
             }
             if let Some(src) = source_damage {
+                if !voices.is_empty() {
+                    let regions = h1::elements(self.h1, src, 0x240, 0x54)?;
+                    let region_def = hd.child("h1_dialogue_regions").expect("physical dialogue");
+                    let mut physical_dialogue = Vec::new();
+                    let mut has_threshold = false;
+                    for region in regions {
+                        let threshold = f32::from_le_bytes(region[0x28..0x2c].try_into().unwrap());
+                        let flags = u32::from_le_bytes(region[0x20..0x24].try_into().unwrap());
+                        has_threshold |= threshold > 0.0;
+                        let mut out = defs::default_record(region_def);
+                        out.set("threshold", Val::Float(threshold))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        out.set("flags", Val::Int(i64::from(flags)))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                        physical_dialogue.push(out);
+                    }
+                    if has_threshold {
+                        r.set("h1_dialogue_regions", Val::Block(physical_dialogue))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                    }
+                }
                 let mut damage = defs::default_record(hd.child("block_60").expect("model damage"));
-                // Native shield shaders and damage sections are coupled to the H2
-                // damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
-                for path in ["tagref_7c", "tagref_84", "tagref_e8", "tagref_f0",
-                             "block_bc"] {
+                // Native shield shaders and NPC damage responses are part of the
+                // H2 damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
+                if let Some(id) = shield {
+                    for path in ["tagref_7c", "tagref_84"] {
+                        damage
+                            .set(path, Val::tag(FourCC(*b"shad"), id))
+                            .map_err(|e| Error::Invalid(e.to_string()))?;
+                    }
+                }
+                for path in ["tagref_e8", "tagref_f0", "block_bc"] {
+                    if player && path == "block_bc" {
+                        continue;
+                    }
                     let field = format!("block_60[0].{path}");
                     if let Some(v) = native.as_ref().and_then(|c| c.at(&field)) {
                         damage.set(path, v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -2948,6 +3035,14 @@ impl<'a> Converter<'a> {
                 }
                 let half = |at: usize| u16::from_le_bytes([src[at], src[at + 1]]);
                 let materials = h1::elements(self.h1, src, 0x234, 0x48)?;
+                if player {
+                    crate::biped_hits::write_player_damage_sections(
+                        hd,
+                        &mut r,
+                        &mut damage,
+                        &materials,
+                    )?;
+                }
                 let body_type = materials.get(usize::from(half(4)))
                     .map(|m| u16::from_le_bytes([m[0x24], m[0x25]]));
                 let shield_type = (f32::from_le_bytes(src[0xcc..0xd0].try_into().unwrap()) > 0.0)
@@ -2977,47 +3072,38 @@ impl<'a> Converter<'a> {
                 }
                 r.set("block_60", Val::Block(vec![damage])).map_err(|e| Error::Invalid(e.to_string()))?;
             }
-            if let Some(id) = udlg {
-                r.set(DIALOGUE_FIELD, Val::tag(FourCC(*b"udlg"), id))
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-            }
+            crate::rebuild::model_dialogue(&mut r, &voices)?;
             self.tree.tags[h.0 as usize & 0xffff].1.root =
                 defs::to_built(hd, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))?;
             self.tree.note_roles(h, copied);
         }
-        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(hlmt);
         let mut swap = None;
         let mut hud = None;
         if health_hud::is_player_biped(&tag.name) {
-            let native = counterpart.as_deref().and_then(|r| self.health_interfaces(r).ok());
-            match self.unit_hud(u) {
-                Ok((id, _)) => {
-                    if let Ok(centre) = self.sensor_centre(u) {
-                        self.tree.hud_sensor = Some(centre);
-                    }
-                    if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
-                        swap = Some((id, *other));
-                    }
-                    hud = Some(vec![id; native.as_ref().map_or(1, |ids| ids.len().max(1))]);
-                }
-                Err(e) => {
-                    rep.no_home.push(format!("HUD conversion: {e}"));
-                    hud = native;
-                }
+            let source = self.h1;
+            let named = |what: &str, e: Error| {
+                h1convert::Error::no_rebuild(&source.header().name, &tag.name, format!("{what}: {e}"))
+            };
+            // The switchable Halo 2 view needs every interface of the
+            // counterpart; one that doesn't read is an error, not a HUD
+            // without the view.
+            let native = counterpart
+                .as_deref()
+                .map(|r| self.health_interfaces(r))
+                .transpose()
+                .map_err(|e| named("Halo 2 HUD view", e))?;
+            let (id, _) = self.unit_hud(u).map_err(|e| named("unit HUD", e))?;
+            // Halo 1's motion sensor centre (unhi +MOTION_SENSOR): the
+            // converted HUD draws the sensor there, so a scaled or short
+            // record stops the conversion.
+            let centre = self.sensor_centre(u).map_err(|e| named("motion sensor", e))?;
+            self.tree.hud_sensor = Some(centre);
+            if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
+                swap = Some((id, *other));
             }
+            hud = Some(vec![id; native.as_ref().map_or(1, |ids| ids.len().max(1))]);
         }
-        let markers = match u.object.model {
-            Some(m) => {
-                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
-                    .0
-                    .markers
-                    .into_iter()
-                    .map(|m| m.name)
-                    .collect()
-            }
-            None => Vec::new(),
-        };
         let mut tracks = Vec::new();
         for id in &u.camera_tracks {
             tracks.push(self.camera_track(self.h1_tag(*id)?)?);
@@ -3064,9 +3150,7 @@ impl<'a> Converter<'a> {
     /// Halo 1's collision when it has none ([`Self::built_physics`]).
     /// Vehicles need one: `vehicle_new` (`0x000eeb80`) refuses a vehicle
     /// whose model has none (`cmp [hlmt+0x24],-1` at `0x000eebcb`) and
-    /// `object_new` deletes it; a vehicle with no usable collision gets
-    /// the stand-in sphere ([`crate::rebuild::sphere_physics`],
-    /// [`STAND_IN_SPHERE`]). Devices need one to block: Havok, which moves
+    /// `object_new` deletes it. Devices need one to block: Havok, which moves
     /// the player, sees a non-scenery object only through its physics
     /// model, so without one a door is walked through (retail doors have a
     /// rigid body per moving node).
@@ -3094,16 +3178,21 @@ impl<'a> Converter<'a> {
         if has {
             return Ok(true);
         }
-        let (phmo, how) = match self.built_physics(obj, kind)? {
+        let physics = self.built_physics(obj, kind).map_err(|e| match kind {
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer => {
+                h1convert::Error::no_rebuild(&self.h1.header().name, name, e).into()
+            }
+            _ => e,
+        })?;
+        let (phmo, how) = match physics {
             Some((block, how)) => (block, how),
             None if matches!(kind, PhysicsKind::Vehicle { .. }) => {
-                let (radius, mass, material) = STAND_IN_SPHERE;
-                (
-                    crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
-                    format!(
-                        "stand-in: a {radius} wu sphere of {mass} kg on the origin (rebuild::sphere_physics); no Halo 1 collision to build from"
-                    ),
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    name,
+                    "vehicle has no collision hull or source mass points",
                 )
+                .into());
             }
             None => return Ok(false),
         };
@@ -3155,7 +3244,10 @@ impl<'a> Converter<'a> {
         let Some(m) = obj.model else {
             return Ok(None);
         };
-        let source = if kind == PhysicsKind::ScriptedFlyer {
+        let source = if matches!(
+            kind,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer
+        ) {
             obj.physics
                 .map(|p| self.h1_tag(p))
                 .transpose()?
@@ -3166,14 +3258,23 @@ impl<'a> Converter<'a> {
         };
         let (model, _) =
             h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
-        let Some(c) = obj.collision else {
-            return match source {
-                Some((physics, mass)) => Ok(Some((
-                    scripted_props::mass_point_physics(&model, &physics, &mass)?,
-                    "built from Halo 1's phys: one body with source mass point spheres".into(),
-                ))),
-                None => Ok(None),
+        let from_points = || -> Result<Option<(Block, String)>> {
+            if !matches!(
+                kind,
+                PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer
+            ) {
+                return Ok(None);
+            }
+            let Some((physics, mass)) = &source else {
+                return Ok(None);
             };
+            Ok(Some((
+                scripted_props::mass_point_physics(&model, physics, mass)?,
+                "built from Halo 1's phys: one body with source mass point spheres".into(),
+            )))
+        };
+        let Some(c) = obj.collision else {
+            return from_points();
         };
         let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
         let world = h1models::mode::world_transforms(
@@ -3200,7 +3301,7 @@ impl<'a> Converter<'a> {
             parts.push((node as i16, cells));
         }
         if parts.is_empty() {
-            return Ok(None);
+            return from_points();
         }
         let mut enclosed = false;
         let mut cap = |cells: Vec<physics::Hull>, total: usize| {
@@ -3224,7 +3325,7 @@ impl<'a> Converter<'a> {
                         .transpose()?,
                 };
                 // Wheels and treads are held above the hull's lowest
-                // point where the role's physics models have them (the
+                // point for the tracked chassis (the
                 // scorpion's treads), else left out (the warthog's tires):
                 // Halo 2 holds a vehicle up on its friction points
                 // (springs at the wheel markers) and its body rides clear
@@ -3260,7 +3361,7 @@ impl<'a> Converter<'a> {
                 }
                 if !hold && !wheel_parts.is_empty() {
                     wheels_note = format!(
-                        " ({} wheel and tread nodes left out: the role's physics models have no wheel shapes)",
+                        " ({} wheel and tread nodes carried by suspension contacts)",
                         wheel_parts.len()
                     );
                 }
@@ -3419,40 +3520,7 @@ impl<'a> Converter<'a> {
         if &g == b"vehi" {
             return self.vehicle_rebuilt(tag, &u);
         }
-        if &g == b"bipd" && self.options.rebuild_bipeds {
-            return self.biped_rebuilt(tag, &u);
-        }
-        let (tpl, tpl_name) = self.template(&g, &tag.name, &g)?;
-        let tpl_root = self.base.root(tpl)?;
-        let mut rep = Self::report(tag, &tpl_name);
-        let mut root = Block::new(tpl_root.clone());
-        self.header(&mut rep, &mut root, &u.object, &tag.name)?;
-        rep.no_home.push(format!(
-            "{} tuning (speeds, seats, camera, damage): the template's; {} Halo 1 references not converted",
-            tag.group,
-            u.references.iter().filter(|r| r.tag.is_some()).count()
-        ));
-        if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
-            match self.health_hud(&mut root, &tpl_root) {
-                Ok(n) => rep.no_home.push(format!(
-                    "HUD: the template's with Halo 1's health meter ({n} interfaces; docs/halo1/health.md)"
-                )),
-                Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
-            }
-        }
-        let bytes = self.h1.tag_data(tag)?;
-        let root =
-            self.with_object_attachments(g, "unit.obje", root, bytes, &u.object, &mut rep)?;
-        self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
-        self.tree.reports.push(rep);
-        Ok(self.tree.push(
-            &tag.name,
-            Converted {
-                group: FourCC(g),
-                root,
-                raw: Vec::new(),
-            },
-        ))
+        self.biped_rebuilt(tag, &u)
     }
 }
 
@@ -3582,95 +3650,138 @@ impl Converter<'_> {
         Ok((id, n))
     }
 
-    /// Halo 1's weapon HUD `wphi` (and its children) as an `nhdt` written
-    /// from scratch ([`crate::h1hud::weapon_widget`]), built once per
-    /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
-    /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
-    /// widget, why.
-    ///
-    /// A chain with no element at all draws nothing in Halo 1 and gets an
-    /// `nhdt` with no widget (V: the flamethrower's on the multiplayer
-    /// maps, `weapons\flamethrower\flame thrower` and its child `ui\hud\master
-    /// fuel`, list no static, meter, number, crosshair or overlay). Until
-    /// converter version 87 it was refused, and the converted flamethrower
-    /// kept the shotgun's Halo 2 HUD (`ui\hud\shotgun`, `role_audit_disc`).
-    /// A chain whose elements all fail to convert is still refused.
-    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
-        use crate::h1hud;
-        let tag = self.h1.tag(wphi)?.clone();
-        if let Some(id) = self.done.get(&tag.id.0) {
-            let skipped = self.weapon_hud_skips.get(&tag.id.0).cloned().unwrap_or_default();
-            return Ok((*id, skipped));
+    /// Build all entries before publishing the interface, including those
+    /// inherited from child HUDs. Empty retail chains produce an empty nhdt.
+    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<TagId> {
+        let tag = self
+            .h1
+            .tag(wphi)
+            .map_err(|err| {
+                h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    format!("wphi {:#010x}", wphi.0),
+                    err,
+                )
+            })?
+            .clone();
+        if tag.group != h1map::Group::new(b"wphi") {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                format!("expected wphi, found {}", tag.group),
+            )
+            .into());
         }
-        let entries = h1hud::weapon_entries(self.h1, wphi)?;
-        let find = |group: &[u8; 4], name: &str| {
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
+        }
+        let result = self.rebuild_weapon_hud(&tag);
+        result.map_err(|err| {
+            h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, err).into()
+        })
+    }
+
+    fn rebuild_weapon_hud(&mut self, tag: &h1map::Tag) -> Result<TagId> {
+        use crate::h1hud::{self, WeaponEntryKind as Kind, weapon::Interface};
+        let entries = h1hud::weapon_entries(self.h1, tag.id)?;
+        let shader = |name: &str| {
             self.base
-                .find(group, name)
+                .find(b"shad", name)
                 .ok_or_else(|| Error::NoTemplate(name.into()))
         };
-        let meter = find(b"shad", h1hud::METER_SHADER)?;
-        let plain = find(b"shad", h1hud::STATIC_SHADER)?;
-        let text_shader = find(b"shad", h1hud::TEXT_SHADER)?;
-        let mut widgets = Vec::new();
-        let mut texts = Vec::new();
-        let mut skipped = Vec::new();
-        for e in &entries {
-            // Numbers: Halo 2 text, placed as the grenade count is.
-            if matches!(e.kind, h1hud::WeaponEntryKind::Number(..)) {
-                let w = h1hud::digit_width(self.h1)?;
-                let h = h1hud::digit_height(self.h1)?;
-                match h1hud::weapon_number(e, w, h, text_shader) {
-                    Ok(t) => texts.push(t),
-                    Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+        let (meter, plain, text) = (
+            shader(h1hud::METER_SHADER)?,
+            shader(h1hud::STATIC_SHADER)?,
+            shader(h1hud::TEXT_SHADER)?,
+        );
+        let mut hud = Interface::new();
+        for (index, e) in entries.iter().enumerate() {
+            let source = self.h1.tag(e.wphi)?.name.clone();
+            let failure =
+                |why: String| Error::Invalid(format!("{source} entry {index} {:?}: {why}", e.kind));
+            if matches!(e.kind, Kind::Number(..)) {
+                let widget = h1hud::weapon_number_with_spacing(
+                    e,
+                    h1hud::digit_width(self.h1)?,
+                    h1hud::digit_height(self.h1)?,
+                    h1hud::decimal_spacing(self.h1)?,
+                    text,
+                )
+                .map_err(|err| failure(format!("{err:?}")))?;
+                hud.text(e, widget)?;
+                continue;
+            }
+            let id = e.bitmap.ok_or_else(|| failure("missing bitmap".into()))?;
+            let bt = self.h1.tag(id)?.clone();
+            let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+            if let Kind::Crosshair(h1hud::crosshair_type::ZOOM_LEVEL, flags) = e.kind {
+                let seq = usize::try_from(e.sequence)
+                    .ok()
+                    .and_then(|seq| bm.sequences.get(seq))
+                    .ok_or_else(|| {
+                        failure(format!("missing sequence {} of {}", e.sequence, bt.name))
+                    })?;
+                let count = seq.sprites.len();
+                let first_zoomed = flags & h1hud::OVERLAY_WHEN_ZOOMED != 0;
+                let single_frame = flags & (h1hud::OVERLAY_WHEN_UNZOOMED | 0x20) != 0;
+                let levels = if single_frame {
+                    1
+                } else {
+                    h1hud::ZOOM_LEVELS + usize::from(!first_zoomed)
+                };
+                if count == 0 {
+                    return Err(failure(format!(
+                        "empty zoom sequence {} of {}",
+                        e.sequence, bt.name
+                    )));
+                }
+                for level in 0..count.min(levels) {
+                    let image = self.sprite_bitmap(id, e.sequence, level)?;
+                    let widget = h1hud::zoom_widget(e, level, image, plain)
+                        .map_err(|err| failure(format!("{err:?}")))?;
+                    hud.bitmap(e, widget)?;
                 }
                 continue;
             }
-            let drawn = match e.bitmap {
-                Some(b) => {
-                    let bt = self.h1.tag(b)?.clone();
-                    let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
-                    h1hud::sprite(&bm, e.sequence).and_then(|_| match e.kind {
-                        h1hud::WeaponEntryKind::Meter(..) => self.meter_bitmap(b),
-                        // A static's colour alpha goes into its sprite, as
-                        // the unit HUD's; colour 0 draws nothing.
-                        h1hud::WeaponEntryKind::Static(_) | h1hud::WeaponEntryKind::Overlay(..) => {
-                            h1hud::static_alpha(e.colour).and_then(|a| self.hud_bitmap(b, a))
-                        }
-                        _ => self.bitmap(b),
-                    })
+            let direct =
+                matches!(e.kind, Kind::Crosshair(_, f) | Kind::Warning(_, f, _) if f & 2 != 0);
+            let image = if direct {
+                if usize::try_from(e.sequence)
+                    .ok()
+                    .and_then(|i| bm.images.get(i))
+                    .is_none()
+                {
+                    return Err(failure(format!(
+                        "missing image {} of {}",
+                        e.sequence, bt.name
+                    )));
                 }
-                None => None,
-            };
-            match h1hud::weapon_widget(e, drawn, meter, plain) {
-                Ok(w) => widgets.push(w),
-                // The zoom-level readout: a widget per level, each on a copy
-                // of the bitmap that starts at the level's sprite.
-                Err(h1hud::Skip::ZoomLevels) => {
-                    for level in 0..h1hud::ZOOM_LEVELS {
-                        let level_drawn = drawn
-                            .and(e.bitmap)
-                            .and_then(|b| self.sprite_bitmap(b, e.sequence, level));
-                        if level > 0 && level_drawn.is_none() {
-                            // No sprite for the level: the weapon has none.
-                            break;
-                        }
-                        match h1hud::zoom_widget(e, level, level_drawn, plain) {
-                            Ok(w) => widgets.push(w),
-                            Err(why) => {
-                                skipped.push(format!("{:?}: {why:?}", e.kind));
-                                break;
-                            }
+                Some(self.direct_hud_bitmap(&bt, bm)?)
+            } else {
+                if h1hud::sprite(&bm, e.sequence).is_none() {
+                    return Err(failure(format!(
+                        "missing sequence {} of {}",
+                        e.sequence, bt.name
+                    )));
+                }
+                match e.kind {
+                    Kind::Meter(..) => self.meter_bitmap(id),
+                    Kind::Static(_) | Kind::Overlay(..) => {
+                        match h1hud::static_alpha(e.colour) {
+                            Some(alpha) => self.hud_bitmap(id, alpha),
+                            None => self.bitmap(id),
                         }
                     }
+                    _ => self.bitmap(id),
                 }
-                Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
-            }
+            };
+            let image = image.ok_or_else(|| failure(format!("could not rebuild {}", bt.name)))?;
+            let widget = h1hud::weapon_widget(e, Some(image), meter, plain)
+                .map_err(|err| failure(format!("{err:?}")))?;
+            hud.bitmap(e, widget)?;
         }
-        let mut root = h1hud::nhdt(&widgets, &texts);
-        let scope = self.weapon_scope(wphi, &tag.name, &mut root)?;
-        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() && !scope {
-            return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
-        }
+        let mut root = hud.build()?;
+        self.weapon_scope(tag.id, &tag.name, &mut root)?;
         let id = self.tree.push(
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
@@ -3680,23 +3791,37 @@ impl Converter<'_> {
             },
         );
         self.done.insert(tag.id.0, id);
-        self.weapon_hud_skips.insert(tag.id.0, skipped.clone());
-        Ok((id, skipped))
+        Ok(id)
     }
 
-    /// Points the player biped's HUD interfaces (`unit +0x1a0`) at copies
-    /// of their `nhdt` with the health meter ([`health_hud`]). Returns how
-    /// many interfaces it points.
-    fn health_hud(&mut self, root: &mut Block, tpl_root: &[u8]) -> Result<usize> {
-        use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
-        let ids = self.health_interfaces(tpl_root)?;
-        let count = ids.len();
-        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
-        for (i, id) in ids.into_iter().enumerate() {
-            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+    /// H1 0xdaeb2 and 0xdb12b index the image directly when bit 1 is set.
+    fn direct_hud_bitmap(
+        &mut self,
+        tag: &h1map::Tag,
+        mut bm: h1map::bitmap::Bitmap,
+    ) -> Result<TagId> {
+        if let Some(&id) = self.direct_hud_bitmaps.get(&tag.id.0) {
+            return Ok(id);
         }
-        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
-        Ok(count)
+        let mut sequences = Vec::with_capacity(bm.images.len());
+        for i in 0..bm.images.len() {
+            sequences.push(h1map::bitmap::Sequence {
+                name: format!("image_{i}"),
+                first_image: i16::try_from(i)
+                    .map_err(|_| Error::Invalid("HUD image index".into()))?,
+                image_count: 1,
+                sprites: Vec::new(),
+            });
+        }
+        bm.sequences = sequences;
+        let pixels = (0..bm.images.len())
+            .map(|i| bm.pixels(self.h1, i))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (converted, _) = h1bitmaps::convert::convert_with(&bm, |i| Ok(pixels[i].to_vec()))
+            .map_err(|e| Error::Invalid(format!("{}: {e}", tag.name)))?;
+        let id = self.tree.push(&format!("{}_direct", tag.name), converted);
+        self.direct_hud_bitmaps.insert(tag.id.0, id);
+        Ok(id)
     }
 
     /// The health-meter copies ([`Self::health_nhdt`]) of the HUD
@@ -3826,9 +3951,8 @@ pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16>
         .collect()
 }
 
-/// A vehicle's wheels and treads in its body, where its role's physics
-/// models have wheel shapes ([`crate::rebuild::VehicleRole::wheel_shapes`];
-/// object space, `wheels` one list of convex pieces per wheel node): each node's pieces cut at `floor`,
+/// Solid pieces of the tracked chassis, cut at the hull floor. The input
+/// holds one list of object-space convex pieces per wheel node. At `floor`,
 /// the lowest point of the rest of the body, and what is left enclosed in
 /// one piece; a node with nothing above `floor` gives none.
 ///

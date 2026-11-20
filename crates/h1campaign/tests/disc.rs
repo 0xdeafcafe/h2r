@@ -4,8 +4,12 @@
 
 #[path = "disc/ground_ai.rs"]
 mod ground_ai;
+#[path = "disc/a10_tutorial.rs"]
+mod a10_tutorial;
 #[path = "disc/a30_flow.rs"]
 mod a30_flow;
+#[path = "disc/no_fallback.rs"]
+mod no_fallback;
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -705,10 +709,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
         objects: layers.contains("objects"),
         ai: layers.contains("ai"),
         scripts: s.as_ref(),
-        sounds: std::env::var("H1_SOUNDS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000),
         donors: Some(&donors),
         ..Default::default()
     };
@@ -923,26 +923,24 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
-        if opts.sounds >= 1000 {
-            let placed: std::collections::HashSet<&str> = hs_s
-                .references()
+        let placed: std::collections::HashSet<&str> = hs_s
+            .references()
+            .iter()
+            .filter(|r| r.group() == FourCC(*b"snd!"))
+            .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
+            .collect();
+        let scenes = h1ai::conversations::read(&h1).unwrap();
+        for scene in &scenes {
+            for path in scene
+                .lines
                 .iter()
-                .filter(|r| r.group() == FourCC(*b"snd!"))
-                .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
-                .collect();
-            let scenes = h1ai::conversations::read(&h1).unwrap();
-            for scene in &scenes {
-                for path in scene
-                    .lines
-                    .iter()
-                    .flat_map(|line| line.sounds.iter().flatten())
-                {
-                    assert!(
-                        placed.contains(path.as_str()),
-                        "{}: missing converted sound {path}",
-                        scene.name
-                    );
-                }
+                .flat_map(|line| line.sounds.iter().flatten())
+            {
+                assert!(
+                    placed.contains(path.as_str()),
+                    "{}: missing converted sound {path}",
+                    scene.name
+                );
             }
         }
         let original = h1scripts::Tables::read(&h1).unwrap();
@@ -955,11 +953,12 @@ fn a30_converts_onto_its_base_and_reads_back() {
         a30_flow::titles(&mut m, &bytes, addr, &h1);
         assert!(r.missing_globals.is_empty(), "{:?}", r.missing_globals);
         if opts.ai {
-            let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
-                !matches!((u.definition.as_str(), u.name.as_str()),
-                    ("objective_cave", "display_scenario_help"))
-            }).collect();
-            assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
+            // The cave's two help calls are checked above on slot 903.
+            assert!(
+                r.missing_builtins.is_empty(),
+                "a30 dropped builtin calls: {:?}",
+                r.missing_builtins
+            );
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
             a30_flow::mission(&hs_s, &ai, &h1);
@@ -1094,10 +1093,10 @@ fn retail_uncover_and_combat_timer_contact_rules() {
     assert_eq!(target.bytes_at(0x0d9013, 3).unwrap(), [0xc2, 0x0c, 0]);
 }
 
-fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
+fn check_authored_uncover_rules(
     level: &str,
     source: &h1map::H1Map,
-    map: &Map<R>,
+    map: &mut Map<Cursor<Vec<u8>>>,
     scenario: &hs::Scenario,
     characters: &[(String, String)],
 ) {
@@ -1106,10 +1105,51 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     let offset = scenario.node(global.root()).unwrap().data();
     let encoded = scenario.string(offset).unwrap();
     let word = |s| u32::from_str_radix(s, 16).unwrap();
+    // The two-section header: character rows, then weapon loudness rows,
+    // with the weapon word's marker bit set.
     let count = word(&encoded[..8]);
-    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let marked = word(&encoded[8..16]);
+    assert_ne!(marked & 0x8000_0000, 0, "{level}: one-word perception header");
+    let weapons = marked & 0x7fff_ffff;
+    assert_eq!(
+        encoded.len(),
+        16 + count as usize * 16 + weapons as usize * 8,
+        "{level}: perception table shape"
+    );
     let references = scenario.references();
-    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+    assert!(references.len() >= count as usize + weapons as usize);
+    let weapon_rules: std::collections::HashMap<_, f32> = encoded.as_bytes()
+        [16 + count as usize * 16..]
+        .chunks_exact(8)
+        .zip(&references[references.len() - count as usize - weapons as usize
+            ..references.len() - count as usize])
+        .map(|(row, weapon)| {
+            assert_eq!(weapon.group(), FourCC(*b"weap"), "{level}: weapon row reference");
+            let row = std::str::from_utf8(row).unwrap();
+            (weapon.id(), f32::from_bits(word(row)))
+        })
+        .collect();
+    assert_eq!(weapon_rules.len(), weapons as usize);
+    // Every converted weapon the campaign names keeps its authored
+    // Halo 1 loudness (weap +0x270) in the table.
+    for tag in map.tags() {
+        if tag.group != FourCC(*b"weap") {
+            continue;
+        }
+        let Some(id) = source.find(h1map::Group::new(b"weap"), tag.name.as_deref().unwrap_or(""))
+        else {
+            continue;
+        };
+        let loud = h1ai::h1::weapon_loudness(source, id).unwrap();
+        assert_eq!(
+            weapon_rules.get(&tag.id),
+            Some(&loud),
+            "{level}: {} keeps its authored report loudness",
+            tag.name.as_deref().unwrap_or("unnamed")
+        );
+    }
+    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[16..16 + count as usize * 16]
+        .chunks_exact(16)
         .zip(&references[references.len() - count as usize..])
         .map(|(row, character)| {
             assert_eq!(character.group(), FourCC(*b"char"));
@@ -1117,6 +1157,7 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
             (character.id(), [word(&row[..8]), word(&row[8..])])
         }).collect();
     assert_eq!(rules.len(), count as usize);
+    let metadata = map_memory(map);
     for (variant, character) in characters {
         if character == "none" {
             continue;
@@ -1137,6 +1178,34 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
                     && original.index_size != 0
                     && original.index_address == tag.index_address
             }), "{level}: {character} keeps its native character payload");
+        }
+        // A promotion through the character's major tag must not lose the
+        // authored thresholds: the major carries a rule, with its own
+        // requirements when a source variant names it and the upgrading
+        // variant's otherwise.
+        let id = metadata.slice(tag.index_address + 0x28, 4).expect("major character datum");
+        let major_id = TagId(u32::from_le_bytes(id.try_into().unwrap()));
+        if major_id != TagId::NULL {
+            let major = map.tag(major_id).unwrap();
+            let major_name = major.name.as_deref().unwrap();
+            let source_name = characters.iter()
+                .find(|(_, selected)| selected == major_name)
+                .map_or(major_name, |(variant, _)| variant.as_str());
+            let major_expected = source
+                .find(h1map::Group::new(b"actv"), source_name)
+                .map(|variant| {
+                    let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+                    let actor = source.tag(variant.actor.id).unwrap();
+                    let bytes = source.tag_data(actor).unwrap();
+                    [0x2d8, 0x324]
+                        .map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()))
+                })
+                .unwrap_or(expected);
+            assert_eq!(
+                rules.get(&major.id),
+                Some(&major_expected),
+                "{level}: {character} upgrades to {major_name} without its source thresholds"
+            );
         }
     }
 }
@@ -1185,8 +1254,11 @@ fn check_authored_automatic_destinations(
             let encounter = &ai.encounters[usize::from(group)];
             let source = &encounter.squads[usize::from(squad)];
             let name: String = format!("{}/{}", encounter.name, source.name).chars().take(31).collect();
+            // A squad's zone is its encounter's. Its parent group is not:
+            // the platoons the scripts name are groups of their own, placed
+            // among the encounters' (`h1ai::convert::Options::platoon_groups`).
             let index = native.squads.iter().enumerate().find(|(index, dest)| {
-                dest.parent == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
+                dest.initial_zone == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
             }).unwrap_or_else(|| panic!("missing native b40 destination {name}")).0;
             named.insert(index);
             expanded += usize::from(index >= 344);
@@ -1280,7 +1352,6 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1289,7 +1360,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
         check_authored_uncover_rules(
-            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+            level, &h1, &mut m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
         );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
@@ -1409,7 +1480,6 @@ fn every_campaign_level_converts() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1697,7 +1767,7 @@ fn check_sound(
     let s = m.read_tag_bytes(scnr.id).unwrap();
     let palettes = [block(&s, sat, 0x250, 0x64), block(&s, sat, 0x258, 0x48)];
     let data = block(&s, sat, 0x290, 0x34);
-    let ambience = h1convert::ambience::read(h1);
+    let ambience = h1convert::ambience::read(h1).unwrap();
     let written = h1convert::ambience::written(&ambience);
     if palettes[0].len() != written[0] || palettes[1].len() != written[1] {
         bad.push(format!(
@@ -1788,7 +1858,6 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
         let opts = Options {
             scripts: Some(&s),
-            sounds: usize::MAX,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1948,7 +2017,6 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -1961,6 +2029,10 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         );
         let bytes = done.bytes;
         let mut m = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        a10_tutorial::check(
+            &hs::Scenario::read(&mut m).unwrap(),
+            done.report.scenario.scripts.as_ref().unwrap(),
+        );
         let mem = map_memory(&mut m);
         let scnr = m.scenario().unwrap().clone();
         let root = m.read_tag_bytes(scnr.id).unwrap();
@@ -2108,7 +2180,6 @@ fn a10_opens_and_closes_only_placed_units() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -2240,7 +2311,6 @@ fn a10_scripted_vehicles_can_be_created() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -2322,7 +2392,6 @@ fn every_device_placement_lands_with_its_device_groups() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -2479,7 +2548,6 @@ fn physics_models_load_as_the_engine_reads_them() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -2753,7 +2821,17 @@ fn campaign_hud_text_and_builtins_round_trip() {
         assert_eq!(word(&root, at), GROUP.as_u32());
         let hud = map.read_tag_bytes(TagId(word(&root, at + 4))).unwrap();
         assert_eq!(word(&hud, MARKER_AT as usize), MARKER);
-        assert_eq!(word(&hud, 0x10) as usize, source.messages.len());
+        // The messages block holds the level's own messages (the scripts'
+        // indices), then its help list and the shared event templates, each
+        // a range named at SCENARIO_HELP and SHARED_MESSAGES
+        // (`h1text::hud::rebuild`).
+        let half = |b: &[u8], at: u32| {
+            usize::from(u16::from_le_bytes([b[at as usize], b[at as usize + 1]]))
+        };
+        let (help, shared) = (h1text::hud::SCENARIO_HELP, h1text::hud::SHARED_MESSAGES);
+        assert_eq!(half(&hud, help), source.messages.len());
+        assert_eq!(half(&hud, shared), half(&hud, help) + half(&hud, help + 2));
+        assert_eq!(word(&hud, 0x10) as usize, half(&hud, shared) + half(&hud, shared + 2));
 
         let locales = Localization::read(&mut map).unwrap();
         for language in Language::ALL {
@@ -2785,16 +2863,37 @@ fn campaign_hud_text_and_builtins_round_trip() {
 
         let scripts = hs::Scenario::read(&mut map).unwrap();
         let message_type = script.target.type_index("hud_message").unwrap();
+        // Message atoms; a reference to a global of that type holds the
+        // global's index, not a message's, and a call's head holds its
+        // builtin or script index in the same word (d40's script
+        // `d40_230_cortana`).
         let atoms: Vec<_> = scripts
             .nodes()
             .iter()
-            .filter(|n| n.live() && n.atom() && n.opcode() == message_type)
+            .filter(|n| {
+                n.live()
+                    && n.atom()
+                    && !n.global()
+                    && n.value_type() != hs::vm::HsType::FUNCTION_NAME.0
+                    && n.opcode() == message_type
+            })
             .collect();
         assert!(!atoms.is_empty());
         for atom in atoms {
             let index = atom.data() as u16 as usize;
             let name = scripts.string(atom.string_offset()).unwrap();
-            assert!(source.messages[index].name.eq_ignore_ascii_case(name));
+            let expected = source.messages.get(index).map(|m| m.name.as_str());
+            assert!(
+                expected.is_some_and(|e| e.eq_ignore_ascii_case(name)),
+                "{level}: message atom {name:?} holds index {index} (data {:#x}), \
+                 which is {expected:?} of {} messages; the atom's own name is at {:?}",
+                atom.data(),
+                source.messages.len(),
+                source
+                    .messages
+                    .iter()
+                    .position(|m| m.name.eq_ignore_ascii_case(name)),
+            );
         }
         if level == "d40" {
             for slot in 667..=672 {
@@ -2855,6 +2954,14 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
         )
         .unwrap();
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        // Built from scratch, identical blocks are shared between tags
+        // (`tags::repo::build` share keys), so a character's general and
+        // weapon arrays may sit in another tag's bytes: read them through
+        // the whole metadata.
+        let space = m.metadata_space().unwrap();
+        let meta = m
+            .read_file_range(space.file_offset, u64::from(space.size))
+            .unwrap();
         let scenario = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scenario.id).unwrap();
         let read = h1ai::h2::ScenarioAi::read(&tags::geometry::TagView::new(
@@ -2886,15 +2993,19 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 c.location.unwrap().address,
             ))
             .unwrap();
-            assert_eq!(decoded.kind, Some(kind));
+            let mview = tags::geometry::TagView::new(&meta, space.virtual_base);
+            let general = mview.block(&bytes, 0x34, 0xc).unwrap();
+            let actor_type = general
+                .first()
+                .map(|g| u16::from_le_bytes([g[4], g[5]]));
+            assert_eq!(actor_type, Some(kind));
             if !v.major_variant.id.is_none() {
                 assert_eq!(
                     m.tag(decoded.major).unwrap().name.as_deref(),
                     Some(h1.tag(v.major_variant.id).unwrap().name.as_str())
                 );
             }
-            let cview = tags::geometry::TagView::new(&bytes, c.location.unwrap().address);
-            let weapons = cview.block(&bytes, 0xcc, 0xcc).unwrap();
+            let weapons = mview.block(&bytes, 0xcc, 0xcc).unwrap();
             if v.weapon.id.is_none() {
                 assert!(weapons.is_empty());
             } else {
@@ -2906,8 +3017,22 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
             }
             let b = m.read_tag_bytes(decoded.unit).unwrap();
             if kind == 13 {
+                // Halo 1's flying words, Halo 2's 0x2cc on: the rates Halo 1
+                // caches per tick are per second here
+                // (`h1objects::rebuild::BIPED_RATES`), the rest as they were.
+                fn word(b: &[u8], at: usize) -> u32 {
+                    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
+                }
                 let source = h1.tag_data(h1.tag(v.unit.id).unwrap()).unwrap();
-                assert_eq!(&b[0x2cc..0x2f8], &source[0x324..0x350]);
+                for k in (0..0x2c).step_by(4) {
+                    let (h2_at, h1_at) = (0x2cc + k, 0x324 + k);
+                    let want = if h1objects::rebuild::BIPED_RATES.iter().any(|r| r.1 == h1_at) {
+                        (30.0 * f32::from_bits(word(&source, h1_at))).to_bits()
+                    } else {
+                        word(&source, h1_at)
+                    };
+                    assert_eq!(word(&b, h2_at), want, "{level} {}: bipd +{h2_at:#x} from +{h1_at:#x}", v.name);
+                }
             }
             let hlmt = m.read_tag_bytes(reference(&b, MODEL)).unwrap();
             let graph_id = reference(&hlmt, HLMT_ANIMATION);
@@ -2920,7 +3045,14 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 m.tag(graph_id).unwrap().name.as_deref(),
                 Some(source_graph.name.as_str())
             );
-            let graph = tags::anim::AnimationGraph::read(&mut m, graph_id).unwrap();
+            // Through the whole metadata too: a shared block can put the
+            // graph's arrays in another tag's bytes.
+            let graph = tags::anim::AnimationGraph::decode_in(
+                &meta,
+                space.virtual_base,
+                m.tag(graph_id).unwrap().location.unwrap().address,
+            )
+            .unwrap();
             assert_eq!(
                 graph.animations.len(),
                 h1models::graph_names(&h1, source_graph).unwrap().len()

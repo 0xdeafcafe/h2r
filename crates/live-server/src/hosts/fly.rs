@@ -349,6 +349,7 @@ pub fn machine_env(
         ("H2_TOKEN".to_string(), boot.token.clone()),
         ("H2_DATA_URL".to_string(), boot.data_url.clone()),
         ("H2_DATA_SHA".to_string(), boot.data_sha256.clone()),
+        ("H2_HOST_ARCHIVE".into(), boot.archive.as_str().into()),
         ("H2_BASE_PORT".to_string(), base.to_string()),
         ("H2_XNET_ADDR".into(), format!("{GLOBAL_BIND}:{base}")),
         ("H2_PUBLIC_ADDR".into(), public_ip.to_string()),
@@ -647,6 +648,7 @@ mod tests {
             token: "host-jwt".to_string(),
             data_url: "https://blobs.forbes.red/host-data.tar.zst?sig=1".to_string(),
             data_sha256: "deadbeefcafe".to_string(),
+            archive: live_proto::hosts::HostArchive::Film,
         }
     }
 
@@ -765,6 +767,7 @@ mod tests {
                     "https://blobs.forbes.red/host-data.tar.zst?sig=1".to_string()
                 ),
                 ("H2_DATA_SHA".to_string(), "deadbeefcafe".to_string()),
+                ("H2_HOST_ARCHIVE".into(), "film".into()),
                 ("H2_BASE_PORT".to_string(), "31000".to_string()),
                 ("H2_XNET_ADDR".to_string(), "fly-global-services:31000".to_string()),
                 ("H2_PUBLIC_ADDR".to_string(), "203.0.113.42".to_string()),
@@ -801,6 +804,7 @@ mod tests {
                         "H2_TOKEN": "host-jwt",
                         "H2_DATA_URL": "https://blobs.forbes.red/host-data.tar.zst?sig=1",
                         "H2_DATA_SHA": "deadbeefcafe",
+                        "H2_HOST_ARCHIVE": "film",
                         "H2_BASE_PORT": base.to_string(),
                         "H2_XNET_ADDR": format!("fly-global-services:{base}"),
                         "H2_PUBLIC_ADDR": "203.0.113.42",

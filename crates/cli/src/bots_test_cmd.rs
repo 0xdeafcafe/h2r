@@ -10,7 +10,7 @@
 //! `h2 bots test --clankermatch [--playlist slayer|teams|doubles]` runs
 //! Clankermatch instead (docs/game/bots.md §8 and §13): Clankers off, the
 //! Live menu's Clankermatch row, a clanker playlist, the empty search, the
-//! lobby the local bots fill, the game, and out again
+//! lobby the phantoms fill, the game, and out again
 //! ([`crate::bots_drive::clankermatch`],
 //! [`crate::bots_verdict::clankermatch`]).
 //!
@@ -44,8 +44,8 @@ Clankers in a Live custom game on this Mac, with no one at the controller
 (docs/game/bots.md, \"Testing\"). Starts a Live server in this process on
 127.0.0.1:--server-port (8077) with a throwaway store, makes the account
 Tester on it, and opens one `h2 play` window signed in as Tester with
-Clankers On and Count --count (5 by default: 3 local bots on ports 1 to 3,
-the rest phantoms), set for this run with `--set`. The window builds the
+Clankers On and Count --count (5 by default: phantoms all, peers of this
+machine's session), set for this run with `--set`. The window builds the
 game into --out first if --out has none (as `h2 play` does).
 --wait-clang runs clang's full build (`h2 play --tier clang`): it waits
 for a background clang build of --out that is still writing its log,
@@ -71,7 +71,7 @@ Without --no-drive nobody presses anything: the game prints its menu screen (H2_
 and this process presses over its agent socket, each press on a screen or
 line it waited for: A through the title screen and the new profile's
 dialogs, Xbox Live from the main menu's row (A on the sign-in's dialogs),
-Custom Game, then, once the local bots are on Xbox Live (or after 90 s),
+Custom Game, then, once the phantoms are in the lobby (or after 90 s),
 Start Game. Every press is a `bots-drive:`
 line.
 
@@ -80,10 +80,9 @@ server's session and game record, and stops once every check has passed
 or after --timeout (360 s). The verdict lists each check, passed or
 failed, with the log lines that explain it, and names the first failure:
 signed in; Clankers on; on Xbox Live (not Split Screen or System Link);
-hosting a Live custom game (the session advertised); the Live roster; each local
-bot through the join gate; each local bot on Xbox Live as a bot account
-(000b...); the start state; gameplay on a map (--map NAME: on that map;
-the map is the lobby's, this does not pick it); the phantoms joined the
+hosting a Live custom game (the session advertised); the Live roster; the
+Clankers phantoms seated; gameplay on a map (--map NAME: on that map; the
+map is the lobby's, this does not pick it); the phantoms joined the
 pregame lobby; the session holding 1 + count players; the game record's bots (bot: true).
 It exits non-zero when a check failed.
 
@@ -102,13 +101,13 @@ Slayer, 9 Clanker Teams, 10 Clanker Doubles; --playlist, slayer by
 default), and the run stops at once if the server does not mark the one
 asked for. The drive goes Xbox Live, row 2 (Clankermatch), the
 playlist's row, A, then waits: the search, the lobby this console hosts,
-the phantoms joining it (no local bot: a Clankermatch's bots are all
-phantoms, never in the party), the countdown, the game (to its end: 6 to 8
+the phantoms joining it (a Clankermatch's bots are all phantoms, never in
+the party), the countdown, the game (to its end: 6 to 8
 minutes) and back out, B until no session is hosted. The checks: signed
 in; the clanker hoppers (server and game); the Clankermatch row's
 playlists; the clanker search; the search ending with this console
-hosting; no local bot planned; no bot signed in on a controller port
-(none in the party); the phantoms rostered as bot accounts; the lobby at the playlist's fewest
+hosting; no bot signed in on a controller port (none in the party); the
+phantoms rostered as bot accounts; the lobby at the playlist's fewest
 players; the countdown and start; gameplay; the phantoms joining the
 lobby before the start; the game record (kind clankermatch, bot: true); the bots
 leaving after the game. --timeout is 900 s (1200 with --no-drive).";
@@ -326,7 +325,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
 /// lineup a fresh server serves, `live_server::default_hopper`): its
 /// hopper (descriptor index), its row on the Clankermatch list (the clanker
 /// hoppers in index order), its fewest and most players and teams, and the
-/// bots the fill seats, all phantoms (`boot::clankers::MATCH_LOCAL`).
+/// bots the fill seats, all phantoms.
 pub fn cm_plan(playlist: CmPlaylist, tag: &str) -> Result<CmPlan> {
     use live_proto::hopper::clankers::size_of;
     let lineup = live_proto::hopper::defaults::playlists();
@@ -361,7 +360,6 @@ pub fn cm_plan(playlist: CmPlaylist, tag: &str) -> Result<CmPlan> {
         max,
         teams,
         bots,
-        local: boot::clankers::MATCH_LOCAL,
         tag: tag.into(),
     })
 }
@@ -577,24 +575,22 @@ fn test(opts: Opts) -> Result<()> {
     match &cm {
         Some(cm) => eprintln!(
             "bots test: Live server {} ({} store); Clankermatch {} (hopper {}, row {}): {} bots \
-             ({} local, {} phantoms), {} to {} players",
+             ({} phantoms), {} to {} players",
             embedded.url,
             embedded.store,
             cm.title,
             cm.hopper,
             cm.row,
             cm.bots,
-            cm.local,
             cm.phantoms(),
             cm.min,
             cm.max
         ),
         None => eprintln!(
-            "bots test: Live server {} ({} store); {} Clankers ({} local, {} phantoms)",
+            "bots test: Live server {} ({} store); {} Clankers ({} phantoms)",
             embedded.url,
             embedded.store,
             plan.count,
-            plan.local(),
             plan.phantoms()
         ),
     }
@@ -629,8 +625,8 @@ fn test(opts: Opts) -> Result<()> {
     eprintln!("bots test: the game opens (it builds into --out first if that has none)");
 
     let driver = match &cm {
-        Some(cm) => Driver::clankermatch(cm.local, cm.row),
-        None => Driver::new(plan.local()),
+        Some(cm) => Driver::clankermatch(cm.row),
+        None => Driver::new(plan.phantoms()),
     };
     let mut watch = Watch::new(TAG, &client, &agent, !opts.no_drive, driver, cm.is_some());
     let mut progress = String::new();

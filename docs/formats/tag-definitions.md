@@ -410,9 +410,8 @@ H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
 - `every_scenery_rebuilds_from_its_definition`: 237 scenery objects (the
   ten levels on 05a, the multiplayer maps on coagulation and beavercreek)
   convert; `scen`, `hlmt` and `mode` read back through the definitions,
-  write the same again, pin nothing, and name only converted tags (2
-  materials take the base's model shader, the shader conversion's
-  stand-in for a Halo 1 shader it cannot read); no report holds a
+  write the same again, pin nothing, and name only converted tags. The
+  material check requires every scenery shader to belong to the tree. No report holds a
   template stopgap; the type, bounds, model chain (collision and
   animation exactly where Halo 1 has them), region count and role words
   are as above; every `coll` (109) has a BSP physics slot per BSP; every
@@ -673,8 +672,7 @@ Halo ring were already built this way.
   Since converter version 77 the points are written in the order of
   the role's phantom spheres (`rebuild::role_spheres`: the physics
   element's first multisphere, count at `+0x6c`, centres from `+0x70`,
-  `0x10` each): each sphere in turn takes the nearest point left
-  (`convert::sphere_order`). E: the engine takes friction point `i`'s
+  `0x10` each): each sphere in turn takes the nearest point left. E: the engine takes friction point `i`'s
   suspension compression from the phantom's sphere `i` (the per-point
   loop at `0x2067dd`; `0x207ab0` writes the point's radius less the
   sphere's ground distance, clamped to the radius; the spring is the
@@ -691,12 +689,9 @@ Halo ring were already built this way.
   version 76 it was the role's word. E: `0x205fd1` turns a point off
   once that region's damage state reaches `+0x42`.
   The wheels and treads (`convert::wheel_nodes`: the gripping points'
-  nodes and every node under them) follow the role (since version 86):
-  where most of the role's members have wheel or tread shapes in their
-  `phmo` (`rebuild::member_wheel_shapes`, since version 87: most of
-  the member's friction points name no region or a region its `phmo`
-  has; `VehicleRole::wheel_shapes`)
-  the body holds them above the hull's lowest point, each wheel node's
+  nodes and every node under them) follow the source vehicle type: a
+  wheeled vehicle (`vehicle_type == 0`, `vehicle_rebuilt`'s `wheels`)
+  has its body hold them above the hull's lowest point, each wheel node's
   cells cut there and enclosed in one piece (`convert::held_wheels`);
   otherwise they stay out. Halo 2 holds a vehicle up on its
   friction-point springs and keeps its body clear of the ground either
@@ -723,14 +718,14 @@ Halo ring were already built this way.
   the ground at spawn and the depenetration threw the warthog about 4.8
   units (game run, 2026-11-19). Proof: `tests/vehicle_rebuild_disc.rs`,
   `wheels_and_treads_are_solid_above_the_hull` (the retail scorpion's
-  reach; the base's scorpion has wheel shapes, its warthog none, and the
-  converted roles agree; the converted scorpion reaches its treads'
+  reach; the base's scorpion has wheel shapes, its warthog none; the
+  converted scorpion reaches its treads'
   sides, the warthog no further than its hull, neither under the hull's
   lowest point; the ghost has no wheel nodes), and
   `held_wheels_keep_what_is_above_the_floor`.
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
-  `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
-  same `vehicle_type`. V, every `vehi` on every map of the retail disc:
+  `rebuild::VEHI_CONTROL`). H2 selects the differential controller for
+  mode 2 at `0xef747`. On the retail disc the field holds
   2 on the scorpion (the only type 0, tank) and on its two cannon
   turrets (type 6); 0 on every other vehicle: the warthog (1); the
   pelican, phantom, gravity throne and sentinel enforcer (3); the ghost,
@@ -745,45 +740,15 @@ Halo ring were already built this way.
   curves are inline six-float records. The XBE interpolates them at
   `0xf15d0`, blends them at `0xf1540`, reads the speed ratio at
   `0xf152c` and selects the next gear at `0xf18aa`. Converted H1 wheels
-  and tracks drive the contacts directly. The role descriptions below
-  record earlier converter versions. [Current mappings and XBE evidence](../halo1/role-audit.md).
-- **The type's role** (`rebuild::vehicle_role`): the turret rule over the
-  base map's vehicles of the same `vehicle_type`, at conversion time:
-  each 4-byte unknown span of the root, every seat, every friction and
-  hover point, the plain-word blocks (the physics element `+0x2f8`, `unit
-  +0x1a8`, `+0x1b8`), the gears and the flags' high half; the seats by
-  kind (above). On 05a: jeep
-  the warthog, tank the scorpion, hover the ghost and wraith, flier the
-  banshee, dropship the pelican and phantom. The turret type keeps the
-  disc-wide turret tables, as does a type the base has none of.
-  **Since converter version 84 the role is taken over only the members
-  whose friction and hover points together are nearest the Halo 1
-  vehicle's powered mass points** (`rebuild::nearest_members`; every
-  member on a tie). A majority over vehicles tuned apart leaves zero
-  wherever no word has half the votes: Coagulation's hover type is the
-  ghost (3 hover points), the spectre (4) and the wraith (6), which
-  agree on few driving words, so through version 83 the converted Blood
-  Gulch ghost held zero in 16 root words the retail ghost fills
-  (`+0x1d0`..`+0x1dc`, `+0x1f4` 5.0, `+0x1f8` 2.5, `+0x204`, `+0x208`,
-  `+0x218`, `+0x22c`, `+0x230`, `+0x238`, `+0x254`, `+0x2d8`, `+0x2dc`, `+0x2e4`; V, read
-  live from the converted map against the base's three) and zero at
-  `+0x8`, `+0x10` and `+0x14` of each hover point (the retail ghost's
-  3.75 on its back point and 1.85 on its front pair, 0.5 and 0.45, 1.0),
-  and did not move under its driver (user report, converted Blood Gulch,
-  2026-11-19). Halo 1's ghost has three powered points, so its role is
-  the retail ghost alone (`tests/vehicle_rebuild_disc.rs`,
-  `ghost_takes_the_retail_ghosts_role`). The retail ghost's hover points
-  are not alike (its back point holds strength 3.75 and height 0.5, its
-  front pair 1.85 and 0.45), so with a one-member role whose hover
-  points match Halo 1's in number each converted point takes one retail
-  point's own words (`VehicleRole::hover_each`), paired by position:
-  each retail point's marker is placed in the vehicle's space through
-  its render model's rest pose (`rebuild::marker_positions`: the hover
-  point's marker `+0` names a `mode` marker group, whose first marker's
-  translation is carried through its node), and in the retail order each
-  takes the nearest Halo 1 powered point left (`convert::sphere_order`,
-  as friction points take phantom spheres). With a marker missing or
-  counts that differ, every point takes the majority as before.
+  and tracks drive the contacts directly. [Current mappings and XBE evidence](../halo1/role-audit.md).
+- **Built. Contact and flight data.** The converter writes friction and hover
+  points in H1 mass-point order. H2 reads up to sixteen friction contacts
+  (`0x20678d`). Each inline phantom shape holds eight spheres. The loader
+  initializes the active shapes at `0x205550`. On converted vehicles the
+  unused tail stores the H1 wheel or aircraft controller at `+0x180` and
+  the powered-seat header at `+0x288`. Its count word at `+0x28c` holds
+  the channel count in the low byte and the source-gravity flag in bit 8.
+  Excess or conflicting source data reports a conversion error. [Drive equations and disc evidence](../halo1/role-audit.md#native-engine-fields).
 - **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
   the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
   `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
@@ -1330,35 +1295,19 @@ per offset, the sound's own name saying which on every tag that sets it
 (`+0x70` pain minor, `+0xf0` death quiet, `+0x740` grenade throwing,
 `+0x360` killed enemy, ...).
 
-Converted since version 53 (`h1objects::rebuild::DIALOGUE`,
-`Converter::dialogue`): a table from Halo 1 offsets to Halo 2
-vocalization names, 41 pairs. The Halo 1 slot names are V (the sound
-names); the Halo 2 names are V (every one is used by a retail `udlg` on
-05a; the disc test asserts it); the pairing is D by meaning, except pain
-and death, where the two retail dialogue tags whose sounds are not named
-after the vocalization (the Chief's and the multiplayer elite's) give
-the bridge: their `death` plays for `dth`, `dth_mjr`, `dth_slnt`,
-`dth_slw` and `dth_hdsht`, their falling death for `dth_fall`, their
-`pain` for `pain_mjr`. Where two slots feed one vocalization the first
-holding a sound wins. The hurt and killed lines by weapon and species,
-the replies, the search and vehicle chatter have no Halo 2 name close
-enough and are left out. The root's `adlg` word, null datum and `snd!`
-group words are as on every retail tag; the designator string is null
-(D: what reads it is not established).
+**Built.** The rebuilt `udlg` starts with one row per entry of the
+base's `adlg +0x00` vocabulary. Halo 2 accesses it by numeric index
+(`0x1144f4`). Native rows carry the converted Halo 1 sounds for
+`h1objects::rebuild::DIALOGUE`'s verified event pairs. Explicit source
+slots follow those rows. Each source row has the exact sound and the
+slot index in the low half of its marker at `+0x00`.
 
-A rebuilt biped's model (`hlmt +0x8c`, `DIALOGUE_FIELD`) names the
-converted dialogue of the first `udlg` its Halo 1 unit names, in place
-of the counterpart's. V (`every_dialogue_converts`, ten campaign levels
-and the multiplayer maps): 102 tags, 6,502 slots holding a sound, 2,140
-Halo 2 lines, all reading back with no pinned bytes and every sound a
-converted one; 125 of 169 bipeds name dialogue, 21 more than one (only
-the first is kept). The sounds are large (0xa0acae4 sample bytes over
-all maps), so h1campaign's file size ladder has a dialogue step: after
-the music, a level over the file limit gets a dialogue budget
-(`Options::dialogue_budget`) that much smaller, down to none, before the
-ambience is cut. A line whose sound would pass the budget is left out.
-What only a real run can confirm: that the AI plays the lines (the
-engine's reader of the vocalization list is not traced).
+A rebuilt unit with one ordinary voice uses `hlmt +0x8c`. Multiple
+voices use separate variant references at `hlmt.variants[].+0x30`,
+with their source selectors. H2 caches the selected dialogue datum
+per unit during speech setup. See [AI dialogue](../halo1/ai.md) for
+the runtime lookup and remaining automatic events.
+
 
 ### Material effects (`foot`)
 

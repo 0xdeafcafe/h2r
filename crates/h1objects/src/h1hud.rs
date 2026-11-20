@@ -316,6 +316,8 @@ pub fn to_halo2_offset(anchor: Anchor, (x, y): (i16, i16)) -> (i16, i16) {
 }
 
 pub mod scope;
+pub(crate) mod weapon;
+use tags::weapon_hud as inputs;
 
 /// Halo 1's weapon HUD (`wphi`) layout, from its draw (E, Halo 1's XBE,
 /// `0x000db5d0`..`0x000dc0b3`, `ebx` the `wphi`; the crosshairs
@@ -538,6 +540,10 @@ pub struct WeaponEntry {
     /// The `wphi` it is in (the weapon's own or a child).
     pub wphi: H1TagId,
     pub kind: WeaponEntryKind,
+    pub thresholds: [i16; 4],
+    pub flash: [u8; 24],
+    pub split_flags: u8,
+    pub frame_period: i16,
     pub screen: u8,
     pub hidden: bool,
     pub anchor: Anchor,
@@ -604,26 +610,40 @@ fn weapon_chain(
     seen.push(tag);
     let t = map.tag(tag)?;
     let b = crate::h1::tag_bytes(map, t, b"wphi", wphi::SIZE)?;
-    if let Some(child) = crate::h1::reference(map, b, wphi::CHILD) {
+    let reference = |bytes: &[u8], at| -> Result<Option<H1TagId>> {
+        let r = h1map::TagRef::read(bytes, at).ok_or(Error::Truncated("weapon HUD reference"))?;
+        if r.id.is_none() {
+            return Ok(None);
+        }
+        let target = map.tag(r.id).map_err(|e| {
+            Error::Invalid(format!("{} +{at:#x} reference {:?}: {e}", t.name, r.id))
+        })?;
+        Ok(Some(target.id))
+    };
+    if let Some(child) = reference(b, wphi::CHILD)? {
         weapon_chain(map, child, low, out, seen)?;
     }
     let raw = u16::from_le_bytes([b[wphi::ANCHOR], b[wphi::ANCHOR + 1]]);
     let anchor =
         Anchor::from_halo1(raw).ok_or_else(|| Error::Invalid(format!("wphi anchor {raw}")))?;
-    let el = |e: &[u8], at: usize, seq: usize| {
-        (
+    let el = |e: &[u8], at: usize, seq: usize| -> Result<_> {
+        Ok((
             (i16_at(e, at), i16_at(e, at + 2)),
             [f32_at(e, at + 4), f32_at(e, at + 8)],
-            crate::h1::reference(map, e, at + h1el::BITMAP),
+            reference(e, at + h1el::BITMAP)?,
             i16_at(e, at + seq),
-        )
+        ))
     };
     let u32_at = |e: &[u8], at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
     use wphi::entry;
     for e in crate::h1::elements(map, b, wphi::STATICS, wphi::STATIC_SIZE)? {
-        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::SEQUENCE);
+        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::SEQUENCE)?;
         out.push(WeaponEntry {
             wphi: tag,
+            thresholds: low,
+            flash: [0; 24],
+            split_flags: 0,
+            frame_period: 0,
             kind: WeaponEntryKind::Static(WeaponState::from_halo1(i16_at(e, entry::STATE))),
             screen: e[entry::SCREEN],
             hidden: e[entry::FLAGS] & 1 != 0,
@@ -636,10 +656,14 @@ fn weapon_chain(
         });
     }
     for e in crate::h1::elements(map, b, wphi::METERS, wphi::METER_SIZE)? {
-        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::METER_SEQUENCE);
+        let (offset, scale, bitmap, sequence) = el(e, entry::ELEMENT, h1el::METER_SEQUENCE)?;
         let m = entry::ELEMENT;
         out.push(WeaponEntry {
             wphi: tag,
+            thresholds: low,
+            flash: [0; 24],
+            split_flags: 0,
+            frame_period: 0,
             kind: WeaponEntryKind::Meter(
                 WeaponState::from_halo1(i16_at(e, entry::STATE)),
                 [
@@ -670,6 +694,10 @@ fn weapon_chain(
         };
         out.push(WeaponEntry {
             wphi: tag,
+            thresholds: low,
+            flash: [0; 24],
+            split_flags: 0,
+            frame_period: 0,
             kind: WeaponEntryKind::Number(
                 WeaponState::from_halo1(i16_at(e, entry::STATE)),
                 number,
@@ -687,12 +715,16 @@ fn weapon_chain(
     }
     use wphi::{crosshair, overlay};
     for c in crate::h1::elements(map, b, wphi::CROSSHAIRS, wphi::CROSSHAIR_SIZE)? {
-        let bitmap = crate::h1::reference(map, c, crosshair::BITMAP);
+        let bitmap = reference(c, crosshair::BITMAP)?;
         let kind = i16_at(c, crosshair::TYPE);
         for o in crate::h1::elements(map, c, crosshair::OVERLAYS, crosshair::OVERLAY_SIZE)? {
             let flags = u32::from_le_bytes(o[overlay::FLAGS..overlay::FLAGS + 4].try_into().unwrap());
             out.push(WeaponEntry {
                 wphi: tag,
+                thresholds: low,
+                flash: o[overlay::COLOUR..overlay::COLOUR + 24].try_into().unwrap(),
+                split_flags: o[0xc],
+                frame_period: i16_at(o, 0x44),
                 kind: match kind {
                     crosshair_type::AIM | crosshair_type::ZOOM_LEVEL => {
                         WeaponEntryKind::Crosshair(kind, flags)
@@ -717,11 +749,15 @@ fn weapon_chain(
     use wphi::{element_overlay as eo, overlay_element as oe};
     for e in crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)? {
         let at = entry::ELEMENT;
-        let bitmap = crate::h1::reference(map, e, at + oe::BITMAP);
+        let bitmap = reference(e, at + oe::BITMAP)?;
         let state = WeaponState::from_halo1(i16_at(e, entry::STATE));
         for o in crate::h1::elements(map, &e[at..], oe::OVERLAYS, oe::OVERLAY_SIZE)? {
             out.push(WeaponEntry {
                 wphi: tag,
+                thresholds: low,
+                flash: [0; 24],
+                split_flags: 0,
+                frame_period: 0,
                 kind: WeaponEntryKind::Overlay(
                     state,
                     u16::from_le_bytes([o[eo::SHOWN_ON], o[eo::SHOWN_ON + 1]]),
@@ -753,6 +789,14 @@ pub const AIM_STATE: [u8; 20] = primary_weapon_state([
 pub const ZOOM_STATE: [u8; 20] = primary_weapon_state([
     0x90, 0x01, 0, 0, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ]);
+
+/// Hide on either native zoom level, including when the primary-slot show bit matches.
+pub const UNZOOMED_STATE: [u8; 20] = {
+    let mut state = AIM_STATE;
+    state[8] |= 0x80;
+    state[9] |= 0x01;
+    state
+};
 
 /// Halo 2's state word C (`+0x0c` show, `+0x14` hide), as the HUD draw
 /// builds it for a weapon HUD (E `0x0013a050`, `edi`; the weapon's HUD
@@ -800,31 +844,13 @@ const fn primary_weapon_state(mut state: [u8; 20]) -> [u8; 20] {
     state
 }
 
-const WEAPON_PANEL_STATE: [u8; 20] = primary_weapon_state(STATE);
+// The vehicle HUD pass has no slot bit. One of the three zoom bits is
+// present on every active view (0x13a0df); exclude the other weapon slots.
+pub const ACTIVE_WEAPON_STATE: [u8; 20] = primary_weapon_state([
+    0xc0, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
-/// The gate state of a warning shown while `show` (word C) is set and
-/// `hide` is not, with thresholds `loaded` (`+0x19`) and `reserve`
-/// (`+0x1a`). Hidden where the aim crosshair is ([`AIM_STATE`]: word B
-/// `0x11` and the other weapon slots).
-pub const fn warning_state(show: u16, hide: u16, loaded: u8, reserve: u8) -> [u8; 20] {
-    primary_weapon_state([
-        0, 0, 0, 0, show as u8, (show >> 8) as u8, 0, 0, 0, 0, 0x11, 0, hide as u8,
-        (hide >> 8) as u8, 0, 0, 0, loaded, reserve, 0,
-    ])
-}
-
-/// Halo 1's "Reload" (warning 3: rounds in reserve, loaded at or below the
-/// weapon's threshold `low`) as Halo 2's gate: shown on rounds loaded
-/// below `low + 1`, hidden on rounds in reserve below 1.
-pub fn reload_state(low: i16) -> [u8; 20] {
-    use weapon_word_c::*;
-    let loaded = (i32::from(low) + 1).clamp(1, 255) as u8;
-    warning_state(LOADED_BELOW, RESERVE_BELOW, loaded, 1)
-}
-
-/// Halo 1's "No ammo" (8) and "Battery depleted" (18) as Halo 2's gate:
-/// shown while there is nothing to fire.
-pub const EMPTY_STATE: [u8; 20] = warning_state(weapon_word_c::NOTHING_TO_FIRE, 0, 0, 0);
+const WEAPON_PANEL_STATE: [u8; 20] = ACTIVE_WEAPON_STATE;
 
 /// The zoom levels Halo 2's state words tell apart: word A `0x80` at zoom
 /// level 0, `0x100` at level 1, `0x40` unzoomed (E `0x0013a0df`..
@@ -864,31 +890,35 @@ pub fn zoom_widget(
     let WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, flags) = e.kind else {
         return Err(Skip::NothingDrawn);
     };
-    if e.hidden {
-        return Err(Skip::Hidden);
-    }
-    if e.screen == SPLIT_SCREEN_ONLY {
-        return Err(Skip::SplitScreen);
-    }
-    if !unscaled(e.scale) {
-        return Err(Skip::Scaled(e.scale));
-    }
-    // Without bit 2 the unzoomed value picks a sprite too: not converted.
-    if flags & OVERLAY_WHEN_ZOOMED == 0 {
-        return Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL));
-    }
-    let state = *ZOOM_LEVEL_STATES.get(level).ok_or(Skip::ZoomLevel(level))?;
+    let state = if flags & 0x20 != 0 {
+        if level != 0 {
+            return Err(Skip::ZoomLevel(level));
+        }
+        ZOOM_STATE
+    } else if flags & OVERLAY_WHEN_ZOOMED != 0 {
+        *ZOOM_LEVEL_STATES.get(level).ok_or(Skip::ZoomLevel(level))?
+    } else if level == 0 {
+        UNZOOMED_STATE
+    } else {
+        *ZOOM_LEVEL_STATES
+            .get(level - 1)
+            .ok_or(Skip::ZoomLevel(level))?
+    };
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     Ok(Widget {
         name: format!("h1_zoom_level_{level}"),
         inputs: [0; 4],
-        state,
+        state: if e.hidden {
+            [0; 20]
+        } else {
+            overlay_state(state, flags)
+        },
         anchor: e.anchor,
         flags: 0,
         bitmap,
         shader: plain,
-        sequence: e.sequence.clamp(0, i8::MAX as i16) as i8,
-        offset: to_halo2_offset(e.anchor, e.offset),
+        sequence: i8::try_from(e.sequence).map_err(|_| Skip::Sequence(e.sequence))?,
+        offset: weapon_offset(e)?,
         registration: registration(e.anchor),
         special: 0,
     })
@@ -902,78 +932,55 @@ pub fn zoom_widget(
 pub const OVERLAY_WHEN_ZOOMED: u32 = 0x04;
 pub const OVERLAY_WHEN_UNZOOMED: u32 = 0x40;
 
+fn overlay_state(mut state: [u8; 20], flags: u32) -> [u8; 20] {
+    if flags & OVERLAY_WHEN_ZOOMED != 0 {
+        state[8] |= 0x40;
+    }
+    if flags & OVERLAY_WHEN_UNZOOMED != 0 {
+        state[8] |= 0x80;
+        state[9] |= 1;
+    }
+    state
+}
+
 /// The suffix of a converted Halo 1 weapon HUD's name.
 pub const WEAPON_NHDT_SUFFIX: &str = "_h1_weapon_hud";
 
 /// Halo 1's screen types an entry is drawn on (`entry +4`, a bit index of
 /// the mask built at `0x000dbe16`): bit 1 is set with one local player,
 /// bit 2 with more (split screen), bit 0 unless the engine's mode
-/// `[0x0039be5c] +0x3c` is 2. The converter keeps entries for 0 and 1,
-/// a full screen; split-screen-only ones (2) are left out.
+/// `[0x0039be5c] +0x3c` is 2. The source screen selector is
+/// stored at widget +0x1b and tested for each local view.
 pub const SPLIT_SCREEN_ONLY: u8 = 2;
 
-/// The Halo 2 widget input that reads what a Halo 1 meter's state does
-/// (Halo 2's input switch `0x0013ad48`, its weapon block in `ecx`):
-/// rounds loaded over the magazine's (`0x36`, `[ecx+6]/[ecx+0x0a]`,
-/// `0x0013ae7c`; V: Halo 2's magnum ammo meter), the battery (`0x38`,
-/// `1 - [ecx+0x10]`, `0x0013af94`; V: the energy sword's), the heat
-/// (`0x31`, `[ecx+0x14]`, `0x0013af00`; V: the beam rifle's and sentinel
-/// beam's meters, Halo 2's heat weapons). Halo 1 fills to
-/// `multiplier * v + offset` of 255 (`wphi::meter`): on the disc's meters
-/// that is the same fraction (V: sniper rifle 60 per round of 4 plus 1,
-/// plasma heat 1 per 255th).
+/// One native meter widget per source state. The remaining selectors carry
+/// its byte transfer function (0xe213a), evaluated before the meter shader.
 pub fn weapon_meter_input(s: WeaponState) -> Option<u8> {
     match s {
-        WeaponState::LoadedAmmo => Some(0x36),
-        WeaponState::Battery => Some(0x38),
-        WeaponState::Heat => Some(0x31),
+        WeaponState::TotalAmmo => Some(inputs::METER),
+        WeaponState::LoadedAmmo => Some(inputs::METER + 1),
+        WeaponState::Heat => Some(inputs::METER + 2),
+        WeaponState::Battery => Some(inputs::METER + 3),
+        WeaponState::SecondTotal => Some(inputs::METER + 4),
+        WeaponState::SecondLoaded => Some(inputs::METER + 5),
         _ => None,
     }
 }
 
-/// Why a weapon HUD entry has no widget.
+/// A malformed source entry or a request for the wrong widget builder.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Skip {
-    /// Its flags say not drawn.
-    Hidden,
-    /// Drawn on a split screen only ([`SPLIT_SCREEN_ONLY`]).
-    SplitScreen,
-    /// No bitmap, or nothing in its sequence.
+    Sequence(i16),
     NothingDrawn,
-    /// A meter on a state no Halo 2 input reads.
     MeterState(WeaponState),
-    /// A crosshair of a type not converted.
     CrosshairType(i16),
-    /// The zoom-level readout: one widget per level ([`zoom_widget`]).
     ZoomLevels,
-    /// A zoom level past those Halo 2's state words tell apart
-    /// ([`ZOOM_LEVELS`]).
     ZoomLevel(usize),
-    /// A warning Halo 2's gate has no state for ([`weapon_word_c`]): low
-    /// ammunition with none in reserve (an "and" of two words' bits),
-    /// low battery, a reload under way, no grenades.
-    Warning(i16),
-    /// An aim overlay drawn only unzoomed: no Halo 2 state flags for it
-    /// are established.
-    UnzoomedOnly,
-    /// Scaled ([`unscaled`]).
     Scaled([f32; 2]),
-    /// A number: a text widget ([`weapon_number`]), not a bitmap one.
     Text,
-    /// A number on a state no Halo 2 number input reads.
     NumberState(WeaponState),
-    /// A number shown in magazines: Halo 2's text has no divide.
-    Magazines,
-    /// A number with fraction digits.
     Fraction,
-    /// A static whose colour is all zero: Halo 1 draws nothing of it
-    /// ([`invisible_colour`]).
-    Invisible,
-    /// An overlay shown only on some conditions ([`overlay_shown`]): no
-    /// Halo 2 state flags for them are established.
     OverlayCondition(u16),
-    /// An animated overlay (a frame rate): a Halo 2 bitmap widget shows
-    /// one sprite.
     Animated(i16),
 }
 
@@ -989,22 +996,10 @@ pub fn weapon_widget(
     meter: TagId,
     plain: TagId,
 ) -> std::result::Result<Widget, Skip> {
-    if e.hidden {
-        return Err(Skip::Hidden);
-    }
-    if e.screen == SPLIT_SCREEN_ONLY {
-        return Err(Skip::SplitScreen);
-    }
     if matches!(e.kind, WeaponEntryKind::Number(..)) {
         return Err(Skip::Text);
     }
-    if !unscaled(e.scale) {
-        return Err(Skip::Scaled(e.scale));
-    }
     let statik = matches!(e.kind, WeaponEntryKind::Static(_) | WeaponEntryKind::Overlay(..));
-    if statik && static_alpha(e.colour).is_none() {
-        return Err(Skip::Invisible);
-    }
     if let WeaponEntryKind::Overlay(_, shown, rate, _) = e.kind {
         if shown & overlay_shown::ALWAYS == 0 {
             return Err(Skip::OverlayCondition(shown));
@@ -1022,13 +1017,18 @@ pub fn weapon_widget(
         WeaponEntryKind::Overlay(..) => {
             ("h1_weapon_overlay", [0; 4], plain, WEAPON_PANEL_STATE)
         }
-        WeaponEntryKind::Meter(s, _) => {
+        WeaponEntryKind::Meter(s, [min, mul, add]) => {
             let input = weapon_meter_input(*s).ok_or(Skip::MeterState(*s))?;
-            ("h1_weapon_meter", [input, 0, 0, 0], meter, WEAPON_PANEL_STATE)
+            (
+                "h1_weapon_meter",
+                [input, *min, *mul, *add],
+                meter,
+                WEAPON_PANEL_STATE,
+            )
         }
         WeaponEntryKind::Crosshair(t, flags) => match *t {
             crosshair_type::AIM if flags & OVERLAY_WHEN_UNZOOMED != 0 => {
-                return Err(Skip::UnzoomedOnly);
+                ("h1_crosshair", [0; 4], plain, overlay_state(UNZOOMED_STATE, *flags))
             }
             crosshair_type::AIM if flags & OVERLAY_WHEN_ZOOMED != 0 => {
                 ("h1_scope", [0; 4], plain, ZOOM_STATE)
@@ -1037,40 +1037,47 @@ pub fn weapon_widget(
             crosshair_type::ZOOM_LEVEL => return Err(Skip::ZoomLevels),
             t => return Err(Skip::CrosshairType(t)),
         },
-        // Shown while Halo 1's condition holds, not for Halo 1's flash
-        // time after it starts: a Halo 2 widget has no timer.
-        WeaponEntryKind::Warning(t, _, low) => match *t {
-            crosshair_type::RELOAD => ("h1_warning_reload", [0; 4], plain, reload_state(*low)),
-            crosshair_type::NO_AMMO | crosshair_type::BATTERY_DEPLETED => {
-                ("h1_warning_empty", [0; 4], plain, EMPTY_STATE)
-            }
-            t => return Err(Skip::Warning(t)),
-        },
+        WeaponEntryKind::Warning(t @ 2..=18, flags, _) => (
+            match *t {
+                crosshair_type::RELOAD => "h1_warning_reload",
+                crosshair_type::NO_AMMO | crosshair_type::BATTERY_DEPLETED => "h1_warning_empty",
+                _ => "h1_weapon_warning",
+            },
+            [inputs::WARNING, *t as u8, *flags as u8, 0],
+            plain,
+            overlay_state(ACTIVE_WEAPON_STATE, *flags),
+        ),
+        WeaponEntryKind::Warning(t, _, _) => return Err(Skip::CrosshairType(*t)),
         WeaponEntryKind::Number(..) => unreachable!("refused above"),
     };
     Ok(Widget {
         name: name.to_owned(),
         inputs,
-        state,
+        state: if e.hidden || (statik && e.colour == 0) {
+            [0; 20]
+        } else {
+            state
+        },
         anchor: e.anchor,
         flags: 0,
         bitmap,
         shader,
-        sequence: e.sequence.clamp(0, i8::MAX as i16) as i8,
-        offset: to_halo2_offset(e.anchor, e.offset),
+        sequence: i8::try_from(e.sequence).map_err(|_| Skip::Sequence(e.sequence))?,
+        offset: weapon_offset(e)?,
         registration: registration(e.anchor),
         special: 0,
     })
 }
 
-/// Whether Halo 1 draws an element at its sprite's own size. Halo 1
-/// multiplies the sprite's size and the offset by the element's scale
-/// (`+4`, two `f32`; E `0x000e15f4`, `0x000e15ff`). A Halo 2
-/// bitmap widget has no scale: it draws the sprite at its size. Every
-/// element on the disc is unscaled (V: `hud_disc` `grenade_huds_read`, the
-/// unit and grenade elements of every map and the weapon entries of
-/// bloodgulch and a10, all 1.0), so Halo 1's size is kept; a scaled one
-/// is refused rather than drawn at the wrong size.
+fn weapon_offset(e: &WeaponEntry) -> std::result::Result<(i16, i16), Skip> {
+    if !e.scale.into_iter().all(f32::is_finite) {
+        return Err(Skip::Scaled(e.scale));
+    }
+    Ok(to_halo2_offset(e.anchor, e.offset))
+}
+
+/// Whether the element needs a native scale effect. H1 applies the two
+/// factors to the draw basis (0xe1590), independently of placement (0xe07a0).
 pub fn unscaled(scale: [f32; 2]) -> bool {
     scale == [1.0, 1.0]
 }
@@ -1573,6 +1580,12 @@ pub fn digit_width(map: &H1Map) -> Result<i16> {
     Ok(i16::from(w as i8))
 }
 
+/// Signed extra width of the decimal cell (H1 0xe1b23, 0xe1bf7, 0xe1c31).
+pub(crate) fn decimal_spacing(map: &H1Map) -> Result<i16> {
+    let value = *digits_tag(map)?.get(0x14).ok_or(Error::Truncated("hud#"))?;
+    Ok(i16::from(value as i8))
+}
+
 /// The height of Halo 1's digit sprites: the digits bitmap (`hud#` `+0x00`)
 /// sequence 0, its first sprite's height in pixels (V: 12 on
 /// `ui\hud\bitmaps\combined\hud_counter_numbers`, every digit's sprite
@@ -1640,11 +1653,15 @@ pub fn number_point(n: &Number, w: i16, h: i16) -> Result<(i16, i16)> {
     if n.fraction_digits != 0 {
         return Err(Error::Invalid("a number with fraction digits".into()));
     }
+    Ok(digit_point(n, w, h, 0))
+}
+
+fn digit_point(n: &Number, w: i16, h: i16, decimal_spacing: i16) -> (i16, i16) {
     let cells = i16::from(n.digits) + i16::from(n.flags & 0x04 != 0);
     let x = match n.anchor {
-        Anchor::TopLeft | Anchor::BottomLeft => n.offset.0 + (cells - 2) * w + w,
+        Anchor::TopLeft | Anchor::BottomLeft => n.offset.0 + (cells - 2) * w + w + decimal_spacing,
         Anchor::TopRight | Anchor::BottomRight => n.offset.0,
-        Anchor::Centre => n.offset.0 + (cells - 1) * w / 2 + w / 2,
+        Anchor::Centre => n.offset.0 + ((cells - 1) * w + decimal_spacing) / 2 + w / 2,
     };
     let (x, y) = to_halo2_offset(n.anchor, (x, n.offset.1));
     // The top of Halo 1's digit sprite, in screen directions.
@@ -1655,7 +1672,7 @@ pub fn number_point(n: &Number, w: i16, h: i16) -> Result<(i16, i16)> {
     };
     let (ink0, ink1) = TEXT_DIGIT_INK;
     // Centre the ink on the sprite: top + h/2 = y' + (ink0 + ink1)/2.
-    Ok((x, top + (h - (ink0 + ink1)) / 2))
+    (x, top + (h - (ink0 + ink1)) / 2)
 }
 
 /// The text widget for grenade type `k`'s count: input `20 + k`, shown
@@ -1698,6 +1715,11 @@ pub fn weapon_number_input(s: WeaponState) -> Option<u8> {
         WeaponState::TotalAmmo => Some(0x33),
         WeaponState::LoadedAmmo => Some(0x30),
         WeaponState::Battery => Some(0x32),
+        WeaponState::SecondTotal => Some(inputs::SECOND_RESERVE),
+        WeaponState::SecondLoaded => Some(inputs::SECOND_LOADED),
+        WeaponState::Heat => Some(inputs::HEAT_BYTE),
+        WeaponState::Other(6) => Some(inputs::RANGE),
+        WeaponState::Other(7) => Some(inputs::ELEVATION),
         _ => None,
     }
 }
@@ -1712,45 +1734,72 @@ pub fn weapon_number_input(s: WeaponState) -> Option<u8> {
 /// HUD passes as 0 (`0x000dc0d6`), and a scale not above 0 is 1.0
 /// (`0x000e1b58`). The disc's weapon numbers hold 0 there (V).
 ///
-/// Refused: hidden or split-screen-only numbers (as the bitmap entries),
-/// a colour of 0 ([`static_alpha`]), states no Halo 2 input shows (the
-/// sniper rifle's zoom numbers, states 6 and 7), numbers shown in
-/// magazines (`+0x78` bit 0: Halo 2's text cannot divide) and fraction
-/// digits ([`number_point`]). Halo 1's leading zeros (flags bit 0: a
-/// three-digit count of 60 shows `060`, E `0x000e1f5d`..`0x000e1f6f`) are
-/// not drawn: no padding of Halo 2's number text is established.
 pub fn weapon_number(
     e: &WeaponEntry,
     w: i16,
     h: i16,
     shader: TagId,
 ) -> std::result::Result<TextWidget, Skip> {
+    weapon_number_with_spacing(e, w, h, 0, shader)
+}
+
+pub(crate) fn weapon_number_with_spacing(
+    e: &WeaponEntry,
+    w: i16,
+    h: i16,
+    decimal_spacing: i16,
+    shader: TagId,
+) -> std::result::Result<TextWidget, Skip> {
     let WeaponEntryKind::Number(state, n, magazines) = &e.kind else {
         return Err(Skip::NothingDrawn);
     };
-    if e.hidden {
-        return Err(Skip::Hidden);
-    }
-    if e.screen == SPLIT_SCREEN_ONLY {
-        return Err(Skip::SplitScreen);
-    }
-    if e.colour == 0 {
-        return Err(Skip::Invisible);
-    }
     let input = weapon_number_input(*state).ok_or(Skip::NumberState(*state))?;
-    if *magazines {
-        return Err(Skip::Magazines);
-    }
-    if n.fraction_digits != 0 {
+    let target = matches!(input, inputs::RANGE | inputs::ELEVATION);
+    if n.digits > 9 || n.fraction_digits > 4 || (n.fraction_digits != 0 && (!target || *magazines))
+    {
         return Err(Skip::Fraction);
     }
-    let offset = number_point(n, w, h).map_err(|_| Skip::Fraction)?;
+    let mut layout = *n;
+    layout.fraction_digits = 0;
+    if n.fraction_digits != 0 {
+        layout.digits = n
+            .digits
+            .checked_add(n.fraction_digits + 1)
+            .ok_or(Skip::Fraction)?;
+    }
+    let offset = digit_point(
+        &layout,
+        w,
+        h,
+        if n.fraction_digits == 0 {
+            0
+        } else {
+            decimal_spacing
+        },
+    );
+    let inputs = if *magazines {
+        [inputs::MAGAZINES, input, n.digits, n.flags]
+    } else if target {
+        [input, n.fraction_digits, n.digits, n.flags]
+    } else {
+        [input, 0, 0, 0]
+    };
+    let state = WEAPON_PANEL_STATE;
     Ok(TextWidget {
         name: "h1_weapon_number".to_owned(),
-        inputs: [input, 0, 0, 0],
-        state: WEAPON_PANEL_STATE,
+        inputs,
+        state: if e.hidden || e.colour == 0 {
+            [0; 20]
+        } else {
+            state
+        },
         anchor: n.anchor,
-        flags: TEXT_NUMBER,
+        flags: TEXT_NUMBER
+            | match (n.flags & 1, n.digits) {
+                (1, 2) => 2,
+                (1, 3) => 4,
+                _ => 0,
+            },
         shader,
         string: TEXT_INPUT1,
         justification: JUSTIFY_RIGHT,
@@ -1796,6 +1845,10 @@ mod tests {
     fn entry(kind: WeaponEntryKind) -> WeaponEntry {
         WeaponEntry {
             wphi: H1TagId(0),
+            thresholds: [0; 4],
+            flash: [0; 24],
+            split_flags: 0,
+            frame_period: 0,
             kind,
             screen: 0,
             hidden: false,
@@ -1816,7 +1869,12 @@ mod tests {
         assert_eq!(static_alpha(0x002896ff), Some(0xff), "additive in Halo 1: shown");
         let mut s = entry(WeaponEntryKind::Static(WeaponState::LoadedAmmo));
         s.colour = 0;
-        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Invisible));
+        assert_eq!(
+            weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            [0; 20]
+        );
         // Meters and crosshairs keep their own colour rules.
         s.kind = WeaponEntryKind::Meter(WeaponState::LoadedAmmo, [0, 60, 1]);
         assert!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)).is_ok());
@@ -1845,11 +1903,32 @@ mod tests {
     }
 
     #[test]
+    fn sniper_decimal_spacing_follows_the_source_anchor() {
+        let mut entry = number_entry(WeaponState::Other(6), false);
+        for (anchor, extra) in [
+            (Anchor::TopLeft, 6),
+            (Anchor::Centre, 3),
+            (Anchor::TopRight, 0),
+        ] {
+            if let WeaponEntryKind::Number(_, ref mut n, _) = entry.kind {
+                n.anchor = anchor;
+                n.fraction_digits = 3;
+            }
+            let uniform = weapon_number(&entry, 9, 12, TagId(1)).unwrap();
+            let spaced = weapon_number_with_spacing(&entry, 9, 12, 6, TagId(1)).unwrap();
+            assert_eq!(spaced.offset, (uniform.offset.0 + extra, uniform.offset.1));
+        }
+    }
+
+    #[test]
     fn weapon_numbers_are_number_texts_on_halo2s_ammo_inputs() {
         let e = number_entry(WeaponState::TotalAmmo, false);
         let t = weapon_number(&e, 9, 12, TagId(7)).unwrap();
         assert_eq!(t.inputs, [0x33, 0, 0, 0]);
-        assert_eq!((t.flags, t.string, t.justification), (TEXT_NUMBER, TEXT_INPUT1, JUSTIFY_RIGHT));
+        assert_eq!(
+            (t.flags, t.string, t.justification),
+            (TEXT_NUMBER | 4, TEXT_INPUT1, JUSTIFY_RIGHT)
+        );
         assert_eq!(
             (t.anchor, t.state, t.shader),
             (Anchor::TopLeft, WEAPON_PANEL_STATE, TagId(7)),
@@ -1860,16 +1939,19 @@ mod tests {
         let input = |s| weapon_number(&number_entry(s, false), 9, 12, TagId(7)).map(|t| t.inputs[0]);
         assert_eq!(input(WeaponState::LoadedAmmo), Ok(0x30));
         assert_eq!(input(WeaponState::Battery), Ok(0x32));
-        assert_eq!(input(WeaponState::Other(6)), Err(Skip::NumberState(WeaponState::Other(6))));
-        assert_eq!(input(WeaponState::Heat), Err(Skip::NumberState(WeaponState::Heat)));
+        assert_eq!(input(WeaponState::Other(6)), Ok(inputs::RANGE));
+        assert_eq!(input(WeaponState::Heat), Ok(inputs::HEAT_BYTE));
         let mags = number_entry(WeaponState::TotalAmmo, true);
-        assert_eq!(weapon_number(&mags, 9, 12, TagId(7)), Err(Skip::Magazines));
+        assert_eq!(
+            weapon_number(&mags, 9, 12, TagId(7)).unwrap().inputs,
+            [inputs::MAGAZINES, 0x33, 3, 1]
+        );
         let mut e = number_entry(WeaponState::TotalAmmo, false);
         e.screen = SPLIT_SCREEN_ONLY;
-        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::SplitScreen));
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)).unwrap().inputs[0], 0x33);
         e.screen = 0;
         e.colour = 0;
-        assert_eq!(weapon_number(&e, 9, 12, TagId(7)), Err(Skip::Invisible));
+        assert_eq!(weapon_number(&e, 9, 12, TagId(7)).unwrap().state, [0; 20]);
         e.colour = 1;
         if let WeaponEntryKind::Number(_, n, _) = &mut e.kind {
             n.fraction_digits = 3;
@@ -1884,18 +1966,30 @@ mod tests {
     fn weapon_meters_read_halo2s_weapon_inputs() {
         let m = entry(WeaponEntryKind::Meter(WeaponState::LoadedAmmo, [0, 60, 1]));
         let w = weapon_widget(&m, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
-        assert_eq!(w.inputs, [0x36, 0, 0, 0]);
+        assert_eq!(w.inputs, [inputs::METER + 1, 0, 60, 1]);
         assert_eq!(w.shader, TagId(2));
         assert_eq!((w.anchor, w.offset, w.registration), (Anchor::TopLeft, (6, 21), [0.0, 0.0]));
         assert_eq!(w.state, WEAPON_PANEL_STATE);
         let heat = entry(WeaponEntryKind::Meter(WeaponState::Heat, [0, 1, 0]));
-        assert_eq!(weapon_widget(&heat, Some(TagId(1)), TagId(2), TagId(3)).unwrap().inputs[0], 0x31);
+        assert_eq!(
+            weapon_widget(&heat, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .inputs[0],
+            inputs::METER + 2
+        );
         let battery = entry(WeaponEntryKind::Meter(WeaponState::Battery, [0, 1, 0]));
-        assert_eq!(weapon_widget(&battery, Some(TagId(1)), TagId(2), TagId(3)).unwrap().inputs[0], 0x38);
+        assert_eq!(
+            weapon_widget(&battery, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .inputs[0],
+            inputs::METER + 3
+        );
         let total = entry(WeaponEntryKind::Meter(WeaponState::TotalAmmo, [0, 1, 0]));
         assert_eq!(
-            weapon_widget(&total, Some(TagId(1)), TagId(2), TagId(3)),
-            Err(Skip::MeterState(WeaponState::TotalAmmo))
+            weapon_widget(&total, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .inputs,
+            [inputs::METER, 0, 1, 0]
         );
     }
 
@@ -1911,7 +2005,12 @@ mod tests {
         c.kind = WeaponEntryKind::Crosshair(crosshair_type::AIM, 6);
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)).unwrap().state, ZOOM_STATE);
         c.kind = WeaponEntryKind::Crosshair(crosshair_type::AIM, 0x40);
-        assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::UnzoomedOnly));
+        assert_eq!(
+            weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            UNZOOMED_STATE
+        );
         c.kind = WeaponEntryKind::Crosshair(9, 1);
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::CrosshairType(9)));
     }
@@ -2017,71 +2116,51 @@ mod tests {
     }
 
     #[test]
-    fn reload_shows_with_rounds_in_reserve_at_or_below_the_threshold() {
-        // V: the assault rifle's `wphi`, rounds loaded threshold 10.
-        let st = reload_state(10);
-        assert_eq!((st[17], st[18]), (11, 1));
-        assert!(!gate(&st, 60, 180, 0.0, false), "full");
-        assert!(!gate(&st, 11, 180, 0.0, false));
-        assert!(gate(&st, 10, 180, 0.0, false), "at the threshold, as Halo 1's <=");
-        assert!(gate(&st, 0, 1, 0.0, false));
-        assert!(!gate(&st, 5, 0, 0.0, false), "nothing in reserve: no reload");
-        assert!(!gate(&st, 0, 0, 0.0, false));
-        // Threshold 0 (none set): only an empty magazine; huge ones clamp.
-        assert!(gate(&reload_state(0), 0, 4, 0.0, false));
-        assert!(!gate(&reload_state(0), 1, 4, 0.0, false));
-        assert_eq!(reload_state(i16::MAX)[17], 255);
-        assert_eq!(reload_state(-3)[17], 1);
-    }
-
-    #[test]
-    fn no_ammo_and_battery_depleted_show_with_nothing_to_fire() {
-        assert!(gate(&EMPTY_STATE, 0, 0, 0.0, false));
-        assert!(!gate(&EMPTY_STATE, 1, 0, 0.0, false));
-        assert!(!gate(&EMPTY_STATE, 0, 1, 0.0, false));
-        assert!(gate(&EMPTY_STATE, 0, 0, 1.0, false), "battery spent");
-        assert!(!gate(&EMPTY_STATE, 4, 0, 0.99, false), "battery left");
-        // Hidden where the aim crosshair hides (AIM_STATE's hide words).
-        assert_eq!(&EMPTY_STATE[8..16], &AIM_STATE[8..16]);
-        assert_eq!(reload_state(4)[10..12], AIM_STATE[10..12]);
-        assert_eq!(reload_state(4)[12], 0x26);
-    }
-
-    #[test]
-    fn warnings_become_widgets_where_halo2_has_a_state() {
-        // V: `master rounds`' Reload (type 3, sequence 1 at (-30, 30)), on
-        // the assault rifle (threshold 10).
-        let mut w = entry(WeaponEntryKind::Warning(crosshair_type::RELOAD, 1, 10));
-        w.anchor = Anchor::Centre;
-        w.offset = (-30, 30);
-        w.sequence = 1;
-        w.colour = 0;
-        let x = weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
-        assert_eq!((x.anchor, x.offset, x.registration), (Anchor::Centre, (-30, 30), [0.5, 0.5]));
-        assert_eq!((x.state, x.shader, x.sequence, x.inputs), (reload_state(10), TagId(3), 1, [0; 4]));
-        assert_eq!(x.name, "h1_warning_reload");
-        for t in [crosshair_type::NO_AMMO, crosshair_type::BATTERY_DEPLETED] {
-            w.kind = WeaponEntryKind::Warning(t, 1, 10);
-            assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)).unwrap().state, EMPTY_STATE);
+    fn every_warning_keeps_its_source_condition_flash_and_independent_axes() {
+        use tags::defs::{Defs, Val, from_built};
+        let native = Defs::builtin().group(map::FourCC(*b"nhdt")).unwrap();
+        let mut hud = weapon::Interface::new();
+        for kind in 2..=18 {
+            let mut e = entry(WeaponEntryKind::Warning(kind, 1, 10));
+            e.anchor = Anchor::Centre;
+            e.offset = (-30, 30);
+            e.scale = [1.5, 0.75];
+            e.thresholds = [24, 10, 85, 15];
+            e.flash[8..12].copy_from_slice(&4.05f32.to_le_bytes());
+            e.screen = SPLIT_SCREEN_ONLY;
+            let w = weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+            assert_eq!(w.inputs, [inputs::WARNING, kind as u8, 1, 0]);
+            assert_eq!(w.offset, (-30, 30));
+            assert!(gate_words(&w.state, [0x40, 0, 0, 0]), "vehicle pass");
+            hud.bitmap(&e, w).unwrap();
         }
-        for t in [
-            crosshair_type::LOW_AMMO,
-            crosshair_type::LOW_BATTERY,
-            crosshair_type::RELOADING,
-            crosshair_type::NO_GRENADES,
-            4,
-            5,
-        ] {
-            w.kind = WeaponEntryKind::Warning(t, 1, 10);
-            assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Warning(t)));
+        let record = from_built(native, &hud.build().unwrap()).unwrap();
+        let Some(Val::Block(rows)) = record.get("bitmap_widgets") else {
+            panic!("bitmaps")
+        };
+        assert_eq!(rows.len(), 17);
+        for row in rows {
+            assert_eq!(
+                row.get("h1_screen"),
+                Some(&Val::Int((inputs::SCREEN + 2).into()))
+            );
+            assert_eq!(row.at("effects[0].scale_flags"), Some(&Val::Flags(1)));
+            for (axis, value) in [("block_10", 1.5f32), ("block_24", 0.75)] {
+                let Some(Val::Data(bytes)) = row.at(&format!("effects[0].{axis}")) else {
+                    panic!("{axis}")
+                };
+                assert_eq!(bytes[4..8], value.to_le_bytes());
+                assert_eq!(bytes[8..12], value.to_le_bytes());
+            }
+            let Some(Val::Data(profile)) = row.at("effects[0].block_38") else {
+                panic!("profile")
+            };
+            assert_eq!(profile[..8], [24, 0, 10, 0, 85, 0, 15, 0]);
+            assert_eq!(
+                profile[inputs::FLASH + 8..inputs::FLASH + 12],
+                4.05f32.to_le_bytes()
+            );
         }
-        // Not drawn (overlay flag bit 7) and split screen: no widget.
-        w.kind = WeaponEntryKind::Warning(crosshair_type::RELOAD, 1, 10);
-        w.hidden = true;
-        assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Hidden));
-        w.hidden = false;
-        w.screen = SPLIT_SCREEN_ONLY;
-        assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
     }
 
     #[test]
@@ -2111,15 +2190,18 @@ mod tests {
         assert!(!a(&ZOOM_LEVEL_STATES[0], 0x40 | 0x10) && !a(&ZOOM_LEVEL_STATES[1], 0x40 | 0x10));
         assert_eq!(zoom_widget(&z, 2, Some(TagId(1)), TagId(3)), Err(Skip::ZoomLevel(2)));
         assert_eq!(zoom_widget(&z, 0, None, TagId(3)), Err(Skip::NothingDrawn));
-        // Without bit 2, or on a split screen: none.
+        // Without bit 2 the first sprite is the unzoomed readout.
         z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 0);
         assert_eq!(
-            zoom_widget(&z, 0, Some(TagId(1)), TagId(3)),
-            Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL))
+            zoom_widget(&z, 0, Some(TagId(1)), TagId(3)).unwrap().state,
+            UNZOOMED_STATE
         );
         z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 4);
         z.screen = SPLIT_SCREEN_ONLY;
-        assert_eq!(zoom_widget(&z, 0, Some(TagId(1)), TagId(3)), Err(Skip::SplitScreen));
+        assert_eq!(
+            zoom_widget(&z, 0, Some(TagId(1)), TagId(3)).unwrap().state,
+            ZOOM_LEVEL_STATES[0]
+        );
         // Not a zoom readout.
         let aim = entry(WeaponEntryKind::Crosshair(crosshair_type::AIM, 1));
         assert_eq!(zoom_widget(&aim, 0, Some(TagId(1)), TagId(3)), Err(Skip::NothingDrawn));
@@ -2149,23 +2231,43 @@ mod tests {
         // Colour 0 draws nothing, as for a static.
         o.kind = kind(overlay_shown::ALWAYS, 0);
         o.colour = 0;
-        assert_eq!(weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Invisible));
-        // The split-screen one is left out.
+        assert_eq!(
+            weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            [0; 20]
+        );
+        // The split-screen copy has the same panel state.
         o.colour = 0xffe6f0ff;
         o.screen = SPLIT_SCREEN_ONLY;
-        assert_eq!(weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
+        assert_eq!(
+            weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            WEAPON_PANEL_STATE
+        );
     }
 
     #[test]
-    fn hidden_split_screen_and_empty_entries_have_no_widget() {
+    fn hidden_entries_are_dormant_and_missing_bitmaps_fail() {
         let mut s = entry(WeaponEntryKind::Static(WeaponState::TotalAmmo));
         assert!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)).is_ok());
         assert_eq!(weapon_widget(&s, None, TagId(2), TagId(3)), Err(Skip::NothingDrawn));
         s.screen = SPLIT_SCREEN_ONLY;
-        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
+        assert_eq!(
+            weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            WEAPON_PANEL_STATE
+        );
         s.screen = 1;
         s.hidden = true;
-        assert_eq!(weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Hidden));
+        assert_eq!(
+            weapon_widget(&s, Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state,
+            [0; 20]
+        );
     }
 
     #[test]

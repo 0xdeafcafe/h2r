@@ -37,6 +37,7 @@ pub enum CameraMode {
     Free,
     Orbit,
     Follow,
+    #[serde(alias = "first_person")]
     FirstPerson,
 }
 
@@ -44,6 +45,8 @@ pub enum CameraMode {
 #[serde(deny_unknown_fields)]
 pub struct Camera {
     pub mode: CameraMode,
+    #[serde(default)]
+    pub seat: Option<u8>,
     #[serde(default)]
     pub player: Option<String>,
     /// Yaw and pitch offsets in radians.
@@ -65,6 +68,8 @@ pub struct State {
     pub speed: f64,
     pub seeking: bool,
     pub camera: CameraMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_seat: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_player: Option<String>,
     #[serde(default)]

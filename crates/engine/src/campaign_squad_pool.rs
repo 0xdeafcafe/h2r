@@ -4,7 +4,8 @@
 use crate::datum::{self, DatumArray, flags, layout};
 use crate::memory::{GuestMemory, MemFault};
 
-pub const LIMIT: usize = 384;
+/// a50 has 384 live or script-addressed squads and two further maneuver targets.
+pub const LIMIT: usize = 386;
 const RETAIL_SQUADS: usize = 335;
 const GROUPS: usize = 100;
 const SQUAD_SIZE: usize = 0x98;
@@ -21,7 +22,9 @@ const fn bytes(count: usize, stride: usize) -> u32 {
 pub const SQUAD_BYTES: u32 = bytes(LIMIT, SQUAD_SIZE);
 pub const GROUP_BYTES: u32 = bytes(GROUPS, GROUP_SIZE);
 const ACTORS: u32 = 256;
-const ACTOR_STATE_SIZE: u32 = 24;
+/// Last heard weapon report, after the actor's focus timestamp.
+pub const ACTOR_LAST_REPORT: u32 = 0x18;
+const ACTOR_STATE_SIZE: u32 = ACTOR_LAST_REPORT + 4;
 const ACTOR_STATE_BYTES: u32 = ACTORS * ACTOR_STATE_SIZE;
 pub const GROUP_ALLOCATION_BYTES: u32 = GROUP_BYTES + ACTOR_STATE_BYTES;
 
@@ -127,13 +130,13 @@ mod tests {
         m.set_u32(crate::points::SCENARIO.base, scenario).unwrap();
         publish(&mut m, squad, group, 0x40000).unwrap();
         m.set_u32(group + GROUP_BYTES, 0x7856_3412).unwrap();
-        m.set_u32(scenario + 0x160, 384).unwrap();
+        m.set_u32(scenario + 0x160, LIMIT as u32).unwrap();
         m.set_u32(scenario + 0x158, 75).unwrap();
         prepare(&mut m).unwrap();
         let data = m.u32(squad + layout::DATA).unwrap();
         let bank = DatumArray::at(squad);
-        m.set_u32(squad + layout::HIGH_WATER, 384).unwrap();
-        for index in 344..362 {
+        m.set_u32(squad + layout::HIGH_WATER, LIMIT as u32).unwrap();
+        for index in [344, 361, 384, 385] {
             let row = data + index * SQUAD_SIZE as u32;
             m.set_u16(row, 0x8000).unwrap();
             m.set_u32(row + 0x10, index).unwrap();
@@ -153,6 +156,6 @@ mod tests {
         assert_eq!(m.u32(group + GROUP_BYTES).unwrap(), 0);
         assert_eq!(actor_state(&m, 255).unwrap(), Some(group + GROUP_ALLOCATION_BYTES - ACTOR_STATE_SIZE));
         assert_eq!(actor_state(&m, 256).unwrap(), None);
-        assert!(!holds(385, 75));
+        assert!(!holds(LIMIT + 1, 75));
     }
 }

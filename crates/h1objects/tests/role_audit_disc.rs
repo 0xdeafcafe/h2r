@@ -48,20 +48,12 @@ use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 /// or the referenced tag's group. Checked before [`KNOWN`].
 const ALLOWED: &[Rule] = &[
     (
-        "mode",
-        "materials[].shader",
-        "emblem",
-        "(a) the player biped's emblem material: Halo 2's, which draws the player's own emblem and colours (h1models::emblem)",
-    ),
-    (
         "vehi",
         "*",
         "none-word",
         "(a) half of a reference the definition does not name, holding none (a group word or -1): no value to take from anywhere",
     ),
     ("hlmt", "block_60[].block_bc*", "*", "(a) native damage section response table indexed by object_new"),
-    ("hlmt", "block_60[].tagref_7c", "shad", "(a) native first- or third-person shield shader"),
-    ("hlmt", "block_60[].tagref_84", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_e8", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_f0", "shad", "(a) native first- or third-person shield shader"),
     (
@@ -100,11 +92,12 @@ const ALLOWED: &[Rule] = &[
         "bitm",
         "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
     ),
+    ("stem", "postprocess[].passes[].pass", "spas", "(a) native opaque lighting, shadow and fog passes used by the rebuilt model template"),
     (
         "spas",
         "postprocess[].implementations[].vertex_shader",
         "vrtx",
-        "(a) the scope effect's passes draw with Halo 2's screen-effect vertex shader (program::SCOPE_VERTEX): Halo 1 has no vertex shader tags (hud.md, Scope mask)",
+        "(a) the scope and model passes require native screen-effect and model vertex shaders; Halo 1 has no vertex shader tags",
     ),
 ];
 
@@ -117,26 +110,8 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    (
-        "mode",
-        "materials[].shader",
-        "shad",
-        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
-    ),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
-    ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
-    ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
     ("vehi", "block_2f8[]*", "value", "native vehicle phantom"),
-    ("vehi", "unknown_218", "value", "aircraft controller subtype"),
-    ("vehi", "unknown_244", "value", "vehicle priority comparison at 0x1ab48a"),
-    ("vehi", "unknown_25c", "value", "native vehicle controller coefficient at +0x25c"),
-    ("vehi", "unknown_270", "value", "native vehicle controller coefficient at +0x270"),
-    ("vehi", "unknown_274", "value", "native vehicle controller coefficient at +0x274"),
-    ("vehi", "unknown_278", "value", "native vehicle controller coefficient at +0x278"),
-    ("vehi", "unknown_27c", "value", "native vehicle controller coefficient at +0x27c"),
-    ("vehi", "unknown_280", "value", "native vehicle controller coefficient at +0x280"),
-    ("vehi", "unknown_2b0", "value", "native vehicle controller coefficient at +0x2b0"),
-    ("vehi", "unknown_2bc", "value", "native vehicle controller coefficient at +0x2bc"),
 ];
 
 /// One field still holding a role's value or a retail reference.
@@ -203,12 +178,29 @@ impl Halo1Objects for Audit<'_> {
         self.inner.object(group, name)
     }
 
+    fn fixture(
+        &mut self,
+        tag: &h1map::Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<usize, String> {
+        self.inner.fixture(tag, lighting)
+    }
+
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
         self.inner.first_person_arms(id)
     }
 
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> Result<Vec<tags::collision::Bsp>, String> {
+        self.inner.collision(group, name)
+    }
+
     fn take(&mut self) -> ObjectTags {
         let t = self.inner.tree();
+        assert!(t.model_shader_error.is_none(), "{:?}", t.model_shader_error);
         let first = self.snap.tags.len();
         self.snap.tags.extend(t.tags.iter().cloned());
         self.snap
@@ -387,8 +379,41 @@ fn meaning<'d>(d: &'d StructDef, path: &str) -> Option<&'d str> {
     }
 }
 
+/// Each original slot must point into this tree, to the shader it was
+/// built from. Only the extra slot appended to a player can be an emblem.
+fn campaign_materials(h1: &H1Map, snap: &Snapshot, name: &str, mode: &Record) {
+    let map = &h1.header().name;
+    let model = h1.find(h1map::Group::new(b"mode"), name).expect("source render model");
+    let source = h1map::Block::read(h1.tag_data(model).unwrap(), 0xdc).unwrap();
+    let rows = h1.block(source, 0x20).unwrap();
+    let materials = values_at(mode, "materials[*].shader");
+    let n = source.count as usize;
+    assert!((n..=n+1).contains(&materials.len()), "{map} {name}: shader count");
+    for (k, shader) in materials.into_iter().enumerate() {
+        let Val::Ref { target: Target::Id(id), .. } = shader else {
+            panic!("{map} {name} slot {k}: unresolved shader {shader:?}");
+        };
+        if k == n {
+            let (name, shader) = local_index(*id)
+                .and_then(|i| snap.tags.get(i))
+                .expect("the emblem instance is rebuilt in this tree");
+            assert_eq!(name, h1objects::convert::EMBLEM_SHADER);
+            assert_eq!(shader.group, FourCC(*b"shad"));
+            continue;
+        }
+        let source = h1.tag(h1map::TagRef::read(rows, k * 0x20).unwrap().id).unwrap();
+        let built = h1objects::convert::local_index(*id).and_then(|i| snap.tags.get(i))
+            .unwrap_or_else(|| panic!("{map} {name} slot {k}: {} is not rebuilt", source.name));
+        assert_eq!(built.1.group, FourCC(*b"shad"));
+        assert!(built.0 == source.name ||
+            (built.0.strip_prefix(source.name.as_str()).is_some_and(|s| s.starts_with('_'))
+                && h1convert::shad::chicago_numeric(h1, source).is_some()),
+            "{map} {name} slot {k}: expected {}, got {}", source.name, built.0);
+    }
+}
+
 /// The leaks of one map's sandbox.
-fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
+fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
     let mut out = Vec::new();
     for (k, (tag, conv)) in snap.tags.iter().enumerate() {
         let group = conv.group.to_string();
@@ -402,6 +427,9 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
         };
         let d = Defs::builtin().group(conv.group);
         let record = d.and_then(|d| defs::from_built(d, &conv.root).ok());
+        if conv.group == FourCC(*b"mode") && h1map::disc::CAMPAIGN_LEVELS.contains(&map) {
+            campaign_materials(h1, snap, tag, record.as_ref().expect("read campaign model"));
+        }
         // Retail references.
         let mut refs = Vec::new();
         match (d, &record) {
@@ -412,14 +440,7 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
             let (g, name) = base.name(id).unwrap_or_else(|| {
                 panic!("{map} {group} {tag} {p}: {id:?} is in neither the tree nor the base")
             });
-            // The emblem material is Halo 2's on purpose: it draws the
-            // player's own emblem and colours.
-            let what = if name == h1objects::convert::EMBLEM_SHADER {
-                "emblem".to_owned()
-            } else {
-                g.to_string()
-            };
-            out.push(leak(&p, what, name.to_owned()));
+            out.push(leak(&p, g.to_string(), name.to_owned()));
         }
         // Role values still there.
         let Some(r) = &record else {
@@ -541,6 +562,7 @@ fn campaign_objects(h1: &H1Map, base: &Base) -> Snapshot {
             _ => continue,
         }.unwrap_or_else(|e| panic!("{} {}: {e}", tag.group, tag.name));
     }
+    assert!(conv.tree.model_shader_error.is_none(), "{:?}", conv.tree.model_shader_error);
     Snapshot { tags: conv.tree.tags, roles: conv.tree.role_fields }
 }
 
@@ -585,7 +607,7 @@ fn every_role_leak_is_classified() {
         };
         assert!(!snap.tags.is_empty(), "{name}: no objects converted");
         let noted: usize = snap.roles.iter().map(|e| e.1.len()).sum();
-        let got = audit(name, &base, &snap);
+        let got = audit(name, &h1, &base, &snap);
         println!(
             "{name} on {base_name}: {} tags, {noted} role values noted, {} leaks",
             snap.tags.len(),
@@ -647,6 +669,14 @@ fn paths_normalise_and_rules_match_by_prefix() {
     };
     assert!(rule(KNOWN, &l).is_none());
     assert!(rule(ALLOWED, &l).is_none());
+    let model_shader = Leak {
+        group: "mode".into(),
+        path: "materials[].shader".into(),
+        what: "shad".into(),
+        ..l
+    };
+    assert!(rule(KNOWN, &model_shader).is_none());
+    assert!(rule(ALLOWED, &model_shader).is_none());
     assert!(matches("unknown_*", "unknown_1c"));
     assert!(!matches("unknown_1", "unknown_1c"));
 }

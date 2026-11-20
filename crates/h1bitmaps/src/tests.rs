@@ -467,6 +467,23 @@ fn a_base_takes_its_masks_red_as_alpha() {
     assert_eq!(red_into_alpha(&base, &base_px, &mask, &mask_px).unwrap().1, px);
 }
 
+/// A multi-image base takes the mask image of its own index when the
+/// counts agree (b30's two-image `light fixtures` over its two-image
+/// `multi`), a single-image mask's only image otherwise; any other
+/// pairing, or an empty bitmap, is refused.
+#[test]
+fn a_multi_image_base_pairs_its_mask_images_by_index() {
+    use crate::mask::paired_image;
+    let same = paired_image(2, 2).unwrap();
+    assert_eq!((same(0), same(1)), (0, 1));
+    let one = paired_image(3, 1).unwrap();
+    assert_eq!((one(0), one(1), one(2)), (0, 0, 0));
+    assert!(paired_image(2, 3).is_err());
+    assert!(paired_image(3, 2).is_err());
+    assert!(paired_image(0, 1).is_err());
+    assert!(paired_image(1, 0).is_err());
+}
+
 /// A DXT1 image (red and blue endpoints, each row the four palette
 /// entries): the result keeps its colours exactly and takes `gain` times
 /// each texel's brightest channel as alpha (255, 255, 170, 170 along a

@@ -28,11 +28,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          and its timed points need the after continuation",
     ),
     (
-        "render-loop",
-        "*",
-        "off by default; the Rust ports park in Rust continuations around their guest calls",
-    ),
-    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
@@ -104,8 +99,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "native particle simulation on the game thread, with post-step hooks around the guest bodies",
     ),
+    ("campaigns", "*", "reads campaign selection and updates profile saves on the game thread"),
     ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
     ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
+    ("h1-drive", "VEHICLE_CONTACT_FORCES", AFTER),
+    ("h1-flag", "*", "steps source cloth points around the guest solver on the simulation thread"),
     ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
     ("h1-conversations", "*", "uses the interpreter and tracks actor construction across guest calls"),
     ("h1-recordings", "UNIT_APPLY_CONTROL", "applies recorded input through a guest continuation"),
@@ -127,6 +125,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("h1-script-builtins", "HS_FALSE_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-script-builtins", "HS_CONSTANT_LONG_EVALUATOR", "evaluates the script on its guest interpreter thread"),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
+    ("h1-hud-text", "GAME_TICK", AFTER),
+    ("h1-hud-text", "GAME_ACTIVATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
     ("h1-precision", "GAME_ACTIVATE", AFTER),
@@ -225,20 +225,15 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "EMBLEM_WIDGET_DRAW",
         "consumes the shared card refresh flag and updates the live widget",
     ),
-    // Local bots: the game thread's frame, sound and players screen. Around
-    // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
-    // hidden; the render thread never meets these points.
+    // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
+    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "SIMULATION_SLOT_ACTION",
         "phantoms sample their pad once per simulation tick: the game thread's tick, \
          answered asynchronously",
     ),
-    ("bots", "SOUND_UPDATE", AFTER),
-    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
-    ("bots", "SOUND_OWNER_USER", AFTER),
-    ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
         "ITEM_SET_UNIT",
@@ -266,22 +261,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     (
         "bots",
-        "PLAYERS_SCREEN_UNJOINED",
-        "a players screen event on the game thread; signs a bot in with guest calls",
-    ),
-    ("bots", "PLAYERS_SCREEN_UPDATE", AFTER),
-    (
-        "bots",
-        "PREGAME_LOBBY_INPUT",
-        "a lobby input event on the game thread; notes a Start press for the start-state log",
-    ),
-    (
-        "bots",
-        "LOBBY_ROW_PRESS",
-        "a lobby list event on the game thread; notes a Start Game press for the start-state log",
-    ),
-    (
-        "bots",
         "SESSION_GAME_START",
         "the session's game start on the game thread; makes this console the host when phantoms \
          are planned",
@@ -291,7 +270,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
+    use crate::registration::tests::{ALL_ON, Case, NATIVE_OFF, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -321,11 +300,16 @@ mod tests {
         // screen-quad and HUD-quad befores.
         for switches in [
             String::new(),
-            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
+            format!("{ALL_ON},{NATIVE_OFF}"),
             ALL_ON.to_owned(),
             format!("{ALL_ON},render-census"),
         ] {
-            let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
+            let mut features = registry(&Case::full(&switches));
+            features.add(&crate::campaign_menu::Campaigns {
+                state: std::sync::Arc::new(crate::campaign_menu::tests::state()),
+                picker: std::sync::Arc::new(|| 0),
+            }).unwrap();
+            let plan = features.build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),

@@ -1,4 +1,4 @@
-//! `Device::set_draw_sharing` (`H2_D3D_DRAW_SHARING`): draws that read the
+//! `Device::set_draw_sharing`: draws that read the
 //! same state arrays as the pushed snapshot share it, and a vertex program
 //! the game switches back to gets its earlier microcode copy. Only which
 //! allocations back a draw changes: the backend sees the same calls, the

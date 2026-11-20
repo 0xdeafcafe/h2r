@@ -3,7 +3,6 @@ import { A } from "@solidjs/router";
 import { createClip, type Clip, type ClipInput } from "../api/films";
 import { clock } from "../lib/format";
 import { clipShareUrl, theaterHref } from "../routes";
-import { TICKS_PER_SECOND } from "../state/frames";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import type { TickRange } from "../state/replay";
@@ -13,6 +12,8 @@ export default function ClipEditor(props: {
   game: string;
   bounds: TickRange;
   tick: () => number;
+  hz: number;
+  clipTick: (tick: number) => number;
   marks: ClipMarks;
   setMarks: (m: ClipMarks) => void;
   view: () => Pick<ClipInput, "pov" | "camera">;
@@ -23,11 +24,11 @@ export default function ClipEditor(props: {
   const [error, setError] = createSignal("");
   const [created, setCreated] = createSignal<Clip>();
   const [copied, setCopied] = createSignal("");
-  const problem = () => clipRangeError(props.marks, props.bounds);
+  const problem = () => clipRangeError(props.marks, props.bounds, props.hz);
   const name = () => title().trim().replace(/\s+/g, " ");
   const titleTooLong = () => Array.from(name()).length > 60;
-  const duration = () => ((props.marks.to_tick ?? 0) - (props.marks.from_tick ?? 0)) / TICKS_PER_SECOND;
-  const time = (tick: number | null) => tick === null ? "—" : clock((tick - props.bounds.from_tick) / TICKS_PER_SECOND);
+  const duration = () => ((props.marks.to_tick ?? 0) - (props.marks.from_tick ?? 0)) / props.hz;
+  const time = (tick: number | null) => tick === null ? "—" : clock((tick - props.bounds.from_tick) / props.hz);
   const setMark = (key: keyof ClipMarks) => {
     setError("");
     props.setMarks({ ...props.marks, [key]: Math.round(props.tick()) });
@@ -41,7 +42,7 @@ export default function ClipEditor(props: {
     setError("");
     try {
       const clip = await createClip({ api: live.server().api, aud: wk.id, me }, props.game, {
-        from_tick, to_tick, title: name(), ...props.view(),
+        from_tick: props.clipTick(from_tick), to_tick: props.clipTick(to_tick), title: name(), ...props.view(),
       });
       setCreated(clip);
       props.setMarks({ from_tick: null, to_tick: null });

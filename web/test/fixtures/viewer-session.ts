@@ -18,6 +18,7 @@ const now = performance.now();
 for (const [i, tick] of [90, 120, 150].entries()) frameHub.push(frame(tick), now - 3000 + i * 1000);
 
 const api = live.api();
+api.hostFilm = async () => null;
 api.chunks = async () => null;
 let requests = 0;
 let deliverRecording!: (frames: Frame[]) => void;
@@ -46,7 +47,7 @@ try {
 
   session.seek(9120);
   setGame((g) => ({ ...g, status: "ended" }));
-  await Promise.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(requests, 1);
   assert.equal(session.isLive(), false);
   assert.equal(session.tick(), 9120);

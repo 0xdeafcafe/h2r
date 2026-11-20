@@ -28,7 +28,12 @@ is round-to-nearest with traps masked: exactly the environment a
 non-strict compiler assumes. The guarded path is `always_inline`; the
 integer authority sits in a `noinline, cold` function per instruction.
 On arm64 the packed forms check and compute all four lanes with NEON
-(`h2sn_arith4`), using the same per-lane guards and PE reconstruction.
+(`h2sn_arith4`), using the same per-lane guards and PE reconstruction. On
+x86-64 the packed forms test all four lanes with SSE2 integer operations
+and issue one packed instruction once PE is already set; with PE clear they
+take the per-lane path. A register-only run of generated SSE samples the
+host mode once at its first arithmetic op (`H2_FP_SAMPLE`); the guest
+MXCSR and operand guards still run on every instruction.
 
 Each operand must be signed zero or a normal binary32 with unbiased exponent
 in [-60,60]. Division additionally requires a nonzero divisor; sqrt requires
@@ -51,9 +56,11 @@ ignore that bit, as the existing reference does.
 The float operation rounds once to binary32. Its sticky PE is reconstructed
 without relying on host flags:
 
-- Add/sub uses binary64 FastTwoSum. The exact sum is `s + e`; PE is set
-  if `e != 0` or the widened binary32 result differs from `s`. The error
-  term matters when operand exponents are far apart.
+- PE is sticky, and within the guard's range it is the only exception
+  possible, so once the guest's PE is set no reconstruction runs.
+- Add/sub uses FastTwoSum in binary32: for `|x| >= |y|` the subtraction
+  `r - x` is exact, so it equals `y` iff `x + y` was exact. Even the
+  smallest residual here is normal.
 - A product of two binary32 values is exact in binary64 (at most 48 bits).
   Compare it with the widened result.
 - Division is exact iff the rounded quotient times the divisor equals the

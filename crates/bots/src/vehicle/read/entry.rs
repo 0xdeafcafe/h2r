@@ -93,6 +93,66 @@ pub(super) fn hull(m: &dyn GuestMemory, mode: u32) -> R<Option<[f32; 2]>> {
     Ok(((0.15..=7.0).contains(&width) && (0.2..=8.0).contains(&height)).then_some([width, height]))
 }
 
+/// The rendered camera marker of a unit in its current world pose. When a
+/// model has no camera marker or head node pose (common on playerless
+/// hosts), use the centre of its upper collision cap. The two biped heights
+/// and radius at +0x268 are verified in docs/formats/tag-definitions.md.
+/// The cap moves with the biped's crouch amount and its parent vehicle.
+pub fn unit_eye(m: &dyn GuestMemory, handle: DatumHandle, crouch: f32) -> R<Option<Vec3>> {
+    let Some((objects::BIPED, body)) = objects::get(m, handle)? else {
+        return Ok(None);
+    };
+    let Some(id) = body.definition(m)? else {
+        return Ok(None);
+    };
+    let Some(tag) = Tags.entry(m, id)? else {
+        return Ok(None);
+    };
+    let unit = tag.address(m)?;
+    if unit == 0 {
+        return Ok(None);
+    }
+    if let Some(at) = camera_marker(m, body, unit).ok().flatten() {
+        return Ok(Some(at));
+    }
+    let standing = m.f32(unit + 0x268)?;
+    let kneeling = m.f32(unit + 0x26c)?;
+    let radius = m.f32(unit + 0x270)?;
+    if ![standing, kneeling, radius, crouch]
+        .iter()
+        .all(|x| x.is_finite())
+        || !(0.0..=1.0).contains(&crouch)
+        || !(standing >= kneeling && kneeling > radius && radius > 0.0)
+    {
+        return Ok(None);
+    }
+    let [origin, _, up] = super::world_pose(m, body)?;
+    let height = standing + crouch * (kneeling - standing) - radius;
+    let at = std::array::from_fn(|i| origin[i] + height * up[i]);
+    Ok(at.iter().all(|x| x.is_finite()).then_some(at))
+}
+
+fn camera_marker(m: &dyn GuestMemory, body: objects::Body, unit: u32) -> R<Option<Vec3>> {
+    let name = m.u32(unit + 0xd4)?;
+    if name == 0 {
+        return Ok(None);
+    }
+    let Some(mode) = model(m, unit)? else {
+        return Ok(None);
+    };
+    if let Some((count, base)) = markers(m, mode, name)? {
+        for j in 0..count {
+            let marker = base + j * 0x24;
+            if (count == 1 || m.u16(marker)? == 0xffff)
+                && let Some((eye, _)) = world_marker(m, body, marker)?
+            {
+                return Ok(Some(eye));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn markers(m: &dyn GuestMemory, mode: u32, name: u32) -> R<Option<(u32, u32)>> {
     // mode.txt: marker groups at +0x58, 0xc each; markers at group+4,
     // 0x24 each. A group can have several entry points (e.g. Scorpion).

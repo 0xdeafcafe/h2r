@@ -16,12 +16,16 @@ pub enum Metric {
     WorkerRoundTrips, ReferencePasses, DisplayPasses,
     WalkExamined, WalkSuppressed, WalkRefusedInputs, WalkRefusedReservation,
     BuildsSkipped, WalkSections, EntryPassesSkipped, SectionsPrepared, StateCallsSkipped, CacheHits, CacheMisses,
+    /// Committed recordings with a private command buffer (`record_ranges`):
+    /// each also ends the open encoder and adds a render pass of its own.
+    CommandBuffers,
 }
-const METRICS: [&str; 29] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+const METRICS: [&str; 30] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
     "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
     "worker_round_trips", "reference_passes", "display_passes",
     "walk_examined", "walk_suppressed", "walk_refused_inputs", "walk_refused_reservation",
-    "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped", "cache_hits", "cache_misses"];
+    "builds_skipped", "walk_sections", "entry_passes_skipped", "sections_prepared", "state_calls_skipped", "cache_hits", "cache_misses",
+    "command_buffers"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;

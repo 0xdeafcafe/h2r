@@ -12,21 +12,21 @@
 //! default one with the labels moved to where the layout puts the actions.
 //!
 //! Every hook is a wrapper at a function entry. Rows and bytes 0 to 3 go to
-//! the generated original untouched. Set `H2_NO_LAYOUTS=1` to skip all of it.
+//! the generated original untouched.
 //! The logic is written over the small [`Gm`] trait so it is tested without
 //! a guest.
 //!
 //! The same install also registers the "Controller Speaker" row on the
-//! Controls screen (`crate::speaker_row`, `H2_NO_SPEAKER_ROW=1` to skip it):
+//! Controls screen (`crate::speaker_row`):
 //! both features grow a list through the same constructor, fill rows of the
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
 //! It also registers the "Video" row on the top-level Settings list (after
 //! Player Profiles and Game Variants) and the Video screen that row opens
-//! (`crate::video_screen`, `H2_NO_VIDEO_SCREEN=1` skips both): a Controls
+//! (`crate::video_screen`): a Controls
 //! screen whose rows are Field of View (with the first-person camera hook
-//! that applies it, `crate::fov_row`; `H2_NO_FOV_ROW=1` skips both), Frame
+//! that applies it, `crate::fov_row`), Frame
 //! Rate, Resolution, Lighting and Mute Button, through the same entries plus the
 //! screen header builder and the Settings list's row text and row chosen.
 //!
@@ -172,14 +172,11 @@ pub fn list_count(name: u32, count: u32) -> u32 {
 /// Both list screens push element size 4; the layout list's count happens to
 /// be 4 as well, which is how an earlier version came to grow the element
 /// size instead and left the list at four rows.
-pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, layouts: bool, speaker: bool) -> u32 {
+pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, speaker: bool) -> u32 {
     let Some(name) = m.u32(esp.wrapping_add(4)) else {
         return eax;
     };
-    let mut n = eax;
-    if layouts {
-        n = list_count(name, n);
-    }
+    let mut n = list_count(name, eax);
     if speaker {
         n = speaker_row::small_list_count(name, n);
     }
@@ -286,8 +283,8 @@ pub fn strings() -> Vec<(u32, &'static str)> {
 }
 
 /// Every string served with these features on.
-pub fn served_strings(layouts: bool, speaker: bool) -> Vec<(u32, &'static str)> {
-    let mut v = if layouts { strings() } else { Vec::new() };
+pub fn served_strings(speaker: bool) -> Vec<(u32, &'static str)> {
+    let mut v = strings();
     if speaker {
         v.push((speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT));
         v.push((speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT));
@@ -543,10 +540,10 @@ fn announce(seen: &AtomicBool, name: &str) {
     }
 }
 
-/// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
-/// and the rows of `model` (`crate::video_screen::model`): the Controller
-/// Speaker row on Controls, the Video row on Settings and the screen it opens,
-/// and the camera hook when the Video screen has the Field of View row.
+/// Install every hook: the button layouts, and the rows of `model`
+/// (`crate::video_screen::model`): the Controller Speaker row on Controls,
+/// the Video row on Settings and the screen it opens, and the camera hook
+/// when the Video screen has the Field of View row.
 /// Every row's count, text and press come from the model. A missing
 /// original (an image with other entries) skips that hook and says so.
 pub fn install(
@@ -555,7 +552,6 @@ pub fn install(
     model: Option<Arc<Model>>,
     theater: Option<crate::theater_ui::Theater>,
 ) -> anyhow::Result<()> {
-    let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
     let has = |list, kind| {
         model
             .as_ref()
@@ -569,6 +565,7 @@ pub fn install(
     });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
+    let with_campaigns = crate::campaign_menu::class().is_some();
     // The Voice screen, and our rows on the pause menus (crate::pause_menu).
     let with_voice = model
         .as_ref()
@@ -576,36 +573,18 @@ pub fn install(
     let with_pause = model
         .as_ref()
         .is_some_and(|m| !m.rows(List::GameSettings).is_empty());
-    let with_custom_games = custom_games::row_enabled();
     let with_theater = theater.is_some();
-    let with_live_menu = with_custom_games || with_theater;
     let live_menu = move || custom_games::Menu {
-        custom_games: with_custom_games,
-        coop: with_custom_games && custom_games::coop_row_enabled(),
+        custom_games: true,
+        coop: custom_games::coop_row_enabled(),
         theater: with_theater,
     };
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
-    // The campaign picker (docs/halo1/campaign-picker.md), when a second
-    // campaign is installed.
-    let with_campaigns = crate::campaign_menu::class().is_some();
     // The Halo 1 options' texts (crate::h1_options): the campaign page's
     // option rows and the Game Setup row and screen, wherever settings are.
     let with_h1_options = model.is_some();
-    if !layouts
-        && !with_speaker
-        && !with_controls
-        && !with_video
-        && !with_voice
-        && !with_pause
-        && !with_live_menu
-        && !with_skulls
-        && !with_campaigns
-        && !with_h1_options
-    {
-        return Ok(());
-    }
     let model = model.unwrap_or_else(|| {
         let store = Arc::new(settings::Store::defaults(&[]));
         Arc::new(Model::new(store, Vec::new(), Vec::new(), 0..0).expect("an empty model"))
@@ -621,7 +600,7 @@ pub fn install(
     let extra_rows =
         model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     // The Live menu's (tag copies, item widgets, pane word) in our data.
-    let mut live = (0u32, 0u32, 0u32);
+    let live: (u32, u32, u32);
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
@@ -629,11 +608,9 @@ pub fn install(
         if extra_rows > 0 {
             mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
         }
-        let mut served = served_strings(layouts, with_speaker);
+        let mut served = served_strings(with_speaker);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
-        if with_live_menu {
-            served.extend(custom_games::strings());
-        }
+        served.extend(custom_games::strings());
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
@@ -646,18 +623,14 @@ pub fn install(
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
-        if with_live_menu {
-            // The Live menu's tag copies, item widgets and pane word: fixed
-            // places, reused each time a map load brings the tag back.
-            live = (
-                alloc,
-                alloc + custom_games::TAG_SPACE,
-                alloc
-                    + custom_games::TAG_SPACE
-                    + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
-            );
-            alloc = live.2 + 0x100;
-        }
+        // The Live menu's tag copies, item widgets and pane word: fixed
+        // places, reused each time a map load brings the tag back.
+        live = (
+            alloc,
+            alloc + custom_games::TAG_SPACE,
+            alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
+        );
+        alloc = live.2 + 0x100;
         ALLOC.store(alloc, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
     }
@@ -702,15 +675,15 @@ pub fn install(
     // closure deadlocks.
     let wanted: Vec<u32> = shared_hooks
         .into_iter()
-        .chain(layout_hooks.into_iter().filter(|_| layouts))
+        .chain(layout_hooks)
         .chain(speaker_hooks.into_iter().filter(|_| with_small))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
         .chain(video_hooks.into_iter().filter(|_| with_video))
-        .chain(text_hooks.into_iter().filter(|_| layouts))
+        .chain(text_hooks)
         // Also for our classes' taller lists (`list_class::extra_items`).
         .chain(controls_hooks)
-        .chain(live_menu_hooks.into_iter().filter(|_| with_live_menu))
-        .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
+        .chain(live_menu_hooks)
+        .chain(custom_games_hooks)
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = wanted
@@ -743,8 +716,9 @@ pub fn install(
                 announce(&seen, "layouts: list constructor");
                 let (n, name) = {
                     let mem = ctx.runtime().memory();
-                    (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
+                    (grown_count(&*mem, cpu.esp, cpu.eax, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
+                let n = if with_campaigns { crate::campaign_menu::options_capacity(name, n) } else { n };
                 let n = video_screen::list_count(&model, name, n);
                 if with_video && video_screen::settings_third_item(name, n) {
                     // Slot 19 reports a third item widget for our row.
@@ -862,7 +836,7 @@ pub fn install(
                 // The Xbox Live menu: our row shows our pane, Content
                 // Download (moved down one) its own. The row is handed over
                 // in our word, not written back through the caller's pointer.
-                if with_live_menu && id == custom_games::SCREEN_ID {
+                if id == custom_games::SCREEN_ID {
                     let tag = LIVE_TAG.load(Ordering::SeqCst);
                     let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
                         mem.u32(tag + 0x20).unwrap_or(0)
@@ -881,7 +855,7 @@ pub fn install(
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, PANE_SET));
                 }
-                let added = layouts && id == SCREEN_ID && layout_of_row(row).is_some();
+                let added = id == SCREEN_ID && layout_of_row(row).is_some();
                 if !added {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, PANE_SET));
@@ -929,9 +903,9 @@ pub fn install(
                         mem.u32(screen).is_ok_and(crate::list_class::has_layout),
                     )
                 };
-                let wanted = (layouts && id == SCREEN_ID)
+                let wanted = id == SCREEN_ID
                     || (extra_rows > 0 && id == speaker_row::SCREEN_ID)
-                    || (with_live_menu && id == custom_games::SCREEN_ID)
+                    || id == custom_games::SCREEN_ID
                     || ours;
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
@@ -1069,7 +1043,7 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
                         };
                         (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
-                    } else if with_live_menu && vtable == custom_games::HANDLER_VTABLE {
+                    } else if vtable == custom_games::HANDLER_VTABLE {
                         // Extra datums beyond the visible slots scroll normally.
                         let n = live_menu().visible() - custom_games::VANILLA_ITEMS;
                         let mut g = live_slots.lock().unwrap_or_else(|e| e.into_inner());
@@ -1272,9 +1246,6 @@ pub fn install(
                     };
                     theater.open(mask.trailing_zeros(), player);
                     return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
-                }
-                if !with_custom_games {
-                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
@@ -1482,25 +1453,12 @@ pub fn install(
     // press), with the level select's layout.
     if with_skulls {
         let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
-        let (block, line) =
-            skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
-        if let Some(line) = line {
-            eprintln!("{line}");
-        }
-        let (layout, picture, lines) = skulls_menu::placement(|k| std::env::var(k).ok());
-        for line in lines {
-            eprintln!("{line}");
-        }
-        let (flow, line) = crate::skulls_screen::PageFlow::from_env();
-        if let Some(line) = line {
-            eprintln!("{line}");
-        }
-        let flow = Arc::new(flow);
+        let flow = Arc::new(crate::skulls_screen::PageFlow::default());
         let class = crate::skulls_screen::class(
             Arc::clone(&screen),
-            block,
-            layout,
-            picture,
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
             Arc::clone(&flow),
         );
         match registry.add(&class) {
@@ -1530,9 +1488,9 @@ pub fn install(
         )));
         match registry.add(&crate::skulls_mp_row::mp_class(
             Arc::clone(&mp),
-            block,
-            layout,
-            picture,
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
         )) {
             Ok(true) => {}
             Ok(false) => eprintln!("skulls menu: features.skulls-mp-screen is off"),
@@ -1545,7 +1503,7 @@ pub fn install(
     if let Some(class) = crate::campaign_menu::class() {
         match registry.add(&class) {
             Ok(true) => {}
-            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; the level select opens as retail"),
+            Ok(false) => eprintln!("campaigns: features.campaigns-screen is off; Campaign uses the retail entry"),
             Err(e) => eprintln!("campaigns: {e}"),
         }
     }
@@ -1566,11 +1524,9 @@ pub fn install(
             .add(&rows)
             .map_err(|e| anyhow::anyhow!("controls rows: {e}"))?;
     }
-    if layouts {
-        registry
-            .add(&LayoutValueText)
-            .map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
-    }
+    registry
+        .add(&LayoutValueText)
+        .map_err(|e| anyhow::anyhow!("layouts: {e}"))?;
     // The retail Controls row text, ported (crate::controls_text); our
     // rows' hooks and the layouts' value pair run around it.
     registry
@@ -2065,9 +2021,9 @@ mod tests {
 
     #[test]
     fn strings_are_written_nul_terminated_and_addressable() {
-        for (layouts, speaker) in [(true, true), (true, false), (false, true)] {
+        for speaker in [true, false] {
             let mut f = Fake::default();
-            let all = served_strings(layouts, speaker);
+            let all = served_strings(speaker);
             let (addrs, end) = write_strings(&mut f, 0x1000, &all).unwrap();
             assert_eq!(addrs.len(), all.len());
             assert_eq!(
@@ -2083,15 +2039,15 @@ mod tests {
                 assert_eq!(b[text.len()], 0);
             }
         }
-        assert_eq!(served_strings(true, false).len(), 6);
+        assert_eq!(served_strings(false).len(), 6);
         assert_eq!(
-            served_strings(false, true),
+            served_strings(true)[6..],
             [
                 (speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT),
                 (speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT),
             ]
         );
-        let mut ids: Vec<u32> = served_strings(true, true).iter().map(|(i, _)| *i).collect();
+        let mut ids: Vec<u32> = served_strings(true).iter().map(|(i, _)| *i).collect();
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 8);
@@ -2111,27 +2067,23 @@ mod tests {
         // The layout list: count 4 in EAX, element size 4 at [esp+8]. Only
         // EAX grows, so the element size stays as the game set it.
         let f = list_call(LIST_NAME);
-        assert_eq!(grown_count(&f, 0x1000, 4, true, true), 7);
+        assert_eq!(grown_count(&f, 0x1000, 4, true), 7);
         assert_eq!(f.u32(0x1008), Some(4));
         // The Controls list: count 6; the model adds its rows after
         // (`video_screen::list_count`).
         let f = list_call(speaker_row::LIST_NAME);
-        assert_eq!(grown_count(&f, 0x1000, 6, true, true), 6);
+        assert_eq!(grown_count(&f, 0x1000, 6, true), 6);
         // The smaller Controls screen's list: count 6, one more too.
         let f = list_call(speaker_row::SMALL_LIST_NAME);
-        assert_eq!(grown_count(&f, 0x1000, 6, false, true), 7);
-        assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
-        assert_eq!(
-            grown_count(&list_call(LIST_NAME), 0x1000, 4, false, true),
-            4
-        );
+        assert_eq!(grown_count(&f, 0x1000, 6, true), 7);
+        assert_eq!(grown_count(&f, 0x1000, 6, false), 6);
         // An element size that happens to match does not count.
         let f = list_call(speaker_row::LIST_NAME);
-        assert_eq!(grown_count(&f, 0x1000, 4, true, true), 4);
+        assert_eq!(grown_count(&f, 0x1000, 4, true), 4);
         // Any other list, or unreadable memory: unchanged.
-        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 4, true, true), 4);
-        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 6, true, true), 6);
-        assert_eq!(grown_count(&Fake::default(), 0x1000, 4, true, true), 4);
+        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 4, true), 4);
+        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 6, true), 6);
+        assert_eq!(grown_count(&Fake::default(), 0x1000, 4, true), 4);
     }
 
     #[test]

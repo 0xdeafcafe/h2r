@@ -19,9 +19,12 @@
 //! permutation whose chunks are those samples, in order, cut at
 //! [`CHUNK_LEN`] (a whole number of blocks for mono and stereo).
 
+use std::collections::{HashMap, HashSet, VecDeque};
+
 use h1models::Converted;
-use map::build::{Block, TagSet};
+use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
+use tags::sound::h1_promotion;
 
 use crate::gestalt::{Chunk, ChunkPointer, SoundGestalt, blocks};
 use crate::h1::{Compression, Sound};
@@ -73,7 +76,7 @@ pub mod snd {
     pub const PITCH_RANGE_COUNT: usize = 0xa;
     /// `u8` scale index.
     pub const SCALE: usize = 0xb;
-    /// `u8` promotion index, `ff` none.
+    /// Nonnegative signed byte promotion index. `ff` means none.
     pub const PROMOTION: usize = 0xc;
     /// `u8` custom playback index, `ff` none.
     pub const CUSTOM_PLAYBACK: usize = 0xd;
@@ -102,6 +105,8 @@ pub struct PermutationOut {
     /// converted permutation gets its own length, so a script's wait on
     /// its sound (`sound_impulse_language_time`) never ends at once.
     pub time_ms: u16,
+    /// The authored 30 Hz mouth aperture curve.
+    pub mouth: Vec<u8>,
     /// The samples, cut into chunks of at most [`CHUNK_LEN`].
     pub chunks: Vec<Vec<u8>>,
 }
@@ -135,8 +140,15 @@ pub struct ConvertedSound {
     pub scale: [u8; 0x14],
     /// Pitch ranges.
     pub ranges: Vec<RangeOut>,
-    /// What had no Halo 2 place and was dropped (promotions, lip-sync).
-    pub dropped: Vec<String>,
+    pub promotion: Option<Promotion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Promotion {
+    pub count: u16,
+    pub millis: u32,
+    /// Another authored sound, or none for a rate-limited sound.
+    pub target: Option<String>,
 }
 
 /// Decibels from a linear gain; 0 and 1 are 0 dB.
@@ -251,10 +263,24 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
     put_f32(&mut scale, 0x0c, if zs == 0.0 { 1.0 } else { zs });
     put_f32(&mut scale, 0x10, if os == 0.0 { 1.0 } else { os });
 
-    let mut dropped = Vec::new();
-    if sound.promotion_id().is_some() {
-        dropped.push(format!("promotion after {}", sound.promotion_count));
+    if sound.promotion_id().is_some() && sound.promotion_name.is_none() {
+        return Err(Error::Invalid("unresolved promotion sound datum".into()));
     }
+    if sound.promotion_count != 0
+        && (sound.promotion_count > i16::MAX as u16
+            || sound
+                .promotion_millis
+                .checked_mul(u32::from(sound.promotion_count) + 1)
+                .is_none_or(|v| v > i32::MAX as u32))
+    {
+        return Err(Error::Invalid("invalid promotion count or duration".into()));
+    }
+    let promotion =
+        (sound.promotion_count != 0 || sound.promotion_name.is_some()).then(|| Promotion {
+            count: sound.promotion_count,
+            millis: sound.promotion_millis,
+            target: sound.promotion_name.clone(),
+        });
     let single = sound.pitch_ranges.len() == 1;
     let mut ranges = Vec::with_capacity(sound.pitch_ranges.len());
     for (r, range) in sound.pitch_ranges.iter().enumerate() {
@@ -270,8 +296,22 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
         let mut permutations = Vec::new();
         for chain in sound.chains(r)? {
             let first = &range.permutations[chain[0]];
-            if chain.iter().any(|&i| range.permutations[i].mouth.size > 0) {
-                dropped.push(format!("lip-sync of {}", first.name));
+            for &i in &chain {
+                let p = &range.permutations[i];
+                if p.mouth.size as usize != p.mouth_samples.len() {
+                    return Err(Error::Invalid(format!(
+                        "{}: mouth data length mismatch",
+                        p.name
+                    )));
+                }
+            }
+            // Retail Xbox dialogue has one envelope per playable permutation.
+            // A split sound would need to rebase segment-local sample times.
+            if chain.len() > 1 && chain.iter().any(|&i| range.permutations[i].mouth.size > 0) {
+                return Err(Error::Unsupported(format!(
+                    "{}: mouth data on a split sound",
+                    first.name
+                )));
             }
             let bytes = crate::decode::chain_bytes(sound, file, r, &chain)?;
             if bytes.len() % block != 0 {
@@ -287,6 +327,7 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
                 name: first.name.clone(),
                 skip_fraction: (first.skip_fraction.clamp(0.0, 1.0) * 32767.0).round() as i16,
                 gain: decibels(first.gain).round().clamp(-128.0, 127.0) as i8,
+                mouth: first.mouth_samples.clone(),
                 chunks: bytes.chunks(CHUNK_LEN).map(<[u8]>::to_vec).collect(),
             });
         }
@@ -309,7 +350,7 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
         playback,
         scale,
         ranges,
-        dropped,
+        promotion,
     })
 }
 
@@ -324,6 +365,25 @@ impl ConvertedSound {
     /// Appends this sound's entries to `gestalt`, its chunks to `set` as raw
     /// resources, and returns its `snd!`.
     pub fn add_to(self, gestalt: &mut SoundGestalt, set: &mut TagSet) -> Result<Converted> {
+        let snd_group = FourCC(*b"snd!");
+        let target = self
+            .promotion
+            .as_ref()
+            .and_then(|p| p.target.as_ref())
+            .map(|target| {
+                set.converted(snd_group, target)
+                    .ok_or_else(|| Error::Invalid(format!("uninstalled promotion sound {target}")))
+            })
+            .transpose()?;
+        let promotion = self.promotion.clone();
+        let mut sound = self.add_samples(gestalt, set)?;
+        if let Some(promotion) = promotion {
+            write_promotion(&mut sound.root, &promotion, target);
+        }
+        Ok(sound)
+    }
+
+    fn add_samples(self, gestalt: &mut SoundGestalt, set: &mut TagSet) -> Result<Converted> {
         let mut header = self.header;
         let playback = gestalt.push(blocks::PLAYBACKS, &self.playback, true);
         put_u16(&mut header, snd::PLAYBACK, index16("playback", playback)?);
@@ -344,6 +404,18 @@ impl ConvertedSound {
             let n = gestalt.push(blocks::IMPORT_NAMES, &id.to_le_bytes(), true);
             index16("import name", n)
         };
+        let curves: Vec<_> = self
+            .ranges
+            .iter()
+            .flat_map(|r| r.permutations.iter())
+            .map(|p| p.mouth.as_slice())
+            .collect();
+        let has_mouth = curves.iter().any(|curve| !curve.is_empty());
+        if has_mouth {
+            let index = crate::mouth::add(&curves, gestalt, set)?;
+            put_u16(&mut header, snd::EXTRA_INFO, index);
+        }
+        let mut descriptor = 0;
         for range in self.ranges {
             let range_name = name(gestalt, set, &range.name)?;
             let params = gestalt.push(blocks::PITCH_RANGE_PARAMETERS, &range.parameters, true);
@@ -377,7 +449,13 @@ impl ConvertedSound {
                 put_u16(&mut e, 0, perm_name);
                 put_u16(&mut e, 2, p.skip_fraction as u16);
                 e[4] = p.gain as u8;
-                e[5] = u8::try_from(i).unwrap_or(u8::MAX);
+                e[5] = if has_mouth {
+                    let index = descriptor;
+                    descriptor += 1;
+                    index as u8
+                } else {
+                    u8::try_from(i).unwrap_or(u8::MAX)
+                };
                 put_u16(&mut e, 6, p.time_ms);
                 e[8..12].copy_from_slice(&size.to_le_bytes());
                 put_u16(&mut e, 12, first_chunk);
@@ -408,47 +486,136 @@ pub fn install_sounds(
     set: &mut TagSet,
     sounds: Vec<(String, ConvertedSound)>,
 ) -> Result<Vec<TagId>> {
+    if sounds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let snd_group = FourCC(*b"snd!");
+    let names: HashSet<_> = sounds.iter().map(|(name, _)| name.as_str()).collect();
+    for (name, sound) in &sounds {
+        if let Some(target) = sound.promotion.as_ref().and_then(|p| p.target.as_deref())
+            && !names.contains(target)
+            && set.converted(snd_group, target).is_none()
+        {
+            return Err(Error::Invalid(format!(
+                "{name}: uninstalled promotion sound {target}"
+            )));
+        }
+    }
+
     let mut gestalt = SoundGestalt::from_set(set)?;
     let mut ids = Vec::with_capacity(sounds.len());
-    for (name, s) in sounds {
-        let c = s.add_to(&mut gestalt, set)?;
-        ids.push(
-            c.install(set, &name)
-                .map_err(|e| Error::Invalid(e.to_string()))?,
-        );
+    let mut promotions = Vec::new();
+    for (name, mut sound) in sounds {
+        let id = match set.converted(snd_group, &name) {
+            Some(id) => id,
+            None => {
+                let promotion = sound.promotion.take();
+                let converted = sound
+                    .add_samples(&mut gestalt, set)
+                    .map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
+                let id = install_named(converted, set, &name)?;
+                if let Some(promotion) = promotion {
+                    promotions.push((id, promotion));
+                }
+                id
+            }
+        };
+        ids.push(id);
+    }
+    // The retail rock and metal chips promote in cycles. Assign every
+    // datum first so all edges are resolved, including backward edges.
+    for (id, promotion) in promotions {
+        let target = promotion.target.as_ref().map(|name| {
+            set.converted(snd_group, name)
+                .expect("validated promotion target installed")
+        });
+        let Some(TagPayload::Built(root)) = set.tag_mut(id).map(|tag| &mut tag.payload) else {
+            return Err(Error::Invalid(format!(
+                "{id:?}: promotion sound is not built"
+            )));
+        };
+        write_promotion(root, &promotion, target);
     }
     gestalt.install(set, crate::gestalt::DEFAULT_NAME)?;
     Ok(ids)
 }
 
-/// Install distinct source sounds in one gestalt pass. Existing references
-/// to a retail namesake retain their datum. Callers discard the set on error.
+fn write_promotion(root: &mut Block, promotion: &Promotion, target: Option<TagId>) {
+    use h1_promotion::*;
+    root.bytes.resize(SIZE as usize, 0);
+    root.put_u32(SIGNATURE as usize, MAGIC);
+    root.put_u32(COUNT as usize, u32::from(promotion.count));
+    root.put_u32(MILLIS as usize, promotion.millis);
+    root.put_u32(TARGET as usize, TagId::NULL.0);
+    if let Some(target) = target {
+        root.tag_id(TARGET, target);
+    }
+}
+
+fn source_tag<'a>(map: &'a h1map::H1Map, name: &str) -> Result<&'a h1map::Tag> {
+    let mut matching = map
+        .tags()
+        .iter()
+        .filter(|tag| tag.group == crate::h1::SND && tag.name.eq_ignore_ascii_case(name));
+    let invalid = |reason| Error::Invalid(format!("{}: {reason} snd! {name}", map.header().name));
+    let tag = matching.next().ok_or_else(|| invalid("missing"))?;
+    if matching.next().is_some() {
+        return Err(invalid("ambiguous"));
+    }
+    Ok(tag)
+}
+
+/// Read the distinct source sounds reachable from the named roots, including
+/// promotion targets. An already installed source sound owns its entire chain.
+pub fn read_source_sounds(
+    h1: &h1map::H1Map,
+    names: impl IntoIterator<Item = String>,
+    mut installed: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, ConvertedSound)>> {
+    let mut pending: VecDeque<_> = names.into_iter().collect();
+    let mut seen = HashSet::new();
+    let mut sounds = Vec::new();
+    while let Some(name) = pending.pop_front() {
+        let tag = source_tag(h1, &name)?;
+        if !seen.insert(tag.id) || installed(&tag.name) {
+            continue;
+        }
+        let sound = Sound::read(h1, tag)
+            .and_then(|s| convert_sound(&s, h1.bytes()))
+            .map_err(|e| Error::Invalid(format!("{}: {name}: {e}", h1.header().name)))?;
+        if let Some(target) = sound.promotion.as_ref().and_then(|p| p.target.as_ref()) {
+            pending.push_back(target.clone());
+        }
+        sounds.push((tag.name.clone(), sound));
+    }
+    Ok(sounds)
+}
+
+/// Install the requested source sounds and their promotion targets together.
 pub fn install_source_sounds(
     h1: &h1map::H1Map,
     set: &mut TagSet,
     names: impl IntoIterator<Item = String>,
-) -> Result<std::collections::HashMap<String, TagId>> {
-    let mut ids = std::collections::HashMap::new();
-    let mut names = names.into_iter().peekable();
-    if names.peek().is_none() {
-        return Ok(ids);
-    }
-    let mut gestalt = SoundGestalt::from_set(set)?;
-    for name in names {
-        if ids.contains_key(&name) {
-            continue;
-        }
-        let tag = h1
-            .find(crate::h1::SND, &name)
-            .ok_or_else(|| Error::Invalid(format!("missing snd! {name}")))?;
-        let converted = Sound::read(h1, tag)
-            .and_then(|s| convert_sound(&s, h1.bytes()))
-            .and_then(|s| s.add_to(&mut gestalt, set))
-            .map_err(|e| Error::Invalid(format!("{name}: {e}")))?;
-        ids.insert(name, install_named(converted, set, &tag.name)?);
-    }
-    gestalt.install(set, crate::gestalt::DEFAULT_NAME)?;
-    Ok(ids)
+) -> Result<HashMap<String, TagId>> {
+    let snd_group = FourCC(*b"snd!");
+    let names: Vec<_> = names.into_iter().collect();
+    let sounds = read_source_sounds(h1, names.iter().cloned(), |name| {
+        set.converted(snd_group, name).is_some()
+    })?;
+    install_sounds(set, sounds)?;
+    names
+        .into_iter()
+        .map(|name| {
+            let source = source_tag(h1, &name)?;
+            let id = set.converted(snd_group, &source.name).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "{}: missing installed snd! {name}",
+                    h1.header().name
+                ))
+            })?;
+            Ok((name, id))
+        })
+        .collect()
 }
 
 pub(crate) fn install_named(tag: Converted, set: &mut TagSet, name: &str) -> Result<TagId> {

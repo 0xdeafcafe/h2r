@@ -32,6 +32,8 @@ pub(crate) const MAX_TICKS: u64 = 30 * 60 * 60;
 pub(crate) const MAX_REPORT: usize = 512 * 1024;
 const MAX_METADATA: usize = 16 * 1024;
 const PAGE_SIZE: usize = 50;
+/// One of the retail session's peer slots belongs to the playerless host.
+const MAX_SIM_BOTS: usize = game::MAX_PLAYERS - 1;
 
 pub(crate) fn is_sim_id(id: &str) -> bool {
     id.starts_with("sim-")
@@ -42,21 +44,6 @@ pub(crate) fn is_sim_stream(stream: &str) -> bool {
 }
 
 pub(crate) fn validate_start(sim: &SimGame, game: &game::NewGame) -> Result<(), ApiError> {
-    validate_metadata(sim, game, 4)
-}
-
-pub(crate) fn validate_hosted_start(sim: &SimGame, game: &game::NewGame) -> Result<(), ApiError> {
-    if sim.pace != "unpaced" {
-        return Err(invalid("dedicated simulations must be unpaced"));
-    }
-    validate_metadata(sim, game, game::MAX_PLAYERS)
-}
-
-fn validate_metadata(
-    sim: &SimGame,
-    game: &game::NewGame,
-    max_bots: usize,
-) -> Result<(), ApiError> {
     if !game::valid_id(&sim.run_id)
         || sim.run_id.len() > 60
         || sim
@@ -67,7 +54,7 @@ fn validate_metadata(
         || !game::valid_id(&sim.gametype)
         || sim.pace.is_empty()
         || sim.pace.len() > 32
-        || !(1..=max_bots).contains(&sim.bots.len())
+        || !(1..=MAX_SIM_BOTS).contains(&sim.bots.len())
         || sim.bots.iter().any(|b| !b.is_object())
         || game.mode != "multiplayer"
         || game.kind() != "custom"
@@ -80,6 +67,13 @@ fn validate_metadata(
         return Err(too_large("simulation metadata is limited to 16 KiB"));
     }
     Ok(())
+}
+
+pub(crate) fn validate_hosted_start(sim: &SimGame, game: &game::NewGame) -> Result<(), ApiError> {
+    if sim.pace != "unpaced" {
+        return Err(invalid("dedicated simulations must be unpaced"));
+    }
+    validate_start(sim, game)
 }
 
 pub(crate) fn idle_seconds(sim: Option<&SimGame>, default: i64) -> i64 {
@@ -445,16 +439,14 @@ struct MatchFields {
 struct MatchBot {
     name: Option<String>,
     params: Option<Value>,
-    #[serde(default)]
-    kind: SeatKind,
+    /// Every bot is a phantom peer; `kind = "local"` is refused with an
+    /// error rather than silently ignored.
+    #[serde(default = "phantom_kind")]
+    kind: String,
 }
 
-#[derive(Default, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum SeatKind {
-    #[default]
-    Local,
-    Phantom,
+fn phantom_kind() -> String {
+    "phantom".into()
 }
 
 impl HostMatch {
@@ -467,18 +459,18 @@ impl HostMatch {
         if m.pace.as_deref().is_some_and(|pace| pace != "unpaced") {
             return Err(invalid("dedicated simulations must be unpaced"));
         }
-        let locals = m
-            .bots
-            .iter()
-            .filter(|bot| bot.kind == SeatKind::Local)
-            .count();
-        if m.bots.is_empty()
-            || locals > 4
-            || m.bots.len() > game::MAX_PLAYERS
-            || m.bots.len() - locals >= game::MAX_PLAYERS
-        {
+        for bot in &m.bots {
+            match bot.kind.as_str() {
+                "phantom" => {}
+                "local" => return Err(invalid(
+                    "kind = \"local\" is unsupported. Controller seats are for people. Use phantom bots",
+                )),
+                other => return Err(invalid(format!("unknown bot kind {other:?}. Use phantom"))),
+            }
+        }
+        if !(1..=MAX_SIM_BOTS).contains(&m.bots.len()) {
             return Err(invalid(
-                "a simulation needs 1 to 16 bots, at most 4 local pads and 15 phantom peers",
+                "a simulation needs 1 to 15 phantom bots: the host occupies one of 16 peers",
             ));
         }
         if m.bots.iter().any(|bot| bot.params.is_some()) {
@@ -806,7 +798,7 @@ mod host_tests {
     use super::*;
 
     #[test]
-    fn hosted_sim_metadata_allows_the_full_roster_and_requires_unpaced() {
+    fn sim_metadata_allows_fifteen_phantoms_and_hosted_runs_are_unpaced() {
         let game = game::NewGame {
             map: "lockout".into(),
             mode: "multiplayer".into(),
@@ -818,15 +810,17 @@ mod host_tests {
             seed: "42".into(),
             gametype: "slayer".into(),
             pace: "unpaced".into(),
-            bots: vec![serde_json::json!({}); game::MAX_PLAYERS],
+            bots: vec![serde_json::json!({"kind": "phantom"}); MAX_SIM_BOTS],
             deferred: false,
         };
-        assert!(validate_start(&sim, &game).is_err());
+        assert!(validate_start(&sim, &game).is_ok());
         assert!(validate_hosted_start(&sim, &game).is_ok());
         sim.bots.push(serde_json::json!({}));
+        assert!(validate_start(&sim, &game).is_err());
         assert!(validate_hosted_start(&sim, &game).is_err());
         sim.bots.pop();
         sim.pace = "realtime".into();
+        assert!(validate_start(&sim, &game).is_ok());
         assert!(validate_hosted_start(&sim, &game).is_err());
     }
 
@@ -909,6 +903,15 @@ mod host_tests {
         assert_eq!(lease.class, HostClass::Small);
         assert_eq!(lease.max_match_s, DEFAULT_MAX_MATCH_S);
         assert!(spec.lease("sim-run-42".into(), ProviderKind::Local).is_err());
+    }
+
+    #[test]
+    fn simulation_host_rejects_local_seats() {
+        let spec = spec(serde_json::json!({"map": "lockout", "bot": [{"kind": "local"}]}));
+        let Err(err) = spec.lease("sim-run-42".into(), ProviderKind::Fly) else {
+            panic!("lease admitted a controller seat");
+        };
+        assert!(err.message.contains("Use phantom bots"));
     }
 
     #[test]

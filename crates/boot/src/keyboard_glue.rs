@@ -1,5 +1,6 @@
 //! Retail virtual keyboard bridge. The host queues text; only the guest thread
 //! inspects screens and calls the game's own edit/validation handlers.
+use film::tape::{Call, TEXT, Tap};
 use input::backend::keyboard::{KeyboardMouse, TextAction};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, Runtime, TransferAbi, guest::Permissions};
 use std::{collections::VecDeque, sync::Arc};
@@ -127,6 +128,72 @@ fn edits(events: Vec<TextAction>) -> VecDeque<Edit> {
     out
 }
 
+// One command per entry to the guest edit handler. A rejected insert may
+// discard the rest of a paste, and a modal may steal focus mid-batch; only
+// edits which actually reached this point are retained.
+fn next_edit(
+    tape: Option<&dyn Tap>,
+    screen: Screen,
+    thread: u32,
+    pending: &mut VecDeque<Edit>,
+) -> Option<Edit> {
+    let Some(tape) = tape else {
+        return pending.pop_front();
+    };
+    let op = "VirtualKeyboard";
+    let args = [
+        screen.address,
+        screen.buffer,
+        screen.caret,
+        u32::from(screen.capacity),
+        screen.context,
+        screen.controller,
+    ];
+    if tape.replaying() {
+        let call = tape.next(op, &args, thread)?;
+        if call.outputs.is_empty() {
+            match call.result {
+                Ok(0) => return None,
+                Ok(1) => return Some(Edit::Backspace),
+                Ok(2) => return Some(Edit::Accept),
+                Ok(3) => return Some(Edit::Cancel),
+                Ok(code @ 0x10000..=0x1ffff) => {
+                    let unit = code as u16;
+                    if char::from_u32(u32::from(unit)).is_some_and(|c| !c.is_control())
+                        && !(0xe000..=0xf8ff).contains(&unit)
+                    {
+                        return Some(Edit::Insert(unit));
+                    }
+                }
+                _ => {}
+            }
+        }
+        tape.fault("invalid virtual keyboard command".into());
+        None
+    } else {
+        let edit = pending.pop_front();
+        let code = match edit {
+            None => 0,
+            Some(Edit::Backspace) => 1,
+            Some(Edit::Accept) => 2,
+            Some(Edit::Cancel) => 3,
+            Some(Edit::Insert(unit)) => 0x10000 | u32::from(unit),
+        };
+        tape.record(
+            TEXT,
+            Call {
+                index: 0,
+                op: op.into(),
+                args: args.to_vec(),
+                thread,
+                result: Ok(code),
+                outputs: vec![],
+            },
+        );
+        edit
+    }
+}
+
 fn finish(cpu: &mut CpuAbi, saved: CpuAbi, return_pc: u32) -> TransferAbi {
     *cpu = saved;
     TransferAbi::ret(return_pc)
@@ -135,17 +202,18 @@ fn apply_next(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     keyboard: KeyboardMouse,
+    tape: Option<Arc<dyn Tap>>,
     screen: Screen,
     mut pending: VecDeque<Edit>,
     saved: CpuAbi,
     return_pc: u32,
 ) -> Result<TransferAbi, GuestFault> {
     let current = detect(&ctx.runtime().memory());
-    if current.is_none_or(|s| s.target() != screen.target()) {
+    let Some(focused) = current.filter(|s| s.target() == screen.target()) else {
         keyboard.set_text_target(current.map(Screen::target));
         return Ok(finish(cpu, saved, return_pc));
-    }
-    let Some(edit) = pending.pop_front() else {
+    };
+    let Some(edit) = next_edit(tape.as_deref(), focused, ctx.thread_id, &mut pending) else {
         return Ok(finish(cpu, saved, return_pc));
     };
     *cpu = saved;
@@ -190,7 +258,7 @@ fn apply_next(
                 pending.pop_front();
             }
         }
-        apply_next(cpu, ctx, keyboard, screen, pending, saved, return_pc)
+        apply_next(cpu, ctx, keyboard, tape, screen, pending, saved, return_pc)
     })
 }
 
@@ -199,6 +267,17 @@ pub fn install(rt: &Runtime, keyboard: KeyboardMouse) -> anyhow::Result<bool> {
 }
 /// Chosen pump for synthetic native fixtures; production uses PUMP.
 pub fn install_at(rt: &Runtime, keyboard: KeyboardMouse, pump: u32) -> anyhow::Result<bool> {
+    install_with_tape(rt, keyboard, pump, None)
+}
+
+/// Install the keyboard bridge at `pump`, using the shared guest call stream
+/// when recording or replaying a film.
+pub fn install_with_tape(
+    rt: &Runtime,
+    keyboard: KeyboardMouse,
+    pump: u32,
+    tape: Option<Arc<dyn Tap>>,
+) -> anyhow::Result<bool> {
     let Some(original) = rt.resolve_original(pump) else {
         keyboard.set_text_target(None);
         eprintln!("keyboard: no original UI frame entry at {pump:#x}; hook skipped");
@@ -236,15 +315,20 @@ pub fn install_at(rt: &Runtime, keyboard: KeyboardMouse, pump: u32) -> anyhow::R
             let return_pc = m.u32(cpu.esp)?;
             cpu.esp += 4;
             let keyboard = keyboard.clone();
+            let tape = tape.clone();
             ctx.call_guest(cpu, &mut m, shadow, move |cpu, ctx| {
                 let screen = detect(&ctx.runtime().memory());
                 keyboard.set_text_target(screen.map(Screen::target));
                 let Some(screen) = screen else {
                     return Ok(TransferAbi::ret(return_pc));
                 };
-                let pending = edits(keyboard.take_text(screen.target()));
+                let pending = if tape.as_ref().is_some_and(|tap| tap.replaying()) {
+                    VecDeque::new()
+                } else {
+                    edits(keyboard.take_text(screen.target()))
+                };
                 let saved = *cpu;
-                apply_next(cpu, ctx, keyboard, screen, pending, saved, return_pc)
+                apply_next(cpu, ctx, keyboard, tape, screen, pending, saved, return_pc)
             })
         });
     });

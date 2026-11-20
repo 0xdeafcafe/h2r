@@ -342,6 +342,20 @@ fn the_structure_mopp_returns_the_rock_where_it_stands() {
 }
 
 #[test]
+fn merged_surfaces_keep_their_source_material_assignment() {
+    let mut level = level();
+    let count = level.surfaces.len();
+    let (mut rock, _) = rock();
+    for (i, surface) in rock.surfaces.iter_mut().enumerate() {
+        surface.material = (i % 2 + 2) as u16;
+    }
+    super::merge_materials(&mut level, &rock, |i| i).unwrap();
+    let expected: Vec<_> = rock.surfaces.iter().map(|s| s.material).collect();
+    let actual: Vec<_> = level.surfaces[count..].iter().map(|s| s.material).collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn two_overlapping_rocks_are_both_solid() {
     let mut b = level();
     let (first, _) = rock();

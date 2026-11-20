@@ -47,7 +47,8 @@ pub struct Participant {
     pub existing_name: Option<String>,
     pub assigned_name: Option<String>,
     pub voices: [i16; 6],
-    pub encounter: Option<String>,
+    /// Compiled encounter, squad or platoon selector at participant +0x44.
+    pub encounter: Option<u32>,
 }
 
 impl Participant {
@@ -129,19 +130,44 @@ impl Line {
 /// encounter groups can be used when every populated squad matches.
 #[derive(Debug, Default)]
 pub struct SpeakerScopes {
-    by_type: BTreeMap<u16, Vec<String>>,
+    by_type: BTreeMap<u16, Vec<u32>>,
+    by_selector: Option<BTreeMap<u32, u32>>,
     pub voice_definitions: Vec<crate::voices::Definition>,
     pub squad_voices: Vec<crate::voices::Squad>,
 }
 
 impl SpeakerScopes {
-    pub fn from_plan(plan: &crate::convert::Plan) -> Self {
+    pub fn from_plan(
+        plan: &crate::convert::Plan,
+        control: &crate::control::Control,
+        conversations: &[Conversation],
+    ) -> Result<Self> {
+        let mut by_selector = BTreeMap::new();
+        for scene in conversations {
+            for role in &scene.participants {
+                if let Some(selector) = role.encounter
+                    && !role.radio()
+                    && role.existing_name.is_none()
+                {
+                    let bound = control
+                        .script_index(selector)
+                        .ok_or_else(|| {
+                            Error::Invalid(format!(
+                                "{}: no roster for conversation selector {selector:#010x}",
+                                scene.name
+                            ))
+                        })?
+                        .map_err(|e| Error::Invalid(format!("{}: {e}", scene.name)))?;
+                    by_selector.insert(selector, bound);
+                }
+            }
+        }
         let mut by_group = BTreeMap::<i16, Vec<_>>::new();
         for (index, squad) in plan.ai.squads.iter().enumerate() {
             // An empty squad can receive actors through ai_attach/ai_migrate.
             by_group.entry(squad.parent).or_default().push((index, squad));
         }
-        let mut result = BTreeMap::<u16, Vec<String>>::new();
+        let mut result = BTreeMap::<u16, Vec<u32>>::new();
         let actor_type =
             |character: i16| plan.characters.get(character as usize).map(|c| c.h1_type.0);
         for (group, squads) in by_group {
@@ -164,24 +190,39 @@ impl SpeakerScopes {
             // A parent group also selects every actor in its child platoons.
             // Only collapse a homogeneous set of direct members into a leaf.
             let leaf = !plan.ai.squad_groups.iter().any(|child| child.parent == group);
-            if let Some((&kind, group)) = common.filter(|_| leaf).zip(plan.group_names.get(group as usize)) {
-                result.entry(kind).or_default().push(group.clone());
+            if let Some(&kind) = common.filter(|_| leaf) {
+                result
+                    .entry(kind)
+                    .or_default()
+                    .push(0x4000_0000 | group as u32);
             } else {
                 for ((index, _), types) in squads.into_iter().zip(kinds) {
                     for kind in types {
-                        result.entry(kind).or_default().push(plan.squad_names[index].clone());
+                        result.entry(kind).or_default().push(index as u32);
                     }
                 }
             }
         }
-        Self {
+        Ok(Self {
+            by_selector: Some(by_selector),
             by_type: result,
             voice_definitions: plan.voice_definitions.clone(),
             squad_voices: plan.squad_voices.clone(),
-        }
+        })
     }
 
-    pub fn for_actor_type(&self, actor_type: u16) -> &[String] {
+    /// An AI-free output has no actors to cast. In a populated roster every
+    /// explicit cast selector must resolve, even if its display text is empty.
+    pub fn for_selector(&self, selector: u32) -> Result<Option<u32>> {
+        let Some(indices) = &self.by_selector else {
+            return Ok(None);
+        };
+        indices.get(&selector).copied().map(Some).ok_or_else(|| {
+            Error::Invalid(format!("unbound conversation AI selector {selector:#010x}"))
+        })
+    }
+
+    pub fn for_actor_type(&self, actor_type: u16) -> &[u32] {
         self.by_type.get(&actor_type).map_or(&[], Vec::as_slice)
     }
 }
@@ -222,7 +263,7 @@ fn decode(
         Ok(Some(fixed_str(&entry[..32])))
     };
     let parse_participant = |p: &[u8]| -> Result<Participant> {
-        let encounter = fixed_str(&p[0x24..0x44]);
+        let selector = u32_at(p, 0x44);
         Ok(Participant {
             flags: u16_at(p, 2),
             selection: u16_at(p, 4),
@@ -230,7 +271,7 @@ fn decode(
             existing_name: object_name(p, 8)?,
             assigned_name: object_name(p, 0xa)?,
             voices: std::array::from_fn(|i| i16_at(p, 0x18 + 2 * i)),
-            encounter: (u32_at(p, 0x44) != u32::MAX && !encounter.is_empty()).then_some(encounter),
+            encounter: (selector != u32::MAX).then_some(selector),
         })
     };
     let parse_line = |l: &[u8]| -> Result<Line> {
@@ -329,7 +370,7 @@ mod tests {
         bytes[role + 0xa..role + 0xc].copy_from_slice(&(-1i16).to_le_bytes());
         bytes[role + 0x18..role + 0x24].fill(0xff);
         bytes[role + 0x1c..role + 0x1e].copy_from_slice(&7i16.to_le_bytes());
-        bytes[role + 0x24..role + 0x29].copy_from_slice(b"guard");
+        bytes[role + 0x44..role + 0x48].copy_from_slice(&0x8001_0000u32.to_le_bytes());
         bytes[line..line + 2].copy_from_slice(&8u16.to_le_bytes());
         bytes[line + 0xc..line + 0x10].copy_from_slice(&0.5f32.to_le_bytes());
         for i in 0..6 {
@@ -347,7 +388,7 @@ mod tests {
         assert_eq!(c.name, "test");
         assert_eq!(c.participants[0].existing_name.as_deref(), Some("lead"));
         assert_eq!(c.participants[0].assigned_name, None);
-        assert_eq!(c.participants[0].encounter.as_deref(), Some("guard"));
+        assert_eq!(c.participants[0].encounter, Some(0x8001_0000));
         assert_eq!(c.participants[0].voices, [-1, -1, 7, -1, -1, -1]);
         assert!(c.lines[0].waits_for_advance());
         assert_eq!(c.lines[0].pause_after, 0.5);
