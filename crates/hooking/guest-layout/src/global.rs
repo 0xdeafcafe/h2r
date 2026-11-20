@@ -81,6 +81,9 @@ crate::globals! { GLOBALS;
     /// local player count (`i16`) at `+8`, the four local users' player
     /// datums at `+0xc` (-1 for none).
     PLAYER_GLOBALS @ 0x004e_8c20; "docs/game/bots.md";
+    /// Pointer to sound state. The four local-user listeners start at
+    /// `+0x88` and have stride `0x48`.
+    SOUND_GLOBALS @ 0x004e_6380; "docs/audio/dsound.md";
     /// The loaded map's short name in the cache header (`lockout`), 32
     /// bytes, NUL-terminated.
     CACHE_MAP_NAME @ 0x0054_7898; "docs/live/live-gamestate.md";

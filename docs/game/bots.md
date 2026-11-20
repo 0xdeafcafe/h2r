@@ -2108,98 +2108,22 @@ Live guest 1, port 2 0x30 Live guest 2`.
 
 ### 4.3 Hiding the views (traced)
 
-These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
+The host's views and HUD follow the local-user map. Each Clanker is a
+remote peer (§5.1), so it has no local view. The local-user mapping used by
+the Phantom's input builder exists only in its private copy of guest RAM.
 
-| Reader | What for | Bot window |
-|---|---|---|
-| `render_game_views` `0x2234e0` (`0x223524`, `0x22359e`) | one view per user, layout from the count | **yes** |
-| HUD, per view (`0x1e6fe0`: user to player via the map, from the view's draw) | that view's HUD | covered by the render window |
-| sound frame service `0x125b40`, listener loop `0x125c93`..`0x125cd7` | one listener per mapped user (`0x221a70(user, listener)`) | **yes**, so only the human's ears count |
-| `SOUND_LISTENERS_UPDATE` `0x127400` (also from `0x18c060`, outside the sound frame) | one listener per mapped user, marked active | **yes**, and the bots' listeners are marked inactive |
-| `SOUND_OWNER_USER` `0x18d4f0` | a starting sound on a mapped user's unit plays unpositioned, in the ears | **yes**, so a bot's sounds are world sounds |
-| `0x1870a0` | actions | **no**: the bot must act |
-| `director_update` `0x1554b0` (`0x155939`, `0x155caf`) | one camera per user | no: harmless, small CPU |
-| about 70 others (game engine, UI, scoreboard; the full list is in the scratch trace) | | no |
+**Listeners.** `SOUND_LISTENERS_UPDATE` fills one record per mapped user
+from the user's camera and marks it active. For an unmapped user, the
+update clears the unit and cluster fields but leaves the active byte.
+The listener selector trusts that byte when it picks the closest listener
+for a world sound. A stale active record can use its last camera position.
 
-**The window:** at the entry of `0x2234e0` and of `0x125b40`, the driver
-does three things:
-
-1. It saves the count and the map.
-2. It sets each bot user's map entry to -1, and lowers the count.
-3. It puts the saved values back at exit.
-
-The order of the map entries for the human is kept. With the pipelined
-render, the render window runs against the render's own snapshot. Its write
-and its restore cancel out, so nothing reaches the game thread. The
-pipeline's hook plan has to list the window as a render-thread hook (its
-boot test checks that every hook is listed).
-
-**Listeners (traced, 2026-11-19).** The listener update `0x127400`
-(`SOUND_LISTENERS_UPDATE`, stdcall, one argument) walks the four local
-users: for each mapped one it sets the user's listener from its camera
-and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 * user`); for
-an unmapped one it writes the record's player fields to -1 and leaves the
-active byte alone (`0x127b13`). It has two callers: `SOUND_UPDATE`
-(`0x125c1e`, inside the window above) and the per-frame update `0x18c060`
-(`0x18c07f`, from `0x137ef8`), which runs it **outside** the window when
-the sound globals' bytes `+0x78`, `+0x79` and `+0x7a` are set. So each
-bot's user was a live listener after all, at the bot's own camera.
-`0x127d00`, which picks the listener a starting sound is for (the
-closest active one; a sound with no position goes to the first mapped
-user), then took a bot's own sounds (its reloads, jumps, landings,
-melee, pain) as heard by the bot, right at its ears. Those are the
-sounds the controller speaker routes (docs/audio/playstation-audio.md),
-and the user heard the bots' through the controller.
-
-- **Design:** the listener update gets the same window as the sound
-  frame (`bot_glue`, before and after `SOUND_LISTENERS_UPDATE`), and at
-  both points each hidden user's listener is marked inactive
-  (`guest::quiet_listeners`): the update never clears the byte for a
-  user it skips, so a listener made before its user was hidden would
-  stay active where the bot last stood. Called from inside
-  `SOUND_UPDATE`, the window finds no bot user mapped and does nothing.
-- That a bot's own sound played as a plain (not 3D) voice is traced
-  now: see "Whose sound" below. The listener was not the whole story.
-
-**Whose sound (traced, 2026-11-19).** The user's run after the
-listeners went quiet: "i can hear sound from every ai player, also,
-sound doesn't get quieter in distance or round corners". A sound that
-starts on an object asks `0x18d4f0` (`SOUND_OWNER_USER`, stdcall,
-`ret 12`: object, a pointer to the sound's kind, a pointer for the user
-or null) whose own sound it is. When the kind is 1 (positioned) it walks
-the local-user map `[0x4e8c20] + 0xc`; for the first mapped user in
-first person (`0x155760` gives 0 or 1) whose player's unit (`+0x2c`) is
-the object or carries it (`0xbafb0`, both ways) it sets the kind to 0
-and the user. Kind 0 has no position: `0x127d00` gives it to the first
-mapped user, `0x127e20` gives it distance 0, and it plays in the ears
-with no distance, no panning and no obstruction, as a player's own
-gun, footsteps and breathing do. Its callers (`0x1890e5`, `0x18935f`,
-`0x189441`, `0x18cf76` from the per-frame update `0x18c060`, and
-`0x18d4dc`) run from the game tick and the per-frame update, not inside
-`SOUND_UPDATE`'s window, so the bots were mapped: every bot's gun, footsteps, grenades, melee and voice
-started as kind 0 and, given to the first mapped user, the human, played
-at full level in the human's ears wherever the bot was. That is both
-halves of the report: every bot is heard, and those sounds never fall
-off with distance or walls (the human's own world sounds always did;
-they are the game's own mix-bin volumes, docs/audio/dsound.md).
-`0x189441`'s caller even checks the user's listener (`+0x8e`) and
-falls back to the world path when it is inactive; the other four do
-not, so quieting the listeners could not fix it.
-
-- **Design:** `SOUND_OWNER_USER` gets the hide window (before: the bots'
-  users out of the map, `guest::hide`; after: `guest::restore`), as the
-  views and listeners have. The walk then finds only the humans: a
-  bot's sound keeps kind 1 and starts as a world sound at the bot,
-  heard (or culled) by the human's listener as a remote player's would
-  be, with the game's distance, panning, cluster audibility
-  (`0x221da0`) and obstruction (`0x221a70`). The human's own sounds are
-  unchanged.
-- The DirectSound listener is not the game's ears: `0x127400` ends by
-  setting it (`0x220790`, `IDirectSound_SetPosition` at `0x2207ba`,
-  `DS3D_DEFERRED`) to the origin facing +x (`[0x468788]`,
-  `[0x4687a8]`), and the game places each 3D mix-in relative to the
-  listener its sound belongs to. So nothing in the DirectSound layer
-  knows which local user a sound is for; the choice is made here.
+**Whose sound.** An attached sound starts as kind 1 (positioned).
+`SOUND_OWNER_USER` walks the local-user map and tests each first-person
+user's unit against the source object and its attachment chain. A match
+makes the sound kind 0 (unpositioned), which plays at distance zero. The
+attached sound part of an effect and a weapon's animation sound event
+both pass through this check. See §5.1 for the Phantom audio hooks.
 
 **The controller speaker, haptics and rumble (Repo).** Nothing there
 goes by port:
@@ -2209,9 +2133,8 @@ goes by port:
   speaker, chosen by device name, gets every routed sound, and the Steam
   Controller's trackpads (`input::steam_pad`, "as haptics") play the
   routed tone on every connected controller. There is no port-to-pad
-  map for sound. So a bot's sounds reached the pad only by being started
-  as a local player's (above); with the bots' listeners gone they start
-  as anyone else's sounds in the world.
+  map for sound. A Clanker's attached sounds stay positioned in the
+  world and play on the main output.
 - **Rumble** goes by port: `XInputSetState` on a port goes to the pad on
   it (`input::device`, `HostBackend::set_rumble` of the backend that owns
   it). A bot's pad says it has no motors (`supports_rumble: false`), so
@@ -2582,6 +2505,20 @@ no run yet).
   bots write in its simulation slot (step 5 above). Until now no phantom
   had a unit, so none of it was seen. Input starts when the phantom has
   a spawned unit.
+
+**Phantom audio.** `crates/extensions/game/src/bot_glue/audio.rs` uses the
+Phantom machine ID on the player datum to exclude any Phantom entry from the local-user map
+while `SOUND_OWNER_USER`, `SOUND_LISTENERS_UPDATE` and `SOUND_UPDATE`
+run. It restores the map on return. Human slots keep their original user
+indices, including in splitscreen. The listener refresh runs both inside
+the sound frame and from the effect update. Both entry points clear the
+active flag for Phantom and unmapped slots.
+
+The sound owner check leaves a Clanker's attached weapon and unit sounds
+positioned. The retail mixer selects a human listener and handles
+distance, panning and obstruction. A human's first-person sound uses the
+retail owner check. The [agent's active listener list](../runtime/agent-api.md#audio-voice-routing)
+shows the slots and camera positions the game can select.
 
 **The user's Halo 1 run (2026-11-19: Live custom game on
 `h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into

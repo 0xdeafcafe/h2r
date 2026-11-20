@@ -9,7 +9,6 @@ use engine::view::Tags;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::sound::h1_promotion::*;
 
-const AUDIO_GLOBALS: u32 = 0x004e_6380;
 const SOUND: GroupTag = GroupTag::from_chars(*b"snd!");
 
 pub struct H1SoundPromotion;
@@ -89,7 +88,7 @@ fn choose(m: &mut dyn GuestMemory, mut id: u32) -> Result<Option<u32>, engine::M
             Some(now) => now,
             None => {
                 // H2 0x126a34 updates this clock in milliseconds.
-                let time = m.u32(m.u32(AUDIO_GLOBALS)? + 0x84)?;
+                let time = m.u32(m.u32(points::SOUND_GLOBALS.base)? + 0x84)?;
                 now = Some(time);
                 time
             }
@@ -145,7 +144,7 @@ mod tests {
         m.set_u32(TAG_INDEX_GLOBAL, index).unwrap();
         m.set_u32(TAG_ENTRIES_GLOBAL, entries).unwrap();
         m.set_u32(index + index_layout::TAG_COUNT, 2).unwrap();
-        m.set_u32(AUDIO_GLOBALS, clock).unwrap();
+        m.set_u32(points::SOUND_GLOBALS.base, clock).unwrap();
         m.set_u32(clock + 0x84, 100).unwrap();
         for (i, root) in roots.into_iter().enumerate() {
             let entry = entries + i as u32 * entry_layout::STRIDE;

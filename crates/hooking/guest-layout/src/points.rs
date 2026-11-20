@@ -1209,11 +1209,10 @@ points! { ALL;
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
     /// The sound listeners' update (stdcall, one argument, `ret 4`): for
     /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
-    /// listener (records `0x48` bytes apart in `[0x4e6380]`) from its
-    /// camera and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 *
-    /// user`); an unmapped user's is left as it was.
-    /// Called from `SOUND_UPDATE` (`0x125c1e`) and, outside it, from the
-    /// per-frame update `0x18c060` (`0x18c07f`, from `0x137ef8`).
+    /// listener from its camera and marks it active (the byte at
+    /// `[SOUND_GLOBALS] + 0x8e + 0x48 * user`). An unmapped user's active
+    /// byte is left alone.
+    /// Called from `SOUND_UPDATE` and from the per-frame effect update.
     SOUND_LISTENERS_UPDATE @ 0x0012_7400: [fn(arg: stack 0) ret 4]; "docs/game/bots.md";
     /// Whose own sound is this (stdcall, `ret 12`): when `*kind` is 1 (a
     /// positioned sound), walks the four local users (`[0x4e8c20] + 0xc`)
@@ -1223,7 +1222,7 @@ points! { ALL;
     /// `*user` (when not null) to the user. Called when a sound starts on
     /// an object: `0x1890e5`, `0x18935f`, `0x189441`, `0x18cf76`,
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
-    /// per-frame update `0x18c060`), not inside `SOUND_UPDATE`'s window.
+    /// per-frame update `0x18c060`).
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
     /// Per-type file bound called by the cache header validator (0x1228b8).
     CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";

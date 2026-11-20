@@ -16,6 +16,7 @@ use dsound::{DirectSound, Hle, Layout};
 /// Read-only routing view for comparing one emitter at several distances.
 #[cfg(feature = "local-io")]
 pub fn add_agent_methods(agent: &agent::Agent, mixer: Arc<Mutex<audio::Mixer>>) {
+    crate::bot_glue::audio::add_agent_method(agent);
     agent.add_method(
         agent_proto::method::AUDIO_VOICES,
         agent::Access::Read,

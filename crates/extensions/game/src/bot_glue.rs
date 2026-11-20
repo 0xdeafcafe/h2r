@@ -224,6 +224,8 @@ impl hooks::Feature for Bots {
             },
         );
 
+        audio::install(b);
+
         // The same weapon-fire point used by Live telemetry, as a sound
         // cue. It can only draw a bot's gaze.
         let phantoms = self.phantoms.clone();
@@ -401,6 +403,7 @@ pub fn install_film(
     Ok(added)
 }
 
+pub(crate) mod audio;
 mod retail_input;
 
 mod film_state;
