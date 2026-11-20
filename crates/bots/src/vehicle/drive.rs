@@ -37,6 +37,15 @@ pub const LEAVE_HEALTH: f32 = 0.2;
 pub const FLIPPED_TICKS: u32 = 30;
 /// A gunner or passenger with nobody driving gets out after this long.
 pub const DRIVERLESS_TICKS: u32 = 4 * 30;
+/// A driver without usable steering or a fight for this long gets out:
+/// on a large map every goal it is offered can be beyond a portal the
+/// chassis fits, and a healthy vehicle it cannot plan from is a seat
+/// it would otherwise never leave.
+pub const NOWHERE_TICKS: u32 = 4 * 30;
+/// One failed roam plan counts this many of those ticks: a failure cost
+/// a goal and a search, and a pocket the chassis can roam needs a run of
+/// failures around it before the bot gives up on driving there.
+pub const FAILED_PLAN: u32 = 16;
 /// Within this (XY) of a goal it must reach on foot (the enemy flag, the
 /// ball), it gets out.
 pub const ON_FOOT: f32 = 3.0;
@@ -191,6 +200,41 @@ pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
     clear_with_floor(map, spec, from, to, || start_floor(map, from))
 }
 
+pub(crate) fn on_mesh(map: &MapData, at: Vec3) -> bool {
+    map.nav
+        .locate([at[0], at[1], at[2] + 0.35], 1.85)
+        .is_some()
+}
+
+/// Steer back onto mapped ground after drifting past its edge. Within
+/// one stuck window's travel, look for a landing that fits the chassis
+/// and check the approach for collision. Normal route steering checks
+/// for ground along the entire span once the vehicle is back on the mesh.
+pub(crate) fn rejoin(map: &MapData, spec: Spec, from: Vec3, speed: f32) -> Option<Vec3> {
+    let reach = (speed * STUCK_TICKS as f32 / crate::mind::TICKS).clamp(1.2, 24.0);
+    let (_, to) = map.nav.nearest(from, reach, 0.5, 1.5)?;
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let length = dx.hypot(dy);
+    if length <= 1e-3 {
+        return None;
+    }
+    let inside = [to[0] + dx / length * 0.45, to[1] + dy / length * 0.45, to[2]];
+    if !clear(map, spec, to, inside) {
+        return None;
+    }
+    let side = [-dy * spec.half_width / length, dx * spec.half_width / length];
+    [-1.0, 0.0, 1.0]
+        .into_iter()
+        .all(|lane| {
+            [0.26, spec.height].into_iter().all(|height| {
+                let probe = |p: Vec3| [p[0] + lane * side[0], p[1] + lane * side[1], p[2] + height];
+                map.walls.clear(probe(from), probe(to))
+            })
+        })
+        .then_some(to)
+}
+
 fn start_floor(map: &MapData, from: Vec3) -> Option<f32> {
     map.nav.nearest(from, 0.25, 0.45, 1.5).map(|(_, p)| p[2])
 }
@@ -322,6 +366,8 @@ pub struct Ride {
     pub driver: bool,
     /// Stuck for good ([`Unstuck::GiveUp`]).
     pub stuck: bool,
+    /// A driver without usable steering or a fight for [`NOWHERE_TICKS`].
+    pub nowhere: bool,
     /// Within [`ON_FOOT`] of a goal it must reach on foot.
     pub there: bool,
 }
@@ -333,6 +379,8 @@ pub enum Leave {
     Wrecked,
     Flipped,
     Stuck,
+    /// A driver with nowhere to drive (see [`NOWHERE_TICKS`]).
+    Nowhere,
     /// A gun with nobody driving.
     Stranded,
     /// Where it was going needs feet.
@@ -347,6 +395,8 @@ pub fn leave(r: &Ride) -> Option<Leave> {
         Some(Leave::Flipped)
     } else if r.driver && r.stuck {
         Some(Leave::Stuck)
+    } else if r.driver && r.nowhere {
+        Some(Leave::Nowhere)
     } else if !r.driver && r.driverless >= DRIVERLESS_TICKS {
         Some(Leave::Stranded)
     } else if r.there {

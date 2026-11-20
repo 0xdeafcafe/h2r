@@ -338,6 +338,10 @@ pub struct Going {
     pub holding: Option<u32>,
 }
 
+/// A vehicle the bot got out of for having nowhere to drive is left alone
+/// this long, so it roams and fights on foot rather than re-parking.
+pub const NOWHERE_SHUN_TICKS: u32 = 3 * plan::SHUN_TICKS;
+
 /// What the mind keeps about vehicles from tick to tick.
 #[derive(Clone, Debug, Default)]
 pub struct Memory {
@@ -350,12 +354,23 @@ pub struct Memory {
     /// Vehicles left alone until a tick: given up on, or just left.
     shunned: Vec<(u32, u32)>,
     pub going: Option<Going>,
+    /// Where this vehicle is being taken for an errand that needs feet at
+    /// the end (the weapon it seeks, §3.6): set on foot each tick the
+    /// weapons plan still seeks it, held while it drives so the far ones
+    /// are ridden to and finished on foot.
+    pub errand: Option<Vec3>,
     pub lock: lock::Lock,
     pub route: Option<drive::Route>,
     pub(crate) route_points: Vec<Vec3>,
     pub(crate) route_plan: crate::work::PlanSchedule,
     pub(crate) route_refresh: bool,
     pub(crate) route_blocked: bool,
+    /// Budget spent without usable steering or a fight, including the
+    /// cost of failed roam plans ([`drive::NOWHERE_TICKS`] gets it out).
+    pub(crate) planless: u32,
+    /// It is getting out for having nowhere to drive: the vehicle is left
+    /// alone for [`NOWHERE_SHUN_TICKS`], not [`plan::SHUN_TICKS`].
+    nowhere_left: bool,
     was_driver: bool,
     pub(crate) paths: crate::nav::VehiclePaths,
     pub unstick: drive::Unstick,
@@ -417,16 +432,29 @@ impl Memory {
                     self.leaving = None;
                     self.flipped = 0;
                     self.driverless = 0;
+                    self.planless = 0;
                 }
+                self.nowhere_left |= self.leaving == Some(drive::Leave::Nowhere);
                 self.flipped = if upright { 0 } else { self.flipped + dt };
                 self.driverless = if driven { 0 } else { self.driverless + dt };
             }
             None => {
                 if let Some(left) = self.was_in {
                     // Out: that one is left alone a while, so it does not
-                    // get straight back in.
-                    self.shun(left, tick);
+                    // get straight back in; one it could not plan from
+                    // longer, so it plays on foot instead of re-parking.
+                    let for_nowhere = std::mem::take(&mut self.nowhere_left);
+                    self.shun_for(
+                        left,
+                        tick,
+                        if for_nowhere {
+                            NOWHERE_SHUN_TICKS
+                        } else {
+                            plan::SHUN_TICKS
+                        },
+                    );
                     self.leaving = None;
+                    self.planless = 0;
                 }
             }
         }
@@ -440,8 +468,13 @@ impl Memory {
 
     /// Leaves vehicle `id` alone for [`plan::SHUN_TICKS`].
     pub fn shun(&mut self, id: u32, tick: u32) {
+        self.shun_for(id, tick, plan::SHUN_TICKS);
+    }
+
+    /// Leaves vehicle `id` alone for `ticks`.
+    pub fn shun_for(&mut self, id: u32, tick: u32, ticks: u32) {
         self.shunned.retain(|s| s.0 != id);
-        self.shunned.push((id, tick + plan::SHUN_TICKS));
+        self.shunned.push((id, tick.wrapping_add(ticks)));
     }
 
     pub fn shunned(&self, id: u32, tick: u32) -> bool {
@@ -467,12 +500,15 @@ impl Memory {
     /// A new life: nothing it was doing with vehicles carries on.
     pub fn reset(&mut self) {
         self.going = None;
+        self.errand = None;
         self.lock.reset();
         self.clear_route();
         self.unstick.reset();
         self.leaving = None;
         self.flipped = 0;
         self.driverless = 0;
+        self.planless = 0;
+        self.nowhere_left = false;
         self.was_in = None;
         self.was_driver = false;
     }

@@ -321,7 +321,7 @@ A feature, `sim-metrics`, observes the game on the game thread, read-only:
 |---|---|
 | `GAME_ACTIVATE` (game start) | the match starts: the tally resets |
 | `GAME_TICK` (after each tick) | `live_telemetry::memory::snapshot`: every player's score, kills, deaths, assists, suicides, team, unit, vehicle, grenades carried, vitality; team scores |
-| `WEAPON_FIRE` | a shot: the weapon's holder unit, so its player |
+| `WEAPON_FIRE` | a shot: the weapon's holder unit, so its player; a mounted weapon (a vehicle's or turret's) the player seated at the seat that fires it |
 | `DAMAGE_REPORT` | a hit: the owner player, the victim unit, so its player, and the damage |
 | `PLAYER_KILLED` | the kill log: attacker, victim, tick; a betrayal is a teammate killed in a team game (`bots::emote::kill_from_guest`) |
 | `GAME_END` | the end latch: the match is over |
@@ -360,11 +360,18 @@ ticks; and the final score. The report is one JSON file per match:
 }
 ```
 
-A shot is attributed to the firing weapon's parent unit at `WEAPON_FIRE`,
-with the next tick's held-weapon snapshot as a fallback. Damage is the damage
-report's body plus shield numbers (**S**: read as amounts, as telemetry's
-`hits` are); a hit is a report with another player's unit as the victim
-(a shotgun's pellets each count, so accuracy can pass 1).
+A shot is attributed at `WEAPON_FIRE` to the weapon's firer: the parent
+biped's player, with the next tick's held-weapon snapshot as a fallback,
+and — for a weapon mounted on a vehicle or turret (a Ghost's plasma, a
+Warthog's chaingun) — the player seated at the seat that fires it (a
+turret's gunner, a driving vehicle's driver;
+`bots::vehicle::read::firing_player`), resolved at once from the players
+array, so mounted fire counts as the seated player's shots. Damage is
+the damage report's body plus shield numbers (**S**: read as amounts, as
+telemetry's `hits` are); a hit is a report with another player's unit as
+the victim (a shotgun's pellets each count, so accuracy can pass 1 — and
+melee and splatter land hits with no shot at all, which is why hits can
+exceed shots without vehicle fire being lost).
 
 Each bot row includes its logical `seat` and transport `kind`. Only a
 local bot has a controller `port`. `opposing_hits` counts positive body
@@ -854,7 +861,11 @@ and 9,000-tick limit. Both matches use four phantom seats.
 ```sh
 bench_dir="$RUSH_KEEP/bot-speed-phantom"
 mkdir -p "$bench_dir"
-awk '/^map = / {$0="map = \"waterworks\""} /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"} {print}' \
+# All-phantom seats: local slots are for real people, and a sim never
+# needs them (the kind line is rewritten for every bot whatever the
+# fixture said).
+awk '/^map = / {$0="map = \"waterworks\""} /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"}
+     /^\[\[bot\]\]$/ {print; print "kind = \"phantom\""; next} /^kind = / {next} {print}' \
   docs/runtime/sim-examples/midship-seats.toml > "$bench_dir/waterworks.toml"
 sed 's/^map = "waterworks"/map = "lockout"/' \
   "$bench_dir/waterworks.toml" > "$bench_dir/lockout.toml"
