@@ -24,17 +24,16 @@ From [notes/halo3-film.md](notes/halo3-film.md), which has the sources.
 | | Halo 3 | This design |
 |---|---|---|
 | Start state | game options, both variants by value, seed, machines and 16 player configurations, in a fixed header of about 64 KB; a game state only in a clip | the same content as a compressed seed of about 1 to 2 KB; never a game state |
-| Tick record | one bit-packed record per tick: player mask, each present player's action after control mapping and aim assist, AI control, machine update, prediction, camera, two queues | columns per seat per chunk of 256 ticks, holding the same post-mapping action; no AI control, prediction or camera |
-| Joins and leaves | a machine update inside the tick record | a seat record on its tick |
-| Desync check | update number, game time and random seed in every record: 12 bytes a tick | 16 bits of the gameplay digest a tick, and the 64-bit arena hash every 256 ticks |
+| Tick record | one bit-packed record per tick, beginning with an update number; its other fields are not covered by the sources | columns per seat per chunk of 256 ticks, holding the post-mapping action |
+| Desync check | not covered by the sources | 16 bits of the gameplay digest a tick, and the 64-bit arena hash every 256 ticks |
 | Compression | none; fields are bit-packed | residual columns under zstd |
-| Seek points | none in the file; the player snapshots as it plays | none in the file; the player's sidecar and ring |
+| Seek points | none in the file; campaign films cannot be rewound | none in the file; the player's sidecar and ring |
 | Version gate | executable type, determinism version, map signature | XBE digest, simulation contract, map digest |
 | Size | 45,000 to 63,000 bytes per player-minute; 133,000 to 720,000 bytes a minute for multiplayer films | about 2,700 (a host's remote seat) to 7,700 (a local seat) bytes per player-minute, and 3,650 a minute for digests (**Estimate**) |
 
-The comparison is not like for like: a Halo 3 record also carries AI
-control, prediction, a camera and the simulation queues, and how much of
-its multiplayer size is input is not established.
+The comparison is not like for like: what a Halo 3 record holds beyond
+its update number, and so how much of its size is input, is not
+established.
 
 ## What a film holds
 
@@ -124,7 +123,7 @@ let playback check that the same seats exist, in place of
 effect. The per-tick update the engine builds for itself carries more
 than the action block: a player-set change with a seat mask and the
 players' identifiers, applied on that tick by the update's own apply
-(**E**: [live-coop.md](../live/live-coop.md) section 14.1; Halo 3's tick record has the same machine update, [notes/halo3-film.md](notes/halo3-film.md)). The recorder
+(**E**: [live-coop.md](../live/live-coop.md) section 14.1). The recorder
 reads those fields at `SIM_UPDATE_APPLY` beside the actions, with the
 joining seat's session configuration (name, appearance, team), and writes
 them as a seat record in the tick's chunk. Playback has no peers,
@@ -188,7 +187,7 @@ every row but the first.
 | Truncated digests | 8 bytes a tick to 2 | 14,400 to 3,600 bytes a match-minute | none | adopted |
 | The seed as a reference | every state byte | | | adopted |
 | Recomputing the shot-assist block in playback | about 22 bits an active tick | | playback runs the target search | not adopted: it changes what playback computes; revisit once the engine film plays |
-| Recording pads in place of actions | the aim floats | | | not adopted: a pad becomes an action through frame timing and control history, which only the machine reproduces; Halo 3 stores actions too |
+| Recording pads in place of actions | the aim floats | | | not adopted: a pad becomes an action through frame timing and control history, which only the machine reproduces |
 
 The bit-packed record, for the comparison:
 

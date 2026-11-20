@@ -14,10 +14,9 @@ Sources: the `blf` library of Blam-Network (the saved-film header and game
 options of the last Xbox 360 title update), BlamLib's Halo 3 `BLF.cs` (film
 header and data readers), the Blam Network file share's public listing
 (`GET https://halo3.blam.network/halo3/fileshare/files?fileType=films`),
-Halopedia's Theater page, and the GDC 2011 talk "I Shot You First". The
-tick record's field list comes from a public source reconstruction of a
-later engine in the same family; struct sizes differ there and the
-mechanism is taken as the same. To reproduce the sizes, page through the
+Halopedia's Theater page, and the GDC 2011 talk "I Shot You First". Only
+these sources are used; what the tick record holds inside is not
+described by them and is not recorded here. To reproduce the sizes, page through the
 listing and divide `size_in_bytes` by `length_seconds`.
 
 **File.** A film is a chunked file with a fixed order: a file header, a
@@ -38,27 +37,15 @@ clip that starts mid-game carries one compressed game state, about 1 MB.
 
 **Tick stream.** A flat run of records with no index. Each has a 32-bit
 header, two bits of type and thirty of size, then the payload. One
-simulation-update record is written per tick. Its payload is a bit-packed
-stream: an update number, flags, a 16-bit mask of the players with an
-action this tick and each such player's action, AI unit control for
-listed actors, an optional machine update (a valid mask and the machine
-ids, which is a join or a leave), player prediction, an optional camera,
-then the game time and the random seed after the tick, and two
-simulation queues. A player's action is what the game computed after
-control mapping, sensitivity and aim assist: buttons as verbs, aim
-angles, throttle, both triggers, weapon set, grenade, zoom, and the
-aim-assist result. Playback compares the update number, game time and
-random seed with its own on every tick and reports out of sync on a
-difference. The stream is not compressed.
+simulation-update record is written per tick, bit-packed, beginning with
+an update number. The stream is not compressed. Its fields beyond the
+update number are not covered by these sources.
 
-**Seeking.** No keyframe or chapter is in the file. The player builds up
-to 16 game-state snapshots in a scratch file as it plays, one every 300
-updates, and rewinds by loading the nearest and simulating forward. That
-history is built only for multiplayer playback.
+**Seeking.** The file holds no keyframe or chapter index. Campaign films
+cannot be rewound (Halopedia).
 
-**Versioning.** A film is refused when the executable type differs or
-the determinism version is not compatible. A different network version
-only warns. The map signature pins the map file.
+**Versioning.** The header carries the executable type, a determinism
+version and a signature of the map file.
 
 **Sizes**, from the listing's 89 items (31 films, 58 clips):
 
@@ -74,9 +61,7 @@ only warns. The map signature pins the map file.
 
 At 30 ticks a second that is about 70 bytes a tick for two players and
 400 for sixteen: 25 to 35 bytes per player per tick, so 45,000 to 63,000
-bytes per player-minute. The 16 bytes of header, update number, game time
-and seed in every record are 28,800 bytes a minute before any input.
+bytes per player-minute.
 
-**Not established.** Whether an Xbox Live client's film carries
-replicated entity state in its simulation queues, and so how much of the
-multiplayer figure is input.
+**Not established.** What a tick record holds beyond its update number,
+and so how much of the multiplayer figure is input.
