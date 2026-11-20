@@ -1097,7 +1097,7 @@ fn retail_uncover_and_combat_timer_contact_rules() {
 fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     level: &str,
     source: &h1map::H1Map,
-    map: &Map<R>,
+    map: &mut Map<R>,
     scenario: &hs::Scenario,
     characters: &[(String, String)],
 ) {
@@ -1137,6 +1137,33 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
                     && original.index_size != 0
                     && original.index_address == tag.index_address
             }), "{level}: {character} keeps its native character payload");
+        }
+        // A promotion through the character's major tag must not lose the
+        // authored thresholds: the major carries a rule, with its own
+        // requirements when a source variant names it and the upgrading
+        // variant's otherwise.
+        let payload = map.read_tag_bytes(tag.id).unwrap();
+        let address = tag.location.unwrap().address;
+        let decoded =
+            h1ai::h2::Character::read(&tags::geometry::TagView::new(&payload, address)).unwrap();
+        if decoded.major != TagId::NULL {
+            let major = map.tag(decoded.major).unwrap();
+            let major_name = major.name.clone().unwrap();
+            let major_expected = source
+                .find(h1map::Group::new(b"actv"), &major_name)
+                .map(|variant| {
+                    let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+                    let actor = source.tag(variant.actor.id).unwrap();
+                    let bytes = source.tag_data(actor).unwrap();
+                    [0x2d8, 0x324]
+                        .map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()))
+                })
+                .unwrap_or(expected);
+            assert_eq!(
+                rules.get(&major.id),
+                Some(&major_expected),
+                "{level}: {character} upgrades to {major_name} without its source thresholds"
+            );
         }
     }
 }
@@ -1289,7 +1316,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
         check_authored_uncover_rules(
-            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+            level, &h1, &mut m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
         );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
