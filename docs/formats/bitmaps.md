@@ -1,5 +1,7 @@
 # Bitmap tags -> gfx textures (`crates/assets`)
 
+Status: Built. Code: `crates/assets/src/bitmap.rs`. Switch: none.
+
 `h2 bitmap <map> <tag> [--image N] [--out DIR] [--mips] [--raw]` and
 `h2 bitmap --all <map> [--list] [--out DIR]` decode `bitm` tags to RGBA8 PNGs.
 Mapping rules live (with evidence labels) in the module docs of

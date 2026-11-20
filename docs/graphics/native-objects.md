@@ -1,19 +1,21 @@
 # Native renderer stage 2: objects and skinning
 
-Part of [native-renderer.md](native-renderer.md).
+Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
+Code: `crates/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/feature/src/native_objects.rs`, `crates/boot/src/native_objects_glue.rs`. Tests: `crates/native-render/tests/models_gpu.rs`, `crates/feature/tests/native_objects.rs`, `crates/native-render/tests/object_lighting_differential.rs`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-## Stage 2: objects and skinning (design)
+Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
+equipment, scenery, machines and crates: every object whose render model the
+game queues in the scene list. Geometry is resident per render-model tag,
+loaded once per map; each frame the CPU hands over only the drawn objects'
+node matrices, read from the game's own computed transforms in guest
+memory. Skinning runs in the vertex shader. The rule that must hold: an
+object draws natively only when its material, state and inputs can be
+reproduced exactly; otherwise its items keep their D3D draws.
 
-Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every
-object whose render model the game queues in the scene list. Geometry is
-resident per render-model tag, loaded once per map; each frame the CPU
-hands over only the drawn objects' node matrices, read from the game's own
-computed transforms in guest memory. Skinning runs in the vertex shader.
+## Stage 2: objects and skinning
 
 ### Native scene object walk
-
-The walk is on whenever the native renderer is
-(`impl.render.native=off` turns it off with every other stage).
 
 The walk covers the third-person base-layer call to `LAYER_DRAW`
 (return `0x0002bed5`). It reads the private sorted entries at the first
@@ -74,7 +76,7 @@ its models or bindings are ready draws those objects on the guest.
 A map activation or snapshot reload changes the generation, so work for
 a previous load cannot suppress any of the new load's draws.
 
-#### Frame stats and gameplay A/B
+#### Frame stats
 
 The `native_objects_walk_native` and `native_objects_walk_fallback`
 columns count objects per view. Fallback reason columns have the same
@@ -83,19 +85,8 @@ or `reservation`. `walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
 object count.
 
-Use the same 03a Old Mombasa firefight with at least six visible enemies,
-the same camera, input and render scale, and a warmed map load for both
-captures. Keep the other render switches fixed. The walk's own A/B
-used a per-walk switch that is gone; compare `H2_FEATURES=render-timing`
-against `H2_FEATURES=render-timing,impl.render.native=off`.
-
-Enable `H2_FRAME_STATS=1` for both. Collect the same window with
-`profile.capture` through the [agent API](../runtime/agent-api.md), or
-stream it with `H2_FRAME_STATS_CSV`. Compare the `render` and `d3d`
-phases, layer-3 and shader-begin time, object walk counters, and the same
-view's images. Check biped animation, held weapons and vehicles through
-fog, and the depth, stencil and draw order against the original path.
-The `impl.render.native=off` capture is the all-D3D reference.
+The method for comparing the walk with `impl.render.native=off` is in
+[notes/native-ab.md](notes/native-ab.md).
 
 ### Research points (Code unless marked; `h2 disasm`)
 
@@ -108,48 +99,44 @@ The `impl.render.native=off` capture is the all-D3D reference.
 | node matrix (`0x34` bytes) | The game's `real_matrix4x3`: `+0` scale, `+4` forward, `+0x10` left, `+0x1c` up, `+0x28` position. A local point `p` goes to `scale · (p.x·forward + p.y·left + p.z·up) + position`: the bounding-sphere update `0x000bdf90..0x000be068` applies the root node exactly so, reading the block through `[body+0x116]`. The matrices are world space (the sphere it produces is the world sphere at `+0x30`). |
 | mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
 | skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
-| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` its second stack argument, the render model (mode) tag datum (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0x10` its fifth, the object's lighting (below), `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state built under `0x00133ab0` (`+0` the object handle, count `+0x166`, per-section words from `+0x48` with stride 4: the lighting pointer at `+0x48 + 4i`, the mode datum at `+0x5c + 4i`, both filled by `0x0003d4f0` and `0x0004b5d0`). **The record does not hold the object handle** (the first live run's walk met 209,131 object records and resolved none by reading `+4` as a handle). Which bits are the section (LOD and permutation) is not read yet. |
-| record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory, Live pending. |
+| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` its second stack argument, the render model (mode) tag datum (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0x10` its fifth, the object's lighting (below), `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state built under `0x00133ab0` (`+0` the object handle, count `+0x166`, per-section words from `+0x48` with stride 4: the lighting pointer at `+0x48 + 4i`, the mode datum at `+0x5c + 4i`, both filled by `0x0003d4f0` and `0x0004b5d0`). **The record does not hold the object handle**. |
+| record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory. |
 | `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
-| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With the native renderer on, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
+| `0x00040136` | The return address of the other layer-3 caller: `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With the native renderer on, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
 | `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
 
-### Resolved-draw path with the walk disabled
+### Layer-3 masks
 
-With the walk off, the layer observer plans items before the layer draw
-and pairs them with their eventual indexed D3D submissions. Guest shader
-and geometry preparation runs in this mode.
+Items the walk does not take are planned by the layer observer before the
+layer draw and paired with their indexed D3D submissions, under the same
+plan rules as the world (`LAYER_DRAW`, an opaque point): **before** the
+layer draw, when the current layer is 3 and the caller is the base layers'
+call (`[esp] == 0x0002bed5`), walk the current list; an item is an object
+item when its build is `0x0004cbf0` and its render record names a live
+object (see "Research points", record `+0x10`). It is skipped when the host
+draws that object's definition and the item's shader (`+8`) is one of the
+host's native materials: layer 3's bit cleared, the item remembered, the
+object added to the view's drawn set (once). The bits go back **before the
+next layer draw** (5 and up follow 3 in the same view), on items that still
+hold the mask the skip left, as the world's do. The host gets one external
+pass per view carrying, per drawn object, the definition and the node
+matrices copied out of the body (`0x34 · count` bytes) and the bounding
+sphere.
 
-The original mask design used the same layer-draw observers as the world (`LAYER_DRAW`, an opaque
-point), under the same plan rules: **before** the layer draw, when the
-current layer is 3 and the caller is the base layers' call (`[esp] ==
-0x0002bed5`), walk the current list; an item is an object item when its
-build is `0x0004cbf0` and its render record's `+4` is a live object
-handle. It is skipped when the host draws that object's definition and
-the item's shader (`+8`) is one of the host's native materials: layer 3's
-bit cleared, the item remembered, the handle added to the view's drawn
-set (once). The bits go back **before the next layer draw** (5 and up
-follow 3 in the same view), on items that still hold the mask the skip
-left, as the world's do. The host gets one
-external pass per view carrying, per drawn handle, the definition and the
-node matrices copied out of the body (`0x34 · count` bytes) and the
-bounding sphere.
-
-Only layer 3 in the first cut, as in stage 1: the objects' layer 1, 5, 7,
-8 and 20 entries and their dynamic-light layers (10 to 13) keep drawing
-through D3D, so self-illumination, environment maps, specular, change
-colour and dynamic lights still come from the game's own passes on top of
-the native base. Those passes depth-test `LessEqual` against the depth the
-native pass wrote; skinned on the GPU in float, the native positions match
-the translated vertex programs to within an ulp or two, not bit for bit,
-so an equal-depth pass can lose pixels on curved surfaces (the A/B shows
-how much). The skipped layers are one mask
-(`native_render::objects::REPLACED_LAYERS`); adding layers later is a mask
-change plus the shading those layers did.
+Only layer 3 is replaced (`native_render::objects::REPLACED_LAYERS`): the
+objects' layer 1, 5, 7, 8 and 20 entries and their dynamic-light layers (10
+to 13) keep drawing through D3D, so self-illumination, environment maps,
+specular, change colour and dynamic lights still come from the game's own
+passes on top of the native base. Those passes depth-test `LessEqual`
+against the depth the native pass wrote; skinned on the GPU in float, the
+native positions match the translated vertex programs to within an ulp or
+two, not bit for bit, so an equal-depth pass can lose pixels on curved
+surfaces (S: how many). Adding a layer is a mask change plus the shading
+that layer did.
 
 What the native pass draws is exactly the set of objects whose layer-3
 items it skipped. The game's own visibility, object list, attachment
@@ -172,15 +159,12 @@ count disagrees with its model's stays on the D3D path.
 ### LODs
 
 The game picks a LOD per object by pixel size, and each render record
-names the section it draws (the key's bits 9..17). The parts drawn
-through the game's programs are drawn by that section: an object's parts
-come from the sections its records name, nothing else. So the load takes
+names the section it draws (the key's bits 9..17). An object's parts come from the sections its records name, nothing else.
+So the load takes
 every detail level's section of the permutations picked
 (`model_load::pick_lod_sections`, highest first per region), and a
-distant object draws the lower level the game picked. Before, only the
-highest level loaded, and a distant object's records named a section the
-pass had no parts for: its items were skipped and nothing drawn (a thin
-object on 03a's rubble, gone at frames 3000 and 4000).
+distant object draws the lower level the game picked. A distant object
+therefore draws the lower level the game picked.
 
 An item whose record names a (section, part) none of the native parts
 is (another permutation than the one loaded, or a part that did not
@@ -243,7 +227,7 @@ models under one owner are therefore independent draws. An incomplete or
 non-geometry list leaves the whole call on D3D, and a mode with a refused
 material or a texture-accumulation dependency stays there too. Loader
 publication is pinned to a map generation, including A → B → A transitions.
-The first-person lights themselves are not native yet.
+The first-person lights themselves are not native.
 
 The path logs native draws,
 objects, skipped items and queue refusals every 1,800 first-person layer-3
@@ -251,38 +235,32 @@ calls; a failed reservation leaves every candidate on D3D rather than
 dropping a planned item. Synthetic tests cover caller selection, record/body
 model divergence, per-item masks and rows, mixed record modes,
 incomplete-list refusal, immediate and next-layer restoration,
-and rebuilt-list handling. The live 03a A/B is still pending.
+and rebuilt-list handling. 
 
 ### Shading
 
-Like the world's first cut: the material's base map (the same name rule,
-`load::base_map`) times a lighting term. The game's per-object lighting
-lives in the render-state cache (`0x0003ddd0`, body `+0xcc`, lighting at
-record `+0x44..`), whose layout is not read; until it is, the term is a
-fixed ambient plus one directional light (`ambient + diffuse · max(n·l,
-0)`), so objects read as lit solids, not as their final look. Reading the
-cache's lighting (ambient, the dominant light's direction and colour, the
-probe's spherical harmonics, [lighting.md](../formats/lighting.md)) is the
-first look step. Materials without a decodable base map keep their D3D
-draws (the skip leaves their items alone) and are not drawn natively.
-Transparent parts (kind 4) are not in layer 3 and are left out.
+Opaque parts are drawn with the game's own vertex program and pixel shader
+(see "Object programs"). `model_gpu::GpuModels` and `models.wgsl` draw the
+base map times a fixed ambient plus one directional term
+(`ambient + diffuse · max(n·l, 0)`); only the theater viewer uses that pass
+(`crates/boot/src/theater/host_view.rs`). Materials without a decodable
+base map keep their D3D draws (the skip leaves their items alone). Transparent
+parts (kind 4) are not in layer 3 and are left out.
 
 Base maps go through the world's stage decoder (`StageDecoder`, one per
 map's model worker): a palettized one (P8, P8 bump) is expanded through
 the device palette bound, when the map's first object was asked for, at
 the stage its material binds it (the first layer-3 implementation that
-names the bitmap; stage 0 otherwise), as the D3D path samples it, not
-drawn as its index in grey. The objects draw only while the palettes the
-expansions used stay bound (checked at each layer-3 view); a stage
-without a full palette refuses the material.
+names the bitmap; stage 0 otherwise), as the D3D path samples it. The
+objects draw only while the palettes the expansions used stay bound
+(checked at each layer-3 view); a stage without a full palette refuses the
+material.
 
 ### Object lighting
 
-The first lit run (03a, objects native, 4,677 of 7,202 layer-3 calls
-drawn) drew the wall vent flat, bright grey-white where the D3D path
-shades it dim: the fixed term above is not the game's lighting, so a
-material that reads the object's lighting must not be drawn with it.
-How the game lights an object's layer-3 pass (Code, `h2 disasm`;
+A fixed ambient and directional term is not the game's lighting, so a
+material that reads the object's lighting is drawn only with the game's
+own inputs. How the game lights an object's layer-3 pass (Code, `h2 disasm`;
 `native_render::object_lighting` has the table):
 
 - **The constants.** The object geometry draw `0x0004d0b0` calls
@@ -337,13 +315,10 @@ How the game lights an object's layer-3 pass (Code, `h2 disasm`;
 Every opaque object material, whether or not its layer-3 pass reads the
 object's lighting, is drawn with the game's own vertex program and pixel
 shader (`native_render::object_program`, `object_program_gpu`), or left
-to D3D, each piece with synthetic tests. The models pass's base-map
-stand-in (base map, fixed ambient and directional light, posed from the
-object's own node matrices) is no longer used for opaque parts: on 03a's
-intro (frame 02000) the scarab's materials that read no lighting were
-drawn by it, flat and dark where the game lights them, and posed apart
-from its parts drawn through their programs, which use the rows its
-records upload and matched D3D pixel for pixel. The native set accepts a
+to D3D, each piece with synthetic tests. The base-map
+stand-in is not used for opaque parts: it would light them flat and pose
+them from the object's node matrices rather than the rows their records
+upload. The native set accepts a
 shader per definition (`NativeSet::shaders` holds `(definition, shader)`):
 a material one model draws through its programs may be refused for
 another whose sections take other programs, and that one's items keep
@@ -432,7 +407,7 @@ implementation samples engine texture 3.
   (`D3DRS_DEPTHCLIPCONTROL`); its range the device's at the issue. This
   takes in the inherited cull: 03a's `concrete_rebar` part of
   `concrete_chunk_j` sets no `CULLMODE` and draws with the device's cull
-  and winding (before, it culled nothing). S: the layer's earlier draws
+  and winding. S: the layer's earlier draws
   leave those fields as at the layer-3 call; the comparison prints the
   D3D draws' own.
 - **One load per map, BSP and generation.** The host keys a load by the
@@ -447,8 +422,7 @@ implementation samples engine texture 3.
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's
   constants with every engine binding that reads the lighting put in from
   the port (`object_vertex_uniforms`: the vector inputs through
-  `ResolvedImplementation::vector_bindings`, the scalar ones through the
-  new `scalar_bindings`, both keeping only what later bindings leave);
+  `ResolvedImplementation::vector_bindings`, the scalar ones through `scalar_bindings`, both keeping only what later bindings leave);
   `c[50..]` the node rows; `c[170..173]` the decompression.
   `inputs_supported` refuses an implementation that reads any other
   per-draw input (time, the camera, object functions) or puts a lighting
@@ -495,12 +469,7 @@ implementation samples engine texture 3.
   and the vertex unit converts them with the formats and shader fetch the
   D3D path's default (GPU) fetch uses (`object_program_gpu::vertex_fetch`,
   `input_fetch`; `NORMSHORT3` as `snorm16x4` read `(x, y, z, 1)`, and so
-  on). They were expanded to floats on the CPU before, and a CPU division
-  can round another way than the GPU's normalised conversion: a part
-  whose layer-3 pass tests depth `Equal` against the depth its D3D pass
-  wrote with the same program (03a's `concrete_rebar`, part 2 of
-  `concrete_chunk_j`, at frames 3000 and 4000) then failed wherever w
-  differed in the last bit, as the world's packed normals did.
+  on). Conversion stays on the GPU because a CPU division can round another way than the GPU's normalised conversion, and a part whose layer-3 pass tests depth `Equal` against the depth its D3D pass wrote with the same program then fails wherever w differs in the last bit.
 - **The implementation** (`record_implementation`, Code `0x0004cbf0`).
   The build of one record's draw switches on its third argument, the
   draw (the jump table at `0x0004d054`, indexed by the bytes at
@@ -549,7 +518,7 @@ implementation samples engine texture 3.
   scalar goes through its binding's transform first
   (`tags::material::engine_scalar`, the one `0x00019ca0` applies: the
   complement, or a cosine or sine wave over one period clamped to 0..1),
-  which the binding now keeps.
+  which the binding keeps.
 - **Which implementations a map draws.** The observer counts live layer-3
   object items by their record's implementation and logs the counts once
   per map, after 600 views.
@@ -570,22 +539,20 @@ implementation samples engine texture 3.
 ### Pipelined render
 
 The observer reads the object array and bodies during the render. With
-`impl.render.pipelined_frame` the render runs one frame behind the simulation on
-its own thread, while the next tick moves the same bodies and may compact
-the pool. That is already safe: on the render thread the observer's
-memory is the render's copy-on-write snapshot of the frame
+`impl.render.pipelined_frame` the render runs one frame behind the
+simulation on its own thread, while the next tick moves the same bodies and
+may compact the pool. On the render thread the observer's memory is the
+render's copy-on-write snapshot of the frame
 (docs/runtime/second-executor.md; `Obs::guest` is the executor's own
-runtime), so the handles, bodies and node matrices it reads are frame
-`k`'s, the same frame the rest of the render draws, and the tick's writes
-to live RAM never reach it. The node matrices are copied out of that
-snapshot at the hook into the pass (`ObjectFrame`), and nothing reads
-guest memory after it, so the snapshot copy the design asked for is the
-pipeline's own snapshot plus that copy. The observer is the one hook
-(context-only, nothing after the body, the restore at the next layer
-draw), so the pipelined render runs it on its own thread like the
-world's. The host's writes are its map state (a mutex only the observer
-takes, with the model loader on host threads) and a reservation on the device
-for the current view. The reservation commits in render order at the hook.
+runtime), so the handles, bodies and node matrices it reads are frame `k`'s,
+and the tick's writes to live RAM never reach it. The node matrices are
+copied out of that snapshot at the hook into the pass (`ObjectFrame`), and
+nothing reads guest memory after it. The observer is one hook (context-only,
+nothing after the body, the restore at the next layer draw), so the pipelined
+render runs it on its own thread like the world's. The host's writes are its
+map state (a mutex only the observer takes, with the model loader on host
+threads) and a reservation on the device for the current view, which
+commits in render order at the hook.
 
 ### Per frame on the CPU
 
@@ -595,10 +562,7 @@ The render thread writes two storage buffers and issues one indexed draw
 per (object, opaque part), grouped by model and material. Nothing per
 vertex and no matrix work on the CPU.
 
-## Stage 2 as built
-
-Not compiled or run by the lane that wrote it (the coordinator builds and
-tests); evidence labels below are what the tests will show once run.
+## Modules
 
 - **`native-render`.** `model` (the game's node matrix, `Model::build`:
   one vertex and index buffer per model in rest space, vertex node indices
@@ -620,8 +584,7 @@ tests); evidence labels below are what the tests will show once run.
   an invented two-node model whose square hangs on a turned node, checks
   colour (lit by the skinned normal), W depth, one object culled and one
   with the wrong node count left out.
-- **The feature `native-objects`** (`crates/feature/src/native_objects.rs`,
-  on by default with the rest of the native renderer).
+- **The feature `native-objects`** (`crates/feature/src/native_objects.rs`).
   One observer before `LAYER_DRAW`, inside `render-timing`'s and the
   world's (`after_feature` on both), context-only. First it sets back the
   bits the last base-layer layer 3 cleared (items still holding the mask
@@ -650,59 +613,18 @@ tests); evidence labels below are what the tests will show once run.
   `... left to the D3D path (<why>)`; every 1,800 views
   `native-objects: D of V layer-3 views drawn natively, O objects, I
   object items skipped`.
-- **Diagnostics** (added after the first live run drew nothing and
-  printed no `native-objects:` line at all). Every layer-3 call of the
-  observer ends in one counted `Stop`: first person (`[esp]` is
-  `0x00040136`, left to D3D), wrong caller (`[esp]` is neither that nor
-  `0x0002bed5`), no host, no camera, no map, no list, no object items (no
-  item's record names a live object), none accepted (models not loaded,
-  refused, or shaders not native), none read (node count), draw refused,
-  drawn. The first of each prints `native-objects: first layer-3 call
-  ending in "<stop>": <detail>`; each distinct wrong caller prints its
-  `[esp]` (up to four); every 1,800 layer-3 calls one line counts them
-  all, with the definitions wanted and the summed walk (items, in layer,
-  geometry builds, object records, live, accepted, failed writes, and up
-  to four other build functions met in layer 3). A run that draws nothing
-  says which return it took.
-- **The first diagnosed run** (03a, world D3D) printed `items 4 in layer
-  4 geometry 4 with handles 0 live 0`, then over 7,202 layer-3 calls
-  209,131 records "with handles" and none live, and 2,521 calls from
-  `[esp]` `0x00040136`. Both had one cause each: the walk read a render
-  record's `+4` as the object handle, but it is the render model datum,
-  so no lookup could succeed; the object is named through the lighting
-  pointer at `+0x10` instead (research table, `record +0x10`). The other
-  caller is the first-person draw, now counted on its own and left to
-  D3D. The transparents' entries (stage 3) read their objects the same
-  way.
-
-### The live A/B
-
-Old Mombasa, E1 off, frame stats and `render-timing` on, the same spot
-with the native renderer off and on (the stage-alone A/B used per-stage
-switches that are gone). What passes:
-
-- the load lines name the map's models, most as native; the refused ones
-  give a reason (the run-time permutations: marines, some scenery);
-- the views line shows every base-layer layer-3 view drawn natively, and
-  objects and items per view in the tens;
-- the frame shows every object in place and posed: bipeds animate (a
-  T-pose or exploded limbs mean the `N · I` reading is wrong), held
-  weapons sit in hands, vehicles and their turrets turn; flat-lit bases
-  with the game's own self-illumination, specular and dynamic lights on
-  top (those layers still draw through D3D);
-- the first-person weapon and arms are unchanged (still D3D);
-- the `0x0002bed0` site (layer 3) and `cpu` drop by the objects' share of
-  layer 3's shader draws (below), `encode` and `submit` with them;
-  `external_passes_dropped` stays 0 (a growth there is an object hole).
-
-What this stage should remove: layer 3 is 8.26 ms on the census run,
-about two thirds of it per-draw guest work in `0x00016b90` and the rest
-D3D; objects are roughly a third to a half of layer 3's 1,882 D3D calls
-on a populated 03a view (S: the split between world and object draws is
-not measured; `render-census` can give it). So with the world already
-native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
-`encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
-dynamic-light passes keep their object draws in this cut.
+- **Diagnostics.** Every layer-3 call of the observer ends in one counted
+  `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller
+  (`[esp]` is neither that nor `0x0002bed5`), no host, no camera, no map, no
+  list, no object items (no item's record names a live object), none
+  accepted (models not loaded, refused, or shaders not native), none read
+  (node count), draw refused, drawn. The first of each prints
+  `native-objects: first layer-3 call ending in "<stop>": <detail>`; each
+  distinct wrong caller prints its `[esp]` (up to four); every 1,800
+  layer-3 calls one line counts them all, with the definitions wanted and
+  the summed walk (items, in layer, geometry builds, object records, live,
+  accepted, failed writes, and up to four other build functions met in
+  layer 3). A run that draws nothing says which return it took.
 
 ### Other builds in layer 3
 
@@ -713,3 +635,20 @@ of `0x18` bytes whose first byte indexes the scenario's decorator palette
 at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
 only build `0x0004cbf0`): they stay on D3D, a later world stage.
+
+## Not verified
+
+- Whether the game composes the same `N · I` for its own node constants
+  (the draw side is checked by a frame A/B).
+- Which regions the game hides that the viewer-style first permutation
+  draws.
+- Which split of layer 3's D3D calls belongs to the world and which to
+  objects (`render-census` can give it).
+- The first-person lights, and a frame comparison of the first-person
+  path.
+
+## Related
+
+[native-renderer.md](native-renderer.md), [native-world.md](native-world.md),
+[objects.md](../formats/objects.md), [lighting.md](../formats/lighting.md),
+[notes/native-ab.md](notes/native-ab.md).

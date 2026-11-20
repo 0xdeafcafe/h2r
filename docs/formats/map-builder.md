@@ -1,10 +1,11 @@
 # Building whole maps (`map::build`)
 
-Status: **Built** (2026-11-16) for the cache layout, string IDs, tag
-names, tag index, metadata with fixups, raw resources, BSP regions and
-the checksum. Proven by synthetic tests and by retail round trips on all
-30 maps of the owner's disc. Maps it writes for the Halo 1 converter load
-and play in the game (owner, 2026-11-17).
+Status: Built for the cache layout, string IDs, tag names, tag index,
+metadata with fixups, raw resources, BSP regions and the checksum.
+Code: `crates/map/src/build.rs`. Switch: none.
+Proven by synthetic tests and by retail round trips on all 30 maps of the
+owner's disc. Maps it writes for the Halo 1 converter load and play in the
+game (**Run**, owner's play).
 
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
 an existing map in place. The builder in `crates/map/src/build.rs` writes
@@ -397,10 +398,10 @@ missing or garbled surfaces), no crash walking round the map.
   `0x200` for bitmap pixels).
 - Aliasing: a pointer from a pinned tag into a moved tag's old bytes (the
   lighting decoder found sky children aliasing other sky payloads) breaks
-  silently. Only bitmaps move today, and nothing is known to alias them.
+  silently. Nothing is known to alias a moved bitmap.
 - Layouts beyond bitmaps: [tag-schema.md](tag-schema.md) infers a layout
   for every group from all retail maps and relocates 90 % of retail tags
-  (`tags::schema::Relocator`), proven offline by a shuffle of all 39 maps.
-  Not yet loaded by the game. The Halo 1 converter builds only the structure
-  BSP and lightmap from scratch (writing every field itself); the scenario
-  and other tags are the base map's, patched in place as pinned bytes.
+  (`tags::schema::Relocator`), proven offline by a shuffle of all 39 maps;
+  a map with every relocatable tag moved has loaded and run headless. The Halo 1 converter assembles converted levels
+  from scratch on the tag repository (`h1campaign::scratch`,
+  `h1convert::scratch`, [tag-repo.md](tag-repo.md)).

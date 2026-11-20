@@ -1,17 +1,68 @@
 # Native GPU renderer
 
-Every stage has defaulted on since the all-native A/B on 2026-11-19/20
-(below, "The all-native push"). The frames matched D3D and the frame rate
-was lower. `H2_FEATURES=impl.render.native=off` is the one switch: it
-returns every stage, walk and the scene lists to the D3D path. The
-per-stage, per-walk and diagnostic switches the push used are gone. The goal is every frame drawn from GPU-resident data, with the game's recompiled
-render front-end left doing only what the GPU path cannot do yet. Evidence
-labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
-(read in the disassembly, `h2 disasm`), **Test**, **S** (supposed). No
-game data: addresses and offsets are research points, everything else is
-read from the user's disc at run time.
+Status: Built. Every stage draws in the default configuration.
+Code: `crates/native-render/src` (wgpu passes and loaders), `crates/feature/src/native_*.rs` (the hooks that hand guest draws to them), `crates/d3d/src/backend.rs` and `crates/d3d/src/device.rs` (admission). Tests: `crates/feature/tests/native_defaults.rs`, `crates/feature/src/switches.rs`, and the per-module tests in `crates/native-render`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-## Ordered replacement handoff
+The native renderer draws the frame from GPU-resident data: the static world, objects, transparents, lights, effects, fog, post and the HUD. It does not
+replace the recompiled front-end wholesale. The guest's render code still
+runs and still fills the push buffer. At each draw, a hook offers the draw to
+a stage; a stage that can reproduce it records a wgpu packet into the same
+frame as the D3D draws and the device drops the original draw. Anything a
+stage refuses stays a D3D draw. Every stage must give the same pixels on
+the reference copy and the display copy of the frame, and a refusal must
+leave the guest exactly as if the hook had not run. Evidence labels as in
+[feature-engine.md](../engine/feature-engine.md): **Code**, **Test**, **S**.
+Addresses and offsets are research points; no game data is in the repo.
+
+The forward design, a renderer that owns the frame and removes the guest
+front-end from the path, is [framescene.md](framescene.md). This page
+describes what exists.
+
+## How a frame flows
+
+1. **Scene lists** ([Scene list builders](#scene-list-builders)). The
+   engine's visibility lists and render records are built in Rust from the
+   live camera, datum arrays and tags, so the guest's gather and setup calls
+   are skipped when the inputs resolve.
+2. **Walks.** Stage hooks sit at researched instruction boundaries in the
+   guest's layer loops ([Native scene walks](#native-scene-walks-for-effects-and-overlays)).
+   Each reads the live list entry and either skips guest work for it or
+   leaves it.
+3. **Admission.** A draw that reaches `d3d` is shown to every registered
+   `d3d::DrawAdmission` ([Admission](#admission)). The first that returns a
+   plan and a pass wins. Preparation records every participating copy; commit
+   splices the sealed command buffers into the D3D submission order.
+4. **Fallback.** A refusal, a failed validation, a material or state the
+   stage cannot reproduce, or a stood-down stage leaves the original D3D draw.
+   Clears, target changes, query reports, menu and video traffic and the
+   final display stay on D3D ([Residual render callers](#residual-render-callers)).
+
+`impl.render.native=off` returns every stage, walk and scene list to the D3D
+path together. `crates/feature/src/switches.rs` (`NATIVE`, `native_render_on`)
+reads it, looked up exactly: the `impl.render` group does not reach it.
+`the_native_master_switch_gates_every_stage_and_walk` checks that every
+stage gate follows it. There are no per-stage switches.
+
+## Stages
+
+| Stage | Page | Modules | What it replaces |
+|---|---|---|---|
+| Stage 1: the static world (and 1b, all layers) | [native-world.md](native-world.md) | `native-render`: `world`, `load`, `gpu`, `cull`, `skip`, `camera`, `world_layers`, `world_layers_gpu`, `world_ranges`. `feature`: `native_world`, `native_world_layers`, `native_map_work` | The structure BSP's layer-3 entries and the other base layers: builds, shader draws, submission |
+| Stage 2: objects and skinning | [native-objects.md](native-objects.md) | `native-render`: `model`, `model_load`, `model_gpu`, `models`, `objects`, `object_walk`, `object_lighting`, `object_nodes`, `object_program`, `object_program_gpu`, `object_state`, `object_streams`. `feature`: `native_objects`, `native_first_person` | Layer-3 object draws and the guest's object setup |
+| Stage 3: transparents | [native-transparents.md](native-transparents.md) | `native-render`: `transparent`, `transparent_streams`. `feature`: `native_transparents` | Indexed submission of the guest's sorted geometry |
+| Particles, decals, effects | [native-particles.md](native-particles.md), [native-decals-research.md](native-decals-research.md) | `native-render`: `particles`, `particle_gpu`, `decal`, `decal_gpu`, `effect_geometry`, `effect_immediate`, `glow`. `feature`: `native_particles`, `native_decals`, `native_effects` | Quad, decal and contrail submission |
+| Stage 4: lights and shadows | [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md), [native-gels.md](native-gels.md) | `native-render`: `lights`, `light_gpu`, `light_list`, `light_look`, `shadows`, `shadow_gpu`, `gels`, `gels_gpu`. `feature`: `native_lights`, `native_shadows`, `native_gels` | The per-light passes, shadow maps and shader gels |
+| Stage 4b: water, fog and camouflage | [native-water-fog.md](native-water-fog.md) | `native-render`: `fog`, `fog_gpu`, `water_gpu`. `feature`: `native_fog`, `native_water` | Layer 16 fog and layer 6 water edge blend |
+| Stage 5: post and HUD | [native-post-hud.md](native-post-hud.md) | `native-render`: `post`, `screen_gpu`, `screen_look`, `hud`, `ui_gpu`. `feature`: `native_post`, `native_hud` | Screen effects, bloom, the HUD and UI quads |
+| Scene list builders | this page | `feature`: `native_scene_lists` | The engine's visibility gathers, object setup and render records |
+
+Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. Sections that code comments cite and on the stage pages: "Object lighting" and "Object programs" in [native-objects.md](native-objects.md); "Skip only the replaced work" in [native-world.md](native-world.md). "What a world pass reads" is a subsection of "Next: matching the look" in the same page.
+
+Stage 1: the static world, Stage 2: objects and skinning, Stage 3:
+  transparents, Stage 4: lights and shadows, Stage 4b: water, fog and
+  camouflage, Stage 5: post and HUD are the table rows above.
+## Admission
 
 World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
 hooks for particles, decals, HUD, gel producers and world layers can register
@@ -106,7 +157,9 @@ copies and multiple runs may share a submission. The queue completion callback
 returns the leased storage to its pool after the last submission using it.
 World placement transforms are initialized once at map load.
 
-**Frame counters.** `H2_FRAME_STATS`, its CSV, `profile.counters` and
+## Frame counters
+
+`H2_FRAME_STATS`, its CSV, `profile.counters` and
 `profile.capture` use the same stage names. Prefix each suffix below with
 `native_<stage>_`, where stage is `world`, `objects`, `transparents`,
 `lights`, `post`, `particles`, `decals`, `hud`, `gels`, `fog`, `water` or `ui`.
@@ -141,44 +194,9 @@ selection time and ownership refusals automatically. New stage implementations u
 `gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
 for resource accounting. Legacy enqueues have no suppression promise.
 
-## Why a new shape
+## Scene list builders
 
-Today a frame on Old Mombasa costs about 25 ms of game-thread time in the
-render front-end ([render-loop.md](render-loop.md), "Where the scene
-passes' time goes"): the opaque layer 3 alone is 8.26 ms, nearly all of it
-per-draw guest work in the shader draw `0x00016b90` (parameter evaluation,
-render-state lists, texture binding) before a D3D call is made. Those
-calls become push-buffer words that `d3d` decodes and translates back into
-wgpu draws on the render thread (decode, then about 6 to 8 ms of encode
-and 4 ms of submit).
-
-Stage 7a ported the orchestrators (`render_views`, `render_scene_passes`,
-the layer loop, the sorts) and saved nothing: it moved code, not work.
-Every Rust port that still calls the pass bodies pays a runner round trip
-per call ([layer-draw.md](layer-draw.md), "Hooked calls leave the direct
-path"). The native renderer does the opposite: it takes the *data* the
-game draws from (tags, at map load) and the *camera* (per frame), draws
-it with its own GPU code, and has the game skip the subtree that would
-have drawn it. A skipped subtree costs nothing on the game thread, in
-`d3d` decode, or in encode.
-
-## Stage plan
-
-| Stage | Draws natively | What the game skips (CPU removed) | Shared with the D3D path |
-|---|---|---|---|
-| 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
-| 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
-| 2. Objects and skinning | Render models with rigid and skinned sections, permutations and LODs | Supported layer-3 draw handlers, object list building and whole-call object setup | Node matrices, object and render-record layouts |
-| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
-| 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
-| 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
-
-Each stage falls back to D3D for the materials or draws it cannot handle.
-
-### Scene list builders
-
-The scene lists are on by default and go off with the rest of the native
-renderer (`impl.render.native=off`). This stage publishes the engine's original
+The scene lists go off with the rest of the native renderer. This stage publishes the engine's original
 visibility lists and render records. A draw can consume the same lists
 through either renderer. The game supplies the camera, clipped cluster
 frusta, live datum arrays and current tag definitions.
@@ -234,8 +252,6 @@ dynamic lights and the sorted dispatch. The Old Mombasa census measured
 isolate the object setup or transparent allocation costs. A net saving
 needs a matching A/B. See [render-loop.md](render-loop.md).
 
-### Maps with no native work
-
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
 no native lit parts. Fog and water stand down when their translated passes
@@ -249,9 +265,7 @@ atomic flag check until the next map activation or snapshot restore.
 
 ## Native scene walks for effects and overlays
 
-The walks are on whenever the native renderer is; `impl.render.native=off`
-disables every walk with its stage. The effects walk shares the particles
-renderer.
+The walks are on whenever the native renderer is. The effects walk shares the particles renderer.
 
 | Stage | Instruction boundary and guest work skipped |
 | --- | --- |
@@ -272,22 +286,16 @@ effective register values on commit and restore their old values on
 refusal. Post retains the assembled original strips for exact D3D replay
 if its complete call fails validation or recording.
 
-Program selection, material evaluation and target changes still run for
-indexed geometry and HUD shader quads. Multi-range indexed branches,
-unknown effect builders, query draws and unsupported states still use
-their original paths. Particle system iteration, property evaluation and
-contrail ribbon construction stay in the guest. Glow and convolution
-quads still use their existing whole-call recording and replay. The
-single-item first-person mask avoids moving a native draw across the
-guest's sort when other layer items participate.
+Program selection, material evaluation and target changes still run in the
+guest for indexed geometry and HUD shader quads. Multi-range indexed
+branches, unknown effect builders, query draws and unsupported states keep
+their original paths. Particle iteration, property evaluation and contrail
+ribbon construction stay in the guest.
 
 ### Post colour state and framebuffer aliases
 
 A load-time screen program does not capture the inherited raster state
-at issue. The screen strip validator used to reject the whole call when
-the live colour state differed, including a blend constant that could
-differ without participating in blending. The strip pipeline now uses the
-resolved blend, blend constant, colour writes, winding, cull and scissor.
+at issue, so the strip pipeline uses the resolved blend, blend constant, colour writes, winding, cull and scissor.
 It still requires the compiled alpha test to match, and checks the actual
 strip attributes against the plan by bits. Each strip in one pass must
 have the same raster state. Other shaders, effects and raster states keep
@@ -299,117 +307,92 @@ D3D's framebuffer snapshot does. Slot identity, sampled dimensions and
 the original replay path stay in the transaction. Mixed alpha
 interpretations of the same framebuffer in one pass are refused.
 
-### Diagnostics and A/B
+## Checking a frame
 
-`H2_FRAME_STATS=1` and the agent's frame counters include
-`native_<stage>_walk_examined`, `walk_suppressed`,
-`walk_refused_inputs` and `walk_refused_reservation`. For post,
-`walk_suppressed` counts guest strip loops skipped. Post's ordinary
-`suppressed` and reference/display range counts measure committed GPU
-coverage. The effects and first-person ranges have their own stage
-columns.
+`H2_FRAME_STATS=1` and the agent's frame counters carry the
+`native_<stage>_walk_examined`, `walk_suppressed`, `walk_refused_inputs` and
+`walk_refused_reservation` counters; for post, `walk_suppressed` counts
+guest strip loops skipped.
 
-Regenerate the retail image with the updated emitter. The emitter routes
-the researched instruction starts through generated entry dispatch.
-Keep the same image across A/B runs and vary only the walk switches.
-Use the same replay or save and input, then capture matching presents
-with the agent API. Include Old Mombasa gameplay and explosions,
-first-person weapon changes, a menu with blurring and glyphs, and a
-two-view run at 1x and 2x. Compare pixels, native and replay counters,
-guest render CPU, D3D encode and render-worker waits. Also capture the
-master-off run as the D3D reference.
+1. Use the agent API (`h2 agent`, [agent-api.md](../runtime/agent-api.md)):
+   run the same replay or save and input with the default and with
+   `H2_FEATURES=impl.render.native=off`, on the same image.
+2. Capture matching presents and compare pixels; compare the native and
+   replay counters, guest render CPU, D3D encode and render-worker waits.
+3. Cover Old Mombasa gameplay and explosions, first-person weapon changes, a
+   menu with blur and glyphs, a movie, an alternate view, and a two-view run
+   at 1x and 2x.
 
-## Open
-
-- Seams: the drawn world is welded (no T-junctions, shared edges
-  bit-identical; `viewer`'s `bsp_cracks`), so no load-time T-junction
-  repair is needed. Draw every material's parts from one vertex buffer
-  with one position transform, and don't snap to a 1/16 grid at scale, so
-  shared edges match bit for bit (high-resolution.md, "Subpixel snapping
-  and cracks"). Re-run `bsp_cracks` on the instanced geometry (not covered
-  yet) and on the campaign BSPs before relying on it.
-- What reads the stencil marks of modes 1 and 2.
-- E1 reprojection: a replayed frame must redraw the native pass with its
-  warped camera; the interpolating backend records draws, not passes.
-- Split screen: one native pass per view, with the view's camera (the
-  camera record is per view; the hook runs per view already).
-- Which 03a templates have a layer-1 texaccum pass that layer 3 samples
-  in screen space; those need the texaccum target bound to the native
-  pass, or stage 1b.
+Numbers from the all-native A/B are in
+[notes/native-ab.md](notes/native-ab.md).
 
 ## Residual render callers
 
-A runtime census of these callers (by view scope, through
-`render.stats`) was used for the inventory below and has been removed.
+What stays on D3D: unsupported materials, exceptional handlers, clears,
+target changes, query reports, menu and video traffic, final display, and
+any shader or geometry setup a stage keeps when it replaces only the
+resolved draws. The reachable sites in the retail image (conditional sites
+counted once; runtime counts depend on visibility and admissions):
 
-### Retail call-site inventory
+| View path | Residual sites |
+|---|---|
+| Scene kind 1 | 5 direct target selections, 1 layer-1 clear, 1 late layer-2 overlay, 1 sky call, 1 visibility issuance and 1 result reader |
+| Scene kind 2 | the same 5 target sites, the layer-1 clear and the layer-2 overlay; exits after the first transparent site |
+| Scene kinds 0, 3, 4, 6, 7 | 4 general layer begins (one is the layer-2 overlay), then the late sky and visibility sites |
+| Scene kind 5 | 1 common exit; it may restore target 0 and the depth clip |
+| Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
+| Outside game views | fallback-view call `0x0022326a`, 2 frame-finish calls, present `0x00223296` |
 
-These are counts of reachable sites from the retail image, with
-conditional sites included once. The number of runtime invocations
-depends on visibility, state caches, materials and which stage
-admissions succeed. All-stage runtime counts are pending integration.
+The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
+`0x0002bf7f` and `0x0002bfe3`. The direct clear is `0x0002be01`; the clear
+helper calls `D3DDevice_Clear` at `0x00014bb2`. Target changes converge on
+`0x0001cd30`, which binds at `0x0001cd63` (same size) or `0x0001cd6c`
+(resets the viewport). The scene exit `0x00013630` can restore a target at
+`0x0001366b`.
 
-| View path | Reachable residual sites | Notes |
-|---|---|---|
-| Scene kind 1 | 5 direct target selections in the base sequence, 1 direct layer-1 clear, 1 late layer-2 overlay, 1 sky call, 1 visibility issuance call and 1 visibility result reader | Layer begins can select and clear targets too. Sky has an independent model path. Flare tests issue once per eligible flare and poll the three-frame set. |
-| Scene kind 2 | The same 5 base target and 1 layer-1 clear sites, and 1 late layer-2 overlay | This path exits after the first transparent site. Sky and the late visibility pair are on the other path. |
-| Scene kinds 0, 3, 4, 6, 7 | 4 general layer begins before the late sequence, including 1 layer-2 overlay site, plus the late sky and visibility sites | Layers 1, 3, 5 and 2 use the general begin. The main scene's five explicit target selections are outside this branch. |
-| Scene kind 5 | 1 common scene-exit site | The scene leaves after its early setup. The common exit may restore target 0 and depth clip. |
-| Alternate view | 1 view setup at `0x0002c863`, 1 UI call at `0x0002c884`, 1 view finish at `0x0002c889` | This is the alternate view record's separate path. Its target and UI draw stream depends on the view. |
-| Outside game views | 1 fallback-view call at `0x0022326a`, 2 frame-finish calls after the view loop, 1 present call at `0x00223296` | Load screens, video and menu composition, the final blit and display resource handling are outside the normal scene admission. |
+The flare writer `0x00020bb0` polls an older result at `0x00020cbb`, begins
+the count with inline NV2A methods, draws its callback and ends the test at
+`0x00020d0f`. The late reader `0x00020770` polls the two-frame slot at
+`0x00020840`. The GPU counter must preserve sample counts, readiness and
+timestamps for both. That report is separate from the previous-frame depth
+grid used for object culling.
 
-The five base target sites are `0x0002bde2`, `0x0002be83`,
-`0x0002bf0e`, `0x0002bf7f` and `0x0002bfe3`. The direct clear is
-`0x0002be01`; the clear helper calls `D3DDevice_Clear` at
-`0x00014bb2`. Target changes converge on `0x0001cd30`, which calls
-the same-size D3D bind at `0x0001cd63` or the viewport-resetting bind at
-`0x0001cd6c`. The scene also reaches layer, light, camera and post targets
-through their own wrappers. The scene exit `0x00013630` can restore a
-target at `0x0001366b`.
+**Residual geometry.** The sky model's indexed strip (`0x0004c976`) and
+standard layer-2 geometry at the main-scene and alternate-scene layer sites
+are admitted. Guest order, transforms, shader inputs and stencil setup stay.
+The pass records the full range on both live target copies before the device
+drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
 
-The flare writer `0x00020bb0` polls an older result at `0x00020cbb`,
-begins the count with inline NV2A methods, draws its callback and ends the
-test at `0x00020d0f`. The late reader `0x00020770` polls the two-frame
-slot at `0x00020840`. The native GPU counter must preserve sample counts,
-readiness and timestamps for both callers. That report is separate from
-the optional previous-frame depth grid used for object culling.
+**Clears, binds and visibility.** A whole-viewport, unmasked clear uses the
+attachment load operations directly; partial or channel-masked clears use the
+rectangle renderer. Target binds among device-owned surfaces skip reference
+staging but keep surface lookup, write-back order and viewport behaviour;
+title-owned surfaces keep the usual rules. Visibility issuance and results
+use the GPU pixel counter and report slots; the inline begin still drains
+before the counted draw, and finish and result calls keep index validation,
+pending answers, timestamps and write order. A one-use marker lets these
+handlers consume the runtime's drain rather than read the push cursor again.
+Callbacks, dirty ranges, deferred destruction and ABI return writes run
+through the common adapter.
 
-The all-stage capture should cover Old Mombasa's cinematic and gameplay,
-a main menu, a movie and an alternate view, against the same run with
-`impl.render.native=off`. What stays on D3D: unsupported materials,
-exceptional handlers, clears, target changes, query reports, menu/video
-and final display traffic, and any shader or geometry setup retained by
-a stage that replaces only resolved draws.
+## Not verified
 
-### Residual geometry admission
+- Seams: the drawn world is welded (`crates/viewer/src/bin/bsp_cracks.rs`
+  checks shared edges), so no load-time T-junction repair is needed. Shared
+  edges must also match bit for bit on instanced geometry and the campaign
+  BSPs, which `bsp_cracks` has not been run over
+  ([high-resolution.md](high-resolution.md), "Subpixel snapping and cracks").
+- What reads the stencil marks of modes 1 and 2.
+- Reprojected frames: a replayed frame must redraw the native pass with its
+  warped camera; the interpolating backend records draws, not passes.
+- Split screen: one native pass per view with the view's camera.
+- Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
+  screen space; those need the texaccum target bound to the native pass.
+- All-stage runtime counts of the residual callers.
 
-With the native renderer on, the residual admission takes the sky model's indexed strip
-at `0x0004c976`, and standard layer-2 geometry at the main-scene and
-alternate-scene layer sites. Their guest order, transforms, shader
-inputs and stencil setup stay in place. The native pass consumes the
-resolved packet and records the full range on both live target copies
-before the handoff replaces the D3D draw. Other layer-2 handlers and
-unknown callers retain their own D3D submission.
+## Related
 
-### Attachment and visibility entry paths
-
-The native renderer also takes the native entry path for clears,
-target binds and visibility finish/results. Their ordering boundary is
-the runtime's existing drain. A one-use marker lets these handlers
-consume that drain instead of reading the push cursor a second time.
-Callbacks, dirty-range processing, deferred destruction and ABI return
-writes still run through the common adapter.
-
-A whole-viewport, unmasked clear uses the native attachment load
-operations directly, without building a rectangle list. Partial or
-channel-masked clears use the existing rectangle renderer. Target
-binds among device-owned surfaces skip reference staging while retaining
-the surface lookup, write-back order and viewport behavior. Title-owned
-surfaces retain the usual reference, parent and destruction rules.
-
-Visibility issuance and results use the existing GPU pixel counter and
-report slots. The inline begin still drains before the counted draw.
-Finish and result calls retain index validation, pending answers, GPU
-timestamps and the normal write order. Counted geometry stays with the
-counting renderer. Draw admission only replaces ranges for which a
-complete recording can be reserved, including every live target copy.
+[framescene.md](framescene.md) (the forward design),
+[render-loop.md](render-loop.md) (the retail front-end and where its time
+goes), [high-resolution.md](high-resolution.md),
+[notes/native-ab.md](notes/native-ab.md), [switches.md](../runtime/switches.md).

@@ -73,6 +73,7 @@ every page here and the plan to bring them to those rules.
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/gfx`): batching, merged passes, the pipeline cache
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/d3d`): entries, device model, push buffer, render targets, vblank
 - [render-switches.md](graphics/render-switches.md): the render switches and experiments that were removed, and why
+- [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates, and the coordinator's measurement commands
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe, measured gain
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
@@ -89,6 +90,7 @@ every page here and the plan to bring them to those rules.
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
 - [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
+- [notes/native-ab.md](graphics/notes/native-ab.md): the all-native A/B record behind the native renderer defaults
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
@@ -181,6 +183,7 @@ every page here and the plan to bring them to those rules.
 
 Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.iso` and converted offline into Halo 2 maps. [README.md](halo1/README.md) (**start here**) says where each part stands.
 
+- [rebuild.md](halo1/rebuild.md): the Halo 1 converter writing objects from typed definitions: scenery, vehicles, bipeds, devices, physics, effects, weapons, particles
 - [campaign.md](halo1/campaign.md): Halo 1's campaign in the Halo 2 engine: the decisions, the pipeline, and every step. All ten levels convert offline at import (`h2 import halo1`); a30 has run headless, none has been played yet
 - [multiplayer.md](halo1/multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants
 - [campaign-picker.md](halo1/campaign-picker.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them (confirmed in the game)
