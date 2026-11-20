@@ -57,6 +57,7 @@ mod h1_command_atoms;
 pub mod health;
 pub mod host_audit;
 pub mod host_coverage;
+pub mod host_report;
 mod host_lobby;
 mod host_metrics;
 pub mod host_mem;
@@ -1165,6 +1166,8 @@ fn run_configured(
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
     anyhow::ensure!(module.slim == (tier == tier::Tier::Host), "module coverage table and build stamp disagree");
+    // The shadow checks build the lifted original from this image on demand.
+    sim_bridge::shadow::SHADOW.set_source(Box::new(fallback::shadow_original));
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
