@@ -1,5 +1,8 @@
 # DirectSound (guest side)
 
+Status: Built. Code: `crates/dsound/src` (`register.rs` is the entry). Tests: `crates/dsound/tests`.
+Switch: none.
+
 `crates/dsound` is the guest-facing half of audio: it takes the calls Halo 2
 makes into its statically linked Xbox DirectSound (`DSOUND` section,
 `0x00379c60`..`0x00387374`, XDK 5849) and answers them from Rust. It reads
@@ -256,9 +259,9 @@ volume table apart (`crates/dsound/src/mixbins.rs`, from `0x37bc89`
 and `0x37a500`): `SetOutputBuffer(mix-in)` replaces the list with the
 mix-in's input bin at `1 / channels`; a later `SetMixBins` routes the
 given pairs and adds the send back; `SetMixBinVolumes` changes volumes
-only, never the list; null takes the send out and keeps the rest. The shim
-used to send such a stream to the mix-in alone, at unity, so a sound in a
-submix played at full level and unpanned however far away it was.
+only, never the list; null takes the send out and keeps the rest. A
+stream is not sent to the mix-in alone at unity: that would play a sound in
+a submix at full level and unpanned however far away it was.
 
 #### What changes the room send
 
@@ -719,9 +722,8 @@ internals, which are unmatched):
   descriptor gives each of these effects a 0x1400-byte ring (80 ms of
   16 kHz 32-bit samples); the other effects keep zeros there. The engine's
   voice streams (`0x335ed3`) take their one mix bin from `0x333330`, as
-  `(state +0x14 - 0x1400) >> 5` of effect `0xb + port`. With `0x1400` for
-  every effect, every port's remote voice landed on bin 0 and played on
-  the left speaker. Each voice effect now gets its own invented base,
+  `(state +0x14 - 0x1400) >> 5` of effect `0xb + port`. A shared `0x1400` base
+  would put every port's remote voice on bin 0, the left speaker. Each voice effect gets its own invented base,
   `0x1400 + (bin << 5)` with bins `0x1b..=0x1e` (the top four FX sends,
   clear of the mix-ins' `0x17..=0x19`), so each port's streams have a bin
   of their own. The mixer captures those bins instead of mixing them
@@ -791,8 +793,8 @@ receives exactly that range. This keeps one invariant: after the call,
 `*pRaw` equals `GetEffectData(index, dest_offset, dest_len)`. Do not take
 `pRaw` as real coefficients; Halo never asks for it.
 
-`GetEffectData`/`SetEffectData` with an index past the image now return
-`DSERR_INVALIDCALL` (the same `0x37e39e` check) instead of `E_INVALIDARG`.
+`GetEffectData`/`SetEffectData` with an index past the image return
+`DSERR_INVALIDCALL` (the same `0x37e39e` check).
 The real code has no offset or size check; the `0x1000` cap stays as this
 model's own limit (`E_INVALIDARG`).
 
@@ -816,7 +818,7 @@ so a failed call leaves uninitialised stack in its comparison.
   the 3D/LFO state object (0 unless the voice has one; not modelled).
 - The shim reports the routing the game set, in millibels. The hardware
   quantises to 1/64 dB steps; that is not reproduced.
-- Default routing, now materialised when a voice is created or `SetMixBins`
+- Default routing is materialised when a voice is created or `SetMixBins`
   is called with a null `DSMIXBINS` (default tables read at `0x38590c`..
   `0x38595c`, chosen at `0x37bc89`): mono and stereo `{0, 1}`, 4 channels
   `{0, 1, 4, 5}`, 6 channels `{0..5}`, all volume 0; a voice with
@@ -887,15 +889,14 @@ and the final ratio are limited so nothing non-finite reaches the mix;
 recursive filter, shelf and diffuser state is flushed to zero when tiny;
 `SetOutputBuffer` holds a reference on its target (balanced on replace,
 clear and stream destruction; a stale pointer is a `BadHandle` stop).
-A second review fixed four more: the direct shelf runs over only the frames a
-voice produced in a render (its state used to advance over block padding, so
-tails depended on block size; tests `direct_shelf_does_not_depend_on_render_block_size`
+Further rules: the direct shelf runs over only the frames a
+voice produced in a render (its state does not advance over block padding, so
+tails do not depend on block size; tests `direct_shelf_does_not_depend_on_render_block_size`
 and `direct_shelf_survives_starvation_and_resume_identically`); a stream keeps
 the last 514 frames of completed packets in a preallocated ring so a negative
 read offset reads real history across a packet join (test
 `packet_boundaries_do_not_change_a_stream_under_receding_doppler`); the deepest
-PARAMEQ cut `0xdfff` decodes to -78.27 dB (the old -60 dB floor is gone; the
-ignored xbe pin now asserts it); and the phase-bound test drives receding and
+PARAMEQ cut `0xdfff` decodes to -78.27 dB (the ignored xbe pin asserts it); and the phase-bound test drives receding and
 approaching Doppler and checks the stream's real offset saturates at +-512.
 
 Determinism and timing. Each voice's effects advance on a frame clock that
@@ -1286,31 +1287,8 @@ after its queue drains naturally (the shim keeps it active). Whether
 default-routing facts above come from small constants read at the cited
 addresses.
 
-## Wanted in `crates/audio`
-
-1. A way to replace a buffer's data and format in place (today `SetBufferData`
-   to a different size removes and re-adds the voice, which changes its
-   `BufferId`, and `Mixer` would need to preserve params).
-2. A `GuestView`-style source so a playing buffer reads guest memory without
-   `Unlock` (or a dirty-range API on `SoundBuffer`).
-3. `PacketStatus::Flushed` should carry the frames already consumed, so
-   `*pdwCompletedSize` can be exact for a half-played flushed packet.
-4. `SoundBuffer::pause` that preserves the playing/looping intent, and a
-   `stopped_at_end` flag so `GetStatus` can distinguish a finished buffer.
-5. (Done: mix-bin routing, mix-in buses, voice headroom and a reverb on the
-   I3DL2 send.) Mix-bin headroom clipping.
-6. Loop and play regions and buffer position notifications if another title
-   path needs them (Halo 2 does not call them).
-7. Wrap-around reads for streams of non-block-aligned PCM. (WMA: done, in
-   `dsound::xwma`.)
-
 ## Controller-speaker routing
 
-`dsound::padroute` labels buffers (at `SetBufferData`) and streams (at
-`Process`, cleared by `Flush`) from the opening bytes of their data, and
-marks chosen sounds for a second host output with `audio::VoiceOutput`. Off
-unless `DirectSound::set_pad_router` is given a router (`boot::pad_speaker`
-installs one per map the game opens). The output thread plays those voices
-into a second sink (`OutputConfig::side`, `Mixer::render_split`) while it is
-connected, and keeps them on the main mix otherwise. See
+`dsound::padroute` labels buffers and streams so a chosen sound can play on a
+controller's speaker (`DirectSound::set_pad_router`). The design is in
 [playstation-audio.md](playstation-audio.md).
