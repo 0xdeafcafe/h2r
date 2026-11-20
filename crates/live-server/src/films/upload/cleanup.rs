@@ -169,14 +169,14 @@ mod tests {
             .await
             .unwrap();
         cleanup_published(&live, id).await;
-        assert!(!live.model.read().films.cleanup_due());
+        assert!(!live.model.read().films.next_cleanup().is_some());
 
         objects
             .put(late, Bytes::from_static(b"late"), &Meta::default())
             .await
             .unwrap();
         reconcile(&live, id, late, false, true).await.unwrap();
-        assert!(live.model.read().films.cleanup_due());
+        assert!(live.model.read().films.next_cleanup().is_some());
         let stream = format!("{}:cleanup", import_stream(id));
         let stale = live.server_event(stream.clone(), HOST_FILM_CLEANED, json!({"game":id}));
         assert!(matches!(
@@ -184,7 +184,7 @@ mod tests {
             Err(StoreError::Conflict { .. })
         ));
         cleanup_published(&live, id).await;
-        assert!(!live.model.read().films.cleanup_due());
+        assert!(!live.model.read().films.next_cleanup().is_some());
         assert!(objects.head(late).await.unwrap().is_none());
         assert!(objects.head(chosen).await.unwrap().is_some());
     }

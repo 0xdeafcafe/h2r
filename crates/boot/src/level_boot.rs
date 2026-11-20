@@ -822,12 +822,12 @@ mod tests {
         recorded.map_zeroed(BUFFER, 0x2000, Permissions::RW).unwrap();
         assert!(take_level_request(&mut recorded).unwrap());
         // The retail options constructor can clear the complete options block.
-        recorded.write(BUFFER, &vec![0; OPTIONS_SIZE as usize]).unwrap();
+        recorded.write_bytes(BUFFER, &vec![0; OPTIONS_SIZE as usize], 1).unwrap();
         let pages = recorded.read::<0x2000>(BUFFER).unwrap();
 
         let mut restored = runtime::Guest::new();
         restored.map_zeroed(BUFFER, 0x2000, Permissions::RW).unwrap();
-        restored.write(BUFFER, &pages).unwrap();
+        restored.write_bytes(BUFFER, &pages, 1).unwrap();
         assert!(!take_level_request(&mut restored).unwrap());
     }
 

@@ -364,7 +364,7 @@ pub(super) fn download_film(
                 if film.version < 3 {
                     // Pre-CIDX recorders and their selector used the stored bounds
                     // directly. They did not record a guest-to-tape clock mapping.
-                    return Ok(clip.clone());
+                    return Ok::<_, String>(clip.clone());
                 }
                 let input = std::fs::File::open(&part).map_err(|e| e.to_string())?;
                 let reader = film::range::RangeReader::new(input).map_err(|e| e.to_string())?;
