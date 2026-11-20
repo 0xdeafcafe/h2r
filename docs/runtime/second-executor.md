@@ -144,6 +144,15 @@ work too but needs a destination allocated first; remap does both.
 Software COW through the fast page table (pipelined-render.md) races a
 sim write against a render read of the same page; host COW has no race.
 
+**With a flat-RAM image** (module feature 16,
+[contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)
+slice F5) the executor's runtime is flat too, and every refresh aliases
+the view's copy into the executor's own window, so its generated code
+runs natively there. On macOS the window aliases the remap itself; on
+Linux the copy goes into a memfd (`Ram::cow_copy_for`), while the frozen
+base stays a plain copy. The view's stores
+mark the window's cards, which its write watch folds.
+
 **The page table.** A view has its own fast page table, built from the
 same mappings (8 MB, a pass over the mapped pages). `cow_refresh` keeps
 it when the source's layout has not changed since the last refresh, so a

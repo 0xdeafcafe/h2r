@@ -1,12 +1,13 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1, T2, T3, F3 and F4 are built (section 6),
-and F2 except its first bullet: deleting the opt-in flat RAM waits for M0,
-which has not been taken. M0's span image still builds with
+Written 2026-11-20. Slices T1, F1, T2, T3, F3, F4 and F5 are built
+(section 6), and F2 except its first bullet: deleting the opt-in flat RAM
+waits for M0, which has not been taken. M0's span image still builds with
 `H2_EMIT_FLAT_RAM=1`; `H2_FLAT_RAM=1` alone builds F3's model. F3's tests
-are `crates/recompiler/emit/tests/flat.rs` and the runtime's
-`window/tests.rs`; its access-trap and MMIO cases need a flat-built module
-in the runtime's tests and are not written. The F2 counters are on the
+are `crates/recompiler/emit/tests/flat.rs` (the emitter's test host),
+`crates/recompiler/emit/tests/flat_runtime.rs` (a flat module in the real
+runtime: the access-trap and MMIO cases) and the runtime's
+`window/tests.rs`. The F2 counters are on the
 agent API, not yet in the sim report. None has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
@@ -407,6 +408,10 @@ window. `cow_refresh` re-aliases the new copy into it. A copy-on-write
 restore from a file re-aliases too; on macOS a shared remap of a private
 file mapping keeps the clean pages shared. On Linux and Windows two
 mappings cannot share private copy-on-write pages: see open question Q1.
+Which blocks a window may alias is `Ram::can_share` (`cow.rs`); a Guest
+asks for aliasing when its runtime runs a flat module
+(`Guest::require_aliasable_ram`), so a paged runtime's views and restores
+keep the window's bookkeeping only.
 
 ### 4.2 Transfers
 
@@ -707,9 +712,7 @@ Runtime only. Old images keep running on the paged path.
   table and a host with a window; the module's fixup table is checked
   sorted and registered with `hostfault`. A runtime with such a module
   catches window faults, turns parking on and moves guest RAM into an
-  aliasable backing, copying what was there. A copy-on-write restore
-  copies the image into that backing too, which is Q1's Linux answer on
-  every host until F5 re-aliases a shared remap on macOS.
+  aliasable backing, copying what was there. Restores and views: F5.
 - Tests: every existing inline-against-helper test in
   `crates/recompiler/emit/tests/perf.rs` rerun as window against null window;
   `page_crossing_access_is_native`; `access_past_4gib_takes_the_fixup`;
@@ -738,8 +741,24 @@ Runtime only. Old images keep running on the paged path.
 
 - `cow_refresh`, `restore_cow` and `cow_snapshot` re-alias into the
   window. Q1 decides the Linux and Windows restore.
-- Tests: `view_refresh_realiases`; `restore_cow_keeps_window_coherent`;
-  the pipelined-render hash parity tests.
+- `Ram::can_share` (`crates/runtime/runtime/src/cow.rs`) is what a
+  window may alias: on macOS the live mapping, a snapshot's remap and a
+  copy-on-write file mapping; on Linux a memfd. A flat-RAM Guest's
+  snapshot can be aliased too (`Ram::cow_copy_for`: the remap on macOS,
+  a memfd copy on Linux); a view's frozen base is a plain copy.
+  `cow_snapshot` keeps the source's flat-RAM flag; `cow_refresh` aliases the new copy into the view's window under
+  a new or an unchanged layout (`Guest::window_ram_replaced`), copying
+  it once if it cannot be (a heap fallback). `restore_cow` aliases the
+  private file mapping on macOS and copies the image into a memfd on
+  Linux (Q1). Only a flat-RAM runtime's Guest is aliased
+  (`Guest::aliases_ram`), so a paged image's views and restores are
+  unchanged.
+- Tests: `view_refresh_realiases` and `restore_cow_keeps_window_coherent`
+  (`crates/runtime/runtime/src/window/tests.rs`);
+  `executor_view_runs_native_in_its_window`
+  (`crates/recompiler/emit/tests/flat_runtime.rs`, a flat module run by a
+  second executor with no fixups); the pipelined-render hash parity
+  tests.
 - Exit: pipelined frame time not worse (M5); resident memory per
   dedicated host reported for Q1.
 
@@ -918,7 +937,10 @@ coordinator builds once per step above and both lanes measure on it.
   mappings cannot share private copy-on-write pages on those systems, so
   under one window the restore must copy the image into the guest's own
   backing: up to 64 MiB resident per host instead of only the written
-  pages. macOS keeps sharing. F5 reports the resident-memory difference.
+  pages. macOS keeps sharing. A flat-RAM runtime on Linux copies
+  the image's non-zero pages into a memfd (`Guest::restore_cow`,
+  `Ram::make_aliasable`); a paged one keeps the shared private mapping.
+  The resident-memory difference per dedicated host is to be measured.
   The user decides whether that is acceptable for host density or whether
   Linux hosts need a different restore.
 - **Q2. Does `h2 sim run` always boot through `restore_cow`?** If so,

@@ -1246,7 +1246,7 @@ impl Guest {
         while at < last {
             let to = (at + CHUNK).min(last);
             let slots = self.window_slots(at, to, w.host_page() as u64);
-            w.refresh(&self.ram, at, &slots);
+            w.refresh(&self.ram, self.aliases_ram(), at, &slots);
             at = to;
         }
     }
@@ -1302,11 +1302,19 @@ impl Guest {
         slots
     }
     /// The Guest's RAM was replaced under unchanged mappings: retire the
-    /// window's aliases of the old RAM.
+    /// window's aliases of the old RAM and alias the new, if it is to be.
     pub(crate) fn window_ram_replaced(&self) {
-        if self.owned_window().is_some_and(|w| w.is_aliased()) {
+        if self.owned_window().is_some_and(|w| w.is_aliased() || self.aliases_ram()) {
             self.refresh_window(0, 1u64 << 32);
         }
+    }
+    /// The window is to alias this Guest's RAM, where the backing can be:
+    /// a flat-RAM runtime's Guest ([`Guest::require_aliasable_ram`]), or
+    /// RAM `H2_FLAT_RAM=1` made aliasable from the start. A paged runtime's
+    /// view or file restore, which macOS could alias, keeps the window's
+    /// bookkeeping only.
+    fn aliases_ram(&self) -> bool {
+        self.aliasable_ram || self.ram.can_alias()
     }
     /// Turn the window's written cards into write-watch notes: the
     /// physical page of each written guest page and of the page after it
@@ -1385,17 +1393,23 @@ impl Guest {
         self.owned_window()
     }
     /// The runtime runs a flat-RAM module (`generated::FEATURE_FLAT_RAM`):
-    /// move RAM into a backing the window can alias, if it is not in one,
-    /// and keep it there through a copy-on-write restore
-    /// ([`Guest::restore_cow`]). RAM made before the module registered is
-    /// copied over, its bytes and every mapping unchanged. A
-    /// second-executor refresh ([`Guest::cow_refresh`]) still leaves RAM
-    /// the window cannot alias: that view runs through its fixups
-    /// (docs/runtime/contract-thin-transfers-flat-ram.md, slice F5).
+    /// keep RAM in a backing the window can alias
+    /// ([`crate::cow::Ram::can_share`]) and alias it, through a
+    /// copy-on-write restore ([`Guest::restore_cow`]) and a view's refresh
+    /// ([`Guest::cow_refresh`]) too
+    /// (docs/runtime/contract-thin-transfers-flat-ram.md, slice F5). RAM
+    /// that cannot be aliased (made before the module registered, a Linux
+    /// file restore, a heap copy) is copied over, its bytes and every
+    /// mapping unchanged.
     pub(crate) fn require_aliasable_ram(&mut self) {
+        let aliased = self.aliases_ram();
         self.aliasable_ram = true;
         if self.ensure_aliasable_ram() {
             self.refresh_fast_range(0, 1u64 << 32);
+        } else if !aliased {
+            // Already shareable (a macOS snapshot or file restore), but
+            // shown unaliased until now.
+            self.refresh_window(0, 1u64 << 32);
         }
     }
     /// Copy RAM into an aliasable backing if this Guest needs one and does
@@ -1404,7 +1418,7 @@ impl Guest {
     pub(crate) fn ensure_aliasable_ram(&mut self) -> bool {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         {
-            if !self.aliasable_ram || self.ram.can_alias() {
+            if !self.aliasable_ram || self.ram.can_share() {
                 return false;
             }
             self.fold_cards();
@@ -1420,6 +1434,12 @@ impl Guest {
         }
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         false
+    }
+    /// RAM is the copy-on-write file mapping of the last
+    /// [`Guest::restore_cow`], not a copy of the image, for a test.
+    #[cfg(test)]
+    pub(crate) fn ram_maps_file(&self) -> bool {
+        self.ram.maps_file()
     }
     /// A Guest whose RAM the window can alias, for a test.
     #[cfg(test)]

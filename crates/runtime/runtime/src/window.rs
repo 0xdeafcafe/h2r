@@ -18,8 +18,16 @@
 //!
 //! The bookkeeping (which pages are in the window, how many mapped pages
 //! are outside it) follows the rule above whatever the RAM's backing. RAM
-//! is aliased in only when its backing can be ([`crate::cow::Ram::alias`]:
-//! flat RAM selected); [`WindowStats::aliased`] says which windows hold RAM.
+//! is aliased in only when the Guest asks for it (a flat-RAM runtime's, or
+//! RAM made aliasable by `H2_FLAT_RAM=1`) and its backing can be
+//! ([`crate::cow::Ram::can_share`]); [`WindowStats::aliased`] says which
+//! windows hold RAM. A second executor's view and a copy-on-write restore
+//! are aliased like live RAM (slice F5): on macOS straight from their
+//! copy-on-write mapping, so the clean pages stay shared.
+//!
+//! **Swapping RAM under one layout** (`Guest::window_ram_replaced`: a
+//! view's refresh) rebuilds the whole window from the new RAM, as a
+//! mapping change does: every old alias is retired first.
 //!
 //! **Cards.** One byte per 4 KiB guest page and, 1,024 bytes below them,
 //! one per 4 MiB region; zero means written. A store marks both (the
@@ -267,14 +275,15 @@ impl Window {
     }
 
     /// Rebuild guest pages `[first, first + slots.len())` of the window
-    /// from `slots`, aliasing `ram` where the rule allows and it can be.
-    /// `first` and the length are whole host pages.
-    pub(crate) fn refresh(&self, ram: &Ram, first: usize, slots: &[Slot]) {
+    /// from `slots`, aliasing `ram` where the rule allows, `alias` asks for
+    /// it and the backing can be. `first` and the length are whole host
+    /// pages.
+    pub(crate) fn refresh(&self, ram: &Ram, alias: bool, first: usize, slots: &[Slot]) {
         let k = self.pages_per_host();
         debug_assert!(first.is_multiple_of(k) && slots.len().is_multiple_of(k));
         debug_assert!(first + slots.len() <= VA_PAGES);
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let can_alias = os::can_alias(ram, self.host);
+        let can_alias = alias && os::can_alias(ram, self.host);
         // Retire every old alias in the range first, whatever RAM it was
         // of: the Guest's RAM may have been replaced since.
         let guarded = self.guard(first * PAGE, (first + slots.len()) * PAGE);
@@ -493,7 +502,7 @@ mod os {
     unsafe impl Sync for Reservation {}
 
     pub(super) fn can_alias(ram: &Ram, host: usize) -> bool {
-        ram.can_alias() && (ram.as_ptr() as usize).is_multiple_of(host)
+        ram.can_share() && (ram.as_ptr() as usize).is_multiple_of(host)
     }
 
     /// Replace `[at, at + len)`, inside the reservation, with a guard.

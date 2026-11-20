@@ -52,9 +52,12 @@ impl Guest {
     /// guards over a copy-on-write copy of its RAM, and how the copy was
     /// made. Neither side sees the other's later writes. It has no write
     /// watch subscribers, no access trap and a page table only if this one
-    /// has one.
+    /// has one. A flat-RAM runtime's Guest gives a copy its window aliases
+    /// once a runtime shows it (slice F5 of
+    /// docs/runtime/contract-thin-transfers-flat-ram.md): a remap on macOS,
+    /// a memfd copy on Linux.
     pub fn cow_snapshot(&self) -> (Guest, CopyKind) {
-        let (ram, kind) = self.ram.cow_copy();
+        let (ram, kind) = self.ram.cow_copy_for(self.aliasable_ram);
         let mut view = Guest {
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
             flat: None,
@@ -78,7 +81,7 @@ impl Guest {
             window: None,
             ident: super::fresh_layout(),
             congruence_skipped: self.congruence_skipped,
-            aliasable_ram: false,
+            aliasable_ram: self.aliasable_ram,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {
@@ -94,10 +97,15 @@ impl Guest {
     /// the cost is the RAM copy alone. Call it under this Guest's memory
     /// guard, and with `source` borrowed under its own, so no store to
     /// either is in flight.
+    ///
+    /// In a flat-RAM runtime the window is rebuilt over the new copy, so
+    /// the view's generated code runs native in it, not through its
+    /// fixups; on macOS the copy is aliased as it is, keeping its pages
+    /// shared with `source` until either side writes them.
     pub fn cow_refresh(&mut self, source: &Guest) -> CopyKind {
         self.invalidate_hle_capture();
         self.fold_cards();
-        let (ram, kind) = source.ram.cow_copy();
+        let (ram, kind) = source.ram.cow_copy_for(self.aliasable_ram);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         {
             self.flat = None;
@@ -106,6 +114,9 @@ impl Guest {
             self.flat_requested = false;
         }
         self.ram = ram;
+        // A copy the window cannot alias (a heap fallback) is copied into
+        // one: slow once, rather than every access through a fixup.
+        self.ensure_aliasable_ram();
         self.watch_revision = self.watch_revision.wrapping_add(1);
         if self.cow_source_layout != source.layout {
             self.copy_layout_from(source);

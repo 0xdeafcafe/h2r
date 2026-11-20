@@ -1,7 +1,7 @@
 use super::*;
 use crate::guest::{Permissions, RAM_SIZE};
 use crate::watch::{CONTIGUOUS_BASE, DirtyRange};
-use crate::{Dispatch, Guest, Runtime};
+use crate::{CopyKind, Dispatch, Guest, Runtime};
 
 /// D2 of the contract change: after a copy-on-write copy of the live RAM,
 /// a store through the window is seen through the canonical mapping and
@@ -306,4 +306,100 @@ fn flat_runtime_lends_no_paged_view() {
         "{dirty:x?}"
     );
     assert_eq!(rt.memory().u32(0x10010).unwrap(), 7);
+}
+
+/// Contract slice F5: a second executor's view in a flat-RAM runtime has
+/// its copy aliased into its own window at every refresh, under a new
+/// layout or an unchanged one. The view's window reads the snapshot, a
+/// store through it is the view's alone, and the live Guest's later
+/// stores reach the view only at the next refresh. On macOS the copy is
+/// the remap itself, not a second copy.
+#[test]
+fn view_refresh_realiases() {
+    let live = Runtime::new(Guest::new(), flat_dispatch());
+    live.memory().map_zeroed(0x10000, 0x8000, Permissions::RW).unwrap();
+    live.memory().set_u32(0x10010, 0x1111).unwrap();
+    let view = Runtime::new(Guest::new(), flat_dispatch());
+    let w = view.memory().window().cloned().expect("a window on this host");
+    let base = view.flat_base().expect("a window");
+    let live_base = live.flat_base().expect("a window");
+    // SAFETY: only called for pages the window holds (checked first).
+    let read = |base: *mut u8, va: u32| unsafe { (base.add(va as usize) as *const u32).read_volatile() };
+    for round in 0..3u32 {
+        let kind = {
+            let mut v = view.memory();
+            let l = live.memory();
+            v.cow_refresh(&l)
+        };
+        if cfg!(target_os = "macos") {
+            assert_eq!(kind, CopyKind::Remapped, "round {round}");
+        }
+        assert!(w.is_aliased(), "round {round}: the copy is aliased");
+        assert_eq!(view.window_stats().pages_outside, 0, "round {round}");
+        assert!(w.holds(0x10010) && w.holds(0x14020));
+        assert_eq!(read(base, 0x10010), 0x1111 + round, "round {round}: the snapshot");
+        // A store through the view's window is the view's.
+        // SAFETY: the window holds the page.
+        unsafe { (base.add(0x14020) as *mut u32).write_volatile(0xa0 + round) };
+        assert_eq!(view.memory().u32(0x14020).unwrap(), 0xa0 + round);
+        assert_eq!(live.memory().u32(0x14020).unwrap(), 0, "round {round}: the view's store stays in the view");
+        assert_eq!(read(live_base, 0x14020), 0);
+        // A live store after the refresh stays out of the view.
+        live.memory().set_u32(0x10010, 0x1111 + round + 1).unwrap();
+        assert_eq!(read(live_base, 0x10010), 0x1111 + round + 1);
+        assert_eq!(read(base, 0x10010), 0x1111 + round, "round {round}: the live store reached the view");
+        if round == 1 {
+            // A new layout for the last round: the window is rebuilt from it.
+            live.memory().map_zeroed(0x40000, 0x4000, Permissions::RW).unwrap();
+            live.memory().set_u32(0x40040, 0x4444).unwrap();
+        }
+    }
+    assert!(w.holds(0x40040));
+    assert_eq!(read(base, 0x40040), 0x4444);
+}
+
+/// Contract slice F5: a copy-on-write restore in a flat-RAM runtime is
+/// aliased into the window. Through the window and through Rust each
+/// guest sees its own stores, no other guest's, and the image is never
+/// written. On macOS the window aliases the private file mapping itself
+/// (the clean pages stay shared); on Linux the image is copied (Q1).
+#[test]
+fn restore_cow_keeps_window_coherent() {
+    let mut source = Guest::new();
+    source.map_zeroed(0x10000, 0x8000, Permissions::RW).unwrap();
+    source.set_u32(0x10010, 0x1234_5678).unwrap();
+    let layout = source.layout();
+    let path = std::env::temp_dir().join(format!("h2-window-restore-{}.ram", std::process::id()));
+    std::fs::write(&path, source.physical_ram()).unwrap();
+    fn physical(rt: &Runtime) -> usize {
+        rt.memory().mappings().iter().find(|m| m.virtual_start == 0x10000).unwrap().physical_start as usize
+    }
+    fn read(rt: &Runtime, va: u32) -> u32 {
+        // SAFETY: only called for pages the window holds (checked first).
+        unsafe { (rt.flat_base().unwrap().add(va as usize) as *const u32).read_volatile() }
+    }
+    let (a, b) = (Runtime::new(Guest::new(), flat_dispatch()), Runtime::new(Guest::new(), flat_dispatch()));
+    for rt in [&a, &b] {
+        rt.memory().restore_cow(&layout, &path).unwrap();
+        let w = rt.memory().window().cloned().expect("a window on this host");
+        assert!(w.is_aliased(), "the restored RAM is aliased");
+        assert!(w.holds(0x10010) && w.holds(0x14000));
+        assert_eq!(rt.window_stats().pages_outside, 0);
+        assert_eq!(read(rt, 0x10010), 0x1234_5678);
+        assert_eq!(rt.memory().ram_maps_file(), cfg!(target_os = "macos"), "shared on macOS, copied elsewhere");
+    }
+    // A store through a's window: a's Rust sees it, b and the image do not.
+    // SAFETY: the window holds the page (checked above).
+    unsafe { (a.flat_base().unwrap().add(0x10010) as *mut u32).write_volatile(7) };
+    assert_eq!(a.memory().u32(0x10010).unwrap(), 7);
+    assert_eq!((b.memory().u32(0x10010).unwrap(), read(&b, 0x10010)), (0x1234_5678, 0x1234_5678));
+    // A store through b's Rust: b's window sees it, a does not.
+    b.memory().set_u32(0x14020, 9).unwrap();
+    assert_eq!(read(&b, 0x14020), 9);
+    assert_eq!((a.memory().u32(0x14020).unwrap(), read(&a, 0x14020)), (0, 0));
+    let image = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let at = physical(&a) + 0x10;
+    assert_eq!(image[at..at + 4], 0x1234_5678u32.to_le_bytes(), "the image is never written");
+    assert_eq!(physical(&a), physical(&b));
 }

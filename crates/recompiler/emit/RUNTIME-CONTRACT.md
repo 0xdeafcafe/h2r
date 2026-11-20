@@ -170,9 +170,11 @@ docs/runtime/contract-thin-transfers-flat-ram.md, section 4.1.
   lends no paged view (`h2abi_v1_fast_acquire` returns null), so a paged
   module registered beside the flat one takes the checked helpers and a
   memory guard never takes the gate or drains the paged dirty bitmap;
-  the write watch reads the cards (`Guest::fold_cards`). A
-  second-executor refresh still leaves RAM the window cannot alias, so
-  such a view runs through its fixups. A runtime without bit 16 in
+  the write watch reads the cards (`Guest::fold_cards`). A second
+  executor's view is aliased into its own window at every refresh, and
+  a copy-on-write restore into the runtime's (on macOS the file mapping
+  itself, on Linux a memfd copy of it), so both run natively. A runtime
+  without bit 16 in
   `FEATURES` refuses the module as unknown; a module without it runs the
   paged model unchanged.
 
