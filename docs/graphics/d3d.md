@@ -1,11 +1,11 @@
 # D3D: the guest-facing Direct3D 8 replacement
 
-Status: Built. Reference for `crates/d3d`.
-Code: `crates/d3d/src/`. Tests: `crates/d3d/tests/`.
+Status: Built. Reference for `crates/platform/d3d`.
+Code: `crates/platform/d3d/src/`. Tests: `crates/platform/d3d/tests/`.
 Switch: `H2_RENDER_THREAD=0` and the diagnostics in [switches.md](../runtime/switches.md).
 
-`crates/d3d` replaces the Direct3D 8 that Halo 2 links statically (XDK 5849,
-`D3D8LTCG`, the `D3D` section) at the API level, on top of `crates/gfx`. It
+`crates/platform/d3d` replaces the Direct3D 8 that Halo 2 links statically (XDK 5849,
+`D3D8LTCG`, the `D3D` section) at the API level, on top of `crates/platform/gfx`. It
 does not emulate the NV2A. This page covers what the game reaches, which
 guest structures matter, what game code does *without* calling D3D, the
 device model, and how to wire it into the runtime.
@@ -571,7 +571,7 @@ and allocations are bounded before anything is read:
     (`texture_info`).
 - `GfxBackend` renders pre-transformed fixed-function draws its built-in
   shader reproduces exactly through that shader, and everything else
-  through a `ShaderProvider` (`Nv2aShaders` over `crates/shaders` by
+  through a `ShaderProvider` (`Nv2aShaders` over `crates/formats/shaders` by
   default). A draw the provider cannot translate is skipped with an
   `Event::DrawSkipped` that gives the reason.
   - Each draw is scissored to `clip`, or, when the scissors leave several
@@ -984,7 +984,7 @@ bound.
 Most of a level's vertices (BSP, object models) never change, but every
 draw would copy its whole vertex window out of guest memory, and the
 render thread would stage the same bytes in its upload ring. The vertex
-cache (`crates/d3d/src/vertex_cache.rs`) keeps them instead, under the
+cache (`crates/platform/d3d/src/vertex_cache.rs`) keeps them instead, under the
 same write-tracker contract as textures.
 
 - **Key.** A vertex window is keyed by guest address and length (the
@@ -1083,7 +1083,7 @@ Fallbacks:
 ## Integration
 
 `d3d::register(&mut Dispatch, SharedDevice<B>)` (in `runtime_glue`)
-installs every override against the real `crates/runtime`:
+installs every override against the real `crates/runtime/runtime`:
 
 ```rust
 let cfg = d3d::DeviceConfig {
@@ -1258,7 +1258,7 @@ and the kernel's (KeTickCount, timers) drift apart.
 
 **On the logical clock** (the faithful delivery). `d3d::vblank::clocked_vblanks(device)`
 is a handler for a kernel periodic source (`kernel::periodic`, see
-crates/kernel/README.md "Periodic host interrupts and pacing"):
+crates/runtime/kernel/README.md "Periodic host interrupts and pacing"):
 
 ```rust,ignore
 kernel.add_periodic(kernel::periodic::Source {
@@ -1832,7 +1832,7 @@ write every other dirty level back (`WritebackCause::Overlap`, a read-back
 each) before binding or sampling one. The device avoids that with an
 *alias mirror*: `Backend::mirror_*` (`GfxBackend` implements it as a
 storage buffer, `gfx::guest_words`) stands for the pool's memory, and the
-device (`crates/d3d/src/device/mirror.rs`) moves the overlapping dirty
+device (`crates/platform/d3d/src/device/mirror.rs`) moves the overlapping dirty
 level into it (`mirror_store`: its guest texels, pitch padding as zeros,
 exactly what the write-back would store) instead of writing it back, and
 fills the bound level from it (`mirror_load`: what an upload of those
@@ -1869,7 +1869,7 @@ it off (tests). The per-byte state is bytes, scanned eight at a time, and
 guest memory is compared with what the mirror took only on pages written
 since.
 
-Tests: `crates/d3d/tests/alias_mirror.rs` runs a five-level pool (two
+Tests: `crates/platform/d3d/tests/alias_mirror.rs` runs a five-level pool (two
 pitches, a partial overlap, a swizzled alias, `X8` with padding, a depth
 level) through draws, in-place and through-memory samples, guest stores
 before and after the mirror took the bytes (whole words and part of one), a
@@ -1878,7 +1878,7 @@ render thread, and compares the back buffer and guest memory with the
 write-back path byte for byte.
 `a_depth_level_fills_from_the_mirror_as_from_memory` does the same for a
 shadow-map pool and checks that the mirror path reads nothing back;
-`crates/gfx/tests/guest_words.rs` checks `load_depth` against `write_depth`
+`crates/platform/gfx/tests/guest_words.rs` checks `load_depth` against `write_depth`
 bit for bit. `bench_shadow_map_binding` (same file as the pool test,
 `#[ignore]`) times a shadow-map binding.
 
@@ -1902,9 +1902,9 @@ read back once per depth generation and decoded on the CPU inside the
 backend. `GfxBackend::set_gpu_depth_aliases(false)` takes the read-back
 path (tests).
 
-Tests: `crates/gfx/tests/guest_words.rs` checks the pass against
+Tests: `crates/platform/gfx/tests/guest_words.rs` checks the pass against
 `read_depth_as` plus `decode_texture` byte for byte, and
-`crates/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with three
+`crates/platform/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with three
 sign masks over three depth contents with the pass on and off, on the
 device's thread and through the render thread, and compares the back
 buffers byte for byte.
@@ -1934,4 +1934,4 @@ What the device and `gfx` do not do:
   depth buffer ("Depth aliases on the GPU"). `D16` levels, and aliases in
   other formats or over a `D16` depth buffer, go through a CPU round trip: a
   readback, then a decode and an upload. The shadow-map comparison itself is
-  in `crates/shaders` ([shaders.md](shaders.md), "Shadow maps").
+  in `crates/formats/shaders` ([shaders.md](shaders.md), "Shadow maps").

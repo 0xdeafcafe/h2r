@@ -1,5 +1,5 @@
 // A save's own SaveImage.xbx (or the title's), decoded in the browser: an
-// `XPR0` resource holding one texture, the format crates/assets/src/xpr.rs
+// `XPR0` resource holding one texture, the format crates/platform/assets/src/xpr.rs
 // reads from the disc's executable. Saves are small (64x64) and DXT1 in
 // practice; DXT1, DXT3 and DXT5 are read, anything else is null and the
 // caller falls back to the disc's save image.

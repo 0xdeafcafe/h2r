@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
 Status: Partly built. Unshadowed dynamic lights over cluster geometry, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
-Code: `crates/feature/src/native_lights.rs`, `native_lights/walk.rs`, `crates/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`. Tests: `crates/feature/tests/native_lights.rs`, `native_lights_split.rs`, `crates/engine/tests/light_passes.rs`, `light_constants.rs`.
+Code: `crates/hooking/feature/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`. Tests: `crates/hooking/feature/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).

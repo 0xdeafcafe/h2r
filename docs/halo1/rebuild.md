@@ -502,7 +502,7 @@ with a Halo 2 driving word on more than one pair (the warthog's Halo 1
 `+0x2fc`, `+0x300`, `+0x304` times 30, 900 and 900 are Halo 2's `+0x1f8`,
 `+0x1fc`, `+0x200` exactly; every other vehicle was retuned for Havok).
 
-Proof (`crates/h1objects/tests/vehicle_rebuild_disc.rs`, lib tests
+Proof (`crates/tools/h1objects/tests/vehicle_rebuild_disc.rs`, lib tests
 `rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role` and
 `rebuilt_vehicle_takes_its_types_role_and_halo_1s_type`):
 
@@ -630,7 +630,7 @@ are: on the same five pairs each agrees within 1 % with one Halo 1 word
 in radians and small ratios; their meaning is not established, so they
 stay unknown spans (`+0x26c` is the crouching height above).
 
-Proof (`crates/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
+Proof (`crates/tools/h1objects/tests/unit_rebuild_disc.rs`, and the lib tests
 `rebuilt_biped_is_the_role_with_halo_1s_header_and_words` and
 `rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references`):
 
@@ -667,7 +667,7 @@ shapes are Halo 1's size (a marine's radius 0.18 where Halo 2's is 0.12).
 
 ## Devices (`mach`, `ctrl`; `h1objects::rebuild::device`)
 
-`crates/tags/src/defs/devi.txt`: `struct devi` (`0..0x11c`, the object
+`crates/formats/tags/src/defs/devi.txt`: `struct devi` (`0..0x11c`, the object
 header and the device layer) and the `mach` (`0x134`) and `ctrl`
 (`0x140`) roots. All 135 retail machines and 14 controls round-trip
 byte-identical. The disc has no `lifi` tags, so there is no `lifi`
@@ -802,7 +802,7 @@ devices name their placement (a fixture's names its machine).
 
 ## Effects from definitions (`h1objects::rebuild::effect`)
 
-`crates/tags/src/defs/effe.txt` is the Halo 2 `effe` from
+`crates/formats/tags/src/defs/effe.txt` is the Halo 2 `effe` from
 [effects.md](../formats/effects.md) (strides V by tiling, the E readers there), with
 `struct property` for the emitters' sixteen-byte properties. All 805
 distinct retail effects on the disc (14,785 instances) round-trip
@@ -875,7 +875,7 @@ a30's `lifepod_entry` its effect and loop. The plain lifepods carry only
 two lights in Halo 1, which they now have; they stay quiet, as in Halo
 1.
 
-Proof (`crates/h1objects/tests/effects_disc.rs`; lib tests
+Proof (`crates/tools/h1objects/tests/effects_disc.rs`; lib tests
 `rebuilt_effect_keeps_halo_1s_events_and_the_parts_that_convert` and
 `audio_placeholders_become_null_when_the_sounds_have_no_room`):
 
@@ -908,7 +908,7 @@ so nothing moves).
 
 ### Lights (`ligh`, version 51)
 
-`crates/tags/src/defs/ligh.txt` is the Halo 2 `ligh` of
+`crates/formats/tags/src/defs/ligh.txt` is the Halo 2 `ligh` of
 [effects.md](../formats/effects.md) (E readers in
 [e3-lighting.md](../graphics/e3-lighting.md), "The light record"). All
 190 distinct retail lights round-trip byte-identical.
@@ -935,7 +935,7 @@ disc's maps (95 cones) rebuild and read back.
 
 ### Decals (`deca`, version 51)
 
-`crates/tags/src/defs/deca.txt`: all 157 distinct retail decals
+`crates/formats/tags/src/defs/deca.txt`: all 157 distinct retail decals
 round-trip byte-identical; the zero spans are pad. Halo 1's `deca`
 (`h1::Decal`, `0x10c`; V on 270 decals of six maps) holds the same
 fields in the same order as Halo 2's: flags (`+0`, the same bits, `8`,
@@ -975,7 +975,7 @@ the import's own job function (`DiscConverter::multiplayer`).
 
 ### Dialogue (`udlg`)
 
-`crates/tags/src/defs/udlg.txt`: all 42 distinct retail `udlg` round-trip
+`crates/formats/tags/src/defs/udlg.txt`: all 42 distinct retail `udlg` round-trip
 byte-identical. A Halo 2 `udlg` is a list of vocalizations, each a
 string ID name and a `snd!`, plus an `adlg` reference (null on every tag)
 and a per-tag string (a three-letter designator, `jon`, `grf`, `dop`;
@@ -1005,7 +1005,7 @@ the runtime lookup and remaining automatic events.
 
 ### Material effects (`foot`)
 
-`crates/tags/src/defs/foot.txt`: all 95 distinct retail `foot` round-trip
+`crates/formats/tags/src/defs/foot.txt`: all 95 distinct retail `foot` round-trip
 byte-identical. A Halo 2 `foot` is a block of kinds by index, each with a
 sounds block and an effects block of `0x18` elements: the tag (an effect
 has a second, null on characters), a global material name and, at
@@ -1038,7 +1038,7 @@ these 32 (h1convert does not use this table), which then find nothing.
 
 ### Lens flares, debris and light fixtures (`lens`, `garb`, `lifi`)
 
-**Lens flares.** `crates/tags/src/defs/lens.txt` is the Halo 2 `lens`
+**Lens flares.** `crates/formats/tags/src/defs/lens.txt` is the Halo 2 `lens`
 of [effects.md](../formats/effects.md); all 160 distinct retail lens flares (and the one `garb`) round-trip
 byte-identical. Four engine paths submit a flare through
 `0x0002dba0` (**E**, the calls found by a scan of the XBE): sky lights
@@ -1094,7 +1094,7 @@ debris meshes are particle models (`PRTM`, 243 tags); its one `garb`
 (the SMG's dropped magazine, 30 instances) is no effect's part (V,
 `halo2_reference_survey`). `bloc` needs a Havok physics model and
 `PRTM` the particle system lane's `prt3`, so Halo 1's garbage stays
-garbage (D). `crates/tags/src/defs/garb.txt` is the item layer and
+garbage (D). `crates/formats/tags/src/defs/garb.txt` is the item layer and
 `0xa8` bytes zero on the disc's only `garb`, which round-trips.
 `flares_conv::garbage` writes the object header (type 4, bounds, model,
 predicted resources), the base's garbage role words and the attachments
@@ -1139,7 +1139,7 @@ fixtures' lights against Halo 1's.
 
 Every Halo 1 `weap`, `eqip` and `proj`, and the `jpt!` its projectiles
 deal, is written from its definition with no retail template bytes
-(`crates/h1objects/src/arsenal.rs`, `convert_arsenal.rs`). **The only
+(`crates/tools/h1objects/src/arsenal.rs`, `convert_arsenal.rs`). **The only
 path since converter version 51**: the template path for these groups
 was removed. `proj.txt` and `jpt_.txt` are new; all 47 retail projectiles
 and 135 damage effects round-trip byte-identical (the proof above, now 18 groups). Building one
@@ -1267,7 +1267,7 @@ first-person graph animates Halo 1's arm nodes.
 
 ## Particles and contrails (`prt3`, `cont`)
 
-`crates/tags/src/defs/prt3.txt`: all 2,021 distinct retail `prt3` (4,988
+`crates/formats/tags/src/defs/prt3.txt`: all 2,021 distinct retail `prt3` (4,988
 instances) round-trip byte-identical. The root's fields are named from
 the engine's reader, the particle draw callback `0x00224550`
 ([effects.md](../formats/effects.md), "prt3 root"): the five properties are colour,
@@ -1304,7 +1304,7 @@ of the 533 hold their stem's most common set. A lod's `+0x6` and a pass's
 `+0x2` vary on retail and nothing reads them.
 `h1objects::particles::particle_postprocess` writes this.
 
-`crates/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
+`crates/formats/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
 round-trip (a `0xf0` root, the bitmap at `+0x30` and `+0x88`, `0x40`
 points each with a `pphy` at `+0x10`). The spans are named by where they
 sit in Halo 1's `cont` (`0x144`, points `0x68`), which Halo 2's compacts

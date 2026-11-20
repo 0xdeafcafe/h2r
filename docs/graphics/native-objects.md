@@ -1,7 +1,7 @@
 # Native renderer stage 2: objects and skinning
 
 Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
-Code: `crates/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/feature/src/native_objects.rs`, `crates/boot/src/native_objects_glue.rs`. Tests: `crates/native-render/tests/models_gpu.rs`, `crates/feature/tests/native_objects.rs`, `crates/native-render/tests/object_lighting_differential.rs`.
+Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/hooking/feature/src/native_objects.rs`, `crates/apps/boot/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/hooking/feature/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
@@ -97,7 +97,7 @@ The method for comparing the walk with `impl.render.native=off` is in
 | body `+0x30`, `+0x3c` | World bounding sphere: centre (3 floats), radius ([occlusion-culling.md](occlusion-culling.md)). |
 | body `+0x114` (u16), `+0x116` (i16) | **The node-matrix block**: its size in bytes and its offset from the body. `object_new` `0x000b7b40` reserves it at `0x000b800b..0x000b801e` with `0x000bc380(field 0x114, 0x34 · nodes, align 0)`, the node count from hlmt `+0x78` (at least one). `0x000bc380` writes a block reference as `+0` size and `+2` offset (`0x000bc427`, `0x000bc430`). The other blocks it places: `+0x10c` and `+0x110` (32 bytes per node, when animated), `+0x118` (10 bytes per region), `+0x11c` (8 per attachment), `+0x120`, `+0x124` (`0x18` per change colour), `+0x128`. |
 | node matrix (`0x34` bytes) | The game's `real_matrix4x3`: `+0` scale, `+4` forward, `+0x10` left, `+0x1c` up, `+0x28` position. A local point `p` goes to `scale · (p.x·forward + p.y·left + p.z·up) + position`: the bounding-sphere update `0x000bdf90..0x000be068` applies the root node exactly so, reading the block through `[body+0x116]`. The matrices are world space (the sphere it produces is the world sphere at `+0x30`). |
-| mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
+| mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/tools/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/formats/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
 | skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
 | `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` its second stack argument, the render model (mode) tag datum (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0x10` its fifth, the object's lighting (below), `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state built under `0x00133ab0` (`+0` the object handle, count `+0x166`, per-section words from `+0x48` with stride 4: the lighting pointer at `+0x48 + 4i`, the mode datum at `+0x5c + 4i`, both filled by `0x0003d4f0` and `0x0004b5d0`). **The record does not hold the object handle**. |
 | record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory. |
@@ -243,7 +243,7 @@ Opaque parts are drawn with the game's own vertex program and pixel shader
 (see "Object programs"). `model_gpu::GpuModels` and `models.wgsl` draw the
 base map times a fixed ambient plus one directional term
 (`ambient + diffuse · max(n·l, 0)`); only the theater viewer uses that pass
-(`crates/boot/src/theater/host_view.rs`). Materials without a decodable
+(`crates/apps/boot/src/theater/host_view.rs`). Materials without a decodable
 base map keep their D3D draws (the skip leaves their items alone). Transparent
 parts (kind 4) are not in layer 3 and are left out.
 
@@ -584,7 +584,7 @@ vertex and no matrix work on the CPU.
   an invented two-node model whose square hangs on a turned node, checks
   colour (lit by the skinned normal), W depth, one object culled and one
   with the wrong node count left out.
-- **The feature `native-objects`** (`crates/feature/src/native_objects.rs`).
+- **The feature `native-objects`** (`crates/hooking/feature/src/native_objects.rs`).
   One observer before `LAYER_DRAW`, inside `render-timing`'s and the
   world's (`after_feature` on both), context-only. First it sets back the
   bits the last base-layer layer 3 cleared (items still holding the mask
@@ -594,7 +594,7 @@ vertex and no matrix work on the CPU.
   not seen, copies the cleared objects' nodes and spheres, gives back the
   bits of objects it could not read or whose node count disagrees, and
   asks for the pass (all bits back if the device cannot). Tests:
-  `crates/feature/tests/native_objects.rs` (the plan with `render-timing`,
+  `crates/hooking/feature/tests/native_objects.rs` (the plan with `render-timing`,
   deep, the layer-draw port and the world; with the world alone the chain
   runs on the render thread; the switch off; the observer on
   `FlatMemory`, with the restore at the next layer draw and a rebuilt
@@ -602,7 +602,7 @@ vertex and no matrix work on the CPU.
   registration tests); `render_thread`'s test checks the layer draw is
   render-thread safe with the world and objects on (see "Pipelined
   render").
-- **Boot glue** (`crates/boot/src/native_objects_glue.rs`). Per map, a
+- **Boot glue** (`crates/apps/boot/src/native_objects_glue.rs`). Per map, a
   worker with the map, its shared maps and the object tag context open;
   definitions arrive one at a time from the feature and are loaded once;
   a model is queued for upload before its definition is published, so a

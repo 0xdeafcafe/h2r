@@ -57,7 +57,7 @@ describe("brand names", () => {
   });
 
   test("the server's colours are the app's", () => {
-    const rust = readFileSync(join(ROOT, "crates/live-server/src/page_meta.rs"), "utf8");
+    const rust = readFileSync(join(ROOT, "crates/live/live-server/src/page_meta.rs"), "utf8");
     expect(rust).toContain(`DASH_THEME: &str = "${THEME.dash}"`);
     expect(rust).toContain(`STATS_THEME: &str = "${THEME.stats}"`);
     expect(rust).toContain(`DEFAULT_IMAGE: &str = "/${CARD.file}"`);

@@ -1,7 +1,7 @@
 # 60 and 120 fps
 
 Status: Partly built. The setting, the determinism harness, the interpolated replay (D) and rotation-only reprojection (E1) are built and tested on synthetic draw lists; none has been run in the game. Object tagging, bundles, 120 and variable refresh are design.
-Code: `crates/lockstep`, `crates/xapi/src/tap.rs`, `crates/app/src/fps.rs`, `crates/d3d/src/interp/`, `crates/boot/src/d3d_glue.rs`, `crates/boot/src/lockstep_glue.rs`. Tests: sections 6 to 8.
+Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/platform/d3d/src/interp/`, `crates/apps/boot/src/d3d_glue.rs`, `crates/apps/boot/src/lockstep_glue.rs`. Tests: sections 6 to 8.
 Switch: `H2_FPS`, `impl.render.interpolate`, `impl.render.reproject`, `impl.render.reproject_ahead`, `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`, listed in [switches.md](../runtime/switches.md).
 
 The rule: **the guest tick stays 30 Hz, and 60 or 120 fps interpolates the picture.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
@@ -91,14 +91,14 @@ Three things to take from this:
 
 ### In our runtime
 
-- **The logical clock** (`kernel::Clock`, crates/kernel/README.md "Time and
+- **The logical clock** (`kernel::Clock`, crates/runtime/kernel/README.md "Time and
   work") counts 100 ns ticks. Generated code charges one ns per guest memory
   access. The clock jumps to the next deadline when every thread waits. Rust
   overrides and DPCs are uncharged. KeTickCount, the performance counter,
   the TSC, timers and vblanks all read this one clock, so a run's schedule
   depends only on the guest's work and its inputs, never on wall time.
 - **Vblanks** come from a kernel periodic source at `Rate::HZ_60`
-  (`crates/boot/src/lib.rs`, `d3d::vblank::clocked_vblanks`) on that clock.
+  (`crates/apps/boot/src/lib.rs`, `d3d::vblank::clocked_vblanks`) on that clock.
   The frame-wait override `FrameWait::HALO2_CLOCKED` yields until the target,
   so the clock jumps straight to the vblank (d3d.md). A level frame is
   33.3 ms of logical time and 2 vblanks ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
@@ -169,7 +169,7 @@ instructions on the same schedule whether it is on or off.
 - Each guest present already hands the backend a frame: the ordered
   `ResolvedDraw`s with their streams, state and shader constants, plus
   clears, copies and uploads. `H2_BOOT_CAPTURE` already records exactly this
-  for offline replay (`crates/boot/src/d3d_diag.rs`), so replaying a frame
+  for offline replay (`crates/apps/boot/src/d3d_diag.rs`), so replaying a frame
   is not new.
 - The presenter keeps two frames, N-1 and N, each stamped on the game's
   thread at the `Swap` entry and carried with the present command. Not in
@@ -312,7 +312,7 @@ Two answers, in order:
   rebases and the game plays in slow motion; interpolating slow motion helps
   nothing. If the guest misses a frame, the presenter holds at alpha 1 for
   that span rather than guessing.
-- **Present modes.** The window uses `AutoVsync` (`crates/app/src/surface.rs`). For a fixed
+- **Present modes.** The window uses `AutoVsync` (`crates/apps/app/src/surface.rs`). For a fixed
   60 or 120 Hz display: render one replay per vsync, with alpha computed for
   the predicted display time, not the submit time. "60 fps" on a 120 Hz
   panel means a replay every other vsync. For **VRR** (ProMotion,
@@ -465,11 +465,11 @@ phase is gated on the per-tick hash test from phase 1.
 
 ## 6. Phase 1: the harness and the setting
 
-Status: Built. Code: `crates/lockstep`, `crates/xapi/src/tap.rs`, `crates/app/src/fps.rs`, `crates/boot/src/lockstep_glue.rs`.
+Status: Built. Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/apps/boot/src/lockstep_glue.rs`.
 
 ### The harness
 
-- **`crates/lockstep`.** `hash_guest` hashes the physical RAM that is in use (pages mapped by any virtual range or held by a reservation), one word per MiB plus one over the lot. It reads RAM from Rust through `Guest::physical_ram`, so it is uncharged and writes nothing. `Recorder` collects `Record`s (kind tick or present, sequence, logical clock, the guest's tick count from `game_time + 8`, the hash) into a `Trace`, which has a text form (`# h2 lockstep trace v1`, one line per record). `compare` names the first differing record and the MiB of RAM that differ, or says one run is a prefix of the other.
+- **`crates/extensions/lockstep`.** `hash_guest` hashes the physical RAM that is in use (pages mapped by any virtual range or held by a reservation), one word per MiB plus one over the lot. It reads RAM from Rust through `Guest::physical_ram`, so it is uncharged and writes nothing. `Recorder` collects `Record`s (kind tick or present, sequence, logical clock, the guest's tick count from `game_time + 8`, the hash) into a `Trace`, which has a text form (`# h2 lockstep trace v1`, one line per record). `compare` names the first differing record and the MiB of RAM that differ, or says one run is a prefix of the other.
 - **Tick observer.** `install_tick_observer` post-hooks the tick function (`TickHook::HALO2`: `game_tick` and the game-time pointer from `engine::points`), the same way Live telemetry wraps it. The original runs unchanged; the hash is taken when it returns. The hook adds dispatch transfers and holds a continuation token in the return slot during the tick, so **compare runs that all have it on**. It refuses a tick that something else already overrides (telemetry, when Live is on). Present records are taken between scheduler slices and change nothing in the run.
 - **Input, keyed by read.** `xapi::tap` puts an `InputTap` on every `XInputGetState`: `Recorder` logs the status and the 22 packet bytes the guest got (stamped with the tick count), `Replayer` answers read *n* with the log's read *n*. Keying by read rather than by time makes replay exact whenever the host pumped input. The log (`# h2 input log v1`) is button and stick values, not game data. Only `XInputGetState` is tapped, so record and replay use the same kind of always-connected pad.
 - **Fake display clock.** `app::fps::FakeDisplayClock` steps a fixed amount per read, so a presenter "at 120" is reproducible in tests.
@@ -482,7 +482,7 @@ H2_INPUT_REPLAY=$TMPDIR/in.log H2_LOCKSTEP=$TMPDIR/b.trace h2 run <disc> ...
 h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
 ```
 
-`H2_LOCKSTEP_TICKS=0` keeps only the present records. Record and replay are exclusive. The wiring is `crates/boot/src/lockstep_glue.rs`; the report prints one `lockstep:` line (records written, reads replayed, reads past the end, handle mismatches). `h2 play` takes the same variables.
+`H2_LOCKSTEP_TICKS=0` keeps only the present records. Record and replay are exclusive. The wiring is `crates/apps/boot/src/lockstep_glue.rs`; the report prints one `lockstep:` line (records written, reads replayed, reads past the end, handle mismatches). `h2 play` takes the same variables.
 
 ### The setting
 
@@ -500,7 +500,7 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 - `cargo test -p lockstep`: the hash sees any changed word and a swap of two, names the changed MiB; traces round-trip through text; compare finds the first divergence and truncation; the clock counts as guest state. On the toy guest (`lockstep::synthetic`: a generated tick handler, a game-time record, an `XINPUT_STATE` input and a crouched-landing-on-a-seam "super bounce"): equal inputs give equal traces; a replay reproduces the recording whatever the live pad does; releasing crouch on the landing read diverges exactly at that tick and loses the bounce; changing an ignored packet byte is still caught; the observer refuses a wrapped tick.
 - `cargo test -p xapi`: the tap's log holds exactly the bytes the guest got, replay gives them back over a different live pad, and a recorded failure status comes back as the call's error.
-- `cargo test -p app`: `H2_FPS` parsing and its default; 30 is never due on the schedule; 60 and 120 redraw 60 and 120 times a second on the fake clock; a late window skips slots; alpha. `crates/app/tests/fps_lockstep.rs` runs the toy guest through the shell's triple buffer with a presenter on the fake clock at all four settings: every guest frame reaches the screen, redraws per guest frame are 1, 2, 4 and over 30, and the guest's trace is identical at every setting. A control shows the check catches a guest that ran one extra tick.
+- `cargo test -p app`: `H2_FPS` parsing and its default; 30 is never due on the schedule; 60 and 120 redraw 60 and 120 times a second on the fake clock; a late window skips slots; alpha. `crates/apps/app/tests/fps_lockstep.rs` runs the toy guest through the shell's triple buffer with a presenter on the fake clock at all four settings: every guest frame reaches the screen, redraws per guest frame are 1, 2, 4 and over 30, and the guest's trace is identical at every setting. A control shows the check catches a guest that ran one extra tick.
 - `cargo test -p boot --lib lockstep`: the toy guest through boot's wiring writes traces that compare identical, or diverge at the changed tick.
 
 ### Next
@@ -510,7 +510,7 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 ## 7. Phase 2: the interpolated replay
 
-Status: Built, tested on synthetic draw lists only. Code: `crates/d3d/src/interp/` (`backend.rs`, `model.rs`, `camera.rs`, `pacing.rs`, `epilogue.rs`), `crates/boot/src/d3d_glue.rs`. Tests: `crates/d3d/tests/interp.rs`, `crates/d3d/tests/interp_gpu.rs`.
+Status: Built, tested on synthetic draw lists only. Code: `crates/platform/d3d/src/interp/` (`backend.rs`, `model.rs`, `camera.rs`, `pacing.rs`, `epilogue.rs`), `crates/apps/boot/src/d3d_glue.rs`. Tests: `crates/platform/d3d/tests/interp.rs`, `crates/platform/d3d/tests/interp_gpu.rs`.
 
 Design D's geometry replay at 60 Hz, for a single gameplay view, behind a switch.
 
@@ -540,7 +540,7 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 
 ### How it works
 
-- **`d3d::interp::InterpBackend<B>`** (`crates/d3d/src/interp/backend.rs`) wraps the backend the render thread drives (`ThreadedBackend<InterpBackend<GfxBackend>>`, or around the `ScaledBackend` with a render scale). It passes every call through. With the setting above 30 it also keeps, for each guest frame, the clears, partial clears, copies and drawn draws whose colour target is a surface the guest has presented (the swap chain), with the draws' textures pinned (`Arc`), so a texture the device frees later still replays. Draws into other targets (shadow maps, render-to-texture, reflections) are not kept: in-between frames sample frame N's.
+- **`d3d::interp::InterpBackend<B>`** (`crates/platform/d3d/src/interp/backend.rs`) wraps the backend the render thread drives (`ThreadedBackend<InterpBackend<GfxBackend>>`, or around the `ScaledBackend` with a render scale). It passes every call through. With the setting above 30 it also keeps, for each guest frame, the clears, partial clears, copies and drawn draws whose colour target is a surface the guest has presented (the swap chain), with the draws' textures pinned (`Arc`), so a texture the device frees later still replays. Draws into other targets (shadow maps, render-to-texture, reflections) are not kept: in-between frames sample frame N's.
 - **Classification** (`interp::model`), once per frame. Nothing in it knows Halo 2's register map; it searches each draw's 192 vertex constants (once per distinct constant block) for:
   - perspective blocks: four registers, as rows or columns, that split into a projection and a rigid camera (`interp::camera::Persp::split`) and rebuild within 1e-5 of their size. Orthographic HUD transforms do not split;
   - the view's camera: per view (viewport and target size), the perspective value most draws compute their clip position from, bit for bit, used by at least two. Which block a draw computes it from is read from its program (`interp::epilogue::position`): the four constant rows `oPos.x` to `oPos.w` are each a `dp4`/`dph` with, followed through temporaries and moves, as they stand before the epilogue reads them back. A program that passes its vertices through (`mov oPos, v0`) is `Fixed`: no constant places them. Anything else (columns, products of blocks) is `Unknown` and does not vote. A rule that counted every perspective-looking block is wrong: see [the note](notes/high-framerate.md) ("Camera pick");
@@ -593,7 +593,7 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 
 ## 8. E1: rotation-only reprojection
 
-Status: Built, tested on synthetic draw lists only. Code: `crates/d3d/src/interp/reproject.rs`, `epilogue.rs`, `screen_space.rs`, `holds.rs`, `crates/gfx/shaders/warp.wgsl`. Tests: `crates/d3d/tests/interp.rs`, `crates/d3d/tests/interp_gpu.rs`, `crates/boot/tests/headless_interp.rs`.
+Status: Built, tested on synthetic draw lists only. Code: `crates/platform/d3d/src/interp/reproject.rs`, `epilogue.rs`, `screen_space.rs`, `holds.rs`, `crates/platform/gfx/shaders/warp.wgsl`. Tests: `crates/platform/d3d/tests/interp.rs`, `crates/platform/d3d/tests/interp_gpu.rs`, `crates/apps/boot/tests/headless_interp.rs`.
 
 The comparison section 3 asks for, as a second mode of the same `InterpBackend`: same recording, classification, pacing, private surfaces and rules as section 7; only how an in-between frame is made differs.
 
@@ -680,7 +680,7 @@ The rules (`interp::screen_space`, used by `world_screen` and the world image):
 - **The overlay.** Without a pass tag, the draws that go on top unwarped are found on the classified frame (`interp::reproject::overlay_start`): from the first draw with a projection of its own (the first-person weapon and hands) after the world has started, or from the first draw after the last one that uses the camera (the HUD), whichever comes first. Everything before it is the world.
 - **The world image, once per guest frame.** At the guest's present, the world's ops (clears, copies, draws) are drawn again into a world copy of the presented surface (and of its depth surfaces) with **overscan**: each draw's own viewport scale (the `x` and `y` components its program's epilogue multiplies by) is scaled by `1 / 1.1` (`reproject::OVERSCAN`), so the picture shrinks about the screen's centre and the image covers 10% more of the view in each direction (the host clips in its own clip space, after the viewport transform, so what lands outside the guest's frustum but inside the target is drawn). The clip position is the guest's, so whatever else a program computes from it is unchanged: many Halo 2 programs look a screen-space texture up from it (`dp4 oT0.x, r12, c[8]`), which scaling the camera's clip `x` and `y` instead would read at the wrong texel. The guest's own frame cannot be used: it is not overscanned, and with no pass tag there is no point mid-frame to copy it at.
 - **The viewport transform** (`interp::epilogue`). The scale and offset are found in each program's microcode, once per program: a symbolic run that follows `oPos` from the clip position through `clip * k`, `1 / w` and `+ o` with `k`, `o` constant components, and accepts the program only when `oPos.xy` ends as `clip.xy / w * scale + offset`, `oPos.w` as the clip `w`, and the scale components are read and flow nowhere else (relative reads only above them, as skinning's are). D3D's epilogue (`c-38`/`c-37`), Halo 2's (`c[10]`/`c[11]`, hardware numbering) and a divide-first form with scale and offset in one register are read; a pass-through (`mov oPos, v0`) or a program that reads its window position back is not. The push-buffer registers (`ResolvedDraw::hw`) hold D3D's numbering, not what Halo 2's programs apply, so the mapping is read from the program.
-- **The warp, per shown frame** (`Backend::warp_surface`, `gfx::blit::Warper`, `crates/gfx/shaders/warp.wgsl`). One full-screen pass draws the world image into the private copy of the presented surface through a homography `H = M_w R_N R_dᵀ M_d⁻¹` (`reproject::homography`), where `M_d` is frame N's projection acting on directions, `M_w` the same with the overscan, `R_N` frame N's camera rotation and `R_d` the display camera's (`reproject::display_rotation`: slerped from N-1 to N at alpha, or from N on by alpha with `_ahead`; a cut gives N's). It is mapped to texture coordinates through the camera draw's viewport transform (the one every world draw shares), sampled linear, clamped at the edge. No depth: a pure rotation needs none.
+- **The warp, per shown frame** (`Backend::warp_surface`, `gfx::blit::Warper`, `crates/platform/gfx/shaders/warp.wgsl`). One full-screen pass draws the world image into the private copy of the presented surface through a homography `H = M_w R_N R_dᵀ M_d⁻¹` (`reproject::homography`), where `M_d` is frame N's projection acting on directions, `M_w` the same with the overscan, `R_N` frame N's camera rotation and `R_d` the display camera's (`reproject::display_rotation`: slerped from N-1 to N at alpha, or from N on by alpha with `_ahead`; a cut gives N's). It is mapped to texture coordinates through the camera draw's viewport transform (the one every world draw shares), sampled linear, clamped at the edge. No depth: a pure rotation needs none.
 - **The overlay on top.** The depth surfaces the overlay uses get private copies cleared to far depth and zero stencil (the world under the overlay is a picture now), then the overlay's ops replay unchanged: weapon, hands and HUD exactly as the guest drew them in frame N.
 - **When.** The guest's present shows the warped frame at its alpha (as D shows its replay); idle slots show further warps on the same pacing grid. Only frames with exactly one camera view and a world blend: split-screen, menus and loads hold the guest's frame as drawn, as do gaps, open pixel counts and frames without a camera. `warp_surface` needs a single-sample target, which every surface made through `Backend::create_surface` is; a backend that cannot warp answers so, and E1 turns itself off for the run with a message, like any replay error.
 

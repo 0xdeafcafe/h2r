@@ -1,0 +1,39 @@
+[package]
+name = "apple-host"
+description = "The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "h2host"
+# The app links the static library; rlib keeps `cargo test -p apple-host` working on a Mac.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+boot.workspace = true
+vfs.workspace = true
+xiso.workspace = true
+kernel.workspace = true
+settings = { path = "../../formats/settings" }
+# Live on by default (live_hle::platform) and cloud saves when signed in
+# (docs/live/live-cloud-saves.md).
+live-hle = { path = "../../live/live-hle" }
+live-proto.workspace = true
+cloud-saves.workspace = true
+d3d = { path = "../../platform/d3d" }
+audio = { path = "../../platform/audio" }
+# GameController only: no gilrs or IOKit HID on tvOS or iOS.
+app = { path = "../app", default-features = false, features = ["game-controller"] }
+input = { path = "../../platform/input", default-features = false, features = ["game-controller"] }
+
+[features]
+# The in-process sampling profiler (boot's perf; the agent API's
+# profile.sample.*). The Xbox app turns it on (crates/apps/uwp-host).
+perf = ["boot/perf"]
+
+[[example]]
+# Mac-side packer: the trimmed disc, the device module framework and the
+# boot cache for an app bundle (platform/tvos/build.sh, platform/ios/build.sh).
+name = "pack"

@@ -2,7 +2,7 @@
 
 Status: Built. Unit tested on synthetic reports and used on a controller
 by the owner; "Not verified" lists what the tests and that use do not show.
-Code: `crates/input/src/steam.rs`, `trackpad.rs`, `haptics.rs`, `steam_pad.rs`; the table below has the rest. Tests: in those files.
+Code: `crates/platform/input/src/steam.rs`, `trackpad.rs`, `haptics.rs`, `steam_pad.rs`; the table below has the rest. Tests: in those files.
 Switch: `H2_STEAM_PAD`, `H2_STEAM_SPEAKER`, `H2_STEAM_SENSITIVITY`, `H2_STEAM_LEFT_PAD`, `H2_PAD_SPEAKER_DEVICE`, see [switches.md](../runtime/switches.md).
 
 Both Valve controllers are read over raw HID, wired, through their wireless
@@ -15,15 +15,15 @@ The code:
 
 | Part | Where |
 |---|---|
-| Report parsing, lizard mode, haptic reports | `crates/input/src/steam.rs` |
-| Trackpad aim, left-pad modes, mapping to the Xbox pad | `crates/input/src/trackpad.rs` |
-| Sound and rumble to pulse trains | `crates/input/src/haptics.rs` |
-| The HID thread and its `HostBackend` | `crates/input/src/steam_pad.rs` |
-| macOS IOKit host | `crates/input/src/steam_pad_iokit.rs` |
-| Mouse-look motion shared with the keyboard backend | `crates/input/src/look.rs` |
-| Platform pads and Steam pads as one backend | `crates/input/src/backend/multi.rs` |
-| The speaker sink | `crates/boot/src/steam_speaker.rs` |
-| Settings | `crates/boot/src/setting_defs.rs` (`steam_pad.*`) |
+| Report parsing, lizard mode, haptic reports | `crates/platform/input/src/steam.rs` |
+| Trackpad aim, left-pad modes, mapping to the Xbox pad | `crates/platform/input/src/trackpad.rs` |
+| Sound and rumble to pulse trains | `crates/platform/input/src/haptics.rs` |
+| The HID thread and its `HostBackend` | `crates/platform/input/src/steam_pad.rs` |
+| macOS IOKit host | `crates/platform/input/src/steam_pad_iokit.rs` |
+| Mouse-look motion shared with the keyboard backend | `crates/platform/input/src/look.rs` |
+| Platform pads and Steam pads as one backend | `crates/platform/input/src/backend/multi.rs` |
+| The speaker sink | `crates/apps/boot/src/steam_speaker.rs` |
+| Settings | `crates/apps/boot/src/setting_defs.rs` (`steam_pad.*`) |
 
 ## Sources
 

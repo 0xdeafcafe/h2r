@@ -1,9 +1,9 @@
 # Audio
 
-Status: Built. Code: `crates/audio/src` (`mixer.rs`, `dsound.rs`, `output.rs`). Tests: `crates/audio/tests`.
+Status: Built. Code: `crates/platform/audio/src` (`mixer.rs`, `dsound.rs`, `output.rs`). Tests: `crates/platform/audio/tests`.
 Switch: none.
 
-`crates/audio` replaces the Xbox SDK's DirectSound at the API level. The
+`crates/platform/audio` replaces the Xbox SDK's DirectSound at the API level. The
 MCPX APU behind it is not emulated: there are no voice slots, no DSP
 programs, no scatter-gather DMA. A game call like `SetVolume` becomes a field
 write on a Rust struct, and a software mixer renders the result.
@@ -305,7 +305,7 @@ effect image and the SDK's effect images. These are skipped:
 - **Dolby Digital / DTS encoding** for the S/PDIF output and 5.1 mixing:
   output is stereo.
 - **WMA**: not a DSP feature, but noted here: the game's own codec is
-  replaced at its six entries by `crates/wma` (`dsound::xwma`), with the
+  replaced at its six entries by `crates/platform/wma` (`dsound::xwma`), with the
   game's XMO wrapper still running around it; see [wma.md](wma.md),
   "Runtime boundary".
 - Voice limits and the hardware's fixed-point rounding. Our mix is f32.
@@ -334,6 +334,6 @@ is the trace source for validating the mixer later.
 - Resampling is linear. A windowed-sinc or polyphase path would be better for
   big downsamples.
 
-The guest mapping is in `crates/dsound`; `dsound::Hle::spawn_output` is the
+The guest mapping is in `crates/platform/dsound`; `dsound::Hle::spawn_output` is the
 one consumer that renders into the ring-fed `DeviceSink` ([dsound.md](dsound.md),
 "Consumers and the output thread").

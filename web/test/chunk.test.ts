@@ -21,7 +21,7 @@ function leb(n: number): number[] {
   }
 }
 
-/** A chunk as crates/live-proto/src/chunk.rs writes one. */
+/** A chunk as crates/live/live-proto/src/chunk.rs writes one. */
 function chunkOf(raw: Uint8Array, codec: 0 | 1, from = frames[0]!.tick, to = frames[frames.length - 1]!.tick, rawLen = raw.length): Uint8Array<ArrayBuffer> {
   const body = codec === 1 ? new Uint8Array(deflateRawSync(raw)) : raw;
   const head = [0x48, 0x32, 0x43, 0x4b, 1, codec, ...leb(rawLen), ...leb(records(raw).length), ...leb(from), ...leb(to)];

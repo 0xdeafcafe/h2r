@@ -1,9 +1,9 @@
 # Structure BSP render geometry and lightmaps
 
-Status: Built. Code: `crates/tags/src/structure.rs`, `crates/tags/src/geometry.rs`. Tests: `crates/tags/src/structure_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`. Tests: `crates/formats/tags/src/structure_tests.rs`. Switch: none.
 
-This covers `crates/tags/src/geometry.rs` (the one geometry-section decoder,
-shared with render models) and `crates/tags/src/structure.rs` (structure BSP
+This covers `crates/formats/tags/src/geometry.rs` (the one geometry-section decoder,
+shared with render models) and `crates/formats/tags/src/structure.rs` (structure BSP
 `sbsp` and lightmap `ltmp` render blocks). It extends
 [map-format.md](map-format.md), whose evidence labels and address rules apply;
 the render-model side is in map-format.md, "Render-model geometry". All

@@ -1,6 +1,6 @@
 # Halo 1 Xbox cache files (version 5)
 
-This describes the reader in `crates/h1map`, step 1 of the campaigns work
+This describes the reader in `crates/tools/h1map`, step 1 of the campaigns work
 ([campaign.md](campaign.md)): Halo: Combat Evolved's Xbox maps,
 read so they can later be converted into Halo 2 v8 maps
 ([map-format.md](../formats/map-format.md)). It is not an on-disk Rust struct ABI.
@@ -256,7 +256,7 @@ surface's (flip-applied) plane. That one check confirms the plane, flip,
 surface, edge and vertex layouts together. `CollisionBsp::validate` runs it.
 
 **The converted collision answers as Halo 1's (V, converter version 54;
-`crates/h1convert/tests/collision_engine.rs`).** All 81 collision BSPs of
+`crates/tools/h1convert/tests/collision_engine.rs`).** All 81 collision BSPs of
 the nineteen multiplayer maps and ten campaign levels, converted
 (`h1convert::collision`), encoded as a structure BSP holds them and read
 back with `Bsp::decode_structure`, give the same answer as Halo 1's own
@@ -349,7 +349,7 @@ needs every level and adds `ui`, `bitmaps` and `sounds` when present.
   images as PNGs ([bitmaps.md](bitmaps.md)).
 - `h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
   [--disc halo2.iso] [--dry-run] [--force]`: converts a multiplayer map onto
-  a Halo 2 base map (`crates/h1convert`;
+  a Halo 2 base map (`crates/tools/h1convert`;
   [multiplayer.md](multiplayer.md)).
 - `h2 import halo1 [iso] [--data DIR] [--force] [--dry-run]`: checks the
   title and every campaign map's header, then copies the maps as stored

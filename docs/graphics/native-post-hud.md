@@ -1,7 +1,7 @@
 # Native renderer stage 5: post and HUD
 
 Status: Partly built. The colour-pass glow, the scenario screen effects and the native UI and HUD are drawn natively; `0x0002df00`, `0x0002dd30` and layer 17 are not, and parity with D3D is not verified.
-Code: `crates/feature/src/native_post.rs`, `native_hud.rs`, `crates/boot/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/native-render/src/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/feature/tests/native_post.rs`, `native_hud.rs`, `crates/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/d3d/tests/swallow.rs`.
+Code: `crates/hooking/feature/src/native_post.rs`, `native_hud.rs`, `crates/apps/boot/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/native-render/src/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/hooking/feature/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).

@@ -278,7 +278,7 @@ def main(argv):
     wanted = [a.rstrip("/") for a in argv if not a.startswith("--")]
     all_docs = git_lines("ls-files", "docs/*.md", "docs/**/*.md")
     tracked = all_docs + git_lines(
-        "ls-files", "README.md", "AGENTS.md", "CONTRIBUTING.md", "crates/*/README.md"
+        "ls-files", "README.md", "AGENTS.md", "CONTRIBUTING.md", "crates/*/*/README.md"
     )
     files = [
         p

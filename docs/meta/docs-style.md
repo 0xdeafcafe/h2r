@@ -83,7 +83,7 @@ deleted, and git keeps it.
    "previously", "no longer", "since 2026-11-18", "an earlier version". A
    commit hash appears only in `notes/` and in a "Measured at" line.
 3. **Cite the code.** A claim about behaviour names the file or the symbol
-   (`crates/feature/src/switches.rs`, `feature::switches::Switches`). A
+   (`crates/hooking/feature/src/switches.rs`, `feature::switches::Switches`). A
    claim that something is tested names the test. A reader should be able
    to open the code from the sentence.
 4. **One home per fact.** Link to it; do not restate it. Switches and

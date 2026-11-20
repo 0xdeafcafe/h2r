@@ -1,10 +1,10 @@
 # Halo 2 effects family (`effe`, `prt3`, `pmov`, `jpt!`, `cont`, `deca`, `ligh`, `lens`)
 
-Status: Built. Code: `crates/tags/src/effects/`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/effects/`. Switch: none.
 
-Implementation: `crates/tags/src/effects/` (hand-written fixed codecs, not in
+Implementation: `crates/formats/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
-`crates/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
+`crates/apps/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's own
 code (XBE disassembly, addresses in [engine-map.md](../engine/engine-map.md)), **S** a name only,
 unverified. No map bytes, tag names, tag dumps or extracted assets are
@@ -22,7 +22,7 @@ labelled **S** is a name only.
 
 ## Shared conventions
 
-(See `crates/tags/src/effects/mem.rs`.)
+(See `crates/formats/tags/src/effects/mem.rs`.)
 
 - **Addressing.** Every type is decoded from the virtual address of its root
   record (`EffectTag::decode_at`), through the whole ordinary metadata space of
@@ -480,7 +480,7 @@ distributions. Both write nothing.
 | +0x40 | `reflections`, stride 0x30 (`flags` u16 +0, `index` u32 +4; rest raw) | V stride (size = 0x64 + n*0x30 + function data) |
 | +0x4c, +0x54, +0x5c | function blocks, stride 8 | V |
 
-Typed definition: `crates/tags/src/defs/lens.txt` (all 160 distinct
+Typed definition: `crates/formats/tags/src/defs/lens.txt` (all 160 distinct
 records round-trip). **E**: four paths submit a flare through
 `0x0002dba0`: sky lights (`0x0003f1e9`), lights (`0x000c34ac`, the
 `ligh` datum at `+0x94`), object attachments (`0x00041b23`) and effect
@@ -497,7 +497,7 @@ The engine's object type 4 (no scenario placement block). The disc has
 one `garb` (30 instances), the item layer and `0xa8` zero bytes; no
 effect part names it. Retail effects throw objects through `obje`
 parts (`bloc` 1,156, `proj` 4) and debris meshes as `PRTM` particle
-models. Definition: `crates/tags/src/defs/garb.txt`.
+models. Definition: `crates/formats/tags/src/defs/garb.txt`.
 
 ### cont (contrail), root 0xf0
 
@@ -560,7 +560,7 @@ All 30 disc maps, shared tags counted once per map:
 The unique-tag counts (915, 253, 89, 161, 34, 158, 192, 161) are the distinct
 datum/data identities across maps; the `effe` layout also tiles its payload
 exactly for all 14,195 instances with a recorded payload (see "Shared
-conventions"). `cargo test -p tags effects` runs the synthetic tests (59 `#[test]` functions under `crates/tags/src/effects/`: valid
+conventions"). `cargo test -p tags effects` runs the synthetic tests (59 `#[test]` functions under `crates/formats/tags/src/effects/`: valid
 decode, empty blocks, aliased pointers, truncated and out-of-bounds blocks,
 over-budget counts, unknown values preserved, per-type function evaluation); none
 needs the disc.

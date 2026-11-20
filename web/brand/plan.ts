@@ -13,7 +13,7 @@ export const SOURCES = {
   /** The iOS icon: the full scene, square and opaque. */
   scene: "platform/ios/H2iOS/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
   /** The Mac icon: the scene on a rounded plate, transparent around it. */
-  plated: "crates/app-icon/assets/AppIcon-512.png",
+  plated: "crates/apps/app-icon/assets/AppIcon-512.png",
   /** The Apple TV top shelf: the scene, wide. */
   shelf: "platform/tvos/H2TV/Assets.xcassets/App Icon & Top Shelf Image.brandassets/Top Shelf Image.imageset/TopShelf@2x.png",
   /** The fonts the card's words are set in (OFL, in the repository). */

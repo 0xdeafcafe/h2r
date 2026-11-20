@@ -1,10 +1,10 @@
 # Halo 2 sound tags (`snd!`, `ugh!`)
 
-Status: Built. Code: `crates/tags/src/sound.rs`. Tests: `crates/tags/src/sound_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/sound.rs`. Tests: `crates/formats/tags/src/sound_tests.rs`. Switch: none.
 
-Implementation: `crates/tags/src/sound.rs` (self-contained, hand-written fixed
+Implementation: `crates/formats/tags/src/sound.rs` (self-contained, hand-written fixed
 codecs; not in `schema.rs`). Export and validation: `h2 sound` in
-`crates/cli/src/sound.rs`. Evidence labels as in [map-format.md](map-format.md):
+`crates/apps/cli/src/sound.rs`. Evidence labels as in [map-format.md](map-format.md):
 **V** verified on the owner's retail disc, **E** corroborated by the engine's
 own code (XBE disassembly), **S** unverified.
 No map bytes, tag names or audio are committed; tests are synthetic.
@@ -98,7 +98,7 @@ Verdict: 64 samples per block per channel; `SamplesPerBlock::Hardware64` is righ
 - Files are never overwritten unless `--force`; only regular files are replaced.
   Directories below `--out` are created one level at a time and refused if they
   are symlinks, and files use exclusive creation, so output cannot leave `--out`
-  through a symlink (`crates/cli/src/safe_out.rs`; it cannot defend against a
+  through a symlink (`crates/apps/cli/src/safe_out.rs`; it cannot defend against a
   concurrent process rewriting the tree).
 - `--all` exits non-zero if any sound fails, including an ASF/WMAv2 decoding
   failure or a missing/unrecognized XBE needed for the runtime tables.

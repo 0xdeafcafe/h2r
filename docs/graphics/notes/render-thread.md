@@ -27,7 +27,7 @@ re-run.
 - Reproduce the guest-thread microseconds per draw at 2000 draws, sharing
   off and on, behind the render thread with the judge and on the device
   alone: `cargo bench -p d3d --bench draw_main`. The equivalence test is
-  `crates/d3d/tests/draw_sharing.rs`.
+  `crates/platform/d3d/tests/draw_sharing.rs`.
 
 ## 2026-11-16: batches
 
@@ -76,7 +76,7 @@ run at a time in the bench gate on a shared machine. Load is the
 
 Commit: master `9a39ed7`, before the guest-side judge, the merged-pass
 default and async pipeline builds. Method: `menu_cpu`
-(`crates/boot/examples/menu_cpu.rs`), exact passes, presents 480-560,
+(`crates/apps/boot/examples/menu_cpu.rs`), exact passes, presents 480-560,
 fresh data, the same dylib, one run at a time in the bench gate on a
 shared 10-core M-series machine. Load averages are at each run's start.
 `guest CPU` is the runner thread's own CPU per frame. Single runs, load

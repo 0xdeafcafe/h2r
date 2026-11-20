@@ -19,7 +19,7 @@ agreed exception to "Halo 2's engine wins" ([campaign.md](campaign.md)
 decision 2). The engine still uses Halo 2's damage, shield and physics code.
 
 Labels: **confirmed** means read from the retail XBE's instructions with
-`h2 disasm` and asserted by `crates/boot/tests/health_xbe.rs` (ignored;
+`h2 disasm` and asserted by `crates/apps/boot/tests/health_xbe.rs` (ignored;
 needs `H2_XBE`); **likely** means strong evidence but not every path read;
 **community** means public knowledge. Nothing here has been seen running.
 
@@ -129,7 +129,7 @@ shields") skips the subtraction so the body takes the full hit.
 
 ## What we do
 
-The `h1-health` feature (`crates/boot/src/health.rs`), on the feature
+The `h1-health` feature (`crates/apps/boot/src/health.rs`), on the feature
 plan:
 
 - **No regeneration.** `before` on `OBJECT_DAMAGE_UPDATE` notes a player

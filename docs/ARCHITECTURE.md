@@ -98,9 +98,9 @@ the moves that put every crate in its domain's directory are in
 | `symbols` | recompiler | Identify statically linked Xbox SDK library functions in an XBE using OOVPA signatures | [xdk-libraries.md](lifter/xdk-libraries.md) | done |
 | `x87` | recompiler | Exact software x87 (ext80) helpers that lifted x87 code calls ([FLOAT-ABI.md](lifter/FLOAT-ABI.md)) † | [FLOAT-ABI.md](lifter/FLOAT-ABI.md) | done |
 | `hostfault` | runtime | The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path |  |  |
-| `kernel` | runtime | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/kernel/README.md) | in progress: covers the boot to the menu and the first level |
+| `kernel` | runtime | Xbox kernel HLE: threads, scheduling on a logical clock, sync, memory, files ([kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md)) † | [kernel-imports.md](runtime/kernel-imports.md), [kernel README](../crates/runtime/kernel/README.md) | in progress: covers the boot to the menu and the first level |
 | `lifted` | runtime | The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md) | [shadow-exec.md](engine/shadow-exec.md) |  |
-| `runtime` | runtime | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/README.md)) † | [runtime README](../crates/runtime/README.md) | done |
+| `runtime` | runtime | Guest memory, CPU state, dispatch/override table and the runner that drives generated code ([runtime README](../crates/runtime/runtime/README.md)) † | [runtime README](../crates/runtime/runtime/README.md) | done |
 | `runtime-test-probe` | runtime | *(no description)* † |  |  |
 | `snapshot` | runtime | Machine snapshots: the versioned container, compressed guest RAM pages and the snapshot store (docs/runtime/snapshots.md) | [snapshots.md](runtime/snapshots.md) |  |
 | `timeline` | runtime | Near-zero-cost timeline events (Chrome/Perfetto trace JSON) and a frame counter | [profiling.md](perf/profiling.md) | done |
@@ -109,7 +109,7 @@ the moves that put every crate in its domain's directory are in
 | `audio` | platform | DirectSound-level audio model, Xbox ADPCM decoder and software mixer for h2recomp | [audio.md](audio/audio.md) | done |
 | `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | done, on by default: plays the movies `h2 movies` installed (sound through the game's mixer), skips them otherwise (`--no-movies`; `h2 run --no-bink` turns it off) |
 | `d3d` | platform | Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx | [d3d.md](graphics/d3d.md) | in progress: the menu and the first level render |
-| `dsound` | platform | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/audio out | [dsound.md](audio/dsound.md) | done |
+| `dsound` | platform | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/platform/audio out | [dsound.md](audio/dsound.md) | done |
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
 | `hot-render` | platform | Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `input` | platform | Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp | [input.md](input/input.md) | done, foundation only |

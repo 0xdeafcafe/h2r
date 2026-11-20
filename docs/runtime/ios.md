@@ -1,7 +1,7 @@
 # iPhone and iPad (iOS)
 
 Status: Built. A guide to the iPhone and iPad app; touch, speed and older devices are under "Known gaps".
-Code: `platform/ios/`, `crates/apple-host`, `crates/input/src/touch.rs`. Tests: `crates/input/src/touch_tests.rs`.
+Code: `platform/ios/`, `crates/apps/apple-host`, `crates/platform/input/src/touch.rs`. Tests: `crates/platform/input/src/touch_tests.rs`.
 Switch: `H2_TOUCH_LOOK_ACCEL`, `H2_TOUCH_AUTO_FIRE`, `H2_ICONS`, see [switches.md](switches.md).
 
 The game runs on an iPhone or iPad as an app built from `platform/ios/`. It is
@@ -13,8 +13,8 @@ device (arm64, iOS 17 or later); there is no simulator build. Landscape only.
 
 | Piece | What it is | Built by |
 | --- | --- | --- |
-| `crates/apple-host` | the runtime as a static library (`libh2host.a`), shared with tvOS: `boot::run_hosted` inside `app::embedded::Embedded` | `cargo build -Zbuild-std --target aarch64-apple-ios` |
-| `h2game.framework` | the generated module built for `arm64-apple-ios17.0`, embedded and signed by Xcode, loaded with `dlopen` | `boot::build` with `H2_EMIT_TARGET=ios` (`crates/apple-host/examples/pack.rs --platform ios`) |
+| `crates/apps/apple-host` | the runtime as a static library (`libh2host.a`), shared with tvOS: `boot::run_hosted` inside `app::embedded::Embedded` | `cargo build -Zbuild-std --target aarch64-apple-ios` |
+| `h2game.framework` | the generated module built for `arm64-apple-ios17.0`, embedded and signed by Xcode, loaded with `dlopen` | `boot::build` with `H2_EMIT_TARGET=ios` (`crates/apps/apple-host/examples/pack.rs --platform ios`) |
 | `disc/`, `bootcache/` | the same disc subset and analysis as tvOS (`h2host::layout::DISC_FILES`) | `pack` |
 | `platform/ios/H2iOS` | a UIKit host: a view controller whose view is a `CAMetalLayer`, a 30 Hz `CADisplayLink`, the on-screen controls and the keyboard | Xcode |
 | `H2iOS/Assets.xcassets` | the app icon: `AppIcon.appiconset`, one 1024 universal image with dark and tinted appearances (iOS 18 and later use them; 17 shows the default) ([art/app-icon](../../art/app-icon/README.md)) | Xcode (actool), named by `ASSETCATALOG_COMPILER_APPICON_NAME` in `project.yml` |
@@ -62,8 +62,8 @@ Layouts follow player one's state (below). On foot:
   (80 while driving), with a 12% radial deadzone.
 * **Right side: look.** A drag anywhere on the right side turns the camera
   by an angle, the way mouse look feels on the Mac but with no stick in
-  between: `crates/input/src/touch_look.rs` turns points into yaw and
-  pitch, and the boot's touch hook (`crates/boot/src/touch_glue.rs`) adds
+  between: `crates/platform/input/src/touch_look.rs` turns points into yaw and
+  pitch, and the boot's touch hook (`crates/apps/boot/src/touch_glue.rs`) adds
   them to player one's facing in the player-control record once a tick.
   Halo's own stick path (its deadzone, response curve, maximum turn rate)
   is not involved, so slow drags are exact and fast flicks turn far.
@@ -137,7 +137,7 @@ trigger.
 The view only tracks fingers. Each change, and once a frame, it sends an
 `H2TouchFrame` (held buttons, the move thumb's offset, the look drag since
 the last call, the gyro's rate) through `h2host_touch_update`. Rust
-(`crates/input/src/touch.rs`, unit-tested) turns it into a pad (the stick
+(`crates/platform/input/src/touch.rs`, unit-tested) turns it into a pad (the stick
 deadzone, the crouch toggle, auto-fire) and a queued turn
 (`touch_look`). The keyboard pad merges it into player one
 (`KeyboardMouse::touch_update`), so it shares port 0 with every other
@@ -159,7 +159,7 @@ one disconnects. A controller counts if it has an extended gamepad profile; a
 Siri Remote paired to an iPad doesn't. It also hides while the system
 keyboard is up. Hiding lets go of everything it held. The rule is
 `h2host_pad_counts` and `h2host_overlay_wanted`
-(`crates/apple-host/src/overlay.rs`, unit-tested).
+(`crates/apps/apple-host/src/overlay.rs`, unit-tested).
 
 ## Typing
 
@@ -176,7 +176,7 @@ Hiding the system keyboard does not cancel the field: the controls come back,
 B or Back backs out as the game's keyboard does, and tapping the screen brings
 the system keyboard back. When the game closes the field, the keyboard goes
 away by itself. The edge detection and the text-to-edit mapping are
-`crates/apple-host/src/text.rs` (unit-tested).
+`crates/apps/apple-host/src/text.rs` (unit-tested).
 
 ## Building
 

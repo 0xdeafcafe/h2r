@@ -3,7 +3,7 @@
 Evidence for [e3-lighting.md](../e3-lighting.md). Entries are dated, newest
 first. Nothing here states what the code does today; the design page does.
 The page's text was recorded at docs revision `af931e2fe`; the shadow
-prototype is `crates/viewer/src/bin/shadowlab` (last changed at `25c47e967`).
+prototype is `crates/tools/viewer/src/bin/shadowlab` (last changed at `25c47e967`).
 Both read the owner's disc at run time and write nothing from it into Git.
 
 ## 2026-11-16: the Lighting setting in levels
@@ -101,7 +101,7 @@ shadow-map frames differ between the views (first: ...)`.
 ## 2026-11-16: shadow prototype (volumes against shadow maps)
 
 
-`crates/viewer/src/bin/shadowlab` renders one scene with each shadow
+`crates/tools/viewer/src/bin/shadowlab` renders one scene with each shadow
 technique, offscreen with wgpu, and times them. It reads the owner's disc at
 run time and writes only into a directory outside the repository; it refuses
 an output path inside it. Nothing it writes from the disc is committed. The

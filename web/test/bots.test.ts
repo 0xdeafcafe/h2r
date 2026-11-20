@@ -8,7 +8,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
 import { createHash } from "node:crypto";
 import clankerKernel from "../src/lib/clanker-kernel.json";
-import appearanceCorpus from "../../crates/live-proto/tests/fixtures/clanker-appearance.json";
+import appearanceCorpus from "../../crates/live/live-proto/tests/fixtures/clanker-appearance.json";
 import { applyAccountsSnapshot, applyEvents, initialState, standings, type AccountState, type GameState, type LiveState } from "../src/state/reducer";
 import { gameHistory, playedWith, serviceRecord, type ServiceRecord } from "../src/state/derive";
 import { clankerAppearance } from "../src/lib/gameart";

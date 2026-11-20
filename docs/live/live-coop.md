@@ -243,7 +243,7 @@ same.
 
 What exists [local]: the logical clock and cooperative scheduler;
 `xapi::tap` (an `InputTap` on every `XInputGetState`, with `Recorder` and
-`Replayer` keyed by read index); `crates/lockstep` (a hash of in-use guest
+`Replayer` keyed by read index); `crates/extensions/lockstep` (a hash of in-use guest
 RAM per tick, traces, `compare` naming the first differing record and
 MiB, and a toy guest in `lockstep::synthetic`); four input ports
 ([input.md](../input/input.md)); Live sessions and game-invite mailboxes
@@ -559,7 +559,7 @@ the protocol and the simulated link. No guest addresses, no game data.
 ## 5. How it plugs into the settings and hook layer
 
 This is written against the `settings-slice` branch (head `0b5c9bc`, not
-on master when this page was written): `crates/settings` (`Def`, `Store`,
+on master when this page was written): `crates/formats/settings` (`Def`, `Store`,
 `Setting<T>`), `boot::ui` (`Screen`, `Row`, `Extension`, `Model`),
 `boot::setting_defs`, `Dispatch::override_handler` in
 `runtime/src/dispatch.rs` with the chaining pattern of
@@ -735,7 +735,7 @@ on it.
 All on tests; nothing here was run in the game. It is the part of phase 0
 that does not need the settings layer.
 
-**`crates/coop`** (no guest, no game data):
+**`crates/live/coop`** (no guest, no game data):
 
 - `wire`: the one datagram. It carries the sender's acknowledgements and
   repeats every pad frame and tick hash the other side has not
@@ -765,7 +765,7 @@ that does not need the settings layer.
   packet for ports 0 and 1, answers "not connected" for anything else,
   and counts a read that came with no frame started.
 
-**`crates/lockstep`**: `SimRegion` and `hash_sim`, the simulation hash:
+**`crates/extensions/lockstep`**: `SimRegion` and `hash_sim`, the simulation hash:
 one word over the game-state block (`SimRegion::HALO2`: `0x3fe000` bytes
 behind the base word at `0x004e6080`, from the static notes, unchecked in
 a running game) instead of all of RAM.
@@ -828,8 +828,8 @@ Built on tests; **no game was built or run for it**. The probe tries the
 retail synchronous path of section 1 with two instances over System Link
 and writes enough on each machine to say how far it got and where the two
 parted. It is off unless `H2_COOP_PROBE=1`. Code:
-`crates/boot/src/coop_probe.rs`, `crates/lockstep/src/pools.rs`,
-`h2 coop-probe diff` (`crates/cli/src/coop_probe_cmd.rs`).
+`crates/apps/boot/src/coop_probe.rs`, `crates/extensions/lockstep/src/pools.rs`,
+`h2 coop-probe diff` (`crates/apps/cli/src/coop_probe_cmd.rs`).
 
 ### 9.1 What it changes
 
@@ -1296,7 +1296,7 @@ against the embedded server: a friends-only `coop` advertisement with the
 campaign and the campaign skulls, a stranger's browser not listing it, the
 friends list, the invitation reaching the guest, the guest's join reading
 the campaign, presence activity, and leaving back to `custom`. Server and
-web: `crates/live-server/tests/coop_sessions.rs`, `web/test/coop.test.ts`.
+web: `crates/live/live-server/tests/coop_sessions.rs`, `web/test/coop.test.ts`.
 
 Not tested, because only the game can: whether our screens open over the
 Live lobby and look right, whether the join screen opens cleanly from the
@@ -1410,7 +1410,7 @@ this path.
 ### 11.4 Previews
 
 `the_retail_co_op_lobby_on_live_drawn_from_the_disc` (in
-`crates/boot/src/coop_live/tests.rs`) draws the lobby as host and as
+`crates/apps/boot/src/coop_live/tests.rs`) draws the lobby as host and as
 guest, plus the level and difficulty screens, with
 `ui_kit::preview::Disc::render_retail`. It needs `H2_DISC` and writes to
 `H2_UI_PREVIEW_DIR`; never into git. The texts the game fills at run time
@@ -1420,7 +1420,7 @@ not drawn.
 ## 12. One command on one Mac: `h2 coop test`
 
 Section 10.4 takes three terminals and a list of variables. `h2 coop test`
-(`crates/cli/src/coop_test_cmd.rs`) does all of it and reads the logs back:
+(`crates/apps/cli/src/coop_test_cmd.rs`) does all of it and reads the logs back:
 
 ```sh
 h2 coop test --disc disc/halo2.iso --auto
@@ -1475,7 +1475,7 @@ It:
 The host's Live code invites the guests to its advertised lobby as soon as
 it has one and they are online, and each guest's Live code accepts the
 host's invitation as soon as it arrives, through the same requests as the
-friends list's Invite and Accept (`crates/live-hle/src/auto.rs`; switched
+friends list's Invite and Accept (`crates/live/live-hle/src/auto.rs`; switched
 on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
 `H2_COOP_AUTO_ACCEPT=<host>` on a guest). Once per lobby and per
 invitation. They print `coop-auto: invited Bravo to session <id>` and
@@ -1551,7 +1551,7 @@ accepted this way (`XOnlineFriendsGetAcceptedGameInvite`, which the
 retail flow reads after its own Accept) and joins at that moment, rather
 than only when its friends list is open. The test
 `coop_auto_invites_the_named_friend_and_the_guest_accepts_by_itself`
-(`crates/live-hle/tests/server.rs`) shows the accepted record is there,
+(`crates/live/live-hle/tests/server.rs`) shows the accepted record is there,
 naming the host's lobby, without a press.
 
 #### "UNABLE TO JOIN ... network problems"
@@ -1564,7 +1564,7 @@ title's session lookup (`XOnlineMatchSessionFindFromID`, its only call at
 `0x00090121`) found the session, at the QoS probe: `XNetQosLookup` (one
 call, `0x0007b558`, synchronous: no event, no flags) to the host's XNADDR
 with the session's XNKID. The HLE answers it on the host's XNet base + 2
-(`crates/live-hle/src/qos.rs`), and only for a session the host listens
+(`crates/live/live-hle/src/qos.rs`), and only for a session the host listens
 for (`XNetQosListen`, `0x00073243`: enable, then its lobby data at
 `0x000732bb`). No answer leaves the target uncontacted (flags 1:
 `qos_failure`); an answer without the lobby data fails the decode.
@@ -1642,7 +1642,7 @@ bar) and places it there (`app::tile`).
 ### 12.3 The checklist
 
 `h2 coop verdict <coop.log> [--auto]` prints it again
-(`crates/cli/src/coop_verdict.rs`). Each step is seen when every game it
+(`crates/apps/cli/src/coop_verdict.rs`). Each step is seen when every game it
 is for printed its line:
 
 | # | Step | Game | Line |
@@ -1696,7 +1696,7 @@ for each step a missing press explains (3: no Live menu, no co-op row,
 another row, hooks off; 5; 7: a guest not in Xbox Live; 8; 9 with and
 without `--auto`; 11; 1); the filter over the host's log of the
 2026-11-17 three-game run, cut to its main menu
-(`crates/cli/src/coop_verdict/host-at-menu.log`, our own lines, paths
+(`crates/apps/cli/src/coop_verdict/host-at-menu.log`, our own lines, paths
 shortened): only the co-op lines kept, no feature plan; the next-steps
 line; the wait for the main menu against a stand-in agent socket;
 `H2_LIVE_DIR`; the automatic invite and acceptance between two HLEs
@@ -1772,7 +1772,7 @@ without a press. The three parts of 12.5:
    not been seen in a run. The focused row is not read: list focus goes
    through widget virtual calls (`0x24c447` → `0x24bae6` → `0x22ed7a`).
    The driver counts its own moves from the restored row instead.
-3. **The script** (`crates/cli/src/coop_drive.rs`). There is one driver
+3. **The script** (`crates/apps/cli/src/coop_drive.rs`). There is one driver
    per game. Each reads its game's `ui: screen` lines and every game's
    co-op lines, and asks for one press at a time, at least 0.7 s apart.
    A press happens only once a screen has held for 1.5 s, or after a line
@@ -1912,7 +1912,7 @@ So the engine runs 16 players already. What holds at two is the data
   "up to N";
 - a guest takes the limit as 16: the host's lobby already held the start.
 
-**Stage 1b** (feature `coop-players`, `crates/boot/src/coop_players.rs`,
+**Stage 1b** (feature `coop-players`, `crates/apps/boot/src/coop_players.rs`,
 on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`):
 
 - *Spawn.* A first spawn of a player of index 2 or more runs the spawn,
@@ -2100,7 +2100,7 @@ gate) is traced in 14.9.
    campaign session ever reaches view state 3.
 2. **Our own join** (built, 14.7): the host holds its tick, snapshots
    with the checkpoint machinery, and sends the state over the co-op
-   transport (crates/coop, the same direct/relay link as phase 0);
+   transport (crates/live/coop, the same direct/relay link as phase 0);
    then the newcomer is admitted through the update's player-set field.
    Independent of the unknowns above; costs a hold of the host's tick.
 
@@ -2188,7 +2188,7 @@ or `coop-jip: back to the lobby: <why>`; host
 
 ### 14.7 What is built (tests only)
 
-- `crates/coop/src/join.rs`: the messages (encode, decode, refusal of
+- `crates/live/coop/src/join.rs`: the messages (encode, decode, refusal of
   short, long, unknown and oversized input), the host state machine
   (`Host`: request, hold, snapshot, windowed resend, ready, admit,
   timeouts, cancel) and the newcomer's (`Joiner`: ask, receive in any
@@ -2281,7 +2281,7 @@ attempts) are in BSS but not zero: the network setup at
 to 10000). Found while tracing phantom peers (docs/game/bots.md §5.1);
 an earlier note here guessed they stayed zero.
 
-**14.9.4 What is wired** (`crates/boot/src/coop_jip.rs`, feature
+**14.9.4 What is wired** (`crates/apps/boot/src/coop_jip.rs`, feature
 `coop-jip`, on the co-op over Live arm):
 
 - **The lift.** On the host of a co-op campaign with

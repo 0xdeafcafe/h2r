@@ -13,7 +13,7 @@ The stats site is Halo 2's, under `/games/` so another game's can sit
 beside it (`STATS_ROOT` in `web/src/routes.ts`; `/games` alone goes to
 it). It was at `/stats` first: the servers answer `/stats/*` with a 301 to
 the same page under `/games/halo2` (`page_meta::moved` in
-`crates/live-server`, both homes), and the app redirects the old paths too.
+`crates/live/live-server`, both homes), and the app redirects the old paths too.
 
 Both recreate a look and a layout language only. No real logos, marks,
 wordmarks, emblems, medal art or proprietary fonts; the site is "h2 live".
@@ -97,7 +97,7 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
   older and newer pages and expandable event data.
 
 The API does not change: `GET /v1/events` keeps its access rules (the
-privacy redaction in `crates/live-server/src/sessions.rs` decides what
+privacy redaction in `crates/live/live-server/src/sessions.rs` decides what
 each reader sees), because the web verifier and other clients read it.
 Hiding the raw log from non-admins is a choice of the web app, not a
 security boundary.

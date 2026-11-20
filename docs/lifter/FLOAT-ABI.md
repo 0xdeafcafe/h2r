@@ -1,19 +1,19 @@
 # Floating-point IR ops and runtime ABI
 
-Status: Built. `crates/x87` implements sections 4 and 6; event 14 (#MF) is in the runtime, `h2abi.h` and `h2gen.h`, and MMX instructions and `emms` check for it (section 2.2); `crates/ir`, `crates/lift` and `crates/emit` lower every x87 instruction to these helpers.
-Code: `crates/x87` (`x87::abi`, `crates/x87/include/h2x87.h`), `crates/lift/src/lower/x87.rs`, `crates/emit/src/x87.rs`. Tests: `crates/x87/src`, `crates/lift/tests/oracle_x87/`.
+Status: Built. `crates/recompiler/x87` implements sections 4 and 6; event 14 (#MF) is in the runtime, `h2abi.h` and `h2gen.h`, and MMX instructions and `emms` check for it (section 2.2); `crates/recompiler/ir`, `crates/recompiler/lift` and `crates/recompiler/emit` lower every x87 instruction to these helpers.
+Code: `crates/recompiler/x87` (`x87::abi`, `crates/recompiler/x87/include/h2x87.h`), `crates/recompiler/lift/src/lower/x87.rs`, `crates/recompiler/emit/src/x87.rs`. Tests: `crates/recompiler/x87/src`, `crates/recompiler/lift/tests/oracle_x87/`.
 Switch: `H2_X87_NATIVE` (on), listed in [switches.md](../runtime/switches.md).
 
 This is the interface the lifter and emitter build against for x87 floating
 point. It follows the correctness-first decision in [FLOAT.md](FLOAT.md). The
 IR models the full architectural x87 state. Every x87 operation goes through a
-runtime helper backed by the exact ext80 implementation in `crates/x87`. A
+runtime helper backed by the exact ext80 implementation in `crates/recompiler/x87`. A
 guarded native `double` path (on by default, see [x87-native.md](x87-native.md))
 applies the written proof rule in FLOAT.md §2.8 per operation; the helpers
 remain the authority. SSE is not covered here: see §5.
 
 The C ABI is versioned `h2x87_v1_*`, declared in
-[`crates/x87/include/h2x87.h`](../../crates/x87/include/h2x87.h). The Rust crate is
+[`crates/recompiler/x87/include/h2x87.h`](../../crates/recompiler/x87/include/h2x87.h). The Rust crate is
 `x87::`, with the safe layer in `x87::abi` and the `extern "C"` wrappers in
 `x87::abi::ffi`. Every C entry point is `extern "C"` and takes no Rust
 references across the boundary. A null pointer or an out-of-range selector is a
@@ -23,7 +23,7 @@ unwind, the process aborts.
 ## 1. State
 
 The helpers operate on the runtime's `X87Abi`, which `CpuAbi` v1 embeds by
-value at offset 56 (h2abi.h and `crates/runtime/src/cpu.rs` are the
+value at offset 56 (h2abi.h and `crates/runtime/runtime/src/cpu.rs` are the
 authority):
 
 ```c
@@ -160,15 +160,15 @@ raises #MF for itself.
 **Where event 14 lives.** It is token-identical in every header, so they can
 be included together:
 
-1. **`crates/runtime/include/h2abi.h`** and **`crates/emit/c/h2gen.h`**:
+1. **`crates/runtime/runtime/include/h2abi.h`** and **`crates/recompiler/emit/c/h2gen.h`**:
    `#define H2SHIM_FP_ERROR 14u`. `h2x87.h` takes it from `h2abi.h` and
    `_Static_assert`s its value.
-2. **`crates/runtime/src/events.rs`**: `ShimEvent::FP_ERROR = 14` decodes to
+2. **`crates/runtime/runtime/src/events.rs`**: `ShimEvent::FP_ERROR = 14` decodes to
    `GuestException::FpError { status: u16 }`, a fault (not a trap), with the
    status word as `arg`. An `arg` above 0xFFFF cannot be a status word and
    decodes as `UnknownShimEvent`, so a broken generator cannot continue
    silently.
-3. **MMX and `EMMS`** (`crates/ir`, `crates/lift`, `h2gen.h`). A pending
+3. **MMX and `EMMS`** (`crates/recompiler/ir`, `crates/recompiler/lift`, `h2gen.h`). A pending
    exception stops an MMX instruction before it reads, writes or faults. The
    lifter therefore puts `Intrinsic::X87Wait` (`h2i_x87_wait`) first in every
    instruction that ends with `Intrinsic::MmxEnter`. `h2i_mmx_enter` stays
@@ -469,13 +469,13 @@ override.
 ## 5. SSE
 
 Out of scope for this document. SSE1 semantics, MXCSR and `#XM` are defined
-by `crates/simd` and [docs/lifter/simd.md](simd.md). That design is integer
+by `crates/recompiler/simd` and [docs/lifter/simd.md](simd.md). That design is integer
 soft-float, with C side `h2simd.h`, and uses no host floating point. The
 previous §5 here assumed FTZ was live. That was wrong: nothing in the XBE sets
 FTZ, DAZ or RC. Every MXCSR write is `saved | 0x1f80` or `saved & ~0x3f` (at
 `0x535ab`, `0x535e2` and `0x53f69`).
 
-## 6. `crates/x87`
+## 6. `crates/recompiler/x87`
 
 The crate has no dependencies beyond `core` (`#![no_std]`), edition 2024, and
 uses integer arithmetic only, with no host floats and no libm.
@@ -652,7 +652,7 @@ All the tests below pass.
     stack underflow); FSCALE by zero of a pseudo-denormal; `save_image`
     through a const pointer to an immutable static; FPREM/FPREM1 shortcuts
     stopping on a tiny exact remainder and normalising a pseudo-denormal.
-- **Library unit tests** in `crates/x87/src`: the constant-table generator and
+- **Library unit tests** in `crates/recompiler/x87/src`: the constant-table generator and
   the 180,000-case precision run are ignored, as are the table printers and
   timing experiments of `fast-trans`, whose tests
   ([x87-transcendentals.md](x87-transcendentals.md)) make up most of them.

@@ -1,7 +1,7 @@
 # XDK library identification
 
 Status: Built. `h2 symbols` identifies XDK library functions by byte signature.
-Code: `crates/symbols/src/lib.rs`, `h2 symbols` in `crates/cli/src/main.rs`. Tests: unit tests in `crates/symbols/src/scan.rs` and `solve.rs`.
+Code: `crates/recompiler/symbols/src/lib.rs`, `h2 symbols` in `crates/apps/cli/src/main.rs`. Tests: unit tests in `crates/recompiler/symbols/src/scan.rs` and `solve.rs`.
 Switch: none.
 
 The plan replaces Direct3D 8, DirectSound and XAPI at the API level, so we
@@ -54,7 +54,7 @@ The repo is MIT OR Apache-2.0. XbSymbolDatabase is mixed:
 
 So the data is **not vendored**. `scripts/setup-xbsymboldb.sh` downloads a
 pinned commit into `.tools/XbSymbolDatabase` (git-ignored, same pattern as
-`scripts/setup-ghidra.sh`), and `crates/symbols` reads the C sources from
+`scripts/setup-ghidra.sh`), and `crates/recompiler/symbols` reads the C sources from
 there at run time. The matcher is our own pure-Rust code with no dependency
 on the C project. Nothing derived from the data is committed, including this
 page's numbers beyond the summary counts.
@@ -64,7 +64,7 @@ page's numbers beyond the summary counts.
 
 ## How matching works
 
-`crates/symbols` is a reader plus a matcher.
+`crates/recompiler/symbols` is a reader plus a matcher.
 
 **Reading the database.** The sources are C preprocessor macros, so
 `parse.rs` is a purpose-built reader, not a C parser. It handles signature
@@ -101,7 +101,7 @@ A function's address is recomputed after every wave from the highest
 revision that matches uniquely, so it can move. Each finished run records the
 addresses it was checked against, and any run whose reference later moves is
 discarded and re-run; no result survives on a stale reference
-(`crates/symbols/src/solve.rs`).
+(`crates/recompiler/symbols/src/solve.rs`).
 
 **Output.** `(va, library, name, xdk_version)` per match, plus flags: the
 LTCG variant, a signature that matched at several addresses, and an address

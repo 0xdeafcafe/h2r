@@ -1,0 +1,231 @@
+# sbsp: structure BSP. Names from crates/formats/tags/src/structure.rs (StructureRender), pathfinding.rs
+# (PathfindingData), collision.rs (Bsp::decode_structure), crates/apps/cli/src/live_weather.rs and
+# crates/tools/h1convert/src/ambience.rs; evidence in docs/formats/structure-bsp.md, pathfinding.md, mopp.md.
+# The schema infers the cluster (+0x9c, engine stride 0xb0), material (+0xa4) and instanced
+# definition (+0x138, engine stride 0xc8) elements too small, so their fields stay typed-only here.
+group sbsp 0x23c align 16
+  0x0 unknown 0x8
+  0x8 u32 structure_checksum -- V lightmap groups and pathfinding data repeat it (structure-bsp.md:45; structure.rs:341)
+  0xc block block_c 0x8 align 4
+    0x0 word word_0
+    0x4 word word_4
+  0x14 block collision_bsp 0x40 align 4 -- V one element: the coll BSP's eight blocks without the leading word (pathfinding.md:33; collision.rs:620, Bsp::decode_structure)
+    0x0 data nodes_3d align 8 -- E 3D nodes, 8 bytes each, as coll (collision.rs:624 BSP_STRIDES; collision.md BSP element table)
+    0x8 data planes align 16 -- E planes, 0x10 bytes each (collision.rs:624)
+    0x10 data leaves align 16 -- E leaves, 4 bytes each (collision.rs:624)
+    0x18 data references_2d align 4 -- E 2D references, 4 bytes each (collision.rs:624)
+    0x20 data nodes_2d align 16 -- E 2D nodes, 0x10 bytes each (collision.rs:624)
+    0x28 data surfaces align 8 -- E surfaces, 8 bytes each (collision.rs:624)
+    0x30 data edges align 8 -- E edges, 0xc bytes each (collision.rs:624)
+    0x38 data vertices align 16 -- E vertices, 0x10 bytes each (collision.rs:624)
+  0x1c unknown 0x10
+  0x2c data structure_leaves align 16 -- E 0x0018d730..: the ambience pass takes the listener's cluster from its leaf's i16 at +0 (structure-bsp.md:82)
+  0x34 unknown 0x18
+  0x4c data data_4c align 8
+  0x54 data data_54 align 8
+  0x5c block block_5c 0x3 align 8
+    0x0 unknown 0x3
+  0x64 block block_64 0x18 align 4
+    0x0 unknown 0x18
+  0x6c unknown 0x18
+  0x84 block weather_palette 0x88 align 4 -- E 0x00036cb8, 0x000385a3 (structure-bsp.md:84); V the layout live_weather reads (live_weather.rs:7-8,35-36)
+    0x0 u8[32] name -- V palette entry name, read as text (live_weather.rs:178)
+    0x20 tagref weather_system groups=weat -- V the only place a weat is named besides scnr+0x260 (live_weather.rs:36; h1convert/tests/h2_scenario.rs:186-190)
+    0x28 unknown 0x60
+  0x8c block weather_polyhedra 0x18 align 4 -- V volumes weather is kept out of (live_weather.rs:9-12,37)
+    0x0 f32[3] bounding_sphere_center -- V (live_weather.rs:9-10)
+    0xc f32 bounding_sphere_radius -- V (live_weather.rs:9-10)
+    0x10 block planes 0x10 align 4 -- V inside when n.p <= d for every plane (live_weather.rs:10-11,38-39)
+      0x0 f32[3] normal -- V (live_weather.rs:159-161)
+      0xc f32 distance -- V (live_weather.rs:161)
+  0x94 block block_94 0x24 align 4
+    0x0 unknown 0x24
+  0x9c block clusters 0x19 align 4 -- E 0x0004109e, 0x000410ac imul 0B0h (structure-bsp.md:46; structure.rs:296)
+    0x0 word word_0
+    0x4 word word_4
+    0x8 word word_8
+    0xc word word_c
+    0x10 word word_10
+    0x14 word word_14
+    0x18 unknown 0x1
+  0xa4 block materials 0x17 align 4 -- V every part's material index is below its count (structure-bsp.md:47; structure.rs:344)
+    0x0 word word_0
+    0x4 word word_4
+    0x8 word word_8
+    0xc word word_c
+    0x10 word word_10
+    0x14 unknown 0x3
+  0xac block block_ac 0x2 align 4
+    0x0 unknown 0x2
+  0xb4 block block_b4 0x18 align 8
+    0x0 unknown 0x18
+  0xbc unknown 0x8
+  0xc4 block pathfinding_data 0x74 align 4 -- V count 0 or 1, element 0x74 (pathfinding.md:34; pathfinding.rs:13)
+    0x0 data sectors align 4 -- V 8-byte sectors (pathfinding.md:47; pathfinding.rs:152)
+    0x8 data links align 4 -- V 0x10-byte links (pathfinding.md:48; pathfinding.rs:161)
+    0x10 data surface_refs align 4 -- V one u32 per collision surface: sector, or 2D BSP node with bit 31 (pathfinding.md:49; pathfinding.rs:175)
+    0x18 block bsp2d_nodes 0x3 align 4 -- V 0x14-byte 2D BSP nodes (pathfinding.md:50; pathfinding.rs:180); schema element size is an inference artefact
+      0x0 unknown 0x3
+    0x20 unknown 0x8
+    0x28 data vertices align 4 -- V f32 x,y,z points (pathfinding.md:52; pathfinding.rs:192)
+    0x30 block block_30 0x1c align 4
+      0x0 unknown 0xc
+      0xc block block_c 0x10 align 4
+        0x0 unknown 0x10
+      0x14 block block_14 0x4 align 4
+        0x0 unknown 0x4
+    0x38 block block_38 0x2 align 4
+      0x0 unknown 0x2
+    0x40 data instance_refs align 4 -- V one u32 per instanced-geometry placement (pathfinding.md:55; pathfinding.rs:207)
+    0x48 u32 structure_checksum -- V equals sbsp+0x08 on every BSP (pathfinding.md:56; pathfinding.rs:230)
+    0x4c unknown 0x20
+    0x6c block block_6c 0x48 align 4
+      0x0 unknown 0x10
+      0x10 block block_10 0x24 align 4
+        0x0 unknown 0x24
+      0x18 block block_18 0x6 align 4
+        0x0 word word_0
+        0x4 unknown 0x2
+      0x20 unknown 0x8
+      0x28 block block_28 0x8 align 4
+        0x0 unknown 0x8
+      0x30 block block_30 0x4 align 4
+        0x0 unknown 0x4
+      0x38 block block_38 0xc align 4
+        0x0 unknown 0x4
+        0x4 block block_4 0x20 align 4
+          0x0 unknown 0x20
+      0x40 block block_40 0x8 align 4
+        0x0 block block_0 0xc align 4
+          0x0 unknown 0xc
+  0xcc unknown 0x8
+  0xd4 block background_sound_palette 0x64 align 4 -- E 0x0018d730..0x0018d8a5 via cluster +0x72; V names the scenario's palette (scnr+0x250) entry for entry (structure-bsp.md:82; ambience.rs:248-250)
+    0x0 u8[32] name -- D palette entry name (ambience.rs:5-9,252)
+    0x20 tagref looping_sound groups=lsnd -- V (ambience.rs:8-9,254-255)
+    0x28 tagref tagref_28
+    0x30 unknown 0x34
+  0xdc block sound_environment_palette 0x48 align 4 -- E 0x0018ddf0..0x0018de0d via cluster +0x74; V names scnr+0x258 entry for entry (structure-bsp.md:82; ambience.rs:263)
+    0x0 u8[32] name -- D palette entry name (ambience.rs:12,265)
+    0x20 tagref sound_environment groups=snde -- V (ambience.rs:12,266-267)
+    0x28 unknown 0x20
+  0xe4 unknown 0x8
+  0xec block block_ec 0x3c align 4
+    0x0 unknown 0x10
+    0x10 raw raw_10
+    0x14 unknown 0x28
+  0xf4 block block_f4 0x10 align 4
+    0x0 unknown 0x10
+  0xfc block block_fc 0x14 align 4
+    0x0 unknown 0x14
+  0x104 block block_104 0x8 align 4
+    0x0 unknown 0x8
+  0x10c unknown 0x2c
+  0x138 block instanced_geometry_definitions 0x11 align 4 -- E 0x000410ca, 0x000410d0 imul 0C8h (structure-bsp.md:48; structure.rs:311)
+    0x0 word word_0
+    0x4 unknown 0x4
+    0x8 word word_8
+    0xc word word_c
+    0x10 unknown 0x1
+  0x140 block instanced_geometry_instances 0x58 align 8 -- E 0x000410b4, 0x000410c2 imul 58h (structure-bsp.md:49; structure.rs:321)
+    0x0 f32 scale -- V uniform scale, positive on every placement (structure-bsp.md:94; structure.rs:326)
+    0x4 f32[3] forward -- V orthonormal right-handed basis row (structure-bsp.md:95; structure.rs:327)
+    0x10 f32[3] left -- V (structure.rs:327)
+    0x1c f32[3] up -- V (structure.rs:327)
+    0x28 f32[3] position -- V translation (structure-bsp.md:96; structure.rs:328)
+    0x34 i16 definition_index -- E 0x000410c5 movsx; V in range (structure-bsp.md:97; structure.rs:329)
+    0x36 unknown 0x16
+    0x4c word word_4c
+    0x50 string string_50
+    0x54 unknown 0x4
+  0x148 block ambience_sound_clusters 0x14 align 4 -- E 0x0018d7b4 via cluster +0x78 (structure-bsp.md:83)
+    0x0 unknown 0x4
+    0x4 block block_4 0x2 align 4
+      0x0 unknown 0x2
+    0xc block block_c 0x2 align 4
+      0x0 unknown 0x2
+  0x150 block reverb_sound_clusters 0x14 align 4 -- E 0x0018dd10 via cluster +0x7a (structure-bsp.md:83)
+    0x0 unknown 0x4
+    0x4 block block_4 0x2 align 4
+      0x0 unknown 0x2
+    0xc block block_c 0x2 align 4
+      0x0 unknown 0x2
+  0x158 block block_158 0x14 align 4
+    0x0 unknown 0x14
+  0x160 unknown 0x70
+  0x1d0 block block_1d0 0x58 align 4
+    0x0 unknown 0x40
+    0x40 block block_40 0x48 align 4
+      0x0 unknown 0x28
+      0x28 block block_28 0x4 align 4
+        0x0 unknown 0x4
+      0x30 block block_30 0x4 align 4
+        0x0 unknown 0x4
+      0x38 unknown 0x8
+      0x40 block block_40 0x4 align 8
+        0x0 unknown 0x4
+    0x48 block block_48 0x38 align 4
+      0x0 unknown 0x20
+      0x20 block block_20 0x11 align 4
+        0x0 word word_0
+        0x4 word word_4
+        0x8 word word_8
+        0xc word word_c
+        0x10 unknown 0x1
+      0x28 block block_28 0x4 align 4
+        0x0 unknown 0x4
+      0x30 block block_30 0x4 align 4
+        0x0 unknown 0x4
+    0x50 block block_50 0x40 align 4
+      0x0 unknown 0x20
+      0x20 block block_20 0x20 align 4
+        0x0 unknown 0x20
+      0x28 block block_28 0x4 align 8
+        0x0 unknown 0x4
+      0x30 block block_30 0x4 align 4
+        0x0 unknown 0x4
+      0x38 unknown 0x8
+  0x1d8 unknown 0x8
+  0x1e0 data collision_mopp_code align 16 -- E 0x001c3b3e/0x001c3b20 pass [sbsp+0x1e4] to the MOPP shape; V count = code size rounded to 16 (mopp.md:26-27)
+  0x1e8 unknown 0x1c
+  0x204 data data_204 align 16
+  0x20c block block_20c 0x20 align 16
+    0x0 unknown 0x20
+  0x214 block block_214 0xac align 16
+    0x0 tagref tagref_0
+    0x8 unknown 0x8
+    0x10 raw raw_10
+    0x14 raw raw_14
+    0x18 rawsize raw_size_18 of=0x10
+    0x1c raw raw_1c
+    0x20 block block_20 0x10 align 4
+      0x0 unknown 0x10
+    0x28 word word_28
+    0x2c unknown 0x80
+  0x21c block block_21c 0x10 align 4
+    0x0 block block_0 0xc align 4
+      0x0 unknown 0xc
+    0x8 block block_8 0x2 align 4
+      0x0 unknown 0x2
+  0x224 block block_224 0x34 align 4
+    0x0 unknown 0xc
+    0xc block block_c 0x4 align 4
+      0x0 word word_0
+    0x14 block block_14 0x4 align 4
+      0x0 unknown 0x4
+    0x1c block block_1c 0x4 align 4
+      0x0 unknown 0x4
+    0x24 data data_24 align 4
+    0x2c data data_2c align 4
+  0x22c block block_22c 0x5c align 4
+    0x0 unknown 0x5c
+  0x234 block block_234 0x30 align 4
+    0x0 unknown 0x10
+    0x10 block block_10 0x3 align 4
+      0x0 unknown 0x3
+    0x18 block block_18 0x18 align 4
+      0x0 unknown 0x14
+      0x14 word word_14
+    0x20 block block_20 0x18 align 4
+      0x0 unknown 0x18
+    0x28 block block_28 0x40 align 4
+      0x0 unknown 0x40

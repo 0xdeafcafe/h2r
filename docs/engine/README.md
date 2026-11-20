@@ -1,6 +1,6 @@
 # Engine function contracts
 
-One page per rewritten function family, for the Rust in `crates/engine`.
+One page per rewritten function family, for the Rust in `crates/rewrites/engine`.
 Each records addresses, the register/stack convention, every memory effect,
 failure paths, quirks that are reproduced on purpose, and the differential
 evidence. No disassembly listings or game data.
@@ -17,7 +17,7 @@ evidence. No disassembly listings or game data.
 | [collision-queries.md](collision-queries.md) | BSP point to leaf `0x14a280`, location `0x11bed0`, vector test `0x1de630`, `0x1de6d0` | Rust (`sim-collision`) + adapters behind `impl.sim.native.collision`, default off |
 | [sim-rewrite-objects.md](sim-rewrite-objects.md) | object walks `0xb6f10`, `0xb7060`, `0xb7150`, per-object update `0xbc470`, `0xbc820`, type update trees, lights `0xc1400` | design: phase 3 of the sim rewrite |
 | [shadow-exec.md](shadow-exec.md) | the native sim ports (`sim.native`, `sim.physics`) | shadow checks against the lifted original in a running game (`shadow.*`), the shared `lifted` test crate, the disc gate |
-| [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/hs` (`hs::vm`); not yet wired into the game |
+| [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/formats/hs` (`hs::vm`); not yet wired into the game |
 | [sim-tier-experiment.md](sim-tier-experiment.md) | compose `0x142a60`, pose `0x1421f0`, MOPP box `0x2ff8b0`, BSP segment `0x1de6d0`, solver `0x31c940` | experiment: `emit::sim` against the reference tier and the hand ports |
 | [sim-tier-writes.md](sim-tier-writes.md) | everything `game_tick` `0x137fe0` reaches | method: static census of the tick's stores |
 | [anim-sampling.md](anim-sampling.md) | animation sampling `0x2798a0` and everything below it | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, default off |
@@ -49,10 +49,10 @@ store one store at a time.
 ## How the contracts were checked
 
 Contracts come from `h2 disasm` and a linear scan of `.text` for call sites.
-Behaviour is checked differentially by `crates/engine/tests/differential.rs`
-(feature `differential`): the original function, lifted by `crates/lift` and
+Behaviour is checked differentially by `crates/rewrites/engine/tests/differential.rs`
+(feature `differential`): the original function, lifted by `crates/recompiler/lift` and
 run on the IR interpreter (`ir::interp`) over the loaded image, against the
-`crates/engine` adapter, from the same 64 MB guest state with the same
+`crates/rewrites/engine` adapter, from the same 64 MB guest state with the same
 registers and a planted return address. The masks and the run command are
 in that file's header:
 
@@ -78,7 +78,7 @@ original's answers. Its results and the bugs it caught are in
 [notes/feature-engine.md](notes/feature-engine.md).
 
 The same feature builds the other differential tests in
-`crates/engine/tests`: `layer_differential.rs` (the layer entry loop) and
+`crates/rewrites/engine/tests`: `layer_differential.rs` (the layer entry loop) and
 `states_differential.rs` (the render-state list), which stub every callee
 on both sides and compare the call logs, the registers at return and all
 of memory ([render-loop.md](../graphics/render-loop.md),
@@ -100,5 +100,5 @@ through `Dispatch::register_override`; each handler takes one
 `ctx.memory()` guard for the whole call and returns `TransferAbi::ret`.
 Nothing calls `register_all`. The game installs the same adapters
 through the `feature` crate's `engine-leaves` feature
-(`crates/feature/src/leaves.rs`): only the locale group is on by default
+(`crates/hooking/feature/src/leaves.rs`): only the locale group is on by default
 ([feature-engine.md](feature-engine.md)).

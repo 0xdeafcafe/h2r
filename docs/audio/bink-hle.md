@@ -1,13 +1,13 @@
 # Bink HLE
 
-Status: Built. Code: `crates/bink-hle/src`, `crates/boot/src/movies_glue.rs`. Tests: `crates/bink-hle` (`xbe_pins` is ignored).
+Status: Built. Code: `crates/platform/bink-hle/src`, `crates/apps/boot/src/movies_glue.rs`. Tests: `crates/platform/bink-hle` (`xbe_pins` is ignored).
 Switch: `--movies`, `--no-movies`, `--no-bink` (command-line flags).
 
-`crates/bink-hle` replaces the Bink 1.x player that Halo 2 links statically
+`crates/platform/bink-hle` replaces the Bink 1.x player that Halo 2 links statically
 (sections `BINK*`, `BINKDATA`). It has no Bink decoder; see
 [movies.md](movies.md) for the optional install-time MOV transcode.
 Every host (`h2 run`, `h2 serve`, `h2 play`, the apps) makes the same choice
-at startup (`crates/boot/src/movies_glue.rs`): **playback** when `h2 movies`
+at startup (`crates/apps/boot/src/movies_glue.rs`): **playback** when `h2 movies`
 has installed transcodes that are current for the disc, **skip** otherwise
 and, by default, on headless runs and level boots, and logs it as one line:
 
@@ -244,7 +244,7 @@ Read from the retail image, addresses only:
   format 10 (X8R8G8B8) with the linear flag in its `bitm` header (`0x10`),
   so `CopyToBuffer`'s rows are plain linear BGRA at the lock's pitch.
 - `0x1568d0` calls `D3D_BlockOnResource` (`0x3fad50`, overridden by
-  crates/d3d), the native lock helper `0x3fdbc0` (texture address and
+  crates/platform/d3d), the native lock helper `0x3fdbc0` (texture address and
   pitch), then `BinkCopyToBuffer(h, bits, pitch, height, 0, 0, 3 | 0x80000000)`.
   `CopyToBuffer` writes through `Guest::write_bytes`, so the runtime's write
   watch marks the texture's physical pages and the D3D write barrier
@@ -382,7 +382,7 @@ Everything above is tested against synthetic guest state. A run of the full
 lifted game is needed to show:
 
 1. The texture path: `0x23e340` creating the X8R8G8B8 linear texture under
-   crates/d3d, the lock helper's pitch, and the quad draw (`0x156960`)
+   crates/platform/d3d, the lock helper's pitch, and the quad draw (`0x156960`)
    showing the re-uploaded texels.
 2. The wrapper's allocation (`0x12d2f0`, 4 or 20 MiB from the game's cache)
    succeeding at the intro, main menu idle and credits.

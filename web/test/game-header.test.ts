@@ -1,7 +1,7 @@
 // The game page's pre-rendered header (src/stats/gameHeader.ts): the model
 // derived from a game, the markup both the servers and the client write
 // from it (the fixtures under fixtures/ are the contract — the Rust side,
-// crates/live-server/src/page_header.rs, renders the same model into the
+// crates/live/live-server/src/page_header.rs, renders the same model into the
 // same bytes), and the emblem's fixed size.
 
 import { describe, expect, test } from "bun:test";

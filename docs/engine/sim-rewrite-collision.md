@@ -11,7 +11,7 @@ Sources: the Waterworks profile in [sim-budget.md](../perf/sim-budget.md)
 `profile.folded`), the formats in [collision.md](../formats/collision.md),
 [mopp.md](../formats/mopp.md) and
 [structure-bsp.md](../formats/structure-bsp.md), the existing ports in
-`crates/engine/src/sim_native` and `sim_physics`, and static reading of the
+`crates/rewrites/engine/src/sim_native` and `sim_physics`, and static reading of the
 owner's XBE. Addresses are guest virtual addresses. Evidence labels: **E**
 read from the engine code for this page, **P** taken from an existing port
 or doc, **Guess** not established.
@@ -96,11 +96,11 @@ until the phase 0 census says otherwise (slice S9).
 ## 3. Crates and modules
 
 ```
-crates/sim-core/            (shared with phase 1; S0 creates what is missing)
+crates/rewrites/sim-core/            (shared with phase 1; S0 creates what is missing)
   src/det.rs                float environment, checked regions, x87 modes
   src/lanes.rs              f32x4 / i32x4 lanes (moved from sim_native/lanes.rs)
   src/epoch.rs              Epoch counter
-crates/sim-collision/       no `runtime` dependency; depends on sim-core, mopp
+crates/rewrites/sim-collision/       no `runtime` dependency; depends on sim-core, mopp
   src/lib.rs                CollisionWorld, Bail, public API
   src/mem.rs                trait GuestRead (bulk and scalar reads only)
   src/bsp/decode.rs         guest blocks -> Bsp
@@ -117,12 +117,12 @@ crates/sim-collision/       no `runtime` dependency; depends on sim-core, mopp
   src/query.rs              the 1697c0 orchestration
   src/batch.rs              batched queries, ordered scatter
   src/store.rs              content-addressed mmapped cache (S10)
-crates/engine/src/sim_collision/
+crates/rewrites/engine/src/sim_collision/
   mod.rs                    adapters: read ABI, call kernel, scatter, return
   layout.rs                 guest offsets as named constants (section 5)
   commit.rs                 ordered scatter helpers, mark replay
-crates/engine/tests/sim_collision_differential.rs
-crates/feature/src/sim_native.rs   installs under impl.sim.native.collision
+crates/rewrites/engine/tests/sim_collision_differential.rs
+crates/hooking/feature/src/sim_native.rs   installs under impl.sim.native.collision
 docs/engine/collision-queries.md   contract page written in S0
 ```
 
@@ -773,10 +773,10 @@ kernel. After S5 the per-function switches `native_point_to_leaf`,
 deleted; `native_collision_query` goes with S7. Their bodies stay as
 differential oracles.
 
-Lane ownership: new `crates/sim-collision`, `crates/engine/src/sim_collision`,
-`crates/engine/tests/sim_collision_differential.rs`,
-`docs/engine/collision-queries.md`; edits to `crates/sim-core` (S0),
-`crates/feature/src/sim_native.rs`, `crates/engine/src/points.rs`, the agent
+Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
+`crates/rewrites/engine/tests/sim_collision_differential.rs`,
+`docs/engine/collision-queries.md`; edits to `crates/rewrites/sim-core` (S0),
+`crates/hooking/feature/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`, the agent
 crates for 8.3, and the workspace manifests. Nothing owned by Live, bots,
 theater or film.
 
@@ -829,7 +829,7 @@ theater or film.
 
 ## Summary
 
-1. Phase 2 replaces the lifted collision queries with `crates/sim-collision`:
+1. Phase 2 replaces the lifted collision queries with `crates/rewrites/sim-collision`:
    BSPs and MOPP programs decoded once per map into flat, mmap-ready arrays.
 2. Measured share: 6,058 of 84,358 Waterworks samples (7.18%, 1.01 ms/tick),
    target ≥ 0.8 ms/tick removed.

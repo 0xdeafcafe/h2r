@@ -1,10 +1,10 @@
 # Halo 1 campaign scripts to Halo 2
 
-`crates/h1scripts` reads Halo 1's compiled scripts from a scenario tag,
+`crates/tools/h1scripts` reads Halo 1's compiled scripts from a scenario tag,
 decompiles them to HSC text, maps Halo 1's builtins and types to Halo 2's, and
 compiles the result to Halo 2 syntax nodes and scenario tables for the
 converter. It is step 6 of [campaign.md](campaign.md) (the scripts
-row of §2). Halo 2's side is [haloscript.md](../formats/haloscript.md) (`crates/hs`);
+row of §2). Halo 2's side is [haloscript.md](../formats/haloscript.md) (`crates/formats/hs`);
 builtins Halo 2 lacks are candidates for the Rust VM ([hs_vm.md](../engine/hs_vm.md)).
 
 No script text, table or value from either disc is in the repository. The
@@ -106,7 +106,7 @@ No node is shared (emitted = reached on every map).
 
 ## Step 2: translate
 
-Halo 2's descriptors have no names; `crates/hs` names a builtin only when
+Halo 2's descriptors have no names; `crates/formats/hs` names a builtin only when
 some retail Halo 2 script calls it (390 of 911). `translate::Target` is built
 from an `hs::Catalog` that has observed every Halo 2 map, plus the engine
 globals Halo 2's scripts name. A Halo 1 builtin is therefore **missing** when
@@ -424,7 +424,7 @@ needs more than retail's `0x9000` nodes (see Syntax storage below).
 
 ## Step 4: hooks in a converted level
 
-`crates/h1campaign` resolves hooks with the encodings retail Halo 2
+`crates/tools/h1campaign` resolves hooks with the encodings retail Halo 2
 scripts use (V: every atom of these types in `05a_deltaapproach` and
 `03a_oldmombasa`, printed by `h1campaign`'s `ai_and_name_literal_encoding`
 survey): object, unit and vehicle names, `short`, `team` and
@@ -441,7 +441,7 @@ Script atoms of these types index scenario blocks, so the converter writes
 Halo 1's blocks into Halo 2's in Halo 1's order and each atom keeps its
 index. `h1scripts::level` reads and writes them; `h1scripts::seats` builds
 the seat-mapping table. Offsets come from the surveys in
-`crates/h1scripts/tests/survey.rs` (they print offsets, strides and counts
+`crates/tools/h1scripts/tests/survey.rs` (they print offsets, strides and counts
 only): for every script atom of a type, the block whose element at the
 atom's index holds the atom's token as its name.
 

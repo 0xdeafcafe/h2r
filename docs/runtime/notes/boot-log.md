@@ -71,7 +71,7 @@ fallback (blocker 1): about 45k fallback entries by the main menu.
     run through the fallback. The "LOADING nn%" frames render; `t:\$C\`
     and `u:\` are probed.
 15. Offscreen render targets: render-to-texture and the same-size
-    SetRenderTarget fast path `0x3f7b30` through crates/d3d.
+    SetRenderTarget fast path `0x3f7b30` through crates/platform/d3d.
 16. Inline draws through BeginPush and SetStateVB (vertex array formats,
     d3d-r6).
 17. Unaligned memcpy/memmove and the zero-holed table at `0x336f0`
@@ -177,7 +177,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | 1 | ~~Holed jump tables~~ | analyze | Read on master. The CRT copy's masked and negative-index tables since bceed11; the unguarded enum tables with long runs of nulls (`0x336f0`, five in a row; `0x33980`, seven; `0x22dcd9`, eight) since an unguarded table placed after its own code may skip up to 16 nulls. `xbe_pins::unguarded_tables_hold_every_case_the_boot_fallback_would_find` pins that the boot's run-time read finds no target the analyzer lacks. | done |
 | 2 | **Fog and sky on the title scene** | gfx / shaders | Seen at fd3e969: brown fog over everything, no sky colour, 8x8 blocky patterns. Fog has followed the NV2A fog unit since 5c2845d and 5b8ec7d; recheck before working on it. | ? |
 | 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
-| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (e5c4251). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
+| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (e5c4251). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/recompiler/x87 abi helpers. | done |
 
 #### Retired
 
@@ -200,8 +200,8 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
   - SetSoftDisplayFilter `0x3f8c70`;
   - the boot's `0x12b2e0` frame wait (now `d3d::register_frame_wait`);
   - the `0x3fb710` resource busy check and `0x3f8cc0` (SetStipple,
-    method `0x1480`), both implemented by crates/d3d;
-  - the SetRenderTarget stopgap (render-to-texture is in crates/d3d; its
+    method `0x1480`), both implemented by crates/platform/d3d;
+  - the SetRenderTarget stopgap (render-to-texture is in crates/platform/d3d; its
     `H2_BOOT_RTT` switch is gone).
 
 Master covers these now. The kernel stopgap table installs nothing,

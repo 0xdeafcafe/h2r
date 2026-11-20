@@ -12,7 +12,7 @@ import UIKit
 /// after a few points, so a tap stays a tap. What the fingers hold is sent
 /// to Rust as an H2TouchFrame on every change and once per display frame
 /// (h2host_touch_update); the look maths, the stick, the crouch toggle and
-/// auto-fire are in crates/input/src/touch*.rs.
+/// auto-fire are in crates/platform/input/src/touch*.rs.
 ///
 /// Which buttons show, and where, follows player one's state: on foot,
 /// driving, or in a passenger or gunner seat, and the held weapon (Rust's

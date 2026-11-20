@@ -463,8 +463,8 @@ hopper file so game and server agree on playlists.
 writes, and leaderboards through the query service — at which point the
 `XNetTsAddrToInAddr` stop and the stats stops retire.
 
-The HLE halves of each phase belong to `crates/live-hle` (Codex's lane);
-the server halves to `crates/live-server`/`crates/live-proto` and the web
+The HLE halves of each phase belong to `crates/live/live-hle` (Codex's lane);
+the server halves to `crates/live/live-server`/`crates/live/live-proto` and the web
 app.
 
 ## 5. Open questions
@@ -485,7 +485,7 @@ app.
 
 `multiplayer_hopper.dat` is now decoded whole, from the retail game's own
 readers and its compiled-in defaults (read statically from the 5849 XBE;
-nothing was run). The code is `crates/live-proto/src/hopper/`:
+nothing was run). The code is `crates/live/live-proto/src/hopper/`:
 `layout.rs` (every field, the validator port, the accessor ports),
 `variant.rs` (the game variant an entry carries) and `defaults.rs` (the
 lineup a server offers with no file). The envelope is unchanged
@@ -653,7 +653,7 @@ is not a game field: it is `Playlist::clankers` in the server's source
 standing (`ranks_as` unset).
 
 `GET /v1/hoppers/clankers` (read like `/v1/hoppers/pins`) serves the marks
-as `ClankerHoppers` (`crates/live-proto/src/hopper/clankers.rs`):
+as `ClankerHoppers` (`crates/live/live-proto/src/hopper/clankers.rs`):
 `{"hoppers": [{"hopper_id", "playlist_id", "players", "teams",
 "ranks_as"?}]}`, by descriptor index, for the hopper file served now. A
 published file keeps a mark only where it has the default's playlist id
@@ -676,7 +676,7 @@ its offset. The server serves it while no file is published (§6.9);
 ### 6.9 Serving
 
 `Live::file` answers Halo 2's `multiplayer_hopper.dat` with the default
-set while none is published (`crates/live-server/src/default_hopper.rs`),
+set while none is published (`crates/live/live-server/src/default_hopper.rs`),
 so the game's title-storage download, `GET /v1/titles/{title}/hopper` and
 the builder's `PUT` (which then publishes the edited default) all work on
 a fresh server. Nothing is written to the log until someone publishes;
@@ -732,8 +732,8 @@ playlist entry to choose a custom map, three pieces are missing:
 ## 7. OptiMatch search: procedure 1, decoded
 
 Read statically from the 5849 XBE; nothing was run. The code that applies
-it is `crates/live-proto/src/optimatch.rs`; the HLE decodes the game's
-parameters (`crates/live-hle/src/sessions.rs`, `Op::Search`) and the
+it is `crates/live/live-proto/src/optimatch.rs`; the HLE decodes the game's
+parameters (`crates/live/live-hle/src/sessions.rs`, `Op::Search`) and the
 server filters `GET /v1/sessions?optimatch=` with it.
 
 ### 7.1 What a session advertises
@@ -893,7 +893,7 @@ VAs.
 ### 8.2 On this server
 
 The server is authoritative: it ranks from the games log, not from the
-console's arithmetic. The rules are in `crates/live-proto/src/rank.rs`:
+console's arithmetic. The rules are in `crates/live/live-proto/src/rank.rs`:
 the game's mechanism (points per opponent by level difference, scaled
 by level, averaged, clamped to ±200; level from a threshold table with
 the same drop rule), with our own numbers rather than the game's
@@ -1040,7 +1040,7 @@ started: the latest `BotsRostered` before its `GameStarted`. The game
 record's acceptance check (bots.md §9.3) refuses any `bot: true` entry
 that is not rostered, so `rank_game` sees only accepted bots.
 
-**Built** (`crates/live-server/src/ranks.rs`, tested in
+**Built** (`crates/live/live-server/src/ranks.rs`, tested in
 `tests/ranks.rs`):
 
 1. In `rank_game`: an entrant rostered in the game's session, in the

@@ -1,8 +1,8 @@
 # fastmem write-watch prototype (Mach exceptions, macOS arm64)
 
-Evidence for the write-watch question in [../guest-memory.md](../guest-memory.md); the prototype is `crates/fastmem-proto`.
+Evidence for the write-watch question in [../guest-memory.md](../guest-memory.md); the prototype is `crates/recompiler/fastmem-proto`.
 
-`crates/fastmem-proto` is the isolated prototype that the fastmem design
+`crates/recompiler/fastmem-proto` is the isolated prototype that the fastmem design
 ("Write watch and fault handling", `docs/fastmem.md` on the `perf` branch)
 asks for. It answers one question: can write watch move from a per-store
 dirty mark to page protection plus a fault handler on macOS arm64, with 16 KiB

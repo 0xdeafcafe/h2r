@@ -1,10 +1,10 @@
 # SSE/MMX hardware oracle
 
 Status: Built. Runs only on Apple Silicon macOS with Rosetta 2.
-Code: `crates/sse-oracle` (`src/bin/sse-oracle.rs`). Tests: `crates/sse-oracle/tests/`, `crates/simd/tests/oracle_corpus.rs`.
+Code: `crates/recompiler/sse-oracle` (`src/bin/sse-oracle.rs`). Tests: `crates/recompiler/sse-oracle/tests/`, `crates/recompiler/simd/tests/oracle_corpus.rs`.
 Switch: none.
 
-`crates/sse-oracle` is a native Rust client for a persistent x86_64 C/assembly
+`crates/recompiler/sse-oracle` is a native Rust client for a persistent x86_64 C/assembly
 runner on Apple Silicon macOS with Rosetta 2. It measures translated x86
 instructions; it is not a physical Pentium III. Results retain register bits,
 NaN payloads, signed zeros, MXCSR sticky flags, comparison EFLAGS and memory
@@ -263,7 +263,7 @@ Per-mnemonic counts include all its observed forms:
 
 ## Committed fixtures (no Rosetta needed)
 
-Normal builds and tests never touch Rosetta. `crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst`
+Normal builds and tests never touch Rosetta. `crates/recompiler/sse-oracle/fixtures/sse-fixtures-v1.bin.zst`
 is committed (**671,747 bytes**, 76,002,648 raw) and embedded in the library with
 `include_bytes!`. It contains **all 5,123,616 corpus fixtures**: the complete
 corpus compresses to under 1 MB, so no sampling was needed and the
@@ -315,14 +315,14 @@ Fixtures are generated instruction inputs and outputs only; there is no game dat
 From an existing corpus (no Rosetta; streams it in about 30 s, parsing every row):
 
 ```sh
-cargo run --release -p sse-oracle -- regen-fixtures "$TMPDIR/sse-corpus.jsonl" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
+cargo run --release -p sse-oracle -- regen-fixtures "$TMPDIR/sse-corpus.jsonl" crates/recompiler/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
 ```
 
 Directly from hardware (explicit opt-in; prints "skipped" and exits 0 if
 `arch -x86_64` or clang is absent):
 
 ```sh
-cargo run --release -p sse-oracle -- regen-fixtures --live "$TMPDIR/sse-inventory.json" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
+cargo run --release -p sse-oracle -- regen-fixtures --live "$TMPDIR/sse-inventory.json" crates/recompiler/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
 ```
 
 Selection lives in `fixtures::keep` / `fixtures::selected_cases`. If the corpus

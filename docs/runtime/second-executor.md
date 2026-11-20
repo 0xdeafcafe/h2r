@@ -2,7 +2,7 @@
 
 Status: Built as a building block, tested on synthetic code; the
 pipelined-render prototype uses it.
-Code: `crates/runtime/src/executor.rs` (`SecondExecutor`), `crates/runtime/src/cow.rs`. Tests: `crates/emit/tests/second_executor.rs`.
+Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`), `crates/runtime/runtime/src/cow.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`.
 Switch: `impl.render.pipelined_frame` (off), listed in [switches.md](switches.md).
 
 It is the prerequisite for pipelined rendering
@@ -12,7 +12,7 @@ snapshot of guest RAM.
 
 Today one host thread runs every guest thread. A guest thread is a CPU
 state and an `ExecCtx`, and the kernel's cooperative scheduler
-(`crates/kernel` `threads.rs`) hands the one host thread from one to the
+(`crates/runtime/kernel` `threads.rs`) hands the one host thread from one to the
 next (docs/runtime/snapshots.md, "How guest threads run"). Nothing in the
 runtime assumed a second host thread would run guest code; this page is
 the inventory of what that takes, then what was built.
@@ -40,7 +40,7 @@ kernel (refused), the HLE overrides (refused unless allowed), the
 time-stamp counter (split, frozen), and process-wide diagnostics that are
 already atomic.
 
-### Runtime (`crates/runtime`), per `Runtime`
+### Runtime (`crates/runtime/runtime`), per `Runtime`
 
 | State | Where | What it is to a second executor |
 |---|---|---|
@@ -92,7 +92,7 @@ its private pages), or use any other mapped RW range.
 | Timeline event buffer | `timeline` global state behind a mutex | shared mutable, already locked |
 | D3D texture-descriptor memo | `d3d::texdesc` thread-locals | per host thread, a cache |
 
-### Generated C (`crates/emit/c`, the emitted module)
+### Generated C (`crates/recompiler/emit/c`, the emitted module)
 
 | State | Where | What it is |
 |---|---|---|
@@ -112,7 +112,7 @@ module.
 
 | State | What it is to a second executor |
 |---|---|
-| Kernel (`crates/kernel`): scheduler, objects, clock, memory manager, files | shared mutable and single-threaded by design (one lock, cooperative). **Refused**: every kernel import token in the executor's dispatch is a refusal that ends the call with `ExecutorError::Refused` (section 3) |
+| Kernel (`crates/runtime/kernel`): scheduler, objects, clock, memory manager, files | shared mutable and single-threaded by design (one lock, cooperative). **Refused**: every kernel import token in the executor's dispatch is a refusal that ends the call with `ExecutorError::Refused` (section 3) |
 | Kernel logical clock | advanced from `take_slice_spent` on the game thread; the executor's accesses are returned to the caller (`CallOutcome::accesses`) to charge at the join |
 | HLE overrides (D3D, XAPI, feature hooks) | shared mutable, each with its own state and locking story. **Refused** unless the caller allows that override address; an allowed one runs on the executor's thread with the executor's `ExecCtx` and memory |
 | D3D device | its own lock; reachable only through allowed D3D overrides |
@@ -191,7 +191,7 @@ the next safe point from another thread.
 
 ## 4. Tests and measurements
 
-Unit tests in `crates/runtime` (Rust stores only): `cow` (a copy keeps
+Unit tests in `crates/runtime/runtime` (Rust stores only): `cow` (a copy keeps
 the bytes of its moment and each side its own writes, repeated copies),
 `guest::view` (a view reads the snapshot with the source's permissions;
 refresh keeps the page table until the layout moves; the written-line
@@ -201,7 +201,7 @@ conflicts), `executor` (private writes and hand-back; kernel calls,
 registered on the main runtime or not, and disallowed HLE refused by
 name; an allowed override runs; cancel).
 
-`crates/emit/tests/second_executor.rs`, on synthetic x86 lifted, emitted
+`crates/recompiler/emit/tests/second_executor.rs`, on synthetic x86 lifted, emitted
 with the inline RAM path (`H2_FASTMEM`) and access accounting, compiled
 and run through the real runtime:
 

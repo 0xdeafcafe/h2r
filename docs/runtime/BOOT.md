@@ -1,7 +1,7 @@
 # Booting the recompiled XBE natively
 
 Status: Built.
-Code: `crates/boot/src/lib.rs` (`build`, `run`, `run_hosted`), `crates/boot/src/registration.rs`, `crates/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/boot/tests/`.
+Code: `crates/apps/boot/src/lib.rs` (`build`, `run`, `run_hosted`), `crates/apps/boot/src/registration.rs`, `crates/apps/cli/src/boot_cmd.rs` (`h2 build`, `h2 run`, `h2 serve`). Tests: `crates/apps/boot/tests/`.
 Switches: the boot runner's own are below; every other one is in [switches.md](switches.md).
 
 `h2 build` lifts the whole `default.xbe` and compiles it to a host dylib.
@@ -26,7 +26,7 @@ copies. Nothing is ever written next to it.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
-| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/boot/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
+| `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/apps/boot/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
 | `--data DIR` | `~/Library/Application Support/h2recomp/data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 (`h2 serve`: no limit) | cooperative scheduler slices before giving up |
@@ -49,7 +49,7 @@ Environment variables the boot runner reads. Every other variable and
 | `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
 | `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](../lifter/x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
 | `H2_SSE_NATIVE=0` | **On by default.** Generated code runs guarded SSE add, subtract, multiply, divide and square root in native SIMD ([sse-native.md](../lifter/sse-native.md)). `0` uses the integer `h2s_*` helpers for every operation. A compiler flag, like `H2_X87_NATIVE`: set it for both build and run. |
-| `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
+| `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/recompiler/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS` | Any value, even `0`, counts as set. D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
@@ -60,7 +60,7 @@ Environment variables the boot runner reads. Every other variable and
 | `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, `Cargo.lock`, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
 | `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
 | `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
-| `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
+| `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/apps/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
 | `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
 | `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
 | `H2_BOOT_CAPTURE_LITE=1` | with a capture, record only the frame's draws, surfaces and snapshots (no uploads or guest writes); for snapshots |
@@ -88,7 +88,7 @@ calls come from memory and are complete.
 
 `run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (`h2 play`,
 [app.md](app.md) "Playing"; the agent and dedicated-host paths) fills in
-`boot::Host` (`crates/boot/src/lib.rs`). The fields a plain host sets:
+`boot::Host` (`crates/apps/boot/src/lib.rs`). The fields a plain host sets:
 
 | Field | Instead of | Goes to |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
 
 ## How it fits together
 
-- **`crates/boot/src/lib.rs`**: `build` and `run`.
+- **`crates/apps/boot/src/lib.rs`**: `build` and `run`.
   - `build` runs analyze, lifts each function, then `emit::plan` writes
     C11 shards and `h2gen.h`.
   - clang builds the shards for the host architecture, and they are linked
@@ -122,14 +122,14 @@ fed on the guest's clock, the callback count, a monotonic clock and
     registered to the interpreter (`fallback::register_cold`).
 - **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
   does all of its arithmetic, conversions and transcendentals in
-  crates/x87 (exact ext80).
+  crates/recompiler/x87 (exact ext80).
   - When generated code stops on an instruction the lifter doesn't lower,
     the runtime hands the STOP to `fallback::recover`
     (`Dispatch::set_stop_recovery`, also for a STOP handed up through
     direct calls), which interprets from there with `ir::interp`. This is
     a stopgap like the others: `--no-stopgaps` turns it off.
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
-    (a decoder over crates/x87's `abi` state machine, so stack faults,
+    (a decoder over crates/recompiler/x87's `abi` state machine, so stack faults,
     source-format exceptions and condition codes match what generated
     code gets) and `sse.rs`.
   - Control goes back to generated code at the next registered entry or
@@ -191,7 +191,7 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   share one between two runs at once.
 
 `cargo build --release -p boot --example menu_cpu` builds a bounded driver
-(`crates/boot/examples/menu_cpu.rs`): `menu_cpu DISC OUT FRESH_DATA_DIR`. It
+(`crates/apps/boot/examples/menu_cpu.rs`): `menu_cpu DISC OUT FRESH_DATA_DIR`. It
 runs boot's normal headless backend, keeps 4096 trace rows and stops after
 present 560. Its `MENU_CPU` line reports wall FPS, process user+system CPU
 milliseconds per frame for presents 480 to 560, and
@@ -205,7 +205,7 @@ numbers are in [menu-budget.md](../perf/notes/menu-budget.md).
 ## Boot stopgaps in force
 
 A stopgap replaces a kernel export the kernel stops on; the table in
-`crates/boot/src/stopgaps.rs` installs an entry only if its ordinal is in
+`crates/apps/boot/src/stopgaps.rs` installs an entry only if its ordinal is in
 `Kernel::stopped_ordinals()`, and only with stopgaps on (`--no-stopgaps`
 turns them off). The other stopgaps:
 

@@ -2,7 +2,7 @@
 
 Status: Built. Everything but real ssh and the real game under the host
 is tested; "Not verified" lists the rest.
-Code: `crates/cli/src/lab/`. Tests: `crates/cli/tests/lab.rs`.
+Code: `crates/apps/cli/src/lab/`. Tests: `crates/apps/cli/tests/lab.rs`.
 Switch: none.
 
 `h2 lab` lets an agent on one Mac start levels on a second Mac (the one
@@ -261,7 +261,7 @@ A recording is a directory with a manifest, not a file:
 ### What replay does and doesn't promise
 
 The input log is `xapi::tap`'s: every `XInputGetState` the game made,
-answered on replay by read index (crates/boot/src/lockstep_glue.rs). A
+answered on replay by read index (crates/apps/boot/src/lockstep_glue.rs). A
 replay starts from a fresh boot of the level.
 
 - **Not verified: that a replay from a fresh level boot follows the same
@@ -278,9 +278,9 @@ replay starts from a fresh boot of the level.
   times, which moves every later answer. Replays across commits are
   approximate by nature.
 - **Replay from a snapshot is not supported.** The recording's `snapshot`
-  field (`crates/cli/src/lab/proto.rs`) is reserved for a machine
+  field (`crates/apps/cli/src/lab/proto.rs`) is reserved for a machine
   snapshot; a host refuses to replay a recording whose `snapshot` is set
-  (`crates/cli/src/lab/host.rs`).
+  (`crates/apps/cli/src/lab/host.rs`).
 
 ## Not verified
 

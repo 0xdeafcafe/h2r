@@ -1,7 +1,7 @@
 # Controller button layouts
 
 Status: Built. Unit tested; the in-game behaviour is under "Not verified".
-Code: `crates/input/src/layouts.rs` (the symbolic tables), `crates/boot/src/layout_glue.rs` (the hooks, installed by `boot::run`). Tests: the same two files.
+Code: `crates/platform/input/src/layouts.rs` (the symbolic tables), `crates/apps/boot/src/layout_glue.rs` (the hooks, installed by `boot::run`). Tests: the same two files.
 Switch: none.
 
 The retail game offers four button layouts. This page records how the retail
@@ -248,11 +248,11 @@ pane and screen tag lines; a missing line names the hook that did not run.
 
 ## Tests
 
-`crates/input/src/layouts.rs`: the layout tables (retail diffs against
+`crates/platform/input/src/layouts.rs`: the layout tables (retail diffs against
 Default, the three added layouts, one button per action, fixed menu
 buttons, the 16-slot encoding, preset numbers).
 
-`crates/boot/src/layout_glue.rs`, over a fake guest: only rows 4 to 6 are
+`crates/apps/boot/src/layout_glue.rs`, over a fake guest: only rows 4 to 6 are
 ours; only the layout list grows, through EAX and not the element size; the
 chosen row is the second argument; for every layout byte 0 to 255 the action
 table is rewritten for 4 to 6 and left exactly as the original made it

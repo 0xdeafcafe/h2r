@@ -1,14 +1,14 @@
 # Performance tooling
 
 Status: Built. `h2 profile` and `h2 bench` need the CLI's `perf` cargo feature; `boot/menu-hold` has no registered boot driver (see "Boot hook").
-Code: `crates/timeline/src/lib.rs`, `crates/perf/src` (`cli.rs`, `sample.rs`, `profile.rs`, `budget.rs`, `bench.rs`, `hotloop.rs`). Tests: in those crates.
+Code: `crates/runtime/timeline/src/lib.rs`, `crates/tools/perf/src` (`cli.rs`, `sample.rs`, `profile.rs`, `budget.rs`, `bench.rs`, `hotloop.rs`). Tests: in those crates.
 Switch: `H2_PROFILE*`, `H2_TIMELINE*`, `H2_PERF_FROM`, listed in [switches.md](../runtime/switches.md).
 
 Three tools for finding out where time goes, in two crates:
 
-- `crates/timeline`: dependency-free timeline events, written as Chrome
+- `crates/runtime/timeline`: dependency-free timeline events, written as Chrome
   trace-event JSON. The runtime, kernel and d3d call it directly.
-- `crates/perf`: the sampling profiler, `perf::Session` (the profiler plus
+- `crates/tools/perf`: the sampling profiler, `perf::Session` (the profiler plus
   a timeline capture around any run), and the benchmark harness. Behind
   `h2 profile` and `h2 bench`.
 
@@ -281,7 +281,7 @@ The hot loops are synthetic x86: assembled with iced-x86, lifted, emitted
 and compiled with clang into `--work` (default `$TMPDIR/h2perf-work`,
 reusing emit's object cache), then run by the real runtime. There are no
 retail bytes. The push-buffer frame uses synthetic guest memory laid out
-like crates/d3d's tests.
+like crates/platform/d3d's tests.
 
 Each scenario gets `--warmup` untimed runs (default 2), then `--samples`
 timed ones (default 10). A scenario that cannot run (no clang, no boot
@@ -313,7 +313,7 @@ Adding a scenario: implement `perf::bench::Scenario` (`prepare` untimed,
 
 ## Boot hook
 
-The boot driver (crates/boot) depends on `perf` only behind its `perf`
+The boot driver (crates/apps/boot) depends on `perf` only behind its `perf`
 feature, which the CLI's `perf` feature turns on.
 
 1. **Profiling `h2 run` and `h2 play`** (on master). With an `h2` built
@@ -347,11 +347,11 @@ feature, which the CLI's `perf` feature turns on.
    `H2_FRAME_STATS=1` (docs/runtime/app.md "Frame stats") splits every frame into
    phases at a clock read per phase switch.
 2. **`boot/menu-hold`** (no driver registered). `perf::boot::BootDriver`
-   (`crates/perf/src/boot.rs`) is the hook: `boot_to_menu()` runs until the
+   (`crates/tools/perf/src/boot.rs`) is the hook: `boot_to_menu()` runs until the
    main menu is up and `step()` runs one iteration of the slice loop.
    `perf::boot::set_boot_driver` registers a factory before
-   `perf::cli::bench` or `perf::cli::profile` runs. Nothing in `crates/boot`
-   or `crates/cli` calls it, so the scenario reports itself skipped.
+   `perf::cli::bench` or `perf::cli::profile` runs. Nothing in `crates/apps/boot`
+   or `crates/apps/cli` calls it, so the scenario reports itself skipped.
    `perf::boot::hold` counts frames with `timeline::frames()` and reports
    frames per wall-clock second.
 
@@ -364,24 +364,24 @@ feature, which the CLI's `perf` feature turns on.
   runtime-to-guest ratio. `H2_PROFILE` with `H2_PERF_FROM` on an `h2 run` or `h2 play`
   (the first boot hook) gives the same tables for the real game, and the guest-instruction table
   shows which loops are worth a fast path.
-- **wgpu submission (crates/gfx):** `--timeline` with
+- **wgpu submission (crates/platform/gfx):** `--timeline` with
   `--cats frame,d3d,gfx` shows `queue submit` and `present` spans against
   frames and `Swap`. The profile's `gfx` category, and the `d3d` versus
   `gfx` split, separate CPU-side translation from submission.
   `d3d/pushbuf-frame` benchmarks the CPU side without a GPU.
-- **IR optimisation passes (crates/opt):** `hot-loop/alu` and
+- **IR optimisation passes (crates/recompiler/opt):** `hot-loop/alu` and
   `hot-loop/memory` are mostly generated code, so a pass that helps should
   move them. Compare runs built with and without the pass (the scenarios
   rebuild through emit, so the pass applies). The "guest instructions"
   table and the `@0x...` folded leaves show which instructions the time
   goes to.
-- **Native x87 (crates/emit):** `hot-loop/x87` runs generated x87
+- **Native x87 (crates/recompiler/emit):** `hot-loop/x87` runs generated x87
   load/mul/add/sqrt/div/store code. Run it with the default and with
   `H2_X87_NATIVE=0` in separate `--work` directories;
   [x87-native.md](../lifter/x87-native.md) describes the guards and oracle
   checks. Hot-loop JSON results also record `cpu_ns_per_trip` on Unix, the
   mean thread CPU time per trip, excluding descheduling and background
-  worker threads (`crates/perf/src/hotloop.rs`). The printed ns/trip
+  worker threads (`crates/tools/perf/src/hotloop.rs`). The printed ns/trip
   statistic is wall time.
 - **Build dependencies:** `perf` brings in `addr2line` (with its loader:
   `gimli`, `object`, `memmap2`, `typed-arena`), `rustc-demangle`,
@@ -390,7 +390,7 @@ feature, which the CLI's `perf` feature turns on.
   cache under `--work`. Nothing here measures build time yet; a
   `build/emit-shard` scenario would fit the same harness if wanted.
 
-## Device CPU cost (crates/d3d)
+## Device CPU cost (crates/platform/d3d)
 
 `cargo bench -p d3d --bench pushbuf` replays a synthetic frame (1,200 draws,
 mostly indexed, texture rebinding on two stages, constant uploads, inline
@@ -404,7 +404,7 @@ measures the device's own per-draw work, not whole-game CPU per frame or
 other upload policies. It prints mean, median and p10 ms per frame; on a
 shared machine the mean is dominated by scheduling outliers, so compare p10
 or median. `H2_BENCH_FRAMES`, `H2_BENCH_DRAWS` and `H2_BENCH_TRACE=1`
-(per-frame times) tune it (`crates/d3d/benches/pushbuf.rs`). To profile, run
+(per-frame times) tune it (`crates/platform/d3d/benches/pushbuf.rs`). To profile, run
 the bench binary under `sample <pid>` or `samply record`.
 
 `cargo bench -p d3d --bench streams` times copying draws' vertex streams:
@@ -431,7 +431,7 @@ Unset, each takes its default.
 | `H2_BENCH_DRAWS` | the `pushbuf`, `streams` and `vertex_fetch` benches and some d3d benchmark tests | draws per frame (defaults 1200, 1000 and 1000 in the benches) |
 | `H2_BENCH_GUEST_ONLY` | `pushbuf` | set: run only the guest-memory dirty-tracking benchmark, then exit |
 | `H2_BENCH_MODES` | `vertex_fetch` | `cpu` or `gpu`: time one fetch mode only, e.g. to profile it |
-| `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | the ignored `render_churn` test in `crates/d3d/tests/render_churn.rs`, its game-frame section | fills per visit (4), small draws per visit (0), rounds, the median reported (3) |
-| `H2_DIFF_SEEDS` | `crates/engine/tests/{differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the layer test defaults to `1,7,99`, `differential` to its first default seed |
-| `H2_DIFF_SCALE` | `crates/engine/tests/differential.rs` | a multiplier on the cases per seed (default 1) |
-| `H2_EMIT_FULL` | `crates/emit/tests/entry.rs` (needs `H2_XBE`) | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards) |
+| `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | the ignored `render_churn` test in `crates/platform/d3d/tests/render_churn.rs`, its game-frame section | fills per visit (4), small draws per visit (0), rounds, the median reported (3) |
+| `H2_DIFF_SEEDS` | `crates/rewrites/engine/tests/{differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the layer test defaults to `1,7,99`, `differential` to its first default seed |
+| `H2_DIFF_SCALE` | `crates/rewrites/engine/tests/differential.rs` | a multiplier on the cases per seed (default 1) |
+| `H2_EMIT_FULL` | `crates/recompiler/emit/tests/entry.rs` (needs `H2_XBE`) | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards) |

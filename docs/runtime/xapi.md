@@ -1,6 +1,6 @@
 # XAPI boundary
 
-`crates/xapi` overrides services that need native host integration. Ordinary
+`crates/platform/xapi` overrides services that need native host integration. Ordinary
 XAPI routines stay generated over the kernel HLE. [storage.md](storage.md)
 describes the VFS shared namespace and ownership.
 
@@ -238,7 +238,7 @@ it is not UTF-16LE with the `FF FE` mark and a `Name=` line (`TitleName=`
 in `TitleMeta.xbx`); the game never writes one so.
 
 `vfs::Vfs::with_storage` mends U: before mounting it
-(`crates/vfs/src/save_meta.rs`): for each `<12 hex digits>` directory
+(`crates/runtime/vfs/src/save_meta.rs`): for each `<12 hex digits>` directory
 whose `SaveMeta.xbx` is present and damaged, it looks in the directory's
 other files (first 1 MiB of each) for a UTF-16LE or 8-bit run whose name
 hash (`003309b8`) is the directory's name. That is the save's own name,
@@ -324,7 +324,7 @@ implements it over the shared `Vfs`, so `U:\` is the host directory
 `<data root>/disk/Partition1/UDATA/<title id>` (the VFS `Config::data_root`,
 by default `~/Library/Application Support/h2recomp`, never the repository).
 A `Storage` without it makes the four calls fail with 50. Tests:
-`crates/xapi/tests/saves.rs` (helpers, the adapter over a private temp-dir
+`crates/platform/xapi/tests/saves.rs` (helpers, the adapter over a private temp-dir
 VFS, registration, the runner with a stand-in allocator) and
 `tests/save_pins.rs` (`H2_XBE`, ignored: decoded instructions only).
 
@@ -411,11 +411,11 @@ kernel thunk table:
    sets the last error and returns FALSE.
 
 `00461d84` is referenced only inside this function. The native override
-(`Function::XMountCacheDrive`, `crates/xapi/src/cache.rs`) keeps steps 1-4
+(`Function::XMountCacheDrive`, `crates/platform/xapi/src/cache.rs`) keeps steps 1-4
 and 6 exactly. The `Storage` trait supplies the database and the volume:
 
 - `read_cache_database` / `write_cache_database` operate on the kernel's raw
-  disk. `crates/kernel/src/rawdisk.rs` owns that disk and is only read here.
+  disk. `crates/runtime/kernel/src/rawdisk.rs` owns that disk and is only read here.
 - `mount_cache(partition)` stands in for step 5. "Format" means emptying the
   partition's host directories (`vfs::Vfs::format_device`), and then N: is
   linked to the partition. The cluster check is skipped, because host volumes
@@ -437,7 +437,7 @@ RtlNtStatusToDosError on these failure paths; the override does not call it.
 A storage without the new methods (their defaults return 50) gets FALSE and
 -1, and N: is missing.
 
-`xapi::VfsStorage` (`crates/xapi/src/vfs_storage.rs`) implements the whole
+`xapi::VfsStorage` (`crates/platform/xapi/src/vfs_storage.rs`) implements the whole
 `Storage` trait over the kernel's one `Arc<Mutex<vfs::Vfs>>`. Z: and N: are
 links to `\Device\Harddisk0\Partition<n>`, and a remount replaces the link.
 Neither letter can be put on, or format, the volume the other resolves to.
@@ -451,7 +451,7 @@ cannot redirect its deletions.
 
 ## Runtime registration
 
-`xapi::register` (`crates/xapi/src/register.rs`) installs all 16 override
+`xapi::register` (`crates/platform/xapi/src/register.rs`) installs all 16 override
 addresses in one dispatch edit, or none of them:
 
 ```rust
@@ -523,13 +523,13 @@ pub fn service_input<S: Storage>(
   active on the calling thread.
 
 `Events` is the trait boundary to the kernel, and this crate does not
-depend on `crates/kernel`. `fn signal(&mut self, guest_handle: u32) ->
+depend on `crates/runtime/kernel`. `fn signal(&mut self, guest_handle: u32) ->
 xapi::Result<()>` is only ever called with no guest memory or XAPI guard
 held.
 
 ### Boot integration
 
-`crates/boot/src/xapi_glue.rs` is this integration, in place. The kernel is
+`crates/apps/boot/src/xapi_glue.rs` is this integration, in place. The kernel is
 attached with its VFS first (`k.set_vfs(v)`, which also mounts the raw
 disk), then:
 

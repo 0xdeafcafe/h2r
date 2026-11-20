@@ -581,9 +581,9 @@ commands are for the coordinator.
 ### Slice 0: baseline and the three agent methods
 
 - **Code.** `render.compare`, `render.capture`, `sim.hashes`: types in
-  `crates/agent-proto/src/render.rs` and `sim/`, logic in
-  `crates/agent/src/render.rs` (PNG compare as a pure function), host
-  glue in `crates/boot/src/agent_glue.rs`, the `h2 agent frame compare`
+  `crates/extensions/agent-proto/src/render.rs` and `sim/`, logic in
+  `crates/extensions/agent/src/render.rs` (PNG compare as a pure function), host
+  glue in `crates/apps/boot/src/agent_glue.rs`, the `h2 agent frame compare`
   verb in the CLI, docs in [agent-api.md](../runtime/agent-api.md).
 - **Tests.** Compare: synthetic images (equal, one pixel, size
   mismatch, the bar's edges). Capture: the frame recorder's existing
@@ -613,7 +613,7 @@ commands are for the coordinator.
   native-render -p feature`.
 - **Gate.** Pixels identical to the commit before (`max_channel == 0`)
   on the gate corpus; hashes identical; fps within noise;
-  `rg GuestRead crates/native-render/src/{gpu,objects,instances,world}*`
+  `rg GuestRead crates/rewrites/native-render/src/{gpu,objects,instances,world}*`
   finds nothing.
 
 ### Slice 2: typed stages prepare and record on the render thread

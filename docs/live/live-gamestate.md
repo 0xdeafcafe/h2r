@@ -25,7 +25,7 @@ The pending options at `0x004ed3a8` are not the active match. `0x00137dd0` copie
 
 ### Generic datum-array header (used by players and objects)
 
-Recovered in `crates/engine/src/datum.rs` and `docs/engine/datum_new.md`.
+Recovered in `crates/rewrites/engine/src/datum.rs` and `docs/engine/datum_new.md`.
 
 | Field | Offset | Type | Confidence | Evidence |
 |---|---:|---|---|---|---|
@@ -164,7 +164,7 @@ playing = C != 0 && read_u8(C + 5) != 0
 
 The same two functions also write the `0x84`-byte block at `[0x004de2f4]` (`+0x80` and `+0x81` set and cleared; builtins 208 and 209 set them from a boolean argument, the shape of `cinematic_show_letterbox` and its immediate form), the players globals' `+6`, the game globals' `+0x11f8` and the AI globals' `+0x20` (cleared by start, set by stop). Those are effects of a cinematic; `+5` above is the state the game itself tests. The main menu's background also runs `cinematic_start`; telemetry is only on in a game.
 
-The agent API (`crates/agent`) and the co-op straggler fix (`crates/boot/src/coop_players.rs`) instead observe the two HaloScript calls; the byte stays right across a checkpoint revert taken inside a cinematic, which observing the calls does not.
+The agent API (`crates/extensions/agent`) and the co-op straggler fix (`crates/apps/boot/src/coop_players.rs`) instead observe the two HaloScript calls; the byte stays right across a checkpoint revert taken inside a cinematic, which observing the calls does not.
 
 ## 4. Players datum array
 
@@ -483,7 +483,7 @@ There is no single decoded BSP world AABB in the repository. For exact bounds, r
 
 ### Reusing the viewer for the web
 
-`crates/viewer/src/bin/bsp.rs:591` already has `world_triangles`, which builds all world-space triangles for one BSP:
+`crates/tools/viewer/src/bin/bsp.rs:591` already has `world_triangles`, which builds all world-space triangles for one BSP:
 
 - cluster positions are already world-space (`:613-616`);
 - definitions are loaded once and transformed per placement (`:618-626`);
@@ -491,15 +491,15 @@ There is no single decoded BSP world AABB in the repository. For exact bounds, r
 
 The public lower-level APIs are:
 
-- `StructureRender::read` — `crates/tags/src/structure.rs:288`;
-- `GeometryHeader::load` — `crates/tags/src/structure.rs:135`;
-- `Section::vertices(None)` — `crates/tags/src/geometry.rs:928`;
-- `Section::part_triangles` — `crates/tags/src/geometry.rs:917`;
-- `InstancedGeometryInstance::transform` — `crates/tags/src/structure.rs:213`.
+- `StructureRender::read` — `crates/formats/tags/src/structure.rs:288`;
+- `GeometryHeader::load` — `crates/formats/tags/src/structure.rs:135`;
+- `Section::vertices(None)` — `crates/formats/tags/src/geometry.rs:928`;
+- `Section::part_triangles` — `crates/formats/tags/src/geometry.rs:917`;
+- `InstancedGeometryInstance::transform` — `crates/formats/tags/src/structure.rs:213`.
 
 Two practical export routes:
 
-1. **Lowest effort:** run the existing `bsp --render` path offline and ship its top-down PNG plus the world-to-image scale/offset. The renderer looks down Z and culls faces with `normal.z <= 0` (`crates/viewer/src/bin/bsp.rs:728-746`). Its framing is the 1st–99th percentile of triangle centroids, not exact world bounds (`:707-725`), so export those computed framing values rather than recomputing an AABB on the server.
+1. **Lowest effort:** run the existing `bsp --render` path offline and ship its top-down PNG plus the world-to-image scale/offset. The renderer looks down Z and culls faces with `normal.z <= 0` (`crates/tools/viewer/src/bin/bsp.rs:728-746`). Its framing is the 1st–99th percentile of triangle centroids, not exact world bounds (`:707-725`), so export those computed framing values rather than recomputing an AABB on the server.
 2. **Vector/interactive:** refactor the private `world_triangles` logic into an offline exporter, project drawn triangles to XY, and emit quantized triangles, an occupancy raster, or boundary edges as SVG/JSON. This currently has no triangle/SVG/GeoJSON/outline CLI. Use exact vertex bounds if the vector output should include everything; optionally retain the renderer's back-face/percentile policy to hide the enclosing shell.
 
 Precompute every scenario BSP offline. Runtime traffic then needs only `{map, bsp_index}` and player XY/heading, not live BSP geometry.
@@ -558,4 +558,4 @@ Consistency rules:
 
 ## References
 
-- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/engine/src/datum.rs`, `crates/tags/src/structure.rs`, `crates/tags/src/geometry.rs`, `crates/viewer/src/bin/bsp.rs`.
+- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/rewrites/engine/src/datum.rs`, `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`, `crates/tools/viewer/src/bin/bsp.rs`.

@@ -4,7 +4,7 @@ Status: **built, not yet run on the disc.** Item 6 of the
 [architecture review](../architecture-review-2026-11.md) (section 3.4,
 "Shadow execution in place of record-and-replay").
 
-The differential tests in `crates/engine/tests/*_differential.rs` check
+The differential tests in `crates/rewrites/engine/tests/*_differential.rs` check
 each native port against the lifted original from seeded, synthetic
 states. Shadow execution checks the same ports while the game runs: at a
 port's call, the port and the lifted original each run on their own copy
@@ -15,7 +15,7 @@ no switch or variable for it.
 
 ## The `lifted` crate
 
-`crates/lifted` is the one "run the lifted original" fixture. Before it,
+`crates/runtime/lifted` is the one "run the lifted original" fixture. Before it,
 each differential test rebuilt its own: image loading and pinning, a lazy
 lifter cache, the register conversion between `runtime::CpuAbi` and
 `ir::interp::Cpu`, and a stepping loop.
@@ -29,7 +29,7 @@ lifter cache, the register conversion between `runtime::CpuAbi` and
 
 Migrated: `sim_native_differential.rs`, `sim_physics_differential.rs` and
 the engine tests' shared `common` helpers. The render differentials in
-`crates/engine/tests` and the two in `crates/native-render/tests` still
+`crates/rewrites/engine/tests` and the two in `crates/rewrites/native-render/tests` still
 carry their own copies; each moves when next touched.
 
 ## The check
@@ -84,7 +84,7 @@ or not, under its switch name and its group (`sim.native`,
 `sim.physics`), and run each installed body through
 `feature::shadow::run`. Only installed ports are checked: a port's
 `impl.` switch puts it in the plan, and `shadow.enable` turns its checks
-on. Boot gives the registry the image ([`fallback.rs`](../../crates/boot/src/fallback.rs)
+on. Boot gives the registry the image ([`fallback.rs`](../../crates/apps/boot/src/fallback.rs)
 `shadow_original`): the build's cached analysis, lifted on demand, built
 at the first `shadow.enable`.
 

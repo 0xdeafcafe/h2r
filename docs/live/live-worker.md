@@ -24,7 +24,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Event stream (`/v1/stream`), live frames, packed ticks | `LiveHub`, hibernatable WebSockets | The feed and frames come from the read model. Hibernation means idle viewers cost nothing. |
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
-| Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live-worker/src/r2.rs`). |
+| Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live/live-worker/src/r2.rs`). |
 | Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
@@ -74,7 +74,7 @@ Postgres stays supported for a native `h2 live serve`, as it is today.
 
 Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 `h2-live-server`'s environment names where it has them
-(`crates/live-worker/src/settings.rs`).
+(`crates/live/live-worker/src/settings.rs`).
 
 | Name | Kind | Meaning |
 |---|---|---|
@@ -124,7 +124,7 @@ anywhere else it can be forged.
 
 On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) and `time`'s `wasm-bindgen` clock.
 
-### crates/live-worker
+### crates/live/live-worker
 
 - **`sqlstore`** (named `d1store` in slice 1): an `EventStore` over `Sql`. It builds and is tested natively against SQLite:
   - it passes the shared store tests;
@@ -144,8 +144,8 @@ lives in a home of its own, so the machine's toolchain is untouched:
 ```
 export RUSTUP_HOME=$TMPDIR/lw2/rustup CARGO_HOME=$TMPDIR/lw2/cargo   # rustup-init, once
 rustup target add wasm32-unknown-unknown; cargo install worker-build
-cd crates/live-worker && worker-build --release     # build/index.js, build/index_bg.wasm
-crates/live-worker/smoke/run.sh 1000                # wrangler dev, the smoke test, a restart
+cd crates/live/live-worker && worker-build --release     # build/index.js, build/index_bg.wasm
+crates/live/live-worker/smoke/run.sh 1000                # wrangler dev, the smoke test, a restart
 ```
 
 For the install only, `CARGO_HOME` points at the private home; the builds
@@ -298,7 +298,7 @@ attachment retains each subscriber's version preference.
 Two drivers run the session:
 - **axum** (`http::run_stream`), on a machine. It is one task per socket,
   selecting over the socket, the feeds and the token deadline, as before.
-- **The hub** (`crates/live-worker/src/sockets.rs`).
+- **The hub** (`crates/live/live-worker/src/sockets.rs`).
   - Each socket is accepted with `state.accept_web_socket`, and its `Resume`
     is kept as the socket's attachment. The attachment is written when that
     state changes (let in, a new token), not per event: every open session
@@ -321,7 +321,7 @@ Two drivers run the session:
 
 `/v1/ingest` works the same way: `live_server::ingest::IngestSession` is
 the game socket's logic, driven by axum's task on a machine and by the hub
-(`crates/live-worker/src/ingest.rs`). The hub handles each ingest socket's
+(`crates/live/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
 the auth message or decoding any frames. The attachment keeps the author
@@ -402,7 +402,7 @@ see [live-telemetry.md](live-telemetry.md).
   a member whose ticket has run out gets a new one from the hub with the
   old ticket (`{"ticket": ...}`, no token), in the background, so no
   datagram waits for it. If the hub says no, the socket closes with 4403.
-- **The room** (`crates/live-worker/src/relayroom.rs`, generic and tested on
+- **The room** (`crates/live/live-worker/src/relayroom.rs`, generic and tested on
   a machine): two accounts; the same account again replaces its old socket
   (4409); a third is refused (4409); messages over 1,200 bytes close with
   4413, faster than `relay_rate` with 4429; `{kind: "peer", present}`
@@ -449,7 +449,7 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 | `LIVE_HOST_DATA_SHA256` | SHA-256 of that bundle. Update alongside its signed URL. |
 
 To set the production cap explicitly, add `LIVE_HOST_BUDGET_USD = "25"`
-under `[env.production.vars]` in `crates/live-worker/wrangler.toml`.
+under `[env.production.vars]` in `crates/live/live-worker/wrangler.toml`.
 Set the variable separately for each environment that starts containers.
 Live reserves budget for the whole match before calling the room to
 start. [Cost calculation](dedicated-host.md#cost-and-budget)
@@ -559,7 +559,7 @@ large share of the day's requests.
 
 ## Deploy
 
-`crates/live-worker/deploy.sh` builds and deploys; never run a bare
+`crates/live/live-worker/deploy.sh` builds and deploys; never run a bare
 `wrangler deploy`. Each environment in wrangler.toml is its own Worker, with
 its own Durable Objects (so its own log), bucket and key:
 
@@ -589,7 +589,7 @@ before deploying.
    `~/.cargo` are not touched. The first run installs it.
 2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
    `web/dist`, the Worker's static assets.
-3. **Wasm.** `worker-build --release` into `crates/live-worker/build`.
+3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
 5. **Bucket.** It creates the environment's R2 bucket if it is missing.
@@ -612,10 +612,10 @@ before deploying.
 ### Staging
 
 ```
-crates/live-worker/deploy.sh staging
+crates/live/live-worker/deploy.sh staging
 # discovery's url: the workers.dev address the first deploy printed
 H2_LIVE_PUBLIC_URL=https://h2-live-staging.<subdomain>.workers.dev \
-  crates/live-worker/deploy.sh staging --skip-build
+  crates/live/live-worker/deploy.sh staging --skip-build
 ```
 
 Staging is invite-only with `afr` as its admin, like production. Its log
@@ -641,7 +641,7 @@ model from the matching game detail. The hub's generic metadata response
 skips the fallback, and the detail read enforces the same anonymous
 visibility rules. Both homes use the same renderer to put the header
 and its emblem URLs above the app's root in the initial HTML.
-[Worker page rendering](../../crates/live-worker/src/site.rs)
+[Worker page rendering](../../crates/live/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
 appearance URL redirects to a revision derived from the published art
@@ -699,7 +699,7 @@ fetches `manifest.json` with `fetch`, which follows the redirect
 cross-origin:
 
 ```
-bunx wrangler@4 r2 bucket cors set live-art --file crates/live-worker/art-cors.json
+bunx wrangler@4 r2 bucket cors set live-art --file crates/live/live-worker/art-cors.json
 ```
 
 A new extraction is a new stamp: publish it again and change the variable.
@@ -707,7 +707,7 @@ A new extraction is a new stamp: publish it again and change the variable.
 ## Migrating the current data
 
 The hub's storage can be reached only through the Worker, so the log goes
-in through the hub's operator endpoints (`crates/live-server/src/logio.rs`):
+in through the hub's operator endpoints (`crates/live/live-server/src/logio.rs`):
 
 | Route | Token | |
 |---|---|---|
@@ -720,7 +720,7 @@ in through the hub's operator endpoints (`crates/live-server/src/logio.rs`):
 An operator token is signed with the server's own key, so only whoever holds
 `server.key` can read the log whole or write into it.
 
-**Writes are held while a log is copied in** (`crates/live-server/src/hold.rs`).
+**Writes are held while a log is copied in** (`crates/live/live-server/src/hold.rs`).
 The first import holds every write of the server's own, and of its clients,
 until `--release`. Without it, the hub's sweep sees a copied sign-in or game
 gone quiet and appends `PresenceExpired` or `GameEnded` at its head. The
@@ -774,7 +774,7 @@ what this rehearses. `deploy.sh staging` keeps staging's key as
 `~/.config/h2-live-worker/staging/server.key`, for `--operator`.
 
 ```
-crates/live-worker/deploy.sh staging
+crates/live/live-worker/deploy.sh staging
 ~/.cargo/bin/h2 live store copy --from postgres://localhost/h2live \
   --to https://h2-live-staging.<subdomain>.workers.dev \
   --operator ~/.config/h2-live-worker/staging --release
@@ -801,7 +801,7 @@ DATA="$HOME/Library/Application Support/h2recomp/live/server"
 
 **0. Install the h2 binary that knows the new commands.**
 ```
-lockf -k $TMPDIR/cargo.lock cargo install --locked --force --path crates/cli --bin h2
+lockf -k $TMPDIR/cargo.lock cargo install --locked --force --path crates/apps/cli --bin h2
 ~/.cargo/bin/h2 live --help | grep -E "assets publish|store copy"
 bunx wrangler@4 login
 ```
@@ -812,7 +812,7 @@ keeps serving meanwhile.
    ```
    bunx wrangler@4 r2 bucket create live-art
    bunx wrangler@4 r2 bucket domain add live-art --domain live-art.forbes.red --zone-id <forbes.red zone id>
-   bunx wrangler@4 r2 bucket cors set live-art --file crates/live-worker/art-cors.json
+   bunx wrangler@4 r2 bucket cors set live-art --file crates/live/live-worker/art-cors.json
    ```
    `bunx wrangler@4 r2 bucket dev-url enable live-art` gives an r2.dev
    address instead of a custom domain; it is rate limited, so it is for
@@ -829,7 +829,7 @@ keeps serving meanwhile.
    ```
 4. It prints `H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/<stamp>"`.
    Put that line under `[env.cutover.vars]`, `[env.production.vars]` and
-   `[env.staging.vars]` in `crates/live-worker/wrangler.toml`.
+   `[env.staging.vars]` in `crates/live/live-worker/wrangler.toml`.
 5. Check: `curl -sI -H 'Origin: https://live.forbes.red' -H 'Accept-Encoding: br'
    https://live-art.forbes.red/art/<stamp>/manifest.json` answers 200 with
    `content-encoding: br`, `cache-control: public, max-age=31536000,
@@ -840,7 +840,7 @@ keeps serving meanwhile.
 the Mac's `server.key`, which deploy.sh checks against the public key at
 https://live.forbes.red/.well-known/h2live.json before putting it:
 ```
-H2_LIVE_KEY_FILE="$DATA/server.key" crates/live-worker/deploy.sh cutover --yes-production
+H2_LIVE_KEY_FILE="$DATA/server.key" crates/live/live-worker/deploy.sh cutover --yes-production
 curl -s https://h2-live.<sub>.workers.dev/healthz        # {"ok":true,"position":0}
 curl -s https://h2-live.<sub>.workers.dev/.well-known/h2live.json   # id live.forbes.red, the Mac's key
 ```
@@ -879,7 +879,7 @@ writing: go back to step 4.
 
 **6. Switch: deploy with the route.**
 ```
-crates/live-worker/deploy.sh production --yes-production --skip-build
+crates/live/live-worker/deploy.sh production --yes-production --skip-build
 ```
 The route `live.forbes.red/*` puts the Worker in front of the proxied
 record. The DNS record and the tunnel's configuration stay as they are.

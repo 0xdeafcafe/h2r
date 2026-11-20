@@ -104,7 +104,7 @@ change 1.
 This is the state at the review; `h2_held_read`/`h2_held_write` have since
 been replaced by the always-inline `H2_HELD_TRY` (ranked change 2 below).
 
-`H2_LD`/`H2_ST` (`crates/emit/c/h2gen.h`) call `h2_held_read`/
+`H2_LD`/`H2_ST` (`crates/recompiler/emit/c/h2gen.h`) call `h2_held_read`/
 `h2_held_write` (`h2fastmem.h`). They are `static inline`, but clang
 does not inline them: the dylib has exactly one out-of-line copy per
 shard (1,000 of each). Disassembly of one copy shows the width test, the
@@ -368,7 +368,7 @@ dispatch table below are not done.
 Every transfer still counts against `max_transfers`, safe points still
 occur exactly where the runner would have had work to do (preempt word
 set, interrupt pending), and the diagnostic frame chain is replayed as
-today. `crates/emit/tests/direct.rs` already proves identical state
+today. `crates/recompiler/emit/tests/direct.rs` already proves identical state
 with direct calls off and on across limits, faults and preemption; it
 is the harness for this too. This is an ABI revision (module feature
 bit and dylib stamp), so old images must be refused, not misread.
@@ -403,7 +403,7 @@ change the unit of work from a lane to an instruction.
   a handler changes the host rounding mode.
 
 The reference helpers stay as the fallback for every rejected case, so
-results and flags are the same bits by construction. `crates/sse-oracle`
+results and flags are the same bits by construction. `crates/recompiler/sse-oracle`
 is the check.
 
 **Transcendentals.**

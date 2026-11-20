@@ -1,0 +1,39 @@
+[package]
+name = "live-proto"
+description = "Wire types, signing and verification shared by the Xbox Live replacement's clients and server (docs/live/live-api.md, docs/live/live-security.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+live-floor-bench = []
+
+[dependencies]
+# MapId and the map package manifest (docs/game/maps.md §5).
+content.workspace = true
+serde.workspace = true
+# Exact float parsing: the canonical-payload check re-serialises numbers.
+serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
+thiserror.workspace = true
+ed25519-dalek = "2"
+sha2 = "0.10"
+# TOTP (RFC 6238) for account recovery.
+hmac = "0.12"
+sha1 = "0.10"
+# Sealing secrets at rest (XChaCha20-Poly1305, key from HKDF-SHA256).
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+base64 = "0.22"
+getrandom = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+flate2 = "1"
+brotli = "9"
+
+# For the Cloudflare Worker (crates/live/live-worker): randomness and the clock
+# from JavaScript on wasm32-unknown-unknown. getrandom 0.2 comes in through
+# the RustCrypto traits (rand_core 0.6).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+time = { version = "0.3", features = ["wasm-bindgen"] }

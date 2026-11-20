@@ -4,9 +4,9 @@
 #
 #   guest.json   the game thread's cost per tick, allocations per tick, the
 #                sink worker's packed encode and the wire size
-#                (crates/live-telemetry/src/bench.rs)
+#                (crates/live/live-telemetry/src/bench.rs)
 #   server.json  ingest, signed event batches and stream fan-out
-#                (crates/live-server/benches/telemetry.rs)
+#                (crates/live/live-server/benches/telemetry.rs)
 #   web.json     packed-frame decode, the frame hub and repaint sampling
 #                (web/bench/telemetry.bench.ts)
 #

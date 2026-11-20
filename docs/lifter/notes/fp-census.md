@@ -4,7 +4,7 @@ Evidence for [FLOAT.md](../FLOAT.md).
 
 ## 2026-11-15
 
-Measured with `h2 fpstats` ([crates/analyze/src/fpstats.rs](../../../crates/analyze/src/fpstats.rs)) over the retail `default.xbe` (SHA-256 `03215919...935d`), at commit 1ec714ed0 (the commit that added the tool; the tool's output has not been rerun since this note was written). Reproduce with `cargo h2 fpstats [disc] [--root 0x12190]`. The tool is static: it counts what the analyzer decoded and claimed, which is not what executes. `--root` adds start points for the reachability split; `0x12190` is `game_main` in [engine-map.md](../../engine/engine-map.md).
+Measured with `h2 fpstats` ([crates/recompiler/analyze/src/fpstats.rs](../../../crates/recompiler/analyze/src/fpstats.rs)) over the retail `default.xbe` (SHA-256 `03215919...935d`), at commit 1ec714ed0 (the commit that added the tool; the tool's output has not been rerun since this note was written). Reproduce with `cargo h2 fpstats [disc] [--root 0x12190]`. The tool is static: it counts what the analyzer decoded and claimed, which is not what executes. `--root` adds start points for the reachability split; `0x12190` is `game_main` in [engine-map.md](../../engine/engine-map.md).
 
 ### What the game uses
 
@@ -176,14 +176,14 @@ so that column is a judgement from "What runs before the first menu frame" and e
 
 | # | lowering | insns | share | reached | menu |
 |---:|---|---:|---:|---:|---|
-| 1 | SSE scalar moves and arithmetic through `crates/simd` (`movss`, `addss`, `subss`, `mulss`, `divss`, `sqrtss`) | 82,019 | 47.7% | 50,600 | **yes** |
-| 2 | x87 through the `crates/x87` helpers on `X87Abi`: loads, stores (three-phase), arithmetic, `fxch`, constants, `fsqrt` | 37,375 | 21.8% | 16,580 | **yes** |
+| 1 | SSE scalar moves and arithmetic through `crates/recompiler/simd` (`movss`, `addss`, `subss`, `mulss`, `divss`, `sqrtss`) | 82,019 | 47.7% | 50,600 | **yes** |
+| 2 | x87 through the `crates/recompiler/x87` helpers on `X87Abi`: loads, stores (three-phase), arithmetic, `fxch`, constants, `fsqrt` | 37,375 | 21.8% | 16,580 | **yes** |
 | 3 | SSE packed moves, shuffles and bit logic (`movaps`, `shufps`, `xorps`, `movlps`/`movhps`, `andps`, `movmskps`, ...) | 27,530 | 16.0% | 10,180 | **yes** |
 | 4 | Compares and flag fusion: `comiss`/`ucomiss`, `fcomip` (with `eflags_defined`), `fcomp`+`fnstsw`+`test ah`, `sahf`, `ftst`, `cmpss`/`cmpps` | 10,786 | 6.3% | 5,502 | **yes** |
 | 5 | SSE packed arithmetic (`mulps`, `addps`, `subps`) | 6,895 | 4.0% | 1,303 | **yes** (matrix/vector paths) |
 | 6 | MMX and SSE-on-MMX integer ops, with the `h2gen.h` aliasing and #MF check | 2,936 | 1.7% | 146 | no: Bink/WMA/HLE'd D3D; stop on use |
 | 7 | Conversions with x86 indefinite: `cvtsi2ss`, `cvttss2si` (simd), `fistp` (x87, RC-exact), `cvtpi2ps`/`cvtps2pi` | 2,731 | 1.6% | 1,491 | **yes** (`_ftol2` has 214 callers) |
-| 8 | x87 transcendentals through `crates/x87` (`fsin`, `fcos`, `fpatan`, `fyl2x`, `f2xm1`, `fscale`, `frndint`, ...) | 773 | 0.4% | 453 | **yes**: camera/orientation math is inline |
+| 8 | x87 transcendentals through `crates/recompiler/x87` (`fsin`, `fcos`, `fpatan`, `fyl2x`, `f2xm1`, `fscale`, `frndint`, ...) | 773 | 0.4% | 453 | **yes**: camera/orientation math is inline |
 | 9 | Hints and state: `prefetch*`, `sfence` no-ops; `fnsave`/`frstor` image/commit | 400 | 0.2% | 99 | prefetch yes (trivial); `fnsave` on use |
 | 10 | min/max; `rcp`/`rsqrt` (simd) | 238 | 0.1% | 83 | **yes** (`rsqrtss` in normalization) |
 | 11 | Control and mode: `fldcw` (normalising), `fnstcw`, `fwait` with #MF, `ldmxcsr`/`stmxcsr` | 123 | 0.1% | 89 | **yes**: `_control87` runs in `platform_bootstrap` |

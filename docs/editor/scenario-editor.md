@@ -1,6 +1,6 @@
-# Scenario editor (`crates/scenario-edit`)
+# Scenario editor (`crates/tools/scenario-edit`)
 
-Status: Built. Code: `crates/scenario-edit/src`. Tests: in-source unit tests.
+Status: Built. Code: `crates/tools/scenario-edit/src`. Tests: in-source unit tests.
 Switch: none.
 
 A Sapien-style placement editor for Halo 2 cache files. It reads the
@@ -152,7 +152,7 @@ after the old end of the metadata.
 ## 4. The session
 
 `scenario_edit::Session` holds the editor's state and every command, with
-no UI; `h2-editor`'s scenario tool (`crates/studio`,
+no UI; `h2-editor`'s scenario tool (`crates/apps/studio`,
 [editor.md](editor.md)) draws it:
 
 ```rust

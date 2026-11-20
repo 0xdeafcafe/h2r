@@ -1,0 +1,93 @@
+# wgit: UI screen definition; a screen owns panes, a pane owns widget definition blocks.
+# Evidence: crates/formats/tags/src/ui.rs (Screen, Pane, widget codecs), docs/formats/ui.md (E engine read, V disc-checked).
+group wgit 0x68 align 4
+  0x0 flags32 flags bits=header_layout_3|build_first_pane|no_header|header_layout_2|header_layout_1 -- E 0x0022fda6, 0x0022f8df: bit 2 hides the header; bits 4, 3, 0 select wigl header layout 1, 2, 3 (else 0); bit 1 builds the first pane of a multi-pane screen up front; bit 5 copied to the screen widget; ui.rs:966,991-999
+  0x4 i16 screen_id -- E 0x00148098: the identifier wgtz screen lookups match; ui.rs:971
+  0x6 unknown 0x12
+  0x18 tagref strings groups=unic -- E 0x00230134: every string ID in the screen resolves through it; V; ui.rs:976
+  0x20 block panes 0x4c align 4 -- E 0x0022f899, builder 0x0022fc08; V; ui.rs:910,1010
+    0x0 unknown 0x2
+    0x2 u16 animation -- E 0x0022f71c: copied to the screen widget when the pane is shown; ui.rs:914
+    0x4 block buttons 0x3c align 4 -- E 0x00253cc8; V; ui.rs:931
+      0x0 flags32 flags bits=justification_0|justification_1|font_option -- E 0x00253cff: bit 0 justification mode 0, else bit 1 mode 1, else 2; bit 2 a font-renderer option; ui.rs:578
+      0x4 u16 animation -- E 1-based index into wigl animations (+0x120), 0 none (0x0022e65e); docs/formats/ui.md; ui.rs:603
+      0x6 unknown 0x4
+      0xa i16 font -- E font index (0x00253cff); ui.rs:583
+      0xc unknown 0x4
+      0x10 f32[3] text_color -- E text colour r, g, b; ui.rs:586
+      0x1c i16[4] rect -- E top, left, bottom, right in UI units, Y up (0x002bafa4); ui.rs:588
+      0x24 tagref bitmap groups=bitm -- E 0x00253ea8: drawn at rect top-left plus bitmap_offset; V; ui.rs:589
+      0x2c i16[2] bitmap_offset -- E 0x00253ea8: x, y from the rect top-left; ui.rs:591
+      0x30 string label -- E label, resolved through the screen unic; V; ui.rs:592
+      0x34 i16 render_depth_bias -- E draw-order key after depth (0x002356d8); ui.rs:594
+      0x36 unknown 0x2
+      0x38 flags32 item_flags -- E bits 0 and 1 copied to the list item runtime flags; ui.rs:597
+    0xc block lists 0x18 align 4 -- E 0x0024bbf3: only the first is used; V; ui.rs:932
+      0x0 flags32 flags -- E bit 0 copied to the list widget +0x7c (0x0024bc12); ui.rs:624
+      0x4 i16 skin_index -- E index into wigl skins +0x138 (0x0014837a); V always in range; ui.rs:626
+      0x6 i16 visible_items -- E items laid out from the skin (0x0024bc12); ui.rs:628
+      0x8 i16[2] anchor -- E x, y top-left of the first item; ui.rs:629
+      0xc u16 animation -- E 1-based index into wigl animations (+0x120), 0 none (0x0022e65e); docs/formats/ui.md; ui.rs:642
+      0xe unknown 0xa
+    0x14 unknown 0x8
+    0x1c block text_blocks 0x2c align 4 -- E 0x0022fc08; V; ui.rs:933
+      0x0 flags32 flags bits=justification_0|justification_1|font_option|force_font_1|large_widget -- E 0x0022f9bf, 0x00253765: bits 0/1 justification as buttons, bit 2 font option, bit 3 forces font 1 and applies wigl +0x4c, bit 4 larger widget allocation; ui.rs:651
+      0x4 u16 animation -- E 1-based index into wigl animations (+0x120), 0 none (0x0022e65e); docs/formats/ui.md; ui.rs:670
+      0x6 unknown 0x4
+      0xa i16 font -- E font index; ui.rs:673
+      0xc unknown 0x4
+      0x10 f32[3] text_color -- E text colour r, g, b; ui.rs:675
+      0x1c i16[4] rect -- E top, left, bottom, right in UI units, Y up; ui.rs:676
+      0x24 string text -- E 0x00253765: resolved through the screen unic (0x00230134); V; ui.rs:662
+      0x28 i16 render_depth_bias -- E draw-order key after depth; ui.rs:678
+      0x2a unknown 0x2
+    0x24 block bitmaps 0x38 align 4 -- E 0x0022fc08; V; ui.rs:934
+      0x0 flags32 flags bits=_|_|meter -- E 0x002b0a68: bit 2 makes a meter bounded by extent, width scaled by a runtime 0..1 value; ui.rs:687,710
+      0x4 u16 animation -- E 1-based index into wigl animations (+0x120), 0 none (0x0022e65e); docs/formats/ui.md; ui.rs:738
+      0x6 unknown 0x2
+      0x8 i16 draw_mode -- E 0x002b0565: value 1 selects the second draw mode (clamps texture scale to 1); other values not distinguished; ui.rs:692
+      0xa i16 image -- E 0x002b01eb, 0x002b0b19: bitmap image used for the size, ignored if out of range; ui.rs:695
+      0xc i16[2] top_left -- E x, y; ui.rs:697,713
+      0x10 f32[2] scroll_rate -- E 0x002b0328: texture-coordinate scroll per second u, v, wrapped to [0, 1); ui.rs:698
+      0x18 tagref bitmap groups=bitm -- E; V; ui.rs:744
+      0x20 i16 render_depth_bias -- E draw-order key after depth; ui.rs:701
+      0x22 unknown 0x2
+      0x24 f32 sprite_fps -- E 0x002b0328: sprite frames per second, below 0.001 static; ui.rs:703
+      0x28 i16[2] extent -- E 0x002b0328: meter right (x) and bottom (y); ui.rs:705
+      0x2c unknown 0xc
+    0x2c block model_scenes 0x4c align 4 -- E 0x0022fc08; V; ui.rs:935
+      0x0 unknown 0x4
+      0x4 u16 animation -- E 1-based index into wigl animations (+0x120), 0 none (0x0022e65e); docs/formats/ui.md; ui.rs:794
+      0x6 unknown 0x2
+      0x8 i16 render_depth_bias -- E draw-order key after depth; ui.rs:774
+      0xa unknown 0x2
+      0xc block object_names 0x20 align 4 -- E 0x002b0baa: scenario objects looked up by name (resolver 0x000bb760); ui.rs:776
+        0x0 u8[32] name -- E scenario object name, NUL padded; ui.rs:753
+      0x14 block secondary_object_names 0x20 align 4 -- E a second name list (resolver 0x000c38e0); ui.rs:778
+        0x0 u8[32] name -- E scenario object name, NUL padded; ui.rs:753
+      0x1c f32[3] camera_scale -- E multiplied with a widget vector and subtracted from camera; ui.rs:780
+      0x28 f32[3] camera -- E camera position; ui.rs:782
+      0x34 f32 fov -- E field of view, clamped to at least 1 and scaled; ui.rs:783
+      0x38 i16[4] viewport -- E top, left, bottom, right in UI units; ui.rs:785
+      0x40 unknown 0xc
+    0x34 unknown 0x10
+    0x44 block tables 0x18 align 4 -- E 0x0022fc08; V; ui.rs:937
+      0x0 unknown 0x4
+      0x4 tagref skin groups=skin -- E 0x002afdbc: skin drawn in every cell; V; ui.rs:899
+      0xc i16[2] anchor -- E x, y of the first cell; ui.rs:850,882
+      0x10 i8 order -- E 0x002afdbc: zero lays cells out by rows, nonzero by columns; ui.rs:851,867
+      0x11 i8 cells -- E 0x0022fc08: one widget per cell; ui.rs:853
+      0x12 i8 columns -- E clamped to at least 1 (0x002afdbc); ui.rs:854,868
+      0x13 i8 rows -- E clamped to at least 1 (0x002afdbc); ui.rs:855,869
+      0x14 i16 row_spacing -- E Y step per cell; ui.rs:856,887
+      0x16 i16 column_spacing -- E X step per cell; ui.rs:858,884
+  0x28 u16 shape_group -- E 0x0022facd: 1-based index into wigl shape groups (+0x128); ui.rs:979
+  0x2a unknown 0x2
+  0x2c string header -- E 0x0022fda6: header text; V; ui.rs:982
+  0x30 block string_lists 0xc align 4 -- E 0x00253c3a, 0x00230195: addressed as (list, item) by screen code; V; ui.rs:941,1014
+    0x0 string string_0
+    0x4 block strings 0x4 align 4 -- E 0x00230195; V; ui.rs:948
+      0x0 string string -- E; V; ui.rs:949
+  0x38 block preload_bitmaps 0x8 align 4 -- E 0x0022f28c, 0x0022f672: bitmaps loaded with the screen; V; ui.rs:985
+    0x0 tagref bitmap groups=bitm -- E; V; ui.rs:1021
+  0x40 unknown 0x28

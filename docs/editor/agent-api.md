@@ -1,7 +1,7 @@
 # h2-editor's agent API
 
-Status: Built. Code: `crates/studio-proto/src`, `crates/studio/src`. Tests: in-source unit tests.
-Switch: `H2_STUDIO` (the socket path; `crates/studio-proto/src/lib.rs`).
+Status: Built. Code: `crates/apps/studio-proto/src`, `crates/apps/studio/src`. Tests: in-source unit tests.
+Switch: `H2_STUDIO` (the socket path; `crates/apps/studio-proto/src/lib.rs`).
 
 An agent (or a script, or a test) edits what the editor edits: maps and
 their tags, scenario placements, game variants, playlists and UI screens,
@@ -10,7 +10,7 @@ through JSON methods on a local socket. The style is the game's agent API
 object per line, short forms on the command line, scripts on stdin, and a
 `session.methods` call that lists every method with its params and result.
 
-Status: first slice built (`crates/studio/src/api`, `crates/studio-proto`).
+Status: first slice built (`crates/apps/studio/src/api`, `crates/apps/studio-proto`).
 The Tags tool (`tag.*`) and the HUD tool (`hud.*`) answer through
 providers. `model.*` and `custom.*` are planned namespaces: listed by
 `session.methods` as `planned` and answering `NOT_YET` until their tools
@@ -59,7 +59,7 @@ lists them). Results print as pretty JSON, one compact line per call in a
 ## The command layer
 
 Every edit the window makes is an `Action` on the `App`
-(`crates/studio/src/app.rs`). The window turns clicks into actions and
+(`crates/apps/studio/src/app.rs`). The window turns clicks into actions and
 `App::dispatch`es them (an action that would drop unsaved edits waits for
 the prompt). The API turns calls into the same actions and
 `App::perform`s them: the action runs through the same `App::run`, and
@@ -190,7 +190,7 @@ bad params), and ours (`studio_proto::code`):
 
 ## Extension points
 
-`crates/studio/src/api/seams.rs`. A tool implements `api::Provider`:
+`crates/apps/studio/src/api/seams.rs`. A tool implements `api::Provider`:
 
 ```rust
 pub trait Provider {
@@ -248,7 +248,7 @@ still to establish.
 - `native-render::model_load` loads a `mode` and picks a variant's
   sections (`pick_sections`): what a preview draws.
 - `bots::guest::bot_look` builds the eight player look bytes the game
-  checks (`0x153750`; `crates/bots/src/phantom/session.rs`): four colour indices (armour primary and secondary,
+  checks (`0x153750`; `crates/live/bots/src/phantom/session.rs`): four colour indices (armour primary and secondary,
   emblem primary and secondary, each below 18), the model (below 4), the
   emblem foreground (below 0x40), background (below 0x20) and flags.
 - The Tags tool (`app::tag_doc`) writes any tag field with undo and saves
@@ -319,10 +319,10 @@ identical profiles.
 
 ## Code
 
-- `crates/studio-proto`: method names, error codes, the socket path,
+- `crates/apps/studio-proto`: method names, error codes, the socket path,
   the short forms and the client (`h2 studio`, `h2-editor call`). No
   editor dependencies, so the `h2` CLI links it without wgpu.
-- `crates/studio/src/api/mod.rs`: `METHODS` (every method's shape and
+- `crates/apps/studio/src/api/mod.rs`: `METHODS` (every method's shape and
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:

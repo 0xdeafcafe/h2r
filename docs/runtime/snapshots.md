@@ -2,16 +2,16 @@
 
 Status: Built. Tested over synthetic machines and fakes; not yet run against
 the game ("Not verified").
-Code: `crates/snapshot` (container, RAM page codec, store, guest sections),
-`crates/runtime` (`Guest::layout`, `restore_with`, continuations),
-`crates/kernel/src/snapshot.rs`, `quiesce.rs`, `crates/feature/src/snapshot.rs`,
-`crates/boot/src/snapshot_glue.rs`, `snapshot_probe.rs`,
-`crates/agent/src/exec/snap.rs`, `crates/agent-proto/src/state.rs`.
-Tests: `crates/snapshot/tests/machine.rs`, `crates/kernel/tests/snapshot.rs`,
-`crates/kernel/tests/quiesce.rs`, `crates/d3d/tests/snapshot.rs`,
-`crates/audio/tests/snapshot.rs`, `crates/dsound/tests/snapshot.rs`,
-`crates/xapi/tests/snapshot.rs`, `crates/agent/src/exec/snap/tests.rs`,
-`crates/boot/src/snapshot_glue/tests.rs`.
+Code: `crates/runtime/snapshot` (container, RAM page codec, store, guest sections),
+`crates/runtime/runtime` (`Guest::layout`, `restore_with`, continuations),
+`crates/runtime/kernel/src/snapshot.rs`, `quiesce.rs`, `crates/hooking/feature/src/snapshot.rs`,
+`crates/apps/boot/src/snapshot_glue.rs`, `snapshot_probe.rs`,
+`crates/extensions/agent/src/exec/snap.rs`, `crates/extensions/agent-proto/src/state.rs`.
+Tests: `crates/runtime/snapshot/tests/machine.rs`, `crates/runtime/kernel/tests/snapshot.rs`,
+`crates/runtime/kernel/tests/quiesce.rs`, `crates/platform/d3d/tests/snapshot.rs`,
+`crates/platform/audio/tests/snapshot.rs`, `crates/platform/dsound/tests/snapshot.rs`,
+`crates/platform/xapi/tests/snapshot.rs`, `crates/extensions/agent/src/exec/snap/tests.rs`,
+`crates/apps/boot/src/snapshot_glue/tests.rs`.
 Switch: `H2_SNAPSHOTS` (store root), `H2_SNAPSHOT_PROBE` (off), listed in
 [switches.md](switches.md).
 
@@ -308,7 +308,7 @@ the robust fallback if in-process cache invalidation turns out leaky.
 
 ## File format
 
-Code: `crates/snapshot/src/container.rs`, `pages.rs`.
+Code: `crates/runtime/snapshot/src/container.rs`, `pages.rs`.
 
 ```text
 magic        8 bytes  "H2SNAP\r\n"
@@ -348,7 +348,7 @@ file crc     u32      CRC-32 of everything before it
 
 ## Where snapshots live
 
-`crates/snapshot/src/store.rs`: `$H2_SNAPSHOTS`, else
+`crates/runtime/snapshot/src/store.rs`: `$H2_SNAPSHOTS`, else
 `~/Library/Caches/h2recomp/snapshots` on Apple hosts,
 `%LOCALAPPDATA%\h2recomp\cache\snapshots` on Windows,
 `$XDG_CACHE_HOME/h2recomp/snapshots` (or `~/.cache/...`) elsewhere: the
@@ -362,7 +362,7 @@ writes are atomic (temporary file, then rename).
 
 ## Kernel and machine
 
-Code: `crates/kernel/src/snapshot.rs`; tests: `crates/kernel/tests/snapshot.rs`.
+Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tests/snapshot.rs`.
 
 - `Machine::save_snapshot` refuses unless `Machine::quiescent()` and
   `load_snapshot` write and read the sections `kcore` (version 2) and
@@ -393,7 +393,7 @@ Code: `crates/kernel/src/snapshot.rs`; tests: `crates/kernel/tests/snapshot.rs`.
   entries are read again at load). Refuses while an object can write or
   delete, or a delete is pending; a load looks every file up before it
   closes anything.
-- `xapi::snapshot` (`crates/xapi/src/snapshot.rs`): the `xapi` section.
+- `xapi::snapshot` (`crates/platform/xapi/src/snapshot.rs`): the `xapi` section.
   Pad handles (token, port, last state), `next_handle`, the gamepad and
   communicator change words, each port's published state and polling
   parameters (`InputManager::port_snapshot`, `restore_port`). A load rebinds
@@ -427,7 +427,7 @@ refuses it; a live closure continuation refuses the save.
 
 ### D3D
 
-Code: `crates/d3d/src/device/snap.rs`; tests: `crates/d3d/tests/snapshot.rs`.
+Code: `crates/platform/d3d/src/device/snap.rs`; tests: `crates/platform/d3d/tests/snapshot.rs`.
 
 - `Device::save_snapshot(mem, out)` adds the `d3d` section. It runs between
   slices and before guest RAM is saved, since it writes to guest memory: it
@@ -456,11 +456,11 @@ Code: `crates/d3d/src/device/snap.rs`; tests: `crates/d3d/tests/snapshot.rs`.
 
 ### Audio
 
-Code: `crates/audio/src/snap.rs`, `crates/dsound/src/state/snap.rs`,
-`crates/dsound/src/register/snap.rs`, `crates/dsound/src/output.rs`,
-`crates/dsound/src/xwma.rs`, `crates/wma` (`Session::save_state`). Tests:
-`crates/audio/tests/snapshot.rs`, `crates/dsound/tests/snapshot.rs`,
-`crates/dsound/tests/xwma.rs`, `crates/wma/src/boundary.rs`.
+Code: `crates/platform/audio/src/snap.rs`, `crates/platform/dsound/src/state/snap.rs`,
+`crates/platform/dsound/src/register/snap.rs`, `crates/platform/dsound/src/output.rs`,
+`crates/platform/dsound/src/xwma.rs`, `crates/platform/wma` (`Session::save_state`). Tests:
+`crates/platform/audio/tests/snapshot.rs`, `crates/platform/dsound/tests/snapshot.rs`,
+`crates/platform/dsound/tests/xwma.rs`, `crates/platform/wma/src/boundary.rs`.
 
 - `Mixer::save_snapshot` adds `audio`; `load_snapshot` is `check_snapshot`
   (decode, check the rate, change nothing) then `apply_snapshot`. Every
@@ -502,10 +502,10 @@ and `write_surface` if the first frame after a load matters to
 
 ## Wiring: `state.*`
 
-Code: `crates/agent-proto/src/state.rs`, `crates/agent/src/exec/snap.rs`,
-`crates/boot/src/snapshot_glue.rs`. Tests: `crates/agent/src/exec/snap/tests.rs`
+Code: `crates/extensions/agent-proto/src/state.rs`, `crates/extensions/agent/src/exec/snap.rs`,
+`crates/apps/boot/src/snapshot_glue.rs`. Tests: `crates/extensions/agent/src/exec/snap/tests.rs`
 (a save waits for a tick; retries per tick then `BUSY`; load, fork, drop;
-name checks; a paused game; exit) and `crates/boot/src/snapshot_glue/tests.rs`
+name checks; a paused game; exit) and `crates/apps/boot/src/snapshot_glue/tests.rs`
 (through the agent over fake parts: save and load orders, the file in the
 store and its header, a RAM hash mismatch naming the MiB, blockers by owner,
 a blocker that appears during the save, the build key).
@@ -550,8 +550,8 @@ a blocker that appears during the save, the build key).
 
 ## Quiescence probe
 
-Code: `crates/kernel/src/quiesce.rs`, `crates/boot/src/snapshot_probe.rs`;
-tests: `crates/kernel/src/quiesce.rs` and `crates/kernel/tests/quiesce.rs`,
+Code: `crates/runtime/kernel/src/quiesce.rs`, `crates/apps/boot/src/snapshot_probe.rs`;
+tests: `crates/runtime/kernel/src/quiesce.rs` and `crates/runtime/kernel/tests/quiesce.rs`,
 the latter over guests that really run (threads waiting in the kernel are
 quiescent; a thread blocked inside an override's guest callback is a blocker
 until the callback returns).
@@ -652,7 +652,7 @@ Boot registers the render features in every run, with their
 `impl.render.*` switches off by default. Each declares its policy before
 any early return for a switch that is off, so a run with all of them off
 is not `Unaudited` and `state.save` is not refused. The other `native-*`
-features (`crates/feature/src/native_*.rs`) are `Stateless`.
+features (`crates/hooking/feature/src/native_*.rs`) are `Stateless`.
 
 None of them changes simulation state. A save runs between slices, with
 the D3D render thread drained and the pipelined render not in flight
@@ -706,7 +706,7 @@ Only a run on the game shows these.
 - **Size and speed**: 64 MB of RAM, mostly in use during a fight, at zstd
   level 1 is estimated at tens of MB and well under a second; not measured
   on game RAM.
-- **The boot loop's wiring** (`crates/boot/src/lib.rs`) has no test.
+- **The boot loop's wiring** (`crates/apps/boot/src/lib.rs`) has no test.
 - **List classes and screens** keep row state that `list_class`'s policy
   (constructor running) does not ask about: the More Options page's unsaved
   edit, `SigninRows`' shown flips, the mods list and detail, `map_select`'s

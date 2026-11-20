@@ -1,7 +1,7 @@
 # Render loop (the retail front-end)
 
 Status: Built. The read of the four orchestrators is reference; of the code, only the render-state list port (`engine::render_loop::states::RenderStates`) is placed, by the native world's BSP walk.
-Code: `crates/engine/src/render_loop.rs` and `render_loop/` (addresses, record layouts, `states`, `layer`); `crates/feature/src/render_loop.rs` (`world_states`). Tests: `crates/engine/tests/states_differential.rs`.
+Code: `crates/rewrites/engine/src/render_loop.rs` and `render_loop/` (addresses, record layouts, `states`, `layer`); `crates/hooking/feature/src/render_loop.rs` (`world_states`). Tests: `crates/rewrites/engine/tests/states_differential.rs`.
 Switch: none. The native world runs the state list under `impl.render.native` ([switches.md](../runtime/switches.md)).
 
 This page holds the read of the four orchestrators in the 1.0 XBE, the
@@ -221,7 +221,7 @@ counts the skipped calls in the native world's timeline metrics
 ## Evidence
 
 - **The render-state list against the lifted original (Test, needs the
-  XBE).** `crates/engine/tests/states_differential.rs`.
+  XBE).** `crates/rewrites/engine/tests/states_differential.rs`.
   - Inputs: 1,200 seeded states (three seeds of 400). Each has a list of
     0 to 24 entries over 64 random definitions, covering every type, both
     sources and every state range, including states past `0xa5`. Floats

@@ -1,12 +1,12 @@
 # HaloScript VM (`hs::vm`)
 
 Status: Partly built. The VM runs scenario scripts against a mock `Engine`;
-nothing in `crates/boot` or `crates/feature` calls it, and the game still runs
-the recompiled interpreter. Code: `crates/hs/src/vm`. Tests:
-`crates/hs/src/tests.rs`, `crates/hs/tests/vm_disc.rs` (`#[ignore]`).
+nothing in `crates/apps/boot` or `crates/hooking/feature` calls it, and the game still runs
+the recompiled interpreter. Code: `crates/formats/hs/src/vm`. Tests:
+`crates/formats/hs/src/tests.rs`, `crates/formats/hs/tests/vm_disc.rs` (`#[ignore]`).
 Switch: none.
 
-A native Rust runtime for compiled HaloScript, in `crates/hs/src/vm`. It runs
+A native Rust runtime for compiled HaloScript, in `crates/formats/hs/src/vm`. It runs
 a decoded `hs::Scenario` against the XBE's `hs::Catalog` and an `Engine`
 trait. It follows the retail interpreter's own structure, so the semantics
 come from the evaluators: threads with frame stacks, evaluators re-entered
@@ -225,7 +225,7 @@ leaves the others running:
 
 ## Validation
 
-`crates/hs/tests/vm_disc.rs`, `#[ignore]`, reads `H2_DISC` (and optionally
+`crates/formats/hs/tests/vm_disc.rs`, `#[ignore]`, reads `H2_DISC` (and optionally
 `H2_XBE`, `H2_HS_TICKS`, `H2_HS_MAP`) and prints to stdout only. Each of the
 30 maps runs under each of the three policies:
 

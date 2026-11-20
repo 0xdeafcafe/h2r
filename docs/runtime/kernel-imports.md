@@ -1,6 +1,6 @@
 # Halo 2 kernel import inventory
 
-Status: Reference. The kernel that serves these imports is `crates/kernel`.
+Status: Reference. The kernel that serves these imports is `crates/runtime/kernel`.
 
 Every kernel import of retail Halo 2, title `4D530064`, linked against
 XBOXKRNL `1.0.5849`. The supplied XBE imports **152 exports:
@@ -263,7 +263,7 @@ channel layouts rather than allocating host Rust equivalents.
   See [RTL HLE][hle-rtl] and [crypto HLE][hle-xc].
 
 These bullets cover every row rated hard, and name the contracts
-`crates/kernel` has to keep (`memory.rs`, `sections.rs`, `timers.rs`,
+`crates/runtime/kernel` has to keep (`memory.rs`, `sections.rs`, `timers.rs`,
 `threads.rs`, `files.rs`, `crypto.rs`). Import presence alone does not
 establish which subset a run executes.
 

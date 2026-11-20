@@ -6,8 +6,8 @@ the design pages do.
 
 ## 2026-11-16: differential harness over every leaf, the game path and the views
 
-Commit `ae5e6a190` (harness at `crates/engine/tests/differential.rs`); image
-pinned by SHA-256 (the hash is in `crates/engine/tests/common`). Debug build.
+Commit `ae5e6a190` (harness at `crates/rewrites/engine/tests/differential.rs`); image
+pinned by SHA-256 (the hash is in `crates/rewrites/engine/tests/common`). Debug build.
 
 Method: every call runs from one 64 MB guest state three ways: the lifted
 original on the IR interpreter, the adapter directly, and
@@ -33,7 +33,7 @@ exercised:
 The locale leaves saw 4,500 finds and 4,502 exists (one a fault), the tag
 leaves 11,762 calls and the datum leaves 72,540.
 
-Reproduce: the command in the header of `crates/engine/tests/differential.rs`
+Reproduce: the command in the header of `crates/rewrites/engine/tests/differential.rs`
 (feature `differential`, the owner's XBE, `--nocapture` prints the table).
 
 ## 2026-11-15: first differential run and injected bugs
@@ -57,7 +57,7 @@ Injected bugs the harness caught:
 
 ## 2026-11-15: HaloScript VM against the disc's 30 maps
 
-Commit `f5f7390a5`. Test: `crates/hs/tests/vm_disc.rs` (`#[ignore]`;
+Commit `f5f7390a5`. Test: `crates/formats/hs/tests/vm_disc.rs` (`#[ignore]`;
 `H2_DISC` names the owner's disc image).
 
 Each of 30 maps runs under three policies (3,000 ticks of initialize and

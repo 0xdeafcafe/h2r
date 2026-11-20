@@ -1,9 +1,9 @@
-# Halo 1 models and animations as Halo 2 tags (`crates/h1models`)
+# Halo 1 models and animations as Halo 2 tags (`crates/tools/h1models`)
 
 Status: **Built** (2026-11-16) for Halo 1 Xbox `mode` -> Halo 2 `mode` and
 `antr` -> `jmad`, including compressed (keyframed) animations
 (2026-11-17). It is proven by decoding the converted tags through
-`crates/tags` and comparing them with the source. No converted tag has been
+`crates/formats/tags` and comparing them with the source. No converted tag has been
 loaded by the game yet ("Needs a game run").
 
 This is the model and animation step of the Halo 1 campaign work
@@ -27,12 +27,12 @@ run time and print only counts and error figures.
   ignored test `retail_h2_mode_layouts`.
 - **V3:** checked against the `jmad` mode/class/type/action trees of every
   map on the owner's retail disc (30 maps, 2,268 graphs) by the ignored test
-  `retail_h2_animation_names` in `crates/h1models/src/names.rs` (2026-11-17).
+  `retail_h2_animation_names` in `crates/tools/h1models/src/names.rs` (2026-11-17).
 - **V4:** checked on every map of the owner's Halo 1 disc (24 maps, 628
   graphs, 186 compressed animations) by the ignored test
   `h1_disc_compressed_animations_decode` (2026-11-17).
 - **V5:** checked on every biped and first-person model of the disc's a10
-  and Blood Gulch by the ignored tests in `crates/h1models/src/skin_tests.rs`
+  and Blood Gulch by the ignored tests in `crates/tools/h1models/src/skin_tests.rs`
   (2026-11-18), which print only counts and error figures.
 - **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
   `default.xbe` on the disc; addresses are virtual addresses in that XBE).
@@ -392,7 +392,7 @@ the node does *not* animate, and is constant over the animation.
 (`cinematics\animations\...`: the pilot, captain, chief, Cortana,
 marines and others on a10, a30, a50, b40, c40, d20 and d40). None occur in
 the multiplayer maps. They are keyframed rather than stored per frame;
-`crates/h1models/src/compressed.rs` decodes them to the same per-frame
+`crates/tools/h1models/src/compressed.rs` decodes them to the same per-frame
 transforms as the uncompressed path, and they convert through the same
 `jmad` path.
 
@@ -484,7 +484,7 @@ constant at `0x001f0ae8` is 1/32767).
 | Translations, scales | finite |
 | a50's chief `B30HoloMapShort` (compressed) against a30's copy on the b30 graph (uncompressed, same 130 frames and channels) | max 0.0026 rad, translation 1.3e-4 |
 | a10's chief x30 `stand rifle idle` (compressed) against the cyborg's (uncompressed, same 59 frames) | max 0.0028 rad, translation 0 |
-| Converted to `jmad` and decoded by `crates/tags` | max 6.1e-5 rad, translation and scale 0 |
+| Converted to `jmad` and decoded by `crates/formats/tags` | max 6.1e-5 rad, translation and scale 0 |
 
 The two uncompressed copies agree to under 0.003 rad, which is the
 keyframe reduction's own loss. Undriven channels sit at the rest pose of
@@ -803,14 +803,14 @@ trip cannot share an assumption with the converter: a retail biped's rest
 frames times the inverse frames its `mode` stores, read as columns, are the
 identity on every node (within 5e-7; read as rows, as the converter wrote
 them until version 59, off by up to 2.0), and its own retail animations,
-decoded by `crates/tags` and composed the same way, stretch the mesh's
+decoded by `crates/formats/tags` and composed the same way, stretch the mesh's
 triangle edges little (median 1.0, 99th percentile 1.5 to 2.4) and less
 than the same frames with conjugated rotations (2.6 to 3.5), so the decoded
 quaternions are used as they are.
 
 **Skinned round trip** (V5, `h1_disc_bipeds_skin`, converter version
 59). Each model and its graph are converted, built into a map and decoded
-through `crates/tags`; every vertex is skinned the Halo 2 way (decoded
+through `crates/formats/tags`; every vertex is skinned the Halo 2 way (decoded
 position, node indices through the section node map, weights, the
 decoded jmad frame composed by Halo 2's rule, times the inverse frame the
 `mode` stores at node `+0x2c`, read as the control reads retail's) and compared with the Halo 1 vertex skinned

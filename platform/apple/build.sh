@@ -5,7 +5,7 @@
 #   platform/apple/build.sh tvos|ios /abs/path/to/disc/halo2.iso [--no-module]
 #       [--maps demo|all] [--mappack /abs/path/to/mappack.iso]
 #
-#   build/libh2host.a        the runtime (crates/apple-host), cross-compiled
+#   build/libh2host.a        the runtime (crates/apps/apple-host), cross-compiled
 #   build/h2game.framework   the game, lifted, emitted and compiled for the device
 #   build/disc/              the disc files the app ships (about 1 GB)
 #   build/bootcache/         the XBE's analysis, so the first launch skips it

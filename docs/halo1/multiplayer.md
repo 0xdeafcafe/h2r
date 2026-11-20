@@ -61,7 +61,7 @@ index and keeps its tail (below, "Halo 1 sandbox").
 
 ## Halo 1 data read (**Built**)
 
-`crates/h1map`, verified on beavercreek and carousel
+`crates/tools/h1map`, verified on beavercreek and carousel
 ([map-format.md](map-format.md) has every layout and its
 evidence): the scenario's skies, player starting locations, netgame flags,
 netgame equipment, vehicle placements and palette; item collections; each
@@ -85,7 +85,7 @@ maps of the Halo 2 disc by `h1convert/tests/h2_sbsp.rs`. Surfaces with no
 material hold `0xffff` in both games.
 
 **Proof** (`h1convert/tests/real_maps.rs`, on both maps): the conversion is
-encoded with Halo 2's layout and decoded back with `crates/tags`'s decoder,
+encoded with Halo 2's layout and decoded back with `crates/formats/tags`'s decoder,
 passes its validator, and agrees with the Halo 1 source on every surface's
 polygon, on 50,000 random points (open or solid, and which leaf), on 20,000
 random segments and 20,000 segments from open space (where each first
@@ -1262,7 +1262,7 @@ by `h2 import halo1`, and by `h2 play` itself when the disc is there:
 Each map is `<data>/maps/h1_<map>/` with `h2/h1_<map>.map`,
 `h1/h1_<map>.map` and one `manifest.toml` listing both, on the map's
 default base (`MAPS`), pinned. When it converts again, the stamp, the
-converter version to bump (`CONVERTER_VERSION`, `crates/cli/src/h1_import.rs`),
+converter version to bump (`CONVERTER_VERSION`, `crates/apps/cli/src/h1_import.rs`),
 `--no-halo1` / `H2_HALO1=0` and the tests are in
 [campaign.md](campaign.md) §10. `h2 h1 convert` still converts one map
 by hand, into any `--out`.

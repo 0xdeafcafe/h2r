@@ -2,7 +2,7 @@
 
 A static recompilation of Halo 2 (original Xbox) to native code, with the
 runtime written in Rust. The retail executable is analysed, lifted to IR,
-emitted as C11 and built by clang into a dylib. `crates/runtime` runs that
+emitted as C11 and built by clang into a dylib. `crates/runtime/runtime` runs that
 dylib against high-level replacements for the Xbox kernel, xapi, Direct3D
 and DirectSound, rendering through wgpu on Metal.
 

@@ -1,10 +1,10 @@
 # Checkpoint acceptance
 
 Status: Built. An ignored acceptance test; it needs the retail XBE.
-Code: `crates/xapi/tests/checkpoints.rs`.
+Code: `crates/platform/xapi/tests/checkpoints.rs`.
 Switch: none.
 
-`crates/xapi/tests/checkpoints.rs` is an ignored retail acceptance harness. It
+`crates/platform/xapi/tests/checkpoints.rs` is an ignored retail acceptance harness. It
 reads `$H2_XBE`, lifts the storage owners, compiles generated C for the host,
 and registers it with the real Runtime and kernel. Its game-state bytes and
 scenario are synthetic. Generated code, headers and game bytes stay in scratch;

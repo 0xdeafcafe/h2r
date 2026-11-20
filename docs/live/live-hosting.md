@@ -27,8 +27,8 @@ work: `--tunnel`, `--tunnel-name NAME` for `--live-tunnel-name`,
 `--hostname HOST` for `--live-tunnel-url https://HOST`. The URL must be
 `https://HOST` with no port and no path beyond `/`.
 
-Implemented in `crates/cli/src/tunnel.rs` (flags in `live_cmd.rs`,
-`play_live.rs`); the server side is `crates/live-server/src/public.rs`.
+Implemented in `crates/apps/cli/src/tunnel.rs` (flags in `live_cmd.rs`,
+`play_live.rs`); the server side is `crates/live/live-server/src/public.rs`.
 
 ## Quick tunnel (`--tunnel`)
 
@@ -164,7 +164,7 @@ image has no disc and no art in it; you extract the art once on a machine
 with the disc and the containers read it from there.
 
 - `deploy/live/Dockerfile`: builds the web app with bun and
-  `h2-live-server` (`crates/live-server/src/bin`, `standalone.rs`: the
+  `h2-live-server` (`crates/live/live-server/src/bin`, `standalone.rs`: the
   server and its `serve` flags without the rest of `h2`, so it builds on
   Linux in a few minutes), into a distroless image that runs as a non-root
   user. The web app is at `/srv/web` (`H2_LIVE_WEB`); `/data` is the
@@ -659,13 +659,13 @@ UDP 3074-3080 reachable for internet play.
 
 ## Tests
 
-- `crates/cli/src/tunnel.rs`: URL parsing over real-looking cloudflared
+- `crates/apps/cli/src/tunnel.rs`: URL parsing over real-looking cloudflared
   logs (the boxed banner, JSON log format, older releases, and look-alikes
   such as `api.trycloudflare.com` that must not match); flags; arguments;
   lookup on `PATH`; lifecycle with a fake `cloudflared` shell script
   (URL reported, process stopped on drop, failure output shown, timeout
   kills it, a dead one restarted with its new URL).
-- `crates/cli/src/tunnel.rs`, named tunnel setup with a fake
+- `crates/apps/cli/src/tunnel.rs`, named tunnel setup with a fake
   `cloudflared` that logs its calls: no certificate → `tunnel login` runs
   (and a login that writes nothing, or a missing `$TUNNEL_ORIGIN_CERT`, is
   an error); an existing tunnel is not created again, a missing one is;
@@ -674,26 +674,26 @@ UDP 3074-3080 reachable for internet play.
   without a host) goes straight to `run`; `tunnel list` JSON (deleted
   tunnels, `null`); `--live-tunnel-url` parsing; the origin certificate
   search.
-- `crates/cli/src/play_live.rs`: `h2 play --live-tunnel` with a fake
+- `crates/apps/cli/src/play_live.rs`: `h2 play --live-tunnel` with a fake
   cloudflared: discovery shows the URL, the game and sign-in link stay on
   loopback, a tunnelled redeem is refused, cloudflared stops with the
   session. `--live-tunnel` flags and their aliases (`--live-tunnel`
   implies `--live-local`); a named `--live-tunnel` session logs in, creates,
   routes and then runs, and only runs with `--no-tunnel-setup`.
-- `crates/live-server/src/standalone.rs`: `h2-live-server`'s flags,
+- `crates/live/live-server/src/standalone.rs`: `h2-live-server`'s flags,
   including the command line `deploy/live/compose.yaml` runs (loopback,
   the id from `--public-url` on a first start only, `CF-Connecting-IP`
   trusted, the art shared, the web app from `H2_LIVE_WEB`); `public.rs`,
   `identity.rs`, `art.rs`: the lasting host, the first-start id and
-  `--game-art` checks both binaries share; `crates/cli/src/live_cmd.rs`:
+  `--game-art` checks both binaries share; `crates/apps/cli/src/live_cmd.rs`:
   `serve --behind-cloudflared` names a new server only.
   `cargo metadata` path closures, atomic installs, the update menu lines,
   `[update]` config, and `--update-repo`/`--update-disc`/`--update-now`.
-- `crates/live-server/src/sqlite.rs`, `pg.rs`, `store.rs`: the one
+- `crates/live/live-server/src/sqlite.rs`, `pg.rs`, `store.rs`: the one
   event-store conformance suite over SQLite (a temporary file), memory,
   the file store and Postgres (`H2_LIVE_TEST_DB`), the concurrent-append
   race on SQLite and Postgres, two handles on one SQLite file, WAL mode.
-- `crates/live-server/src/blobs.rs`: the blob-store conformance suite
+- `crates/live/live-server/src/blobs.rs`: the blob-store conformance suite
   (put, streamed file uploads, ranged reads, list by prefix, conditional
   writes) over a directory, memory and a fake S3 endpoint that checks the
   requests are path-style and signed for region `auto`; `check.rs`: the
@@ -705,7 +705,7 @@ UDP 3074-3080 reachable for internet play.
   copies, resumable) and the redirects with their cache policy;
   `tests/cloud_saves.rs`: saves in a bucket, and an index changed by
   another writer is not overwritten.
-- `crates/live-server/tests/s3_server.rs`: the blob store against a real S3
+- `crates/live/live-server/tests/s3_server.rs`: the blob store against a real S3
   protocol server (the `s3s` library over a directory, in process, with
   SigV4 checked): put, get, head, list, delete, a range read from the
   middle and across a 10 MiB part boundary, a 25 MiB multipart upload,
@@ -720,7 +720,7 @@ UDP 3074-3080 reachable for internet play.
   `H2_S3_TEST_REGION` if not `auto`) to run the same tests against MinIO or
   a scratch bucket instead; each test keeps to a random prefix and deletes
   what it wrote.
-- `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
+- `crates/live/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only
   trusted behind a tunnel; unclaimed admin names.

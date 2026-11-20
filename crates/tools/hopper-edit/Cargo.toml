@@ -1,0 +1,15 @@
+[package]
+name = "hopper-edit"
+description = "The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+live-proto.workspace = true
+map.workspace = true
+editor-core = { path = "../editor-core" }
+variants = { path = "../../formats/variants" }

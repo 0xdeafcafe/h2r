@@ -25,7 +25,7 @@ tag and register bytes in `X87Abi`, which only static stack allocation
 would remove. `mrs fpcr` itself costs about one cycle.
 
 ```sh
-clang -std=c11 -O1 -fno-fast-math -ffp-contract=off -DH2_X87_NATIVE=1 -Icrates/emit/c -Icrates/x87/include -Icrates/runtime/include crates/emit/tests/c/x87_bench.c -o "$TMPDIR/x87-bench" && "$TMPDIR/x87-bench"
+clang -std=c11 -O1 -fno-fast-math -ffp-contract=off -DH2_X87_NATIVE=1 -Icrates/emit/c -Icrates/x87/include -Icrates/runtime/include crates/recompiler/emit/tests/c/x87_bench.c -o "$TMPDIR/x87-bench" && "$TMPDIR/x87-bench"
 ```
 
 `hot-loop/x87` is a synthetic workload assembled at runtime, never copied

@@ -10,7 +10,7 @@ hand in custom games, as extra built-ins. In the variant list they carry a
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
 
-Code: `crates/boot/src/community_variants.rs`, installed by the boot runner.
+Code: `crates/apps/boot/src/community_variants.rs`, installed by the boot runner.
 
 No game data is in the repository. Addresses are guest virtual addresses of
 the retail XBE (SHA-256 `03215919…935d`), named only as hook points. The
@@ -217,7 +217,7 @@ All three hooks are wrappers at function entries
    byte 0): it was on the low 24 bits once, and the co-op screens' texts,
    first at `0x20ffe000`, showed these names. The ids reach the wrapper as
    written (the `goof` entry's name, the description id we return), so
-   nothing needs the looser match. `crates/boot/src/string_ids.rs` checks
+   nothing needs the looser match. `crates/apps/boot/src/string_ids.rs` checks
    every family of our ids against every other's claim.
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from

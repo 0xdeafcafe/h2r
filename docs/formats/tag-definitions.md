@@ -2,7 +2,7 @@
 
 Status: Built for 18 groups, each proven against every retail tag of the
 group on the disc ("Proof"). Not run in the game.
-Code: `crates/tags/src/defs.rs` and `crates/tags/src/defs/*.txt`.
+Code: `crates/formats/tags/src/defs.rs` and `crates/formats/tags/src/defs/*.txt`.
 Evidence labels are those of [map-format.md](map-format.md): **E** engine
 code, **V** checked on the owner's disc, **D** a naming or interpretation
 choice made here.
@@ -54,7 +54,7 @@ written from a definition has a defined value in every byte.
 
 ## The files
 
-`crates/tags/src/defs/*.txt`, parsed in the order of `defs::FILES` (a
+`crates/formats/tags/src/defs/*.txt`, parsed in the order of `defs::FILES` (a
 struct before the files that embed it):
 
 ```text

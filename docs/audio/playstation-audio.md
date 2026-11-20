@@ -1,7 +1,7 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
 Status: Partly built. The speaker routing and the mute button are built; the microphone is a design only.
-Code: `crates/dsound/src/padroute.rs`, `crates/boot/src/pad_speaker.rs`, `crates/boot/src/speaker_setting.rs`, `crates/boot/src/speaker_row.rs`, `crates/input/src/pad_hid.rs`. Tests: `crates/dsound/tests/padroute.rs`.
+Code: `crates/platform/dsound/src/padroute.rs`, `crates/apps/boot/src/pad_speaker.rs`, `crates/apps/boot/src/speaker_setting.rs`, `crates/apps/boot/src/speaker_row.rs`, `crates/platform/input/src/pad_hid.rs`. Tests: `crates/platform/dsound/tests/padroute.rs`.
 Switch: `H2_PAD_SPEAKER`, `H2_PAD_SPEAKER_EXCLUSIVE`, `H2_PAD_MUTE`, listed in [switches.md](../runtime/switches.md).
 
 Three things were asked for, on a DualSense (and a DualShock 4 where it can):
@@ -112,10 +112,10 @@ and LED, however, work the same over Bluetooth (below).
 - XHV (the voice engine, XDK libraries `XVOICE`, `VOICMAIL`) is statically
   linked game code and runs recompiled. `XHVEngineCreate` is `0x333055`; it
   creates its own DirectSound objects and a stream (`docs/audio/dsound.md`,
-  "DSOUND entries"), and its 20 ms timer DPC runs (`crates/kernel/README.md`).
+  "DSOUND entries"), and its 20 ms timer DPC runs (`crates/runtime/kernel/README.md`).
   The game's voice init (`0x55810`) runs for real since the dry DSP image
   was fixed (`docs/runtime/BOOT.md`).
-- **The Communicator is absent.** `crates/xapi/src/controllers.rs` knows
+- **The Communicator is absent.** `crates/platform/xapi/src/controllers.rs` knows
   only `XDEVICE_TYPE_GAMEPAD`; every other device type gets empty
   `XGetDevices`/`XGetDeviceChanges` masks, and `XInputOpen` fails. The real
   XPP (USB) stack is skipped. There is no XHV, voice microphone or voice
@@ -310,7 +310,7 @@ widgets and raising the count together is what it takes.
 
 The row text is redrawn every update (the item's update method `0x24abe0`
 calls the screen's row text slot), so the value changes as soon as the row
-is pressed. Code: `crates/boot/src/speaker_row.rs` (logic over the `Gm`
+is pressed. Code: `crates/apps/boot/src/speaker_row.rs` (logic over the `Gm`
 trait), registered by `layout_glue::install` because both features share
 those entries.
 
@@ -420,7 +420,7 @@ to the XMO's rate, and gate it with `MicMute`. Over Bluetooth there is no
 mic without the Opus input report above.
 
 **Live overlap.** Voice chat sends XHV's encoded frames through the Live
-session's voice channel; `crates/live-hle` would carry them like any other
+session's voice channel; `crates/live/live-hle` would carry them like any other
 UDP payload. Voice commands (if the game uses them offline) need only steps
 1 to 3. Whoever builds Communicator HLE should agree with the Live work on
 who owns the voice transport. This document owns the device and capture side.

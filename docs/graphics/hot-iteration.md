@@ -1,7 +1,7 @@
 # Hot iteration: live tag edits and a hot host renderer
 
 Status: Partly built. Built and tested without the game: WGSL overrides of translated programs with a watched directory, override parameters, toggles, program listing and dumps (`render.*`); field reads, writes, journal and revert of loaded tags (`edit.*`). Not built: live object placement, runtime `impl.render.*` switches, a reloadable renderer dylib ([What is left](#what-is-left)).
-Code: `crates/agent/src/hot.rs`, `crates/agent-proto/src/hot.rs`. Tests: `crates/d3d/tests/hot_overrides.rs` (synthetic guest memory, a real GPU), `crates/agent/src/hot/tests.rs`.
+Code: `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent-proto/src/hot.rs`. Tests: `crates/platform/d3d/tests/hot_overrides.rs` (synthetic guest memory, a real GPU), `crates/extensions/agent/src/hot/tests.rs`.
 Switch: none.
 
 Nothing here was established by running the game.
@@ -126,7 +126,7 @@ needs its group: `group`, `shad:shaders\...\metal` or
 
 ## Methods
 
-Host methods (`agent_proto::hot::method`, `crates/agent/src/hot.rs`):
+Host methods (`agent_proto::hot::method`, `crates/extensions/agent/src/hot.rs`):
 
 | Method | Access | Params → result |
 |---|---|---|
@@ -148,16 +148,16 @@ unknown bytes as hex.
 
 ## Where the pieces are
 
-- `crates/hot-render`: the hub (overrides, parameters, toggles, dumps),
+- `crates/platform/hot-render`: the hub (overrides, parameters, toggles, dumps),
   the interface check, the directory watch. No GPU.
-- `crates/d3d/src/nv2a_hot.rs`: the provider's side, run from
+- `crates/platform/d3d/src/nv2a_hot.rs`: the provider's side, run from
   `Nv2aShaders::maintain` once a frame.
-- `crates/hot-tags`: the tag index in guest memory, paths, values, the
+- `crates/extensions/hot-tags`: the tag index in guest memory, paths, values, the
   editor and journal.
-- `crates/agent/src/hot.rs`, `crates/agent-proto/src/hot.rs`: the methods.
-- `crates/boot/src/hot_glue.rs`: installs them on the agent with the
+- `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent-proto/src/hot.rs`: the methods.
+- `crates/apps/boot/src/hot_glue.rs`: installs them on the agent with the
   runtime's memory and the map file's names.
-- `crates/cli/src/agent_hot_cmd.rs`: `h2 agent edit …`, `h2 agent render …`.
+- `crates/apps/cli/src/agent_hot_cmd.rs`: `h2 agent edit …`, `h2 agent render …`.
 
 ## What is left
 

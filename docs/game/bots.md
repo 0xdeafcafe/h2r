@@ -240,7 +240,7 @@ layer before its bots could even stand still.
 - Rows: Quickmatch 0, OptiMatch 1, Clankermatch 2, then Co-op Campaign 3
   (directly above Custom Game), Custom Game 4 (retail row 2, moved), Custom
   Game Browser 5, Content Download 6 (rows close up by one without co-op).
-- `crates/boot/src/custom_games.rs` adds our rows: row text `0x230f36`, row
+- `crates/apps/boot/src/custom_games.rs` adds our rows: row text `0x230f36`, row
   chosen `0x230f92`, last row `0x510a18`.
 
 **Matchmaking** ([live-matchmaking.md](../live/live-matchmaking.md)).
@@ -256,7 +256,7 @@ layer before its bots could even stand still.
 **Game Setup** (`squad_settings_dialog`, screen 23, window 3; row chosen
 `0x2bb801`, jump table `0x2bb884`) already carries our **Halo 1 Options**
 row. That row opens an `OptionsScreen` of `OptionRow`s (Sandbox, Assets,
-HUD) whose values are kept in the settings store (`crates/boot/src/h1_options.rs`).
+HUD) whose values are kept in the settings store (`crates/apps/boot/src/h1_options.rs`).
 
 ## 3. The brain
 
@@ -570,7 +570,7 @@ can store it under the persistent ranked bot's account and map revision
 on the local server and worker. Within this lane the brain owns it in
 memory. It survives match resets for that brain's lifetime.
 
-**Getting unstuck** (`crates/bots/src/stuck.rs`, built). A pure state
+**Getting unstuck** (`crates/live/bots/src/stuck.rs`, built). A pure state
 machine, run every tick the bot is walking somewhere (chase, roam, going
 for a weapon; not while it strafes in a fight). It measures progress the
 way the bot wants to go: the position's gain along the wanted direction
@@ -631,7 +631,7 @@ under them instead of giving up. A bot whose next waypoint's floor is
 more than 1.2 (plus its distance) over it has fallen below its path and
 plans again at once.
 
-**Moving in a fight** (`crates/bots/src/moves.rs`, built). The feet in a
+**Moving in a fight** (`crates/live/bots/src/moves.rs`, built). The feet in a
 fight, apart from the aim:
 
 | | Easy | Normal | Heroic | Legendary |
@@ -663,7 +663,7 @@ fight, apart from the aim:
 - **Stuck in a fight**: pushing a way for 15 ticks without moving 0.15
   reverses the strafe and jumps.
 
-**Roaming** (`crates/bots/src/roam.rs`, built). With nobody to fight or
+**Roaming** (`crates/live/bots/src/roam.rs`, built). With nobody to fight or
 chase, a bot goes to likely places: each candidate is scored, the best
 it can reach and has not been blacklisted wins.
 
@@ -1076,7 +1076,7 @@ has its own base taunt value.
 
 The user, after playing the Clankers: "they don't know when they have no
 ammo". The bot now reads what it carries and what lies about
-(`crates/bots/src/arms.rs`), and a pure decision (`arms::plan`) turns
+(`crates/live/bots/src/arms.rs`), and a pure decision (`arms::plan`) turns
 that into a reload, a weapon switch, a walk to a weapon, or a melee.
 
 **Fields.** Traced offline from the XBE with `h2 disasm` (static reading,
@@ -1249,7 +1249,7 @@ a visibly expired effect or ten seconds without confirmation clears it.
 ### 3.7 Objectives (traced)
 
 Stage 5. The bot reads the gametype, the objective objects and the
-scenario's netgame flags (`crates/bots/src/objective.rs`), and a pure
+scenario's netgame flags (`crates/live/bots/src/objective.rs`), and a pure
 decision (`objective::plan`) gives it a goal.
 
 **Fields.** Traced offline from the XBE with `h2 disasm` and a reading of
@@ -1545,7 +1545,7 @@ is a yes or no:
 
 The user, after playing the Clankers: "clankers also don't seem to
 interact with vehicles, try and board, go and take, lock on with
-rockets." The vehicle code lives in `crates/bots/src/vehicle.rs`, `vehicle/` and
+rockets." The vehicle code lives in `crates/live/bots/src/vehicle.rs`, `vehicle/` and
 `mind/ride.rs`. The bot sees each seat and its rider. It can enter a free
 vehicle, board a slow enemy, pilot a Banshee, drive ground vehicles and
 man a turret. A rocket launcher holds its lock on a vehicle before firing.
@@ -1560,7 +1560,7 @@ metadata and `S` one of its seat definitions.
 | body vitality | `O+0xec` | `f32`, 0 to 1 | confirmed | `object_get_health` `0x2a1a20` (live-telemetry `layout::BODY_VITALITY`) |
 | wrecked | `O+0x10a` bit 2 | `u16` | confirmed | `0xd6800` (`guest::BODY_DEPLETED`) |
 | the unit's seat | `U+0x1fc` | `i16`, -1 none | confirmed | live-telemetry `layout::UNIT_SEAT`: the enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores -1 (`0xea995`) |
-| seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
+| seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/formats/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
 | seat flags | `S+0` | `u32` | traced and disc-checked | Driver bit 2, gunner bit 3, boarding bit 11, forbids players bit 16. See `h1objects::rebuild` and `h1objects/tests/vehicle_rebuild_disc.rs` (`0x000cc810`, `0x000c8c87`, `0x000c92c0`). The first unflagged passenger is used as fallback driver **[guess]**. |
 | boarding target seat | `S+0x3e` | `i16` | traced | `0x000c92c0`, `h1objects::rebuild::SEAT_BOARDING` |
 | entry marker and admission limits | `S+0xc`, `+0x98`, `+0x9c`, `+0xa0`, `+0xa4` | string ID, four `f32`s | traced and disc-checked | `0x000c6fb0` resolves the marker, with the object's origin for an empty ID. `0x000c9040` checks eye-to-marker radius, marker facing, look cone and distance to the vehicle. See `h1objects/tests/vehicle_ground_disc.rs`. |
@@ -1756,7 +1756,7 @@ controller, render and audio traces. Current bots use §5.
 ### 4.1 The bot's pad (traced, Repo)
 
 A bot's controller is a pad on a free port, not a change to the agent tap.
-`input::InputManager::sync` (`crates/input/src/device.rs`) polls every
+`input::InputManager::sync` (`crates/platform/input/src/device.rs`) polls every
 `HostBackend` in order and puts each new pad on the lowest free port. So a
 **bots backend**, added last, makes its pads appear on ports 1 to 3 after
 the human's real pads. They show up in `XGetDevices`, so the game sees an
@@ -2938,7 +2938,7 @@ added the same way (`crate::h1_options_row` is the model). The row opens a
 **Clankers** page.
 
 The page is a native ui_kit page: a `ListPage` or a `Page` impl
-(`crates/boot/src/ui_kit/page.rs`). That gives it the kit's preview, its
+(`crates/apps/boot/src/ui_kit/page.rs`). That gives it the kit's preview, its
 layout checks and the `Page` table tests. These are its rows:
 
 | Row | Values | Setting |
@@ -3000,7 +3000,7 @@ the playlist's player limit.
    require (Repo: keyboard-charset.md). The game's fonts lack it; the
    keyboard's dingbats (star, flag, check, ballot x) are the only symbols
    close to it, and none of them reads as "bot". So we draw our own glyph
-   and add it with `font::patch` (Repo: `crates/font/src/patch.rs`, already
+   and add it with `font::patch` (Repo: `crates/formats/font/src/patch.rs`, already
    used by `boot::icons` to add our icon glyphs at load). No disc glyph is
    copied.
 
@@ -3757,7 +3757,7 @@ This is the development history, including the retired local-slot
 implementation and its original checks. Use §11 and §13 for current
 game checks.
 
-1. **Minimal bot (local slot).** Built: `crates/bots` (the brain, the pads,
+1. **Minimal bot (local slot).** Built: `crates/live/bots` (the brain, the pads,
    the guest memory work) and `boot::bot_glue` (the hooks).
    - The retired local bot backend was added after the host's own pads. Each bot pad asks for its
      port (`HostBackend::preferred_port`), and gets the lowest free one if a
@@ -3834,7 +3834,7 @@ game checks.
         send the log lines starting `bots:` and `ui:`.
 2. **Navigation.** Built: `bots::nav`, `bots::los`, `bots::cache`,
    `h2 bots nav`, and the map loading in `boot::bot_glue`.
-   - **The mesh** (`nav::NavMesh`) comes from `crates/pathfind`'s generator
+   - **The mesh** (`nav::NavMesh`) comes from `crates/formats/pathfind`'s generator
      over each structure BSP's collision: its sectors are the walkable
      polygons, its links the edges walked across. Then:
      - polygon edges that do not meet another polygon look for a floor
@@ -3884,7 +3884,7 @@ game checks.
        are two map files: switching sandbox builds that map again (about
        a second).
      - **The generator version** (`cache::GENERATOR`) is bumped whenever
-       `bots::nav`, `bots::los`, `cache::build` or `crates/pathfind`'s
+       `bots::nav`, `bots::los`, `cache::build` or `crates/formats/pathfind`'s
        generator change what a map builds. The test
        `generator_output_is_pinned` records its output on a small scene
        with the version, so changing the output without the bump fails.
@@ -5524,7 +5524,7 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the data root `h2 play` uses), so the window renders with the user's
    own video settings.
 3. Presses through the menus over the game's agent socket
-   (`crates/cli/src/bots_drive.rs`). The game runs with `H2_UI_WATCH=1`, and
+   (`crates/apps/cli/src/bots_drive.rs`). The game runs with `H2_UI_WATCH=1`, and
    every press waits on a `ui: screen` line, a game line or the agent API's
    phase. A fresh data folder stops on the title screen and the new
    profile's dialogs: each gets A once it has held 4 s. The main menu is
@@ -5657,7 +5657,7 @@ fill seats bots.
 | teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 |
 | doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 |
 
-**The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
+**The drive** (`crates/apps/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
 list is the first settled screen after that A; its row is read off its
 list value (or counted from the DOWNs sent, when the value reads as no

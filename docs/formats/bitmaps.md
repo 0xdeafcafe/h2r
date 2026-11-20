@@ -1,11 +1,11 @@
-# Bitmap tags -> gfx textures (`crates/assets`)
+# Bitmap tags -> gfx textures (`crates/platform/assets`)
 
-Status: Built. Code: `crates/assets/src/bitmap.rs`. Switch: none.
+Status: Built. Code: `crates/platform/assets/src/bitmap.rs`. Switch: none.
 
 `h2 bitmap <map> <tag> [--image N] [--out DIR] [--mips] [--raw]` and
 `h2 bitmap --all <map> [--list] [--out DIR]` decode `bitm` tags to RGBA8 PNGs.
 Mapping rules live (with evidence labels) in the module docs of
-`crates/assets/src/bitmap.rs`; this page records what the disc runs showed.
+`crates/platform/assets/src/bitmap.rs`; this page records what the disc runs showed.
 No pixels or names of game assets are stored in the repo.
 
 Findings (retail disc, three maps: the main menu and two single-player maps;

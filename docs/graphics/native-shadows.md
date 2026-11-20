@@ -1,7 +1,7 @@
 # Native shadows
 
 Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend; pixel parity and timing are not verified.
-Code: `crates/feature/src/native_shadows.rs`, `crates/boot/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `crates/native-render/src/shadows.rs`, `shadow_gpu.rs`. Tests: `crates/native-render/tests/shadow_gpu.rs`, `crates/feature/tests/native_shadows.rs`, `crates/engine/tests/shadow_constants*.rs`.
+Code: `crates/hooking/feature/src/native_shadows.rs`, `crates/apps/boot/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/hooking/feature/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The stage keeps the game's gather, template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
@@ -42,7 +42,7 @@ The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `
 
 ## Interfaces
 
-`native_render::shadow_gpu::Producer` accepts the ordered caster batches on their encoder and returns a generation-owned `SampledMap`. The GPU differential (`crates/native-render/tests/shadow_gpu.rs`) compares all four channels, including stencil for D24.
+`native_render::shadow_gpu::Producer` accepts the ordered caster batches on their encoder and returns a generation-owned `SampledMap`. The GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`) compares all four channels, including stencil for D24.
 
 The guest targets hold the result of all admitted and fallback casters. Boot publishes a handle at the matching layer-11 boundary through `boot::native_shadows_glue::observe_receivers(Some(observer))`. The observer receives a `ReceiverTerm` with the present, view, caster generation, site, identity (light and definition datums or both object arguments), projection, map kind and guest texture header. The consumer stores the handle in its ordered graph node during the callback, because the guest memory guard is held and calling back into the runtime would reacquire it.
 

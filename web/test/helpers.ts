@@ -7,7 +7,7 @@ export function ev(type: string, stream: string, data: unknown, at = "2026-11-15
   return { position: pos, stream, version: pos, type, at, data };
 }
 
-// `ACCOUNT_VECTOR` in crates/live-proto/src/sign.rs: the RFC 8037 key signing
+// `ACCOUNT_VECTOR` in crates/live/live-proto/src/sign.rs: the RFC 8037 key signing
 // {gamertag: "Sneaky Pete", aud: "localhost", iat: 1800000000}.
 export const ACCOUNT_VECTOR =
   "eyJhbGciOiJFZERTQSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJ0eXAiOiJoMmxpdmUtYWNjb3VudCJ9." +

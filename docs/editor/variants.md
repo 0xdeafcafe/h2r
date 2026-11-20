@@ -1,9 +1,9 @@
 # Game variants: record, schema and saved files
 
-Status: Built. Code: `crates/variants/src`. Tests: in-source unit tests; `crates/variants/tests/disc.rs` (ignored, needs a disc).
+Status: Built. Code: `crates/formats/variants/src`. Tests: in-source unit tests; `crates/formats/variants/tests/disc.rs` (ignored, needs a disc).
 Switch: none.
 
-`crates/variants` is the game variant editor of the editor suite: the
+`crates/formats/variants` is the game variant editor of the editor suite: the
 0x130-byte variant record, the settings schema, saved-variant files and the
 editor's state and commands (`VariantEditor`, drawn by `h2-editor`). No
 game data is in the repository: the schema and the built-in variants are
@@ -20,7 +20,7 @@ marked **confirmed** (seen in code or data) or **inferred**.
 
 The record is the active variant at `G+0x13c` (docs/live/live-gamestate.md §3),
 the whole payload of a saved variant, and the last 0x130 bytes of a hopper
-record slot (`crates/live-proto/src/hopper/mod.rs`, `VARIANT_AT`). The editor's
+record slot (`crates/live/live-proto/src/hopper/mod.rs`, `VARIANT_AT`). The editor's
 hopper tool links a variant by copying `GameVariant::to_bytes()` into the
 slot, after `record::check` finds nothing (docs/editor/editor.md).
 
@@ -172,7 +172,7 @@ certificate's own, else from `XboxAlternateSignatureKeys`. End's roamable
 path (`0x2d64c0`) is a plain HMAC finish. The non-roamable path (not used
 here) adds a second HMAC with the hard-disk key.
 
-Our kernel never fills export 325 (crates/kernel/STOPS.md), so on our
+Our kernel never fills export 325 (crates/runtime/kernel/STOPS.md), so on our
 runtime the key is 16 zero bytes. **Unverified**: no save written by the
 game under our runtime has been compared yet. To check: save one variant
 in the game, then run the ignored test `saved_variant_verifies` with

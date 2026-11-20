@@ -76,7 +76,7 @@ timer 0x484248, armed from 0x332b6d; see the kernel README). The boot's old
 
 The engine finds headsets itself. Its hot-plug poll at 0x332b97 calls
 XPeekDevices (0x409884) for two XPP device types, 0x4088b0 (microphone) and
-0x4088bc (headphone). Our `crates/xapi/src/controllers.rs` answers
+0x4088bc (headphone). Our `crates/platform/xapi/src/controllers.rs` answers
 peek_devices, get_devices and get_device_changes with 0 for any type that is
 not a gamepad. So today the engine never sees a communicator, never calls
 CommunicatorStatusUpdate with status 0, and the headset byte stays clear.
@@ -271,7 +271,7 @@ trait VoiceIo {
 The XMOs resample between the device's 48 kHz and the engine's 16 kHz
 16-bit mono packets of 640 bytes (traced, 3.3).
 
-macOS first, on cpal over CoreAudio like `crates/audio/src/output.rs`. A fake
+macOS first, on cpal over CoreAudio like `crates/platform/audio/src/output.rs`. A fake
 `VoiceIo` (scripted frames in, recorded frames out) is what the tests use.
 Other ports implement the trait.
 
@@ -279,7 +279,7 @@ Playback has two routes: the voice output device when `voice.output_device`
 names one (a headset), or mixed into the game's own output when it is "same as
 game". The second route is a host stream in DirectSound's mixer
 (`boot::voice_glue::GameMix`), so voice plays wherever the mixer's output
-thread plays the game (`crates/dsound/src/output.rs`), follows the game's
+thread plays the game (`crates/platform/dsound/src/output.rs`), follows the game's
 master volume, and opens no second device stream.
 
 Push-to-talk is a gate in the microphone XMO: with the button up it fills
@@ -425,7 +425,7 @@ confirmed in the disassembly, **I** means inferred):
      ready, it moves the read position to write − 0x280. So remote voice
      reaches a headphone object only if the host's DirectSound runs those
      effects and their output rings. That is a slice 4 dependency on
-     crates/dsound (built: `dsound::voice_rings`); the slice 3 objects do
+     crates/platform/dsound (built: `dsound::voice_rings`); the slice 3 objects do
      not depend on it.
    - **The XMO vtable is at 0x417544 (C).** Slots: AddRef 0x41058f,
      Release 0x4112dc, GetInfo 0x4105ab, GetStatus 0x410603, Process
@@ -487,7 +487,7 @@ as for chat. The game's own limits stay: 15 s and fewer than 0x499a bytes
 Sending: MessageSend and the friend request, team recruit and game invite
 paths already hand the HLE the attachment. The HLE uploads the bytes as is
 with the message. The server stores the voice blob in the **private** blob
-store (crates/live-server/src/blobs.rs; the data dir natively, private R2 in
+store (crates/live/live-server/src/blobs.rs; the data dir natively, private R2 in
 the Worker) under `voice/{message_id}`, never in a public bucket. The message
 event carries the blob key, size and duration, not the bytes. The server
 checks the size is under 0x499a bytes and the buffer starts with the traced
@@ -587,7 +587,7 @@ chat report is the existing "Screaming" or "Harassment" feedback, as today.
 ## 4. Integration with pause-settings
 
 The pause-settings lane adds Video and Voice rows to the pause menu and owns
-these host settings in `crates/settings` Defs:
+these host settings in `crates/formats/settings` Defs:
 
 | Setting | Read where |
 |---|---|

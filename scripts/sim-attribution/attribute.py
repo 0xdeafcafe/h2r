@@ -199,7 +199,7 @@ class Graph:
 # ---- the profile --------------------------------------------------------
 
 def category(name):
-    """crates/perf/src/symbolize.rs `Category::of_symbol`."""
+    """crates/tools/perf/src/symbolize.rs `Category::of_symbol`."""
     if name.startswith(("guest 0x", "@0x")):
         return "guest"
     n = name.lstrip("<&_ ")

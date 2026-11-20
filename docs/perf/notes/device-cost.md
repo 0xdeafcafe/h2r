@@ -1,6 +1,6 @@
 # D3D device CPU cost: measurements
 
-Evidence for the benchmarks described in [../profiling.md](../profiling.md), "Device CPU cost (crates/d3d)".
+Evidence for the benchmarks described in [../profiling.md](../profiling.md), "Device CPU cost (crates/platform/d3d)".
 
 ## 2026-11-15: per-draw cost of the device on the push-buffer frame
 

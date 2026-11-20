@@ -1,7 +1,7 @@
 # Game options the game doesn't allow
 
 Status: Partly built. Sections 1 to 3 are built: the record's limits, our added choices, the extension block with its Live transport, and the "More Options" page. Movement speed, team size, weapons outside the globals list in the game's editor, and the lobby texts are not built; section 4 (names with any character) is a design.
-Code: `crates/variants` (`ext`, `extra`, `record`, `schema`), `crates/boot/src/variant_options.rs`, `variant_ext.rs`, `variant_page.rs`, `community_variants.rs`. Tests: listed under "Tests".
+Code: `crates/formats/variants` (`ext`, `extra`, `record`, `schema`), `crates/apps/boot/src/variant_options.rs`, `variant_ext.rs`, `variant_page.rs`, `community_variants.rs`. Tests: listed under "Tests".
 Switch: `features.variant-more-options-row`, `features.variant-more-options`, `variant-vitality`, `variant-ext-live` (feature ids), listed in [switches.md](../runtime/switches.md).
 
 The goals:
@@ -421,7 +421,7 @@ guests"):
   [ui-screens.md](ui-screens.md)). Its rows are `Row::value`s whose get and
   set read and write the block in the record being edited
   (`boot::variant_page`; "The variant editor's page list" below).
-- **Studio** (`crates/studio/src/ui/variants.rs`): a "More options
+- **Studio** (`crates/apps/studio/src/ui/variants.rs`): a "More options
   (h2recomp)" section under the pages edits the block through
   `VariantEditor::set_ext` (undoable; a drag on one option is one step).
   It shows only what the game applies (gravity, damage, shield and health,

@@ -1,7 +1,7 @@
 # Native renderer stage 1: the static world
 
 Status: Built. The static world draws natively in the default configuration.
-Code: `crates/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/feature/src/native_world.rs`, `crates/boot/src/native_world_glue.rs`. Tests: `crates/native-render/tests/gpu.rs`, `crates/feature/tests/native_world.rs`.
+Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/hooking/feature/src/native_world.rs`, `crates/apps/boot/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/hooking/feature/tests/native_world.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 1 of [native-renderer.md](native-renderer.md). The structure BSP's opaque
@@ -307,7 +307,7 @@ there is no hand-written look in between.
 
 ### Modules
 
-`crates/native-render/src`:
+`crates/rewrites/native-render/src`:
 
 - `world`: one vertex and index buffer for the whole BSP, one draw per
   opaque part in world space (instances placed at load), sorted into
@@ -339,10 +339,10 @@ there is no hand-written look in between.
 - **`d3d` external pass.** World and object replacements use the ordered
   reservation in [native-renderer.md](native-renderer.md), "Admission".
   `Device::request_external_pass` schedules legacy passes at the next
-  push-buffer drain. `crates/d3d/tests/external_pass.rs` covers both entry
+  push-buffer drain. `crates/platform/d3d/tests/external_pass.rs` covers both entry
   points, direct and threaded recording, scaled attachment refusal, and
   replay.
-- **The feature `native-world`** (`crates/feature/src/native_world.rs`).
+- **The feature `native-world`** (`crates/hooking/feature/src/native_world.rs`).
   `LAYER_DRAW` is an opaque point, so the hook is one observer before it:
   it first sets back the bits the last layer 3 cleared (on items that
   still hold the mask it left), then, with layer 3 current, reads the
@@ -358,15 +358,15 @@ there is no hand-written look in between.
   device's current targets, which the render owns while it is in flight.
   The host drains previous commands, previews the list and confirms one
   batched reservation for the view before applying masks.
-  Tests: `crates/feature/tests/native_world.rs` (the plan with
+  Tests: `crates/hooking/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; on by default, keeping pipelining;
   `impl.render.native=off` places nothing; the skip and its restore at the
   next layer draw on synthetic memory, a rebuilt list left alone, and a
   part left to D3D keeping its bit though its shader is drawn);
-  `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
+  `crates/apps/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
   render-thread safe).
-- **Boot glue** (`crates/boot/src/native_world_glue.rs`). On a new (map
+- **Boot glue** (`crates/apps/boot/src/native_world_glue.rs`). On a new (map
   name, active BSP address) a worker opens the loaded map through the VFS
   with its shared maps, picks the scenario BSP whose tag data sits at that
   address, builds the world, decodes each lightmap page (with its mip

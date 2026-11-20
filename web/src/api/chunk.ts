@@ -1,5 +1,5 @@
 // Recorded frame chunks (docs/live/live-api.md, "Frame chunks"; the
-// writer is crates/live-proto/src/chunk.rs). A game's frames are stored
+// writer is crates/live/live-proto/src/chunk.rs). A game's frames are stored
 // ten seconds of game time at a time: each chunk a packed stream (a
 // keyframe, then deltas) compressed with raw deflate, behind a small
 // header. The game's index (`GET /v1/games/{id}/chunks`) lists them, so a

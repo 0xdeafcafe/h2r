@@ -1,0 +1,13 @@
+[package]
+name = "hot-render"
+description = "Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Override sources are parsed and checked with the translator's naga front end.
+shaders = { path = "../../formats/shaders" }
+naga = { version = "30", features = ["wgsl-in"] }
+serde.workspace = true
+serde_json.workspace = true

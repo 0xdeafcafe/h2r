@@ -191,7 +191,7 @@ describe("the mock's summary", () => {
   let pos = 0;
   const ev = (game: string, type: string, at: number, data: unknown) => ({ stream: `game-${game}`, type, at: new Date(at).toISOString(), data, position: ++pos });
 
-  test("counts like the server (crates/live-server/src/stats.rs, the first test)", () => {
+  test("counts like the server (crates/live/live-server/src/stats.rs, the first test)", () => {
     const f = new StatsFold();
     const k = (victim: number, killer: number, kind: string, weapon: string, s: number) =>
       f.apply(ev("g1", "PlayerKilled", T0 + s * 1000, { tick: 1, victim, killer, kind, weapon }));

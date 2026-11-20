@@ -1,0 +1,19 @@
+[package]
+name = "h1sounds"
+description = "Halo 1 Xbox sounds: decode to PCM with the audio crate's Xbox ADPCM decoder, and convert to Halo 2 snd! tags plus ugh! gestalt entries"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+h1map = { path = "../h1map" }
+# The Xbox ADPCM decoder Halo 2's mixer uses; Halo 1 stores the same codec.
+audio = { path = "../../platform/audio", default-features = false }
+tags.workspace = true
+map.workspace = true
+# `Converted { group, root, raw }` and `install`, shared with the other converters.
+h1models = { path = "../h1models" }
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true

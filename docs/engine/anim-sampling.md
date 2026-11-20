@@ -2,10 +2,10 @@
 
 Phase 1a of the [simulation rewrite](sim-rewrite.md). Switch:
 `impl.sim.native.anim` (hierarchical, default off). Code:
-[`crates/sim-anim`](../../crates/sim-anim/src/lib.rs) (clips, codecs,
-sampler), [`crates/sim-core`](../../crates/sim-core/src/lib.rs) (float
+[`crates/rewrites/sim-anim`](../../crates/rewrites/sim-anim/src/lib.rs) (clips, codecs,
+sampler), [`crates/rewrites/sim-core`](../../crates/rewrites/sim-core/src/lib.rs) (float
 rules, lanes, epoch) and the adapter
-[`crates/engine/src/sim_anim.rs`](../../crates/engine/src/sim_anim.rs).
+[`crates/rewrites/engine/src/sim_anim.rs`](../../crates/rewrites/engine/src/sim_anim.rs).
 
 Status: Rust + adapter + differential test. Not yet through the run
 ladder (A/B, cache-cold arm, cross-arch, timing).

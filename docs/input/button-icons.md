@@ -1,7 +1,7 @@
 # Button icons for the device in use
 
 Status: Built. Unit tested on synthetic fonts; the game's own text path is under "Not verified".
-Code: `crates/boot/src/icons.rs`, `crates/font/src/icons/`, `crates/input/src/active.rs`. Tests: listed under "Tests".
+Code: `crates/apps/boot/src/icons.rs`, `crates/formats/font/src/icons/`, `crates/platform/input/src/active.rs`. Tests: listed under "Tests".
 Switch: `H2_ICONS` (`--icons`), see [switches.md](../runtime/switches.md).
 
 Halo 2 draws button prompts ("Press X to pick up", the menu legends, the
@@ -19,13 +19,13 @@ H2_ICONS=playstation h2 run disc.iso ...
 is set, so headless runs and benchmarks see the retail fonts.
 
 No glyph data is in the repository. The pictures are computed at run time from
-shapes in `crates/font/src/icons/`, and added to the user's own font files as
+shapes in `crates/formats/font/src/icons/`, and added to the user's own font files as
 the game reads them. Nothing on disc is modified and no vendor logo or artwork
 is used: a cross, circle, square and triangle are drawn as geometry.
 
 ## The retail glyphs
 
-Read from the disc with a scratch tool over `crates/font` (the format is in
+Read from the disc with a scratch tool over `crates/formats/font` (the format is in
 [fonts.md](../formats/fonts.md)); `h2 font <iso> conduit-16 <text> --glyph-colors` draws
 any of them. The text scanner treats U+E000 to U+E3FF as its icon range. Every
 font file on the disc, the Asian ones included, maps the same pictures at the
@@ -158,7 +158,7 @@ that updates the game's prompt code point therefore gets the corresponding
 host icon; hardcoded guest prompts would still need fixing where emitted.
 The mapping is:
 
-- pads: `crates/input` maps the right bumper to Black and the left to White,
+- pads: `crates/platform/input` maps the right bumper to Black and the left to White,
   so Black draws the right bumper (RB, R1) and White the left;
 - keyboard: the first input bound to the control in the user's bindings
   ([input.md](input.md), `--bindings`). A stick shows its four keys as one cap
@@ -169,7 +169,7 @@ The mapping is:
 
 ## How it works
 
-Two parts, both in `crates/boot/src/icons.rs`.
+Two parts, both in `crates/apps/boot/src/icons.rs`.
 
 **1. The fonts get every set.** `vfs::RewriteBackend` wraps the disc. When
 the game opens a file under `maps\fonts` (not the `.txt` tables), the whole
@@ -275,7 +275,7 @@ All use synthetic fonts and in-memory files.
   kerning unchanged, header totals equal to the file, bad sizes rejected.
 - `font::icons`: the rasteriser (coverage, symmetry, area of a disc, outline
   width, blending, pixel conversion); the label set covers every key name
-  `crates/input` accepts; every icon at heights 9 to 24 fits the glyph limits
+  `crates/platform/input` accepts; every icon at heights 9 to 24 fits the glyph limits
   and survives the compressor; the bumper pair is white at run levels with the
   right side lit; face balls have the right colours; key caps are light with
   dark letters and follow the labels; each set's code points are distinct; a

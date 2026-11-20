@@ -43,7 +43,7 @@ Five findings carry most of the review.
    first three phases estimate 2.7-3.7 ms of a 14.12 ms tick. Codegen and
    runtime work applies to all guest code at once. Port the sim to own it
    and extend it, on a timetable that speed does not force.
-3. **The hand-lifted ports are a dead end.** `crates/engine/src/sim_native`
+3. **The hand-lifted ports are a dead end.** `crates/rewrites/engine/src/sim_native`
    and `sim_physics` transcribe single functions at register level, flags
    included. All 32 are off by default. They are neither readable Rust nor
    faster than the lifter's output, and the lifted function on the IR
@@ -66,11 +66,11 @@ The ordered list of ten changes is in section 5.
 
 `analyze` (8.5k lines) finds functions by recursive descent, then tries
 speculative candidates (code references, data pointers, gap starts) in an
-overlay and keeps only clean decodes (`crates/analyze/src/lib.rs:1-17`).
+overlay and keeps only clean decodes (`crates/recompiler/analyze/src/lib.rs:1-17`).
 `lift` (7.9k) lowers each instruction to `ir` (3.7k): one `IrInsn` per
 guest instruction, temps that never outlive their instruction, total
 operations, explicit undefined flags and precise fault ordering
-(`crates/ir/src/lib.rs:10-52`). `opt` (1.4k) has two passes, dead flags
+(`crates/recompiler/ir/src/lib.rs:10-52`). `opt` (1.4k) has two passes, dead flags
 and lazy flags. `emit` (15k) writes one C function per owner in about
 1,000 shards keyed by `entry >> 12`, and `clif` (2.1k) lowers the same
 planned IR to Cranelift objects.
@@ -79,11 +79,11 @@ A generated function has the signature
 `TransferAbi h2fn(CpuAbi *, ExecCtxOpaque *, uint32_t start)`. It can be
 entered at any registered selector, keeps the registers it writes in
 locals, and leaves by returning a transfer (call, jump, return, fault,
-stop) to the Rust runner (`crates/runtime/src/runner.rs`). Return
+stop) to the Rust runner (`crates/runtime/runtime/src/runner.rs`). Return
 addresses stay on the guest stack and resolve through a resume table.
 All guest threads run on one host thread under a cooperative scheduler
 whose clock is the number of guest memory accesses
-(`crates/emit/RUNTIME-CONTRACT.md`, sections 1.5 and 4).
+(`crates/recompiler/emit/RUNTIME-CONTRACT.md`, sections 1.5 and 4).
 
 ### 1.2 What is good and should not change
 
@@ -94,7 +94,7 @@ whose clock is the number of guest memory accesses
   strongest part of the repository.
 - **Discovery does not need to be sound, because the fallback makes it
   complete.** A target the analyzer missed stops the handler and the IR
-  interpreter carries on from there (`crates/boot/src/fallback.rs:1-20`).
+  interpreter carries on from there (`crates/apps/boot/src/fallback.rs:1-20`).
   That is the right design for a binary with LTCG and jump tables. What
   it lacks is a loop back into the build: see 1.8.
 - **C as the optimising tier.** See 1.6.
@@ -108,7 +108,7 @@ Three rules in the contract set the size and speed of everything
 downstream.
 
 **Rule 1: every access checks a page table under a gate.** An inline
-access is `H2_HELD_TRY` (`crates/emit/c/h2fastmem.h:404-417`): a held-gate
+access is `H2_HELD_TRY` (`crates/recompiler/emit/c/h2fastmem.h:404-417`): a held-gate
 test, a page-crossing test, a page-table load, a permission test, a
 physical-range test, a watch test on stores, a charge and an address
 computation. The gate is a lock shared with Rust memory guards; handlers
@@ -119,14 +119,14 @@ with a cold call and a fault exit behind it.
 
 **Rule 2: every access is a point where the handler may stop with exact
 state.** `opt`'s rule is that state is observable at "faults (any load,
-store, `FaultIf` or intrinsic may fault)" (`crates/opt/README.md`). So a
+store, `FaultIf` or intrinsic may fault)" (`crates/recompiler/opt/README.md`). So a
 flag or register write cannot be removed across a memory access, and the
 lazy-flag machinery exists to make those exits exact without paying on
 the hot path. That machinery is 43% of the generated C by bytes: 23% lazy
 flags computed in place, 11% settled in place, 6% `h2lz_` switches, 3%
 bookkeeping ([lifter/build-perf.md](../lifter/notes/build-perf.md), "What the C
 is"). `lazy-flags` alone grows the C from 417 MB to 539 MB
-(`crates/opt/README.md`, "Measurements").
+(`crates/recompiler/opt/README.md`, "Measurements").
 
 **Rule 3: the scheduler's clock is the access count.** Each handler keeps
 a local count, charges it at exits, reads a budget on entry and polls at
@@ -147,7 +147,7 @@ runner, whose loop validates the transfer and the CPU state, takes the
 preempt reasons, checks interrupts, unwinds the diagnostic frame list,
 looks for a continuation token, resolves the target, checks the execute
 permission and updates up to four sets of counters, per transfer
-(`crates/runtime/src/runner.rs:58-281`).
+(`crates/runtime/runtime/src/runner.rs:58-281`).
 
 The codegen configuration shows the same history. `h2gen.h` and
 `h2fastmem.h` hold 71 `#if` blocks and 13 independent feature macros
@@ -166,11 +166,11 @@ hosts, and first-write faults in place of software dirty bits
 (RUNTIME-CONTRACT.md, lines 128-200). An access becomes one host load or
 store at `base + address`. Finish it, make it the default, then delete
 what it replaces: `H2_HELD_TRY`, the page cache, the entry gate, inline
-dirty marking, the span grouping, `fastmem-4k` and `crates/fastmem-proto`.
+dirty marking, the span grouping, `fastmem-4k` and `crates/recompiler/fastmem-proto`.
 Two parts need care.
 
 - The flat path still takes the gate (`H2_SPAN` in
-  `crates/emit/c/h2gen.h:750-752`). The gate should leave generated code
+  `crates/recompiler/emit/c/h2gen.h:750-752`). The gate should leave generated code
   altogether. Mappings change only inside kernel HLE, which runs on the
   game thread when no handler is running, so generated code needs no lock
   to read the translation. Host threads that read guest memory while the
@@ -216,7 +216,7 @@ and resolve, 0.73% to context creation and 0.52% to fast acquisition
 work"). Static calls are nearly all direct already, so the runner's load
 comes from four sources: Rust handlers (HLE and hooks), returns that miss
 their inline continuation, direct calls refused at run time, and indirect
-calls. `H2_ENTRY_STATS` (`crates/runtime/src/entry_stats.rs`) can split
+calls. `H2_ENTRY_STATS` (`crates/runtime/runtime/src/entry_stats.rs`) can split
 those; record that split in the doc before choosing an order. The
 changes, cheapest first:
 
@@ -229,10 +229,10 @@ changes, cheapest first:
 2. **Hooks that stay on the fast path.** Today a slot is filled only for
    `Handler::Native`, so any hook on a hot function sends all its callers
    through the runner, and one `edit_dispatch` invalidates every slot
-   (`crates/runtime/src/direct.rs:12-17`). The code already avoids hooks
+   (`crates/runtime/runtime/src/direct.rs:12-17`). The code already avoids hooks
    for that reason: the datum and tag leaves stay off because "each
    override takes them off the direct-call path"
-   (`crates/feature/src/leaves.rs:30-38`). Give exact Rust overrides a
+   (`crates/hooking/feature/src/leaves.rs:30-38`). Give exact Rust overrides a
    C-ABI thunk with the handler signature so they can sit in the entry
    table like any generated function.
 3. **Direct HLE entries.** A D3D, DirectSound or kernel call is a
@@ -270,7 +270,7 @@ reasonable target is under 6% of the sim thread in the runtime.
   rule changes above are what make it cheap: with a one-instruction load,
   a table call and a block clock there is very little backend-specific
   fast path left to port twice. Without them, every codegen improvement
-  has to be written in `h2gen.h` macros and again in `crates/clif`.
+  has to be written in `h2gen.h` macros and again in `crates/recompiler/clif`.
 - **Whole-program or per-function.** Per-function owners in address
   shards are right for this ABI. Whole-program optimisation has nothing
   to work with while calls go through a table.
@@ -298,7 +298,7 @@ In order of payoff:
    and remove most flag code. Compile time follows machine-code size, and
    the register allocator and coalescer are 38% of a median shard.
 2. **Tier by default.** `H2_OPT_COLD` and `H2_HOT` exist and are off
-   (`crates/emit/src/compile/tiers.rs`). A hot list is guest addresses
+   (`crates/recompiler/emit/src/compile/tiers.rs`). A hot list is guest addresses
    from a profile, which the repository's rules allow. Ship one, compile
    the hot sources at `-O2` and the rest at `-O1` or `-Os`, and measure
    fps once. If nine tenths of clang time is in cold sources, `-O0` for
@@ -335,7 +335,7 @@ Two gaps.
 ### 1.9 Floating point
 
 The design is right: exact software ext80 as the authority
-(`crates/x87`), native fast paths proved equal to it, hardware-checked
+(`crates/recompiler/x87`), native fast paths proved equal to it, hardware-checked
 SSE reference semantics. Two structural steps remain.
 
 - **x87 stack promotion.** Values live as ten bytes in `cpu->x87.st[]`
@@ -386,7 +386,7 @@ above it.
 `boot` has 278 files, 149 `mod` lines, fan-out to 51 crates and 224
 `static` items. `lib.rs` is 2,906 lines and the second most-changed file
 in the repository (242 commits); `run_configured` at
-`crates/boot/src/lib.rs:1067` is one function of about 1,460 lines. It is
+`crates/apps/boot/src/lib.rs:1067` is one function of about 1,460 lines. It is
 big because it is the only crate allowed to see everything, so every
 cross-crate join lands there, and product features were then written in
 it directly. By content: about 40,000 lines of guest UI and screens
@@ -398,7 +398,7 @@ Split it along those lines: `ui-kit`, `game-ui`, `render-bridge` (merged
 with `feature/src/native_*`, see section 4), `net-glue`, `bot-glue`, and
 a thin `boot` that builds, loads and runs. `studio` depends on all of
 `boot` for one type, `boot::ui_kit::input::Input`
-(`crates/studio/src/app.rs:203`); the `ui-kit` split removes that edge.
+(`crates/apps/studio/src/app.rs:203`); the `ui-kit` split removes that edge.
 
 ### 2.3 `feature`, `engine` and `sim`
 
@@ -410,8 +410,8 @@ is the native renderer's guest half: `pipeline_render.rs` (3,165),
 registry therefore sits above the renderer and the D3D layer, and
 anything that wants a hook pulls both in.
 
-`crates/sim` is not the simulation. It is the headless match harness
-(`crates/sim/src/lib.rs:1-9`). The native sim code is in
+`crates/live/sim` is not the simulation. It is the headless match harness
+(`crates/live/sim/src/lib.rs:1-9`). The native sim code is in
 `feature/src/sim_*.rs` and `engine`. Rename it `sim-bench` before the
 sim rewrite starts using the obvious name.
 
@@ -447,7 +447,7 @@ There are 466 distinct `"H2_*"` string literals in `crates/` (183 in
 `boot`, 108 in `cli`, 57 in `emit`, 35 in `d3d`), 40 distinct `impl.*`
 switch names (35 of them `impl.render.*`), and about 35 `sim.native_*`
 keys built from tables. Switches are a `BTreeMap<String, bool>` parsed
-from `H2_FEATURES` (`crates/feature/src/switches.rs`) with defaults
+from `H2_FEATURES` (`crates/hooking/feature/src/switches.rs`) with defaults
 scattered across call sites. The planned parent `impl.sim.native` does
 not exist in code; the keys are `impl.sim.native_x`, whose parent is
 `impl.sim`.
@@ -466,9 +466,9 @@ default build does not exercise. Three rules:
 ### 2.7 Tests
 
 There are 9,797 `#[test]` functions and 504 `#[ignore]`. The differential
-suites are good: `crates/emit/tests/differential.rs`,
-`crates/clif/tests/differential.rs`, `crates/lift/tests/oracle.rs`, 14
-`*_differential.rs` files in `crates/engine/tests`. Three weaknesses.
+suites are good: `crates/recompiler/emit/tests/differential.rs`,
+`crates/recompiler/clif/tests/differential.rs`, `crates/recompiler/lift/tests/oracle.rs`, 14
+`*_differential.rs` files in `crates/rewrites/engine/tests`. Three weaknesses.
 
 - **CI runs none of them.** `.github/workflows/ci.yml` runs clippy and
   `cargo test --workspace` with no disc, so the oracle fixtures, the
@@ -492,8 +492,8 @@ replacement.
 
 ### 2.8 Delete, merge, rename
 
-- **Delete:** `crates/fastmem-proto` (2,563 lines, no dependents, its own
-  table row says prototype); `crates/viewer` (7,258 lines, fan-in zero,
+- **Delete:** `crates/recompiler/fastmem-proto` (2,563 lines, no dependents, its own
+  table row says prototype); `crates/tools/viewer` (7,258 lines, fan-in zero,
   superseded by `studio`) once its shadow lab is moved or dropped; the
   stage 7a render-loop ports that the docs say save nothing; the
   hand-lifted sim ports as each is superseded (section 3).
@@ -515,11 +515,11 @@ replacement.
 
 ### 3.1 The engine as built
 
-Points are named addresses in `crates/engine/src/points.rs`: 331 of them,
+Points are named addresses in `crates/rewrites/engine/src/points.rs`: 331 of them,
 each with a signature kind, a required or optional class and a doc
 reference. A hook chain per address runs observers, `before` hooks (which
 may return early), the body or its replacement, then `after` hooks
-through a shadow address (`crates/feature/src/install.rs:256-417`).
+through a shadow address (`crates/hooking/feature/src/install.rs:256-417`).
 Mid-function `Site` hooks need the emitter to have emitted a selector at
 that PC.
 
@@ -531,11 +531,11 @@ Four weaknesses, in order of consequence.
 - **Addresses are not in one table.** Beyond the 331 points there are
   about 6,300 other five-digit-or-longer hex literals in `boot`,
   `feature` and `engine` sources: local constants for globals, field
-  offsets and resume PCs (`crates/engine/src/sim_physics/object_update.rs:6-19`
+  offsets and resume PCs (`crates/rewrites/engine/src/sim_physics/object_update.rs:6-19`
   is typical).
 - **No point is verified against the image.** `ImageAddrs` has `Base` and
   a `Remap` meant for tests and a future title-update map
-  (`crates/feature/src/plan.rs:35-56`). The only check against a real
+  (`crates/hooking/feature/src/plan.rs:35-56`). The only check against a real
   image is one ignored test over about 20 render points. A point whose
   address is wrong fails at run time, or silently if the install degrades
   to "body runs alone".
@@ -616,7 +616,7 @@ them.
    `agent` and the native renderer's extraction use it too, so a layout
    fix lands once.
 2. **Shadow execution in place of record-and-replay.** The runtime
-   already has copy-on-write guest memory (`crates/runtime/src/cow.rs`)
+   already has copy-on-write guest memory (`crates/runtime/runtime/src/cow.rs`)
    and a second executor (`docs/runtime/second-executor.md`). For a
    ported entry, at each call: fork guest memory, run the lifted original
    on the fork, run the port on the live memory, and compare return value
@@ -652,21 +652,21 @@ switch is deleted.
 
 ### 4.1 The D3D path
 
-The boundary is the D3D8 API: 88 overrides (`crates/d3d/src/runtime_glue.rs`,
+The boundary is the D3D8 API: 88 overrides (`crates/platform/d3d/src/runtime_glue.rs`,
 adapters in `abi.rs`). It leaks because the title is LTCG and inlines
 D3D: game code writes the render-state and texture-state arrays and the
 push buffer directly, so the device treats the guest arrays as
 authoritative, re-reads them at every draw and decodes a real push
 buffer at every entry (`pushbuf.rs`, `regs.rs`, `device/fragments.rs`).
 It is an API replacement plus part of an NV2A method decoder. Shader
-translation (`crates/shaders`, `d3d/src/nv2a.rs`) and the persisted
+translation (`crates/formats/shaders`, `d3d/src/nv2a.rs`) and the persisted
 pipeline keys (`pipeline_store.rs`) are sound.
 
 The crate is 37,000 lines of source and 29,000 of tests. `device.rs` is
 6,657 lines. The `Backend` trait has 55 methods (`backend.rs:1075`) and
 six implementations stacked as decorators
 (`ThreadedBackend<InterpBackend<ScaledBackend<GfxBackend>>>`, composed in
-`crates/boot/src/d3d_glue.rs`), so every new capability is written six
+`crates/apps/boot/src/d3d_glue.rs`), so every new capability is written six
 times.
 
 ### 4.2 The native renderer

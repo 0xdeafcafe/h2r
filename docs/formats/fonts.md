@@ -1,8 +1,8 @@
-# Fonts (`crates/font`, `h2 font`)
+# Fonts (`crates/formats/font`, `h2 font`)
 
-Status: Built. Code: `crates/font`. Switch: none.
+Status: Built. Code: `crates/formats/font`. Switch: none.
 
-Halo 2's fonts are packed files under `/maps/fonts/`, not map tags. `crates/font`
+Halo 2's fonts are packed files under `/maps/fonts/`, not map tags. `crates/formats/font`
 parses them (bounds-checked, safe on hostile input), decodes glyph bitmaps, and
 rasterises UTF-16 text to RGBA on the CPU. `h2 font` drives it:
 
@@ -14,7 +14,7 @@ h2 font --all <iso>      # parse + fully validate every font; non-zero exit on f
 
 No glyph sheet, dump or render is stored in the repo. Output PNGs go wherever
 `--out` says (the exporter refuses to follow symlinks and will not overwrite
-without `--force`, via `crates/cli/src/safe_out.rs`).
+without `--force`, via `crates/apps/cli/src/safe_out.rs`).
 
 ## Provenance
 

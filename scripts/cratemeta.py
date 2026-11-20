@@ -144,7 +144,7 @@ def packages(root):
             "metadata": pkg.get("metadata"),
         }
         # A path dependency inside the workspace root is a member too
-        # (`crates/runtime/test-probe` is matched by no glob).
+        # (`crates/runtime/runtime/test-probe` is matched by no glob).
         for dep in out[name]["dependencies"]:
             if dep["path"] and os.path.isfile(os.path.join(dep["path"], "Cargo.toml")):
                 dep_rel = os.path.relpath(dep["path"], root)
@@ -172,7 +172,7 @@ def planned_domains(rule_set):
 def domain_of(pkg, rule_set, root):
     """(domain, placed). placed is False while the crate sits outside a
     domain directory; the domain is then the planned one, or None. A
-    domain directory holds crates and is not one (`crates/runtime` is a
+    domain directory holds crates and is not one (`crates/runtime/runtime` is a
     crate until the move, and a domain after it)."""
     parts = pkg["dir"].split(os.sep)
     if (len(parts) >= 3 and parts[0] == "crates" and parts[1] in rule_set["domains"]

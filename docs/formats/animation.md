@@ -1,14 +1,14 @@
 # Animation graphs (`jmad`) and animation data
 
-Status: Built. Code: `crates/tags/src/anim.rs`, `crates/tags/src/anim_sample.rs`. Tests: `crates/tags/src/anim_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/anim.rs`, `crates/formats/tags/src/anim_sample.rs`. Tests: `crates/formats/tags/src/anim_tests.rs`. Switch: none.
 
-This describes `crates/tags/src/anim.rs` (the `jmad` tag), `crates/tags/src/anim_sample.rs`
-(decompression and sampling) and `h2 anim` in `crates/cli`. Like
+This describes `crates/formats/tags/src/anim.rs` (the `jmad` tag), `crates/formats/tags/src/anim_sample.rs`
+(decompression and sampling) and `h2 anim` in `crates/apps/cli`. Like
 [sound.md](sound.md) it is hand-written and self-contained: it does not use the
-schema generator in `crates/tags`.
+schema generator in `crates/formats/tags`.
 
 No game data is in the repository or in the tests. Tests build invented tags and
-streams in memory; the disc check (`crates/tags/examples/anim_survey.rs`) prints
+streams in memory; the disc check (`crates/formats/tags/examples/anim_survey.rs`) prints
 aggregate counts only.
 
 ## Evidence labels and provenance
@@ -258,7 +258,7 @@ The engine's own interpolated functions are the same piecewise-linear blend.
 
 ```rust
 use tags::anim::AnimationGraph;
-use tags::sound::ResourceReader; // supplies raw resource bytes; see crates/cli/src/sound.rs
+use tags::sound::ResourceReader; // supplies raw resource bytes; see crates/apps/cli/src/sound.rs
 
 let graph = AnimationGraph::read(&mut map, tag_id)?;
 let idx = graph.find_animation(map.strings(), "<mode>:<action>").unwrap();

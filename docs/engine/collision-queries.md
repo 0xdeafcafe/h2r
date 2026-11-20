@@ -3,9 +3,9 @@
 The contract page for the collision entries taken over under
 `impl.sim.native.collision` (default off). Design and slices:
 [sim-rewrite-collision.md](sim-rewrite-collision.md). Code:
-`crates/sim-collision` (kernels, synthetic data only),
-`crates/engine/src/sim_collision` (adapters, guest layout),
-`crates/feature/src/sim_native.rs` (installation). The data comes from the
+`crates/rewrites/sim-collision` (kernels, synthetic data only),
+`crates/rewrites/engine/src/sim_collision` (adapters, guest layout),
+`crates/hooking/feature/src/sim_native.rs` (installation). The data comes from the
 guest image, and no value from it is copied here or into the code.
 
 Bar E: same bits as retail. Each kernel works out its full answer before

@@ -466,12 +466,12 @@ weapon HUD and target state, called UI).
 
 ## Slices a lane can start
 
-1. **Profiler categories.** `crates/perf/src/symbolize.rs`: a `host`
+1. **Profiler categories.** `crates/tools/perf/src/symbolize.rs`: a `host`
    category for `bots::`, `boot::`, `feature::`, `sim::`, `input::`,
    `engine::`, `live_telemetry::` frames; update the tests beside it and
    the table in profiling.md.
 2. **Attribution in the tool.** Port `attribute.py` to `h2 profile attribute`
-   in `crates/perf`, reading the owner map as data, so a census prints this
+   in `crates/tools/perf`, reading the owner map as data, so a census prints this
    page's tables.
 3. **Map status poll.** Read `163680` and `213f10`: find why the status is
    asked every frame in a game, and answer it from the last result when the

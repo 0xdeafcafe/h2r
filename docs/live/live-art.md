@@ -9,17 +9,17 @@ under `/art/game/` like the other art, to this machine only unless the
 server runs with `--share-game-art`. Nothing derived from the
 disc is in the repository: the tests build invented tag data.
 
-Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
-`crates/cli/src/live_looks.rs` (surface pictures),
-`crates/cli/src/live_basemap.rs` (which bitmap a shader draws as its base),
-`crates/cli/src/live_mappack.rs` (map pack maps),
-`crates/cli/src/live_scenario.rs` (placed objects),
-`crates/cli/src/live_layers.rs` (decals and effects), `live_sky.rs` (the sky),
+Code: `crates/apps/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
+`crates/apps/cli/src/live_looks.rs` (surface pictures),
+`crates/apps/cli/src/live_basemap.rs` (which bitmap a shader draws as its base),
+`crates/apps/cli/src/live_mappack.rs` (map pack maps),
+`crates/apps/cli/src/live_scenario.rs` (placed objects),
+`crates/apps/cli/src/live_layers.rs` (decals and effects), `live_sky.rs` (the sky),
 `live_weather.rs` (weather volumes), `live_models.rs` (player, weapon and
 vehicle models), `live_weapons.rs` (weapon ballistics), `live_features.rs`
 (teleporters and lifts), `live_catalog.rs` (the playlist builder's catalog) and
-`crates/cli/src/live_render.rs` (the software renderer). Tests:
-`crates/cli/src/live_geometry_tests.rs` and the modules' own.
+`crates/apps/cli/src/live_render.rs` (the software renderer). Tests:
+`crates/apps/cli/src/live_geometry_tests.rs` and the modules' own.
 
 ## Files
 
@@ -322,7 +322,7 @@ vehicle models wait for `map.glb` (`ModelLibrary.hold`), so they don't
 share its bandwidth. Placed objects of one model are instanced (below). Every
 art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
-keep it. The art server (`crates/live-server/src/art.rs`) answers a
+keep it. The art server (`crates/live/live-server/src/art.rs`) answers a
 stamped request with `Cache-Control: private, max-age=31536000,
 immutable` and anything else with `no-cache`, and sends a file's `.br`
 copy to a browser that takes Brotli, else its `.gz` copy to one that takes
@@ -589,7 +589,7 @@ view), the same for every view.
 
 ## Packing
 
-The last step of an extraction (`crates/live-server/src/art_pack.rs`,
+The last step of an extraction (`crates/live/live-server/src/art_pack.rs`,
 `pack`) readies the art for the web, so both homes send the same bytes:
 the art server (`/art/game/`, `--share-game-art`) and the published copy
 the Worker redirects to ([live-worker.md](live-worker.md)).
@@ -1070,8 +1070,8 @@ character, a model per multiplayer weapon and a model per vehicle, for the
 3D viewer's players and AI (the players contract, sections 2 and 5). Like the maps, everything comes from the owner's disc at run
 time; the tests build invented models.
 
-Code: `crates/cli/src/live_models.rs`. Tests:
-`crates/cli/src/live_models_tests.rs`.
+Code: `crates/apps/cli/src/live_models.rs`. Tests:
+`crates/apps/cli/src/live_models_tests.rs`.
 
 ## Files
 
@@ -1108,14 +1108,14 @@ none. `ballistics` (what the weapon fires: `kind` one of `bullet`,
 `plasma`, `needle`, `rocket`, `grenade`, `beam`, `melee`; `speed` and
 `final_speed` in world units a second; `rate` sustained rounds a second;
 each absent when unknown) comes from the weapon's barrel and its projectile
-tag (`crates/cli/src/live_weapons.rs` has the offsets and how they were
+tag (`crates/apps/cli/src/live_weapons.rs` has the offsets and how they were
 established) and drives the viewer's tracers, bolts and rockets. Version 1
 had none of these and unskinned bipeds; a version 1 reader that skips the
 version check still draws the version 2 files (below).
 
 `seats` (extractor 22) lists, by vehicle stem, the vehicle's seats in the
 order of its tag's seats block (`vehi +0x1c8`, stride `0xb0`;
-crates/tags/src/defs/unit.txt), the block the unit's seat index
+crates/formats/tags/src/defs/unit.txt), the block the unit's seat index
 (`unit +0x1fc`, telemetry's `seat`) indexes: element `i` is seat `i`.
 `label` is the seat's label (string ID at `+4`), the rider's animation
 mode, so `any:seat_<label>` is the biped clip that seats the rider (the

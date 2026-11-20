@@ -5,7 +5,7 @@ Change 5 of the [November 2026 architecture review](../architecture-review-2026-
 address, one bounded table of `impl.*` switches, and hook points that fail
 by name when their address is wrong.
 
-## `crates/guest-layout`
+## `crates/hooking/guest-layout`
 
 A crate with no dependencies, so bots, telemetry, the agent API, the
 engine and the native renderer can all read guest structures without
@@ -56,7 +56,7 @@ crate's tests check for overlaps and bounds.
 
 ## The switch table
 
-`crates/feature/src/switches/table.rs` lists every `impl.*` switch: its
+`crates/hooking/feature/src/switches/table.rs` lists every `impl.*` switch: its
 default (on, off, following `impl.render.native`, or a group), its owning
 area, the day it appeared and when it is deleted. `Switches::parse`
 refuses an `impl.*` name that is not a row, a parent of one, or an engine
@@ -78,7 +78,7 @@ At install (`feature::verify`), each chain's point is checked against the
 loaded image. A point that is not what it says turns its features off
 with its name, address and the bytes found, as a missing original does.
 Runtimes with no XBE header at `0x10000` (synthetic tests) are not
-checked. `crates/engine/tests/point_shapes.rs` checks the whole table
+checked. `crates/rewrites/engine/tests/point_shapes.rs` checks the whole table
 against the user's XBE:
 
 ```text

@@ -1,6 +1,6 @@
 # Level lighting and atmosphere
 
-Status: Built. Code: `crates/tags/src/lighting.rs`. Tests: `crates/tags/src/lighting_tests.rs`. Switch: none.
+Status: Built. Code: `crates/formats/tags/src/lighting.rs`. Tests: `crates/formats/tags/src/lighting_tests.rs`. Switch: none.
 
 `tags::lighting` extends the canonical `tags::structure` and shared
 `tags::geometry` readers. It does not introduce a second BSP, palette, bucket,

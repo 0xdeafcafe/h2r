@@ -1,6 +1,6 @@
 #!/bin/sh
 # Checks platform/xbox/portal.sh and deploy.sh against a stand-in curl and
-# keychain (run by crates/uwp-host/tests/deploy.rs). No network.
+# keychain (run by crates/apps/uwp-host/tests/deploy.rs). No network.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/h2xbox-test.XXXXXX")

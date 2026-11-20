@@ -1,7 +1,7 @@
 // The fixture game behind the game-header fixtures: a finished team Slayer
 // with two teams, full and partial appearances, a bot, and a name that needs escaping. The generator
 // (gen-game-header.ts) writes its model and markup to game-header.json and
-// game-header.html; the Rust side (crates/live-server/src/page_header.rs)
+// game-header.html; the Rust side (crates/live/live-server/src/page_header.rs)
 // renders the same model and must write the same markup.
 
 import type { GamePlayerState, GameState } from "../../src/state/reducer";

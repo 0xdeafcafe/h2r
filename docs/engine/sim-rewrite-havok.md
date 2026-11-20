@@ -8,7 +8,7 @@ replaces that page's phase 4 sketch, which assumed bar D.
 Read with [havok-runtime.md](havok-runtime.md) (layouts),
 [sim-budget.md](../perf/sim-budget.md) (the profile) and
 [FLOAT.md](../lifter/FLOAT.md) (the float contract). The three existing
-ports in `crates/engine/src/sim_physics` (`havok.rs` with `solver_rows.rs`
+ports in `crates/rewrites/engine/src/sim_physics` (`havok.rs` with `solver_rows.rs`
 and `solver_pairs.rs`, `weld.rs`, `support.rs`) are oracles. They are not
 the architecture: they model registers and the guest stack, which this
 design drops.
@@ -343,14 +343,14 @@ crates/sim-havok/               no runtime dependency; deps: sim-core, mopp, sim
   src/step.rs                   the pipeline, as resumable stages
   src/digest.rs                 canonical walk hash
   src/fixture.rs                (test) synthetic worlds
-crates/engine/src/sim_havok/    the adapter
+crates/rewrites/engine/src/sim_havok/    the adapter
   mod.rs  boundary.rs  callbacks.rs  spec.rs
-crates/engine/tests/sim_havok_differential.rs
+crates/rewrites/engine/tests/sim_havok_differential.rs
 docs/engine/havok-step.md       the contract page (engine README format)
 ```
 
-Edited: `crates/engine/src/points.rs`, `crates/feature/src/sim_native.rs`,
-the workspace and engine `Cargo.toml`, `crates/agent/src/havok.rs`,
+Edited: `crates/rewrites/engine/src/points.rs`, `crates/hooking/feature/src/sim_native.rs`,
+the workspace and engine `Cargo.toml`, `crates/extensions/agent/src/havok.rs`,
 `docs/runtime/agent-api.md`. Nothing owned by Live, bots, theater or film.
 
 `sim-core` (`lanes`, `det`, `Epoch`, `Jobs`) comes from phase 1a. If it
@@ -667,7 +667,7 @@ Havok layouts are too rich to write by hand. `fixture.rs` drives the
 *lifted* constructors on the IR interpreter (world `0x003101c0`, entity
 and motion construction, shape constructors, add-to-world) with synthetic
 numbers: spheres, capsules, a biped wrapper, and a small synthetic
-structure with its own MOPP from `crates/mopp`'s compiler. The result is a
+structure with its own MOPP from `crates/formats/mopp`'s compiler. The result is a
 guest memory image holding a real world and no game data. Needs the
 owner's XBE; skipped without it.
 
@@ -695,7 +695,7 @@ allocation order is covered.
 
 ### 9.3 Differential tests
 
-`crates/engine/tests/sim_havok_differential.rs`, `differential` feature.
+`crates/rewrites/engine/tests/sim_havok_differential.rs`, `differential` feature.
 
 - **Per entry.** From a fixture image, run the lifted entry on the
   interpreter and the Rust entry; compare all of memory outside the

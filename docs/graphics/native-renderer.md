@@ -1,7 +1,7 @@
 # Native GPU renderer
 
 Status: Built. Every stage draws in the default configuration.
-Code: `crates/native-render/src` (wgpu passes and loaders), `crates/feature/src/native_*.rs` (the hooks that hand guest draws to them), `crates/d3d/src/backend.rs` and `crates/d3d/src/device.rs` (admission). Tests: `crates/feature/tests/native_defaults.rs`, `crates/feature/src/switches.rs`, and the per-module tests in `crates/native-render`.
+Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/hooking/feature/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/hooking/feature/tests/native_defaults.rs`, `crates/hooking/feature/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The native renderer draws the frame from GPU-resident data: the static world, objects, transparents, lights, effects, fog, post and the HUD. It does not
@@ -39,7 +39,7 @@ describes what exists.
    final display stay on D3D ([Residual render callers](#residual-render-callers)).
 
 `impl.render.native=off` returns every stage, walk and scene list to the D3D
-path together. `crates/feature/src/switches.rs` (`NATIVE`, `native_render_on`)
+path together. `crates/hooking/feature/src/switches.rs` (`NATIVE`, `native_render_on`)
 reads it, looked up exactly: the `impl.render` group does not reach it.
 `the_native_master_switch_gates_every_stage_and_walk` checks that every
 stage gate follows it. There are no per-stage switches.
@@ -377,7 +377,7 @@ through the common adapter.
 
 ## Not verified
 
-- Seams: the drawn world is welded (`crates/viewer/src/bin/bsp_cracks.rs`
+- Seams: the drawn world is welded (`crates/tools/viewer/src/bin/bsp_cracks.rs`
   checks shared edges), so no load-time T-junction repair is needed. Shared
   edges must also match bit for bit on instanced geometry and the campaign
   BSPs, which `bsp_cracks` has not been run over

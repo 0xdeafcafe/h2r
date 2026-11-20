@@ -501,7 +501,7 @@ skipped.
 ### The submit regression (bisected 2026-11-15)
 
 `queue submit` went from 2.1 ms a frame (9a39ed7, merged passes opt-in)
-to 7.1 ms (1a5aa8d). `crates/d3d/tests/draw_churn.rs` replays 600
+to 7.1 ms (1a5aa8d). `crates/platform/d3d/tests/draw_churn.rs` replays 600
 textured draws a frame with level-like churn (two textures, new pixel
 uniforms every draw, alpha test on every third draw, blending on every
 fifth) at every d3d/gfx commit in the range. The render-pass count is

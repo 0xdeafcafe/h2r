@@ -6,7 +6,7 @@ To install it: put the map pack ISO next to `halo2.iso` as `mappack.iso`.
 Status: Partly built. `h2 import-mappack` and the automatic install are
 built; playing the maps in the game on 1.0 is open ([Not verified](#not-verified)),
 and running the title update is design only.
-Code: `crates/cli/src/mappack_cmd.rs` (`h2 import-mappack`), `crates/content/src/patch_lvl.rs` (`v2_from_v3`), `crates/kernel/src/content.rs` (`sign`). Tests: `mappack_cmd::tests`, `crates/kernel/tests/misc.rs`, `crates/vfs/tests/storage.rs`.
+Code: `crates/apps/cli/src/mappack_cmd.rs` (`h2 import-mappack`), `crates/formats/content/src/patch_lvl.rs` (`v2_from_v3`), `crates/runtime/kernel/src/content.rs` (`sign`). Tests: `mappack_cmd::tests`, `crates/runtime/kernel/tests/misc.rs`, `crates/runtime/vfs/tests/storage.rs`.
 Switch: `H2_MAPPACK` (on) and `--no-mappack`, listed in [switches.md](../runtime/switches.md).
 
 `h2 import-mappack` installs the nine maps as nine content packages, one
@@ -58,7 +58,7 @@ hard disk.
 ### The maps
 
 All nine are version 8 cache files with build string `02.09.27.09809`, the
-same as the retail disc's maps. `crates/map` opens them without changes:
+same as the retail disc's maps. `crates/formats/map` opens them without changes:
 `h2 tags` on `backwash.map` lists all 4,547 tags.
 
 ### `patch.lvl` and `patch_v3.lvl`
@@ -168,7 +168,7 @@ certificate version, and
 `<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
 the game disc version, or empty the data dir (`--fresh-data`), and the next
 start installs again. A stamp with another format version
-(`STAMP_VERSION` in `crates/cli/src/mappack_cmd.rs`) also installs again.
+(`STAMP_VERSION` in `crates/apps/cli/src/mappack_cmd.rs`) also installs again.
 The current format signs `ContentMeta.xbx` and installs one package per
 map with our own `patch.lvl`; it removes disc-shaped packages from an
 older format, whose `patch.lvl` would take over the Lockout slot (8.5).
@@ -200,7 +200,7 @@ It reads the disc's directory tree and, for every `/demos/dlc/<8 hex
 digits>/` package, its `ContentMeta.xbx` and `patch_v3.lvl`. Then it writes
 **one package per map** (1.0 takes one map per package, 8.1) to
 `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`, which is the host
-side of `T:\$c\<offer ID>\` in `crates/vfs` (`vfs::Config::content_dir`).
+side of `T:\$c\<offer ID>\` in `crates/runtime/vfs` (`vfs::Config::content_dir`).
 Each holds:
 
 | file | from |
