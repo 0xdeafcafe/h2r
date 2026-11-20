@@ -57,7 +57,7 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         .route("/v1/hosts/{lease}", get(detail))
         .route(
             "/v1/admin/hosts",
-            get(inventory).post(create.layer(DefaultBodyLimit::max(MAX_START_BODY))),
+            get(inventory).merge(post(create).layer(DefaultBodyLimit::max(MAX_START_BODY))),
         )
         .route("/v1/admin/hosts/{lease}/stop", post(stop));
     #[cfg(feature = "native")]

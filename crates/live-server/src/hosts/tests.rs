@@ -621,7 +621,7 @@ async fn post_start(
         builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
     }
     let response = router
-        .oneshot(builder.body(axum::body::Body::from(body)).unwrap())
+        .oneshot(builder.body(axum::body::Body::from(body.to_owned())).unwrap())
         .await
         .unwrap();
     let status = response.status();
@@ -807,11 +807,11 @@ async fn admin_manual_lease_answers_a_token_that_registers_and_reports() {
 async fn never_registered_manual_lease_times_out_like_any_requested_lease() {
     let (live, _) = setup().await;
     live.set_host_config(config(1));
-    let mut request = admin_start("lockout");
-    request.launch = false;
+    let mut start = admin_start("lockout");
+    start.launch = false;
     let admin = || operator(&live, crate::admin::LXM_ADMIN_WRITE);
     let (lease, token) = live
-        .admin_start_host(Some(&admin()), request)
+        .admin_start_host(Some(&admin()), start)
         .await
         .unwrap();
     assert_eq!(
