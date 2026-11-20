@@ -91,6 +91,14 @@ pub use switches::Switches;
 
 /// Retail instruction boundaries that the emitter must route through entry
 /// dispatch. Hook bodies keep working on images with only a subset present.
+#[cfg(not(feature = "native-render"))]
+pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
+    std::iter::empty()
+}
+
+/// Retail instruction boundaries that the emitter must route through entry
+/// dispatch. Hook bodies keep working on images with only a subset present.
+#[cfg(feature = "native-render")]
 pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
     let mut seen = std::collections::HashSet::new();
     [

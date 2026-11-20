@@ -190,6 +190,9 @@ pub(crate) fn enter_opaque_range(
     Restore(DRAW.replace(Some(DrawContext {
         layer, frame, compare: feature::native_world_layers::compare_frames().contains(&frame),
         geometry: Some(geometry), target: targets, index_count: Some(count),
+        // The sorted range has no guest memory to read the BSP from here;
+        // without it the section cache is bypassed for this range.
+        bsp: None, generation: feature::native_map_work::bsp_generation(),
         return_address: native_render::skip::GEOMETRY_DRAW,
     })))
 }

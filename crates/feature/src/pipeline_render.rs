@@ -29,9 +29,23 @@ use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 #[path = "pipeline_snapshot.rs"]
 mod snapshot;
+#[path = "pipeline_scene.rs"]
+mod scene;
 pub use scene::{ResidentCache, SceneTraversal};
 
 use snapshot::Footprint;
+
+/// The native layer handoff, or nothing when the native renderer is not built.
+mod world_layers {
+    #[cfg(feature = "native-render")]
+    pub(super) use crate::native_world_layers::{Layer, current, replace};
+    #[cfg(not(feature = "native-render"))]
+    pub(super) type Layer = ();
+    #[cfg(not(feature = "native-render"))]
+    pub(super) fn current() -> Option<Layer> { None }
+    #[cfg(not(feature = "native-render"))]
+    pub(super) fn replace(_: Option<Layer>) -> Option<Layer> { None }
+}
 
 pub const ID: &str = "pipeline-render";
 pub const SWITCH: &str = "impl.render.pipelined_frame";
@@ -744,7 +758,7 @@ struct Inner {
     /// When the render thread last stopped (a serviced call's wait starts
     /// there).
     stopped: Option<Instant>,
-    render_layer: Option<crate::native_world_layers::Layer>,
+    render_layer: Option<world_layers::Layer>,
     /// The frame in flight's render stopped at a pool call
     /// ([`Stats::io_stalls_render`]).
     io_stalled_render: bool,
@@ -1540,7 +1554,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                     snapshot::arm(&mut job.exec.runtime().memory());
                 }
                 if !matches!(job.start, JobStart::Resume) {
-                    crate::native_world_layers::replace(None);
+                    world_layers::replace(None);
                 }
                 let started = Instant::now();
                 let result = match job.start {
@@ -1552,7 +1566,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 {
                     let mut inner = me_t.lock();
                     inner.stopped = Some(stopped);
-                    inner.render_layer = crate::native_world_layers::current();
+                    inner.render_layer = world_layers::current();
                 }
                 let footprint = me_t
                     .check_snapshot
@@ -2278,7 +2292,7 @@ fn resume(
     ctx: &mut ExecCtx,
     at: CpuAbi,
     portable: bool,
-    layer: Option<crate::native_world_layers::Layer>,
+    layer: Option<world_layers::Layer>,
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
     let saved = *cpu;
@@ -2286,7 +2300,7 @@ fn resume(
     let mut c = *cpu;
     c.esp = me.stack_top.load(Ordering::Relaxed);
     me.resuming.store(true, Ordering::Release);
-    let previous_layer = crate::native_world_layers::replace(layer);
+    let previous_layer = world_layers::replace(layer);
     // Both executors may have allocated exactly the same token for
     // different callbacks. Pivot the callback pool with the stack instead
     // of inserting its closures into the live pool or rewriting addresses.
@@ -2313,7 +2327,7 @@ fn resume(
                         ctx.set_interrupts_masked(was_masked);
                     }
                 }
-                crate::native_world_layers::replace(previous_layer);
+                world_layers::replace(previous_layer);
                 me2.resuming.store(false, Ordering::Release);
                 *cpu = saved;
                 k(cpu, ctx)
@@ -2332,7 +2346,7 @@ fn resume(
                     ctx.set_interrupts_masked(was_masked);
                 }
             }
-            crate::native_world_layers::replace(previous_layer);
+            world_layers::replace(previous_layer);
             me.resuming.store(false, Ordering::Release);
             *cpu = saved;
             other
@@ -2885,7 +2899,7 @@ fn launch(
                 ctx,
                 at,
                 false,
-                crate::native_world_layers::current(),
+                world_layers::current(),
                 Box::new(|cpu, ctx| ctx.memory().ret(cpu, 0)),
             );
         }
