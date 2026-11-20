@@ -84,7 +84,7 @@ or not, under its switch name and its group (`sim.native`,
 `sim.physics`), and run each installed body through
 `feature::shadow::run`. Only installed ports are checked: a port's
 `impl.` switch puts it in the plan, and `shadow.enable` turns its checks
-on. Boot gives the registry the image ([`fallback.rs`](../../crates/apps/boot/src/fallback.rs)
+on. Boot gives the registry the image ([`fallback.rs`](../../crates/runtime/recomp/src/fallback.rs)
 `shadow_original`): the build's cached analysis, lifted on demand, built
 at the first `shadow.enable`.
 

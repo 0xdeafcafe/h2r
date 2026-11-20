@@ -34,12 +34,12 @@ struct Tables {
 /// Registry routes for owners whose bodies were left out of a slim module.
 /// Pairs are (selector, owner), with a separate table for each route.
 #[derive(Clone, Copy)]
-pub(crate) struct ColdRoutes<'a> {
+pub struct ColdRoutes<'a> {
     pub entries: &'a [[u32; 2]],
     pub resumes: &'a [[u32; 2]],
 }
 
-pub(crate) fn register_cold(
+pub fn register_cold(
     dispatch: &mut runtime::Dispatch,
     routes: ColdRoutes<'_>,
     interpret: fn(&mut CpuAbi, &mut ExecCtx, u32, u32) -> TransferAbi,
@@ -165,7 +165,7 @@ pub fn init(xbe_bytes: &[u8], entries: &[u32], resumes: &[(u32, u32, u32)]) -> R
     init_with_cold(xbe_bytes, entries, resumes, None)
 }
 
-pub(crate) fn init_with_cold(
+pub fn init_with_cold(
     xbe_bytes: &[u8],
     entries: &[u32],
     resumes: &[(u32, u32, u32)],
@@ -408,7 +408,7 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     run_from(cpu, ctx, None)
 }
 
-pub(crate) fn interpret_cold(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
+pub fn interpret_cold(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: u32, selector: u32) -> TransferAbi {
     {
         let mut stats = STATS.lock().unwrap();
         let hits = stats.get_or_insert_default().cold.entry((owner, selector)).or_default();
@@ -732,7 +732,7 @@ pub fn start_analysis(rt: &runtime::Runtime) {
 /// The boot's cache directory (`H2_BOOT_CACHE`, or `$TMPDIR/h2boot-cache`),
 /// or `None` for `H2_BOOT_CACHE=off`. Holds the unread-target sets and
 /// the cached analyses ([`crate::analysis_cache`]).
-pub(crate) fn boot_cache_dir() -> Option<std::path::PathBuf> {
+pub fn boot_cache_dir() -> Option<std::path::PathBuf> {
     match std::env::var_os("H2_BOOT_CACHE") {
         Some(d) if d == "off" => None,
         Some(d) => Some(std::path::PathBuf::from(d)),
@@ -747,7 +747,7 @@ fn unread_cache_path(xbe: &[u8]) -> Option<std::path::PathBuf> {
     Some(boot_cache_dir()?.join(format!("unread-{:016x}-{}.txt", fnv64(xbe), env!("UNREAD_SOURCE_HASH"))))
 }
 
-pub(crate) fn fnv64(bytes: &[u8]) -> u64 {
+pub fn fnv64(bytes: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for &b in bytes {
         h ^= b as u64;
@@ -792,7 +792,7 @@ pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     run(cpu, ctx)
 }
 
-pub(crate) fn log_cold_summary(stats: &Stats) {
+pub fn log_cold_summary(stats: &Stats) {
     for (&(owner, selector), &hits) in &stats.cold {
         eprintln!("fallback: slim host summary h2fn_{owner:08x} at {selector:#010x}, hits={hits}");
     }

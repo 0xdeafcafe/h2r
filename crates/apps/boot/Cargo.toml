@@ -6,6 +6,8 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+# Build and load (docs/dev/crate-structure.md, S4).
+recomp = { path = "../../runtime/recomp" }
 h1-runtime = { path = "../../extensions/h1-runtime" }
 # The native renderer's and the native simulation's guest halves
 # (docs/dev/crate-structure.md, S3).
@@ -97,7 +99,7 @@ perf = { path = "../../tools/perf", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io"]
-desktop-runtime = ["dep:clif", "render-bridge/native-render"]
+desktop-runtime = ["dep:clif", "render-bridge/native-render", "recomp/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
@@ -117,7 +119,3 @@ required-features = ["gpu"]
 [[test]]
 name = "headless_interp"
 required-features = ["gpu"]
-
-[[test]]
-name = "fast_tier"
-required-features = ["desktop-runtime"]

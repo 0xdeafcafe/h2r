@@ -155,7 +155,7 @@ None of them changes the clock.
   the pipelined render turns a second-executor fault into a terminal event
   (`crates/rewrites/render-bridge/src/pipeline_render.rs`, `settle`);
   `RtlRaiseException` is a kernel stop (`crates/runtime/kernel/STOPS.md`);
-  stop recovery takes STOPs only (`crates/apps/boot/src/fallback.rs`).
+  stop recovery takes STOPs only (`crates/runtime/recomp/src/fallback.rs`).
 - **Test.** `a_fault_a_run_ends_with_is_counted_once_and_not_as_continued`,
   `going_on_from_a_generated_fault_needs_a_precise_exit`,
   `a_discarded_or_restarted_fault_is_not_continued`,

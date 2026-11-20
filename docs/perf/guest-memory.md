@@ -158,7 +158,7 @@ D3d, Gfx and Fallback times overlap and are not summed.
 - The module imports `h2abi_v1_fast_acquire`, `h2abi_v1_exit`,
   `h2abi_v1_read` and `h2abi_v1_write` and the other symbols in
   RUNTIME-CONTRACT.md section 1; the boot bridge installs them
-  (`crates/apps/boot/c/boot_bridge.c`).
+  (`crates/runtime/recomp/c/boot_bridge.c`).
 - Every compiler switch is a `-D` define chosen in
   `emit::compile::cflags_for` (`crates/recompiler/emit/src/compile.rs`). They are in the
   object cache key and the boot stamp: set them identically for `h2 build`

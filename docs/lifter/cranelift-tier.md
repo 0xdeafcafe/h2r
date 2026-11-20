@@ -1,7 +1,7 @@
 # A Cranelift fast tier for the first build
 
 Status: Partly built. `crates/recompiler/clif` lowers all integer, control-flow, memory, transfer, flag, atomic and REP constructs, and x87 and SSE through helper calls; `boot::tier` starts on it and builds clang's module in the background. Not built: inline fast memory, direct calls, native floating point and hot swap (section 8).
-Code: `crates/recompiler/clif/src/lib.rs` (`compile_shard`), `crates/recompiler/clif/src/lower.rs`, `crates/apps/boot/src/tier.rs`. Tests: `crates/recompiler/clif/tests/differential.rs`, `crates/apps/boot/tests/fast_tier.rs`.
+Code: `crates/recompiler/clif/src/lib.rs` (`compile_shard`), `crates/recompiler/clif/src/lower.rs`, `crates/runtime/recomp/src/tier.rs`. Tests: `crates/recompiler/clif/tests/differential.rs`, `crates/runtime/recomp/tests/fast_tier.rs`.
 Switch: `H2_TIER` and `--tier` (`fast`, `clang`, `auto`), `H2_CLIF_OPT`, listed in [switches.md](../runtime/switches.md).
 
 The cold `h2 build` spends about eleven minutes in clang on 1,001 shards of
@@ -232,7 +232,7 @@ to the authority the same way.
 the next start uses clang's module.** No hot swap.
 
 - `h2 build --tier fast` writes `<out>/fast/libh2game.dylib` and its own
-  stamp (`crates/apps/boot/src/tier.rs`): it starts `tier fast` and names the
+  stamp (`crates/runtime/recomp/src/tier.rs`): it starts `tier fast` and names the
   image, the generator's sources plus crates/recompiler/clif and Cargo.lock, the IR
   passes, Cranelift's optimisation level and the module ABI. Neither
   tier's stamp passes for the other's. Plain `h2 build` builds clang's
@@ -306,7 +306,7 @@ A function the backend cannot lower (an unsupported construct, a Cranelift verif
   random states, and requires identical ends, CPU state and memory.
 - The x87 and SSE fixtures of the same harness, then `native_x87.rs` and
   `native_sse.rs`, cover the FP paths.
-- `crates/apps/boot/tests/fast_tier.rs`: a fast-tier module links with boot's
+- `crates/runtime/recomp/tests/fast_tier.rs`: a fast-tier module links with boot's
   bridges and exports what `load_module` looks up; `tier.rs`'s tests
   cover the stamps, the choice of module and the background command.
 
@@ -315,7 +315,7 @@ A function the backend cannot lower (an unsupported construct, a Cranelift verif
 1. **Built**: `crates/recompiler/clif/src/lower.rs`: integer, control flow, memory, transfers, flags, atomics and REP; `crates/recompiler/clif/src/x87.rs` and the SSE wrappers in `c/h2clif_helpers.c`: x87 and SSE through helper calls.
 2. **Built**: the differential harness, `crates/recompiler/clif/tests/differential.rs`, against the interpreter and the C tier.
 3. **Not recorded**: the timed whole-image fast build against the 30 s cold target. No test in the tree times it.
-4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier and starts clang's build in the background; `crates/apps/boot/tests/fast_tier.rs` covers the link.
+4. **Built**: `boot::tier` (`Tier`, `Choice`, `build_fast`, `background_build`) loads either tier and starts clang's build in the background; `crates/runtime/recomp/tests/fast_tier.rs` covers the link.
 5. **Not built**: inline fast memory, direct calls, native Cranelift floating point and hot swap.
 
 ## Not verified

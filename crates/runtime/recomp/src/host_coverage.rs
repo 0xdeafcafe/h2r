@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
-    pub(crate) selectors: BTreeSet<(u32, u32)>,
+    pub selectors: BTreeSet<(u32, u32)>,
 }
 
 impl Coverage {
@@ -65,11 +65,11 @@ impl Coverage {
         output
     }
 
-    pub(crate) fn fingerprint(&self) -> u64 {
+    pub fn fingerprint(&self) -> u64 {
         crate::fallback::fnv64(self.canonical().as_bytes())
     }
 
-    pub(crate) fn owners(&self, plan: &[emit::Owner]) -> Result<BTreeSet<u32>> {
+    pub fn owners(&self, plan: &[emit::Owner]) -> Result<BTreeSet<u32>> {
         ensure!(!self.selectors.is_empty(), "no owner/selector pairs");
         let mut owners = BTreeSet::new();
         for &(owner, selector) in &self.selectors {
