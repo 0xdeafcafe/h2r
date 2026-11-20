@@ -787,7 +787,11 @@ and setup before `render_scene_passes`. Within `render_scene_passes`, the
 relevant sites are `0x0002bd2d` (transparent geometry and effect producers),
 `0x0002c03e` (dynamic-light bookkeeping) and `0x0002c19a` (transparent
 ordering and draw handlers). Compare those times alongside the list
-counters with `impl.render.native_scene_lists` toggled. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders).
+counters with `impl.render.native_scene_lists` toggled. The
+`native_scene_lists_object_setup_*` columns count whole setup calls,
+including their child traversal. Use the refusal columns to separate
+resource I/O, light-probe work and animated poses from the accepted
+calls in a capture. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders).
 
 **Overhead.** Twelve observer calls per frame plus two per view and per
 light, each a mutex and a clock read, a few microseconds a frame; plus

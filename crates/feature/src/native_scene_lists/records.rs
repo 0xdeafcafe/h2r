@@ -29,25 +29,107 @@ pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Out
 
 fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     fp_supported(cpu)?;
+    let mut out = plan_append(
+        m,
+        cpu.eax,
+        cpu.ecx,
+        cpu.edx,
+        |offset| stack(m, cpu, offset),
+        None,
+    )?;
+    out.pop = 0x54;
+    Ok(out)
+}
+
+/// Record fields after the object section walk has selected its palette,
+/// overlay group, region and section. The same writer serves the guest
+/// append-site fallback.
+pub(super) struct ObjectRecord {
+    pub section: u32,
+    pub selector: u16,
+    pub node_count: u8,
+    pub flags: u32,
+    pub model: u32,
+    pub palette: u32,
+    pub region: u32,
+    pub lighting: u32,
+    pub clip_mask: u16,
+    pub opacity: u8,
+    pub attachment: u32,
+    pub pixels: f32,
+    pub group: u32,
+    pub group_cookie: u32,
+    pub clip_flags: u16,
+    pub full_rect: bool,
+    pub empty_rect: bool,
+    pub mirror_mode: bool,
+    pub mirror_alpha: f32,
+    pub effect_alpha: f32,
+    pub group_depth: f32,
+    pub sphere: ([f32; 3], f32),
+}
+
+impl ObjectRecord {
+    pub(super) fn plan(&self, m: &dyn GuestMemory) -> Result<Output> {
+        let words = [
+            self.flags,
+            self.model,
+            self.palette,
+            self.region,
+            self.lighting,
+            u32::from(self.clip_mask),
+            u32::from(self.opacity),
+            0, // The object arm always uses its palette.
+            self.attachment,
+            self.pixels.to_bits(),
+            self.group,
+            self.group_cookie,
+            u32::from(self.full_rect),
+            u32::from(self.empty_rect),
+            u32::from(self.mirror_mode),
+            self.mirror_alpha.to_bits(),
+            self.effect_alpha.to_bits(),
+            self.group_depth.to_bits(),
+            u32::from(self.clip_flags),
+        ];
+        plan_append(
+            m,
+            self.section,
+            u32::from(self.selector),
+            u32::from(self.node_count),
+            |offset| {
+                words
+                    .get(offset as usize / 4)
+                    .copied()
+                    .ok_or(Refusal::Layout)
+            },
+            Some(self.sphere),
+        )
+    }
+}
+
+fn plan_append(
+    m: &dyn GuestMemory,
+    section: u32,
+    selector: u32,
+    lod: u32,
+    args: impl Fn(u32) -> Result<u32>,
+    sphere: Option<([f32; 3], f32)>,
+) -> Result<Output> {
     let count = m.i32(COUNT)?;
     let count = u32::try_from(count).map_err(|_| Refusal::Layout)?;
-    let mut out = Output {
-        pop: 0x54,
-        ..Output::default()
-    };
-    if count >= RECORD_LIMIT || cpu.eax == NONE {
+    let mut out = Output::default();
+    if count >= RECORD_LIMIT || section == NONE {
         out.eax = Some(NONE);
         return Ok(out);
     }
 
-    // Stack arguments are already pushed at this instruction site.
-    let args = |offset| stack(m, cpu, offset);
     let model = args(4)?;
     if model == NONE || args(0)? & (1 << 12) != 0 {
         return Err(Refusal::Unsupported);
     }
     let model_data = tag(m, ptr(m, TAGS)?, model)?;
-    let section_index = cpu.eax & 0x1ff;
+    let section_index = section & 0x1ff;
     if section_index >= m.u32(at(model_data, 0x24)?)? {
         return Err(Refusal::Layout);
     }
@@ -56,7 +138,7 @@ fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     // Keep the guest writer for this path.
     let _geometry = ptr(m, at(section, 0x34)?)?;
     let lighting = args(0x10)?;
-    let placement = cpu.ecx & 0x7ff;
+    let placement = selector & 0x7ff;
     let light_class = light_class(m, placement, lighting)?;
     let vis = ptr(m, CURRENT_VIS)?;
     let kind = m.u32(at(vis, VIEW_KIND)?)?;
@@ -67,7 +149,7 @@ fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     let address = at(RENDER_RECORDS, count * RENDER_RECORD_SIZE)?;
     let mut row = [0u8; 0x20];
     m.read(address, &mut row)?;
-    let mut flags = (args(0)? & 0x1f_ffff) | ((cpu.edx & 0xff) << 21) | (light_class << 29);
+    let mut flags = (args(0)? & 0x1f_ffff) | ((lod & 0xff) << 21) | (light_class << 29);
     let group = args(0x28)? & 0x1f;
     let packed = (args(0xc)? & 0xf)
         | (group << 4)
@@ -76,7 +158,7 @@ fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
         | (u32::from(m.u16(at(section, 0x18)?)?) << 29);
     let attachment = args(0x20)?;
     if group != 0x1f {
-        group_data(m, &mut out, cpu, group, attachment)?;
+        group_data(m, &mut out, &args, group, attachment, sphere)?;
     }
     let attachment_index = if attachment != NONE {
         let end = m.u32(ATTACHMENT_COUNT)?;
@@ -145,6 +227,13 @@ fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     Ok(out)
 }
 
+pub(super) fn compare_counters(m: &dyn GuestMemory, out: &mut Output) -> Result<()> {
+    for addr in [COUNT, MAIN_COUNT, ATTACHMENT_COUNT, GROUP_COUNT] {
+        out.compare_range(m, addr, 4)?;
+    }
+    Ok(())
+}
+
 fn put(row: &mut [u8], off: usize, value: u32) {
     row[off..off + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -185,35 +274,122 @@ fn light_class(m: &dyn GuestMemory, placement: u32, lighting: u32) -> Result<u32
 fn group_data(
     m: &dyn GuestMemory,
     out: &mut Output,
-    cpu: &CpuAbi,
+    args: &impl Fn(u32) -> Result<u32>,
     group: u32,
     attachment: u32,
+    sphere: Option<([f32; 3], f32)>,
 ) -> Result<()> {
     let address = at(GROUP_DATA, group * 0x24)?;
-    let args = |offset| stack(m, cpu, offset);
     out.word(GROUP_COUNT, m.u32(GROUP_COUNT)?.max(group + 1));
     let value = args(0x2c)?;
     out.word(at(address, 0x20)?, value);
     if attachment == NONE {
         return Ok(());
     }
-    let limits = if args(0x30)? as u8 != 0 || m.u8(FULL_RECT)? != 0 {
-        [m.u32(RECT_MIN)?, m.u32(RECT_MAX)?]
-    } else if args(0x34)? as u8 != 0 || m.u8(EMPTY_RECT)? != 0 {
-        [m.u32(RECT_MAX)?, m.u32(RECT_MIN)?]
-    } else {
-        // Its alternative projects a sphere to a scissor rectangle.
-        return Err(Refusal::Unsupported);
+    let (centre, radius) = match sphere {
+        Some(sphere) => sphere,
+        None => (m.vec3(args(0x4c)?)?, f32::from_bits(args(0x50)?)),
     };
-    let centre = args(0x4c)?;
-    for axis in 0..3 {
-        out.word(at(address, 4 + axis * 4)?, m.u32(at(centre, axis * 4)?)?);
+    let min = m.f32(RECT_MIN)?;
+    let max = m.f32(RECT_MAX)?;
+    let limits = if args(0x30)? as u8 != 0 || m.u8(FULL_RECT)? != 0 {
+        [min, max, min, max]
+    } else if args(0x34)? as u8 != 0 || m.u8(EMPTY_RECT)? != 0 {
+        [max, min, max, min]
+    } else {
+        projected_rect(m, centre, radius, min, max)?
+    };
+    for (axis, coordinate) in centre.into_iter().enumerate() {
+        out.word(at(address, 4 + axis as u32 * 4)?, coordinate.to_bits());
     }
     out.word(address, args(0x44)?);
-    for i in 0..4 {
-        out.word(at(address, 0x10 + i * 4)?, limits[i as usize % 2]);
+    for (i, limit) in limits.into_iter().enumerate() {
+        out.word(at(address, 0x10 + i as u32 * 4)?, limit.to_bits());
     }
     Ok(())
+}
+
+// The guest's sphere rectangle uses tangent points in the X/depth and
+// Y/depth planes. Its pixel bounds are not clipped to the viewport.
+fn projected_rect(
+    m: &dyn GuestMemory,
+    centre: [f32; 3],
+    radius: f32,
+    min: f32,
+    max: f32,
+) -> Result<[f32; 4]> {
+    const CAMERA: u32 = 0x004b_9da0;
+    const PROJECTION: u32 = 0x004b_9e14;
+    let camera = m.vec3(CAMERA)?;
+    let one = m.f32(0x0045_dbc0)?;
+    let half = m.f32(0x0045_dbbc)?;
+    let scale = m.f32(PROJECTION)?;
+    let [x, y, z] = std::array::from_fn(|i| {
+        let d = centre[i] - camera[i];
+        if scale == one { d } else { scale * d }
+    });
+    let project = |row: u32| -> Result<f32> {
+        let ax = m.f32(PROJECTION + 4 + row * 4)?;
+        let ay = m.f32(PROJECTION + 0x10 + row * 4)?;
+        let az = m.f32(PROJECTION + 0x1c + row * 4)?;
+        Ok((az * z + ay * y) + ax * x)
+    };
+    let depth = project(2)? * m.f32(0x0045_dbcc)?;
+    let near = m.f32(0x0045_dc7c)?;
+    if radius < 0.0 || ![radius, depth, near].into_iter().all(f32::is_finite) {
+        return Err(Refusal::Unsupported);
+    }
+    if depth + radius <= near {
+        return Ok([max, min, max, min]);
+    }
+    let tiny = m.f32(0x0045_dbdc)?;
+    let bound =
+        |row: u32, scale_offset: u32, bias_offset: u32, viewport: u32| -> Result<[f32; 2]> {
+            let coordinate = project(row)?;
+            let length_squared = coordinate * coordinate + depth * depth;
+            let discriminant = length_squared - radius * radius;
+            if discriminant <= tiny {
+                return Ok([min, max]);
+            }
+            let projection_scale = m.f32(PROJECTION + scale_offset)?;
+            let projection_bias = m.f32(PROJECTION + bias_offset)?;
+            let lo = f32::from(m.u16(CAMERA + viewport)? as i16) * half;
+            let hi = f32::from(m.u16(CAMERA + viewport + 4)? as i16) * half;
+            let tangent = discriminant.sqrt();
+            let factor = radius / length_squared;
+            let depth_radius = depth * radius;
+            let side_radius = coordinate * radius;
+            let side_tangent = coordinate * tangent;
+            let depth_tangent = depth * tangent;
+            let project = |along: f32, forward: f32, default| {
+                if forward <= near {
+                    default
+                } else {
+                    let value = (along / forward) * projection_scale + projection_bias;
+                    (one - value) * lo + (value + one) * hi
+                }
+            };
+            Ok([
+                project(
+                    coordinate - (side_radius + depth_tangent) * factor,
+                    depth - (depth_radius + side_tangent) * factor,
+                    min,
+                ),
+                project(
+                    coordinate - (side_radius - depth_tangent) * factor,
+                    depth - (depth_radius - side_tangent) * factor,
+                    max,
+                ),
+            ])
+        };
+    let [left, right] = bound(0, 0x78, 0x98, 0x32)?;
+    let [top, bottom] = bound(1, 0x8c, 0x9c, 0x30)?;
+    let limits = [left, right, top, bottom];
+    if limits.into_iter().all(f32::is_finite) {
+        Ok(limits)
+    } else {
+        Err(Refusal::Unsupported)
+    }
 }
 
 #[cfg(test)]

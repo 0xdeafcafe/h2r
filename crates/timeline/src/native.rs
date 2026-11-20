@@ -41,8 +41,9 @@ const SCENE_LISTS: [&str; 14] = [
     "light_extra_caster", "transparent_effect", "transparent_polygon",
     "transparent_geometry", "transparents",
 ];
-const SCENE_LIST_RESULTS: [&str; 7] = [
-    "native", "fallback", "memory", "layout", "unsupported", "compared", "mismatch",
+const SCENE_LIST_RESULTS: [&str; 11] = [
+    "native", "fallback", "memory", "layout", "unsupported", "residency", "lighting",
+    "palette", "object_model", "compared", "mismatch",
 ];
 pub(crate) const COLUMNS: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 
@@ -73,6 +74,10 @@ pub enum SceneListResult {
     Memory,
     Layout,
     Unsupported,
+    Residency,
+    Lighting,
+    Palette,
+    ObjectModel,
     Compared,
     Mismatch,
 }

@@ -130,11 +130,6 @@ pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
 
-/// OBJECT_RENDER_SETUP, after the view, LOD and section inputs are ready.
-pub const OBJECT_SETUP_INPUTS_READY: Point = Point::new(
-    "OBJECT_SETUP_INPUTS_READY", 0x0013_39bd, Sig::Site, "docs/graphics/native-renderer.md",
-);
-
 /// The object section loop's call to the shared record writer.
 pub const OBJECT_RECORD_APPEND: Point = Point::new(
     "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",

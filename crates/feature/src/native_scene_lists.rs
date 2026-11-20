@@ -66,11 +66,7 @@ impl Feature for NativeSceneLists {
         // The opt-in occlusion feature's before-hook gets first refusal.
         install(
             b,
-            Seam::Sites(
-                &points::OBJECT_RENDER_SETUP,
-                &points::OBJECT_SETUP_INPUTS_READY,
-                SceneList::ObjectSetup,
-            ),
+            Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
             setup::build,
         );
         install(
@@ -130,9 +126,8 @@ impl Feature for NativeSceneLists {
     }
 }
 
-pub(crate) fn instruction_entries() -> [u32; 6] {
+pub(crate) fn instruction_entries() -> [u32; 5] {
     [
-        points::OBJECT_SETUP_INPUTS_READY.base,
         points::OBJECT_RECORD_APPEND.base,
         points::TRANSPARENT_GEOMETRY_ENTRY.base,
         points::TRANSPARENT_GEOMETRY_QUEUED.base,
@@ -146,6 +141,10 @@ enum Refusal {
     Memory,
     Layout,
     Unsupported,
+    Residency,
+    Lighting,
+    Palette,
+    ObjectModel,
 }
 
 impl From<MemFault> for Refusal {
@@ -251,31 +250,14 @@ impl Bytes {
     }
 }
 
-// At the resume point in OBJECT_RENDER_SETUP the guest's stack locals
-// hold the inputs. Only these frame registers are live across the splice.
-struct SetupFrame {
-    esp: u32,
-    index: u32,
-    list: u32,
-}
-
-impl SetupFrame {
-    fn registers(&self) -> [u32; 4] {
-        [self.esp, self.index, self.list, 0]
-    }
-
-    fn store(&self, cpu: &mut CpuAbi) {
-        [cpu.esp, cpu.ebp, cpu.edi, cpu.ebx] = self.registers();
-    }
-}
-
 #[derive(Default)]
 struct Output {
     writes: Vec<Write>,
+    compare_checks: Vec<Write>,
     eax: Option<u32>,
     ecx: Option<u32>,
     edx: Option<u32>,
-    frame: Option<SetupFrame>,
+    al: Option<u8>,
     pop: u32,
 }
 
@@ -302,6 +284,14 @@ impl Output {
         }
     }
 
+    fn compare_range(&mut self, m: &dyn GuestMemory, addr: u32, size: usize) -> Result<()> {
+        self.compare_checks.push(Write {
+            addr,
+            bytes: Bytes::Array(m.bytes(addr, size)?),
+        });
+        Ok(())
+    }
+
     fn check_write(&self, mem: &Guest) -> Result<()> {
         for Write { addr, bytes } in &self.writes {
             mem.check(*addr, bytes.slice().len(), Access::Write, 1)
@@ -318,7 +308,7 @@ impl Output {
     }
 
     fn mismatch(&self, m: &dyn GuestMemory, cpu: &CpuAbi) -> Option<String> {
-        for Write { addr, bytes } in &self.writes {
+        for Write { addr, bytes } in self.compare_checks.iter().chain(&self.writes) {
             let expected = bytes.slice();
             let Ok(actual) = m.bytes(*addr, expected.len()) else {
                 return Some(format!("could not read output at {addr:#010x}"));
@@ -347,16 +337,10 @@ impl Output {
                 return Some(format!("{reg} Rust {expected:#x}, guest {actual:#x}"));
             }
         }
-        if let Some(frame) = &self.frame {
-            let actual = [cpu.esp, cpu.ebp, cpu.edi, cpu.ebx];
-            let expected = frame.registers();
-            if let Some(i) = actual.iter().zip(expected).position(|(a, e)| *a != e) {
-                let name = ["esp", "ebp", "edi", "ebx"][i];
-                return Some(format!(
-                    "{} Rust {:#x}, guest {:#x}",
-                    name, expected[i], actual[i]
-                ));
-            }
+        if let Some(expected) = self.al
+            && expected != cpu.eax as u8
+        {
+            return Some(format!("AL Rust {expected:#x}, guest {:#x}", cpu.eax as u8));
         }
         None
     }
@@ -444,6 +428,10 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
                         Refusal::Memory => SceneListResult::Memory,
                         Refusal::Layout => SceneListResult::Layout,
                         Refusal::Unsupported => SceneListResult::Unsupported,
+                        Refusal::Residency => SceneListResult::Residency,
+                        Refusal::Lighting => SceneListResult::Lighting,
+                        Refusal::Palette => SceneListResult::Palette,
+                        Refusal::ObjectModel => SceneListResult::ObjectModel,
                     });
                     return Ok(Flow::Continue);
                 }
@@ -451,10 +439,9 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
             if let Some(compare) = &comparison {
                 let esp = match seam {
                     Seam::Function(_, pop) => c.cpu.esp.wrapping_add(4 + pop),
-                    Seam::Sites(_, _, _) | Seam::CallSite(_, _, _, _) => output
-                        .frame
-                        .as_ref()
-                        .map_or(c.cpu.esp.wrapping_add(output.pop), |frame| frame.esp),
+                    Seam::Sites(_, _, _) | Seam::CallSite(_, _, _, _) => {
+                        c.cpu.esp.wrapping_add(output.pop)
+                    }
                 };
                 let key = (Arc::as_ptr(&runtime) as usize, c.ctx.thread_id, esp);
                 compare
@@ -489,8 +476,8 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
                 c.cpu.edx = edx;
             }
             c.cpu.esp = c.cpu.esp.wrapping_add(output.pop);
-            if let Some(frame) = output.frame {
-                frame.store(c.cpu);
+            if let Some(al) = output.al {
+                c.cpu.eax = (c.cpu.eax & !0xff) | u32::from(al);
             }
             stage.count(SceneListResult::Native);
             Ok(Flow::Return(transfer))

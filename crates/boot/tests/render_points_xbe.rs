@@ -57,7 +57,6 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
     let xbe = xbe::Xbe::parse(&data).unwrap();
     let mut analysis = analyze::analyze(&xbe).unwrap();
     let sites = [
-        points::OBJECT_SETUP_INPUTS_READY.base,
         points::OBJECT_RECORD_APPEND.base,
         points::TRANSPARENT_GEOMETRY_ENTRY.base,
         points::TRANSPARENT_GEOMETRY_QUEUED.base,

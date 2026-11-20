@@ -160,7 +160,7 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 |---|---|---|---|
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
-| 2. Objects and skinning | Render models with rigid and skinned sections, permutations and LODs | Supported layer-3 draw handlers, object list building, setup inputs and record publication | Node matrices, object and render-record layouts |
+| 2. Objects and skinning | Render models with rigid and skinned sections, permutations and LODs | Supported layer-3 draw handlers, object list building and whole-call object setup | Node matrices, object and render-record layouts |
 | 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
@@ -178,8 +178,8 @@ frusta, live datum arrays and current tag definitions.
 | Rust publication | Original work bypassed when the inputs resolve |
 |---|---|
 | Camera and light visibility | `0x00134390` publishes visible BSP clusters and placements. `0x00132220` walks both object reference partitions and the light reference partition. Both start after the portal or sphere cluster pass. |
-| Object order and LOD | `0x00134240` promotes model-linked entries with the original swaps of all four columns. `OBJECT_RENDER_SETUP` enters at `0x001339bd` with the reconstructed projection, LOD fades, section flags and stack inputs. This bypasses `0x0004baf0` and the setup's call to `0x001332f0`. |
-| Object render records | At `0x001341d0`, the model arm of `0x0002cbf0` publishes records, attachment slots, lighting bytes and subpart allocation. A projected scissor or a resource-backed lightmap branch uses the guest writer. |
+| Object order and setup | `0x00134240` promotes model-linked entries with the original swaps of all four columns. Rust returns directly from accepted `OBJECT_RENDER_SETUP` calls (`0x00133790`). It calculates the projection, opacity and flags, selects sections and handles residency (`0x0004b5d0`), builds palettes and walks children (`0x00133ab0`), then publishes the visibility bit and AL retry result. |
+| Object render records | Whole-call setup uses the same Rust writer as the standalone append hook at `0x001341d0`. It publishes the model arm of `0x0002cbf0`, including attachment and group slots, projected scissors, lighting bytes and subpart allocation. The standalone hook also serves guest setup calls that reach the append after a refusal. |
 | Dynamic light order and affected geometry | The pass at `0x0002c03e` calls `0x00031910`, which collects candidates, updates per-view history, ranks lights and fades their weights. Rust replaces this call and its helpers `0x0004a7c0` and `0x0004ac30`. After the per-light visibility pass, Rust applies the caster and receiver flags from `0x00031660` and the optional owner append from `0x00031c20`. |
 | Transparent and effect lists | Rust publishes the geometry append at `0x00041381` and the effect and polygon records from `0x0001e4e0` and `0x0001e5e0`. In the pass at `0x0002c19a`, Rust fills the active u16 index interval and skips `TRANSPARENT_SORT` at `0x0001e3b2`. The original comparator's plane rules, partition swaps and short-sort ties determine the order, including entries with a null callback. |
 
@@ -191,27 +191,38 @@ candidate mask, removal swaps, protected entries and fade accumulators.
 The transparent queue retains the guest's depth calculation, handlers
 and payloads. Consumers read the same addresses and counts.
 
-The guest handles object section selection and residency
-(`0x0004b5d0`), palette and child traversal (`0x00133ab0`), and the
-per-object retry or mark-not-drawn tail. That tail writes the original
-visibility flag. Portal traversal and dynamic light frustum setup
-(`0x000c1d90`) supply the inputs to the Rust gathers. The effect producers
-still decide when an effect is ready to queue.
+Object setup touches the requested sections in region order before
+consulting the previous permutations. It tries the cached LOD without
+requesting I/O when selection at the desired LOD fails. It preserves
+the guest's per-view permutation bytes, LOD and palette tokens, resource
+epochs, miss counts, lighting cache data, and object render stamps. New
+palettes use the same transposed node matrices and per-section remaps.
+The object walk emits each parent's sections before descending through
+its child and sibling links. The no-draw exit updates the low byte of
+the original visibility column. The existing caller uses AL to process
+a kind-1 retry, including the retry call's different render flags.
 
-Each replacement checks the source data and every destination under one
-guest memory guard before publishing. A failed read, unsupported render
-state or missing instruction entry leaves the original continuation at
-the hook. Frame stats record `native_scene_lists_<stage>_native`,
-`_fallback` and the associated `_memory`, `_layout` or
-`_unsupported` reason. Counts are per list, setup or append, depending on
-the stage.
+Setup stages writes across the entire object tree. A refusal restarts at
+the original entry with the incoming registers and memory. New resource
+I/O, synchronous waits, request reprioritization, resource relocation,
+live light-probe work, animated pose evaluation, and auxiliary model
+materials use that path. Portal traversal and dynamic light frustum
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
+producers decide when effects are ready to queue.
+
+Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
+the associated `_memory`, `_layout` or `_unsupported` reason. Object
+setup also reports `_residency`, `_lighting`, `_palette` and
+`_object_model` for the corresponding guest service paths. Counts are
+per list, setup or append, depending on the stage.
 
 `H2_NATIVE_LISTS_COMPARE=1` builds the Rust result and lets the guest
-publish its own. The comparison checks the ordered row bytes, marks,
-counters and live result registers for that seam. It logs the first
-mismatch per seam and counts additional mismatches. Compare mode uses
-the guest result for draw dispatch. Use `H2_FRAME_STATS=1` for the
-`_compared` and `_mismatch` columns.
+publish its own. For object setup it compares the staged palette, cache,
+resource, group and record bytes at the function return, along with the
+visibility word, palette cursor, record counts, object lighting handle
+and AL. It logs the first mismatch per seam and counts additional
+mismatches. Compare mode uses the guest result for draw dispatch.
+Use `H2_FRAME_STATS=1` for the `_compared` and `_mismatch` columns.
 
 For timing, compare `impl.render.native_scene_lists=off` with the
 default, using `H2_FEATURES=render-timing` in both captures. Include the
