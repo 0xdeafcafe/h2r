@@ -3461,6 +3461,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lift"
+version = "0.1.0"
+dependencies = [
+ "analyze",
+ "iced-x86",
+ "ir",
+ "opt",
+ "serde_json",
+ "xbe",
+]
+
+[[package]]
 name = "lifted"
 version = "0.1.0"
 dependencies = [
@@ -3470,18 +3482,6 @@ dependencies = [
  "lift",
  "runtime",
  "serde",
- "serde_json",
- "xbe",
-]
-
-[[package]]
-name = "lift"
-version = "0.1.0"
-dependencies = [
- "analyze",
- "iced-x86",
- "ir",
- "opt",
  "serde_json",
  "xbe",
 ]
