@@ -524,15 +524,13 @@ pub(super) fn install(b: &mut Builder) {
             return Ok(Flow::Continue);
         }
         // The group into the scene, with what the first handler supplies
-        // (framescene.md, slice 4): object shadows are not a light's.
+        // (framescene.md, slice 4).
         let group_site = match site {
-            None | Some(shadows::Site::Light) => Some(frame_scene::GroupSite::Light),
-            Some(shadows::Site::AdditionalCaster) => Some(frame_scene::GroupSite::AdditionalCasters),
-            Some(shadows::Site::Object) => None,
+            None | Some(shadows::Site::Light) => frame_scene::GroupSite::Light,
+            Some(shadows::Site::AdditionalCaster) => frame_scene::GroupSite::AdditionalCasters,
+            Some(shadows::Site::Object) => frame_scene::GroupSite::ObjectShadow,
         };
-        if let Some(group_site) = group_site {
-            crate::scene_step::light_group(mem, list, layer, group_site, &built.sorted());
-        }
+        crate::scene_step::light_group(mem, list, layer, group_site, &built.sorted());
         IN_LAYER.set(batch.is_some());
         PENDING.set(batch);
         phase::count(Counter::LightWalkBuilds, 1);

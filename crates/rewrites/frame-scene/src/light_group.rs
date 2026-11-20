@@ -6,7 +6,9 @@
 //! render section, part, vertex class, index range and topology), its
 //! pose (world, a placement, or an object's node rows) and its bindings
 //! (shader, pass selector, variant and implementation). The additional
-//! casters' pair (`0x00030ed0`) is groups of its own site. With these the
+//! casters' pair (`0x00030ed0`) is groups of its own site, and each
+//! object shadow (`0x00032350`, outside any light) an [`ObjectShadow`]
+//! with its layers 10 and 11 as groups. With these the
 //! native light and shadow stages can plan a layer from the scene alone
 //! (`native_render::light_scene`), with no guest handler run for it.
 //! `scene_extract::light_groups` reads them at each layer build.
@@ -26,6 +28,9 @@ pub enum GroupSite {
     /// The additional casters' pair `0x00030ed0`: its layers 10 and 11,
     /// on a suffix of the same lists, between the light's 11 and 14.
     AdditionalCasters,
+    /// An object shadow `0x00032350`: its layers 10 and 11, into
+    /// [`FrameScene::shadow_groups`].
+    ObjectShadow,
 }
 
 /// How a part's indices draw (the emitter `0x0004daa0`).
@@ -102,7 +107,8 @@ pub const PROJECTION_ROWS: usize = 9;
 /// One layer of a light, gathered.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct LightGroup {
-    /// Into [`FrameScene::lights`]: the view's light it belongs to.
+    /// Into [`FrameScene::lights`]: the view's light it belongs to; for
+    /// [`GroupSite::ObjectShadow`], into [`FrameScene::object_shadows`].
     pub light: u32,
     pub layer: u8,
     pub site: GroupSite,
@@ -126,6 +132,18 @@ impl LightGroup {
     }
 }
 
+/// One object shadow `0x00032350` of a view, in the guest's order: the
+/// caster gathered by `0x00033400`, its layers' groups after it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct ObjectShadow {
+    /// Into [`FrameScene::views`]: the view it was drawn in.
+    pub view: u32,
+    /// The call's two arguments, the caster entry's `+8` and `+0xc`.
+    pub identity: [u32; 2],
+    /// Into [`FrameScene::shadow_groups`].
+    pub groups: Range<u32>,
+}
+
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
     v.get(r.start as usize..r.end as usize).unwrap_or(&[])
 }
@@ -137,6 +155,17 @@ impl FrameScene {
         let start = self.light_groups.partition_point(|g| g.light < light);
         let end = self.light_groups.partition_point(|g| g.light <= light);
         &self.light_groups[start..end.max(start)]
+    }
+
+    /// The object shadows of view `view` (an index into [`Self::views`]).
+    pub fn object_shadows_of(&self, view: u32) -> &[ObjectShadow] {
+        let start = self.object_shadows.partition_point(|o| o.view < view);
+        let end = self.object_shadows.partition_point(|o| o.view <= view);
+        &self.object_shadows[start..end.max(start)]
+    }
+
+    pub fn shadow_groups_of(&self, shadow: &ObjectShadow) -> &[LightGroup] {
+        slice(&self.shadow_groups, &shadow.groups)
     }
 
     pub fn entries_of(&self, group: &LightGroup) -> &[LightEntry] {
@@ -151,26 +180,45 @@ impl FrameScene {
         }
     }
 
-    /// Each group's light in the scene and the groups in light order,
-    /// each group's entries and each entry's rows in bounds.
+    /// Each group's light or object shadow in the scene and the groups in
+    /// its order, each object shadow's view and groups, each group's
+    /// entries and each entry's rows in bounds.
     pub(crate) fn check_light_groups(&self) -> Result<(), String> {
         let mut last = 0;
-        for (n, g) in self.light_groups.iter().enumerate() {
-            if g.light as usize >= self.lights.len() {
-                return Err(format!("light group {n} names light {}, not in the scene", g.light));
+        for (n, o) in self.object_shadows.iter().enumerate() {
+            if o.view as usize >= self.views.len() || o.view < last {
+                return Err(format!("object shadow {n} names view {}, out of the scene or its order", o.view));
             }
-            if g.light < last {
-                return Err(format!("light group {n} is not in light order"));
+            last = o.view;
+            if o.groups.start > o.groups.end || o.groups.end as usize > self.shadow_groups.len() {
+                return Err(format!("object shadow {n} groups {:?} outside 0..{}", o.groups, self.shadow_groups.len()));
             }
-            last = g.light;
+            if self.shadow_groups_of(o).iter().any(|g| g.light as usize != n || g.site != GroupSite::ObjectShadow) {
+                return Err(format!("object shadow {n} holds another's group"));
+            }
+        }
+        let groups = self.light_groups.iter().map(|g| (g, self.lights.len(), "light"))
+            .chain(self.shadow_groups.iter().map(|g| (g, self.object_shadows.len(), "object shadow")));
+        let mut last = (0, "light");
+        for (n, (g, owners, what)) in groups.enumerate() {
+            if g.light as usize >= owners {
+                return Err(format!("group {n} names {what} {}, not in the scene", g.light));
+            }
+            if last.1 == what && g.light < last.0 {
+                return Err(format!("group {n} is not in {what} order"));
+            }
+            if (what == "light") == (g.site == GroupSite::ObjectShadow) {
+                return Err(format!("group {n} of site {:?} under a {what}", g.site));
+            }
+            last = (g.light, what);
             if g.entries.start > g.entries.end || g.entries.end as usize > self.light_entries.len() {
-                return Err(format!("light group {n} entries {:?} outside 0..{}", g.entries, self.light_entries.len()));
+                return Err(format!("group {n} entries {:?} outside 0..{}", g.entries, self.light_entries.len()));
             }
             for (k, e) in self.entries_of(g).iter().enumerate() {
                 if let LightPose::Rows(r) = &e.pose
                     && (r.start > r.end || r.end as usize > self.rows.len())
                 {
-                    return Err(format!("light group {n} entry {k} rows {r:?} outside 0..{}", self.rows.len()));
+                    return Err(format!("group {n} entry {k} rows {r:?} outside 0..{}", self.rows.len()));
                 }
             }
         }
@@ -259,6 +307,42 @@ mod tests {
         assert!(bad.check().is_err());
         let mut bad = (*s).clone();
         bad.light_entries[1].pose = LightPose::Rows(0..1000);
+        assert!(bad.check().is_err());
+    }
+
+    #[test]
+    fn an_object_shadows_layers_are_its_groups_outside_any_light() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera()).unwrap();
+        assert_eq!(b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap_err(), BuildError::NoShadow);
+        let caster = entry(0, LayerOwner::Object(InstanceKey(0xe400_0001)), LightPose::Rows(0..0));
+        let rows = vec![[1.0, 2.0, 3.0, 4.0]; 3];
+        assert_eq!(b.push_object_shadow([0x11, 0x12]).unwrap(), 0);
+        b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[(caster.clone(), rows.clone())]).unwrap();
+        b.push_shadow_group(group(11, GroupSite::ObjectShadow), &[(entry(1, LayerOwner::Cluster(3), LightPose::World), vec![])])
+            .unwrap();
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 1 }, camera()).unwrap();
+        assert_eq!(b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap_err(), BuildError::NoShadow,
+            "the last object shadow is another view's");
+        b.push_object_shadow([0x21, 0x22]).unwrap();
+        b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        assert!(s.light_groups.is_empty(), "no light holds them");
+        let first = s.object_shadows_of(0);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].identity, [0x11, 0x12]);
+        let groups = s.shadow_groups_of(&first[0]);
+        assert_eq!(groups.iter().map(|g| g.layer).collect::<Vec<_>>(), [10, 11]);
+        assert_eq!(s.pose_rows(&s.entries_of(&groups[0])[0]), rows.as_slice());
+        assert_eq!(s.object_shadows_of(1)[0].identity, [0x21, 0x22]);
+        assert_eq!(s.shadow_groups_of(&s.object_shadows_of(1)[0])[0].light, 1);
+        let mut bad = (*s).clone();
+        bad.shadow_groups[0].site = GroupSite::Light;
+        assert!(bad.check().is_err());
+        let mut bad = (*s).clone();
+        bad.object_shadows[1].view = 5;
         assert!(bad.check().is_err());
     }
 }

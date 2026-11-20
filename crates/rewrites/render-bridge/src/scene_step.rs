@@ -54,6 +54,9 @@ struct Step {
     /// The light whose passes run is the open view's last: its groups
     /// may follow ([`light_group`]).
     light_open: bool,
+    /// The object shadow drawing is the open view's last: its groups may
+    /// follow.
+    shadow_open: bool,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -109,6 +112,7 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     }
     step.builder.begin(id(m));
     step.light_open = false;
+    step.shadow_open = false;
 }
 
 /// `render_views`' entry: a new scene.
@@ -157,6 +161,7 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
             VIEWS.fetch_add(1, Ordering::Relaxed);
             step.based = false;
             step.light_open = false;
+            step.shadow_open = false;
         }
         if base && !step.based {
             step.based = true;
@@ -224,19 +229,43 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
 /// A light's passes begin: until [`light`] puts it in the view, its
 /// groups have no light to join.
 pub fn light_entry() {
-    with_step(|step| step.light_open = false);
+    with_step(|step| {
+        step.light_open = false;
+        step.shadow_open = false;
+    });
+}
+
+/// An object shadow `0x00032350` of the open view begins, with its call's
+/// two arguments (`identity`) when the caller matched its caster entry;
+/// `None` ends the one before without a new one. Opens the view first
+/// when none is.
+pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
+    with_step(|step| step.shadow_open = false);
+    let Some(identity) = identity else { return };
+    if view(mem).is_none() {
+        return;
+    }
+    with_step(|step| {
+        step.light_open = false;
+        step.shadow_open = step.builder.push_object_shadow(identity).is_ok();
+        if !step.shadow_open {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
 }
 
 /// A light layer's sorted entries (`sorted`, as the layer build leaves
-/// them on `list`) into a group of the open view's last light, with what
-/// the first geometry handler would supply (`scene_extract::light_groups`).
-/// The light is in the view from its passes' entry; without one, nothing
-/// is written.
+/// them on `list`) into a group of the open view's last light, or of its
+/// last object shadow for [`GroupSite::ObjectShadow`], with what the first
+/// geometry handler would supply (`scene_extract::light_groups`). The
+/// light is in the view from its passes' entry, the object shadow from
+/// its call; without one, nothing is written.
 pub fn light_group(mem: &dyn GuestMemory, list: u32, layer: u32, site: GroupSite, sorted: &[Sorted]) {
     let Ok(layer) = u8::try_from(layer) else { return };
     let m = Ro(mem);
     with_step(|step| {
-        if !step.light_open || step.builder.view().is_none_or(|v| v.lights.is_empty()) {
+        let open = if site == GroupSite::ObjectShadow { step.shadow_open } else { step.light_open };
+        if !open || step.builder.view().is_none() {
             return;
         }
         match light_groups::push(&m, list, layer, site, sorted, &mut step.builder) {

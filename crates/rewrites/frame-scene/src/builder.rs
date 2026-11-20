@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::camera::Camera;
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
-use crate::light_group::{LightEntry, LightGroup, LightPose};
+use crate::light_group::{LightEntry, LightGroup, LightPose, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
@@ -85,6 +85,8 @@ pub enum BuildError {
     NoLayer,
     /// A light group with no light in the open view.
     NoLight,
+    /// An object-shadow group with no object shadow in the open view.
+    NoShadow,
 }
 
 /// What the builder remembers of the scene before, for cuts.
@@ -342,20 +344,34 @@ impl SceneBuilder {
             return Err(BuildError::NoLight);
         }
         let light = lights.end - 1;
-        let e = scene.light_entries.len() as u32;
-        for (entry, rows) in entries {
-            let pose = match entry.pose {
-                LightPose::Rows(_) => {
-                    let r = scene.rows.len() as u32;
-                    scene.rows.extend_from_slice(rows);
-                    LightPose::Rows(r..scene.rows.len() as u32)
-                }
-                ref other => other.clone(),
-            };
-            scene.light_entries.push(LightEntry { pose, ..entry.clone() });
-        }
+        let entries = push_entries(scene, entries);
         let index = scene.light_groups.len() as u32;
-        scene.light_groups.push(LightGroup { light, entries: e..scene.light_entries.len() as u32, ..group });
+        scene.light_groups.push(LightGroup { light, entries, ..group });
+        Ok(index)
+    }
+
+    /// Adds an object shadow to the open view, after its others; its
+    /// index in the scene. Its groups follow ([`Self::push_shadow_group`]).
+    pub fn push_object_shadow(&mut self, identity: [u32; 2]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let g = scene.shadow_groups.len() as u32;
+        let index = scene.object_shadows.len() as u32;
+        scene.object_shadows.push(ObjectShadow { view: open as u32, identity, groups: g..g });
+        Ok(index)
+    }
+
+    /// Adds a gathered group to the open view's last object shadow, as
+    /// [`Self::push_light_group`] to a light.
+    pub fn push_shadow_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let shadow = match scene.object_shadows.last() {
+            Some(o) if o.view as usize == open => scene.object_shadows.len() as u32 - 1,
+            _ => return Err(BuildError::NoShadow),
+        };
+        let entries = push_entries(scene, entries);
+        let index = scene.shadow_groups.len() as u32;
+        scene.shadow_groups.push(LightGroup { light: shadow, entries, ..group });
+        scene.object_shadows[shadow as usize].groups.end = index + 1;
         Ok(index)
     }
 
@@ -396,6 +412,24 @@ impl SceneBuilder {
         self.previous = Previous { map_epoch: Some(scene.id.map_epoch), views: keys };
         Some(Arc::new(scene))
     }
+}
+
+/// A group's entries into the scene, each [`LightPose::Rows`] pose's rows
+/// with it; their range.
+fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> std::ops::Range<u32> {
+    let e = scene.light_entries.len() as u32;
+    for (entry, rows) in entries {
+        let pose = match entry.pose {
+            LightPose::Rows(_) => {
+                let r = scene.rows.len() as u32;
+                scene.rows.extend_from_slice(rows);
+                LightPose::Rows(r..scene.rows.len() as u32)
+            }
+            ref other => other.clone(),
+        };
+        scene.light_entries.push(LightEntry { pose, ..entry.clone() });
+    }
+    e..scene.light_entries.len() as u32
 }
 
 #[cfg(test)]

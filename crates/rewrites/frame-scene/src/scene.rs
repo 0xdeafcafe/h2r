@@ -17,7 +17,7 @@ use serde::Serialize;
 use crate::camera::Camera;
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
-use crate::light_group::{LightEntry, LightGroup};
+use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 
@@ -330,6 +330,10 @@ pub struct FrameScene {
     pub light_groups: Vec<LightGroup>,
     /// Each group's sorted entries; groups index ranges of it.
     pub light_entries: Vec<LightEntry>,
+    /// The object shadows, in view order then the guest's.
+    pub object_shadows: Vec<ObjectShadow>,
+    /// Each object shadow's groups; shadows index ranges of it.
+    pub shadow_groups: Vec<LightGroup>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -355,6 +359,8 @@ impl FrameScene {
         self.layer_items.clear();
         self.light_groups.clear();
         self.light_entries.clear();
+        self.object_shadows.clear();
+        self.shadow_groups.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {

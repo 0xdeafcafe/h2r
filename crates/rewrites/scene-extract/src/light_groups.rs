@@ -285,7 +285,8 @@ pub fn projection(mem: &dyn GuestRead) -> Option<[[u32; 4]; PROJECTION_ROWS]> {
 }
 
 /// The sorted entries of `layer` on `list` into a group of the open
-/// view's last light: each that reads with its streams, pose and
+/// view's last light (its last object shadow for
+/// [`GroupSite::ObjectShadow`]): each that reads with its streams, pose and
 /// bindings, the rest the group's remainder by cause. Layers 10 and 11
 /// take the shadow projection.
 pub fn push(
@@ -310,10 +311,11 @@ pub fn push(
     }
     out.entries = entries.len() as u32;
     let projection = matches!(layer, 10 | 11).then(|| projection(mem)).flatten();
-    builder.push_light_group(
-        LightGroup { light: 0, layer, site, projection, entries: 0..0, remainder: out.remainder() },
-        &entries,
-    )?;
+    let group = LightGroup { light: 0, layer, site, projection, entries: 0..0, remainder: out.remainder() };
+    match site {
+        GroupSite::ObjectShadow => builder.push_shadow_group(group, &entries)?,
+        _ => builder.push_light_group(group, &entries)?,
+    };
     Ok(out)
 }
 
@@ -525,5 +527,23 @@ mod tests {
         let slots: Vec<u16> = s.entries_of(&groups[0]).iter().map(|e| e.slot).collect();
         assert_eq!(slots, [2, 0, 0, 1]);
         assert_eq!(s.pose_rows(&s.entries_of(&groups[0])[0]).len(), 3);
+    }
+
+    #[test]
+    fn an_object_shadows_layers_go_to_its_shadow_not_the_light() {
+        let mut m = fixture();
+        placement_and_object(&mut m);
+        let mut b = SceneBuilder::default();
+        scene_with_light(&mut b);
+        assert_eq!(push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2)], &mut b), Err(BuildError::NoShadow));
+        b.push_object_shadow([7, 8]).unwrap();
+        let got = push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2), sorted(0)], &mut b).unwrap();
+        assert_eq!(got.entries, 2);
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        assert!(s.groups_of(0).is_empty());
+        let shadow = &s.object_shadows_of(0)[0];
+        let group = &s.shadow_groups_of(shadow)[0];
+        assert_eq!((group.layer, group.site, s.entries_of(group).len()), (10, GroupSite::ObjectShadow, 2));
     }
 }

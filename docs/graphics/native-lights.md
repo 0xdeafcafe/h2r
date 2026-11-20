@@ -113,8 +113,11 @@ groups of their own site. An entry the handler would do more for (the
 auxiliary state toggle, state around one part, visible subparts, a
 shader flag, a material animation, a template callback) is the group's
 remainder, counted by cause in `render.scene`
-(`scene_light_entry_remainder_<cause>`). Object shadows are not
-grouped. `native_render::light_scene::plan` gives a whole group's draws
+(`scene_light_entry_remainder_<cause>`). Each object shadow
+(`0x00032350`, matched to its caster entry as the shadow stage matches
+it) is a `frame_scene::ObjectShadow` of the view with its call's two
+arguments, and its layers 10 and 11 are its groups
+(`GroupSite::ObjectShadow`, `FrameScene::shadow_groups_of`). `native_render::light_scene::plan` gives a whole group's draws
 from the scene alone, against the resident geometry (`Resident`): the
 sorted order and duplicates kept, adjacent list ranges of one stream,
 binding, class and pose joined, a missing stream or placement transform
