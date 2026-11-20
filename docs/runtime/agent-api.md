@@ -857,7 +857,12 @@ h2 agent render.parity '{"arm": true}'
   absent when its draw did not run in the view; `carried`, its ops by
   slot from the scene sink's last frame (empty without
   `frame-scene.sink`, and for a first-person view), and `camera_use`
-  (empty: the sink does not classify draws by `CameraUse`); `counters`
+  counts the retained guest draws for that scene and game view,
+  including its overlay. `screen` is pretransformed or passes screen
+  positions through, `view` has the view's verified projection block
+  and viewport, and `unknown` covers the other draws. The map is
+  empty for other view kinds or without a retained matching scene.
+  The top-level `counters` include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
