@@ -963,7 +963,8 @@ impl Studio {
                 }
                 if app.tool == ToolKind::Scenario {
                     ui.same_line_with_spacing(0.0, 24.0);
-                    play::status_chip(ui, &self.play.chip());
+                    play::status_chip(ui, &self.play.chip(app));
+                    self.play.status_pair_button(ui, app);
                 }
                 let mut right = String::new();
                 if app.tool == ToolKind::Playlists {

@@ -156,7 +156,11 @@ fn bind_unix(path: &Path) -> std::io::Result<UnixListener> {
         }
         std::fs::remove_file(path)?;
     }
-    UnixListener::bind(path)
+    let listener = UnixListener::bind(path)?;
+    // The agent can drive the game: only this user may connect.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 fn accept<S: Stream>(

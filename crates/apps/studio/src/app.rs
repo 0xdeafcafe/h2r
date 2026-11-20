@@ -391,6 +391,9 @@ pub struct App {
     pub ui_screens: UiScreens,
     /// The HUD tool.
     pub hud: HudTool,
+    /// Pairing with a running game: what the agent API asks of it and what
+    /// it publishes back (`crate::play::pair`).
+    pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
     /// The selected tag's shared-map line, for the tag and revision.
@@ -447,6 +450,7 @@ impl App {
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             hud: HudTool::default(),
+            pairing: Default::default(),
             tags: TagDoc::default(),
             tag_homes: Default::default(),
         }

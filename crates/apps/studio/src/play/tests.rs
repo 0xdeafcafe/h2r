@@ -421,3 +421,153 @@ fn play_writes_the_edited_map_for_the_override() {
         Err(e) => assert!(e.contains("disc"), "{e}"),
     }
 }
+
+// ---- finding games ----
+
+/// A finder that looks only at these sockets (the real one reads the
+/// user's agents directory).
+fn finder_for(paths: &[&Game]) -> pair::Finder {
+    let paths: Vec<PathBuf> = paths.iter().map(|g| g.path.clone()).collect();
+    pair::Finder::with_scan(std::sync::Arc::new(move || {
+        agent_proto::discover::scan_paths(&paths, Duration::from_secs(5), false)
+    }))
+}
+
+#[test]
+fn a_running_game_is_offered_with_its_map_and_pairs_on_request() {
+    let t = Temp::new("offer");
+    let game = Game::start("offer", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "the game to be found", |p, a| p.notice(a).is_some());
+    let n = play.notice(&app).unwrap();
+    assert_eq!(n.matches, MapMatch::Same);
+    assert!(n.text.contains("example"), "{}", n.text);
+    assert_eq!(n.socket, Some(game.path.clone()));
+    assert!(
+        play.chip_in(&app).starts_with("Game: Halo 2 is running example"),
+        "{}",
+        play.chip_in(&app)
+    );
+    // Auto-pair is off: it waits for the button.
+    assert_eq!(play.conn, Conn::Off);
+    assert_eq!(play.auto_target(false), None);
+    play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
+    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
+    assert!(play.notice(&app).is_none(), "paired: nothing to offer");
+    assert!(play.chip_in(&app).contains("(the open map)"), "{}", play.chip_in(&app));
+}
+
+#[test]
+fn a_game_on_another_map_is_offered_and_says_so() {
+    let t = Temp::new("other");
+    let game = Game::start("other", "zanzibar", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "the game to be found", |p, a| p.notice(a).is_some());
+    let n = play.notice(&app).unwrap();
+    assert_eq!(n.matches, MapMatch::Different);
+    assert!(n.text.contains("zanzibar") && n.text.contains("example"), "{}", n.text);
+    play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
+    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
+    assert!(play.chip_in(&app).contains("the editor has example"), "{}", play.chip_in(&app));
+    assert!(play.edits_blocked(&app).unwrap().contains("zanzibar"));
+}
+
+#[test]
+fn the_one_running_game_is_paired_on_its_own_once() {
+    let t = Temp::new("auto");
+    let game = Game::start("auto", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    assert!(app.pairing.auto_pair, "on by default");
+    let mut play = Play::new();
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "the automatic pairing", |p, _| {
+        p.is_paired() && p.map().is_some()
+    });
+    // After Unpair it stays unpaired, however often it looks.
+    play.unpair(&mut app);
+    for _ in 0..3 {
+        play.finder.look_again();
+        let end = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < end {
+            play.update(&mut app);
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert_eq!(play.conn, Conn::Off);
+    assert_eq!(play.auto_target(true), None);
+    assert!(play.notice(&app).is_some(), "still offered by hand");
+}
+
+#[test]
+fn several_games_are_not_paired_for_the_user() {
+    let t = Temp::new("many");
+    let a = Game::start("many-a", "example", SessionKind::Local);
+    let b = Game::start("many-b", "zanzibar", SessionKind::Local);
+    let mut app = editor(&t);
+    let mut play = Play::new();
+    play.finder = finder_for(&[&a, &b]);
+    until(&mut play, &mut app, "both to be found", |p, _| p.finder.running().len() == 2);
+    assert_eq!(play.auto_target(true), None);
+    let n = play.notice(&app).unwrap();
+    assert_eq!(n.socket, None);
+    assert!(n.text.starts_with("2 "), "{}", n.text);
+    assert_eq!(play.conn, Conn::Off);
+}
+
+#[test]
+fn a_game_that_is_gone_is_no_longer_offered() {
+    let t = Temp::new("gone");
+    let game = Game::start("gone", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "the game to be found", |p, a| p.notice(a).is_some());
+    drop(game);
+    let end = Instant::now() + Duration::from_secs(25);
+    while play.notice(&app).is_some() {
+        assert!(Instant::now() < end, "the game was still offered");
+        play.finder.look_again();
+        play.update(&mut app);
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_agent_api_lists_pairs_and_unpairs() {
+    let t = Temp::new("api");
+    let game = Game::start("api", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut api = crate::api::Api::new();
+    // No window yet: nothing is published.
+    assert!(api.call(&mut app, "pair.status", Value::Null).is_err());
+    assert!(api.call(&mut app, "pair.connect", json!({"socket": "/x"})).is_err());
+    assert_eq!(
+        api.call(&mut app, "pair.auto", json!({"enabled": false})).unwrap(),
+        json!({"auto_pair": false})
+    );
+    let mut play = Play::new();
+    play.update(&mut app);
+    let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
+    assert_eq!((s["state"].as_str(), s["open_map"].as_str()), (Some("off"), Some("example")));
+    let socket = game.path.display().to_string();
+    let r = api.call(&mut app, "pair.connect", json!({"socket": socket})).unwrap();
+    assert_eq!(r["requested"], socket);
+    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
+    let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
+    assert_eq!(s["state"], "connected");
+    assert_eq!(s["map"], "example");
+    assert_eq!(s["matches"], "same");
+    assert_eq!(s["socket"], socket);
+    api.call(&mut app, "pair.disconnect", Value::Null).unwrap();
+    until(&mut play, &mut app, "the unpairing", |p, _| p.conn == Conn::Off);
+    let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
+    assert_eq!(s["state"], "off");
+}

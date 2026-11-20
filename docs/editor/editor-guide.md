@@ -476,11 +476,32 @@ While the game runs, the editor stays paired with it:
   a starting location) or after **Play** again. Things already in the
   world stay put. Adding or removing placements needs **Play** again.
 
-To pair with a game you started yourself, start it with an agent socket
-(`H2_AGENT=<path> h2 play ...`, or `h2 serve`) and pick it under **Pair**
-(**Find** lists the sockets it can see). In a co-op game the editor sends
-nothing to the game: one machine changing alone would split it from the
-others.
+A game you started yourself is found without any setup. `h2 play` opens
+an agent socket of its own (in the `agents` folder of the h2recomp cache;
+`H2_AGENT=off` closes it), and the editor looks for those every couple of
+seconds:
+
+- With one game running, the Game panel and the status bar say
+  "Halo 2 is running (map)", with a **Pair** button, and whether its map is
+  the one open here. A game on another map pairs too; edits stay here until
+  the maps match.
+- **Auto-pair** (in the Game panel, on by default) pairs by itself with
+  the one game running, once per game: after **Unpair** the editor leaves
+  it alone. Pairing only reads the game; nothing is sent until you edit on
+  a map the game is running.
+- With several games the panel lists each with its map and process id;
+  pick one.
+- A game started another way (`h2 serve`, or `H2_AGENT=<path> h2 play`)
+  is listed too when its socket is the default one or in the cache; any
+  other goes in the **Pair** box, and **Find** looks again.
+
+While paired the status bar reads, for example, "Game: ascension playing
+tick 812 (the open map)", or "(the editor has zanzibar)" when the maps
+differ. In a co-op game the editor sends nothing to the game: one machine
+changing alone would split it from the others.
+
+An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
+`pair.disconnect` and `pair.auto` ([agent-api.md](agent-api.md)).
 
 ### Your packages in the Maps list
 

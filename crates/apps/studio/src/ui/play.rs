@@ -8,6 +8,10 @@ use dear_imgui_rs::{Key, Ui, WindowKey};
 use scenario_edit::geometry::Vec3;
 
 use crate::app::App;
+use agent_proto::Endpoint;
+use agent_proto::discover::MapMatch;
+
+use crate::play::pair::Request;
 use crate::play::{self, Conn, Play, Spawn, launch};
 use crate::theme::{self, icon};
 
@@ -23,7 +27,7 @@ pub struct PlayUi {
 impl Default for PlayUi {
     fn default() -> Self {
         Self {
-            play: Play::new(),
+            play: Play::discovering(),
             sockets: launch::discover(),
             step_ticks: 1,
             show_objects: true,
@@ -61,14 +65,32 @@ impl PlayUi {
     }
 
     /// The status bar's chip, and its colour.
-    pub fn chip(&self) -> (String, [f32; 4]) {
-        let c = match self.play.conn {
-            Conn::Connected => theme::OK,
-            Conn::Connecting => theme::WARN,
-            Conn::Lost(_) => theme::ERROR,
-            Conn::Off => theme::DIM,
+    pub fn chip(&self, app: &App) -> (String, [f32; 4]) {
+        let offer = self.play.notice(app);
+        let c = match (&self.play.conn, &offer) {
+            (Conn::Connected, _) => theme::OK,
+            (Conn::Connecting, _) => theme::WARN,
+            (_, Some(n)) if n.matches == MapMatch::Same => theme::OK,
+            (_, Some(_)) => theme::WARN,
+            (Conn::Lost(_), None) => theme::ERROR,
+            (Conn::Off, None) => theme::DIM,
         };
-        (self.play.chip(), c)
+        (self.play.chip_in(app), c)
+    }
+
+    /// The status bar's Pair button, beside the chip, when exactly one
+    /// running game could be paired with.
+    pub fn status_pair_button(&mut self, ui: &Ui, app: &App) {
+        let Some(socket) = self.play.notice(app).and_then(|n| n.socket) else {
+            return;
+        };
+        ui.same_line();
+        if ui.small_button("Pair") {
+            self.play.request(Request::Pair(Endpoint::Unix(socket)));
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text("Pair with the running game (Game panel).");
+        }
     }
 
     /// The Game panel.
@@ -77,7 +99,7 @@ impl PlayUi {
     }
 
     fn panel(&mut self, ui: &Ui, app: &mut App) {
-        let (chip, c) = self.chip();
+        let (chip, c) = self.chip(app);
         let p = &mut self.play;
         ui.text_colored(c, chip);
         if let Conn::Lost(why) = &p.conn {
@@ -144,6 +166,23 @@ impl PlayUi {
 
         // Pair.
         ui.separator();
+        if let Some(n) = p.notice(app) {
+            let tone = if n.matches == MapMatch::Same { theme::OK } else { theme::WARN };
+            ui.text_colored(tone, &n.text);
+            if let Some(s) = n.socket
+                && ui.button(format!("{} Pair with it", icon::ZAP))
+            {
+                p.request(Request::Pair(Endpoint::Unix(s)));
+            }
+        }
+        ui.checkbox("Auto-pair with a game that is running", &mut app.pairing.auto_pair);
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Pairs by itself when exactly one game is running and the editor is not \
+                 paired, once per game. Pairing only reads the game; edits are sent only \
+                 while the game runs the map open here.",
+            );
+        }
         ui.text("Pair with a running game");
         ui.set_next_item_width(-60.0);
         ui.input_text("##agent-socket", &mut p.socket_text)
@@ -155,6 +194,34 @@ impl PlayUi {
         }
         if ui.small_button(format!("{} Find", icon::SEARCH)) {
             self.sockets = launch::discover();
+            p.finder.look_again();
+        }
+        for g in p.finder.games.clone() {
+            let shown = g.path.display().to_string();
+            let what = match (&g.status, &g.note) {
+                (Some(s), _) => format!(
+                    "{} {}{}",
+                    s.at.map.as_deref().unwrap_or("no map"),
+                    if s.at.paused { "paused" } else { "running" },
+                    g.pid.map(|p| format!(", pid {p}")).unwrap_or_default()
+                ),
+                (None, _) => format!("not answering ({shown})"),
+            };
+            let rel = play::pair::relation_text(
+                MapMatch::of(app.loaded_map(), g.map()),
+                g.map(),
+                app.loaded_map(),
+            );
+            if ui
+                .selectable_config(format!("{what}##game-{shown}"))
+                .selected(p.endpoint().is_some_and(|e| e.to_string() == shown))
+                .build()
+            {
+                p.request(Request::Pair(g.endpoint()));
+            }
+            if ui.is_item_hovered() {
+                ui.tooltip_text(format!("{shown}\n{rel}"));
+            }
         }
         for s in &self.sockets {
             let shown = s.display().to_string();

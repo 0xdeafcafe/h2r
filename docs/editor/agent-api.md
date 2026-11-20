@@ -138,6 +138,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
+| `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -170,6 +171,21 @@ Notes on some:
   `GROWTH_REFUSAL` the window shows; `data` has the count and capacity);
   `.delete` where something refers to entries by index. A new entry goes
   to `position`, else the camera focus, in one undo step.
+- **Pairing.** The editor pairs with a running game (the Game panel's
+  Pair; [editor-guide.md](editor-guide.md), "Play from the editor").
+  `pair.list` looks at the games now: the sockets in the agents directory
+  where `h2 play` listens by default (`agent_proto::discover`), plus the
+  default and `$H2_AGENT` sockets and Play's own. Each entry has its
+  `socket`, `pid`, `map`, `phase`, `paused`, `tick`, whether its map is the
+  open one (`matches`: `same`, `different`, `unknown`) and whether the
+  editor is `paired` with it; a socket nothing answers on is removed from
+  the agents directory. It works headless. `pair.status`, `pair.connect`
+  and `pair.disconnect` act on the window's pairing (`api/pair.rs`, through
+  `play::pair::Bridge` on the app), so they answer REFUSED with no window,
+  and `pair.connect` answers before the window has paired: poll
+  `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
+  takes the one game running, and is refused with none or several.
+  `pair.auto {enabled}` reads or sets auto-pair, on by default.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.

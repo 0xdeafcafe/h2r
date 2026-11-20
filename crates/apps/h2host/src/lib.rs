@@ -99,6 +99,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             pad_speaker: None,
             debug_menu: None,
             perf_overlay: None,
+            discoverable_agent: false,
             settings: Some(store),
             trace_limit: Some(TRACE_LIMIT),
             level: None,

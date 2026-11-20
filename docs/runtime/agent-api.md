@@ -93,7 +93,21 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   over TCP instead (`agent_proto::Endpoint`), which is how the Xbox app is
   reached (`h2 agent --xbox HOST`, port 4720; [xbox.md](xbox.md), "Remote
   control"). TCP has no authentication; Unix sockets are Unix only.
-  `h2 serve` removes its socket on Ctrl-C or SIGTERM.
+  `h2 serve` removes its socket on Ctrl-C or SIGTERM. A Unix socket is
+  created with mode 0600.
+- **Finding a game.** `h2 play` with `H2_AGENT` unset opens its own socket,
+  `<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
+  directory is mode 0700, so only the user can connect; set in `boot`'s
+  agent source from `Host::discoverable_agent`). A game started any other
+  way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
+  `H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
+  opening one ([switches.md](switches.md)). A client lists the directory
+  and asks each socket `session.status` (`discover::scan`); a file nothing
+  answers on, left by a game that was killed, is removed. `h2 agent games`
+  prints each game's socket, pid, map and phase, and `h2 agent <call>` with
+  no socket named, no `$H2_AGENT` and nothing at the default socket uses
+  the one game in the directory. The editor pairs with these games
+  ([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
   <call>` against that run's socket; `h2 lab bench` does a wait, capture,
   `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).

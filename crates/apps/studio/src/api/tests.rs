@@ -201,6 +201,10 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
             c(m::DOC_UNDO, json!({"doc": "map"}));
         }
+        // The window's pairing, as its first frame publishes it.
+        n if n.starts_with("pair.") => {
+            app.pairing.published = Some(json!({"state": "off"}));
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");

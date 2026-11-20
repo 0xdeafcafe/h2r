@@ -14,13 +14,14 @@
 
 pub mod launch;
 pub mod link;
+pub mod pair;
 pub mod sync;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -32,7 +33,9 @@ use scenario_edit::geometry::{self, Ray, Vec3};
 use serde_json::{Value, json};
 
 use crate::app::App;
+use agent_proto::discover::MapMatch;
 use link::{Event, Link, Options, Purpose};
+use pair::{Finder, Notice, Request};
 use sync::{Baseline, Write};
 
 /// How long a launched game may take to open its socket (`h2 play` may
@@ -158,6 +161,13 @@ pub struct Play {
     pub socket_text: String,
     /// What the last launch ran, for the panel.
     pub last_command: Option<String>,
+    /// Looks for running games ([`Play::discovering`]).
+    pub finder: Finder,
+    /// Sockets already paired with, by hand or by itself: auto-pair takes
+    /// each game once, so an Unpair stays unpaired.
+    auto_tried: HashSet<PathBuf>,
+    /// Pair and Unpair asked for by the UI, taken at the next update.
+    queue: Vec<Request>,
 }
 
 impl Default for Play {
@@ -195,6 +205,19 @@ impl Play {
             h2_path: String::new(),
             socket_text: String::new(),
             last_command: None,
+            // Looks at nothing: tests and anything headless. The window's
+            // panel uses `discovering`.
+            finder: Finder::with_scan(std::sync::Arc::new(Vec::<agent_proto::discover::Found>::new)),
+            auto_tried: HashSet::new(),
+            queue: Vec::new(),
+        }
+    }
+
+    /// A pairing that looks for running games ([`pair::default_scan`]).
+    pub fn discovering() -> Self {
+        Self {
+            finder: Finder::default(),
+            ..Self::new()
         }
     }
 
@@ -213,6 +236,24 @@ impl Play {
     /// The game's map, from the last poll.
     pub fn map(&self) -> Option<&str> {
         self.status.as_ref()?.at.map.as_deref()
+    }
+
+    /// The chip with what the editor knows of its open map: while paired,
+    /// whether the game's map is the open one; while not, a game it
+    /// could pair with.
+    pub fn chip_in(&self, app: &App) -> String {
+        let chip = self.chip();
+        match self.conn {
+            Conn::Connected => match (self.map_match(app), app.loaded_map()) {
+                (MapMatch::Same, _) => format!("{chip} (the open map)"),
+                (MapMatch::Different, Some(open)) => format!("{chip} (the editor has {open})"),
+                _ => chip,
+            },
+            _ => match self.notice(app) {
+                Some(n) => format!("Game: {}", n.short),
+                None => chip,
+            },
+        }
     }
 
     /// The status chip's text: the connection, the game's map and tick.
@@ -241,9 +282,32 @@ impl Play {
         }
     }
 
+    /// Leave `Pair` or `Unpair` for the next update (the status bar draws
+    /// with the app borrowed shared).
+    pub fn request(&mut self, r: Request) {
+        self.queue.push(r);
+    }
+
+    /// The running games the editor is not paired with, as one notice:
+    /// none while paired or connecting.
+    pub fn notice(&self, app: &App) -> Option<Notice> {
+        if matches!(self.conn, Conn::Connected | Conn::Connecting) {
+            return None;
+        }
+        pair::notice(&self.finder.running(), app.loaded_map())
+    }
+
+    /// How the paired game's map compares with the one open here.
+    pub fn map_match(&self, app: &App) -> MapMatch {
+        MapMatch::of(app.loaded_map(), self.map())
+    }
+
     /// Attach to a game already running at `endpoint`. The game is taken
     /// to hold the map as the editor shows it now.
     pub fn pair(&mut self, app: &mut App, endpoint: Endpoint) {
+        if let Endpoint::Unix(p) = &endpoint {
+            self.auto_tried.insert(p.clone());
+        }
         self.start(app, endpoint, Options::default());
         self.baseline = baseline_of(app);
         app.info(format!(
@@ -411,6 +475,9 @@ impl Play {
     /// Once a frame: the link's news, the launched game's state, and edits
     /// to send.
     pub fn update(&mut self, app: &mut App) {
+        self.finder.poll();
+        self.take_requests(app);
+        self.auto_pair(app);
         if let Some(c) = &mut self.child
             && let Ok(Some(code)) = c.try_wait()
         {
@@ -434,6 +501,80 @@ impl Play {
             self.next_push = Instant::now() + PUSH_EVERY;
             self.push_edits(app);
         }
+        self.publish(app);
+    }
+
+    /// Pair and Unpair asked for by the UI and by `pair.connect` and
+    /// `pair.disconnect`.
+    fn take_requests(&mut self, app: &mut App) {
+        let mut reqs = std::mem::take(&mut self.queue);
+        reqs.append(&mut app.pairing.requests);
+        for r in reqs {
+            match r {
+                Request::Pair(e) => self.pair(app, e),
+                Request::Unpair => self.unpair(app),
+            }
+        }
+    }
+
+    /// The socket auto-pair would take now: the one running game, when
+    /// nothing is paired, the setting is on, and it has not been paired
+    /// with before.
+    pub fn auto_target(&self, on: bool) -> Option<PathBuf> {
+        if !on || self.child.is_some() || matches!(self.conn, Conn::Connected | Conn::Connecting) {
+            return None;
+        }
+        match self.finder.running().as_slice() {
+            [g] if !self.auto_tried.contains(&g.path) => Some(g.path.clone()),
+            _ => None,
+        }
+    }
+
+    fn auto_pair(&mut self, app: &mut App) {
+        let Some(path) = self.auto_target(app.pairing.auto_pair) else {
+            return;
+        };
+        let map = self
+            .finder
+            .running()
+            .first()
+            .and_then(|g| g.map().map(str::to_owned));
+        app.info(format!(
+            "found Halo 2 running {}: pairing with it (Game panel: Auto-pair turns this off)",
+            map.as_deref().unwrap_or("with no map yet")
+        ));
+        self.pair(app, Endpoint::Unix(path));
+    }
+
+    /// What `pair.status` and `pair.list` answer, read each frame.
+    fn publish(&self, app: &mut App) {
+        let (state, why) = match &self.conn {
+            Conn::Off => ("off", None),
+            Conn::Connecting => ("connecting", None),
+            Conn::Connected => ("connected", None),
+            Conn::Lost(w) => ("lost", Some(w.clone())),
+        };
+        let at = self.status.as_ref().map(|s| &s.at);
+        let published = json!({
+            "state": state,
+            "why": why,
+            "socket": self.endpoint().map(ToString::to_string),
+            "map": self.map(),
+            "phase": at.map(|a| format!("{:?}", a.phase).to_lowercase()),
+            "paused": at.map(|a| a.paused),
+            "tick": at.map(|a| a.tick.unwrap_or(a.ticks)),
+            "matches": match self.map_match(app) {
+                MapMatch::Same => "same",
+                MapMatch::Different => "different",
+                MapMatch::Unknown => "unknown",
+            },
+            "open_map": app.loaded_map(),
+            "live_edits": self.live_edits,
+            "edits_blocked": self.edits_blocked(app),
+            "auto_pair": app.pairing.auto_pair,
+            "games": self.finder.running().len(),
+        });
+        app.pairing.published = Some(published);
     }
 
     fn call(&self, method: &str, params: Value, purpose: Purpose) {
