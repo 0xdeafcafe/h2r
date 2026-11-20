@@ -65,7 +65,7 @@ only start later. The device hands each draw over with
 The stream buffers come back through a bounded pool (`SPARE_DRAWS`) for the
 device to refill; vertex-cache snapshots ([d3d.md](d3d.md), "Vertex cache")
 are shared, not copied. Wrappers forward `draw_owned` (`DiagBackend`,
-`Headless`); one that does not falls back to `draw`, which copies.
+`Headless`, `SceneSink`); one that does not falls back to `draw`, which copies.
 
 ## What can move
 

@@ -1355,6 +1355,11 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     );
     #[cfg(feature = "desktop-runtime")]
     let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
+    // The frame's carried part by slot (frame-scene.sink; docs/graphics/
+    // framescene.md, slice 6): records only while the frame step declares
+    // a slot, and passes every call on.
+    #[cfg(feature = "desktop-runtime")]
+    let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
     // goes back to re-reading every resource on every use.
     let upload = if std::env::var_os("H2_BOOT_UPLOAD_ALWAYS").is_some() {
@@ -1378,6 +1383,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
+    #[cfg(feature = "desktop-runtime")]
+    render_bridge::carried_slots::set_drain(Arc::new(SinkDrain(Arc::clone(&device))));
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
@@ -1463,6 +1470,31 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
         native: r.native.len(),
         barrier: entries,
     })
+}
+
+/// The scene sink's drain (`render_bridge::carried_slots::Drain`): the
+/// device decodes what game code wrote into the push buffer before the
+/// frame step moves the slot.
+#[cfg(feature = "desktop-runtime")]
+struct SinkDrain<B: d3d::backend::Backend>(d3d::abi::SharedDevice<B>);
+
+#[cfg(feature = "desktop-runtime")]
+impl<B: d3d::backend::Backend + Send + 'static> render_bridge::carried_slots::Drain for SinkDrain<B> {
+    fn drain(&self, mem: &mut dyn engine::memory::GuestMemory) {
+        struct Mem<'a>(&'a mut dyn engine::memory::GuestMemory);
+        impl d3d::GuestMemory for Mem<'_> {
+            fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+                self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
+            }
+            fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
+                self.0.write(addr, data).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
+            }
+        }
+        // A latched fault answers every later entry; nothing to add here.
+        if let Ok(mut d) = self.0.lock() {
+            let _ = d.sync_push_buffer(&mut Mem(mem));
+        }
+    }
 }
 
 /// One line for the run report.

@@ -35,7 +35,8 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneParams, ScenePostRecord, SceneReply, SceneViewRecord,
+    PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
+    SceneSideTarget, SceneViewRecord,
     SnapRecord,
 };
 

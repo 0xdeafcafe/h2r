@@ -689,7 +689,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -759,8 +759,10 @@ h2 agent render.parity '{"arm": true}'
   `{colour, late, view_kind, screen_effects, screen_effects_gated,
   colour_pass, effects}` (`render_screen_effects`' arguments and gates,
   whether the colour pass ran, the screen effects drawn under it); each
-  absent when its draw did not run in the view; and carried ops by slot
-  and by `CameraUse` (empty while no stage carries ops); `counters`
+  absent when its draw did not run in the view; `carried`, its ops by
+  slot from the scene sink's last frame (empty without
+  `frame-scene.sink`, and for a first-person view), and `camera_use`
+  (empty: the sink does not classify draws by `CameraUse`); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
@@ -793,7 +795,23 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
   (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
-  `scene_unresident`, `scene_readback`, `scene_held_draws`). With
+  `scene_unresident`, `scene_held_draws`). With `frame-scene.sink` in
+  `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
+  each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
+  `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
+  while the D3D backend still draws it; `carried` is its last frame:
+  `slots`, each slot's `{draws, binds, clears, copies, uploads,
+  samples}` (slots with none left out), `side_targets`, each surface
+  other than the scene's presented colour and its depth that a game
+  view's ops name, `{aux, width, height, format, depth, ops}` (`ops` by
+  slot), and `readbacks` and `readbacks_outside`, the guest's reads of
+  what was drawn in and outside a game view by kind (`surface`,
+  `depth`, `mirror`, `pixel_count`); and the counters add
+  `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
+  `scene_side_target_frames` (frames that named a side target in a
+  game view), `scene_readback` and `scene_readback_<kind>` (in a game
+  view, since the start). Without the option `carried` and those
+  counters are absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`

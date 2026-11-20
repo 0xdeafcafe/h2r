@@ -353,6 +353,12 @@ pub struct SceneReply {
     /// when the census is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<SceneEntries>,
+    /// The last frame's carried part (`frame-scene.sink`; framescene.md,
+    /// slice 6): the guest's D3D work by slot, the side targets a game
+    /// view names and the readbacks. `None` when the sink is off or has
+    /// recorded no frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<SceneCarried>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
@@ -389,6 +395,53 @@ pub struct SceneEntryRecord {
     pub particle_updates: u64,
 }
 
+/// `render.scene`'s carried part: one frame's guest D3D work as the
+/// device's scene sink filed it (framescene.md, slice 6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneCarried {
+    /// Ops by slot (`opaque`, `after_opaque`, `after_lights`,
+    /// `transparents`, `after_post`, `overlay`, `outside`); slots with
+    /// none are left out.
+    pub slots: BTreeMap<String, SceneOpCounts>,
+    /// Surfaces other than the scene's colour and depth that a game view's
+    /// ops name (section 8.3's census).
+    pub side_targets: Vec<SceneSideTarget>,
+    /// Readbacks in a game view, and outside one, by kind (`surface`,
+    /// `depth`, `mirror`, `pixel_count`); kinds with none are left out.
+    pub readbacks: BTreeMap<String, u32>,
+    pub readbacks_outside: BTreeMap<String, u32>,
+}
+
+/// Carried ops of each kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneOpCounts {
+    pub draws: u32,
+    /// Attachment changes (and the first ops of each slot and view).
+    pub binds: u32,
+    pub clears: u32,
+    /// Whole-surface copies.
+    pub copies: u32,
+    /// Guest texels written into a target.
+    pub uploads: u32,
+    /// Targets sampled: framebuffer snapshots, render-to-texture levels in
+    /// place, depth bits.
+    pub samples: u32,
+}
+
+/// A side target named in a game view.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneSideTarget {
+    /// Its number in the frame (`TargetRef::Aux`).
+    pub aux: u32,
+    pub width: u32,
+    pub height: u32,
+    /// The guest's `D3DFORMAT` code.
+    pub format: u32,
+    pub depth: bool,
+    /// The ops that named it, by slot.
+    pub ops: BTreeMap<String, u32>,
+}
+
 /// One view of a sealed scene.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneViewRecord {
@@ -420,9 +473,11 @@ pub struct SceneViewRecord {
     /// `strip`); flags no part has are left out.
     #[serde(default)]
     pub part_flags: BTreeMap<String, u32>,
-    /// Carried ops by slot name, then by CameraUse; empty until slice 6.
+    /// The view's carried ops by slot name (`frame-scene.sink`); empty
+    /// without it.
     #[serde(default)]
     pub carried: BTreeMap<String, u32>,
+    /// Carried draws by `CameraUse`; empty until the sink classifies them.
     #[serde(default)]
     pub camera_use: BTreeMap<String, u32>,
     /// Model decorator draws (one per placement) of the view's layer 3,
@@ -600,6 +655,33 @@ mod tests {
         assert_eq!(v["post"]["effects"], 1);
         assert!(v.get("water").is_none());
         assert_eq!(serde_json::from_value::<SceneViewRecord>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn a_scenes_carried_part_prints_only_when_the_sink_recorded() {
+        let v = serde_json::to_value(SceneReply::default()).unwrap();
+        assert!(v.get("carried").is_none());
+        let r = SceneReply {
+            carried: Some(SceneCarried {
+                slots: BTreeMap::from([("opaque".to_owned(), SceneOpCounts { draws: 3, binds: 1, ..Default::default() })]),
+                side_targets: vec![SceneSideTarget {
+                    aux: 0,
+                    width: 256,
+                    height: 256,
+                    format: 6,
+                    depth: false,
+                    ops: BTreeMap::from([("after_lights".to_owned(), 2)]),
+                }],
+                readbacks: BTreeMap::from([("pixel_count".to_owned(), 4)]),
+                readbacks_outside: BTreeMap::new(),
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["carried"]["slots"]["opaque"]["draws"], 3);
+        assert_eq!(v["carried"]["side_targets"][0]["ops"]["after_lights"], 2);
+        assert_eq!(v["carried"]["readbacks"]["pixel_count"], 4);
+        assert_eq!(serde_json::from_value::<SceneReply>(v).unwrap(), r);
     }
 
     #[test]

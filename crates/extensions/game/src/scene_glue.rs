@@ -3,15 +3,20 @@
 //! summarised per view (with its fog, water and post passes, slice 5), and
 //! written whole as JSON on `dump`; with the
 //! scene stages each typed stage queued to the render thread and dropped
-//! there (`d3d::scene_stage`); and with `frame-scene.census`, the entry
+//! there (`d3d::scene_stage`); with `frame-scene.census`, the entry
 //! census (`render_bridge::entry_census`) over the device's count of draws
-//! handed to the D3D backend.
+//! handed to the D3D backend; and with `frame-scene.sink`, the last
+//! frame's carried part as the device's scene sink filed it
+//! (`d3d::scene_sink`, slice 6).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agent_proto::{SceneEntries, SceneEntryRecord, SceneLateRecord, ScenePostRecord, SceneReply, SceneViewRecord};
-use frame_scene::FrameScene;
+use agent_proto::{
+    SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, ScenePostRecord, SceneReply, SceneSideTarget,
+    SceneViewRecord,
+};
+use frame_scene::{CarriedSummary, FrameScene, OpCounts, Readback, Slot, ViewKind};
 
 /// Registers the source with the agent, and the D3D draw counter with the
 /// entry census.
@@ -44,16 +49,26 @@ fn entries() -> Option<SceneEntries> {
 }
 
 fn source(dump: bool) -> Result<SceneReply, String> {
+    // The sink's counters only while it records: zero readbacks from a
+    // sink that is off would read as a pass.
+    let sink = render_bridge::carried_slots::slot().is_some();
     let counters: BTreeMap<String, u64> = render_bridge::scene_step::counters()
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
+        .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
+    let summary = if sink { d3d::scene_sink::last() } else { None };
     let Some(scene) = render_bridge::scene_step::last() else {
-        return Ok(SceneReply { counters, entries: entries(), ..SceneReply::default() });
+        return Ok(SceneReply {
+            counters,
+            entries: entries(),
+            carried: summary.as_ref().map(carried),
+            ..SceneReply::default()
+        });
     };
-    let mut reply = reply(&scene, counters);
+    let mut reply = reply(&scene, counters, summary.as_ref());
     reply.entries = entries();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
@@ -61,8 +76,55 @@ fn source(dump: bool) -> Result<SceneReply, String> {
     Ok(reply)
 }
 
-/// The summary of `scene`.
-fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
+fn ops(c: &OpCounts) -> SceneOpCounts {
+    SceneOpCounts { draws: c.draws, binds: c.binds, clears: c.clears, copies: c.copies, uploads: c.uploads, samples: c.samples }
+}
+
+/// By name, the non-zero entries of a per-[`Readback`] count.
+fn readbacks(counts: &[u32; Readback::COUNT]) -> BTreeMap<String, u32> {
+    Readback::ALL.iter().zip(counts).filter(|(_, n)| **n != 0).map(|(k, n)| (k.name().to_owned(), *n)).collect()
+}
+
+/// By slot name, the non-zero entries of a per-[`Slot`] count.
+fn by_slot(counts: impl IntoIterator<Item = u32>) -> BTreeMap<String, u32> {
+    Slot::ALL.iter().zip(counts).filter(|(_, n)| *n != 0).map(|(s, n)| (s.name().to_owned(), n)).collect()
+}
+
+/// The sink's last frame (docs/graphics/framescene.md, slice 6).
+fn carried(s: &CarriedSummary) -> SceneCarried {
+    SceneCarried {
+        slots: Slot::ALL
+            .iter()
+            .zip(&s.slots)
+            .filter(|(_, c)| c.total() != 0)
+            .map(|(slot, c)| (slot.name().to_owned(), ops(c)))
+            .collect(),
+        side_targets: s
+            .side_targets
+            .iter()
+            .map(|t| SceneSideTarget {
+                aux: u32::from(t.aux),
+                width: t.target.width,
+                height: t.target.height,
+                format: t.target.format,
+                depth: t.target.depth,
+                ops: by_slot(t.ops),
+            })
+            .collect(),
+        readbacks: readbacks(&s.readbacks),
+        readbacks_outside: readbacks(&s.readbacks_outside),
+    }
+}
+
+/// A game view's carried ops by slot, from the sink's frame: those of the
+/// guest view of its index.
+fn view_carried(summary: Option<&CarriedSummary>, view: &frame_scene::View) -> BTreeMap<String, u32> {
+    let Some(s) = summary.filter(|_| view.key.kind == ViewKind::Game) else { return BTreeMap::new() };
+    s.views.iter().find(|(v, _)| *v == view.key.view).map_or_else(BTreeMap::new, |(_, slots)| by_slot(slots.iter().map(OpCounts::total)))
+}
+
+/// The summary of `scene`, with the sink's last frame when it records.
+fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&CarriedSummary>) -> SceneReply {
     SceneReply {
         sealed: true,
         map_epoch: scene.id.map_epoch as u32,
@@ -93,7 +155,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     layer_remainder: c.layers.iter().map(|&(_, _, r)| r).sum(),
                     remainder: c.remainder,
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
-                    carried: BTreeMap::new(),
+                    carried: view_carried(summary, v),
                     camera_use: BTreeMap::new(),
                     decorators: d.draws,
                     decorator_instances: d.instances,
@@ -114,6 +176,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
             .collect(),
         counters,
         entries: None,
+        carried: summary.map(carried),
         dump: None,
     }
 }
@@ -232,7 +295,7 @@ mod tests {
         .unwrap();
         b.post_colour(key, [0; 7]).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
-        let r = reply(&scene, BTreeMap::new());
+        let r = reply(&scene, BTreeMap::new(), None);
         assert!(r.sealed);
         assert_eq!((r.map_epoch, r.frame, r.tick), (3, 40, 12));
         assert_eq!(r.hash.len(), 16);
@@ -250,5 +313,47 @@ mod tests {
         let post = v.post.expect("the post passes ran");
         assert_eq!((post.colour, post.colour_pass, post.effects, post.view_kind), (true, true, 0, 1));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
+        assert!(r.carried.is_none() && v.carried.is_empty(), "no sink, no carried part");
+    }
+
+    #[test]
+    fn the_sinks_frame_is_reported_by_slot_and_per_game_view() {
+        use frame_scene::{AuxTarget, Carried, GuestOp, SlotAt, TargetRef};
+        let at = |slot, view| SlotAt { slot, view };
+        let mut c: Carried<()> = Carried::default();
+        c.aux.push(AuxTarget { width: 128, height: 64, format: 6, depth: false });
+        c.push(at(Slot::Opaque, 0), GuestOp::Bind { colour: TargetRef::SceneColour, depth: TargetRef::SceneDepth });
+        c.push(at(Slot::Opaque, 0), GuestOp::Draw(()));
+        c.push(at(Slot::AfterLights, 0), GuestOp::Clear { colour: TargetRef::Aux(0), depth: TargetRef::None, rects: false });
+        c.push(at(Slot::Overlay, 0), GuestOp::Draw(()));
+        c.readback(at(Slot::Transparents, 0), Readback::PixelCount);
+        let s = c.summary();
+        let k = carried(&s);
+        assert_eq!(k.slots.keys().map(String::as_str).collect::<Vec<_>>(), ["after_lights", "opaque", "overlay"]);
+        assert_eq!(k.slots["opaque"], SceneOpCounts { draws: 1, binds: 1, ..Default::default() });
+        assert_eq!(k.side_targets.len(), 1);
+        assert_eq!((k.side_targets[0].width, k.side_targets[0].height), (128, 64));
+        assert_eq!(k.side_targets[0].ops, BTreeMap::from([("after_lights".to_owned(), 1)]));
+        assert_eq!(k.readbacks, BTreeMap::from([("pixel_count".to_owned(), 1)]));
+        assert!(k.readbacks_outside.is_empty());
+
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId { map_epoch: 1, frame: 2, tick: 3 });
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 1.0,
+            viewport: [0, 0, 480, 640],
+            near: 0.1,
+            far: 100.0,
+        };
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).unwrap();
+        b.open_view(ViewKey { kind: ViewKind::FirstPerson, player: 0, view: 0 }, camera).unwrap();
+        let scene = b.seal(Stamp::default()).unwrap();
+        let r = reply(&scene, BTreeMap::new(), Some(&s));
+        assert_eq!(r.views[0].carried, BTreeMap::from([("opaque".to_owned(), 2), ("after_lights".to_owned(), 1)]));
+        assert!(r.views[1].carried.is_empty(), "the first person's view is the game view's guest view");
+        assert_eq!(r.carried, Some(k));
     }
 }

@@ -27,6 +27,8 @@
 //!   guest's thread (opt-in, docs/graphics/render-thread.md);
 //! * [`scene_stage`]: the typed scene stages it prepares and records
 //!   (docs/graphics/framescene.md, slice 2);
+//! * [`scene_sink`]: the frame's carried part, filled from the guest's
+//!   work by slot (docs/graphics/framescene.md, slice 6);
 //! * `interp`: in-between frames replayed with interpolated matrices
 //!   (opt-in, docs/game/high-framerate.md).
 
@@ -54,6 +56,7 @@ pub mod resource;
 pub mod runtime_glue;
 #[cfg(feature = "gpu")]
 pub mod scaled;
+pub mod scene_sink;
 pub mod scene_stage;
 pub mod shader;
 pub mod state;
@@ -74,6 +77,7 @@ pub use device::{
     SwallowTarget, WritebackCause, WritebackCauses,
 };
 pub use dirty::{UploadPolicy, WriteTracker};
+pub use scene_sink::SceneSink;
 pub use events::{D3dError, Event, HleStop};
 #[cfg(feature = "gpu")]
 pub use gfx_backend::{GfxBackend, SwapFinish};
