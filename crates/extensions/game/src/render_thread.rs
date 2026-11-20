@@ -263,6 +263,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "GAME_ACTIVATE", AFTER),
     ("bots", "SOUND_UPDATE", AFTER),
     ("agent-audio", "SOUND_UPDATE", AFTER),
+    ("attract", "*", "menu idle and movie lifetimes run on the game thread"),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     ("bots", "SOUND_OWNER_USER", AFTER),
     (

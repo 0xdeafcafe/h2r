@@ -46,7 +46,7 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -1118,6 +1118,22 @@ findings, skipped actions, Clanker cards and navigation errors. Findings
 or a failed traversal produce a nonzero exit. Save the report outside the
 repository because resolved text can contain profile names and disc strings.
 [CLI implementation](../../crates/apps/cli/src/agent_ui_crawl.rs)
+
+### `ui.attract`
+
+`h2 agent ui.attract` takes no parameters and is registered when the Bink
+HLE is installed. It reads the menu's UI clock, idle time, music gate and
+movie flags at a game boundary (`timer`). The `state` says whether the
+menu is idle, fading, playing the attract movie or keeping its music.
+`asset` reports preparation or unavailability and `blocked_reason` gives
+the reason for keeping the music during the current idle cycle.
+
+`last_attempt` gives the UI time, idle time and present at the deadline.
+Its `outcome` says whether the wrapper started playback, the guard skipped
+it as unavailable, or the wrapper failed after preparation.
+`returned_ui_ms` is filled when the wrapper closes the attract movie after
+input or the final frame. [Attract timer](../audio/bink-hle.md#attract-timer)
+describes the sequence.
 
 ## `audio`: voice routing
 

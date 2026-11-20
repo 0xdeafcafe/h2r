@@ -40,6 +40,13 @@ inside a Git checkout or worktree, including symlink aliases, are rejected.
 Nothing writes into the source ISO or repository. The synchronous installer
 belongs on the installer's worker thread, before launching the game.
 
+`install_region` takes a named movie's file extent and runs the same
+conversion and publication path for that movie alone. The windowed boot
+uses it on a background worker for an unprepared attract clip after
+resolving the disc path through VFS. Other movies in the installation
+remain available. [Attract timer](bink-hle.md#attract-timer) describes how
+the menu handles preparation and fallback.
+
 Before creating the destination, ffmpeg is checked with `-version`,
 `-decoders`, and `-encoders`. It needs `binkvideo`, both Bink audio decoders,
 AAC, and one supported video encoder. An absent or unsuitable ffmpeg returns

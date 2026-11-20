@@ -1,6 +1,6 @@
 //! Override bodies. Everything is `__stdcall`: arguments sit at `esp+4...`
 //! and the callee pops them, so each body ends in `ret(cpu, 4 * nargs)`.
-use crate::{Request, read_cstr};
+use crate::{MovieOpenError, Request, RequestOutcome, read_cstr};
 use crate::addr::*;
 use crate::audio_out::{MovieAudioOut, MovieVoice};
 use crate::source::{AudioInfo, Clock, MovieSource, MovieStream, StreamInfo, SystemClock};
@@ -59,6 +59,8 @@ struct Slot {
     frame: Vec<u8>,
     /// The 0-based frame `frame` holds, once one is decoded.
     decoded: Option<u32>,
+    /// Preflight may decode a picture before the guest asks to show it.
+    frame_visible: bool,
     /// Wall time (the [`Clock`]) at which the movie position was 0.
     anchor_ms: u64,
     sound: Option<Sound>,
@@ -125,11 +127,20 @@ impl Slot {
 
 struct Inner {
     slots: Vec<Option<Slot>>,
-    requests: Vec<Request>,
+    requests: Vec<RequestOutcome>,
+}
+
+struct Movie {
+    stream: Box<dyn MovieStream>,
+    info: StreamInfo,
+    first_frame: Option<Vec<u8>>,
 }
 
 pub struct BinkHle {
     source: Option<Arc<dyn MovieSource>>,
+    /// One stream primed for the upcoming attract start. It has no guest
+    /// handle or audio voice until BinkOpen consumes it.
+    prepared: Mutex<Option<(String, Movie)>>,
     clock: Arc<dyn Clock>,
     /// Where movie sound plays; `None` plays movies silent.
     audio: Mutex<Option<Arc<dyn MovieAudioOut>>>,
@@ -166,6 +177,7 @@ impl BinkHle {
     fn build(source: Option<Arc<dyn MovieSource>>, clock: Arc<dyn Clock>, hint: u32) -> Arc<Self> {
         Arc::new(Self {
             source,
+            prepared: Mutex::new(None),
             clock,
             audio: Mutex::new(None),
             arena_hint: if HLE_RESERVED.contains(&hint) {
@@ -190,7 +202,50 @@ impl BinkHle {
     }
     /// Every movie the engine asked for, in order.
     pub fn requests(&self) -> Vec<Request> {
-        self.lock().requests.clone()
+        self.lock()
+            .requests
+            .iter()
+            .map(|r| r.request.clone())
+            .collect()
+    }
+    /// The latest Bink result for a path or bare movie name.
+    pub fn last_request(&self, path: &str) -> Option<RequestOutcome> {
+        let name = movie_name(path);
+        self.lock()
+            .requests
+            .iter()
+            .rev()
+            .find(|r| movie_name(&r.request.path) == name)
+            .cloned()
+    }
+    /// Validate and decode the first frame for an upcoming start. No guest
+    /// state or audio changes until BinkOpen consumes the prepared movie.
+    /// The name can be a guest path or a bare stem, matched case-insensitively.
+    pub fn prepare(&self, path: &str) -> Result<(), MovieOpenError> {
+        let name = movie_name(path);
+        let mut prepared = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        if prepared.as_ref().is_some_and(|(key, _)| key == &name) {
+            return Ok(());
+        }
+        let mut movie = self.load_movie(&name)?;
+        let mut pixels = vec![0; frame_size(movie.info)];
+        if !movie.stream.decode(0, &mut pixels) {
+            return Err(MovieOpenError::FirstFrame);
+        }
+        movie.first_frame = Some(pixels);
+        *prepared = Some((name, movie));
+        Ok(())
+    }
+    /// Release a prepared movie when the wrapper's pending start is canceled.
+    pub fn discard_prepared(&self, path: &str) {
+        let _ = self.take_prepared(&movie_name(path));
+    }
+    fn take_prepared(&self, name: &str) -> Option<Movie> {
+        let mut prepared = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        if prepared.as_ref().is_some_and(|(key, _)| key.as_str() == name) {
+            return prepared.take().map(|(_, movie)| movie);
+        }
+        None
     }
     pub fn open_streams(&self) -> usize {
         self.lock().slots.iter().flatten().count()
@@ -200,12 +255,47 @@ impl BinkHle {
     }
 
     pub(crate) fn record_skip(&self, mem: &runtime::Guest, path_ptr: u32, flags: u32) {
-        let path = read_cstr(mem, path_ptr);
-        self.lock().requests.push(Request {
-            path,
+        self.record_request(
+            read_cstr(mem, path_ptr),
             flags,
-            played: false,
+            Some(MovieOpenError::NoSource),
+        );
+    }
+
+    fn record_request(&self, path: String, flags: u32, failure: Option<MovieOpenError>) {
+        let mut inner = self.lock();
+        let sequence = inner.requests.len() + 1;
+        inner.requests.push(RequestOutcome {
+            sequence,
+            request: Request {
+                path,
+                flags,
+                played: failure.is_none(),
+            },
+            failure,
         });
+    }
+
+    fn load_movie(&self, name: &str) -> Result<Movie, MovieOpenError> {
+        let stream = self
+            .source
+            .as_ref()
+            .ok_or(MovieOpenError::NoSource)?
+            .try_open(name)?;
+        let info = stream.info();
+        if !(1..=MAX_DIM).contains(&info.width)
+            || !(1..=MAX_DIM).contains(&info.height)
+            || info.frames == 0
+            || info.fps_num == 0
+            || info.fps_den == 0
+        {
+            return Err(MovieOpenError::InvalidMetadata);
+        }
+        Ok(Movie {
+            stream,
+            info,
+            first_frame: None,
+        })
     }
 
     // --- Bink API ---------------------------------------------------------
@@ -237,56 +327,62 @@ impl BinkHle {
         let flags = mem.u32(cpu.esp.wrapping_add(8))?;
         let path = read_cstr(&mem, path_ptr);
         let name = movie_name(&path);
-        let stream = self.source.as_ref().and_then(|s| s.open(&name));
-        let mut handle = 0;
-        let mut played = false;
-        if let Some(stream) = stream {
-            let info = stream.info();
-            let ok = (1..=MAX_DIM).contains(&info.width)
-                && (1..=MAX_DIM).contains(&info.height)
-                && info.frames > 0
-                && info.fps_num > 0
-                && info.fps_den > 0;
-            if ok {
-                let mut inner = self.lock();
-                if let Some(i) = inner.slots.iter().position(Option::is_none)
-                    && let Some(arena) = self.ensure_arena(&mut mem)
-                {
-                    {
-                        let h = arena + i as u32 * SLOT_SIZE;
-                        mem.set_u32(h + F_WIDTH, info.width)?;
-                        mem.set_u32(h + F_HEIGHT, info.height)?;
-                        mem.set_u32(h + F_FRAMES, info.frames)?;
-                        mem.set_u32(h + F_FRAME_NUM, 1)?;
-                        mem.set_u32(h + F_LAST_FRAME, 0)?;
-                        mem.set_u32(h + F_RATE, info.fps_num)?;
-                        mem.set_u32(h + F_RATE_DIV, info.fps_den)?;
-                        let now = self.clock.now_ms();
-                        let sound = self.open_sound(&*stream);
-                        let mut slot = Slot {
-                            stream,
-                            info,
-                            frame: vec![0; info.width as usize * info.height as usize * 4],
-                            decoded: None,
-                            anchor_ms: now,
-                            sound,
-                            row: Vec::new(),
-                        };
-                        slot.feed();
-                        inner.slots[i] = Some(slot);
-                        handle = h;
-                        played = true;
-                    }
-                }
-            }
-        }
-        self.lock().requests.push(Request {
-            path,
-            flags,
-            played,
-        });
+        let movie = self
+            .take_prepared(&name)
+            .map_or_else(|| self.load_movie(&name), Ok);
+        let result = match movie {
+            Ok(movie) => self.open_handle(&mut mem, movie)?,
+            Err(why) => Err(why),
+        };
+        let (handle, failure) = match result {
+            Ok(handle) => (handle, None),
+            Err(why) => (0, Some(why)),
+        };
+        self.record_request(path, flags, failure);
         cpu.eax = handle;
         mem.ret(cpu, 8)
+    }
+
+    fn open_handle(
+        &self,
+        mem: &mut runtime::Guest,
+        movie: Movie,
+    ) -> Result<Result<u32, MovieOpenError>, GuestFault> {
+        let mut inner = self.lock();
+        let Some(i) = inner.slots.iter().position(Option::is_none) else {
+            return Ok(Err(MovieOpenError::NoHandle));
+        };
+        let Some(arena) = self.ensure_arena(mem) else {
+            return Ok(Err(MovieOpenError::NoArena));
+        };
+        let Movie {
+            stream,
+            info,
+            first_frame,
+        } = movie;
+        let h = arena + i as u32 * SLOT_SIZE;
+        mem.set_u32(h + F_WIDTH, info.width)?;
+        mem.set_u32(h + F_HEIGHT, info.height)?;
+        mem.set_u32(h + F_FRAMES, info.frames)?;
+        mem.set_u32(h + F_FRAME_NUM, 1)?;
+        mem.set_u32(h + F_LAST_FRAME, 0)?;
+        mem.set_u32(h + F_RATE, info.fps_num)?;
+        mem.set_u32(h + F_RATE_DIV, info.fps_den)?;
+        let now = self.clock.now_ms();
+        let sound = self.open_sound(&*stream);
+        let mut slot = Slot {
+            stream,
+            info,
+            decoded: first_frame.as_ref().map(|_| 0),
+            frame: first_frame.unwrap_or_else(|| vec![0; frame_size(info)]),
+            frame_visible: false,
+            anchor_ms: now,
+            sound,
+            row: Vec::new(),
+        };
+        slot.feed();
+        inner.slots[i] = Some(slot);
+        Ok(Ok(h))
     }
 
     fn open_sound(&self, stream: &dyn MovieStream) -> Option<Sound> {
@@ -353,8 +449,9 @@ impl BinkHle {
                 // The picture already in the buffer is not decoded again: a
                 // platform decoder may only go forward cheaply (AVFoundation
                 // restarts its reader for anything earlier).
-                if s.decoded != Some(idx) && s.stream.decode(idx, &mut s.frame) {
+                if s.decoded == Some(idx) || s.stream.decode(idx, &mut s.frame) {
                     s.decoded = Some(idx);
+                    s.frame_visible = true;
                 }
                 s.feed();
             }
@@ -411,7 +508,7 @@ impl BinkHle {
         };
         if let (Some(swap), Some(i)) = (order, self.slot_index(h)) {
             let mut inner = self.lock();
-            if let Some(s) = inner.slots[i].as_mut().filter(|s| s.decoded.is_some()) {
+            if let Some(s) = inner.slots[i].as_mut().filter(|s| s.frame_visible) {
                 let (w, hh) = (s.info.width as usize, s.info.height as usize);
                 let rows = hh.min((height as usize).saturating_sub(y as usize));
                 let cols = w.min((pitch as usize / 4).saturating_sub(x as usize));
@@ -489,6 +586,10 @@ impl BinkHle {
             }
         }
     }
+}
+
+fn frame_size(info: StreamInfo) -> usize {
+    info.width as usize * info.height as usize * 4
 }
 
 /// `d:\bink\intro_60.bik` -> `intro_60`.

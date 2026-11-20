@@ -188,6 +188,8 @@ pub mod method {
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Main-menu attract movie, idle timer and last attempt.
+    pub const UI_ATTRACT: &str = "ui.attract";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
     /// Active widget panes, resolved text and audit findings at this boundary.

@@ -15,6 +15,7 @@ pub mod account_screen;
 pub mod agent_frames;
 pub mod agent_glue;
 pub mod aim_assist;
+pub mod attract;
 mod audio_loop_agent;
 mod audio_loops;
 pub mod campaign_cache;
