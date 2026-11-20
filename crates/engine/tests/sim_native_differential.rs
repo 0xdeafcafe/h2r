@@ -111,7 +111,7 @@ impl Oracle<'_> {
         point: &points::Point,
         mode: usize,
         init: impl FnOnce(&mut CpuAbi, &mut Ram<'_>),
-        native: impl FnOnce(&mut CpuAbi, &mut Ram<'_>) -> sim::Result,
+        native: impl Fn(&mut CpuAbi, &mut Ram<'_>) -> sim::Result,
     ) {
         if self.point != point.base {
             return;
@@ -149,18 +149,22 @@ impl Oracle<'_> {
         mem.writes.clear();
         let mut reference = mem.clone();
         let mut guest = ir_cpu(&c);
-        let transfer = native(&mut c, &mut mem).unwrap();
-        if transfer.target_pc == HARNESS_EXIT {
-            assert_eq!(transfer, TransferAbi::ret(HARNESS_EXIT));
-        }
         self.finish(&mut guest, &mut reference, point.base);
-        let mut got = ir_cpu(&c);
-        self.finish(&mut got, &mut mem, transfer.target_pc);
-        let label = (point.name, mode);
-        assert_eq!(mem.calls, reference.calls, "callback arguments {label:?}");
-        assert_eq!(got, guest, "architectural state {label:?}");
-        assert_eq!(mem.writes, reference.writes, "{label:?}");
-        assert_eq!(mem.overlay, reference.overlay, "{label:?}");
+        // Host vector lanes and the scalar loop must each match the guest.
+        for simd in [true, false] {
+            let (mut c, mut mem) = (c, mem.clone());
+            let transfer = sim::with_simd(simd, || native(&mut c, &mut mem)).unwrap();
+            if transfer.target_pc == HARNESS_EXIT {
+                assert_eq!(transfer, TransferAbi::ret(HARNESS_EXIT));
+            }
+            let mut got = ir_cpu(&c);
+            self.finish(&mut got, &mut mem, transfer.target_pc);
+            let label = (point.name, mode, if simd { "simd" } else { "scalar" });
+            assert_eq!(mem.calls, reference.calls, "callback arguments {label:?}");
+            assert_eq!(got, guest, "architectural state {label:?}");
+            assert_eq!(mem.writes, reference.writes, "{label:?}");
+            assert_eq!(mem.overlay, reference.overlay, "{label:?}");
+        }
     }
 
     fn finish(&mut self, c: &mut Cpu, mem: &mut Ram<'_>, mut pc: u32) {
@@ -256,6 +260,11 @@ differential!(geometry_test, COLLISION_GEOMETRY_TEST, collision_cases);
 differential!(object_value, OBJECT_FUNCTION_VALUE, object_cases);
 differential!(object_import, OBJECT_FUNCTION_IMPORT, object_cases);
 differential!(base_object_import, BASE_OBJECT_IMPORT, object_cases);
+differential!(compose_lanes, OBJECT_TRANSFORM_COMPOSE, lane_cases);
+differential!(pose_matrix_lanes, OBJECT_POSE_MATRIX, lane_cases);
+differential!(rotation_codec_lanes, ANIM_ROTATION_CODEC, lane_cases);
+differential!(mopp_ray_ties, SIM_MOPP_RAY, tie_cases);
+differential!(mopp_box_ties, SIM_MOPP_BOX, tie_cases);
 
 fn sample(i: usize, seed: u32) -> u32 {
     let mixed = (i as u32 ^ seed).wrapping_mul(0x735a_2d97).rotate_left(9);
@@ -879,6 +888,192 @@ fn traversal_cases(o: &mut Oracle<'_>) {
                     12 => &[0x15, 25, 13, 1, 0x33, 0x31],
                     _ => &[0x1b, 91, 96, 1, 0, 0],
                 };
+                m.store(TAGS, stream);
+            },
+            |c, m| sim::mopp_query::ray_query(c, m),
+        );
+    }
+}
+
+/// Mostly magnitudes near one, so whole compositions stay on the native
+/// packed fast path, with boundary patterns of its range check mixed in:
+/// signed zero, subnormals, the first and last values in range, infinity
+/// and both kinds of NaN.
+fn dense(i: usize, seed: u32, edges: bool) -> u32 {
+    const EDGES: [u32; 16] = [
+        0x8000_0000,
+        0x0000_0001,
+        0x807f_ffff,
+        0x0080_0000,
+        0x1fff_ffff,
+        0x2000_0000,
+        0x5eff_ffff,
+        0x5f00_0000,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc0_0000,
+        0x7f80_0001,
+        0,
+        0xbf80_0000,
+        0x7f7f_ffff,
+        0xdf00_0000,
+    ];
+    let mixed = (i as u32 ^ seed).wrapping_mul(0x735a_2d97).rotate_left(9);
+    if edges && mixed % 11 == 0 {
+        EDGES[(mixed >> 8) as usize % EDGES.len()]
+    } else {
+        (mixed & 0x8000_0000) | (0x3c00_0000 + (mixed >> 5) % 0x0800_0000)
+    }
+}
+
+fn lane_cases(o: &mut Oracle<'_>) {
+    for n in 0..60 {
+        let edges = n % 4 != 0;
+        o.case(
+            &points::OBJECT_TRANSFORM_COMPOSE,
+            n,
+            |c, m| {
+                for (base, seed) in [(A, 5), (B, 91)] {
+                    for i in 0..13 {
+                        m.word(base + 4 * i as u32, dense(n * 13 + i, seed, edges));
+                    }
+                }
+                (c.ecx, c.edx) = (A, B);
+                let out = [OUT, A, B, B - 4, B + 4, A + 4, A + 8][(n / 7 + n) % 7];
+                m.word(STACK + 4, out);
+            },
+            |c, m| sim::compose(c, m),
+        );
+        o.case(
+            &points::OBJECT_POSE_MATRIX,
+            n,
+            |_, m| {
+                for i in 0..8 {
+                    m.word(A + 4 * i as u32, dense(n * 8 + i, 23, edges));
+                }
+                m.word(sim::pose::POSE_INIT_FLAGS, (n % 2) as u32 | 0x9000_0000);
+                m.word(sim::pose::POSE_NORM_THRESHOLD, 1.0e-5f32.to_bits());
+                m.word(STACK + 4, [OUT, A, A + 8, A + 4][n % 4]);
+                m.word(STACK + 8, A);
+            },
+            |c, m| sim::pose_matrix(c, m),
+        );
+        o.case(
+            &points::ANIM_ROTATION_CODEC,
+            n,
+            |_, m| {
+                use sim::pose::*;
+                m.word(ROTATION_BLOCK, A);
+                m.word(ROTATION_TRACK, 2);
+                m.word(A + 20, 64);
+                m.word(FRAME_A, 1);
+                m.word(FRAME_B, 2);
+                let first = A + 32 + 2 * 64 + 16;
+                for i in 0..8 {
+                    m.word(first + 4 * i as u32, dense(n * 8 + i, 41, edges));
+                }
+                m.word(ROTATION_WEIGHT, dense(n, 77, edges));
+                m.word(ROTATION_OUT, [OUT, first, first + 16][n % 3]);
+            },
+            |c, m| sim::rotation_codec(c, m),
+        );
+    }
+}
+
+/// Query boxes and segments that land exactly on split planes and bounds
+/// (and one unit either side), so every strict and non-strict comparison
+/// decides a child. Visit order and terminal keys come out in the stores.
+fn tie_cases(o: &mut Oracle<'_>) {
+    // Box program, the tie for the low corner and the tie for the high.
+    const BOX: [(&[u8], u32, u32); 6] = [
+        (&[0x10, 100, 120, 1, 0x32, 0x33], 100, 120),
+        (&[0x20, 95, 1, 0x33, 0x37], 95, 95),
+        (&[0x26, 10, 100, 0x50, 27], 100, 10),
+        (&[0x23, 100, 10, 0, 0, 0, 1, 0x32, 0x33], 100, 10),
+        // Two axes summed: each corner at half the threshold.
+        (&[0x13, 100, 120, 1, 0x32, 0x33], 100, 120),
+        (&[0x10, 7, 7, 1, 0x34, 0x35], 7, 7),
+    ];
+    for n in 0..BOX.len() * 9 {
+        let (stream, low, high) = BOX[n % BOX.len()];
+        let low = low.wrapping_add((n / BOX.len()) as u32 % 3).wrapping_sub(1);
+        let high = high
+            .wrapping_add((n / BOX.len() / 3) as u32 % 3)
+            .wrapping_sub(1);
+        o.case(
+            &points::SIM_MOPP_BOX,
+            n,
+            |c, m| {
+                let (state, code, keys) = (MODEL, TAGS, OUT + 64);
+                c.ecx = A;
+                m.word(A, OUT);
+                m.word(OUT, keys);
+                m.word(OUT + 8, 32);
+                for axis in 0..3 {
+                    m.word(state + 4 * axis, high);
+                    m.word(state + 16 + 4 * axis, low);
+                }
+                m.word(state + 44, 97);
+                m.word(STACK + 4, state);
+                m.word(STACK + 8, code);
+                m.store(code, stream);
+            },
+            |c, m| sim::mopp_query::box_query(c, m),
+        );
+    }
+
+    // Ray programs whose planes sit at integer coordinates, crossed by
+    // endpoints placed on them. The other two lanes are dense so the
+    // packed clip blends stay on the fast path.
+    const RAY: [&[u8]; 8] = [
+        &[0x10, 32, 8, 1, 0x34, 0x36],
+        &[0x26, 7, 30, 0x33],
+        &[0x29, 0, 0, 7, 0, 0, 31, 0],
+        &[0x20, 24, 1, 0, 0],
+        &[0x23, 32, 8, 0, 0, 0, 1, 0, 0],
+        &[0x15, 25, 13, 1, 0x33, 0x31],
+        &[0x1b, 91, 96, 1, 0, 0],
+        &[0x02, 1, 2, 3, 0x26, 6, 30, 0],
+    ];
+    const ENDS: [(f32, f32); 7] = [
+        (32.0, 8.0),
+        (8.0, 8.0),
+        (32.0, 32.0),
+        (24.0, 25.0),
+        (7.0, 30.0),
+        (-0.0, 31.0),
+        (25.0, 13.0),
+    ];
+    for n in 0..RAY.len() * ENDS.len() {
+        let stream = RAY[n % RAY.len()];
+        let (start, end) = ENDS[n / RAY.len()];
+        o.case(
+            &points::SIM_MOPP_RAY,
+            n,
+            |c, m| {
+                c.ecx = A;
+                m.word(STACK + 4, DEFINITION);
+                m.word(STACK + 8, TAGS);
+                m.word(STACK + 12, MODEL);
+                m.word(MODEL, start.to_bits());
+                m.word(MODEL + 16, end.to_bits());
+                for lane in 1..4u32 {
+                    let i = n * 8 + lane as usize;
+                    m.word(MODEL + 4 * lane, dense(i, 3, false));
+                    m.word(MODEL + 16 + 4 * lane, dense(i, 4, false));
+                }
+                m.word(A + 0x54, 1.0f32.to_bits());
+                m.word(A + 100, B);
+                m.word(B, OUT);
+                m.word(OUT + 52, HANDLER);
+                m.word(HANDLER + 256, OUT + 256);
+                m.word(OUT + 256 + 36, HANDLER + 16);
+                m.word(A + 96, DEFINITION + 128);
+                m.word(A + 92, DEFINITION + 160);
+                m.callbacks.insert(HANDLER, (8, HANDLER + 256));
+                m.callbacks.insert(HANDLER + 16, (12, 0));
+                m.word(A + 20, 1.0f32.to_bits());
+                m.word(DEFINITION + 20, 1.0f32.to_bits());
                 m.store(TAGS, stream);
             },
             |c, m| sim::mopp_query::ray_query(c, m),

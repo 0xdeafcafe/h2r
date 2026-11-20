@@ -428,6 +428,10 @@ pub struct Report {
     /// Gameplay digests in guest tick order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state_hashes_v1: Vec<TickHash>,
+    /// The per-component breakdown behind those digests, as deltas
+    /// (`h2 sim diff`, [`crate::diff`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_components_v1: Option<crate::diff::StateComponents>,
     pub game_seconds: f64,
     pub wall: Wall,
     pub players: Vec<PlayerReport>,
@@ -538,6 +542,7 @@ pub struct Tally {
     kills: Vec<KillEvent>,
     last: Option<TickSample>,
     hashes: Vec<(u32, u64, Option<u64>)>,
+    components: crate::diff::Recorder,
     resets: u32,
     /// `(attacker, victim)` → the first and the latest tick of the fight's
     /// hits, for the time to kill.
@@ -669,6 +674,17 @@ impl Tally {
         } else {
             self.hashes.push(entry);
         }
+    }
+
+    /// Record the per-component state for the tick just given to
+    /// [`Tally::tick_hashed`]; same timeline, same resets.
+    pub fn tick_components(
+        &mut self,
+        tick: u32,
+        arena_base: Option<u32>,
+        components: impl IntoIterator<Item = (String, String)>,
+    ) {
+        self.components.record(tick, arena_base, components);
     }
 
     /// A shot by `player`.
@@ -903,6 +919,7 @@ impl Tally {
                     arena: arena.map(|h| format!("{h:016x}")),
                 })
                 .collect(),
+            state_components_v1: self.components.finish(),
             game_seconds: speed.game_seconds(),
             wall: Wall {
                 setup_s: speed.setup_s,
