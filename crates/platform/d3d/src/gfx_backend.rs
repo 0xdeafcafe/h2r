@@ -1085,7 +1085,14 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        self.submit_present(from, surface, flags, gamma, true)
+        let result = self.submit_present(from, surface, flags, gamma, true);
+        if result.is_err() && from.is_some() {
+            // Showing the reference is the scaled backend's final attempt for
+            // this guest swap. Even an unshown frame consumes its ordinal.
+            self.frame += 1;
+            self.frame_draw = 0;
+        }
+        result
     }
 
     fn submit_present(
@@ -1099,6 +1106,12 @@ impl GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        // Start the already-submitted query reads before exposing this swap.
+        // If one fails, a scaled display can still fall back to the reference
+        // without handing the window or parity observer a second image.
+        for report in self.reports.values().filter(|r| r.is_submitted()) {
+            report.try_read(&self.ctx)?;
+        }
         if let Some(observer) = &mut self.submitted_frame_observer {
             observer();
         }
@@ -1145,12 +1158,6 @@ impl GfxBackend {
             }
         }
         self.prev_frame_end = frame_end;
-        // Reports from this frame and before are read later (Halo reads a
-        // visibility test two frames after it ends): start their reads now,
-        // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values().filter(|r| r.is_submitted()) {
-            r.try_read(&self.ctx)?;
-        }
         Ok(())
     }
 
@@ -2361,6 +2368,36 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 mod tests {
     use super::merge_split;
     use wgpu::ColorWrites as W;
+
+    #[test]
+    fn an_unshown_scaled_swap_still_consumes_its_guest_ordinal() {
+        use super::{Backend, GfxBackend, GfxContext};
+        use std::sync::{Arc, Mutex};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut reference = GfxBackend::new(GfxContext {
+            instance: ctx.instance.clone(),
+            adapter: ctx.adapter.clone(),
+            device: ctx.device.clone(),
+            queue: ctx.queue.clone(),
+            caps: ctx.caps,
+        });
+        let mut display = GfxBackend::new(ctx);
+        let back = reference.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let ordinals = Arc::clone(&observed);
+        display.observe_guest_present(move |n, _, _, _| ordinals.lock().unwrap().push(n));
+
+        // A failed view may still show the reference under the same number.
+        display.external_ordering_error = Some("failed scaled view".into());
+        assert!(display.present_from(None, back, 0, None).is_err());
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        // A lost fallback consumes the number, without showing an image.
+        display.external_ordering_error = Some("failed reference view".into());
+        assert!(display.present_from(Some(&reference), back, 0, None).is_err());
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(*observed.lock().unwrap(), [1, 3]);
+    }
 
     #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {
