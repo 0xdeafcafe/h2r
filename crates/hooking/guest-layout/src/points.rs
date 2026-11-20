@@ -1109,6 +1109,9 @@ points! { ALL;
     /// 1.0 asks for campaign 1 only (`0x19c190`).
     CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTIONS_LIST @ 0x002b_14dc: [fn(list: ebx, player: stack 0) -> eax ret 4]; "docs/halo1/campaign-picker.md";
+    /// Campaign Options list slot 19: the number of item widgets to link.
+    /// Retail returns the active row count from the list's datum array.
+    CAMPAIGN_OPTION_ITEM_COUNT @ 0x002b_160c: [fn(list: ecx) -> eax ret 0]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTION_TEXT @ 0x002b_1613: [fn(list: ecx, item: stack 0, arg: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     CAMPAIGN_OPTION_CHOSEN @ 0x002b_166d: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     PROFILE_LAST_MAP @ 0x0019_10d9: [fn() -> eax ret 0]; "docs/halo1/campaign-picker.md";
