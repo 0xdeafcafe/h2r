@@ -1797,6 +1797,11 @@ where
         self.inner.supports_external_pass()
     }
 
+    /// Not while replaying: [`Backend::prepare_external`] refuses then.
+    fn runs_scene_stages(&self) -> bool {
+        self.rate() == Rate::Off && self.inner.runs_scene_stages()
+    }
+
     fn external_pass(
         &mut self,
         color: Self::Surface,

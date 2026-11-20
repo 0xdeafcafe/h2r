@@ -220,7 +220,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
-        let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+        // With a render thread that records scene stages, the planning here
+        // is extraction: the guest and device reads and every check that
+        // can refuse, which decide the run the guest skips. The packets,
+        // pipelines and uploads are made on the render thread
+        // (docs/graphics/framescene.md, slice 2).
+        let staging = self.device.lock().is_ok_and(|d| d.queues_scene_stages(Stage::Objects));
+        let planning = Timer::start(Stage::Objects, if staging { Metric::ExtractNs } else { Metric::PrepareNs });
         if mem.u8(engine::render_loop::layer::DRAW_FLAG) != Ok(0) {
             // The guest's first shader begin initializes the whole layer's
             // state and clears the cached texture-stage bindings.
@@ -250,19 +256,41 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let ranges = draws.len();
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
-        let pass = Box::new(ObjectsPass {
-            models: Arc::clone(&models), draws, view: None, w_clip: None,
-            run: u64::from(device.swap_count()).wrapping_add(1),
-        });
+        let batch = u64::from(device.swap_count()).wrapping_add(1);
+        let pass = |draws: Vec<(u32, PlannedDraw)>| {
+            Box::new(ObjectsPass { models: Arc::clone(&models), draws, view: None, w_clip: None, run: batch })
+        };
         drop(planning);
+        // The load the run was planned against, held to the commit.
+        let current = || match self.state.lock() {
+            Ok(state)
+                if state.as_ref().is_some_and(|s| s.map_generation == generation && publishes_to(s, &models))
+                    && generation == native_map_work::generation() =>
+            {
+                Ok(state)
+            }
+            _ => Err(ObjectWalk::Reservation),
+        };
+        // A scene stage: queued now, its packets made when the render
+        // thread reaches it. Not taken, the run is reserved here as before.
+        if staging {
+            let reserved = device.reserve_scene_stage(
+                &mut crate::native_lights_glue::DeviceMemory(mem), promise.clone(), pass(draws.clone()),
+            );
+            if let Some(reservation) = reserved.map_err(|_| ObjectWalk::Reservation)? {
+                let _state = current()?;
+                if !consume(mem) {
+                    return Err(ObjectWalk::Reservation);
+                }
+                reservation.commit();
+                return Ok(());
+            }
+        }
         let ready = device.prepare_external_bound(
-            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
+            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass(draws), Vec::new(),
         ).ok().flatten().ok_or(ObjectWalk::Reservation)?;
-        let state = self.state.lock().map_err(|_| ObjectWalk::Reservation)?;
-        if !state.as_ref().is_some_and(|s| s.map_generation == generation && publishes_to(s, &models))
-            || generation != native_map_work::generation()
-            || !consume(mem)
-        {
+        let _state = current()?;
+        if !consume(mem) {
             return Err(ObjectWalk::Reservation);
         }
         ready.commit();
@@ -346,7 +374,14 @@ fn plan_walk<B: d3d::backend::Backend>(
     let mut checked_transition = false;
     let index = models.index.try_lock().map_err(|_| ObjectWalk::Model)?;
     let coverage = models.coverage.try_lock().map_err(|_| ObjectWalk::Model)?;
-    let lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
+    // A model upload holds the models for long: the run keeps its D3D
+    // draws rather than wait. Otherwise the holder is a scene stage making
+    // its packets on the render thread, which is short: wait for it.
+    let lit = if models.upload_queued.load(Ordering::Acquire) {
+        models.lit.try_lock().map_err(|_| ObjectWalk::Model)?
+    } else {
+        models.lit.lock().map_err(|_| ObjectWalk::Model)?
+    };
     let lit = lit.as_ref().ok_or(ObjectWalk::Model)?;
     let guest = Ro(mem);
     let mut draws = Vec::with_capacity(run.len());
