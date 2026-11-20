@@ -1,5 +1,9 @@
 # Performance tooling
 
+Status: Built. `h2 profile` and `h2 bench` need the CLI's `perf` cargo feature; `boot/menu-hold` has no registered boot driver (see "Boot hook").
+Code: `crates/timeline/src/lib.rs`, `crates/perf/src` (`cli.rs`, `sample.rs`, `profile.rs`, `budget.rs`, `bench.rs`, `hotloop.rs`). Tests: in those crates.
+Switch: `H2_PROFILE*`, `H2_TIMELINE*`, `H2_PERF_FROM`, listed in [switches.md](../runtime/switches.md).
+
 Three tools for finding out where time goes, in two crates:
 
 - `crates/timeline`: dependency-free timeline events, written as Chrome
@@ -67,8 +71,7 @@ The sampler is macOS-only (`perf::sample::SUPPORTED`). On other hosts
 still work.
 
 Cost: each sample holds the target for the time `thread_suspend` takes to
-stop it plus the walk. The mean is printed as "mean pause": about 50 us in
-a debug build, which is 5% of the thread's time at 1000 Hz. Lower `--hz`
+stop it plus the walk. The mean is printed as "mean pause". Lower `--hz`
 for long runs.
 
 ### Mapping generated code back to the guest
@@ -250,7 +253,7 @@ together, and the sampler splits it.
 The header gives, per frame, the logical time (`logical us` counter),
 the logical/wall ratio, vblank DPCs, slices, charged accesses, and idle
 advances with the logical time they skipped. Contended memory-lock waits
-are listed per host thread. docs/perf/menu-budget.md is the main-menu budget
+are listed per host thread. [notes/menu-budget.md](notes/menu-budget.md) is a main-menu budget
 made with it.
 
 ## Benchmarks
@@ -270,7 +273,7 @@ h2 bench list
 | `hot-loop/alu` | ns/trip | register arithmetic loop in generated code (locals and the back-edge preemption poll) |
 | `hot-loop/memory` | ns/trip | inc/load/add-to-memory loop through `h2abi_v1_read`/`write` |
 | `hot-loop/call` | ns/trip | call/return per trip: two runner transfers and two dispatches |
-| `hot-loop/x87` | ns/trip | x87 load/mul/add/sqrt/div/store in generated code ([below](#native-x87-comparison)) |
+| `hot-loop/x87` | ns/trip | x87 load/mul/add/sqrt/div/store in generated code ([x87 comparison](#which-tool-fits-which-job)) |
 | `d3d/pushbuf-frame` | us/frame | `Device::kick_off` draining 1000 inline QUADLIST draws (26 words each) through push-buffer decode, immediate-mode assembly and a recording backend |
 | `boot/menu-hold` | fps | boot to the main menu, then hold it for `--frames` frames (wall clock); needs the boot hook below, which is not built |
 
@@ -289,7 +292,7 @@ A run is written to `<out>/<unix seconds>-<label>.json` and never
 overwrites an existing file:
 
 ```json
-{ "schema": 1, "label": "after", "git": "a41dae4c0ffe", "git_dirty": false,
+{ "schema": 1, "label": "after", "git": "<commit>", "git_dirty": false,
   "host": { "os": "macos", "arch": "aarch64", "cpus": 12 },
   "started_unix": 1794721821, "samples": 10, "warmup": 2,
   "results": [ { "scenario": "hot-loop/call", "description": "...",
@@ -343,24 +346,12 @@ feature, which the CLI's `perf` feature turns on.
    the hooks above. Swap counts frames. For frame times without a trace,
    `H2_FRAME_STATS=1` (docs/runtime/app.md "Frame stats") splits every frame into
    phases at a clock read per phase switch.
-2. **`boot/menu-hold`** (not built: nothing registers a boot driver, so
-   the scenario reports itself skipped). Split `boot::run` into setup and stepping, and
-   implement `perf::boot::BootDriver` on the result:
-   - `boot_to_menu()`: run until the main menu is up. For example, step
-     until `timeline::frames()` passes a menu frame count, or until the
-     scripted input (`xapi_glue::InputScript`) says the menu is reached.
-   - `step()`: one iteration of today's slice loop: the input script step,
-     `m.run(1)`, `xapi::service_input`. Return `false` when the outcome is
-     not `SliceLimit`.
-
-   Then register it once at startup, before `perf::cli::bench` or
-   `perf::cli::profile` runs. Use the CLI's `main` behind the boot
-   feature, or put it in the boot crate's own init:
-
-   ```rust
-   perf::boot::set_boot_driver(|args| Ok(Box::new(boot::BenchDriver::new(&args.disc, &args.work)?)));
-   ```
-
+2. **`boot/menu-hold`** (no driver registered). `perf::boot::BootDriver`
+   (`crates/perf/src/boot.rs`) is the hook: `boot_to_menu()` runs until the
+   main menu is up and `step()` runs one iteration of the slice loop.
+   `perf::boot::set_boot_driver` registers a factory before
+   `perf::cli::bench` or `perf::cli::profile` runs. Nothing in `crates/boot`
+   or `crates/cli` calls it, so the scenario reports itself skipped.
    `perf::boot::hold` counts frames with `timeline::frames()` and reports
    frames per wall-clock second.
 
@@ -384,6 +375,14 @@ feature, which the CLI's `perf` feature turns on.
   rebuild through emit, so the pass applies). The "guest instructions"
   table and the `@0x...` folded leaves show which instructions the time
   goes to.
+- **Native x87 (crates/emit):** `hot-loop/x87` runs generated x87
+  load/mul/add/sqrt/div/store code. Run it with the default and with
+  `H2_X87_NATIVE=0` in separate `--work` directories;
+  [x87-native.md](../lifter/x87-native.md) describes the guards and oracle
+  checks. Hot-loop JSON results also record `cpu_ns_per_trip` on Unix, the
+  mean thread CPU time per trip, excluding descheduling and background
+  worker threads (`crates/perf/src/hotloop.rs`). The printed ns/trip
+  statistic is wall time.
 - **Build dependencies:** `perf` brings in `addr2line` (with its loader:
   `gimli`, `object`, `memmap2`, `typed-arena`), `rustc-demangle`,
   `serde_json` and `iced-x86` (code_asm), but only into `cli` builds with
@@ -391,39 +390,22 @@ feature, which the CLI's `perf` feature turns on.
   cache under `--work`. Nothing here measures build time yet; a
   `build/emit-shard` scenario would fit the same harness if wanted.
 
-## Native x87 comparison
-
-`hot-loop/x87` exercises generated x87 load/mul/add/sqrt/div/store code.
-Run with the default and with `H2_X87_NATIVE=0` in separate work directories;
-[x87-native.md](../lifter/x87-native.md) describes the guards, oracle checks and
-measured limits. Hot-loop JSON results also record `cpu_ns_per_trip` on
-Unix, the mean thread CPU time per trip, excluding descheduling and
-background worker threads. The printed ns/trip statistic remains wall time.
-
 ## Device CPU cost (crates/d3d)
 
 `cargo bench -p d3d --bench pushbuf` replays a synthetic frame (1,200 draws,
 mostly indexed, texture rebinding on two stages, constant uploads, inline
 state through the push buffer, vertex-input switches) against a null backend,
 so only the device's own work is timed. Nothing in it is retail data.
-It is a synthetic microbenchmark: it runs over `SparseMemory`, calls the device
-directly (no runtime lock, ABI or write-watch cost), uses 48 unchanging textures
-with `UploadPolicy::Tracked`, a pixel shader that samples nothing, and changes
-simple state on almost every draw (so translation-memo hits are rare). Its
-numbers say the device's own per-draw work shrank (p10 5.6 to 3.0 ms/frame
-there); they do not measure whole-game CPU per frame or other upload policies. It prints
-mean, median and p10 ms per frame; on a shared machine the mean is dominated
-by scheduling outliers, so compare p10 or median. `H2_BENCH_FRAMES`,
-`H2_BENCH_DRAWS` and `H2_BENCH_TRACE=1` (per-frame times) tune it. To profile,
-run the bench binary under `sample <pid>` or `samply record`.
-
-Per-draw costs removed so far: the linear slot search in
-`SimpleEncode::mirror_slot` (now a table), the per-draw guest-slot to state-type
-lookups in `StateWords::translate` (`state::Translator`, plus a memo of the last
-translation while the arrays are unchanged), the pixel-shader decode in
-`sampled_stages`, heap reads of fixed-size headers (`guest::read_array`, state
-arrays read straight into arrays), per-word constant-shadow writes, and the
-three passes over the index list in `draw_indexed_vertices`.
+It runs over `SparseMemory` and calls the device directly (no runtime lock,
+ABI or write-watch cost), uses 48 unchanging textures with
+`UploadPolicy::Tracked`, a pixel shader that samples nothing, and changes
+simple state on almost every draw (so translation-memo hits are rare). It
+measures the device's own per-draw work, not whole-game CPU per frame or
+other upload policies. It prints mean, median and p10 ms per frame; on a
+shared machine the mean is dominated by scheduling outliers, so compare p10
+or median. `H2_BENCH_FRAMES`, `H2_BENCH_DRAWS` and `H2_BENCH_TRACE=1`
+(per-frame times) tune it (`crates/d3d/benches/pushbuf.rs`). To profile, run
+the bench binary under `sample <pid>` or `samply record`.
 
 `cargo bench -p d3d --bench streams` times copying draws' vertex streams:
 1,000 draws a frame over three streams of large vertex buffers, index windows
@@ -433,10 +415,10 @@ prints allocations of 4 KiB or more per draw (the index list accounts for 0.75
 of them at the default ratio; anything above is stream buffers the pool did not
 supply). A stream is appended to an empty pooled buffer straight from guest
 memory (`GuestMemory::read_append`, no zero fill); the pool hands out the
-smallest buffer that fits, so a small buffer is not regrown (a copy of its old
-bytes) when a large one is waiting; and immediate draws fill pooled buffers
-too, where their fresh ones used to overflow the pool, which then freed the
-large buffers the next indexed draws had to allocate and fault in again.
+smallest buffer that fits, so a small buffer is not regrown when a large one
+is waiting; immediate draws fill pooled buffers too.
+
+Results are in [notes/device-cost.md](notes/device-cost.md).
 
 ## Test and bench knobs
 
