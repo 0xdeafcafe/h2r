@@ -213,7 +213,7 @@ impl Served {
     pub(crate) fn film_source(&self) -> Result<crate::FilmMapSource> {
         let mut source = match &self.reader {
             Reader::File(f, _) => crate::FilmMapSource::region(f.file().try_clone()?, 0),
-            Reader::Mapped(_, _, file) => crate::FilmMapSource::region(file.try_clone()?, 0),
+            Reader::Mapped(_, region, file) => crate::FilmMapSource::immutable_region(file.try_clone()?, 0, region.len),
             Reader::Overlay { base, overlay } => crate::FilmMapSource::overlay(
                 crate::FilmMapSource::region(base.file.try_clone()?, base.offset),
                 base.len, overlay.clone(), self.id(),

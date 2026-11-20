@@ -366,6 +366,7 @@ fn run_configured(
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
+    cfg.map_guest_reads = host_light && features.switches().implementation("sim.mapped-reads", true);
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -1414,7 +1415,9 @@ fn run_configured(
             );
             (w, t)
         });
-        s.note_cow(cow);
+        let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
+            .unwrap_or_default();
+        s.note_memory(cow, reads);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),

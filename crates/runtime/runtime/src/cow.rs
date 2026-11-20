@@ -47,6 +47,9 @@ enum Backing {
     #[cfg(target_os = "macos")]
     MachLive,
     #[cfg(target_os = "macos")]
+    /// A paged runtime's dedicated reservation, without shared flat aliases.
+    MachPaged,
+    #[cfg(target_os = "macos")]
     MachCopy,
     #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
     /// A whole-file private mapping ([`Ram::become_private_of`]).
@@ -87,7 +90,7 @@ impl Ram {
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         let _ = aliasable;
         #[cfg(target_os = "macos")]
-        if aliasable {
+        if aliasable || cfg!(feature = "guest-file-reads") {
             // A dedicated mapping guarantees host-page alignment for shared
             // aliases, independent of the selected global allocator.
             let p = unsafe {
@@ -105,7 +108,7 @@ impl Ram {
                     return Self {
                         ptr,
                         len,
-                        backing: Backing::MachLive,
+                        backing: if aliasable { Backing::MachLive } else { Backing::MachPaged },
                         cow_base: None,
                     };
                 }
@@ -265,6 +268,78 @@ impl Ram {
     }
 
 
+    /// Install only whole pages within our paged data reservation. A memfd
+    /// (Linux) or MachLive block can already have writable flat aliases, so
+    /// replacing its pages would give those aliases a stale view.
+    #[cfg(all(feature = "guest-file-reads", unix))]
+    pub(crate) fn install_file_pages(
+        &mut self, physical: usize, file: &File, offset: u64, len: usize, page: usize,
+    ) -> Result<(), &'static str> {
+        use std::os::fd::AsRawFd;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let paged = matches!(self.backing, Backing::Guarded { file: None, .. });
+        #[cfg(target_os = "macos")]
+        let paged = matches!(self.backing, Backing::MachPaged | Backing::MachCopy | Backing::FilePrivate);
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let paged = false;
+        if !paged {
+            return Err("RAM has aliases or no dedicated mapping");
+        }
+        if len == 0 || physical.checked_add(len).is_none_or(|end| end > self.len)
+            || !len.is_multiple_of(page) || !offset.is_multiple_of(page as u64)
+            || offset.checked_add(len as u64).is_none_or(|end| end > i64::MAX as u64)
+        {
+            return Err("range outside RAM or file offset limits");
+        }
+        // SAFETY: bounds checked above. The reservation and both guards
+        // (where present) remain at their original addresses.
+        let dst = unsafe { self.ptr.as_ptr().add(physical) };
+        if !(dst as usize).is_multiple_of(page) {
+            return Err("physical RAM is not page aligned");
+        }
+        // SAFETY: only our exclusively owned whole data pages are replaced,
+        // under the Guest gate. The caller has checked the extent on a VFS
+        // input whose contents stay immutable until every host releases it.
+        let mapped = unsafe {
+            libc::mmap(dst.cast(), len, libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_FIXED | libc::MAP_PRIVATE, file.as_raw_fd(), offset as libc::off_t)
+        };
+        if mapped == libc::MAP_FAILED {
+            // POSIX allows a failed MAP_FIXED to leave holes (e.g. kernel
+            // mapping-count exhaustion). The copy path needs writable RAM.
+            // If the reservation was lost, reinstall the entire interior
+            // and fill it from the pinned source before exposing it again.
+            let prot = libc::PROT_READ | libc::PROT_WRITE;
+            if unsafe { libc::mprotect(dst.cast(), len, prot) } != 0 {
+                let recovered = unsafe {
+                    libc::mmap(dst.cast(), len, prot,
+                        libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+                };
+                if recovered == libc::MAP_FAILED {
+                    eprintln!("guest mapped read: failed to restore guest RAM reservation");
+                    std::process::abort();
+                }
+                use std::os::unix::fs::FileExt;
+                if let Err(error) = file.read_exact_at(&mut self[physical..physical + len], offset) {
+                    eprintln!("guest mapped read: failed to recover guest RAM contents: {error}");
+                    std::process::abort();
+                }
+            }
+            return Err("mmap refused file pages");
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "guest-file-reads", unix))]
+    pub(crate) fn host_page_size() -> Option<usize> {
+        static PAGE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        *PAGE.get_or_init(|| {
+            // SAFETY: sysconf has no pointer arguments.
+            usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()
+                .filter(|p| p.is_power_of_two() && *p >= 4096)
+        })
+    }
+
     /// Make this block a private copy-on-write view of `file`, which must
     /// hold exactly this block's bytes: every read comes from the file's
     /// shared pages until this block writes it, and a write gives this
@@ -409,7 +484,7 @@ impl Drop for Ram {
                 }
             }
             #[cfg(target_os = "macos")]
-            Backing::MachLive => {
+            Backing::MachLive | Backing::MachPaged => {
                 // SAFETY: this is the original live anonymous mapping.
                 unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
             }

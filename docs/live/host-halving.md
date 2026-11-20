@@ -160,10 +160,8 @@ of copying (`crates/runtime/vfs/src/sim_store.rs`,
 page it later writes becomes private; the rest stay one set in the page
 cache for every match on the host. A read that is not congruent, is
 shorter than 16 pages, or targets a writable source is copied as before,
-and the report counts mapped and copied bytes. The store builder may pad a
-range so that its offset is congruent on 4 KiB hosts; 16 KiB hosts (Apple
-silicon) qualify less often. This needs no snapshot and no template, and
-it works for a human match, whose level loads only after the roster joins.
+and the report counts mapped and copied bytes. The store builder pads large ranges for congruence on 4 KiB hosts; 16 KiB hosts (Apple
+silicon) qualify less often. The mapping is private and preserves guest writes. A live alias, a write watch that needs the original backing, or an unsupported RAM layout can require copying. Compare the mapped and copied byte counters and hashes in matched runs, and require at least 40 MiB less private dirty memory per match on one map.
 
 **Guest RAM from a snapshot.** `state.load` with `"cow": true` already
 maps a saved RAM image private copy-on-write
@@ -418,7 +416,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
-| 4 | Mapped reads | `crates/runtime/vfs/src/sim_store.rs`, `disc.rs`, `map_override.rs`, `crates/runtime/runtime/src/guest.rs`, `cli/src/sim_store_cmd.rs` (padding) | synthetic file: same bytes, a write stays private, a non-congruent read copies, both page sizes | `Private_Dirty` down ≥ 40 MiB per match on one map; hashes equal |
 | 5 | Heap census, budgets and allocator | the owners the census names; `deploy/host/entrypoint.sh` for allocator settings | a budget test per cache that gets one | `footprint_mib` ≤ 80 on a 2v2 |
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
 | 7 | Stores and the slim module in the staged image | `deploy/host/build.sh`, `crates/live/host-data`, `docs/live/dedicated-host-build.md` | the store's `NotInStore` tests; the coverage export's checks | Zero fallbacks and zero store misses over the light-host corpus; image and bundle bytes recorded |

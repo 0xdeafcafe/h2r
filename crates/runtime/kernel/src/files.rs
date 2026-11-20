@@ -397,31 +397,43 @@ impl Core {
                 // offset; later chunks continue from the position the previous
                 // synchronous transfer left. A short chunk ends the transfer.
                 // An end-of-file after some bytes is a successful short read.
-                let mut done = 0usize;
-                let mut at = offset;
-                let result = loop {
-                    let n = (length - done).min(chunk.len());
-                    let target = guest_offset(buffer, done)?;
-                    let transferred = if write {
-                        memory.read_bytes(target, &mut chunk[..n], 1)?;
-                        storage.write(handle, at, &chunk[..n])
-                    } else {
-                        storage.read(handle, at, &mut chunk[..n])
-                    };
-                    match transferred {
-                        Ok(count) => {
-                            let count = count.min(n);
-                            if !write {
-                                memory.write_bytes(target, &chunk[..count], 1)?;
+                let mapped = if write {
+                    None
+                } else {
+                    storage.try_map_read(handle, offset, length, |source| {
+                        memory.map_file_read(buffer, source)
+                    })
+                };
+                let result = if let Some(bytes) = mapped {
+                    Ok(bytes)
+                } else {
+                    let mut done = 0usize;
+                    let mut at = offset;
+                    loop {
+                        let n = (length - done).min(chunk.len());
+                        let target = guest_offset(buffer, done)?;
+                        let transferred = if write {
+                            memory.read_bytes(target, &mut chunk[..n], 1)?;
+                            storage.write(handle, at, &chunk[..n])
+                        } else {
+                            storage.read(handle, at, &mut chunk[..n])
+                        };
+                        match transferred {
+                            Ok(count) => {
+                                let count = count.min(n);
+                                if !write {
+                                    memory.write_bytes(target, &chunk[..count], 1)?;
+                                    storage.note_guest_copy(count);
+                                }
+                                done += count;
+                                at = Offset::Current;
+                                if count < n || done == length {
+                                    break Ok(done);
+                                }
                             }
-                            done += count;
-                            at = Offset::Current;
-                            if count < n || done == length {
-                                break Ok(done);
-                            }
+                            Err(Error::EndOfFile) if !write && done > 0 => break Ok(done),
+                            Err(e) => break Err(e),
                         }
-                        Err(Error::EndOfFile) if !write && done > 0 => break Ok(done),
-                        Err(e) => break Err(e),
                     }
                 };
                 if let Some(position) = position {

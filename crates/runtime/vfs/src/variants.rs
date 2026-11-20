@@ -359,7 +359,7 @@ impl<B: Backend> Backend for VariantFiles<B> {
             return p.served(path)?.film_source().map(Some);
         }
         if let Some(pack) = self.server_pack(path) {
-            return Ok(Some(crate::FilmMapSource::region(pack.source.try_clone()?, 0)));
+            return Ok(Some(crate::FilmMapSource::immutable_region(pack.source.try_clone()?, 0, pack.file.len)));
         }
         self.inner.film_source(path)
     }
