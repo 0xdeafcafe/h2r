@@ -2,13 +2,9 @@
 
 Every stage has defaulted on since the all-native A/B on 2026-11-19/20
 (below, "The all-native push"). The frames matched D3D and the frame rate
-was lower. Set `H2_FEATURES=impl.render.native=off` for the D3D path or
-use a stage's `impl.render.native_*=off` for a narrower comparison.
-An explicit stage switch takes precedence in either order. The UI stage
-also requires the master switch. Enabling
-`native_world` also enables its material programs unless
-`impl.render.native_world_programs=off` is set. The split lights diagnostic
-still requires `impl.render.native_lights_split=on`. The goal is every frame drawn from GPU-resident data, with the game's recompiled
+was lower. `H2_FEATURES=impl.render.native=off` is the one switch: it
+returns every stage, walk and the scene lists to the D3D path. The
+per-stage, per-walk and diagnostic switches the push used are gone. The goal is every frame drawn from GPU-resident data, with the game's recompiled
 render front-end left doing only what the GPU path cannot do yet. Evidence
 labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
 (read in the disassembly, `h2 disasm`), **Test**, **S** (supposed). No
@@ -170,8 +166,8 @@ Each stage falls back to D3D for the materials or draws it cannot handle.
 
 ### Scene list builders
 
-`impl.render.native_scene_lists` defaults on and requires
-`impl.render.native=on`. This stage publishes the engine's original
+The scene lists are on by default and go off with the rest of the native
+renderer (`impl.render.native=off`). This stage publishes the engine's original
 visibility lists and render records. A draw can consume the same lists
 through either renderer. The game supplies the camera, clipped cluster
 frusta, live datum arrays and current tag definitions.
@@ -217,23 +213,15 @@ setup also reports `_residency`, `_lighting`, `_palette` and
 `_object_model` for the corresponding guest service paths. Counts are
 per list, setup or append, depending on the stage.
 
-`H2_NATIVE_LISTS_COMPARE=1` builds the Rust result and lets the guest
-publish its own. For object setup it compares the staged palette, cache,
-resource, group and record bytes at the function return, along with the
-visibility word, palette cursor, record counts, object lighting handle
-and AL. It logs the first mismatch per seam and counts additional
-mismatches. Compare mode uses the guest result for draw dispatch.
-Use `H2_FRAME_STATS=1` for the `_compared` and `_mismatch` columns.
-
-For timing, compare `impl.render.native_scene_lists=off` with the
-default, using `H2_FEATURES=render-timing` in both captures. Include the
+For timing, compare `impl.render.native=off` with the default, using
+`H2_FEATURES=render-timing` in both captures. Include the
 `game_view` stage for the main-camera object gather, and sites
 `0x0002bd2d`, `0x0002c03e` and `0x0002c19a` for transparent production,
 dynamic lights and the sorted dispatch. The Old Mombasa census measured
 1.88 ms/frame for the entire dynamic-light bookkeeping site and about
 0.01 ms/frame for the two old sort leaves combined. The census does not
 isolate the object setup or transparent allocation costs. A net saving
-needs a matching A/B with the compare mode off. See [render-loop.md](render-loop.md).
+needs a matching A/B. See [render-loop.md](render-loop.md).
 
 ### Maps with no native work
 
@@ -241,8 +229,7 @@ The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
 no native lit parts. Fog and water stand down when their translated passes
 yield no drawable parts. A BSP-backed stage stays eligible while any BSP
-has work or has yet to be checked. Water's per-draw census follows the
-water stage.
+has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object
 definitions. Model loads and uploads stay lazy when definitions exist.
@@ -308,25 +295,24 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   units, which the objects clipped at 0). The Stage 3 transparent pass and the
   Stage 4 cluster light pass also take the device range. That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
-  To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
-  line per pass (the first 8, then every 250th, or every `n`th with
-  `H2_NATIVE_WORLD_TRACE_EVERY=n`: the clip, whether draws
-  are W-buffered, the render camera and its view-projection beside the
-  constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
-  draws every part without the CPU cull. With the trace,
-  `H2_NATIVE_WORLD_PROBE=x,y` adds, on each traced pass, the parts whose
+  To tell the remaining causes apart, a world trace printed a line per
+  pass (the clip, whether draws are W-buffered, the render camera and its
+  view-projection beside the constants `c[0..3]`, the cull's count), and
+  a no-cull switch drew every part without the CPU cull. (The trace,
+  probe, dump, owners and inherited-cull switches described here have
+  since been removed.) With the trace, a pixel probe added, on each
+  traced pass, the parts whose
   triangles cover that guest pixel through the render camera, nearest
   first: owner (cluster or placement), part, material, view depth and the
   distance to the triangle's nearest edge (under a pixel: an edge tie).
   Pass numbers are not frame numbers (views left to the D3D path, a
-  cinematic's several views), so each trace, probe and dump line names
+  cinematic's several views), so each trace, probe and dump line named
   its frame: the device's swap count at the layer-3 call plus one
   (`Device::swap_count`), the number of the frame shot that shows it.
-  `H2_NATIVE_WORLD_PROBE=x,y@first-last` probes every pass of those
-  frames without the trace, and `H2_NATIVE_WORLD_DUMP=...#frame` arms
-  no earlier than that frame.
-  `H2_NATIVE_WORLD_OWNERS=clusters` (or `placements`) draws only that
-  kind natively and leaves the other's items to the D3D path. At 03000
+  A frame range let the probe run without the trace and the dump arm no
+  earlier than a given frame. An owners switch drew only the clusters or
+  only the placements natively and left the other's items to the D3D
+  path. At 03000
   the probe put the 43 px girder line on placement 282's edge (0.23 px
   outside its triangle, over cluster 31), and the 02000 remainder and
   01000's 3 px are edge pixels too (the van's outline, the curb): the
@@ -372,8 +358,8 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   while the game may still be streaming bitmaps at low detail: 03000's
   dump saw the D3D path bind 2x8 and 4x8 DXT stand-ins where the native
   stage has the 64x256 bitmap (S: low-detail stand-ins, since the
-  later frames match native to a mean of 0.009), so `H2_NATIVE_WORLD_DUMP` takes `@passes` to arm
-  later. It now lists only the pixel shader and option fields that
+  later frames match native to a mean of 0.009), so the dump took a pass count to arm
+  later. It listed only the pixel shader and option fields that
   differ, the D3D draw's stipple pattern when it masks anything, and the
   pipeline's primitive (topology, winding, cull, fill) and depth write,
   compare and bias as `gfx::translate` derives them from the D3D draw's
@@ -389,9 +375,7 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   stencil is; `program::InheritedCull`). That made 01000, 03000 and
   04000 match exactly (w19). The clusters take it too: 02000's 81
   cluster pixels on a curb (box [120,327]-[235,374]) went with it and
-  nothing else changed (w21), so that is the default;
-  `H2_NATIVE_WORLD_INHERIT_CULL=placements` gives it to the placements
-  only and `=none` to neither. The other fields
+  nothing else changed (w21), so both take it. The other fields
   the compare listed change nothing: `explicit_final` is the device's
   final-combiner latch, which only matters when both final-combiner
   input words are zero (`PixelShaderDef::has_final_combiner`), and a
@@ -402,18 +386,17 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   reads fog and by the bump-environment texture modes, which
   `world_parity` refuses. Without a material the dump arms every
   material the native pass draws the placement with, and each D3D draw
-  is compared with the one whose pixel shader it is
-  (`uniform_compare::pick`, fewest differing definition and option
-  fields): the placement's materials can share a vertex program, so 03000's
+  was compared with the one whose pixel shader it is (fewest differing
+  definition and option fields): the placement's materials can share a vertex program, so 03000's
   second kind of draw (another pixel shader, an alpha test) was compared
   with material 107's. A D3D draw that pairs with no material exactly is
   one the native pass may not draw at all.
-  For the placements' edges,
-  `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
-  so that the D3D path draws the placement) prints, once per loaded
-  world, the uniforms the native rigid draw of that placement and
-  material would take, and arms `d3d::uniform_compare`: the D3D path's
-  next draws with the same rows `c[50..52]` and the same program print
+  For the placements' edges, the world dump (with the owners switch on
+  clusters, so that the D3D path drew the placement) printed, once per
+  loaded world, the uniforms the native rigid draw of placement 282 and
+  material 107 would take, and armed the D3D uniform compare: the D3D
+  path's next draws with the same rows `c[50..52]` and the same program
+  printed
   every constant the program reads, every input it reads (streamed by
   one and not the other, or with other defaults) and every vertex or
   pixel uniform that differs, then the input fetch and interpolation,
@@ -665,7 +648,7 @@ is native only once its A/B is clean.
   of an invented world into an offscreen target; its W depth equals the
   formula.
 - **Frame A/B** (the game): the same 03a frame with and without
-  `impl.render.native_world`, compared by pixel diff, through the headless
+  the native renderer (`impl.render.native=off`), compared by pixel diff, through the headless
   capture (`H2_BOOT_GFX`) or the agent API's `capture`. Report the share of
   differing pixels, the largest difference, and an image of the
   differences. Frame stats `cpu`, `d3d`, `encode`, `submit` and the
@@ -708,9 +691,8 @@ The crate `native-render` (`crates/native-render`):
   drain. `crates/d3d/tests/external_pass.rs` covers both entry points,
   direct and threaded recording, scaled attachment refusal, and replay.
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
-  off by default (the A/B on screen showed the stage 1 look, base map
-  times lightmap, far from the D3D path), `H2_FEATURES=impl.render.native_world=on`
-  turns it on, exact key). `LAYER_DRAW` is an opaque point, so the hook is one
+  on by default with the rest of the native renderer, off with
+  `H2_FEATURES=impl.render.native=off`). `LAYER_DRAW` is an opaque point, so the hook is one
   observer before it: it first sets back the bits the last layer 3
   cleared (on items that still hold the mask it left), then, with layer 3
   current, reads the camera and the active BSP (`0x004e0348`) and asks the
@@ -730,8 +712,8 @@ The crate `native-render` (`crates/native-render`):
   and confirms one batched reservation for the view before applying masks.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
-  runs on the render thread; off by default, and on with pipelining placed; the
-  switch off places nothing; the skip and its restore at the next layer
+  runs on the render thread; on by default, keeping pipelining;
+  `impl.render.native=off` places nothing; the skip and its restore at the next layer
   draw on synthetic memory, a rebuilt list left alone, and a part left to
   D3D keeping its bit though its shader is drawn);
   `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
@@ -773,9 +755,6 @@ The crate `native-render` (`crates/native-render`):
   `native-world: a pass came without the device's view constants; it
   draws nothing`, `native-world: N batch draws left out: their material
   program could not be bound`.
-  With `impl.render.native_world_programs=off` (the A/B against stage 1
-  only) every material whose base map decodes is drawn as base map times
-  lightmap, as stage 1 first did.
 
 ### The live A/B
 
@@ -807,8 +786,6 @@ surfaces only (the D3D ones are the game's own):
   P8 page through its palette, bound at stage 3), its bump map (`P8Bump`
   through the device palette at stage 2; black walls with bright pillars
   was the bump sampled as its index) or a constant;
-  `impl.render.native_world_programs=off` shows that material in the
-  stage 1 look for comparison;
 - **shimmer or blur at a distance**: sampling (the bump stage is 4x
   anisotropic; mip chains);
 - **cut-out foliage or grates filled in or missing**: the pass's alpha
@@ -826,9 +803,9 @@ surfaces only (the D3D ones are the game's own):
 
 Step 4 below draws every native material with its own translated pass
 (above, "Match the look"), and a material whose pass does not translate
-stays on the D3D path: there is no hand-written look in between, and the
-stage 1 look (the base map by a name rule, times the lightmap) is kept
-only behind `impl.render.native_world_programs=off` for the A/B.
+stays on the D3D path: there is no hand-written look in between. The
+stage 1 look (the base map by a name rule, times the lightmap) and its
+`impl.render.native_world_programs=off` A/B are gone.
 
 #### What a world pass reads (Code, `h2 disasm`, `h2 shader`, `vsh` disassembly)
 
@@ -951,9 +928,7 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 4. `native-render::gpu`: one pipeline per (program, definition) through
    `shaders::link`, the uniforms filled as the D3D path fills them, one
    bind group per material. Built as `native-render::program`, and the
-   native world's only look: `impl.render.native_world_programs` is on
-   with the world (exact key; `=off` brings back stage 1's look for the
-   A/B against it, nothing else):
+   native world's only look:
    - `look::layer3_pass` takes the pass's implementation as above and
      its own render states (`pass_state`, as transparents do): depth test
      and write, colour writes, alpha test and cull. The 03a world passes
@@ -1063,8 +1038,7 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 The main scene draws ordinary BSP clusters and placements in sorted order in
 layers 1, 3, 5, 7 and 8. The default front end takes these entries at the
 standard geometry handler (`0x0004d0b0`). Native objects and entries left
-with the guest can still use the indexed admission in
-`impl.render.native_world_layers`. Both paths preserve the original subpart
+with the guest can still use the native world layers' indexed admission. Both paths preserve the original subpart
 ranges, topology, live colour/depth attachments and per-record stencil state.
 
 Layer 1 replaces a draw only while target 1's attachment header is
@@ -1093,9 +1067,8 @@ vector when its selected implementation has its required inputs.
 
 ### Native BSP scene walk
 
-`impl.render.native_world_skip_build` is on by default. It needs both
-`impl.render.native` and `impl.render.native_world`. Switch it off to
-compare the two front ends with the same GPU renderer.
+The walk is on by default and goes off with the rest of the native
+renderer (`impl.render.native=off`).
 
 | Guest boundary | Work done in Rust | State handed to the next stage |
 |---|---|---|
@@ -1148,9 +1121,9 @@ late refusal before the first range can issue the indexed draws under the
 state already applied. A device error after emission follows the fault
 path so a submitted prefix cannot be drawn twice.
 
-For the A/B, capture the same Old Mombasa replay and present numbers with
-`H2_FRAME_STATS=1` and `H2_FEATURES=render-timing`, changing only
-`impl.render.native_world_skip_build=off` to `on`. Use ordinary
+The walk's A/B (2026-11, with a per-walk switch since removed) captured
+the same Old Mombasa replay and present numbers with `H2_FRAME_STATS=1`
+and `H2_FEATURES=render-timing`, changing only the walk. Use ordinary
 render timing. Deep timing adds guest brackets that change the cost of the control path. Compare warmed per-frame `render`,
 `scene_passes`, `d3d` and `cpu`, and count differing pixels on both target
 copies at matching presents. Include views with placements, partial
@@ -1203,34 +1176,16 @@ breakdown includes the backend refusal reason. Compare these counters
 with skipped handlers to distinguish CPU preparation savings from changes
 in GPU recording.
 
-### Opaque-layer comparison
-
-`H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
-draws of layers 1, 2, 3, 5, 7 and 8 at those present numbers. It works
-with or without the native stage switches. Take a reference with both
-`impl.render.native_world=off` and `impl.render.native_objects=off`
-to see the guest's complete layer 3. Use the same replay and render
-scale for both comparisons. Each line names the layer's call site and
-its list, the standard geometry handler's owner, render record, part,
-shader, variant and implementation where they resolve, plus the
-indexed call's return site, attachments, clip, W/Z and stencil state.
-Other indexed handlers lack a geometry identity.
+### Target 1's headers
 
 Target 1 has two guest headers. The scene's main layer-1 site
 (`0x0002be45`) asks `0x00014bc0` for it before the layer, and
 `0x0001dcf0(1)` gives the attachment header at descriptor `+0x18`
 when the descriptor is enabled and `+0x78` is positive.
-`0x0001dcc0(1)` returns the texture header at `+4`. The line reports
-both headers and the texture's guest size, whether the draw wrote to
-that attachment and which stages bound the texture header. An
-`in_place_sample` line names the actual backend surface and texture ID,
-which can be paired with the indexed draw's `texture_ids`. Equal guest
-dimensions alone do not establish the same target. Native
-`recorded` lines show the replacement recorded on each physical copy.
-The native stage suppression counters show committed draws. Use
-`H2_NATIVE_WORLD_LAYERS_OWNERS=world` or `objects` with the switch on
-to compare mixed ownership. The default is `all`. Frame and pass color
-checks use the agent API (`render.frame` and `render.stats`).
+`0x0001dcc0(1)` returns the texture header at `+4`. Equal guest
+dimensions alone do not establish the same target. The native stage
+suppression counters show committed draws. Frame and pass color checks
+use the agent API (`render.frame` and `render.stats`).
 
 ### Scene and exceptional draw sites
 
@@ -1265,10 +1220,8 @@ computed transforms in guest memory. Skinning runs in the vertex shader.
 
 ### Native scene object walk
 
-`impl.render.native_object_walk` defaults to on with the native renderer
-and the objects stage. Turning it off selects the resolved layer-3 draw
-path described below. `impl.render.native=off` disables the walk even
-with an explicit walk override.
+The walk is on whenever the native renderer is
+(`impl.render.native=off` turns it off with every other stage).
 
 The walk covers the third-person base-layer call to `LAYER_DRAW`
 (return `0x0002bed5`). It reads the private sorted entries at the first
@@ -1340,10 +1293,9 @@ object count.
 
 Use the same 03a Old Mombasa firefight with at least six visible enemies,
 the same camera, input and render scale, and a warmed map load for both
-captures. Keep the other render switches fixed.
-
-- A uses `H2_FEATURES=render-timing,impl.render.native_object_walk=off`.
-- B uses `H2_FEATURES=render-timing,impl.render.native_object_walk=on`.
+captures. Keep the other render switches fixed. The walk's own A/B
+used a per-walk switch that is gone; compare `H2_FEATURES=render-timing`
+against `H2_FEATURES=render-timing,impl.render.native=off`.
 
 Enable `H2_FRAME_STATS=1` for both. Collect the same window with
 `profile.capture` through the [agent API](../runtime/agent-api.md), or
@@ -1351,9 +1303,7 @@ stream it with `H2_FRAME_STATS_CSV`. Compare the `render` and `d3d`
 phases, layer-3 and shader-begin time, object walk counters, and the same
 view's images. Check biped animation, held weapons and vehicles through
 fog, and the depth, stencil and draw order against the original path.
-A third capture with `impl.render.native=off` supplies the all-D3D
-reference. For the legacy object part probe and uniform comparison use
-`impl.render.native_object_walk=off`.
+The `impl.render.native=off` capture is the all-D3D reference.
 
 ### Research points (Code unless marked; `h2 disasm`)
 
@@ -1370,7 +1320,7 @@ reference. For the legacy object part probe and uniform comparison use
 | record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory, Live pending. |
 | `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
-| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With `impl.render.native_first_person=on`, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
+| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With the native renderer on, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
@@ -1463,7 +1413,7 @@ the viewer does (S: some may be hidden in game).
 The first-person weapon and arms are drawn by the player chain after the
 transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
 projection, not by the base layers' layer-3 call, which the caller check
-pins. With `impl.render.native_first_person=on` (off by default),
+pins. With the native renderer on (the default),
 `feature::native_first_person` plans the layer-3 call returning to
 `0x00040136` in each of the two `0x0003fdf0` invocations when it has one
 in-layer item. The native path reserves the draw before clearing its flag
@@ -1503,16 +1453,12 @@ material or a texture-accumulation dependency stays there too. Loader
 publication is pinned to a map generation, including A → B → A transitions.
 The first-person lights themselves are not native yet.
 
-For a paired uniform comparison,
-`H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]` keeps that record mode
-on D3D, prepares the same native part and arms `d3d::uniform_compare` on
-the selected external-target encode (part 0, encode 0 by default; scaled
-output encodes a pass more than once). The ordinary path logs native draws,
+The path logs native draws,
 objects, skipped items and queue refusals every 1,800 first-person layer-3
 calls; a failed reservation leaves every candidate on D3D rather than
 dropping a planned item. Synthetic tests cover caller selection, record/body
-model divergence, per-item masks and rows, mixed record modes, comparison
-shadowing, incomplete-list refusal, immediate and next-layer restoration,
+model divergence, per-item masks and rows, mixed record modes,
+incomplete-list refusal, immediate and next-layer restoration,
 and rebuilt-list handling. The live 03a A/B is still pending.
 
 ### Shading
@@ -1647,32 +1593,6 @@ implementation samples engine texture 3.
     the stage's size (`ResolvedImplementation::dimension_bindings`, which
     the resolver left 0 by 0 for an engine texture) get it
     (`texaccum_dimensions`).
-- **The probe.** `H2_NATIVE_OBJECTS_PROBE=x,y` (guest pixels) prints, on
-  the first eight passes and every 250th after, for each object of the
-  pass whose bounding sphere covers that pixel, each of its items the
-  pass draws (`LitObjects::describe`: part, section, shader,
-  implementation, indices and the resolved depth, cull, winding, colour
-  writes, alpha test and clamp) and each it left to D3D with why; then
-  the texture accumulation level's size.
-  `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...` leaves those definitions to
-  D3D (the load refuses them), to tell which one a difference is.
-- **The comparison.** `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`
-  (e.g. `0xe92207ad:2:30`; `part` written `0x...` picks the first item
-  whose shader is that tag, `0xe92207ad:0xe5da0465:30` for the rebar) is
-  the objects' `H2_NATIVE_WORLD_DUMP`: the
-  definition's items keep their D3D draws (`NativeSet::shadowed`: the
-  host gets them as shadow items, plans them and draws none), and on the
-  pass after `after` that plans lit part `part` of the model (an index
-  into its lit parts), that draw is armed in `d3d::uniform_compare` as
-  the pass would issue it (`LitObjects::part_uniforms`: program words,
-  vertex and pixel uniforms
-  with the object's rows, decompression, lighting and texture
-  accumulation constants, translation options, pixel shader and options,
-  samplers, primitive, depth). The D3D draws with the same rows
-  `c[50..52]` and the same program are compared field by field; those
-  with another program (the object's other parts, and its earlier
-  layers, which wrote the depth a later `Equal` pass tests) are named
-  with their cull, winding, depth state and `c[0..4]`.
 - **By item, in the list's order.** The skip is per item, not per
   object or section: `objects::clear_objects` reads each item's key
   (`objects::ItemKey`: the record, the item's shader, the record key's
@@ -1909,7 +1829,7 @@ tests); evidence labels below are what the tests will show once run.
   colour (lit by the skinned normal), W depth, one object culled and one
   with the wrong node count left out.
 - **The feature `native-objects`** (`crates/feature/src/native_objects.rs`,
-  `H2_FEATURES=impl.render.native_objects=on`, off by default, exact key).
+  on by default with the rest of the native renderer).
   One observer before `LAYER_DRAW`, inside `render-timing`'s and the
   world's (`after_feature` on both), context-only. First it sets back the
   bits the last base-layer layer 3 cleared (items still holding the mask
@@ -1966,9 +1886,8 @@ tests); evidence labels below are what the tests will show once run.
 ### The live A/B
 
 Old Mombasa, E1 off, frame stats and `render-timing` on, the same spot
-with `impl.render.native_objects` off and on (with
-`impl.render.native_world` on in both, so the difference is the
-objects'). What passes:
+with the native renderer off and on (the stage-alone A/B used per-stage
+switches that are gone). What passes:
 
 - the load lines name the map's models, most as native; the refused ones
   give a reason (the run-time permutations: marines, some scenery);
@@ -2064,8 +1983,8 @@ D3D state-resolution costs still apply.
 
 1. **Sorted parts.** `feature::native_transparents` tracks the view and
    geometry handler frames. It verifies the entry argument and render
-   record at each indexed draw. The switch
-   `impl.render.native_transparents` is off by default.
+   record at each indexed draw. It is on with the rest of the native
+   renderer.
 2. **Draw state and attachments.** Each draw takes the D3D snapshot
    after that handler sets up its pass, including the effects of earlier
    setup and restore writes. The adapter requires a programmable
@@ -2091,26 +2010,10 @@ D3D state-resolution costs still apply.
    the GPU across views. No transparent draw allocates its own pair
    of uniform buffers and group.
 5. **Live A/B pending.** Capture the same Old Mombasa frame with
-   `H2_LEVEL=03a_oldmombasa` and
-   `H2_FEATURES=impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_transparents=on`.
-   For the reference, set `impl.render.native_transparents=off` and
-   keep the other switches and capture settings the same. Compare
+   `H2_LEVEL=03a_oldmombasa`. For the reference, set
+   `H2_FEATURES=impl.render.native=off` and keep the other switches and capture settings the same. Compare
    pixels, check that `native-transparents:` reports native bindings,
    and compare the `0x0002c19a` site's time.
-
-   - `H2_NATIVE_TRANSPARENTS_PROBE=x,y` names the sorted indexed entries
-     with triangles covering a guest pixel. It reports source, part,
-     record, shader, triangle depth and edge distance from the live
-     vertex program. Coverage is measured before clip, depth and alpha
-     tests.
-   - `H2_NATIVE_TRANSPARENTS_COMPARE=placement:ID:PART[@N]` keeps the
-     selected original binding and emits a one-shot diagnostic after
-     `N` eligible draws. The other selectors are `cluster:ID:PART[@N]`
-     and `object:HANDLE:PART[:RECORD][@N]`. Handles may be hexadecimal.
-     The optional record distinguishes draws that share a handle and
-     part. Read `native-transparents compare` for both vertex fetch
-     plans and the shared W clip, constants, stage textures and render
-     states.
 
 ## Stage 4: lights and shadows (design)
 
@@ -2169,10 +2072,8 @@ definition flags).
 
 ### Gathered light and shadow geometry
 
-`impl.render.native_light_walk` defaults on with the native renderer.
-`impl.render.native=off` disables it with the other stages. The lights
-and shadows switches control ownership of their respective layers. The
-light and shadow comparison modes and render timing keep the original
+The walk is on with the native renderer; `impl.render.native=off`
+disables it with the other stages. Render timing keeps the original
 builder available for comparison.
 
 At `RENDER_LIGHT_PASSES` the game has chosen the light, receivers and
@@ -2250,8 +2151,8 @@ capture interval set to `never` for the CPU timing comparison.
 
 ### Order of work
 
-1. **Admission and runs** (built, parity pending). Enable
-   `impl.render.native_lights` to reserve sorted cluster dispatches.
+1. **Admission and runs** (built, parity pending). The native lights
+   reserve sorted cluster dispatches.
    Positive admitted and per-copy recorded ranges establish coverage.
 2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
    port them as pure functions of `Light` and the `ligh` definition, with
@@ -2513,13 +2414,6 @@ capture interval set to `never` for the CPU timing comparison.
        `the_native_light_textures_hold_the_texels_the_d3d_path_uploads`
        (synthetic X8R8G8B8 cube and AL8 volume through both decodes,
        every face, level and texel).
-     - **Split lights** (`impl.render.native_lights_split`, off by default).
-       The host validates the entire sorted array, reserves the exact
-       supported prefix and skips those same sorted slots. Exclusions
-       between two consumed entries are harmless. Matching materials in
-       the D3D suffix retain their original order. The gathered item masks
-       stay intact. The synthetic split test drives the guest entry loop
-       through a duplicate, an exclusion and a failed counter write.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
@@ -2535,36 +2429,17 @@ capture interval set to `never` for the CPU timing comparison.
    initial data and deterministic input in both arms. Set
    `H2_LEVEL=03a_oldmombasa H2_OPT=2 H2_FPS=30 H2_RENDER_SCALE=1
    H2_FRAME_STATS=1 H2_BOOT_STOP_AT_PRESENT=4000 H2_BOOT_GFX_EVERY=1000`.
-   Keep render timing and split lights off. Use a separate
-   `H2_BOOT_GFX` directory for each arm so matching present numbers survive.
-
-   | Arm | `H2_FEATURES` | `H2_NATIVE_LIGHTS_COMPARE` |
-   | --- | --- | --- |
-   | D3D lights | `impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_lights=off` | `0` |
-   | Native diagnostic | `impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_lights=on` | `1` |
-   | Native pixel comparison | same as native diagnostic | `0` |
-
-   For the combined target-13 test add `impl.render.native_gels=on`
-   to both arms. Set `H2_NATIVE_GELS_COMPARE=16` for the producer
-   diagnostic and `0` for pixel comparisons. Repeat at scale 2 to
-   exercise display-copy reservations. A scene with zero shader-gel
-   admissions provides no evidence for that binding.
-
-   On stderr the first eligible diagnostic light stays on D3D. Two
-   external-pass markers bracket its draws on the backend. Look for
-   `native-lights compare: paired`, the material, layer and
-   implementation, the projected float rectangle and rounded guest scissor,
-   then the indented `uniform-compare` fields (D3D
-   first). Pairing uses the vertex program and closest pixel definition.
-   Zero matching draws means the comparison found no program to compare.
-   Separately, `D3D fallback light` compares the original pass flags
-   and each frame lane against the port, even when every light is refused.
-   Check `admitted`, reference/scaled passes, worker round trips and
-   `native_lights_v*_reference_ranges` in frame stats. Investigate
-   dropped reservations and nonzero invariant counts. Compare decoded pixels at equal presents
-   against the native arm with the diagnostic off. Identical captures
-   from a run with zero native submissions establish no light coverage.
-   Record the light site time separately after establishing parity.
+   Keep render timing off. Use a separate `H2_BOOT_GFX` directory for
+   each arm so matching present numbers survive. The D3D arm sets
+   `H2_FEATURES=impl.render.native=off`; the native arm sets nothing.
+   Repeat at scale 2 to exercise display-copy reservations. A scene with
+   zero shader-gel admissions provides no evidence for the target-13
+   binding. Check `admitted`, reference/scaled passes, worker round trips
+   and `native_lights_v*_reference_ranges` in frame stats. Investigate
+   dropped reservations and nonzero invariant counts. Compare decoded
+   pixels at equal presents. Identical captures from a run with zero
+   native submissions establish no light coverage. Record the light site
+   time separately after establishing parity.
 
 ## Stage 4b: water, fog and camouflage (design)
 
@@ -2614,8 +2489,8 @@ gates the player chain after):
   bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6
   target 3, 13 target 9 (the shadow map), 8 target 10. Whether the
   water templates' layer-6 or layer-15 passes bind one, and which, is
-  read at load by the fog/water glue's census (`H2_NATIVE_WATER_CENSUS`,
-  below) and must be answered before any water pass is drawn: a pass
+  was read at load by the fog/water glue's census (since removed) and
+  must be answered before any water pass is drawn: a pass
   sampling a target the native side has no copy of stays on the D3D
   path. **Attachment lifetime**: the only explicit copy the native
   renderer makes today is the screen effects' (`screen_gpu`: a copy of
@@ -2629,7 +2504,7 @@ gates the player chain after):
 
 ### Planar fog (built)
 
-`impl.render.native_fog` (off by default), `feature::native_fog` and
+On with the rest of the native renderer: `feature::native_fog` and
 `boot::native_fog_glue`, `native_render::fog`/`fog_gpu`. The most
 self-contained of the four: the same geometry the native world already
 loaded, drawn with each material's own translated layer-16 pass.
@@ -2689,16 +2564,13 @@ loaded, drawn with each material's own translated layer-16 pass.
   `PassState` (the 03a fog passes are `ZFUNC` equal without depth
   writes — the depth the world's native pass already wrote bit for
   bit).
-- **The A/B and diagnostics.** `H2_NATIVE_FOG_COMPARE=<cluster>:<part>[:<material>]`
-  leaves that part's items to the D3D path and arms `d3d::uniform_compare`
-  with the native pass's program and uniforms for its layer-16 draws, as
-  the world's `H2_NATIVE_WORLD_DUMP` does; the load line names the
-  materials that stayed on D3D and why, and every 1,800 layer-16 views a
-  line with the skip counts.
+- **Diagnostics.** The load line names the materials that stayed on
+  D3D and why, and every 1,800 layer-16 views a line gives the skip
+  counts.
 
 ### Water and the rest
 
-`impl.render.native_water` (off by default), `feature::native_water`,
+On with the rest of the native renderer: `feature::native_water`,
 `native_render::water_gpu` and `boot::native_water_glue`. Two parts:
 
 - **The water edge blend, drawn natively (layer 6).** The skip is the
@@ -2732,20 +2604,8 @@ loaded, drawn with each material's own translated layer-16 pass.
   source for the scene copy. Any other
   engine id — run-time chosen, the light's, a rasterizer bitmap, a
   cleared stage — refuses the material at the load
-  (`FogRefusal::Unsupplied`). `H2_NATIVE_WATER_PROBE=1` logs the
-  dimensions and part count of the first submitted recording for
-  each copy.
-- **The census** (`H2_NATIVE_WATER_CENSUS=<layers>`, default `6`;
-  `6,18,19,21` or `all`): at each layer draw of a named layer, the
-  first view and then every 1,800th, the census by caller and material
-  — items split structure (BSP cluster or placement) against object,
-  the shaders by tag index, and for layer 6 the wrappers' gates. At
-  load (the world's worker, `native_water_glue::census`) one line per
-  material with a pass in a census layer names its template's stage
-  sources: the bitmaps, and the engine textures with what each is
-  (the scene copy, the render targets by index) — the scene-copy and
-  reflection enumeration.
-- **Layers 18/19 (camouflage) and 21 (hologram)**, census-only. What
+  (`FogRefusal::Unsupplied`).
+- **Layers 18/19 (camouflage) and 21 (hologram)**, not drawn. What
   the repo establishes (Code, the lifted ports; the disc census,
   e3-lighting.md "Pass taxonomy"; `engine::render::Role`): the two
   camo layers are named ActiveCamo and ActiveCamoModulate (111 and 30
@@ -2757,11 +2617,9 @@ loaded, drawn with each material's own translated layer-16 pass.
   7, and the light passes 10 to 14. The caller is therefore some
   function no port covers — most plausibly in the object-render chain
   the camo wraps (`0x00133790`'s; the camo fades with the parent's
-  `+0x2b0`, e3-lighting's table), an S until the census names it. The
-  runtime census prints the layer draw's return address for exactly
-  that (`[esp]`, one line per layer per view); the load-side census
-  enumerates their materials' stage sources the same way. Until a
-  level with camo or a hologram has been censused, drawing them is
+  `+0x2b0`, e3-lighting's table), an S. (A census that printed the
+  layer draw's return address and the materials' stage sources has been
+  removed; finding the caller needs a new trace.) Drawing them is
   refused outright: nothing about their wrapper (whether, like water,
   a setup and a teardown bracket the layer, or whether the draw is
   per-object) or their passes' state is established, so there is
@@ -2956,10 +2814,9 @@ words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
 
 #### Native UI
 
-`impl.render.native_ui` defaults on. Set it to `off` to return the UI
-draws to D3D. `impl.render.native=off` disables UI even if explicitly
-enabled. The old `impl.render.native_hud=off` disables the same stage.
-`impl.render.native_hud_walk=off` disables the early HUD shader fan only.
+The native UI is on by default, with its early HUD shader fan.
+`impl.render.native=off` returns the UI draws to D3D with every other
+stage.
 
 The guest selects the visible screens and widgets, sorts them, and sets
 up layout, animation, text shaping, bitmap selection and shaders. At the
@@ -3040,17 +2897,13 @@ entry, incompatible inputs and failed reservations.
 `model_fallback_widget` counts widgets with a recorded refusal.
 `model_fallback_*` gives the entry, camera, caller, geometry, range
 limit, texture commit or reservation reason. The standard per-copy
-resource, validation and replay counters still apply.
-
-`H2_NATIVE_HUD_COMPARE=N` (empty means 512) disables UI replacement
-and pairs the screen/HUD fan inputs with their resolved D3D draws. The
-diagnostic does not require a native draw to succeed. The generated image
-must expose the new instruction sites for the native walk.
+resource, validation and replay counters still apply. The generated
+image must expose the new instruction sites for the native walk.
 
 ### Stage 5 status
 
-`H2_FEATURES=impl.render.native_post=on` enables the experimental
-replacement. The default uses D3D. Each enabled call either commits
+The native post is on by default with the rest of the native renderer;
+`impl.render.native=off` returns it to D3D. Each call either commits
 one complete replacement or draws all its originals. An effect whose
 plan requires an unsupported input or an unavailable live target
 uses D3D for that call.
@@ -3182,25 +3035,16 @@ uses D3D for that call.
       replacements across representative views and effects.
 
    **The frame A/B** for the glow: the same frame (a fixed save, view
-   and time, `H2_FEATURES` differing only in `impl.render.native_post`)
-   captured with the D3D path and the native one. `H2_POST_AB=<dir>`
-   (`native_post_glue::Ab`) captures the view's colour where the glow
-   lands (after the composite; before the screen effects, the fade and
-   the HUD) from each call `H2_POST_AB_AT` names (default 600; a list
-   `601,1500,2700`, or a start and a stride `600+500` for ten windows
-   spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
-   each (default 1), into
-   `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
-   under the render scale. With the switch off the hook observes
-   the same quads for a D3D capture. It queues a native capture after
-   the replacement commits. For headless GPU rendering set
-   `H2_BOOT_GFX=<dir>` and `H2_BOOT_GFX_EVERY=never`.
+   and time, one run with `H2_FEATURES=impl.render.native=off`)
+   captured with the D3D path and the native one, through the headless
+   capture (`H2_BOOT_GFX`) or the agent API. (The glow-only capture
+   switches `H2_POST_AB*` have been removed.)
 
    Compare the same view and call. Check that the expected glow and
    screen replacements committed, with no unexpected refusals or
    replays. Compare pixels on each changed intermediate, its next D3D
    consumer and the final image. Require zero unexplained pixel
-   differences. The glow A/B files capture the composite. Use the
+   differences. Use the
    agent API's `render.frame` and stage counters to inspect the other
    passes and confirm coverage. Keep a D3D measurement of
    `render_screen_effects` for the cost comparison.
@@ -3506,18 +3350,13 @@ uses D3D for that call.
      A grid that cannot be made keeps the call on D3D
      (`Missing::Wide`), as does a missing frame; a grid with a strip
      under a triangle is refused (`ScreenRefused::NoStrips`). With these
-     a wide convolution misses nothing and is armed with the switch on
-     (off by default).
+     a wide convolution misses nothing and is armed whenever the native
+     post is.
    - **Runtime diagnostics.** An early menu A/B reported identical
      images while no screen replacement committed. The menu and
      gameplay can call `0x0002d140` with different bound targets and
-     grid sizes. `H2_POST_SHAPES=1` logs the first 64 screen plans.
-     `H2_POST_TRACE=N` records the first `N` calls per egor (default
-     four), including D3D caller addresses and draw fates. `,after`
-     includes template return values. While post calls arrive it
-     prints a cumulative summary every five seconds with held calls,
-     dropped and replayed draws, glow and screen commits, and refusals
-     by reason. `H2_FRAME_STATS` includes the native post examined,
+     grid sizes. (The shapes dump and call trace that found this are
+     gone.) `H2_FRAME_STATS` includes the native post examined,
      suppressed, refused and recorded-range columns.
 
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
@@ -3545,11 +3384,11 @@ run stops at about present 2500. The machine's load varied from 40 to
 180 and moved D3D fps from 35 down to 23, so each D3D run is made back
 to back with its native run under the same load.
 
-**All native** means every switch on: `impl.render.native_world,
-native_world_programs, native_world_layers, native_objects,
-native_transparents, native_decals, native_particles, native_lights,
-native_gels, native_shadows, native_fog, native_water,
-native_first_person, native_residual, native_post, native_ui`.
+**All native** meant every per-stage switch of the time on (world,
+world programs, world layers, objects, transparents, decals, particles,
+lights, gels, shadows, fog, water, first person, residual, post and UI).
+Those switches are gone: the default is all native, and
+`impl.render.native=off` is the D3D side.
 
 ### Pixels
 
@@ -3602,26 +3441,24 @@ render thread the bottleneck.
 
 ### Status
 
-All native switches stay off by default until a paired A/B shows
-native at least as fast as D3D with identical frames.
+Every stage has defaulted on since this push (see the top of this
+document); `impl.render.native=off` is the D3D side of any A/B.
 
 ## Native scene walks for effects and overlays
 
-The walks are on by default. Set an individual `impl.render.native_<stage>_walk=off`
-to compare it with the earlier stage path on the same generated image.
-`impl.render.native=off` disables every walk. Each walk also needs its owning
-native stage switch. The effects walk shares the particles renderer and its
-stage switch.
+The walks are on whenever the native renderer is; `impl.render.native=off`
+disables every walk with its stage. The effects walk shares the particles
+renderer.
 
-| Stage | Switch suffix | Instruction boundary and guest work skipped |
-| --- | --- | --- |
-| Transparents | `native_transparents_walk` | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. Skip the indexed submission and resume at `0x0004dae0`. |
-| First person | `native_first_person_walk` | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
-| Decals | `native_decals_walk` | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
-| Particles | `native_particles_walk` | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
-| Effects | `native_effects_walk` | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
-| UI and HUD | `native_ui` | The sorted widget dispatch, HUD and loading callbacks delimit ownership. Known fans and inline rectangles bypass their guest submission as described under “Native UI”. |
-| Post | `native_post_walk` | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Supply those vertices to the ordered post transaction and resume at `0x0002d8b2`. |
+| Stage | Instruction boundary and guest work skipped |
+| --- | --- |
+| Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. Skip the indexed submission and resume at `0x0004dae0`. |
+| First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
+| Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
+| Particles | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
+| Effects | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
+| UI and HUD | The sorted widget dispatch, HUD and loading callbacks delimit ownership. Known fans and inline rectangles bypass their guest submission as described under “Native UI”. |
+| Post | At `0x0002d565` the screen strip's Begin is published. Read the active pass and two corner rows and evaluate them with the call's MXCSR. Supply those vertices to the ordered post transaction and resume at `0x0002d8b2`. |
 
 A direct native draw drains preceding work and resolves the same streams,
 program, sampler inputs, depth and colour attachment as the guest issue
@@ -3699,23 +3536,8 @@ master-off run as the D3D reference.
 
 ## Residual render callers
 
-The runtime census is selected with
-`H2_NATIVE_RESIDUAL_PROBE=2000,3000,4000`. The agent's `render.stats`
-returns the completed presents in `counters.residual.frames`. For each
-view kind it gives the invocation count and distinct `(entry, return_pc)`
-pairs, plus the draw attempts that reached the ordinary backend.
-`ViewSetup` covers the game-view prefix. `Alternate` is the separate
-`0x0002c790` view. `Scene(n)` uses the actual scene-pass argument.
-`ViewTail` covers calls after the scene passes return. `OutsideView`
-includes the frame tail and frames that never enter a game view. The counts are
-at runtime D3D entries, before native draw admission. Pair them with
-the native suppression counters and `render.frame` to distinguish
-original entry work from draw packets that still reach the D3D renderer.
-A D3D continuation that re-enters counts twice. Inline push-buffer
-methods and unhooked XDK helpers are tracked through their containing
-entries or the static call sites below. If an inline packet drains in a
-later ABI entry, its backend draw is labelled with the packet entry and
-a null return PC.
+A runtime census of these callers (by view scope, through
+`render.stats`) was used for the inventory below and has been removed.
 
 ### Retail call-site inventory
 
@@ -3750,17 +3572,15 @@ readiness and timestamps for both callers. That report is separate from
 the optional previous-frame depth grid used for object culling.
 
 The all-stage capture should cover Old Mombasa's cinematic and gameplay,
-a main menu, a movie and an alternate view. Turn on the integrated
-world/object layers, transparents, decals, particles, lights, gels,
-shadows, first person, water/fog/camouflage, post and HUD switches.
-Compare with the residual switch off and on. The census still lists
-unsupported materials, exceptional handlers, clears, target changes,
-query reports, menu/video and final display traffic, and any shader or
-geometry setup retained by a stage that replaces only resolved draws.
+a main menu, a movie and an alternate view, against the same run with
+`impl.render.native=off`. What stays on D3D: unsupported materials,
+exceptional handlers, clears, target changes, query reports, menu/video
+and final display traffic, and any shader or geometry setup retained by
+a stage that replaces only resolved draws.
 
 ### Residual geometry admission
 
-`impl.render.native_residual=on` admits the sky model's indexed strip
+With the native renderer on, the residual admission takes the sky model's indexed strip
 at `0x0004c976`, and standard layer-2 geometry at the main-scene and
 alternate-scene layer sites. Their guest order, transforms, shader
 inputs and stencil setup stay in place. The native pass consumes the
@@ -3770,7 +3590,7 @@ unknown callers retain their own D3D submission.
 
 ### Attachment and visibility entry paths
 
-The residual switch also selects the native entry path for clears,
+The native renderer also takes the native entry path for clears,
 target binds and visibility finish/results. Their ordering boundary is
 the runtime's existing drain. A one-use marker lets these handlers
 consume that drain instead of reading the push cursor a second time.
