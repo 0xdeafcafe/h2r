@@ -2838,13 +2838,27 @@ paths. The fade and solid rectangle helpers own their separate scopes.
 | Full-screen fade | The two signed-short extents at `0x00040d86`, with the fade's selected combiner and blend already set. | Begin, four position setters and End. The fade epilogue runs at `0x00040db8`. |
 | Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree. | The copy callback and inline packet publication. The common uploader's caller runs its original state tail. |
 | Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR. | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order. |
+| Menu backdrop wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the active title's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
+| Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621`. | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626`. |
+| Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified. | The packed colour and vertex loop. The guest End closes the empty stream and restores line state. |
 
-Other draws inside those callbacks, including model widgets, the menu
-backdrop's intermediate passes, and HUD geometry outside the fan helpers,
-can use the same recorder after issuing their original packet. This
-keeps each fallback at its position in the list. The route does not yet
-elide those callbacks or provide geometry for UI producers outside the
-scoped calls and known leaf sites.
+Active model widgets still use the guest's scenario-object updates, view
+and layer construction, and the material and transform uploads. When
+textures change, the same guest commit runs before native recording and
+updates the applied mirror. A refused range lets the guest emitter run
+at that draw position. Separate masked strips and disjoint triangle-list
+ranges reserve together, in guest order, and require that all draws can
+use the first draw's texture views. Each material group commits
+independently, so an active model widget can contain both native and guest
+groups. The menu backdrop
+currently reserves each fan independently. The outline keeps the
+guest's rectangle transformation and state setup.
+
+Uncovered HUD and widget helpers still build their draw packets.
+The scoped recorder can consume these packets with the resolved D3D
+draw available as ordered fallback. The host debug menu is already
+drawn by the host over the presented frame. See
+[The debug menu](../runtime/debug-menu.md).
 
 **Draw state.** Native packets take their vertex and combiner programs,
 textures, flat shading, alpha comparison, fog and stipple from the
@@ -2875,8 +2889,15 @@ and list validation refusals (`items`, `item_refused`), early
 geometry submissions skipped (`builds_skipped`, `walk_suppressed`),
 and native ranges committed on each copy. `fallback_*` distinguishes
 geometry, order, target, state, shader, texture, upload and reservation.
-A preparation refusal may accompany a failed early reservation. The
-standard per-copy resource, validation and replay counters still apply.
+A preparation refusal may accompany a failed early reservation.
+`guest_builder_draw` counts draws that still arrive as guest packets
+and `model_guest_builder_draw` counts those inside a model widget.
+`backdrop_fallback_*` and `outline_fallback_*` distinguish a missing
+entry, incompatible inputs and failed reservations.
+`model_fallback_widget` counts widgets with a recorded refusal.
+`model_fallback_*` gives the entry, camera, caller, geometry, range
+limit, texture commit or reservation reason. The standard per-copy
+resource, validation and replay counters still apply.
 
 `H2_NATIVE_HUD_COMPARE=N` (empty means 512) disables UI replacement
 and pairs the screen/HUD fan inputs with their resolved D3D draws. The

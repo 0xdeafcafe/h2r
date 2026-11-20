@@ -5545,7 +5545,8 @@ impl<B: Backend> Device<B> {
         };
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
-            if pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
+            if (pass.indexed_tail().is_some_and(|tail| tail.remaining > 1)
+                || pass.requires_independent_samples())
                 && (reads_frame_copy || !self.independent_samples(mem, &sampled)) {
                 plan.stage.count(Metric::RefusedResources, 1);
                 return None;

@@ -34,10 +34,16 @@ const OBJECT_WALK_COLUMNS: [&str; 9] = [
     "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
     "walk_model", "walk_inputs", "walk_state", "walk_reservation",
 ];
-const UI_COLUMNS: [&str; 10] = [
+const UI_COLUMNS: [&str; Ui::OutlineReservation as usize + 1] = [
     "items", "item_refused", "fallback_geometry", "fallback_order", "fallback_target",
     "fallback_state", "fallback_shader", "fallback_texture", "fallback_upload",
-    "fallback_reservation",
+    "fallback_reservation", "guest_builder_draw", "model_guest_builder_draw",
+    "backdrop_native", "backdrop_fallback_entry",
+    "backdrop_fallback_inputs", "backdrop_fallback_reservation", "model_idle",
+    "model_native_group", "model_fallback_widget", "model_fallback_entry",
+    "model_fallback_camera", "model_fallback_caller", "model_fallback_geometry",
+    "model_fallback_range_limit", "model_fallback_texture_commit", "model_fallback_reservation",
+    "outline_native", "outline_fallback_entry", "outline_fallback_inputs", "outline_fallback_reservation",
 ];
 const UI_OFFSET: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
 pub(crate) const COLUMNS: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -55,6 +61,26 @@ pub enum Ui {
     Texture,
     Upload,
     Reservation,
+    GuestBuilderDraw,
+    ModelGuestBuilderDraw,
+    BackdropNative,
+    BackdropEntry,
+    BackdropInputs,
+    BackdropReservation,
+    ModelIdle,
+    ModelNativeGroup,
+    ModelWidgetFallback,
+    ModelEntry,
+    ModelCamera,
+    ModelCaller,
+    ModelGeometry,
+    ModelRangeLimit,
+    ModelTextureCommit,
+    ModelReservation,
+    OutlineNative,
+    OutlineEntry,
+    OutlineInputs,
+    OutlineReservation,
 }
 
 impl Ui {

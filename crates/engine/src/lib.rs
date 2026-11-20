@@ -59,6 +59,8 @@ pub mod hs_syntax;
 mod squad_pool;
 pub mod tags;
 pub mod testing;
+pub mod ui_backdrop;
+pub mod ui_model;
 pub mod ui_sprite;
 pub mod view;
 

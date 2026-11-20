@@ -128,6 +128,31 @@ pub mod ui_render {
     use super::{Point, Sig};
 
     const DOC: &str = "docs/graphics/native-renderer.md";
+    pub const BACKDROP_WASH: Point =
+        Point::new("UI_BACKDROP_WASH", 0x0025_4b95, Sig::Site, DOC);
+    pub const BACKDROP_WASH_TAIL: u32 = 0x0025_4dc0;
+    pub const BACKDROP_TINT: Point =
+        Point::new("UI_BACKDROP_TINT", 0x0025_4e28, Sig::Site, DOC);
+    pub const BACKDROP_TINT_TAIL: u32 = 0x0025_4ee0;
+    pub const BACKDROP_COMPOSITE: Point =
+        Point::new("UI_BACKDROP_COMPOSITE", 0x0025_5083, Sig::Site, DOC);
+    pub const BACKDROP_COMPOSITE_TAIL: u32 = 0x0025_5191;
+    pub const MODEL_WIDGET_DRAW: u32 = 0x002b_0baa;
+    pub const MODEL_VIEW_CALL: Point =
+        Point::new("UI_MODEL_VIEW_CALL", 0x002b_0e12, Sig::Site, DOC);
+    pub const MODEL_VIEW_CONTINUATION: u32 = 0x002b_0e17;
+    pub const MODEL_VIEW_RETURN: Point =
+        Point::new("UI_MODEL_VIEW_RETURN", 0x002b_0e1b, Sig::Site, DOC);
+    pub const MODEL_GEOMETRY_CALL: Point =
+        Point::new("UI_MODEL_GEOMETRY_CALL", 0x0004_d621, Sig::Site, DOC);
+    pub const MODEL_GEOMETRY_RETURN: u32 = 0x0004_d626;
+    pub const MODEL_GEOMETRY_EMITTER: u32 = 0x0004_daa0;
+    pub const MODEL_TEXTURE_COMMIT: u32 = 0x0001_cf50;
+    pub const ITEM_CONTINUATION: u32 = 0x0023_5448;
+    pub const OUTLINE_VERTICES: Point =
+        Point::new("UI_OUTLINE_VERTICES", 0x0001_ed98, Sig::Site, DOC);
+    pub const OUTLINE_VERTICES_TAIL: u32 = 0x0001_ee3a;
+    pub const OUTLINE_SUBMIT_RETURN: u32 = 0x0023_5e55;
     pub const LAYERS_RETURN: Point = Point::new("UI_LAYERS_RETURN", 0x0014_7cb9, Sig::Site, DOC);
     pub const ITEM_CALL: Point = Point::new("UI_ITEM_CALL", 0x0023_5445, Sig::Site, DOC);
     pub const ITEM_RETURN: Point = Point::new("UI_ITEM_RETURN", 0x0023_544d, Sig::Site, DOC);

@@ -296,6 +296,10 @@ impl IndexedTail {
 pub trait ExternalPass: Send {
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
+    /// All these ranges share the textures resolved at the first draw.
+    /// Refuse if a later original draw could observe an earlier write.
+    fn requires_independent_samples(&self) -> bool { false }
+
     #[cfg(feature = "gpu")]
     /// Records the pass, on the thread that owns the GPU. Called once per
     /// copy of the targets: twice under the render scale (the 1x

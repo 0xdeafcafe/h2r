@@ -6,10 +6,10 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest};
+use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
-use feature::native_hud::{Host, HudQuadCall, HudVertices, UiScope};
+use feature::native_hud::{Host, HudQuadCall, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
 use gfx::vertex::{PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
 use native_render::camera::GuestRead;
 use native_render::hud::{self, Batch, Expect, HudQuad, Kind, Pairing};
@@ -194,6 +194,7 @@ impl Admission {
         snapshot: &DrawSnapshot<'_>,
         frame: u32,
         retain_packet: bool,
+        siblings: Arc<[IndexedStreams]>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let draw = snapshot.draw;
         if snapshot.color_header == 0 {
@@ -205,7 +206,7 @@ impl Admission {
             ExternalPlan {
                 stage: Stage::Ui,
                 view: 4,
-                ranges: 1,
+                ranges: 1 + siblings.len(),
                 slots: Vec::new(),
             },
             Box::new(UiPass {
@@ -213,6 +214,7 @@ impl Admission {
                 gpu: self.gpu.clone(),
                 frame,
                 retain_packet,
+                siblings,
             }),
         ))
     }
@@ -224,16 +226,28 @@ impl DrawAdmission for Admission {
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let scope = SCOPES.with(|scopes| scopes.borrow().active(self.owner))?;
+        if scope.kind == UiScope::Model {
+            Ui::ModelGuestBuilderDraw.count();
+            return None;
+        }
+        Ui::GuestBuilderDraw.count();
         if !scope.eligible {
             return None;
         }
-        self.plan(snapshot, scope.frame, true)
+        self.plan(snapshot, scope.frame, true, Vec::new().into())
     }
 }
 
 struct Direct<'a> {
     admission: &'a Admission,
     frame: u32,
+    siblings: Arc<[IndexedStreams]>,
+}
+
+impl<'a> Direct<'a> {
+    fn new(admission: &'a Admission, frame: u32) -> Self {
+        Self { admission, frame, siblings: Vec::new().into() }
+    }
 }
 
 impl DrawAdmission for Direct<'_> {
@@ -241,7 +255,7 @@ impl DrawAdmission for Direct<'_> {
         &self,
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        self.admission.plan(snapshot, self.frame, false)
+        self.admission.plan(snapshot, self.frame, false, self.siblings.clone())
     }
 }
 
@@ -250,20 +264,44 @@ struct UiPass {
     gpu: Arc<Mutex<UiGpu>>,
     frame: u32,
     retain_packet: bool,
+    siblings: Arc<[IndexedStreams]>,
+}
+
+impl UiPass {
+    fn prepare(&self, target: &ExternalAttachments, request: ExternalPassRequest)
+        -> Result<ExternalDraws, Refusal>
+    {
+        if request.surface_size != (self.draw.target.width, self.draw.target.height) {
+            return Err(Refusal::Target);
+        }
+        let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        let mut total = gpu.prepare(target, &self.draw, self.frame)?;
+        for sibling in self.siblings.iter() {
+            let mut draw = (*self.draw).clone();
+            draw.layout = sibling.layout.clone();
+            draw.vertex_count = sibling.vertex_count;
+            draw.streams = sibling.streams.clone();
+            draw.indices = Some(sibling.indices.clone());
+            let part = gpu.prepare(target, &draw, self.frame)?;
+            total.ranges += part.ranges;
+            total.packets.extend(part.packets);
+            total.discards |= part.discards;
+        }
+        Ok(total)
+    }
 }
 
 impl ExternalPass for UiPass {
+    fn requires_independent_samples(&self) -> bool {
+        !self.siblings.is_empty()
+    }
+
     fn record_draws(
         &mut self,
         target: &ExternalAttachments,
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
-        let result = if request.surface_size != (self.draw.target.width, self.draw.target.height) {
-            Err(Refusal::Target)
-        } else {
-            self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(target, &self.draw, self.frame)
-        };
-        Some(result.map_err(|reason| {
+        Some(self.prepare(target, request).map_err(|reason| {
             match reason {
                 Refusal::Geometry => Ui::Geometry,
                 Refusal::Target => Ui::Target,
@@ -303,7 +341,7 @@ impl<B: d3d::Backend> Glue<B> {
         &self,
         mem: &mut dyn GuestMemory,
         vertices: &[[(u8, [f32; 4]); N]; 4],
-        pushed: bool,
+        push_bytes: Option<u32>,
     ) -> bool {
         if !self.permits_draw() {
             return false;
@@ -312,13 +350,13 @@ impl<B: d3d::Backend> Glue<B> {
             Ui::Reservation.count();
             return false;
         };
-        if pushed && !inline_screen_space(mem, device.config().layout) {
+        if push_bytes.is_some_and(|bytes| !inline_space(mem, device.config().layout, bytes, false)) {
             Ui::Order.count();
             return false;
         }
-        let candidate = Direct { admission: &self.admission, frame: device.swap_count() };
+        let candidate = Direct::new(&self.admission, device.swap_count());
         let mut memory = DeviceMemory(mem);
-        let result = if pushed {
+        let result = if push_bytes.is_some() {
             device.try_native_pushed_draw(&mut memory, PrimitiveType::TriangleFan, vertices, &candidate)
         } else {
             device.try_native_immediate_draw(&mut memory, PrimitiveType::TriangleFan, vertices, &candidate)
@@ -339,38 +377,103 @@ impl<B: d3d::Backend> Glue<B> {
     }
 }
 
-fn inline_screen_space(mem: &dyn GuestMemory, layout: d3d::layout::GuestLayout) -> bool {
+// Begin and End take two words each. Each vertex takes a two-word
+// packed colour and two three-word float2 writes.
+const SCREEN_FAN_PUSH_BYTES: u32 = (2 + 4 * (2 + 3 + 3) + 2) * 4;
+
+fn inline_space(mem: &dyn GuestMemory, layout: d3d::layout::GuestLayout, bytes: u32, open: bool) -> bool {
     use d3d::layout::device_field::{FLAGS, PUT, THRESHOLD};
 
-    // Begin and End take two words each. Each vertex takes a two-word
-    // packed colour and two three-word float2 writes. Avoid skipping a
-    // push-buffer wrap or the guest's deferred fence on End.
-    const FAN_BYTES: u32 = (2 + 4 * (2 + 3 + 3) + 2) * 4;
-    const BEGIN_OR_FENCE_PENDING: u32 = 0x1800;
+    const BEGIN: u32 = 0x800;
+    const FENCE_PENDING: u32 = 0x1000;
+    let expected = if open { BEGIN } else { 0 };
     mem.u32(layout.p_device).ok().is_some_and(|device| {
         device == layout.device
-            && mem.u32(device + FLAGS).is_ok_and(|flags| flags & BEGIN_OR_FENCE_PENDING == 0)
+            && mem.u32(device + FLAGS).is_ok_and(|flags| flags & (BEGIN | FENCE_PENDING) == expected)
             && mem.u32(device + PUT).ok()
-                .and_then(|put| put.checked_add(FAN_BYTES))
+                .and_then(|put| put.checked_add(bytes))
                 .is_some_and(|end| mem.u32(device + THRESHOLD).is_ok_and(|limit| end <= limit))
     })
 }
 
 impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        self.fan(mem, vertices, false)
+        self.fan(mem, vertices, None)
     }
 
     fn screen_fan(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        self.fan(mem, vertices, true)
+        self.fan(mem, vertices, Some(SCREEN_FAN_PUSH_BYTES))
     }
 
     fn fade_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
-        self.fan(mem, vertices, false)
+        self.fan(mem, vertices, None)
     }
 
     fn loading_bitmap_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
-        self.fan(mem, vertices, false)
+        self.fan(mem, vertices, None)
+    }
+
+    fn backdrop_wash(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        self.fan(mem, vertices, Some(engine::ui_backdrop::WASH_PUSH_BYTES))
+    }
+
+    fn backdrop_composite(
+        &self,
+        mem: &mut dyn GuestMemory,
+        vertices: &engine::ui_backdrop::Fan<2>,
+    ) -> bool {
+        self.fan(mem, vertices, None)
+    }
+
+    fn model_ranges(&self, mem: &mut dyn GuestMemory, ranges: &[engine::ui_model::Range]) -> bool {
+        if !SCOPES.with(|s| {
+            s.borrow().active(self.admission.owner)
+                .is_some_and(|scope| scope.kind == UiScope::Model && scope.eligible)
+        }) {
+            return false;
+        }
+        let Some((head, rest)) = ranges.split_first() else { return false };
+        if rest.iter().any(|range| range.strip != head.strip) {
+            return false;
+        }
+        let Ok(mut device) = self.device.lock() else {
+            return false;
+        };
+        let mut candidate = Direct::new(&self.admission, device.swap_count());
+        let mut memory = DeviceMemory(mem);
+        if !rest.is_empty() {
+            if !matches!(device.drain_admission_boundary(&mut memory), Ok(true)) {
+                Ui::Order.count();
+                return false;
+            }
+            let ranges: Vec<_> = rest.iter().map(|r| (r.indices, r.count)).collect();
+            let Ok(siblings) = device.indexed_siblings(&memory, &ranges) else {
+                Ui::Geometry.count();
+                return false;
+            };
+            candidate.siblings = siblings.into();
+        }
+        let primitive = if head.strip { PrimitiveType::TriangleStrip } else { PrimitiveType::TriangleList };
+        device.try_native_indexed_draw(
+            &mut memory, primitive, head.count, head.indices, &candidate,
+        ).ok() == Some(true)
+    }
+
+    fn outline(&self, mem: &mut dyn GuestMemory, vertices: &OutlineVertices) -> bool {
+        if !self.permits_draw() {
+            return false;
+        }
+        let Ok(mut device) = self.device.lock() else {
+            return false;
+        };
+        if !inline_space(mem, device.config().layout, OUTLINE_PUSH_BYTES, true) {
+            Ui::Order.count();
+            return false;
+        }
+        let candidate = Direct::new(&self.admission, device.swap_count());
+        device.try_native_open_pushed_draw(
+            &mut DeviceMemory(mem), PrimitiveType::LineStrip, vertices, &candidate,
+        ).ok() == Some(true)
     }
 
     fn inline_ui_quad(&self, mem: &mut dyn GuestMemory, primitive: u32, bytes: Vec<u8>) -> bool {
@@ -379,7 +482,7 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         }
         let Some(primitive) = PrimitiveType::from_xbox(primitive) else { return false };
         let Ok(mut device) = self.device.lock() else { return false };
-        let candidate = Direct { admission: &self.admission, frame: device.swap_count() };
+        let candidate = Direct::new(&self.admission, device.swap_count());
         let drawn = device.try_native_inline_draw(
             &mut DeviceMemory(mem), primitive, bytes, &[None; 16], &candidate,
         ).ok() == Some(true);
@@ -522,11 +625,16 @@ mod tests {
             .put_u32(layout.device + FLAGS, 0)
             .put_u32(layout.device + PUT, put)
             .put_u32(layout.device + THRESHOLD, put + 144);
-        assert!(inline_screen_space(&mem, layout));
+        assert!(inline_space(&mem, layout, SCREEN_FAN_PUSH_BYTES, false));
         mem.put_u32(layout.device + THRESHOLD, put + 128);
-        assert!(!inline_screen_space(&mem, layout));
+        assert!(!inline_space(&mem, layout, SCREEN_FAN_PUSH_BYTES, false));
         mem.put_u32(layout.device + THRESHOLD, put + 4096)
             .put_u32(layout.device + FLAGS, 0x1000);
-        assert!(!inline_screen_space(&mem, layout));
+        assert!(!inline_space(&mem, layout, SCREEN_FAN_PUSH_BYTES, false));
+        mem.put_u32(layout.device + FLAGS, 0x0800);
+        assert!(inline_space(&mem, layout, OUTLINE_PUSH_BYTES, true));
+        assert!(!inline_space(&mem, layout, SCREEN_FAN_PUSH_BYTES, false));
+        mem.put_u32(layout.device + FLAGS, 0x1800);
+        assert!(!inline_space(&mem, layout, OUTLINE_PUSH_BYTES, true));
     }
 }

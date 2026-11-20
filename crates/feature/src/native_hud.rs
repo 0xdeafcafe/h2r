@@ -2,6 +2,9 @@
 //! Producers may skip emission after a complete native reservation. The UI
 //! walk keeps the game's order, state setup and layout callbacks.
 
+mod backdrop;
+mod model;
+mod outline;
 mod ui;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +23,7 @@ pub const SWITCH: &str = "impl.render.native_hud";
 pub const UI_SWITCH: &str = "impl.render.native_ui";
 
 pub(crate) use ui::instruction_entries;
+pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
 
 /// Both names select the same UI renderer. The old HUD key remains an
@@ -106,6 +110,26 @@ pub trait Host: Send + Sync {
     }
 
     fn loading_bitmap_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
+        false
+    }
+
+    fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    fn backdrop_composite(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _vertices: &engine::ui_backdrop::Fan<2>,
+    ) -> bool {
+        false
+    }
+
+    fn model_ranges(&self, _mem: &mut dyn GuestMemory, _ranges: &[engine::ui_model::Range]) -> bool {
+        false
+    }
+
+    fn outline(&self, _mem: &mut dyn GuestMemory, _vertices: &OutlineVertices) -> bool {
         false
     }
 

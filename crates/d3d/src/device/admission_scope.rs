@@ -19,14 +19,16 @@ impl<B: Backend> Device<B> {
 
 impl<B: Backend> Device<B> {
     fn native_producer_ready(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
+        Ok(self.native_boundary_ready(mem)? && !self.immediate.is_open())
+    }
+
+    fn native_boundary_ready(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
         if !self.created || !self.can_external_pass() || self.swallowing.is_some()
             || self.scoped_admission.is_some() || self.trace.is_some()
         {
             return Ok(false);
         }
-        Ok(self.drain_admission_boundary(mem)?
-            && !self.immediate.is_open()
-            && !self.hw.zpass_count_enable)
+        Ok(self.drain_admission_boundary(mem)? && !self.hw.zpass_count_enable)
     }
 
     /// Submit only the native recording. Refusal leaves the caller's retail
@@ -194,6 +196,38 @@ impl<B: Backend> Device<B> {
         self.try_native_register_draw(mem, primitive, vertices, admission, true)
     }
 
+    /// Replace the vertex loop of a pushed primitive. Keep the now-empty
+    /// Begin paired with the guest's End so the original flag, line width
+    /// and ownership cleanup still runs. On refusal the guest sees its
+    /// original empty assembler and can publish its own vertices.
+    pub fn try_native_open_pushed_draw<const N: usize>(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: PrimitiveType,
+        vertices: &[[(u8, [f32; 4]); N]],
+        admission: &dyn crate::DrawAdmission,
+    ) -> Result<bool, D3dError> {
+        if !self.native_boundary_ready(mem)? || !self.immediate.empty_begin(primitive)
+            || !register_vertices_valid(vertices)
+        {
+            return Ok(false);
+        }
+
+        let mut scratch = self.immediate.clone();
+        write_register_vertices(&mut scratch, vertices)?;
+        let draw = scratch.end(0)?;
+        let words = self.pushed_state(mem)?;
+        let parts = self.immediate_parts(mem, "inline Begin/End", draw, words)?;
+        scratch.begin(primitive, 0)?;
+
+        let original = std::mem::replace(&mut self.immediate, scratch);
+        let result = self.try_native_producer(mem, parts, admission);
+        if !matches!(result, Ok(true)) {
+            self.immediate = original;
+        }
+        result
+    }
+
     fn try_native_register_draw<const N: usize>(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -206,22 +240,14 @@ impl<B: Backend> Device<B> {
         if !self.native_producer_ready(mem)? {
             return Ok(false);
         }
-        if vertices.is_empty() || vertices.iter().any(|vertex| {
-            vertex.split_last().is_none_or(|(&(reg, _), attrs)| {
-                reg != 0 || attrs.iter().any(|&(reg, _)| !(1..16).contains(&reg))
-            })
-        }) {
+        if !register_vertices_valid(vertices) {
             return Ok(false);
         }
         let words = if pushed { self.pushed_state(mem)? } else { Arc::new(self.state(mem)?) };
         let initial = *self.immediate.registers();
         let mut scratch = Immediate::with_registers(initial);
         scratch.begin(primitive, 0)?;
-        for vertex in vertices {
-            for &(reg, value) in vertex {
-                scratch.set(0, usize::from(reg), &value, 0, true)?;
-            }
-        }
+        write_register_vertices(&mut scratch, vertices)?;
         let draw = scratch.end(0)?;
         let parts = self.immediate_parts(mem, entry, draw, words.clone())?;
         // The unwritten defaults must be resolved against the live carry.
@@ -236,6 +262,26 @@ impl<B: Backend> Device<B> {
         }
         result
     }
+}
+
+fn register_vertices_valid<const N: usize>(vertices: &[[(u8, [f32; 4]); N]]) -> bool {
+    !vertices.is_empty() && vertices.iter().all(|vertex| {
+        vertex.split_last().is_some_and(|(&(reg, _), attrs)| {
+            reg == 0 && attrs.iter().all(|&(reg, _)| (1..16).contains(&reg))
+        })
+    })
+}
+
+fn write_register_vertices<const N: usize>(
+    immediate: &mut Immediate,
+    vertices: &[[(u8, [f32; 4]); N]],
+) -> Result<(), PushError> {
+    for vertex in vertices {
+        for &(reg, value) in vertex {
+            immediate.set(0, usize::from(reg), &value, 0, true)?;
+        }
+    }
+    Ok(())
 }
 
 impl<B: Backend> Device<B> {
