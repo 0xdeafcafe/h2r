@@ -1293,6 +1293,28 @@ points! { ALL;
     /// Sets the first word of the vehicle update's 16 contact records
     /// (`d8` bytes each, from `buffer + bc0`) to none.
     VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
+    // Slice 6c of docs/engine/sim-rewrite-objects.md: the rest of the unit
+    // update (`UNIT_DIALOGUE_UPDATE` and `UNIT_LIGHT_UPDATE` are named above).
+    /// The unit's timers (`+2e8`, `+2ca` with the deferred injury notice,
+    /// `+1f4`); `al` whether any was running (`UNIT_UPDATE`'s fifth call).
+    UNIT_TIMERS @ 0x000c_6740: [fn(unit: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Active camouflage: the levels at `+2b0` and `+2b4` moved toward body
+    /// `+134` bits 3 and 4, and the Assassins skull's AI camouflage.
+    UNIT_CAMO_UPDATE @ 0x000c_6810: [fn(unit: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// The unit's team `+138`: the player's, the actor's, or for a vehicle
+    /// its seated units'.
+    UNIT_TEAM_UPDATE @ 0x000c_6990: [fn(unit: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Start a seat iterator (`0x18` bytes at `iterator`) at the unit's top
+    /// biped or vehicle ancestor.
+    UNIT_SEATS_BEGIN @ 0x000d_0620: [fn(unit: eax, iterator: ebx) ret 0], Hot; "docs/engine/object-update.md";
+    /// The iterator's next biped or vehicle (its handle at `+10`, seat at
+    /// `+14`, parent at `+c`); `al` whether there was one.
+    UNIT_SEATS_NEXT @ 0x000d_0690: [fn(iterator: edx) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// The unit's animation state (`0xa0e` bytes; the vehicle update calls
+    /// it): picks and starts the unit's two animation names and steps the
+    /// limits block's three channels; `al` from its last two callees and
+    /// the channels.
+    UNIT_ANIMATION_STATE @ 0x0011_1650: [fn(unit: stack 0, record: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

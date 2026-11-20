@@ -328,6 +328,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_6A_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_9_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_10_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_6C_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -431,6 +432,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     }
     answer_floats(cpu, target, n, case);
     slice_6a_answer(cpu, g, target, n, case);
+    slice_6c_answer(cpu, g, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -2629,7 +2631,7 @@ fn weapon_update() {
 /// Every guest function the slice 10 body calls that no table above
 /// lists, with the bytes its `ret` pops (docs/engine/object-update.md,
 /// "Slice 10 body"). `1d24a0`, `ba1d0` and `d6660` are slice 11's,
-/// `ba7f0` slice 8's; `bba20` is a body.
+/// `ba7f0` slice 8's; `bba20` and `111650` (slice 6c) are bodies.
 const SLICE_10_CALLEES: &[(u32, u32)] = &[
     (0x1d2460, 0),
     (0xefc30, 0),
@@ -2657,12 +2659,11 @@ const SLICE_10_CALLEES: &[(u32, u32)] = &[
     (0xd7b80, 24),
     (0x113e40, 0),
     (0xe6830, 4),
-    (0x111650, 8),
     (0xb9ef0, 0),
 ];
 
 /// Slice 10's callouts whose `al` the body branches on.
-const SLICE_10_ANSWERS_AL: &[u32] = &[0xef870, 0xefb60, 0x205510, 0x205be0, 0xcc380, 0x113e40, 0xe6830, 0x111650];
+const SLICE_10_ANSWERS_AL: &[u32] = &[0xef870, 0xefb60, 0x205510, 0x205be0, 0xcc380, 0x113e40, 0xe6830];
 
 /// The matg the vehicle update reads (`[4e034c]`, its record at `+144`),
 /// and the definition's marker array (`+2f4`, `4c` bytes each).
@@ -2752,4 +2753,439 @@ fn vehicle_update() {
 #[test]
 fn type_update_dispatch_reaches_the_vehicle() {
     dressed_with(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle);
+}
+
+// Slice 6c: the rest of the unit update: the timers `c6740`, the dialogue
+// update `114c60`, the team `c6990` with its seat iterator `d0620` and
+// `d0690`, active camouflage `c6810`, the integrated light `c50a0`, and
+// the animation state `111650`. The shell root (`unit_update`) reaches the
+// first five through `c6b30` and the vehicle roots reach `111650`; the
+// roots below run each over the slice 6a unit dressing plus the fields
+// these bodies branch on: the campaign and the skulls, a player and an
+// actor, a vehicle with two seated bipeds and a weapon between them (and
+// a vehicle parent for some), the timers, the camouflage and light levels,
+// and the dialogue block.
+
+/// Every guest function a slice 6c body calls that no table above lists,
+/// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 6c
+/// bodies").
+const SLICE_6C_CALLEES: &[(u32, u32)] = &[
+    // The timers `c6740`.
+    (0x1c9c80, 16),
+    (0xcffc0, 0),
+    // Active camouflage `c6810`.
+    (0xbfe60, 4),
+    (0xb58c0, 8),
+    // The integrated light `c50a0`.
+    (0xc5890, 0),
+    (0xc5740, 4),
+    // The dialogue update `114c60`.
+    (0x20b140, 8),
+    (0x1891d0, 4),
+    (0x20d220, 12),
+    (0x20d570, 8),
+    (0x20fd50, 0),
+    // The animation state `111650` (`ba160` is slice 10's, `d6bc0` slice
+    // 11's).
+    (0x113910, 0),
+    (0x10eef0, 4),
+    (0x1cb710, 20),
+    (0xe6a20, 8),
+    (0x1c6440, 0),
+    (0xe6b00, 12),
+    (0xbfc90, 0),
+    (0x1c7380, 0),
+    (0x10eea0, 0),
+    (0x10ee70, 0),
+    (0x13e420, 8),
+    (0x1c73a0, 8),
+    (0x142570, 4),
+    (0xb8bd0, 4),
+    (0xe4300, 0),
+    (0xe5840, 4),
+    (0x11b710, 4),
+    (0x10f5f0, 0),
+    (0xa7670, 0),
+    (0x111010, 0),
+    (0xc7070, 0),
+    (0x1103a0, 12),
+    (0x10f430, 28),
+    (0x1ccba0, 0),
+    (0x10ee20, 0),
+    (0x1ce180, 12),
+    (0x1060a0, 0),
+    (0x1c68c0, 12),
+    (0x1c63f0, 0),
+    (0x114330, 0),
+    (0x110fc0, 0),
+    (0xba350, 4),
+    (0x10dc70, 0),
+    (0x10eaf0, 0),
+];
+
+/// Slice 6c's callouts whose `al` a body branches on.
+const SLICE_6C_ANSWERS_AL: &[u32] = &[
+    0xbfe60, 0x113910, 0xbfc90, 0x10eea0, 0xa7670, 0x111010, 0xc7070, 0x1103a0, 0x10f430, 0x10ee20, 0x110fc0,
+    0x10dc70, 0x10eaf0,
+];
+
+/// The slice 6c stubs' answers beyond [`answer`]'s: yes and no by turns
+/// in `al`.
+fn slice_6c_answer(cpu: &mut Cpu, _g: &mut Guest, target: u32, n: usize, case: u32) {
+    if SLICE_6C_ANSWERS_AL.contains(&target) {
+        cpu.gpr[0] = (n as u32 + case) % 2;
+    }
+}
+
+/// The players array the player tests read (`[4e8c24]`, data at `+44`,
+/// `21c` bytes each), and the local player's record (`[4f55ec]`).
+const UNIT_PLAYERS: u32 = 0x0068_2000;
+const UNIT_LOCAL_PLAYER: u32 = 0x004f_55ec;
+/// The byte the light update tests through `[5107e8]`.
+const UNIT_PAUSED_GLOBAL: u32 = 0x0051_07e8;
+const UNIT_PAUSED: u32 = 0x0068_3000;
+/// The seat iterator the iterator roots are given.
+const UNIT_ITERATOR: u32 = 0x0068_1000;
+/// The vehicle definition's seat records (`+1cc`, `b0` bytes each).
+const UNIT_SEATS: u32 = DEFINITION + 0xc00;
+/// The dialogue block's offset from the body (`[body+342]`).
+const UNIT_DIALOGUE: u16 = 0x1000;
+/// The seated bipeds, the weapon between them, and the vehicle parent.
+const SEATED: [u32; 2] = [40, 41];
+const SEAT_WEAPON: u32 = 43;
+const UNIT_PARENT: u32 = 42;
+
+/// [`unit_dress`], then the fields the slice 6c bodies branch on, varied
+/// by `case`: player cases (`case % 4 == 1`), actor cases (`2`), vehicle
+/// cases (`0`, and `3` with the early-out bit or as a biped).
+fn unit_rest_dress(g: &mut Guest, case: u32) {
+    unit_dress(g, case);
+    let c = case as usize;
+    let f = |v: f32| v.to_bits();
+    let slot = object(case) & 0xffff;
+    let unit = handle(slot);
+    let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    let kind = case % 4;
+    // The campaign but in two cases; Envy once, Assassins for the actors.
+    word(g, PHASE + 8, u32::from(case != 7 && case != 14));
+    byte(g, points::SKULLS.base, u8::from(case == 9));
+    byte(g, points::SKULLS.base + 2, u8::from(kind == 2));
+
+    // The timers (`c6740`).
+    g.set_u16(body + 0x2e8, [0, 1, 2, 1, 0, 3][c % 6]).unwrap();
+    word(g, body + 0x2e4, f(0.5));
+    g.set_u16(body + 0x2ca, [1, 0, 2, 1, 0xffff, 1, 0][c % 7]).unwrap();
+    g.set_u16(body + 0x2c8, 7).unwrap();
+    word(g, body + 0x2cc, f(0.25));
+    word(g, body + 0x2d0, 0x00e8_0001);
+    byte(g, body + 0x1f4, [0, 1, 2, 0, 1][c % 5]);
+
+    // A player, an actor, or neither.
+    word(g, body + 0x13c, if kind == 1 { 0x00eb_0001 } else { u32::MAX });
+    word(g, body + 0x12c, if kind == 2 { 0x00e9_0002 } else { u32::MAX });
+    word(g, points::PLAYERS.base, UNIT_PLAYERS);
+    word(g, UNIT_PLAYERS + 0x44, UNIT_PLAYERS + 0x100);
+    let player = UNIT_PLAYERS + 0x100 + 0x21c;
+    byte(g, player + 0xc0, [0xfe, 4][c % 2]);
+    byte(g, player + 0x88, u8::from(case == 5));
+    word(g, UNIT_LOCAL_PLAYER, UNIT_PLAYERS + 0x800);
+    // The team: in range, none, out of range, negative.
+    g.set_u16(body + 0x138, [3, 0xffff, 0x12, 5, 0x8000][c % 5]).unwrap();
+
+    // Active camouflage (`c6810`) and the light (`c50a0`): body `+134`
+    // bits 3 and 4 the camouflage's direction, 29 the light, 15 a toggle.
+    let camo = [0, 8, 0x10, 0x18][c % 4];
+    let lit = [0, 0, 1 << 29, 0, 1 << 29][c % 5];
+    word(g, body + 0x134, camo | lit | if case % 3 == 0 { 0x8000 } else { 0 });
+    word(g, body + 0x2b8, f(0.75));
+    word(g, body + 0x2b0, f([0.0, 0.99, 0.5, 0.01][(c / 4) % 4]));
+    word(g, body + 0x2b4, f([0.5, 0.0, 1.0, 0.98][(c / 3) % 4]));
+    word(g, body + 0xd4, if case % 3 == 2 { u32::MAX } else { 0x00ea_0003 });
+    byte(g, body + 0x148, [4, 0, 4, 4, 0][c % 5]);
+    word(g, body + 0x268, f([0.0, 0.01, 1.0][c % 3]));
+    word(g, body + 0x264, f([0.5, 1.0, 0.25, 0.999, 0.0][c % 5]));
+    byte(g, body + 0x2bc, [0, 1, 2][c % 3]);
+    g.set_u16(body + 0x2be, [1, 0, 2, 1][c % 4]).unwrap();
+    word(g, UNIT_PAUSED_GLOBAL, UNIT_PAUSED);
+    byte(g, UNIT_PAUSED, u8::from(case % 6 == 1));
+
+    // The team of a vehicle: two seated bipeds and a weapon in its child
+    // list, the first in a flagged seat; a vehicle parent for some.
+    let early = u16::from(case == 3) << 2;
+    let damage = g.u16(body + 0x10a).unwrap() & !4;
+    g.set_u16(body + 0x10a, damage | early).unwrap();
+    byte(g, body + 0xaa, u8::from(kind != 3 || case == 3));
+    word(g, body + 0x10, handle(SEATED[0]));
+    word(g, body + 0x0c, u32::MAX);
+    g.set_u16(body + 0x1fc, 0).unwrap();
+    let parented = case % 8 == 0;
+    word(g, body + 0x14, if parented { handle(UNIT_PARENT) } else { u32::MAX });
+    let flags = g.u32(body + 4).unwrap() & !(1 << 26);
+    word(g, body + 4, flags | u32::from(parented || case % 8 == 4) << 26);
+    let parent = RECORDS + BODY * UNIT_PARENT;
+    byte(g, parent + 0xaa, 1);
+    word(g, parent + 4, 0);
+    word(g, parent + 0x10, unit);
+    for off in [0x0c, 0x14] {
+        word(g, parent + off, u32::MAX);
+    }
+    let chain = [SEATED[0], SEAT_WEAPON, SEATED[1]];
+    for (i, &s) in chain.iter().enumerate() {
+        let b = RECORDS + BODY * s;
+        let next = chain.get(i + 1).map_or(u32::MAX, |&n| handle(n));
+        word(g, b + 0x0c, next);
+        word(g, b + 0x10, u32::MAX);
+        word(g, b + 0x14, unit);
+        byte(g, b + 0xaa, if s == SEAT_WEAPON { 2 } else { 0 });
+        word(g, b + 4, u32::from(s == SEATED[0] && case % 2 == 0) << 26);
+    }
+    g.set_u16(RECORDS + BODY * SEATED[0] + 0x1fc, 0).unwrap();
+    g.set_u16(RECORDS + BODY * SEATED[1] + 0x1fc, [1, 0xffff][c % 2]).unwrap();
+    g.set_u16(RECORDS + BODY * SEATED[0] + 0x138, 3).unwrap();
+    g.set_u16(RECORDS + BODY * SEATED[1] + 0x138, [3, 5, 0xffff][c % 3]).unwrap();
+    word(g, DEFINITION + 0x1cc, UNIT_SEATS);
+    word(g, UNIT_SEATS, 1 << 11);
+    word(g, UNIT_SEATS + 0xb0, 0);
+
+    // The dialogue block (`114c60`): its timers, the line playing or not,
+    // started or not, a sound or none; and the step at body `+208`.
+    g.set_u16(body + 0x342, UNIT_DIALOGUE).unwrap();
+    let d = body + u32::from(UNIT_DIALOGUE);
+    g.set_u16(d + 0x3c, [0, 1, 2, 1][c % 4]).unwrap();
+    g.set_u16(d + 0x3e, [0, 1, 3][c % 3]).unwrap();
+    g.set_u16(d + 0x42, [0, 2][c % 2]).unwrap();
+    g.set_u16(d + 0x40, [1, 0][c % 2]).unwrap();
+    g.set_u16(d + 0x0c, [1, 0, 1, 0xffff, 2][c % 5]).unwrap();
+    g.set_u16(d + 0x0e, 9).unwrap();
+    byte(g, d + 0x48, [0, 1, 0][c % 3]);
+    byte(g, d + 0x49, [0, 0, 1][(c / 2) % 3]);
+    byte(g, d + 0x4a, [0, 1][(c / 3) % 2]);
+    word(g, d + 0x08, 0x00ee_0004);
+    word(g, d + 0x10, if case % 5 == 2 { u32::MAX } else { 0x00ec_0001 });
+    word(g, d + 0x1c, if case % 3 == 1 { u32::MAX } else { 0x00ed_0002 });
+    g.set_u16(d + 0x4e, [0, 1, 0, 3][c % 4]).unwrap();
+    g.set_u16(d + 0x4c, [0, 1, 2, 0, 0][c % 5]).unwrap();
+    g.set_u16(d + 0x50, [0, 0, 1][c % 3]).unwrap();
+    word(g, d + 0x54, 0x00ef_0005);
+    word(g, body + 0x208, f([-2.0, 0.0, 0.3, 5.0, -0.01][c % 5]));
+}
+
+/// The record `111650` is given (stack 1).
+const UNIT_ANIMATION_RECORD: u32 = 0x0068_4000;
+/// The animation block's and the limits block's offsets from the body
+/// for the `111650` root (`[body+12a]`, `[body+33e]`), clear of the
+/// fields the other slice 6c bodies read.
+const UNIT_ANIMATION_BLOCK: u16 = 0x1100;
+const UNIT_ANIMATION_LIMITS: u16 = 0x1200;
+/// The counter the weapon refresh is spread over.
+const UNIT_ANIMATION_COUNTER: u32 = 0x0055_e70c;
+/// Where `111650`'s `cmp` ladder carries the names it switches on (the
+/// `imm32` of each `cmp esi, imm`), read from the image.
+const UNIT_ANIMATION_NAMES: [u32; 9] =
+    [0x1118f7, 0x111935, 0x111911, 0x111905, 0x111aa5, 0x11191d, 0x111b30, 0x111b38, 0x111b40];
+
+/// The fields `111650` branches on, over [`unit_rest_dress`]: the record's
+/// names and bytes, the animation block (playing or not, its flag words,
+/// the name it had, which the `cmp` ladder switches on), the limits
+/// block's three channels, the definition's seat index and kill flag, the
+/// parent's seat, the held weapons and the refresh counter.
+fn unit_animation_dress(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    let slot = object(case) & 0xffff;
+    let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    let r = UNIT_ANIMATION_RECORD;
+    word(g, r, [u32::MAX, 0, 0x00f0_0001, 0x00f0_0002][c % 4]);
+    word(g, r + 4, [0, 0x00f1_0001, u32::MAX][c % 3]);
+    byte(g, r + 8, 3);
+    byte(g, r + 9, (case % 2) as u8);
+
+    // The body: the blocks, the early-out bit, the dying byte and the
+    // kill flag, the arguments of `1cb710`, the held weapons.
+    g.set_u16(body + 0x12a, UNIT_ANIMATION_BLOCK).unwrap();
+    g.set_u16(body + 0x33e, UNIT_ANIMATION_LIMITS).unwrap();
+    let damage = g.u16(body + 0x10a).unwrap() & !4;
+    g.set_u16(body + 0x10a, damage | if case == 6 { 4 } else { 0 }).unwrap();
+    byte(g, body + 0x1f4, u8::from(case == 7));
+    byte(g, body + 0xc1, (case % 2) as u8);
+    g.set_u16(body + 0x10e, 0x20).unwrap();
+    g.set_u16(body + 0x110, 0x60).unwrap();
+    g.set_u16(body + 0x112, 0x40).unwrap();
+    for i in 0..4u32 {
+        let held = if (i + case) % 3 == 0 { u32::MAX } else { 0x00f2_0000 | i };
+        word(g, body + 0x218 + 4 * i, held);
+    }
+    word(g, UNIT_ANIMATION_COUNTER, if case % 3 == 0 { slot.wrapping_sub(1) } else { case });
+    // The record word's `+36` (body `+ [body+346]`).
+    g.set_u16(body + u32::from(UNIT_RECORD) + 0x36, u16::from(case == 9)).unwrap();
+    // Definition: the kill test's flag, the seat index; the parent's
+    // seat record `+3e`.
+    let bits = g.u32(DEFINITION + 0xbc).unwrap() & !2;
+    word(g, DEFINITION + 0xbc, bits | if case % 2 == 0 { 2 } else { 0 });
+    g.set_u16(DEFINITION + 0x254, [0xffff, 2, 0][c % 3]).unwrap();
+    g.set_u16(UNIT_SEATS + 0x3e, [0xffff, 1][c % 2]).unwrap();
+
+    // The animation block: playing (`+0`, `+6`) but in two cases; its
+    // flags `+11`, `+12`, `+6c`, `+6e`; names `+70`, `+7c` (the ladder's
+    // names in turn, and one it does not know); `+68` none or not.
+    let a = body + u32::from(UNIT_ANIMATION_BLOCK);
+    word(g, a, if case == 2 { u32::MAX } else { 0x00f3_0001 });
+    g.set_u16(a + 6, if case == 3 { 0xffff } else { 1 }).unwrap();
+    byte(g, a + 0x11, [0x02, 0x0a, 0x08, 0x02, 0x00][c % 5]);
+    g.set_u16(a + 0x12, [0x0001, 0x4001, 0x4003, 0x0001, 0x0000, 0x0001][c % 6]).unwrap();
+    g.set_u16(a + 0x14, [0, 3][c % 2]).unwrap();
+    g.set_u16(a + 0x16, 5).unwrap();
+    word(g, a + 0x68, if case % 4 == 1 { u32::MAX } else { 0x00f4_0001 });
+    g.set_u16(a + 0x6c, u16::from(case == 11)).unwrap();
+    g.set_u16(a + 0x6e, (case % 2) as u16).unwrap();
+    let name = |g: &Guest, i: usize| g.u32(UNIT_ANIMATION_NAMES[i % UNIT_ANIMATION_NAMES.len()]).unwrap();
+    let before = if c % 10 == 9 { 0x0100_0000 } else { name(g, c) };
+    word(g, a + 0x7c, before);
+    word(g, a + 0x70, name(g, c + 3));
+    word(g, a + 0x74, 0x00f5_0001);
+    word(g, a + 0x78, 0x00f5_0002);
+    // The channel marks' blocks at `+20`, `+40` (as `+0`).
+    for off in [0x20u32, 0x40] {
+        word(g, a + off, if case % 2 == 0 { 0x00f6_0001 } else { u32::MAX });
+        g.set_u16(a + off + 6, 2).unwrap();
+        byte(g, a + off + 0x11, 0);
+        byte(g, a + off + 0x12, 1);
+    }
+
+    // The limits block: `+0` bit 7, `+1` bit 0, the override `+2c`, and
+    // three channels at `+dc`, `+9c`, `+bc` playing or not, with names
+    // equal to the definition's (`+8`) or not.
+    let l = body + u32::from(UNIT_ANIMATION_LIMITS);
+    byte(g, l, [0x80, 0, 0x81][c % 3]);
+    byte(g, l + 1, (case % 2) as u8);
+    word(g, l + 0x2c, if case % 5 == 4 { 0x00f7_0001 } else { u32::MAX });
+    for (i, off) in [0xdcu32, 0x9c, 0xbc].into_iter().enumerate() {
+        let ch = l + off;
+        let k = c + i;
+        word(g, ch, if k % 4 == 3 { u32::MAX } else { 0x00f8_0000 | i as u32 });
+        g.set_u16(ch + 6, if k % 5 == 4 { 0xffff } else { 1 }).unwrap();
+        word(g, ch + 8, if k % 2 == 0 { DEFINITION } else { 0x00f9_0001 });
+        byte(g, ch + 0x11, [0x00, 0x02, 0x04, 0x08, 0x0e][k % 5]);
+        g.set_u16(ch + 0x12, [0x0001, 0x4000, 0x4002, 0x0000][k % 4]).unwrap();
+        g.set_u16(ch + 0x14, [0, 4][k % 2]).unwrap();
+        g.set_u16(ch + 0x16, 6).unwrap();
+    }
+}
+
+/// The arguments of a slice 6c root: the unit in `eax` (and the iterator
+/// in `ebx` for `d0620`), the iterator in `edx` for `d0690` (part way
+/// through by the case), the unit on the stack for `c6b30`, and the unit
+/// and its record on the stack for `111650`.
+fn unit_rest_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let unit = object(case);
+    cpu.gpr[0] = unit;
+    if root == points::UNIT_UPDATE.base {
+        word(g, STACK + 4, unit);
+    }
+    if root == points::UNIT_SEATS_BEGIN.base {
+        cpu.gpr[3] = UNIT_ITERATOR;
+    }
+    if root == points::UNIT_SEATS_NEXT.base {
+        let (first, current, next) = match case % 5 {
+            0 => (unit, unit, handle(SEATED[0])),
+            1 => (unit, unit, handle(SEAT_WEAPON)),
+            2 => (unit, unit, u32::MAX),
+            3 => (unit, handle(SEATED[0]), u32::MAX),
+            _ => (unit, u32::MAX, u32::MAX),
+        };
+        word(g, UNIT_ITERATOR, first);
+        word(g, UNIT_ITERATOR + 4, current);
+        word(g, UNIT_ITERATOR + 8, next);
+        cpu.gpr[2] = UNIT_ITERATOR;
+    }
+    if root == points::UNIT_ANIMATION_STATE.base {
+        word(g, STACK + 4, unit);
+        word(g, STACK + 8, UNIT_ANIMATION_RECORD);
+    }
+}
+
+/// [`transcripts`] of a slice 6c root over a [`unit_rest_dress`]ed pool.
+fn unit_rest_transcripts(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    UNIT.with(|u| u.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            unit_rest_dress(&mut g, case);
+            if point.base == points::UNIT_ANIMATION_STATE.base {
+                unit_animation_dress(&mut g, case);
+            }
+            unit_rest_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+    UNIT.with(|u| u.set(false));
+}
+
+#[test]
+fn unit_timers() {
+    unit_rest_transcripts(&points::UNIT_TIMERS, 12);
+}
+
+#[test]
+fn unit_dialogue_update() {
+    unit_rest_transcripts(&points::UNIT_DIALOGUE_UPDATE, 20);
+}
+
+#[test]
+fn unit_team_update() {
+    unit_rest_transcripts(&points::UNIT_TEAM_UPDATE, 16);
+}
+
+#[test]
+fn unit_seat_iterator() {
+    unit_rest_transcripts(&points::UNIT_SEATS_BEGIN, 8);
+    unit_rest_transcripts(&points::UNIT_SEATS_NEXT, 10);
+}
+
+#[test]
+fn unit_camo_update() {
+    unit_rest_transcripts(&points::UNIT_CAMO_UPDATE, 16);
+}
+
+#[test]
+fn unit_light_update() {
+    unit_rest_transcripts(&points::UNIT_LIGHT_UPDATE, 20);
+}
+
+#[test]
+fn unit_animation_state() {
+    unit_rest_transcripts(&points::UNIT_ANIMATION_STATE, 16);
+}
+
+/// The shell fuses the slice 6c children over their dressing.
+#[test]
+fn unit_update_fuses_the_rest() {
+    unit_rest_transcripts(&points::UNIT_UPDATE, 16);
 }
