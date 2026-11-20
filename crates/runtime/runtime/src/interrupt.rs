@@ -74,10 +74,6 @@ impl InterruptQueue {
     pub(crate) fn leave_word(&self) -> bool {
         self.leave_word.load(Ordering::Relaxed)
     }
-    /// The queued count, for generated code's direct calls (`direct.rs`).
-    pub(crate) fn pending_ptr(&self) -> *const AtomicUsize {
-        &self.pending
-    }
     /// Whether anything is queued: one load, for the runner's every-transfer
     /// check (the queue's lock and the runtime handle are taken only then).
     pub(crate) fn any_pending(&self) -> bool {
@@ -90,7 +86,9 @@ impl Runtime {
     /// preempt word, from now on, set exactly while the interrupt queue is
     /// not empty, so that the word alone answers "would the runner's safe
     /// point do anything". Only for generated code whose loop polls ignore
-    /// that bit (preempt.rs, "The leave word"); there is no way back.
+    /// that bit (preempt.rs, "The leave word"); there is no way back. The
+    /// runtime calls it itself when dispatch first has a module with an
+    /// entry table (`generated::FEATURE_ENTRY_TABLE`).
     pub fn enable_leave_word(&self) {
         let queue = self.interrupts.lock();
         self.interrupts.leave_word.store(true, Ordering::Relaxed);

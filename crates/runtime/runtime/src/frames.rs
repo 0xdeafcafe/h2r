@@ -21,6 +21,13 @@ struct CallRecord {
     slot: u32,
 }
 
+/// A position in a [`ShadowStack`] ([`ShadowStack::mark`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Mark {
+    len: usize,
+    current: u32,
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ShadowStack {
     records: VecDeque<CallRecord>,
@@ -61,6 +68,24 @@ impl ShadowStack {
     pub(crate) fn clear(&mut self) {
         self.records.clear();
         self.current = 0;
+    }
+
+    /// Where the record stands now, for [`rewind`](Self::rewind).
+    pub(crate) fn mark(&self) -> Mark {
+        Mark {
+            len: self.records.len(),
+            current: self.current,
+        }
+    }
+
+    /// Drop the records made since `mark` and make its function current
+    /// again (the host-call thunk, direct.rs). A record that has since
+    /// unwound below the mark stays as it is.
+    pub(crate) fn rewind(&mut self, mark: Mark) {
+        if self.records.len() >= mark.len {
+            self.records.truncate(mark.len);
+            self.current = mark.current;
+        }
     }
 
     pub(crate) fn snapshot(&self, pc: u32) -> Vec<GuestFrame> {
@@ -123,6 +148,23 @@ mod tests {
                 pc: 0x1005
             }]
         );
+    }
+    #[test]
+    fn rewind_drops_what_came_after_the_mark() {
+        let mut s = ShadowStack::default();
+        s.enter(0x1000);
+        s.call(0x2000, 0x1005, 0x7ffc);
+        let mark = s.mark();
+        let before = s.snapshot(0x2001);
+        s.call(0x3000, 0x2005, 0x7ff0);
+        s.call(0x4000, 0x3005, 0x7fe0);
+        s.enter(0x4100);
+        s.rewind(mark);
+        assert_eq!(s.snapshot(0x2001), before);
+        // Unwound below the mark since: left as it is.
+        s.unwind(0x8000);
+        s.rewind(mark);
+        assert_eq!(s.snapshot(0x1005), vec![GuestFrame { function: 0x1000, pc: 0x1005 }]);
     }
     #[test]
     fn deep_chains_are_bounded() {

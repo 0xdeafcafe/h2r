@@ -72,6 +72,7 @@ impl Guest {
             watch: Default::default(),
             hle_writes: None,
             layout: fresh_layout(),
+            code_id: fresh_layout(),
             trap: None,
             cow_source_layout: 0, watch_revision: 0,
         };
@@ -109,6 +110,7 @@ impl Guest {
     }
 
     fn copy_layout_from(&mut self, source: &Guest) {
+        self.code_moved();
         self.mappings = source.mappings.clone();
         self.next_physical = source.next_physical;
         self.reservations = source.reservations.clone();

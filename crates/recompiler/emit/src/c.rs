@@ -73,11 +73,13 @@ pub struct OwnerShape<'a> {
     pub loops: &'a crate::backedge::Loops,
     /// Count guest memory accesses in the handler ([`crate::Codegen`]).
     pub accounting: bool,
-    /// The module's function entries (each has a handler `h2fn_<entry>`):
+    /// The module's function entries (each has a handler `h2fn_<entry>`)
+    /// and their entry indices (RUNTIME-CONTRACT.md §2, the entry table):
     /// a call or tail jump to one may invoke it directly (`H2_DCALL`,
-    /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"). `None` emits
-    /// every transfer for the runner.
-    pub functions: Option<&'a BTreeSet<u32>>,
+    /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"), if the
+    /// runtime's entry table holds it at that index. `None` emits every
+    /// transfer for the runner.
+    pub functions: Option<&'a BTreeMap<u32, u32>>,
 }
 
 /// [`homes`] bit for EFLAGS and its defined mask (bits 0-7 are the GPRs in
@@ -1104,14 +1106,14 @@ impl Emitter<'_> {
         self.dirty.get(&pc).copied().unwrap_or(self.home)
     }
 
-    /// Whether `t` is a function entry of the module, so its handler may be
-    /// invoked directly; records it for a prototype.
-    fn direct_target(&mut self, t: u32) -> bool {
-        let yes = self.shape.functions.is_some_and(|f| f.contains(&t));
-        if yes {
+    /// `t`'s entry index if it is a function entry of the module, so its
+    /// handler may be invoked directly; records it for a prototype.
+    fn direct_target(&mut self, t: u32) -> Option<u32> {
+        let index = self.shape.functions.and_then(|f| f.get(&t).copied());
+        if index.is_some() {
             self.direct.insert(t);
         }
-        yes
+        index
     }
 
     /// `goto` a local block, or leave through an entry-routed jump so the
@@ -1134,17 +1136,29 @@ impl Emitter<'_> {
     fn control(&mut self, insn: &IrInsn, last: bool) {
         let pc = insn.pc;
         let d = 2;
+        // The entry index of a static call's or tail jump's target, when it
+        // may be invoked directly.
+        let direct = match &insn.control {
+            Control::Jump { target: Target::Direct(t), tail: true, .. } => self.direct_target(*t),
+            Control::Call { target: Target::Direct(t), continuation, .. }
+                if self.shape.selectors.contains(continuation) =>
+            {
+                self.direct_target(*t)
+            }
+            _ => None,
+        };
         match &insn.control {
             Control::Next => {
                 if last {
                     self.line(d, Self::go(Dest::local(insn.next_pc())));
                 }
             }
-            Control::Jump { target: Target::Direct(t), tail: true, .. } if self.direct_target(*t) => {
+            Control::Jump { target: Target::Direct(t), tail: true, .. } if direct.is_some() => {
+                let index = direct.unwrap_or_default();
                 self.settle(lazy::ALL, d);
                 let spill = if self.x87 { "H2X87_SPILL()" } else { "(void)0" };
                 let dirty = self.dirty_at(pc);
-                self.line(d, format!("H2_DJUMP({}, {t:#x}u, {spill}, {dirty:#x}u);", symbol(*t)));
+                self.line(d, format!("H2_DJUMP({}, {index}u, {t:#x}u, {spill}, {dirty:#x}u);", symbol(*t)));
             }
             Control::Jump { target: Target::Direct(t), tail, .. } => {
                 self.line(d, Self::go(Dest { pc: *t, tail: *tail }));
@@ -1172,9 +1186,8 @@ impl Emitter<'_> {
                 self.line(d, format!("default: H2_HALT({pc:#x}u, H2SHIM_UNKNOWN_TARGET, {});", val(target)));
                 self.line(d, "}");
             }
-            Control::Call { target: Target::Direct(t), continuation, .. }
-                if self.direct_target(*t) && self.shape.selectors.contains(continuation) =>
-            {
+            Control::Call { target: Target::Direct(t), continuation, .. } if direct.is_some() => {
+                let index = direct.unwrap_or_default();
                 // The continuation is this handler's own selector, so a
                 // return there resumes this handler with that start: going
                 // on from its label is the same thing.
@@ -1187,17 +1200,23 @@ impl Emitter<'_> {
                 self.line(
                     d,
                     format!(
-                        "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
+                        "H2_DCALL({}, {index}u, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
                         symbol(*t)
                     ),
                 );
             }
-            // A call through a pointer, back to this handler: H2_ICALL finds
-            // the target's handler in the direct slots the runner filled
-            // and calls it as H2_DCALL would, or leaves for the runner as
-            // below.
-            Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
-                if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
+            // A call through a pointer or a kernel import slot, back to this
+            // handler: H2_ICALL finds the target's entry index in the
+            // module's pcmap and its handler in the runtime's entry table,
+            // or for a target outside the module's text (a kernel import's
+            // token) the host-call thunk, and calls it as H2_DCALL would,
+            // or leaves for the runner as below.
+            Control::Call {
+                target: Target::Dynamic(v),
+                continuation,
+                kind: CallKind::Indirect | CallKind::Kernel { .. },
+                ..
+            } if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
             {
                 self.settle(lazy::ALL, d);
                 let label = if self.shape.loops.headers.contains(continuation) { "P" } else { "L" };
