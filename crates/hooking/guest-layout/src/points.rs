@@ -1233,6 +1233,9 @@ points! { ALL;
     CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Creature post-physics update: slot `+44` of `crea`.
     CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 11: the projectile step.
+    /// Projectile step: one tick of a projectile's flight (homing, drag, gravity, collision, up to ten hits), called by `PROJECTILE_UPDATE`.
+    PROJECTILE_STEP @ 0x000f_8eb0: [fn(object: stack 0, velocity: stack 1) ret 8], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

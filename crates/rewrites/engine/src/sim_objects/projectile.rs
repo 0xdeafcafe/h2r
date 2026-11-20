@@ -1,7 +1,7 @@
 //! The projectile update `f8de0` (slice 11 of docs/engine/sim-rewrite-objects.md;
 //! contract in docs/engine/object-update.md, "Slice 11 bodies"): the `proj`
-//! descriptor's slot `+40`. The projectile step it calls, `f8eb0`, stays
-//! a guest callout (see the contract page for why).
+//! descriptor's slot `+40`. The projectile step it calls, `f8eb0`, is a
+//! body of its own (`projectile_step.rs`), so `drive` fuses the call.
 //!
 //! **`f8de0 (object: stack 0) -> al`; `ret 4`.** Always returns 1.
 //! Frame: `sub esp, 18`, then `ebx`, `esi`, `edi` pushed; with `S` that
@@ -32,8 +32,8 @@ const FRAME: u32 = 0x18;
 /// The early-mover reader (docs/engine/object-update.md, "Who reads it,
 /// and when"): the displacement of the mover that woke an object.
 const MOVER_DISPLACEMENT: u32 = 0x0010_9a00;
-/// The projectile step.
-const STEP: u32 = 0x000f_8eb0;
+/// The projectile step (`projectile_step.rs`).
+const STEP: u32 = points::PROJECTILE_STEP.base;
 const VELOCITY: u32 = 0x88;
 
 /// After the displacement and after the step.
