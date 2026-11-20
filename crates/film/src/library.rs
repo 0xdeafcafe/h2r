@@ -9,6 +9,7 @@ use std::{
 pub struct LibraryEntry {
     pub meta: FilmMeta,
     pub saved: bool,
+    pub lease_id: Option<String>,
     pub path: PathBuf,
 }
 impl std::ops::Deref for LibraryEntry {
@@ -41,11 +42,12 @@ impl Library {
             let Ok(reader) = Reader::new(file) else {
                 continue;
             };
-            let meta = reader.header.meta;
+            let header = reader.header;
             rows.push(LibraryEntry {
+                lease_id: header.lease_id,
                 saved: path.with_extension("h2film.saved").is_file(),
                 path,
-                meta,
+                meta: header.meta,
             });
         }
         rows.sort_by(|a, b| {

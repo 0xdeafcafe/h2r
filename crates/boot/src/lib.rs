@@ -1478,7 +1478,7 @@ fn run_configured(
             &mut features,
             &film_dir(),
             stamp,
-            live.server_url.as_deref(),
+            live,
             open,
         )?;
         Some(theater)
@@ -2233,7 +2233,7 @@ fn run_configured(
             break;
         }
         if let Some(f) = &film {
-            f.finish(film_slices, false, _telemetry.as_ref())?;
+            f.finish(film_slices, false)?;
         }
         // Sim mode: the match is over (its end, its limits, match.stop).
         if let Some(s) = &sim_mode
@@ -2247,7 +2247,7 @@ fn run_configured(
         audit.finish(&loaded.runtime)?;
     }
     if let Some(f) = &film {
-        f.finish(film_slices, true, _telemetry.as_ref())?;
+        f.finish(film_slices, true)?;
     }
     // A shared copy-on-write guest RAM base (`state.load` with
     // "cow": true): census the pages the match wrote over it, so the

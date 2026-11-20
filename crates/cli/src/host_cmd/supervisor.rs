@@ -36,6 +36,7 @@ pub(super) struct Options {
     pub tunnel_listen: SocketAddr,
     pub out: PathBuf,
     pub data: Option<PathBuf>,
+    pub film: Option<PathBuf>,
     cache: PathBuf,
 }
 
@@ -63,6 +64,7 @@ impl Options {
                         | "--tunnel-listen"
                         | "--out"
                         | "--data"
+                        | "--film"
                 ),
                 "{USAGE}"
             );
@@ -125,6 +127,7 @@ impl Options {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::temp_dir().join("h2boot")),
             data: value("--data", "H2_DATA").map(PathBuf::from),
+            film: value("--film", "H2_FILM_OUT").map(PathBuf::from),
             cache: env("H2_HOST_CACHE")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
@@ -162,7 +165,9 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         Err(error) if stopping() => (EndReason::Stopped, Some(error)),
         Err(error) => (EndReason::Crashed, Some(error)),
     };
-    let reported = live.ended(&reason, lifecycle.players_peak);
+    let finish_film = !simulation && reason == EndReason::MatchOver;
+    let report_end = || live.ended(&reason, lifecycle.players_peak);
+    let reported = (!finish_film).then(&report_end);
     if !simulation
         && let Some(game) = game.as_ref()
         && let Ok(mut agent) = game.connect(AGENT_TIMEOUT)
@@ -170,6 +175,12 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
     {
         eprintln!("h2 host {}: closing lobby: {error}", lease.id);
     }
+    if finish_film && let Some(game) = game.as_mut() {
+        // A normal end lets the child join its film upload before the lease
+        // report makes the process eligible for provider cleanup.
+        game.shutdown(film::UPLOAD_TIMEOUT + Duration::from_secs(5));
+    }
+    let reported = reported.unwrap_or_else(report_end);
     drop(game);
 
     if exit_code(&reason) != 0 {
@@ -438,6 +449,7 @@ mod tests {
                     "H2_TUNNEL_LISTEN" => "0.0.0.0:31120",
                     "H2_IMAGE" => "modules",
                     "H2_DATA" => "container-data",
+                    "H2_FILM_OUT" => "container-film.h2film",
                     "H2_HOST_CACHE" => "cache",
                     _ => return None,
                 }
@@ -451,6 +463,8 @@ mod tests {
             "31030",
             "--data",
             "state",
+            "--film",
+            "retained.h2film",
         ];
         let opts = Options::parse_with(args.into_iter().map(str::to_owned), env).unwrap();
         assert_eq!(opts.lease, "hl-cli");
@@ -463,6 +477,7 @@ mod tests {
         assert_eq!(opts.tunnel_listen.port(), 31120);
         assert_eq!(opts.out, PathBuf::from("modules"));
         assert_eq!(opts.data, Some(PathBuf::from("state")));
+        assert_eq!(opts.film, Some(PathBuf::from("retained.h2film")));
         assert_eq!(opts.cache, PathBuf::from("cache"));
     }
 

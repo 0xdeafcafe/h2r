@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 #[cfg(not(feature = "desktop"))]
 const USAGE: &str = "usage:
   h2 serve <disc.iso> --system-link --host-light [--host-bots] [--socket PATH]
-           [--out DIR] [--data DIR] [--fresh-data] [--settings DIR]
+           [--out DIR] [--data DIR] [--fresh-data] [--settings DIR] [--film FILE]
 
 --out defaults to the temporary directory's h2boot and must contain the
 prebuilt game module. Use the same H2_OPT the module was built with.
@@ -260,6 +260,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     // `serve` never builds, and runs clang's module unless told otherwise.
     let choice = if serve && tier.is_none() && std::env::var_os("H2_TIER").is_none() { Choice::Clang } else { choice };
+    #[cfg(unix)]
+    let mut between_slices = None;
     let lib = if serve {
         let plan = if host_light {
             boot::tier::plan_light(&xbe, &out, choice)
@@ -277,7 +279,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         // SAFETY: set before the run starts any thread; boot reads it once.
         unsafe { std::env::set_var(agent_proto::ENV, &path) };
         #[cfg(unix)]
-        stop_on_signal(path)?;
+        {
+            between_slices = stop_on_signal(path, host_light)?;
+        }
         plan.dylib
     } else {
         #[cfg(feature = "desktop")]
@@ -301,6 +305,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         crate::h1_import::auto_import(&disc, &data);
     }
     let host = boot::Host {
+        #[cfg(unix)]
+        between_slices,
         host_light,
         host_bots,
         settings: settings_dir.map(|d| settings_store(cmd, &d)),
@@ -465,13 +471,14 @@ fn fresh_data_dirs(data: &Path, keep: &[&Path]) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// `h2 serve` on Ctrl-C or SIGTERM: remove the socket file, store pending
-/// file metadata, and exit (128 + the signal), instead of dying with the
-/// socket left behind. SIGINT and SIGTERM are blocked here, before the run
-/// starts any thread, so every thread inherits the mask and only this one
-/// takes them.
+/// Let a light host finish its recording and upload on the game thread's
+/// normal teardown path. Other servers keep their immediate signal exit.
 #[cfg(unix)]
-fn stop_on_signal(socket: PathBuf) -> Result<()> {
+fn stop_on_signal(socket: PathBuf, graceful: bool) -> Result<Option<boot::BetweenSlices>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let stopping = graceful.then(|| Arc::new(AtomicBool::new(false)));
+    let signal_stop = stopping.clone();
     // SAFETY: plain sigset operations on a local, and a mask change on
     // this thread before any other thread exists.
     let set = unsafe {
@@ -496,12 +503,19 @@ fn stop_on_signal(socket: PathBuf) -> Result<()> {
             if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                 return;
             }
-            let _ = std::fs::remove_file(&socket);
-            vfs::flush_pending_metadata();
             eprintln!("h2 serve: signal {sig}: stopping");
-            std::process::exit(128 + sig);
+            if let Some(stop) = signal_stop {
+                stop.store(true, Ordering::Release);
+            } else {
+                let _ = std::fs::remove_file(&socket);
+                vfs::flush_pending_metadata();
+                std::process::exit(128 + sig);
+            }
         })?;
-    Ok(())
+    let Some(stop) = stopping else {
+        return Ok(None);
+    };
+    Ok(Some(Box::new(move |_| !stop.load(Ordering::Acquire))))
 }
 
 #[cfg(test)]
