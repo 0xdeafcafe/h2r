@@ -1015,9 +1015,21 @@ impl ObjectsPass {
             return Err("object texture accumulation is an attachment");
         }
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.as_mut().ok_or("planned object geometry unavailable")?;
-        if !self.draws.iter().all(|(model, d)| lit.has(*model) && !d.indices.is_empty()) {
-            return Err("planned object geometry unavailable");
+        let lit = lit.as_mut().ok_or_else(|| {
+            for (_, draw) in &self.draws {
+                d3d::scene_stage::residency::missing_object(draw.instance);
+            }
+            "planned object geometry unavailable"
+        })?;
+        let mut missing = self.draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
+        if missing.peek().is_some() {
+            for (_, draw) in missing {
+                d3d::scene_stage::residency::missing_object(draw.instance);
+            }
+            return Err("planned object geometry or material unavailable");
+        }
+        if self.draws.iter().any(|(_, d)| d.indices.is_empty()) {
+            return Err("planned object indices empty");
         }
         let view = ViewInputs {
             constants,

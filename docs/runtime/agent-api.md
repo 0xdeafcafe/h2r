@@ -951,8 +951,8 @@ h2 agent render.parity '{"arm": true}'
   in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
-  (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
-  `scene_unresident`, `scene_held_draws`). With `frame-scene.sink` in
+  (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
+  `scene_held_draws`). With `frame-scene.sink` in
   `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
   `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
@@ -990,6 +990,18 @@ h2 agent render.parity '{"arm": true}'
   counts presentations that take the ordinary backend path, including
   frames outside game views. `scene_owned_flare_queries` counts
   game-view pixel reports whose native result the owner installed.
+  With the sink and a render worker, `scene_residency_frames` counts
+  presents where the worker observed a draw, a committed scene stage,
+  an owned frame or a failure. `scene_unresident` counts distinct
+  object handles per present whose dropped work lacked the planned
+  GPU model, geometry buffer or material program.
+  `scene_residency_unknown_frames` counts frames with an unclassified
+  drop, a skipped guest packet or a worker failure. The counters appear
+  after the first observation. A post-load zero requires a positive
+  frame delta and zero growth in both omission counters. Private
+  captures have no effect. Legacy refusals can keep their guest draws.
+  Check native ownership across the same game views to measure native
+  coverage.
   The raw `scene_readback_pixel_count` includes these requests.
   Compare raw and native counts at the same recording boundaries
   to identify requests that still need the reference.

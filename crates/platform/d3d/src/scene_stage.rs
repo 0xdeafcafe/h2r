@@ -9,6 +9,8 @@
 //! guest; so one frame at most is short of them, and the counters say
 //! which stage and why.
 
+pub mod residency;
+
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -211,6 +211,8 @@ pub struct LitObjects {
 /// accumulation level.
 #[derive(Clone, Debug)]
 pub struct PlannedDraw {
+    /// Salted handle of the object whose record supplied this draw.
+    pub instance: frame_scene::InstanceKey,
     pub part: usize,
     pub implementation: usize,
     pub program: usize,
@@ -423,6 +425,15 @@ impl LitObjects {
         self.models.contains_key(&index)
     }
 
+    /// Whether the uploaded model owns the exact geometry and material
+    /// the accepted item requires. Dynamic targets and pipelines are
+    /// validated separately when recording this draw.
+    pub fn has_draw_assets(&self, model: u32, draw: &PlannedDraw) -> bool {
+        self.models.get(&model).is_some_and(|m| {
+            m.buffers.get(draw.buffer).is_some() && m.programs.get(draw.program).is_some()
+        })
+    }
+
     /// The draw of the item `key` (the part and implementation its record
     /// picked) of `frame` in model `index`, its record's node rows `rows`,
     /// over the render state the device held at the layer-3 call
@@ -445,7 +456,7 @@ impl LitObjects {
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { lighting: instance.lighting.as_ref(), defaults: instance.defaults, subparts: part.subparts };
+        let inputs = PartInputs { instance: instance.key, lighting: instance.lighting.as_ref(), defaults: instance.defaults, subparts: part.subparts };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
 
@@ -714,6 +725,7 @@ pub fn plan_part<'a>(
 /// lighting copy and the inputs' defaults.
 #[derive(Clone, Copy)]
 struct PartInputs<'a> {
+    instance: frame_scene::InstanceKey,
     lighting: Option<&'a Lighting>,
     defaults: Option<Defaults>,
     /// The subparts the item's record chose; `None`, the whole part.
@@ -722,7 +734,7 @@ struct PartInputs<'a> {
 
 impl<'a> PartInputs<'a> {
     fn of(frame: &'a ObjectFrame) -> Self {
-        Self { lighting: frame.lighting.as_ref(), defaults: frame.defaults, subparts: None }
+        Self { instance: frame_scene::InstanceKey(frame.handle), lighting: frame.lighting.as_ref(), defaults: frame.defaults, subparts: None }
     }
 }
 
@@ -771,6 +783,7 @@ fn plan_indexed_part<'a>(
         state
     };
     Ok(PlannedDraw {
+        instance: frame.instance,
         part,
         implementation: key.implementation,
         program,
@@ -1577,9 +1590,10 @@ mod tests {
         let parts = [without, with];
         let f = frame();
         let rows = [[1.0f32; 4]; 3];
-        let inputs = |subparts| PartInputs { lighting: f.lighting.as_ref(), defaults: f.defaults, subparts };
+        let inputs = |subparts| PartInputs { subparts, ..PartInputs::of(&f) };
         let plan = |part: usize, subparts: Option<Subparts>| plan_indexed_part(&parts, Some(part), &pass_of, inputs(subparts), &key(4, part as u8, 0), &rows, &entry(), true);
         let whole = plan(1, None).unwrap();
+        assert_eq!(whole.instance, frame_scene::InstanceKey(f.handle));
         assert_eq!(whole.indices, 3..6);
         assert_eq!(whole.ranges.as_slice(), std::slice::from_ref(&whole.indices));
         let chosen = plan(1, Some(Subparts { first: 2, count: 2, visible: 0b10 })).unwrap();
@@ -1605,6 +1619,14 @@ mod tests {
             buffers: vec![buffer],
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
         });
+        let mut requested = objects.plan(7, &frame(), &key(0, 0, 0), &[[1.0; 4]; 3], &entry()).unwrap();
+        assert!(objects.has_draw_assets(7, &requested));
+        assert!(!objects.has_draw_assets(8, &requested));
+        requested.buffer = 1;
+        assert!(!objects.has_draw_assets(7, &requested));
+        requested.buffer = 0;
+        requested.program = 1;
+        assert!(!objects.has_draw_assets(7, &requested));
         let pool = gfx::ring::UploadPool::default();
         let view = ViewInputs { constants: Default::default(), guest_size: (16, 16), size: (16, 16),
             z_scale: 1.0, w_clip: None };

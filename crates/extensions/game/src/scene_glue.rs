@@ -56,6 +56,9 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(render_bridge::native_layers::counters())
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
+    if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
+        counts.extend(residency.map(|(name, n)| (name.to_owned(), n)));
+    }
     if let Some(owner) = d3d::threaded::owner::stats() {
         counts.insert("scene_owned_presented".into(), owner.presented);
         counts.insert("scene_owned_declined".into(), owner.declined);
@@ -76,7 +79,7 @@ pub(crate) fn level_activated(map: &str, present: u64) {
             let frame = c["scene_carried_frames"];
             c.retain(|k, _| {
                 k.starts_with("scene_dropped_") || k.starts_with("scene_readback")
-                    || k.starts_with("scene_owned_") || k == "scene_unresident" || k == "scene_carried_game_frames"
+                    || k.starts_with("scene_owned_") || k.starts_with("scene_residency_") || k == "scene_unresident" || k == "scene_carried_game_frames"
             });
             agent_proto::SceneCensusActivation { map: map.into(), present, frame, counters: c }
         });
