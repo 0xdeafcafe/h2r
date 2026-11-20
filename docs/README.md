@@ -92,7 +92,7 @@ every page here and the plan to bring them to those rules.
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
-- [native-decals-research.md](graphics/native-decals-research.md): the dynamic decal path read from the guest code, and the native decals as built
+- [native-decals-research.md](graphics/native-decals-research.md): native decals: the dynamic decal path read from the guest code and its draw admission
 - [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phases 1 and 3 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
 - [pstencil-history.md](graphics/pstencil-history.md): the history of the cut E3 2003 stencil lighting from public sources: how it worked, why it was cut, where to see it, and the look to tune against (§4)

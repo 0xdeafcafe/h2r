@@ -1,14 +1,12 @@
 # Native renderer stage 3: transparents
 
-Part of [native-renderer.md](native-renderer.md).
+Status: Built. Sorted transparent geometry draws keep their guest handlers; the stage substitutes immutable GPU vertex bindings at the indexed draw. Pixel parity and the time saved are not verified.
+Code: `crates/feature/src/native_transparents.rs`, `crates/boot/src/native_transparents_glue.rs`, `crates/native-render/src/transparent.rs`, `transparent_streams.rs`, `world_layers_gpu.rs`. Tests: `crates/feature/tests/native_transparents.rs`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
+
+After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRANSPARENTS` (`0x0001e370`). The call sorts its own list and invokes one handler per entry; the geometry handlers set up their layer-15 passes and depth-test against what the opaque layers left. The stage lets every handler run and changes only where an indexed draw takes its vertices from. Part of [native-renderer.md](native-renderer.md).
 
 ## Stage 3: transparents
-
-After the opaque layers and late passes, `render_scene_passes` calls
-`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run). The call
-sorts its own list and invokes one handler per entry. The geometry
-handlers set up their layer-15 passes and depth-test against what the
-opaque layers left.
 
 ### The list (Code, `h2 disasm`)
 
@@ -34,12 +32,11 @@ opaque layers left.
   but with layer 15's passes, one entry at a time in sorted order.
 - The render record at `+0x28 >> 8` says what the geometry is: `+4` an
   object's render model datum (the object itself through `+0x10`, as in
-  stage 2), or `-1` for the BSP with `+0xc` bits 9..17 the cluster
+  the objects stage), or `-1` for the BSP with `+0xc` bits 9..17 the cluster
   and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
   "What a world pass reads").
 
-Other handlers in the list (effects, particles, contrails, decals) are
-not read yet; they keep their D3D draws in this stage.
+Other handlers in the list (effects, particles, contrails, decals) keep their D3D draws here; [native-particles.md](native-particles.md) covers the effect leaves.
 
 ### Admission and order
 
@@ -59,38 +56,31 @@ that the handler actually draws. No stage-3 pass is queued ahead of
 that work. The optimization targets vertex bindings. Guest handler and
 D3D state-resolution costs still apply.
 
-### Order of work
+### Admission and order
 
-1. **Sorted parts.** `feature::native_transparents` tracks the view and
-   geometry handler frames. It verifies the entry argument and render
-   record at each indexed draw. It is on with the rest of the native
-   renderer.
-2. **Draw state and attachments.** Each draw takes the D3D snapshot
-   after that handler sets up its pass, including the effects of earlier
-   setup and restore writes. The adapter requires a programmable
-   W-buffered indexed triangle draw with compatible colour and depth
-   targets. The shared backend uses the resolved state and receives the
-   actual texture bindings. Palette expansion, resident mip selection,
-   BC blocks, sampler state and render-to-texture coherency stay with
-   that path.
-3. **Vertex bindings.** `native_render::transparent_streams` packs
-   multiple immutable streams into one buffer when their live
-   declarations and strides allow it. It keeps the raw guest bytes,
-   including packed normals and normalized endpoints. The cache uses
-   immutable stream snapshots and the exact declaration, scoped to the
-   game activation and active BSP. A transparent view can use the cache
-   before any layer-3 item. The object flag also has to be on to pack
-   object entries. Object inputs and node rows come from the actual
-   draw, as do cluster and placement inputs. The opaque world keeps the
-   layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and
-   `Float32x2` for v6.
-4. **GPU submission.** The ordered draw path batches uniforms in the
-   renderer's upload arena and reuses texture/sampler groups keyed by
-   the live views and samplers. The packed vertex buffer can stay on
-   the GPU across views. No transparent draw allocates its own pair
-   of uniform buffers and group.
-5. **Live A/B pending.** Capture the same Old Mombasa frame with
-   `H2_LEVEL=03a_oldmombasa`. For the reference, set
-   `H2_FEATURES=impl.render.native=off` and keep the other switches and capture settings the same. Compare
-   pixels, check that `native-transparents:` reports native bindings,
-   and compare the `0x0002c19a` site's time.
+`feature::native_transparents` tracks the view and geometry handler frames and verifies the entry argument and render record at each indexed draw. Observers identify the sorted entry from the live guest stack and clear the scope at the end of the sorted loop (`0x0001e406`). The dispatcher and its cleanup can run on the pipelined render thread.
+
+The standard handler runs its material builds, state writes, bindings and restores. The D3D indexed draw drains pending push-buffer work, then resolves its own state and bindings. The stage may substitute one immutable GPU vertex binding at that draw. It uses the original indices, shader classification, constants, alpha test, W clip and attachments. The original draw remains if the entry, map generation, compatible depth target or any sampled texture cannot be confirmed.
+
+The adapter requires a programmable W-buffered indexed triangle draw with compatible colour and depth targets. Each draw takes the D3D snapshot after its handler sets up the pass, so earlier setup and restore writes are included. Palette expansion, resident mip selection, BC blocks, sampler state and render-to-texture coherency stay with the D3D path. The intervening D3D and inline draws pass through the same command stream, and each entry retains its own part. No transparent pass is queued ahead of that work.
+
+### Vertex bindings
+
+`native_render::transparent_streams` packs multiple immutable streams into one buffer when their live declarations and strides allow it. It keeps the raw guest bytes, including packed normals and normalized endpoints. The cache uses immutable stream snapshots and the exact declaration, scoped to the game activation and active BSP. A transparent view can use the cache before any layer-3 item. Object entries pack only when the objects stage is on. Object inputs and node rows come from the actual draw, as do cluster and placement inputs. The opaque world keeps the layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and `Float32x2` for v6.
+
+### GPU submission
+
+The ordered draw path batches uniforms in the renderer's upload arena and reuses texture and sampler groups keyed by the live views and samplers. The packed vertex buffer can stay on the GPU across views. No transparent draw allocates its own pair of uniform buffers and group.
+
+## Rules and limits
+
+The optimization targets vertex bindings. Guest handler and D3D state-resolution costs still apply. A refusal leaves the original D3D draw in place.
+
+## Not verified
+
+- Pixel comparison of the same Old Mombasa frame with `impl.render.native` on and off, with other switches and capture settings equal.
+- That the stage reports native bindings, and the time of the `0x0002c19a` site.
+
+## Related
+
+[native-renderer.md](native-renderer.md), [native-world.md](native-world.md), [native-objects.md](native-objects.md), [native-particles.md](native-particles.md).

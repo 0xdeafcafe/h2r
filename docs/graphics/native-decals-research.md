@@ -1,13 +1,18 @@
 # Native decals
 
-Addresses and offsets below are research points from the guest code (**Code**,
-`h2 disasm`), not game data. No runtime draw comparison has run yet.
+Status: Built. All seven decal modes are admitted through `d3d::DrawAdmission`; pixel parity with D3D is not verified.
+Code: `crates/feature/src/native_decals.rs`, `crates/boot/src/native_decals_glue.rs`, `crates/native-render/src/decal.rs`, `decal_gpu.rs`. Tests: `crates/feature/tests/native_defaults.rs` (switch), `crates/native-render/tests/decals_gpu.rs`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-## The sorted-list handlers are not decals
+The guest keeps the decal array, the per-record texture binds, the duplicate markers and the wrapper's state. The stage replaces only the resolved `D3DDevice_DrawVertices` packet of each record. Addresses and offsets below are research points from the guest code (**Code**, `h2 disasm`), not game data. Part of [native-renderer.md](native-renderer.md).
+
+## How it works
+
+### The sorted-list handlers are not decals
 
 The sorted transparent list calls the handler in each entry at `+0x20` with
 `entry+0x24`, in the order produced by its sort (`0x0001e370`). The two
-previously unclassified handlers replay object/model scene layers; neither is
+handlers below replay object/model scene layers; neither is
 a decal boundary, and neither may be suppressed by a decal implementation.
 
 - `0x000420a0` adds class-3 entries with handler `0x00041cc0` for records
@@ -31,7 +36,7 @@ for layers 1 and 3 (stencil `ALWAYS`, reference and masks `0xff`, pass
 `REPLACE`, fail/z-fail `KEEP`) and `0x00015370(0)` for the others (stencil
 disabled); the earlier direct `0x00044c90` calls inherit their state.
 
-## The dynamic decal path
+### The dynamic decal path
 
 The runtime decal array is initialized by `0x0017d220`, through `0x00043890`.
 The construction at `0x00180f87` obtains a dynamic geometry address from
@@ -120,7 +125,7 @@ set it. Its call to `0x00016b10` reaches `0x00018900`, which can apply the
 previous shader implementation's arbitrary restore-state list. The effective
 stencil function, reference, masks and operations therefore must be read from
 the device's ordered state at the callback. The native path admits only a
-resolved disabled stencil state for now; enabled or unreadable stencil stays
+resolved disabled stencil state; enabled or unreadable stencil stays
 on D3D.
 
 The observers scope the current mode and outer-list entry. With the walk
@@ -130,11 +135,9 @@ contains the exact declaration, streams, shader inputs, state, textures,
 viewport and scissors. The guest callback still binds textures, writes every
 duplicate marker and runs the wrapper's final solid-offset reset.
 
-## As built
+### Admission
 
-The admission is on by default and off with the rest of the native renderer
-(`impl.render.native=off`). The
-implementation is split into `native-render/src/decal.rs` (shared mode, vertex
+The implementation is split into `native-render/src/decal.rs` (shared mode, vertex
 and quad rules), `native-render/src/decal_gpu.rs` (translation and encoding),
 `feature/src/native_decals.rs` (callback scope and tallies), and
 `boot/src/native_decals_glue.rs` (resolved-draw admission).
@@ -161,21 +164,8 @@ sealed, so a late refusal cannot leave the decal undrawn. The wgpu viewport is
 target-wide, as in D3D; the resolved clip and disjoint scissor rectangles do
 the clipping at each copy's scale.
 
-## Remaining runtime evidence
+### Per-record scene walk
 
-The handoff's per-copy decal range and
-invariant counters show actual recording and suppression.
-
-Runtime A/B still needs to prove actual replacement, exact depth/bias and
-blend, live texture identity, mixed native/D3D order, and zero unexplained
-invariants or pixel differences. No cargo, game run or runtime comparison was
-performed by the implementation lane. The agent API was not needed for this
-static work and was not expanded.
-
-
-## Per-record scene walk
-
-The walk is on whenever native decals are.
 After duplicate marking and bitmap and default-register setup, the hook
 at `0x00044161` reads the record's live allocation and quad count. It
 resolves the same array and native material and reserves that record on
@@ -183,3 +173,11 @@ all copies. Success resumes at `0x00044195`, immediately after the guest's
 array-draw entry. Refusal runs the original submission for that record.
 The callback owns the traversal and changes to the next texture in both
 cases. It clears its admission scope at `0x000441aa`.
+
+## Not verified
+
+- The per-copy decal range and invariant counters in `H2_FRAME_STATS` show actual recording and suppression. A runtime A/B still has to show actual replacement, exact depth, bias and blend, live texture identity, mixed native and D3D order, and zero unexplained invariants or pixel differences.
+
+## Related
+
+[native-renderer.md](native-renderer.md), [native-particles.md](native-particles.md), [native-transparents.md](native-transparents.md).

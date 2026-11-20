@@ -1,8 +1,12 @@
 # Native renderer stage 5: post and HUD
 
+Status: Partly built. The colour-pass glow, the scenario screen effects and the native UI and HUD are drawn natively; `0x0002df00`, `0x0002dd30` and layer 17 are not, and parity with D3D is not verified.
+Code: `crates/feature/src/native_post.rs`, `native_hud.rs`, `crates/boot/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/native-render/src/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/feature/tests/native_post.rs`, `native_hud.rs`, `crates/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/d3d/tests/swallow.rs`.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
+
 Part of [native-renderer.md](native-renderer.md).
 
-## Stage 5: post and HUD (design)
+## Stage 5: post and HUD
 
 What the game draws after a view's scene comes in three groups: the
 last passes of `render_scene_passes`, the rest of `render_view_scene`
@@ -139,10 +143,9 @@ continuation closes the plan before the guest caller resumes. Under
   compiled as stage 3 compiles layer 15, drawn with the rectangle and
   the entry's function values. Blur needs the scene as a texture, which
   the colour pass's copy already gives.
-- **`0x0002df00`**, once it is traced; until then a call with `late`
-  set keeps its D3D passes.
+- **`0x0002df00`** is not drawn natively; a call with `late` set keeps its D3D passes.
 
-### The UI and HUD (Code, `h2 disasm`; the native-hud lane)
+### The UI and HUD (Code, `h2 disasm`)
 
 **Where they are drawn.** `render_view_scene` (`0x0002ba10`) calls
 `0x001917eb` at `0x0002bc93` when `[0x004b9ed8]` (the view's user) is
@@ -190,10 +193,6 @@ words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
 (`0x003f9d00`, between two `0x003f9df0`).
 
 #### Native UI
-
-The native UI is on by default, with its early HUD shader fan.
-`impl.render.native=off` returns the UI draws to D3D with every other
-stage.
 
 The guest selects the visible screens and widgets, sorts them, and sets
 up layout, animation, text shaping, bitmap selection and shaders. At the
@@ -244,8 +243,7 @@ stencil operations and reference, fill, winding, clip, colour writes and
 blend from the live draw. Point or wireframe fill requires the matching
 device feature. The 1× and display copies have separate clip transforms
 and the display uses the existing glyph shader option when enabled.
-Native UI uses the live textures, including the glyph cache. The
-previous text-only atlas mirror and fixed text shader have been removed.
+Native UI uses the live textures, including the glyph cache.
 Ordered native packets can join the same GPU pass as adjacent compatible
 draws.
 
@@ -275,12 +273,11 @@ entry, incompatible inputs and failed reservations.
 `model_fallback_*` gives the entry, camera, caller, geometry, range
 limit, texture commit or reservation reason. The standard per-copy
 resource, validation and replay counters still apply. The generated
-image must expose the new instruction sites for the native walk.
+image must expose the instruction sites for the native walk.
 
-### Stage 5 status
+### Post admission
 
-The native post is on by default with the rest of the native renderer;
-`impl.render.native=off` returns it to D3D. Each call either commits
+Each call either commits
 one complete replacement or draws all its originals. An effect whose
 plan requires an unsupported input or an unavailable live target
 uses D3D for that call.
@@ -292,16 +289,18 @@ uses D3D for that call.
 | Kept convolution | It emits no draws. Its result names the pass's target. |
 | Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
-| `0x0002df00`, `0x0002dd30`, layer 17, fade, UI and HUD | D3D. |
+| `0x0002df00`, `0x0002dd30` and layer 17 | D3D. The fade, UI and HUD are the native UI, above. |
 
-### Order of work
+### The post hooks
 
-1. **The hooks** (`feature::native_post`). The glow draws after
+`feature::native_post`: The glow draws after
    layer 17 and before the screen effects. The entry hooks pass
    guest arguments, MXCSR and the x87 control word to the host. The
    guest runs all its setters and its tail with either draw path.
 
-2. **The call transaction** (`d3d::Device::swallow`). Arming drains
+### The call transaction
+
+`d3d::Device::swallow`. Arming drains
    previously queued pushes. The active guest frame is identified by
    its entry, entry ESP, caller's return address and live return
    continuation. D3D entries must still be inside that frame. Each
@@ -344,7 +343,9 @@ uses D3D for that call.
    The screen renderer's GPU test covers masked writes and pixels
    preserved between partial passes into a BGRA intermediate.
 
-3. **The colour pass.** Its numbers are built: `engine::colour_pass`
+### The colour pass
+
+Its numbers are ported: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
    `pack_colour`: `0x00131e50`; `Parameters::colours`: the two combiner
@@ -353,8 +354,9 @@ uses D3D for that call.
    `engine::glow` (`engine/tests/glow_differential.rs`: the three
    combiner blocks, and the blur's steps with the device calls stubbed).
    The host (`boot::native_post_glue`) uses them through the swallow
-   (item 2).
-   1. **The quad, traced** (Code). `0x0001c590` loads the vertex shader
+   (the call transaction, above).
+
+   1. **The quad** (Code). `0x0001c590` loads the vertex shader
       the rasterizer globals name for screen quads
       (`[[0x00485a80] + 0x5c] + 0x64`, entry 0; `LoadVertexShaderProgram`
       when Halo's cache at `0x0051f0f0` holds another), which passes
@@ -388,7 +390,7 @@ uses D3D for that call.
       level. `0x00014f60` binds a target to a stage: its size into
       `0x00485af4`/`0x00485b04` and its texture into `0x0051f3d8`
       (through the jump table at `0x00015114` by the target's kind).
-   2. **The native glow** (built): `native_render::glow`.
+   2. **The native glow:** `native_render::glow`.
       `read_frame` reads the window, the tap signs and the sizes;
       `Plan::quad` gives each quad its corners and per-stage offsets and
       scales; `VERTEX` is the screen shader for them; `program` compiles
@@ -400,35 +402,17 @@ uses D3D for that call.
       `0x000222d0`'s states (`Blend`: source `ONE` or
       `INVDESTCOLOR` by the sixth argument, destination `ONE` unless
       the seventh's byte is set, alpha alike). The down-sample and
-      blur draw with blending off (item 3), and S: the D3D path's pixel centres
+      blur draw with blending off (the Blending item below), and S: the D3D path's pixel centres
       match a quad whose corners are the window's (the frame A/B shows
       it). Tests: `glow::tests` (the taps of the down-sample and the
       composite, the blend, a block's module, the frame's words).
-   3. **The leftovers**: none to redo. The game's code runs; only its
-      quads are dropped (item 2). `0x00034a90`'s `0x000142f0(10)` sets
+   3. **Blending.** The game's code runs; only its quads are dropped. `0x00034a90`'s `0x000142f0(10)` sets
       `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for the down-sample
       and the blur (Code), so they draw unblended, as `GpuGlow` does.
-   4. Default-on admission requires complete, pixel-identical
-      replacements across representative views and effects.
 
-   **The frame A/B** for the glow: the same frame (a fixed save, view
-   and time, one run with `H2_FEATURES=impl.render.native=off`)
-   captured with the D3D path and the native one, through the headless
-   capture (`H2_BOOT_GFX`) or the agent API. (The glow-only capture
-   switches `H2_POST_AB*` have been removed.)
+### The screen effects
 
-   Compare the same view and call. Check that the expected glow and
-   screen replacements committed, with no unexpected refusals or
-   replays. Compare pixels on each changed intermediate, its next D3D
-   consumer and the final image. Require zero unexplained pixel
-   differences. Use the
-   agent API's `render.frame` and stage counters to inspect the other
-   passes and confirm coverage. Keep a D3D measurement of
-   `render_screen_effects` for the cost comparison.
-
-4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
-   function values (`0x00134fc0`) read at the call. Traced (Code,
-   `h2 disasm`); slice (a) built (below).
+`0x0002d140`, with the function values (`0x00134fc0`) read at the call (Code, `h2 disasm`).
    - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
      as four floats twice (the corners), then per entry of the scenario
      block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
@@ -469,18 +453,8 @@ uses D3D for that call.
      - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
        `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
        `0x00485a78`/`7c` cleared.
-   - **What the native side needs.** The draws can be swallowed as the
-     glow's are (the hand-pushed strip is an inline `Begin(6)` of four
-     vertices; the blurs are `0x00034a90` quads). Drawing them natively
-     needs, in order: (a) the plan: which entries draw (the function
-     values, `0x00134fc0` over `0x0013b390`, a port with its own
-     differential test), and per pass the implementation, target and
-     texture coordinates (pure, from the tag); (b) the layer-15 template
-     pass through `program::translate_pass` (the world's and lights'
-     path) with the engine inputs the screen-effect pass reads; (c)
-     `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
-     `0x1b` as convolution targets like 7 and 8. Each is a slice; (a) first.
-   - **Built: which entries draw** (`engine::screen_effects`):
+   - **What the native side does.** The draws are swallowed as the glow's are (the hand-pushed strip is an inline `Begin(6)` of four vertices; the blurs are `0x00034a90` quads). The pieces are: (a) the plan, which entries draw (the function values, `0x00134fc0` over `0x0013b390`, with its own differential test), and per pass the implementation, target and texture coordinates (pure, from the tag); (b) the layer-15 template pass through `program::translate_pass` (the world's and lights' path) with the engine inputs the screen-effect pass reads; (c) `0x00021360` beside `blur`; (d) targets `0x19` to `0x1b` as convolution targets like 7 and 8.
+   - **which entries draw** (`engine::screen_effects`):
      `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
      plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
      the function through `0x0013bb90`, its output range unless a flag in
@@ -494,7 +468,7 @@ uses D3D for that call.
      random functions of every type with parents, and the loop from
      `0x000139ba` with `0x0002d140` stubbed, against the lifted
      original, bit for bit).
-   - **Built: the evaluator** (`engine::function_eval`, `0x0013b390`
+   - **the evaluator** (`engine::function_eval`, `0x0013b390`
      instruction for instruction): SSE in the original's operand order,
      so a NaN keeps the sign and payload the original's does (the blend
      is `second * r + (1 - r) * first`, type 9's `(1 - r) * first +
@@ -515,7 +489,7 @@ uses D3D for that call.
      refused. Tests: unit tests, and the differential above with
      `_getptd` (`0x00326079`) stubbed so the CRT's error paths run
      lifted.
-   - **Built: what each draws** (`engine::screen_effect::plan`, one call
+   - **what each draws** (`engine::screen_effect::plan`, one call
      of `0x0002d140` as an `Effect`): the shader and layer 15's
      implementation count (the template datum the shader's `+0x24`
      points at, its definition's `+0x5c` element: the word at
@@ -542,7 +516,7 @@ uses D3D for that call.
      `effect_plans_match_the_lifted_original` (`0x0002d140` lifted, its
      callees stubbed and recorded: the template passes, every size set,
      the convolution calls and the words pushed must be the plan's).
-   - **Built: `0x00021360`** (`engine::glow::wide`, slice (c)), the blur's
+   - **`0x00021360`** (`engine::glow::wide`), the blur's
      sibling (Code): EAX the source, ECX the draw count, XMM0 a scale,
      then stack words passed to each draw, the two buffers, the last
      target, a byte that first sets the combiner `0x00020f30` (XMM0 0,
@@ -557,13 +531,12 @@ uses D3D for that call.
      target's size (`0x0001dd60`, -1 the bound one `[0x004858b8]`), the
      target's rectangle or the window by a byte argument, the per-stage
      size ratios (`0x00485af4`/`0x00485b04` over the target's) and EDI's
-     four floats where `0x00034a90` takes a spread; how the four move
-     each tap is for the native draw to trace. Tests: unit test
+     four floats where `0x00034a90` takes a spread; the grid's strips give the four moves of each tap. Tests: unit test
      `the_wide_convolution_ping_pongs_with_a_growing_scale`, and
      `glow_differential::wide_matches_the_lifted_original` (stubbed as
      the blur's: draws, offsets, the quad's stack words, combiner, copy
      and result); the plan now follows a convolution after a wide one.
-   - **Built: `0x00034d90`'s grid** (`engine::screen_grid`): the grid
+   - **`0x00034d90`'s grid** (`engine::screen_grid`): the grid
      each step of `0x00021360` draws, 30 strips of 21 x 2 vertices
      (`0x00034770` with the attribute function `0x00034100`). Each tap is
      the rectangle at (u, v) pulled toward its centre by its EDI float,
@@ -578,7 +551,7 @@ uses D3D for that call.
      the drawn passes and refuses unsupported inputs before arming.
      The return hooks commit the staged recording or replay the call.
 
-   - **Built: the template pass's look** (`native_render::screen_look`):
+   - **the template pass's look** (`native_render::screen_look`):
      `screen_look` takes the egor's shader resolved and an
      layer pass and implementation and gives that pass of layer 15 (at
      the first level of detail; its vertex shader, stages as the shader's bitmaps
@@ -589,20 +562,15 @@ uses D3D for that call.
      lightmap, states the native pass does not fit). `compile_screen`
      translates it through `program::translate_pass` over the strips'
      inputs, `v0` the position and `v1`..`v4` the four texture
-     coordinates (`0x00101a00`, `0x00101a10 + 16 s`). Still missing
-     before `TemplatePass` leaves `missing`: reading each egor's shader
-     at load (its material, vertex program and bitmaps), the engine
-     textures layer 15 binds, and the GPU pass drawing a plan's strips.
-   - **Built: the load** (`boot::native_post_load`, the switch on): every `egor` tag's shader (the definition's `+0x44`)
+     coordinates (`0x00101a00`, `0x00101a10 + 16 s`).
+   - **The load** (`boot::native_post_load`): every `egor` tag's shader (the definition's `+0x44`)
      resolved, each implementation of each of its layer-15 passes
      looked at and translated with its vertex shader's classification-0
      program (below), and the stages' bitmaps decoded; refusals counted by reason, one line on
      stderr. The post glue runs it itself, on a thread of its own at the
      first screen-effect call on a map (`native_post_glue::EffectsSlot`),
-     with or without the native world: it used to ride the world's load,
-     so with `native_world` off no egor loaded and every call was refused
-     as `TemplatePass`.
-   - **Traced: the engine textures** (`0x00019530`, the jump table at
+     with or without the native world.
+   - **the engine textures** (`0x00019530`, the jump table at
      `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
      1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);
      render targets through `0x00014f60`: 2 and 3 target 1, 6 target 3, 8
@@ -614,7 +582,7 @@ uses D3D for that call.
      run time; 7 and 11 null entries. A template pass binding the light's,
      a run-time one or an invalid id is refused
      (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
-   - **Traced: which pass, implementation and program**
+   - **which pass, implementation and program**
      (`0x00016610(shader, layer, pass, implementation, target, flag)`,
      Code): the layer's passes are the template's word at its layer
      index (low 9 bits the first, high 7 the count, which is
@@ -628,7 +596,7 @@ uses D3D for that call.
      (`screen_look::SCREEN_CLASSIFICATION`), per (layer pass,
      implementation): `effects\screen_effects\blur` has two layer-15
      passes (`copy_fb_to_texaccum`, `copy_texaccum_to_fb`), so a layer
-     with several passes is no longer refused. What the real egors
+     with several passes is accepted. What the real egors
      (`blur`, `desaturate`) showed the look must take: their passes set
      `ZENABLE` 0 and no ZWRITEENABLE (`pass_state` takes the depth
      buffer off as enough; a screen pass testing or writing depth is
@@ -648,7 +616,7 @@ uses D3D for that call.
      format and loads existing contents. Partial strips, colour
      masks and consecutive writes preserve the surrounding pixels.
 
-   - **Traced: the end of the call draws nothing**
+   - **the end of the call draws nothing**
      (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
      targets 1, `0x19` and `0x1b` back into the target table (`+0x80`,
      `+0x84`, the surface words `+0x14`, `+0x28`) from what
@@ -666,12 +634,12 @@ uses D3D for that call.
      call. Reading target 1 before the call draws into it or while
      the same pass writes it refuses the replacement.
 
-   - **Built: the call's engine constants**
+   - **the call's engine constants**
      (`screen_look::ScreenConstants`): `0x0002d140` copies its four
      values to `0x004c19b0`, and the scalar evaluator `0x000336f0` (its
      table at `0x000338d4`) returns `[0x004c19b0]` for scalar 41 and
      `[0x004c19b4]` for 42 (`screen_look::SCREEN_SCALARS`), so a pass
-     reading those is no longer refused. The blur's
+     reading those is supplied. The blur's
      `copy_texaccum_to_fb` reads 41 into `c0.a` (pixel mode 3), the mix
      of its two stages, and sets `c18`..`c21` from its stages' sizes
      (vertex modes 14 and 15 of stages 1 and 2: `[w, 0, 0, 0]`,
@@ -689,7 +657,7 @@ uses D3D for that call.
      size. A vertex register the resolver took from the engine that no
      external of the implementation names is refused
      (`ScreenRefusal::EngineVertexConstants`).
-   - **Built: the blur's convolution** (`screen_gpu::ScreenConvolution`,
+   - **the blur's convolution** (`screen_gpu::ScreenConvolution`,
      `native_post_glue::screen_convolution`): `0x0002d140` calls
      `0x000211a0` with its seventh word 1 and the eighth to tenth 0, so
      the combiner is `0x00020f30`'s at strength 0 and `y` 0
@@ -703,7 +671,7 @@ uses D3D for that call.
      the results in the order the call produces them. A convolution
      whose colour state or source differs keeps the original draws.
 
-   - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
+   - **the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
      `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
      the words `+0x50`, `+0x54`, the convolution targets, -1, 1, 0, 0, so its
      combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
@@ -726,26 +694,22 @@ uses D3D for that call.
      as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the target's slot.
      A grid that cannot be made keeps the call on D3D
      (`Missing::Wide`), as does a missing frame; a grid with a strip
-     under a triangle is refused (`ScreenRefused::NoStrips`). With these
-     a wide convolution misses nothing and is armed whenever the native
-     post is.
-   - **Runtime diagnostics.** An early menu A/B reported identical
-     images while no screen replacement committed. The menu and
-     gameplay can call `0x0002d140` with different bound targets and
-     grid sizes. (The shapes dump and call trace that found this are
-     gone.) `H2_FRAME_STATS` includes the native post examined,
-     suppressed, refused and recorded-range columns.
+     under a triangle is refused (`ScreenRefused::NoStrips`). A wide convolution is armed whenever the native post is.
+   - **Diagnostics.** The menu and gameplay call `0x0002d140` with different bound targets and grid sizes, so a menu A/B with no committed screen replacement shows identical images. `H2_FRAME_STATS` includes the native post examined, suppressed, refused and recorded-range columns.
 
-5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
-   same shape and gets its own skip point.
-6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
-7. **The fade** `0x00040890`, a skip point of its own: one full-screen
-   quad with the colour and blend it reads.
-8. **The UI and HUD** (`0x00147af1`; `HUD_SHOWN`, the HUD render
-   `0x0013954b`): trace the caller chain first, then text and bitmaps
-   through the native renderer. Once that is done, `0x00013b90`,
-   `0x00013cd0` and the present (`0x00013f10`) are the last D3D work in
-   the frame.
-9. **The live A/B**, as the other stages': the same frame with the
-   switch on and off, `external_passes_dropped` steady, and the time of
-   `render_screen_effects`.
+## Rules and limits
+
+- Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
+- Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
+- `0x0002df00` and `0x0002dd30` (same shape as the screen-effect passes) and layer 17 (S: bloom) are not drawn natively. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
+- Under `impl.render.pipelined_frame` the post hooks require the game thread.
+
+## Not verified
+
+- Pixel identity of the same view and call with `impl.render.native` on and off (fixed save, view and time, captured through `H2_BOOT_GFX` or the agent API's `render.frame`): the glow and screen replacements commit with no unexpected refusals or replays, and every changed intermediate, its next D3D consumer and the final image match.
+- The cost of `render_screen_effects` against a D3D measurement.
+- That the D3D path's pixel centres match a quad whose corners are the window's (S).
+
+## Related
+
+[native-renderer.md](native-renderer.md), [native-transparents.md](native-transparents.md), [formats/ui.md](../formats/ui.md), [d3d.md](d3d.md), [debug-menu.md](../runtime/debug-menu.md).
