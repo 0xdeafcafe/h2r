@@ -1,5 +1,6 @@
 use h1convert::shad::program::{self, scope_filters};
 use map::build::Block;
+use map::TagId;
 use tags::scope_zoom::{Blur, Profile};
 
 use super::Converter;
