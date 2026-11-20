@@ -1780,6 +1780,10 @@ where
         self.inner.commit_external(recording);
     }
 
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.inner.supports_external_pass()
     }
