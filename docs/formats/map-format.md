@@ -1,5 +1,7 @@
 # Halo 2 retail Xbox cache files (version 8)
 
+Status: Built. Reader and lossless writer in `crates/map`; tag codecs in `crates/tags`. Switch: none.
+
 This describes the reader and lossless writer in `crates/map`, not an on-disk Rust struct ABI.
 All integers below are little-endian. Offsets are hexadecimal and relative to
 one `.map` file, including when the map is read inside an ISO.
@@ -250,45 +252,30 @@ buffers and total decoded string bytes per table are each capped at 64 MiB;
 tag slots are capped at 65,536. Payload lengths are checked against their
 region and allocated with fallible reservation. The lossless writer is described below.
 
-## Rust tag definitions for an editable engine
+## Tag definitions
 
-**Design recommendation:** use a small, reviewed schema as the source of truth
-and generate checked binary readers/writers and field metadata from it. Include
-field name, offset, scalar/enum type, array/block stride, tag-reference class,
-address kind, build applicability, and preserved unknown byte ranges. Generate
-ordinary named Rust structs for understood values; use `TagId`, typed tag
-references, string IDs, raw-resource pointers and `Vec<T>` blocks, not opaque
-integer pointers in the editor model.
-
-Names and layouts come from our own engine traces, disc checks and tests;
-no outside layout file is vendored or imported.
-
-Start with hand-reviewed `scnr`, `matg`, `bitm` and BSP records, then expand the
-schema as needed. Hand-write semantic validation and editable domain models
-above generated codecs. Keep padding/unknown fields for eventual round trips,
-retain the provenance of each layout, and test codecs with synthetic fixtures.
-Use private disc-backed checks locally for additional evidence.
-
-Do not cast cache bytes into `#[repr(C)]` structs: disk offsets, alignment,
-little-endian fields, salted references, and region-dependent pointers require
-explicit decoding. `repr(C)` can be useful later at the guest-engine ABI boundary;
-it is not the editable asset model. This keeps readable Rust names and useful
-editor metadata without hand-maintaining hundreds of repetitive offset readers.
+The typed per-group definitions (every field named or an explicit `unknown`
+span) are in [tag-definitions.md](tag-definitions.md); the layout inference
+that finds pointers, references and string IDs is in
+[tag-schema.md](tag-schema.md). The generated codecs for the records below
+are in `crates/tags/schema.rs` and `crates/tags/build.rs`. Cache bytes are
+never cast into `#[repr(C)]` structs: disk offsets, alignment, little-endian
+fields, salted references and region-dependent pointers need explicit
+decoding.
 
 [whitepaper]: https://xboxdevwiki.net/index.php?title=Halo_2&oldid=5696
 
 
-## Reviewed tag definitions (2026-11-14)
+## Generated record codecs
 
 This section records the implementation in `crates/tags`. For block claims,
 **V means count × stride fits in bounds on every disc instance**, with the
 additional checks stated below. **S** marks a meaning that is unverified on the
 disc and in the engine.
 
-**Design:** the earlier dense scenario, globals, BSP, and model child-block
-catalogues have been removed: bounds fitting the disc was not enough to justify
-them. Those unused areas are now coalesced `Bytes` fields, without block names
-or strides. Only bitmap child records are interpreted. Observed-empty slots
+**Design:** the scenario, globals, BSP and model child blocks are not
+catalogued, because bounds fitting the disc is not enough to justify a name
+or a stride. Those areas are coalesced `Bytes` fields. Only bitmap child records are interpreted. Observed-empty slots
 remain as `unsupported_<offset>` guards because the strict decoder actively
 checks them; there is no guessed stride or semantic name for those slots.
 
@@ -367,8 +354,7 @@ Reviewed ranges, references and StringIDs still fail on corruption in both modes
 Leniency does not add support for cache builds rejected by `map`.
 
 These modes apply only to declared guards. Opaque byte spans have no interpreted
-block descriptors and are preserved in both modes. In particular, there is no
-longer a claim to validate every top-level pointer in scenario/globals/BSP/model.
+block descriptors and are preserved in both modes. In particular, no claim is made to validate every top-level pointer in scenario/globals/BSP/model.
 Adding such coverage requires individually reviewed child definitions and
 evidence.
 
@@ -380,7 +366,7 @@ Total decoded sprite count is capped at `payload_len / 0x20` so repeated,
 aliased sprite spans cannot produce quadratic allocations. Bounded aliasing is
 allowed; arbitrary next-block order or non-overlap is not assumed.
 
-The later [lighting decoder](lighting.md) additionally verifies three sky-child
+The [lighting decoder](lighting.md) additionally verifies three sky-child
 aliases into other sky payloads and one zero-sized fog identity alias on the
 retail disc. Those reads require a same-class owning payload in the identical
 address space; zero-sized roots require an exact metadata address match.
@@ -393,7 +379,6 @@ strict decoding. Root codecs round-trip exactly, retained data references fit,
 root tag references resolve full salted IDs with concrete/parent/grandparent
 class compatibility, and model StringID lengths match. Empty guards confirm
 only zero counts, never a stride. The verifier reports aggregate coverage.
-The previous broad root-block coverage claim is withdrawn after schema trimming.
 
 `validate_resources(&ResourceSizes)` additionally requires lengths for every
 selected resource file and checks full LOD/low-detail extents. The disc verifier
@@ -792,7 +777,7 @@ Or run directly against the read-only ISO without extracting an input map:
 CARGO_TARGET_DIR="$TMPDIR/map-write-target" cargo run -p tags --example edit_map -- /path/to/halo2.iso /maps/beavercreek.map
 ```
 
-### Retail results (2026-11-15)
+### Retail results
 
 All 30 maps in the supplied retail ISO round-tripped **byte-identically**, with
 no semantic-only exceptions. All recorded and recomputed checksums matched.
@@ -801,38 +786,8 @@ by re-reading the new field/name and validating its recomputed checksum.
 Physical and declared lengths matched on this disc; synthetic tests separately
 cover trailing physical padding and embedded-region boundaries.
 
-| Map | Original bytes | Exact / checksum / edited |
-|---|---:|---|
-| `00a_introduction.map` | 113,031,168 | pass / pass / pass |
-| `01a_tutorial.map` | 69,169,664 | pass / pass / pass |
-| `01b_spacestation.map` | 248,586,240 | pass / pass / pass |
-| `03a_oldmombasa.map` | 203,507,712 | pass / pass / pass |
-| `03b_newmombasa.map` | 234,307,584 | pass / pass / pass |
-| `04a_gasgiant.map` | 194,758,656 | pass / pass / pass |
-| `04b_floodlab.map` | 199,387,136 | pass / pass / pass |
-| `05a_deltaapproach.map` | 195,034,112 | pass / pass / pass |
-| `05b_deltatowers.map` | 213,932,032 | pass / pass / pass |
-| `06a_sentinelwalls.map` | 213,370,880 | pass / pass / pass |
-| `06b_floodzone.map` | 221,074,432 | pass / pass / pass |
-| `07a_highcharity.map` | 272,911,872 | pass / pass / pass |
-| `07b_forerunnership.map` | 180,540,928 | pass / pass / pass |
-| `08a_deltacliffs.map` | 143,452,160 | pass / pass / pass |
-| `08b_deltacontrol.map` | 262,776,832 | pass / pass / pass |
-| `ascension.map` | 29,735,936 | pass / pass / pass |
-| `beavercreek.map` | 28,942,336 | pass / pass / pass |
-| `burial_mounds.map` | 32,114,688 | pass / pass / pass |
-| `coagulation.map` | 41,397,248 | pass / pass / pass |
-| `colossus.map` | 31,132,160 | pass / pass / pass |
-| `cyclotron.map` | 46,205,952 | pass / pass / pass |
-| `foundation.map` | 37,599,232 | pass / pass / pass |
-| `headlong.map` | 56,096,256 | pass / pass / pass |
-| `lockout.map` | 34,523,136 | pass / pass / pass |
-| `mainmenu.map` | 59,670,016 | pass / pass / pass |
-| `midship.map` | 30,519,808 | pass / pass / pass |
-| `shared.map` | 183,370,752 | pass / pass / pass |
-| `single_player_shared.map` | 429,017,088 | pass / pass / pass |
-| `waterworks.map` | 41,352,704 | pass / pass / pass |
-| `zanzibar.map` | 53,547,008 | pass / pass / pass |
+The result is per map (exact round trip, checksum, edited and re-read); the
+verifier prints the table for the owner's disc.
 
 The standalone `edit_map` demo was also run directly on `/maps/beavercreek.map`:
 a weapon's bounding radius field was changed, tag-name offsets were rebuilt,

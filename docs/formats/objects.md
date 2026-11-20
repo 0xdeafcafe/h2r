@@ -152,7 +152,7 @@ because their stride is either unproven or only an upper bound.
   `+0x20` block (`bipd +0x284`, `0x80` each: a sphere at `+0x20`, a
   transform at `+0x30` whose child pointer `+0x3c` is the sphere), `+0x28`
   (`+0x28c`, `0x50` each: a pill at `+0x20`) and `+0x30` (`+0x294`, as
-  `+0x20`). The sizes they are built from are in tag-definitions.md
+  `+0x20`). The sizes they are built from are in [rebuild.md](../halo1/rebuild.md)
   ("Bipeds from definitions").
 - The same code passes `vehi +0x2ac` to `0x00205550`.
 
