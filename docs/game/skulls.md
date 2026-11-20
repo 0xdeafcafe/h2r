@@ -1,12 +1,8 @@
 # Campaign skulls per profile
 
-Status: built. Pickup tracking, per-profile storage and the
-campaign-start apply (`boot::skulls`, the settings store's per-profile
-values) have been seen working. The Skulls page between the difficulty
-and the level (`boot::skulls_screen`, `boot::skulls_menu`, our own list
-class with the level select's layout, "Menu" below) is built and tested
-offline, not yet seen running; it replaces the Skulls row the difficulty
-list had.
+Status: Built. Pickup tracking, per-profile storage and the campaign-start apply (`boot::skulls`, the settings store's per-profile values) are seen working. The Skulls page between the difficulty and the level (`boot::skulls_screen`, `boot::skulls_menu`, our own list class with the level select's layout, "Menu" below) is tested offline; "Not verified" lists what only a run shows.
+Code: `crates/boot/src/skulls.rs`, `skulls_screen.rs`, `skulls_menu.rs`, `skulls_mp.rs`, `skulls_custom.rs`. Tests: in those files.
+Switch: feature ids `skulls`, `skulls-page`, `skulls-screen`, `skulls-mp`, `skulls-mp-row`, `skulls-mp-screen`, `skulls-custom` (`H2_FEATURES=<id>=off`), and `H2_SKULLS_REVEAL`; listed in [switches.md](../runtime/switches.md).
 
 The ask: a skull a player has picked up is remembered on their profile, and
 when they start a new campaign (alone or in co-op) they can pick which of
@@ -15,8 +11,7 @@ their collected skulls to turn on.
 Labels: **confirmed** means read from the retail XBE's instructions or the
 disc's scripts with this repo's tools (`h2 disasm`, `h2 hs`, `h2 strings`,
 an absolute-reference scan of the XBE); **likely** means strong evidence but
-not every path read; **community** means public knowledge, cited. Nothing
-here has been seen running, apart from what the status lines above say was seen.
+not every path read; **community** means public knowledge, cited.
 
 ## What the game does
 
@@ -41,7 +36,7 @@ skull weapon, then calls `(ice_cream_flavor_stock n)` (confirmed, `h2 hs` on
 the 14 campaign maps). `0x1df3e0` has one caller, the builtin, so hooking it
 sees every pickup.
 
-### The skulls by index (confirmed unless noted)
+### Where each skull is
 
 The index is what the scripts stock. The names are the game's own HUD names
 for each index (`unlocked_extra_1` ... `unlocked_extra_14` in shared.map's
@@ -70,9 +65,8 @@ skull. All read with `h2 hs <map>` on the 14 campaign maps.
 | 13 | Angry | Gravemind (`07a_highcharity`) | yes | the waker wakes `ice_cream_angry` only on Legendary |
 | 14 | Bandana (community name; no HUD name) | The Armory (`01a_tutorial`) | yes | `icecream` waits for `(and mark_ice_cream (difficulty_legendary))`; `mark_ice_cream` is set once Johnson has asked the player onto the lift several times |
 
-Level names are the shipped titles of the map files. An earlier version of
-this table had 7 and 11 the wrong way round (Ghost is Uprising's, Iron is
-High Charity's); the scripts above are the evidence. Where community lists
+Level names are the shipped titles of the map files; the scripts above are
+the evidence (Ghost is Uprising's, Iron is High Charity's). Where community lists
 put a skull on another level, trust the index: it is what the engine stores.
 The menu's copy of this is `skulls::ABOUT`; its effect lines are our own
 words, not the game's (the game has no description text for skulls).
@@ -166,7 +160,7 @@ Skulls row shown; <profile> <n> of 15 collected, ...`.
 The plan's own `feature: SKULL_STOCK before skulls:note the skull active`
 lines say each hook ran the first time.
 
-## Menu (built)
+## Menu
 
 **The flow** is level select (or New Campaign) → difficulty → the Game
 Options page → the level. The page comes when the pressing player's
@@ -195,8 +189,7 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   two-value row). A locked skull does nothing and says why on stderr.
   **B** goes back to the difficulty list (the generic back handler, as on
   every screen of ours); choosing a difficulty there opens the page again.
-  X and Start do nothing (`ListClass::action_buttons(&[])`): X going on to
-  the level was a mystery to the player. A pressed over and over still
+  X and Start do nothing (`ListClass::action_buttons(&[])`). A pressed over and over still
   goes from the level list through the difficulty and the page into the
   game, since Start Level is the first row.
 - **Footer**: "◀  ▶ CHANGE  Ⓐ SELECT  Ⓑ BACK" in the font's button glyphs, the two arrows two spaces apart (side by side the font draws them as one diamond, and one narrow space left them touching).
@@ -207,18 +200,13 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   what it does.
 - **Height**: the list lays out 13 rows (`skulls_menu::VISIBLE_ROWS`) from
   the level select's anchor down to the footer band, and scrolls for the
-  rest. It used to lay out the Controls tag's 6 (5 seen), a third of the
-  page: our tag copy kept the Controls list block's visible count, and the
-  Controls handler embeds only six item widgets. The copy now writes the
-  layout's count (`ListLayout::visible`), and the class's list gets the
-  rows past six as item widgets of ours, linked by the "add items" hook
+  rest. The Controls handler embeds only six item widgets, so the tag copy
+  writes the layout's count (`ListLayout::visible`) and the class's list
+  gets the rows past six as item widgets of ours, linked by the "add items" hook
   (`list_class::extra_items`, `layout_glue`), as the Controls screen's own
   added rows are.
 - **Going back**: the picture and the description fade with the page.
-  They had no animation (the bitmap block's was cleared, the text block's
-  zero), so through the page's out transition they stayed fully drawn, the
-  skull over the difficulty screen's own skull coming back in. They now
-  carry the level select's own animations (as its tag stores them:
+  They carry the level select's own animations (as its tag stores them:
   picture 13, description 11, `skulls_menu::PICTURE_ANIMATION`,
   `DESCRIPTION_ANIMATION`; checked against the disc).
 
@@ -228,22 +216,12 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   Start Level runs the kept difficulty press at once, from the page's own
   row press, with the page still up. The press pushes the loading screen
   onto window 5 slot 4 over the page, as it would have over the difficulty
-  screen: the level loads straight away. The first builds closed the page
-  and ran the press once the stack had freed it: the page animated out and
-  the difficulty screen came back before the level loaded, and a Start
-  pressed while the page was still opening went back and never loaded (the
-  press then ran from inside the stack's free of the page while the stack
-  was still settling its top screen). With no close there is nothing to
-  race. Closing and pressing at once (the very first build) put the
-  loading screen over a page still closing, and the close took it down.
-- The difficulty list is not there while the page is up. Seen live
-  (2026-11-19, `h2 serve --settings`, a10 from the level select): at
-  Start Level the kept list's address held vtable `0x458788`, not the
-  difficulty list's `0x45d688`, so the check refused the press ("is gone;
-  not started"), nothing loaded, and each later Start Level found nothing
-  kept. The stack frees the screen under a new one and builds it again
-  when it comes back, which is why the close-then-run order always found
-  a list. A mode 0 press reads its list only for the mode byte
+  screen: the level loads straight away. With no close there is nothing to
+  race.
+- The difficulty list is not there while the page is up. At Start Level
+  the kept list's address holds vtable `0x458788`, not the difficulty
+  list's `0x45d688`, because the stack frees the screen under a new one and
+  builds it again when it comes back. The press cannot rely on the list. A mode 0 press reads its list only for the mode byte
   (`0x2c9d79`; from `0x2c9d9b` on, `this` is never read), so with the
   list gone the press runs on a stand-in: the byte at `+0x2a0` in our
   scratch page (`skulls_screen::write_stand_in`, `Target::StandIn`). A
@@ -252,9 +230,9 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
 - From a lobby's Game Setup (mode 1, `0x2bb945`), the press only stores the
   lobby's difficulty and animates the difficulty screen out; with the page
   on top that would leave the page up over the lobby. So there the page
-  closes as B does and the press runs once it is freed, as before.
+  closes as B does and the press runs once it is freed.
 
-How the flow is made (static reading, not seen running):
+How the flow is made (static reading):
 
 | Address | What | Confidence |
 |---|---|---|
@@ -314,6 +292,8 @@ How the flow is made (static reading, not seen running):
   is among them, so a Start Level that loads nothing says whether the
   press opened its loading screen (`boot::ui_watch::stack`).
 
+### Layout
+
 **The layout** is the campaign level select's
 (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map;
 `h2 ui` prints it): its list on the left, its picture box on the right
@@ -368,9 +348,9 @@ measures every skull name and state in the retail row font.
   `H2_FEATURES=skulls-page=off` removes the hook.
 - **Co-op.** The page is for the pressing player's profile. The
   campaign start applies the union of every signed-in profile's On
-  skulls, as before. The game also has `difficulty_lobby` (screen 1,
+  skulls. The game also has `difficulty_lobby` (screen 1,
   another list); if co-op reaches that one, it has no page (not checked
-  in game).
+  in game; "Not verified").
 
 ## Gold and silver
 
@@ -513,10 +493,10 @@ is never applied or advertised. Guests apply the host's advertised set
 whatever their own profiles hold.
 
 **Not stored with the variant.** The choice stays per host profile and
-travels with the Live session, as before. The variant's record (the
-0x130-byte game variant the editor edits at `0x54e4a0`, its name at
-`0x54e4a4`) now has room of ours, the extension block in its spare bytes
-(docs/game/game-options.md section 3), but the skulls have not moved there.
+travels with the Live session. The variant's record (the 0x130-byte game
+variant the editor edits at `0x54e4a0`, its name at `0x54e4a4`) has room of
+ours, the extension block in its spare bytes (docs/game/game-options.md
+section 3), but the skulls are not stored in it.
 
 | Address | What | Confidence |
 |---|---|---|
@@ -536,12 +516,10 @@ list has six item widgets for seven rows, so it scrolls.
 
 ### Why the Game Setup row broke
 
-The first version put the row on the lobby's Game Setup dialog
-(`squad_settings_dialog`, screen 23) and opened the screen the way the
-difficulty row does, with `0x149f1e(1 << player, loader)`. In game it
-"breaks, it looks like it tries to use the campaign screen". Read
-statically (not seen running), the cause is the screen stack it opened
-on:
+A row on the lobby's Game Setup dialog (`squad_settings_dialog`, screen 23)
+that opens the screen the way the difficulty row does, with
+`0x149f1e(1 << player, loader)`, shows the campaign screen. Read
+statically, the cause is the screen stack it opens on:
 
 - A screen request (`0x149f49`) carries a window at `+4` and a slot at
   `+8`. The base screen constructor `0x22f5ca` keeps them at screen
@@ -556,19 +534,19 @@ on:
   on window 3 (`0x25102e`, `0x2c7eef` both push 3), and every screen it
   opens itself (Change Map `0x2bb8ac`, the variant list `0x2bb8df`, and the
   others in its jump table) says window 3 too.
-- So our Skulls screen went onto the main menu's stack (window 5), under
-  the lobby's dialogs, not over the Game Setup dialog: the screen shown is
-  the main menu's (where Campaign is), and B closed our screen on window
+- So a screen opened that way goes onto the main menu's stack (window 5),
+  under the lobby's dialogs, not over the Game Setup dialog: the screen
+  shown is the main menu's (where Campaign is), and B closes it on window
   5, back to whatever the main menu's stack held.
 
-Two fixes, both in: the row moved to the variant editor (where the
-variant's settings are edited), and our press opens the screen on the
-pressing screen's own stack: it reads the variant editor's window and slot
+So the row is in the variant editor (where the variant's settings are
+edited), and our press opens the screen on the pressing screen's own
+stack: it reads the variant editor's window and slot
 (`+0x74`, `+0x78`) and builds the request itself
 (`skulls_mp::open_request`, written to a page of ours and handed to the
-class's loader), so it would be right on a lobby's window 3 as well as the
-main menu's 5. And the multiplayer screen is no longer the campaign
-screen in another mode: it is its own instance and class.
+class's loader), so it is right on a lobby's window 3 as well as the
+main menu's 5. The multiplayer screen is its own instance and class, not the
+campaign screen in another mode.
 
 ### How the host's set reaches guests
 
@@ -748,6 +726,8 @@ calls), a loud stderr line, and the object removed as `object_destroy`
 `object_delete` (`0xb8540`). A checkpoint revert or a BSP change that
 takes the object away places it again.
 
+### Calls into the game
+
 Calls into the game run at one point: a `before` on `game_tick`, first in
 its chain, that, when calls are queued, answers with an async body that
 makes them and then runs the tick (whose chain runs again and continues),
@@ -840,189 +820,32 @@ ours is placed or applied; retail's skulls are untouched either way.
   (x, y, z) [hint]: <placed|collected|waiting for bsp n ...>; player 0
   12.3 wu away`
 
-## To check in game
+## Not verified
 
-1. `h2 play`, sign in a named profile, start Cairo Station on Legendary and
-   pick up its skull. stderr at boot: `skulls: hooks installed via feature
-   plan at ...; saving to <path>`; on pickup: `skulls: pickup call for
-   skull 3 (Thunderstorm), was off`, then `skulls: Thunderstorm kept for
-   <profile>, saved to <path>`. That `settings.toml` now has
-   `[profiles."<profile>".skulls] thunderstorm = true`.
-2. Quit, start `h2 play` again, start any campaign level with that profile:
-   stderr `skulls: campaign start for <profile>: Thunderstorm`, and the
-   skull's effect is on from the first encounter.
-3. Set `thunderstorm = false` (in the menu, step 7, or the file), start
-   a campaign: `... : none`, and the effect is off even after picking up
-   another skull earlier in the same boot.
-4. Co-op with two named profiles: a pickup is kept for both; the start
-   turns on the union.
-5. The default profile (no name) or `H2_LEVEL`: a pickup is kept under
-   `default` (with the `no named profile signed in (...)` line showing the
-   slots as read), and a campaign start applies `default`'s skulls.
-6. The HUD message and sound on pickup are unchanged (the game's own
-   function still runs).
+Only a game run shows these.
 
-The page (step numbers kept for the multiplayer steps below):
-
-7. With a profile that has no skull collected: Campaign, New Campaign,
-   pick a difficulty. The difficulty list is retail's four rows (no
-   Skulls row), and the level starts at once. stderr: `skulls page:
-   <profile> has no skulls collected; starting as retail`.
-8. With a profile that has a skull: pick a difficulty. A page titled
-   "Skulls" opens instead of the level. stderr, in order: `skulls page:
-   difficulty chosen; the Skulls page comes first`, `skulls page:
-   kept difficulty <n> (<name>) for level New Campaign's first, player 0
-   (<profile>), list 0x...` ("chosen on Select Level" from there),
-   `skulls-screen: opened with 21 rows (our list class)`, `list class: a
-   screen of ours gets its own layout (tag copy at 0x...)`,
-   `skulls-screen: row text`. If the layout line is missing, the list is
-   still full width: report it.
-9. **Look at the layout** (the point of this change; it can only be seen
-   in game). It should match Select Level's screen:
-   - the list on the **left**, rows about as wide as Select Level's
-     (each row ends left of the screen's centre), **no Start row**: first
-     row Assassins, then Thunderstorm, Famine, Blind, Black Eye, Catch, Iron,
-     Mythic, Angry, Envy, Grunt Birthday Party, IWHBYD, Ghost, Sputnik,
-     Bandana, Fall Damage, Acrophobia, Low Gravity, Unlimited Ammo,
-     Unlimited Grenades, Invincible; each "Name: < On >",
-     "Name: < Off >" or "Name: Locked". Scroll to the end and back: all 21 reachable.
-   - on the **right**, a large skull in Select Level's picture box,
-     **gold** on a gold skull, **silver** on a silver one, dimmer while
-     locked, changing as the cursor moves.
-   - **under the skull**, inside the right column, the description,
-     wrapped to the picture's width: "Gold skull:" or "Silver skull:",
-     the effect, "Found on <level>, Legendary only" (Blind: "any
-     difficulty"), then a blank line and "◀▶ Toggle Ⓐ Start Level Ⓑ
-     Back" with the controller's button pictures (the d-pad's left and
-     right, A, B) (if they show as boxes
-     or blanks, report it). The list's left bracket wraps its top-left
-     corner as on the level select; no frame art bottom right.
-   If something sits wrong, say where (screen centre origin, Y up,
-   640x480). Also note: whether long labels ("Unlimited Grenades: Locked",
-   "Grunt Birthday Party: < Off >") fit their row; the button prompts (the Controls screen's own: B may still
-   say "Done", though it goes back).
-10. Left or right (d-pad or left stick) on a collected skull flips On
-    and Off at once, the row reading "< On >" or "< Off >" (stderr
-    `skulls page: right on row <n>: skulls: Mythic off for <profile>`),
-    and `settings.toml` follows. Holding the stick or d-pad flips it
-    every 250 ms. On a locked skull it changes nothing: `skulls page:
-    left on row <n>: skulls menu: Iron is locked for <profile>: not
-    collected yet (found on High Charity, Legendary only)`.
-11. B: back on the difficulty list. Pick a difficulty again: the page
-    opens again.
-12. A on the page: the page animates out like B, and the level starts on
-    the difficulty picked. stderr, in order: `skulls page: A/X/Start:
-    starting difficulty <n> (<name>) once the page is freed`, `skulls
-    page: close requested for the page 0x... (window 5, slot 4)`,
-    `skulls page: the page 0x... is freed; back on the difficulty list`,
-    `skulls page: starting: the difficulty press (<name> for <profile>,
-    list 0x...) with <skulls on>`, `skulls page: the difficulty press
-    returned (0x...); the level should be loading`, then the campaign
-    start's `skulls: campaign start for <profile>: ...` with exactly the
-    On skulls. Then again with X, and with Start: the same. Pressing A
-    twice quickly on the page: `A/X/Start again; already closing`, nothing
-    more. Spam A from the level list: level, difficulty, page, game, with
-    no stop on the page; holding A on the difficulty does not skip the
-    page. A `skulls page: A/X/Start <n> ms after the page opened: the
-    press that opened it; ignored` line means a press was dropped as the
-    opening one (report it with `<n>`). If it sticks, report every `skulls page:` line. Which line is
-    last says where: no "freed" line (the stack did not call our
-    destructor: the page is back on the difficulty list and nothing
-    starts), or "returned" with no level (the press ran but did
-    nothing from there). B after
-    picking: `the page 0x... is freed (B); nothing started`.
-13. Select Level: pick a level, then a difficulty: the same page (the
-    kept line says "chosen on Select Level"), and A loads that level (the other loader, `0x2bb432`).
-14. Co-op (two named profiles): each player's difficulty press opens the
-    page for their own profile. Note which difficulty screen co-op shows;
-    if it has no page, it is the lobby one (screen 1).
-15. `H2_FEATURES=skulls-screen=off`: the difficulty starts the level as
-    retail.
-
-Multiplayer (a Live server running; two machines for 20 to 22):
-
-16. At boot: `skulls-mp: hooks installed via feature plan at 0x18f000
-    (multiplayer start), 0x13939b (Blind: HUD), 0x165f16 (Blind:
-    first-person weapon), 0xfda00 (Famine: placed weapons); offered:
-    Famine, Blind, Low Gravity (each once the host's profile has collected it)`.
-17. Main menu, Settings, Game Variants, pick or create a variant, edit it:
-    the category list is Match Options ... Equipment Options, then
-    "Skulls" (the list scrolls by one). stderr `layouts: list 0x45be10
-    grows from 6 to 7 rows` (only when no other list
-    grew earlier in the run, as that line is said once) and `skulls menu: variant editor
-    row text`. Moving onto Skulls keeps the Equipment Options pane.
-18. A on it: "Multiplayer Skulls", rows Famine, Blind and Low Gravity, over
-    the variant editor. stderr `skulls menu: opening the multiplayer Skulls screen for
-    <profile> (player 0) on window 5`, then `skulls-mp-screen: opened with
-    3 rows (our list class)`. The same layout as the campaign page
-    (list left, "Famine: Locked" style labels, skull right, description
-    under it; no Start row). The big skull: gold or silver by the
-    focused skull's tier, dim while locked. A on Blind (collected): `skulls: Blind on
-    in multiplayer for <profile>`; on one not collected: Locked, nothing
-    changes, and `skulls menu: Famine is locked for <profile> in
-    multiplayer: not collected yet (found on The Oracle, Legendary only)`.
-    B returns to the variant editor, the cursor on Skulls. The other
-    categories still open their screens.
-19. Start the game alone: `skulls-mp: multiplayer start (local): Blind`;
-    no HUD and no first-person weapon, and `skulls-mp: Blind is hiding
-    the HUD and first-person weapon this game`. With Famine: `skulls-mp:
-    Famine halved a placed weapon's ammo (the first this game)`, and a
-    map's placed weapons start with half their rounds.
-20. Host with a guest: the host says `skulls-mp: multiplayer start as host
-    of 2 machines: <set> (advertised to guests)`; the guest says
-    `skulls-mp: multiplayer start as a guest: the host's skulls, read from
-    the server now: <set>` (or `as advertised when we joined ...`), and
-    its HUD is gone if Blind is in the set, whatever its own profile says.
-21. Over System Link: the guest says `... the host's skulls are unknown
-    (...); none here ...`.
-22. After the game, the stats site shows the skull badges on that game and
-    in the games list, and `?skulls=6` on `/v1/games` finds it.
-
-Our skulls (no Live server needed; `H2_SKULLS_REVEAL=1` helps find them):
-
-23. At boot: `skulls-custom: hooks installed via feature plan at 0x...
-    (tick: calls, effects, hidden skulls); hidden: Acrophobia on Uprising,
-    Low Gravity on Delta Halo, Fall Damage on Metropolis, Unlimited Ammo
-    on Outskirts, Unlimited Grenades on Sacred Icon, Invincible on The
-    Great Journey`; with `H2_SKULLS_REVEAL=1`, six `skulls reveal: ... at
-    boot; no local player` lines.
-24. Start Outskirts (any difficulty). stderr at load: `skulls:
-    03a_oldmombasa hides Unlimited Ammo (bsp 1): not yet collected by
-    everyone here; it will be placed`. On the beach (BSP 1): `skulls:
-    placed Unlimited Ammo at (-452.00, -468.00, -7.12) as object 0x...`.
-    If instead `... cannot be placed: <why>` or `object_new refused`,
-    report the line. With the reveal on, the distance in `skulls reveal:`
-    falls as you walk there.
-25. The skull sits on the floor under the pier, retail skull model. Walk
-    over it (or press the pick-up button, as for a retail skull): `skulls:
-    ==== FOUND Unlimited Ammo on 03a_oldmombasa by player 0 (object 0x...);
-    on for the rest of this level ====`, `skulls: Unlimited Ammo kept for
-    <profile>, saved to <path>`, `skulls: removed the found skull (object
-    0x...)`; the HUD says "Skull found: Unlimited Ammo"; the skull is gone
-    from the hands and the world. If it stays in the hands or the game
-    stops, report the last `skulls:` lines.
-26. Then `skulls: Unlimited Ammo is acting on the local players this
-    game`: fire a battle rifle dry: the magazine empties and reloads, the
-    reserve stays full. A plasma rifle never drains its charge.
-27. Restart the level: `... already collected by every profile here; not
-    placed`. The Skulls screen lists Unlimited Ammo as On; starting any
-    campaign level says `skulls: ours on this campaign: Unlimited Ammo`.
-28. Each effect, turned on in the Skulls screen (or found):
-    - Invincible: no damage from anything; a grenade at your feet leaves the
-      shield full.
-    - Unlimited Grenades: throw both kinds: each count stays at 4.
-    - Low Gravity: `skulls: Low Gravity: gravity 4.17.. -> 2.08..
-      (physics constants 0x...)`; jumps go higher and fall slower, and so
-      do grenades and bodies.
-    - Fall Damage: drop from a ledge: `skulls: Fall Damage: player 0
-      landed at <speed> wu/s: ...`; a jump on flat ground says nothing. A
-      long enough drop kills (`... ; killed`). If a plain jump hurts, give
-      the speed it reports.
-    - Acrophobia: jump and look up: you keep climbing; look level: you
-      hover; look down: you sink slowly; crouch: you fall. If you only
-      fall, the physics overrides the velocity write: report it.
-29. Multiplayer: Low Gravity on in the multiplayer Skulls screen (once
-    collected): `skulls-mp: multiplayer start (local): Low Gravity` and the
-    Low Gravity line from step 28, on every machine.
-30. `H2_FEATURES=skulls-custom=off`: `skulls-custom: off: switched off
-    (H2_FEATURES)`; no skull is placed and none of ours acts.
+- The campaign flow with a named profile: a pickup is kept (`[profiles."<profile>".skulls]`
+  in `settings.toml`), the next campaign start turns the kept skulls on
+  from the first encounter, a skull set off stays off, co-op with two named
+  profiles keeps a pickup for both, and the `default` profile and `H2_LEVEL`
+  fall back as the "Who it is for" bullet says.
+- The Skulls page: a profile with no skull collected starts as retail with
+  no page; a profile with one gets the page after the difficulty; Start
+  Level loads the level on the chosen difficulty from the level select,
+  New Campaign and a lobby's Game Setup; B returns to the difficulty list;
+  the list is full width less the picture, scrolls past 13 rows, and the
+  picture and description fade with the page. Whether co-op reaching
+  `difficulty_lobby` (screen 1) needs a page.
+- The multiplayer Skulls row in the variant editor: its pane, B back to the
+  editor, and the screen on a lobby's own stack (window 3).
+- Multiplayer: the host's Low Gravity is applied on every machine and a
+  guest's own profile does not matter; Famine and Blind apply for the
+  local players only.
+- Our skulls: each hidden skull is found at its place (the `H2_SKULLS_REVEAL`
+  lines name the spots), is removed on pickup, is kept per profile and
+  placed again until every profile here has it; Low Gravity, Fall Damage,
+  Unlimited Ammo and the others act as "How each works" says. The jump
+  button held in air is not traced.
+- `H2_FEATURES=skulls-screen=off`, `skulls-page=off`, `skulls-mp=off` and
+  `skulls-custom=off` leave the matching parts as retail, with the log
+  lines "What it logs" names.
