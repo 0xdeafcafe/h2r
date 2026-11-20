@@ -30,7 +30,17 @@ pub(crate) struct Variant {
 }
 
 /// Include major variants even when the scenario never names them directly.
-pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result<Vec<Variant>> {
+/// `retail` is the set of the Halo 2-assets variant (`crate::h2assets`): a
+/// variant's weapon is then its retail counterpart, as every placed weapon
+/// is, and a counterpart missing from the set is an error. Otherwise, or
+/// when the mapping keeps the weapon Halo 1's, it is Halo 1's own,
+/// converted.
+pub(crate) fn prepare(
+    h1: &H1Map,
+    ai: &H1Ai,
+    conv: &mut Converter<'_>,
+    retail: Option<&TagSet>,
+) -> Result<Vec<Variant>> {
     let mut todo = Vec::new();
     for (i, entry) in ai.actor_palette.iter().enumerate() {
         if ai.actor_of(i).is_some_and(|a| rebuilds_character(a.kind)) {
@@ -74,10 +84,30 @@ pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result
         let weapon = if variant.weapon.id.is_none() {
             None
         } else {
-            Some(
-                conv.object(h1.tag(variant.weapon.id)?)
-                    .map_err(|e| invalid(format!("AI weapon {}: {e}", tag.name)))?,
-            )
+            let source = h1.tag(variant.weapon.id)?;
+            let stand_in = match retail {
+                Some(set) => crate::h2assets::stand_in(set, source).map_err(|why| {
+                    invalid(format!("AI weapon {} of {}: {why}", source.name, tag.name))
+                })?,
+                None => None,
+            };
+            if retail.is_some()
+                && stand_in.is_none()
+                && let crate::h2assets::Swap::Retail(last) =
+                    crate::h2assets::swap_for(&source.group.0.to_be_bytes(), &source.name)
+            {
+                return Err(invalid(format!(
+                    "AI weapon {} of {}: its Halo 2 counterpart {last} is not in the map",
+                    source.name, tag.name
+                )));
+            }
+            match stand_in {
+                Some(id) => Some(id),
+                None => Some(
+                    conv.object(source)
+                        .map_err(|e| invalid(format!("AI weapon {}: {e}", tag.name)))?,
+                ),
+            }
         };
         let major = if variant.major_variant.id.is_none() {
             None
@@ -195,7 +225,8 @@ pub(crate) fn install(set: &mut TagSet, ids: &[TagId], variants: Vec<Variant>) -
             .find(FourCC(*b"char"), parent)
             .ok_or_else(|| invalid(format!("char {} needs parent {parent}", v.name)))?;
         let real = |id| ids[local_index(id).expect("converted object")];
-        let weapon = v.weapon.map(real);
+        // A retail weapon is a set tag already, not one of the tree's.
+        let weapon = v.weapon.map(|id| local_index(id).map_or(id, |k| ids[k]));
         let major = v.major.as_ref().map(|n| by_name[n]);
         let style = (v.kind == 13)
             .then(|| set.find(FourCC(*b"styl"), SENTINEL_STYLE))

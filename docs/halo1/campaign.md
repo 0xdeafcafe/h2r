@@ -223,7 +223,9 @@ in place (converted); a `dropped` line says so.
   levels (§9, Cutscenes).
 - **The AI's characters.** Both asset variants use the same squad roster.
   Crew and Sentinels take Halo 1's actor variants, equipment and rebuilt
-  bipeds. Other types use the retail character table in `h1ai`.
+  bipeds; with Halo 2 assets their weapons are the retail counterparts,
+  as every placed weapon is. Other types use the retail character table
+  in `h1ai`.
 - **Scenery, devices, sounds, text**: the level.
 
 **The scripts' references.** Object names point at the placements as

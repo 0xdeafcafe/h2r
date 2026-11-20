@@ -391,6 +391,12 @@ pub fn compile_scenario(
     };
     c.out.scripts.resize(t.scripts.len(), [0; 40]);
     c.out.globals.resize(t.globals.len(), [0; 40]);
+    // The runtime reads the conversation voice table at offset 0 of the
+    // script strings, so it is reserved before anything interns a string
+    // (the command scripts below do); `conversations::build` fills it.
+    if let Some((scenes, scopes)) = conversation_data {
+        c.out.strings.resize(conversations::voice_prefix_len(scenes, scopes), 0);
+    }
     // Spawn locations and command-list literals address the command definitions
     // directly after the authored scripts. Allocate those before any other helpers.
     c.generate_commands()?;

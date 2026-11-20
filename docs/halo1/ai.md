@@ -494,8 +494,9 @@ comes from 04b when donor maps are supplied.
 with its unit, perception, vitality and weapon properties. a10's tech,
 engineer, security, science and command variants have different RGB
 bounds in the block at `actv+0x22c`. Their rebuilt bipeds share a model
-and graph. Security carries the source pistol. The other five variants
-(including the pilot) have null weapon references.
+and graph. Security carries the source pistol (the retail magnum in the
+Halo 2-assets variant). The other five variants (including the pilot)
+have null weapon references.
 
 **Built — firing positions.** Halo 1 encounter flag `0x20` marks all
 three a30 Banshee encounters (584 points). They keep their altitude and
@@ -524,6 +525,12 @@ b40's `a2_top_cov/grunt_sniper` names only firing group Y, and its
 encounter has no position in that group, so it gets no sites. b40's
 `a2_bottom_cov/grunts_tub` has no actor or start to instantiate. Both
 remain addressable for migration.
+
+A level converted without its scripts keeps none of these: nothing names
+or places a squad, and the automatic migration orders are written with
+the scripts. Squads of encounters only the scripts create are left out
+while the pool is over (a `dropped` line counts them), so a50 fits its
+384 slots either way.
 
 The campaign squad-pool hook runs before `0x00200b30` initializes the
 arrays. Retail allocates consecutive `0xc760` and `0x163c` buffers

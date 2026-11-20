@@ -996,7 +996,10 @@ pub fn write(
             if !fresh {
                 weapon_palette = ai_weapons::base_palette(base)?;
             }
-            let roster = crate::roster::prepare(h1, &ai_src, &mut conv)?;
+            // No placements: the Halo 2-assets variant still arms its
+            // rebuilt crew with retail weapons.
+            let retail = (opts.assets == crate::h2assets::Assets::Halo2).then_some(&*set);
+            let roster = crate::roster::prepare(h1, &ai_src, &mut conv, retail)?;
             let ids = conv
                 .tree
                 .install(set)
@@ -1116,7 +1119,21 @@ pub fn write(
         generated_starts = crate::squad_roster::prepare(
             &mut retained, tables, &requests, &mut ai_options,
             subjects.as_ref().and_then(|s| s.follow_encounters.as_ref()),
+            opts.scripts.is_some(),
         );
+        if opts.scripts.is_none() {
+            let live = |ai: &h1ai::h1::H1Ai| {
+                ai.encounters.iter().flat_map(|e| &e.squads)
+                    .filter(|q| !q.starting_locations.is_empty())
+                    .count()
+            };
+            let left = live(&ai_src).saturating_sub(live(&retained));
+            if left > 0 {
+                report.dropped.push(format!(
+                    "ai: {left} squads only the scripts create, left out (converted without scripts)"
+                ));
+            }
+        }
         if let Some(subjects) = subjects {
             let groups = retained.encounters.len() + ai_options.platoon_groups.len();
             let selected = crate::ai_control_roster::prepare(
@@ -1408,7 +1425,7 @@ fn place_objects(
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.unit_hud_draw_colour = true;
     let roster = ai
-        .map(|src| crate::roster::prepare(h1, src, &mut conv))
+        .map(|src| crate::roster::prepare(h1, src, &mut conv, halo2.then_some(&*set)))
         .transpose()?
         .unwrap_or_default();
     conv.options.rebuild_bipeds = rebuild_bipeds;
