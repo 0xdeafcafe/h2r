@@ -487,16 +487,11 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::h1_scope_zoom::ScopeZoom)
         .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
     // The view's post passes on the native GPU renderer
-    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
-    // turns them off for the comparison against the D3D path;
-    // docs/graphics/native-renderer.md, stage 5): a context-only hook at
-    // the colour pass's entry. Its host (native_post_glue, installed with
-    // the world's) plans the glow, has the device drop exactly its quads
-    // and draws the glow natively in place of the last; the game's code
-    // runs and leaves every state. H2_POST_AB=<dir> places it with the
-    // switch off too, observing, for the frame A/B's captures.
-    #[cfg(feature = "gpu")]
-    feature::native_post::place_for_capture(crate::native_post_glue::ab_requested());
+    // (with impl.render.native; docs/graphics/native-renderer.md, stage 5):
+    // a context-only hook at the colour pass's entry. Its host
+    // (native_post_glue, installed with the world's) plans the glow, has
+    // the device drop exactly its quads and draws the glow natively in
+    // place of the last; the game's code runs and leaves every state.
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_post::NativePost)

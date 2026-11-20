@@ -8,23 +8,9 @@
 //! a complete native recording on every live copy or replays the packets.
 //! Each native pass uses the original targets' live attachments and
 //! formats. The checks run on every call, including after a map reload.
-//!
-//! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
-//! where the glow lands (after the composite, before the screen effects,
-//! the fade and the HUD), from each call `H2_POST_AB_AT` names (default
-//! 600; a list `601,1500,2700`, or a start and a stride `600+500` for
-//! [`MAX_WINDOWS`] windows spread over the run) for `H2_POST_AB_COUNT`
-//! calls each (default 1), into
-//! `<dir>/<native|d3d>-<call>-<w>x<h>.png` (`.raw` for a format other than
-//! 8-bit RGBA or BGRA), one per copy of the target under the render scale.
-//! With the switch off the hook is placed for it and the host observes
-//! the same quads, dropping none, so both sides are captured at the same
-//! draw.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, Instant};
 
 use engine::colour_pass;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
@@ -795,116 +781,6 @@ fn log_rejection(detail: impl FnOnce() -> String) {
     }
 }
 
-/// `H2_POST_SHAPES` set: each screen-effect call's swallow plan on stderr
-/// (its egor, probe or drop, each draw's slot, primitive and vertex
-/// count), the first [`DUMPED_PLANS`] calls, for an A/B to set beside
-/// the device's account of a mismatch.
-fn dump_plan(egor: TagId, drop: bool, plan: &SwallowPlan) {
-    static DUMPED: AtomicU64 = AtomicU64::new(0);
-    static ON: OnceLock<bool> = OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("H2_POST_SHAPES").is_some()) {
-        return;
-    }
-    if DUMPED.fetch_add(1, Ordering::Relaxed) >= DUMPED_PLANS {
-        return;
-    }
-    eprintln!("native-post: H2_POST_SHAPES {}", plan_line(egor, drop, plan));
-}
-
-/// How many calls `H2_POST_SHAPES` dumps.
-pub const DUMPED_PLANS: u64 = 64;
-
-/// One call's plan as `H2_POST_SHAPES` writes it.
-pub fn plan_line(egor: TagId, drop: bool, plan: &SwallowPlan) -> String {
-    let draws: Vec<String> = plan.0.iter().zip(&plan.1).map(|(s, (p, n))| format!("{s}:{p:?}x{n}")).collect();
-    format!("{:#010x} {} [{}]", egor.0, if drop { "drop" } else { "probe" }, draws.join(" "))
-}
-
-/// `H2_POST_TRACE` ([`post_feature::TraceSpec`]): the calls of
-/// `0x0002d140` traced so far, and whether one is running (the device
-/// keeping its account, [`d3d::Traced`]). A trace runs from its call's
-/// hook to the next hook of either kind (the next effect, or the next
-/// frame's colour pass), then is written, one line per event.
-static TRACE: Mutex<Traces> = Mutex::new(Traces::new());
-
-/// The traces so far: their count, each egor's, and whether one runs.
-pub struct Traces {
-    traced: u64,
-    egors: Vec<(u32, u64)>,
-    running: bool,
-}
-
-impl Traces {
-    pub const fn new() -> Self {
-        Traces { traced: 0, egors: Vec::new(), running: false }
-    }
-
-    /// Starts a trace of a call of `egor` while it has had fewer than
-    /// `calls`: its number (from 1), or `None`.
-    pub fn start(&mut self, egor: u32, calls: u64) -> Option<u64> {
-        let i = match self.egors.iter().position(|(e, _)| *e == egor) {
-            Some(i) => i,
-            None => {
-                self.egors.push((egor, 0));
-                self.egors.len() - 1
-            }
-        };
-        if self.egors[i].1 >= calls {
-            return None;
-        }
-        self.egors[i].1 += 1;
-        self.traced += 1;
-        self.running = true;
-        Some(self.traced)
-    }
-
-    /// Ends the trace running: its number, or `None`.
-    pub fn end(&mut self) -> Option<u64> {
-        std::mem::replace(&mut self.running, false).then_some(self.traced)
-    }
-}
-
-/// One event of a trace as `H2_POST_TRACE` writes it.
-pub fn trace_line(e: &d3d::Traced) -> String {
-    match e {
-        d3d::Traced::Call { entry, ret } => format!("call {entry} from {ret:#010x}"),
-        d3d::Traced::Arming => "swallow: arming, draining what was queued first".into(),
-        d3d::Traced::Armed { draws } => format!("swallow: armed for {draws} draws"),
-        d3d::Traced::Draw(d) => {
-            let inline = if d.inline > 0 { format!(", an inline array of {} words", d.inline) } else { String::new() };
-            let push = d.push.map(|p| format!(", its End pushed at {p:#010x}")).unwrap_or_default();
-            let fate = d.fate.map(|f| format!(": {f}")).unwrap_or_default();
-            format!(
-                "draw {} {:?} x{}{inline}{push}, into {:#010x}, after {} draws{fate}",
-                d.entry, d.primitive, d.vertices, d.target, d.draws
-            )
-        }
-        d3d::Traced::Note(n) => n.clone(),
-    }
-}
-
-/// The line a traced call of `0x00016610` adds: its six words, its
-/// caller, and whether `engine::screen_effect::template_draws` says the
-/// pass draws (`port`).
-pub fn template_line(args: [u32; 6], ret: u32, port: Result<bool, String>) -> String {
-    let port = match port {
-        Ok(d) => format!("the port says it {}", if d { "draws" } else { "skips" }),
-        Err(e) => format!("the port fails: {e}"),
-    };
-    format!(
-        "0x00016610(shader {:#010x}, layer {}, implementation {}, selector {}, target {}, {}) from {ret:#010x}; {port}",
-        args[0], args[1], args[2] as i32, args[3] as i32, args[4], args[5]
-    )
-}
-
-/// The line that opens a trace.
-pub fn effect_line(call: ScreenEffect, ret: u32) -> String {
-    format!(
-        "0x0002d140(egor {:#010x}, values {:#010x}, columns {}, rows {}, corners {:#010x}) from {ret:#010x}",
-        call.datum, call.values, call.columns, call.rows, call.corners
-    )
-}
-
 /// The swallow's slot per quad: the view 0, target 7 1, target 8 2.
 pub fn targets(plan: &Plan) -> Vec<u8> {
     plan.draws
@@ -931,202 +807,6 @@ fn glow_headers(mem: &dyn GuestMemory) -> Vec<Option<u32>> {
 
 /// A quad of `0x00034420`: four vertices between pushed Begin(7) and End.
 pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
-
-/// `H2_POST_AB`: where and which calls the A/B captures.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Ab {
-    dir: PathBuf,
-    /// The first call of each window, ascending.
-    starts: Vec<u64>,
-    count: u64,
-}
-
-/// Windows a stride (`H2_POST_AB_AT=<start>+<stride>`) makes.
-pub const MAX_WINDOWS: u64 = 10;
-
-/// `H2_POST_AB_AT`: one call, a list (`601,1500,2700`), or a start and a
-/// stride (`600+500`: [`MAX_WINDOWS`] starts). `None` when it does not
-/// parse.
-fn starts(at: &str) -> Option<Vec<u64>> {
-    let at = at.trim();
-    let mut v = if let Some((start, stride)) = at.split_once('+') {
-        let (start, stride) = (start.trim().parse::<u64>().ok()?, stride.trim().parse::<u64>().ok()?);
-        if stride == 0 {
-            return None;
-        }
-        (0..MAX_WINDOWS).map(|i| start + i * stride).collect()
-    } else {
-        at.split(',').map(|n| n.trim().parse::<u64>().ok()).collect::<Option<Vec<_>>>()?
-    };
-    v.sort_unstable();
-    v.dedup();
-    (!v.is_empty()).then_some(v)
-}
-
-/// Calls after the last capture the host still arms for, so the copies
-/// already made are mapped and written (each only once the frame that
-/// made it was submitted: the next pass's encode, on the GPU's thread).
-const AB_TAIL: u64 = 8;
-
-impl Ab {
-    fn from_env() -> Option<Ab> {
-        let dir = PathBuf::from(std::env::var_os("H2_POST_AB")?);
-        let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-        let at = std::env::var("H2_POST_AB_AT").unwrap_or_else(|_| "600".into());
-        let starts = starts(&at).unwrap_or_else(|| {
-            eprintln!("native-post A/B: H2_POST_AB_AT={at:?} is not a call, a list or start+stride; using 600");
-            vec![600]
-        });
-        Some(Ab {
-            dir,
-            starts,
-            count: num("H2_POST_AB_COUNT", 1).max(1),
-        })
-    }
-
-    fn get() -> Option<&'static Ab> {
-        static AB: OnceLock<Option<Ab>> = OnceLock::new();
-        AB.get_or_init(Ab::from_env).as_ref()
-    }
-
-    /// Whether `call` is in a window `extra` calls longer than asked.
-    fn within(&self, call: u64, extra: u64) -> bool {
-        self.starts.iter().any(|&a| (a..a + self.count + extra).contains(&call))
-    }
-
-    fn captures(&self, call: u64) -> bool {
-        self.within(call, 0)
-    }
-
-    fn pumps(&self, call: u64) -> bool {
-        self.within(call, AB_TAIL)
-    }
-}
-
-/// Whether the A/B is asked for (boot places the hook for it).
-pub fn ab_requested() -> bool {
-    Ab::get().is_some()
-}
-
-const PENDING: u8 = 0;
-const READY: u8 = 1;
-const FAILED: u8 = 2;
-
-/// A copy of the view's colour on its way back.
-struct Readback {
-    buffer: wgpu::Buffer,
-    state: Arc<AtomicU8>,
-    mapping: bool,
-    path: PathBuf,
-    size: (u32, u32),
-    padded: u32,
-    format: wgpu::TextureFormat,
-}
-
-static READBACKS: Mutex<Vec<Readback>> = Mutex::new(Vec::new());
-
-/// Copies the bound colour into a buffer, to be written by a later
-/// [`pump`].
-fn capture(t: &mut d3d::ExternalTarget<'_>, stem: &str) {
-    let Some(ab) = Ab::get() else { return };
-    let texture = t.color.texture();
-    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
-        return;
-    }
-    let Some(bpp) = t.color_format.block_copy_size(None) else { return };
-    let (w, h) = (texture.width(), texture.height());
-    let padded = (w * bpp).div_ceil(256) * 256;
-    let buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("native post A/B"),
-        size: u64::from(padded) * u64::from(h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    t.encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
-        },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-    );
-    READBACKS.lock().unwrap_or_else(|e| e.into_inner()).push(Readback {
-        buffer,
-        state: Arc::new(AtomicU8::new(PENDING)),
-        mapping: false,
-        path: ab.dir.join(format!("{stem}-{w}x{h}")),
-        size: (w, h),
-        padded,
-        format: t.color_format,
-    });
-}
-
-/// Maps the copies made before this pass (their frames were submitted:
-/// passes encode in order on the GPU's thread) and writes the ones
-/// mapped. Polls the device for the mappings; never waits.
-fn pump(device: &wgpu::Device) {
-    let _ = device.poll(wgpu::PollType::Poll);
-    let mut list = READBACKS.lock().unwrap_or_else(|e| e.into_inner());
-    list.retain_mut(|r| {
-        if !r.mapping {
-            r.mapping = true;
-            let state = Arc::clone(&r.state);
-            r.buffer.slice(..).map_async(wgpu::MapMode::Read, move |res| {
-                state.store(if res.is_ok() { READY } else { FAILED }, Ordering::Release);
-            });
-            return true;
-        }
-        match r.state.load(Ordering::Acquire) {
-            READY => {
-                if let Err(e) = write(r) {
-                    eprintln!("native-post A/B: {}: {e}", r.path.display());
-                }
-                r.buffer.unmap();
-                false
-            }
-            FAILED => false,
-            _ => true,
-        }
-    });
-}
-
-fn write(r: &Readback) -> Result<(), String> {
-    let data = r.buffer.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?;
-    let (w, h) = r.size;
-    let row = (w * r.format.block_copy_size(None).unwrap_or(4)) as usize;
-    let mut px = Vec::with_capacity(row * h as usize);
-    for line in data.chunks(r.padded as usize).take(h as usize) {
-        px.extend_from_slice(&line[..row]);
-    }
-    drop(data);
-    use wgpu::TextureFormat as F;
-    let rgba = match r.format {
-        F::Rgba8Unorm | F::Rgba8UnormSrgb => true,
-        F::Bgra8Unorm | F::Bgra8UnormSrgb => {
-            for p in px.chunks_exact_mut(4) {
-                p.swap(0, 2);
-            }
-            true
-        }
-        _ => false,
-    };
-    if let Some(dir) = r.path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    if !rgba {
-        let path = r.path.with_extension(format!("{:?}.raw", r.format));
-        return std::fs::write(path, px).map_err(|e| e.to_string());
-    }
-    let path = r.path.with_extension("png");
-    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut out = enc.write_header().map_err(|e| e.to_string())?;
-    out.write_image_data(&px).map_err(|e| e.to_string())?;
-    eprintln!("native-post A/B: wrote {}", path.display());
-    Ok(())
-}
 
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
@@ -1185,27 +865,6 @@ impl d3d::SwallowPass for GlowPass {
     }
 }
 
-/// The A/B's D3D side: a capture where the glow would land.
-struct CapturePass(Option<String>);
-
-impl d3d::ExternalPass for CapturePass {
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
-        pump(t.device);
-        if let Some(stem) = &self.0 {
-            capture(&mut t, stem);
-        }
-    }
-}
-
-impl d3d::SwallowPass for CapturePass {}
-
-static GLOW_PLAN_REFUSED: AtomicU64 = AtomicU64::new(0);
-static SCREEN_PLAN_REFUSED: AtomicU64 = AtomicU64::new(0);
-const SUMMARY_PERIOD: Duration = Duration::from_secs(5);
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -1214,10 +873,6 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
     screens: ScreenCache,
-    calls: AtomicU64,
-    summary: Mutex<Option<Instant>>,
-    glow_commits: AtomicU64,
-    screen_commits: AtomicU64,
 }
 
 /// Read the live pass and both rows after the template sets its state.
@@ -1288,34 +943,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
+    fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp) -> bool {
         self.interrupt();
-        self.trace_end();
-        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
-        let ab = Ab::get();
-        let pumping = ab.is_some_and(|a| a.pumps(call));
-        if !native && !pumping {
-            return false;
-        }
         let plan = match plan(&*mem, args, fp) {
             Ok(Some(p)) => p,
             Ok(None) => return false,
             Err(error) => {
-                GLOW_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
                 log_rejection(|| format!("glow plan: {error}"));
                 return false;
             }
         };
-        let capturing = ab.is_some_and(|a| a.captures(call));
-        let capture = |side: &str| CapturePass(capturing.then(|| format!("{side}-{call:06}")));
         let targets = targets(&plan);
-        let pass: Box<dyn d3d::SwallowPass> = if native {
-            Box::new(GlowPass { plan, gpu: Arc::clone(&self.gpu) })
-        } else {
-            Box::new(capture("d3d"))
-        };
+        let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass { plan, gpu: Arc::clone(&self.gpu) });
         let headers = glow_headers(mem);
-        let capture = (native && pumping).then(|| Box::new(capture("native")) as Box<dyn d3d::ExternalPass>);
         self.arm(mem, d3d::Swallow {
             call: Some(swallow_call(site)),
             end_returns: Vec::new(),
@@ -1324,17 +964,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             primitive: QUAD.0,
             vertices: QUAD.1,
             shapes: Vec::new(),
-            drop: native,
+            drop: true,
             pass,
-            capture,
+            capture: None,
         })
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
         self.interrupt();
-        let armed = self.effect(mem, site, call, fp);
-        self.note(|| format!("hook: armed {armed}"));
-        armed
+        self.effect(mem, site, call, fp)
     }
 
     fn finish(&self, mem: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
@@ -1349,40 +987,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             {
                 log_rejection(|| format!("{kind:?}: {detail}"));
             }
-            let counter = match kind {
-                PostCall::Colour => &self.glow_commits,
-                PostCall::Screen => &self.screen_commits,
-            };
-            counter.fetch_add(after.swallow_commits - before.swallow_commits, Ordering::Relaxed);
-            self.trace_summary(after);
         }
-        if kind == PostCall::Screen {
-            self.trace_end();
-        }
-    }
-
-    fn trace_effect(&self, _mem: &mut dyn GuestMemory, call: ScreenEffect, ret: u32) {
-        self.trace_end();
-        let Some(spec) = post_feature::trace_spec() else { return };
-        let mut t = TRACE.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(mut d) = self.device.lock() else { return };
-        if t.start(call.datum, spec.calls).is_none() {
-            return;
-        }
-        d.trace(true);
-        d.trace_note(|| effect_line(call, ret));
-    }
-
-    fn trace_template(&self, mem: &mut dyn GuestMemory, args: [u32; 6], ret: u32) {
-        self.note(|| {
-            let port = screen_effect::template_draws(&*mem, args[0], args[1], args[2] as i32, args[3] as i32)
-                .map_err(|e| format!("{e:?}"));
-            template_line(args, ret, port)
-        });
-    }
-
-    fn trace_note(&self, note: String) {
-        self.note(|| note);
     }
 }
 
@@ -1395,73 +1000,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
     }
 
-    fn trace_summary(&self, stats: d3d::Stats) {
-        if post_feature::trace_spec().is_none() {
-            return;
-        }
-        let now = Instant::now();
-        let mut last = self.summary.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_some_and(|last| now.duration_since(last) < SUMMARY_PERIOD) {
-            return;
-        }
-        *last = Some(now);
-        let device_reasons = d3d::SwallowRefusal::ALL
-            .map(|reason| format!("{reason:?}={}", stats.swallow_reasons[reason.index()]))
-            .join(" ");
-        let missing = Missing::ALL.into_iter().zip(effect_refusals())
-            .map(|(reason, count)| format!("{reason:?}={count}"))
-            .collect::<Vec<_>>().join(" ");
-        eprintln!(
-            "native-post: H2_POST_TRACE summary swallowed_calls={} dropped={} replayed={} committed={} glow={} screen={} refused={} {device_reasons} glow_plan={} screen_plan={} {missing}",
-            stats.swallow_calls, stats.swallow_draws_dropped, stats.swallow_draws_replayed,
-            stats.swallow_commits, self.glow_commits.load(Ordering::Relaxed),
-            self.screen_commits.load(Ordering::Relaxed), stats.swallow_refusals,
-            GLOW_PLAN_REFUSED.load(Ordering::Relaxed), SCREEN_PLAN_REFUSED.load(Ordering::Relaxed),
-        );
-    }
-
-    /// Adds `note` to the trace running, if one is.
-    fn note(&self, note: impl FnOnce() -> String) {
-        if !TRACE.lock().unwrap_or_else(|e| e.into_inner()).running {
-            return;
-        }
-        if let Ok(mut d) = self.device.lock() {
-            d.trace_note(note);
-        }
-    }
-
-    /// Ends the trace running, if one is, and writes it.
-    fn trace_end(&self) {
-        let Some(call) = TRACE.lock().unwrap_or_else(|e| e.into_inner()).end() else { return };
-        let Ok(mut d) = self.device.lock() else { return };
-        let (events, past) = d.take_trace();
-        d.trace(false);
-        let end = format!(
-            "end: {} swallow mismatches, the last: {}; a swallow {}",
-            d.stats().swallow_mismatches,
-            d.swallow_mismatch().unwrap_or("none"),
-            if d.swallowing() { "still armed" } else { "not armed" }
-        );
-        std::mem::drop(d);
-        for e in &events {
-            eprintln!("native-post: H2_POST_TRACE #{call} {}", trace_line(e));
-        }
-        if past > 0 {
-            eprintln!("native-post: H2_POST_TRACE #{call} {past} more not kept");
-        }
-        eprintln!("native-post: H2_POST_TRACE #{call} {end}");
-    }
-
     /// [`Host::screen_effect`]'s body.
     fn effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
         let (mut effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
-            Ok(None) => {
-                self.note(|| "hook: no plan (no egor, or nothing to draw)".into());
-                return false;
-            }
+            Ok(None) => return false,
             Err(e) => {
-                SCREEN_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
                 if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
                     eprintln!("native-post: a screen effect keeps its D3D draws: {e} (logged once)");
                 }
@@ -1471,14 +1015,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let effects = self.screen_effects(&*mem);
         let egor = TagId(call.datum);
         let skipped = skip_undrawn(&*mem, &mut effect);
-        if let Some(n) = skipped.filter(|&n| n > 0) {
-            self.note(|| format!("hook: {n} passes 0x00016610 skips left out"));
-        }
         let ordered = call_ordered(effects.as_deref(), egor, &effect);
         if effects.is_none() {
             // The first call on a map starts their load: nothing is
             // missing yet, they are not in.
-            self.note(|| "hook: the map's screen effects are still loading".into());
             return false;
         }
         let frame = quad_frame(&*mem, fp);
@@ -1489,9 +1029,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         for m in &m {
             refused(*m);
         }
-        if !m.is_empty() {
-            self.note(|| format!("hook: refused, missing {m:?}"));
-        }
         // Armed only once nothing is missing (never while the stand-ins
         // are); until then the D3D path draws every effect.
         if !m.is_empty() {
@@ -1499,8 +1036,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let Some(effects) = effects else { return false };
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else {
-            SCREEN_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
-            self.note(|| "hook: the depth constant is unreadable".into());
             return false;
         };
         let grid = |p: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
@@ -1508,15 +1043,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let Some(call) = screen_call(&effect, egor, values, depth, frame, &grid) else {
             refused(Missing::Wide);
-            self.note(|| "hook: refused, a wide convolution's grid was not made".into());
             return false;
         };
         let Some(plan) = screen_swallow(&call) else {
-            self.note(|| "hook: nothing to swallow (no strips, or a convolution into no stand-in)".into());
             return false;
         };
-        dump_plan(egor, true, &plan);
-        self.note(|| format!("hook: plan {}", plan_line(egor, true, &plan)));
         let (targets, shapes) = plan;
         let (primitive, vertices) = shapes[0];
         let end_returns = screen_end_returns(&call);
@@ -1626,10 +1157,6 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::a
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
         screens: Arc::new(Mutex::new((Weak::new(), ScreenSet::new()))),
-        calls: AtomicU64::new(0),
-        summary: Mutex::new(None),
-        glow_commits: AtomicU64::new(0),
-        screen_commits: AtomicU64::new(0),
     }));
 }
 
@@ -1821,25 +1348,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_ab_takes_a_call_a_list_or_a_stride() {
-        assert_eq!(starts("600"), Some(vec![600]));
-        assert_eq!(starts(" 2700, 601 ,1500,601"), Some(vec![601, 1500, 2700]), "sorted, once each");
-        assert_eq!(starts("600+500"), Some((0..MAX_WINDOWS).map(|i| 600 + 500 * i).collect()));
-        for bad in ["", "x", "600+0", "600+", "1,,2", "-5"] {
-            assert_eq!(starts(bad), None, "{bad:?}");
-        }
-        let ab = Ab {
-            dir: PathBuf::new(),
-            starts: vec![601, 1500],
-            count: 3,
-        };
-        let captured: Vec<u64> = (0..2000).filter(|&c| ab.captures(c)).collect();
-        assert_eq!(captured, vec![601, 602, 603, 1500, 1501, 1502]);
-        assert!(ab.pumps(603 + AB_TAIL) && !ab.pumps(604 + AB_TAIL), "each window's tail");
-        assert!(!ab.pumps(600) && !ab.pumps(1499));
-    }
-
     fn pass(kind: u16, convolutions: Vec<Convolution>) -> screen_effect::Pass {
         screen_effect::Pass {
             index: 0,
@@ -1855,15 +1363,15 @@ mod tests {
     /// What arms a screen call's swallow: no draw is slot 0's (the target
     /// bound when armed), since `0x00016610` binds the pass's target
     /// itself; the mainmenu A/B's call mismatched at its first strip
-    /// before. `H2_POST_SHAPES` writes the plan.
+    /// before.
     #[test]
     fn a_screen_swallow_takes_the_target_its_pass_binds() {
         let effect = Effect { shader: 0, implementations: 2, passes: vec![drawn_pass(2, 3)] };
         let call = screen_call(&effect, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
         let plan = screen_swallow(&call).unwrap();
         assert!(!plan.0.contains(&0), "{:?}", plan.0);
-        assert_eq!(plan_line(EGOR, false, &plan), "0xe0000001 probe [1:TriangleStripx6 1:TriangleStripx6]");
-        assert!(plan_line(EGOR, true, &plan).contains(" drop "));
+        assert_eq!(plan.0, [1, 1]);
+        assert_eq!(plan.1, [(PrimitiveType::TriangleStrip, 6), (PrimitiveType::TriangleStrip, 6)]);
     }
 
     /// A call is armed only when `0x00016610` draws every pass the plan
@@ -2289,82 +1797,5 @@ mod tests {
         let call = || ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None };
         let screens = Arc::new(Mutex::new((Weak::new(), ScreenSet::new())));
         assert!(ScreenPass { effects, call: call(), screens, raster: OnceLock::new() }.colour_only(), "the screen passes bind no depth");
-    }
-
-    /// `H2_POST_TRACE`'s lines: each event the device kept, the call that
-    /// opens a trace and each template pass, as the A/B reads them.
-    #[test]
-    fn a_trace_writes_what_the_device_saw() {
-        let draw = |inline, push, fate| {
-            d3d::Traced::Draw(d3d::TracedDraw {
-                entry: "inline Begin/End",
-                primitive: PrimitiveType::QuadList,
-                vertices: 0,
-                inline,
-                push,
-                target: 0x8007_c000,
-                draws: 12,
-                fate,
-            })
-        };
-        let lines: Vec<String> = [
-            d3d::Traced::Call { entry: "D3D_MakeRequestedSpace", ret: 0x0002_d5f0 },
-            d3d::Traced::Arming,
-            d3d::Traced::Armed { draws: 1 },
-            draw(24, Some(0x8010_0040), Some("mismatch")),
-            d3d::Traced::Draw(d3d::TracedDraw {
-                entry: "D3DDevice_DrawVertices",
-                primitive: PrimitiveType::TriangleStrip,
-                vertices: 4,
-                inline: 0,
-                push: None,
-                target: 0x8007_c000,
-                draws: 11,
-                fate: None,
-            }),
-            d3d::Traced::Note("hook: armed true".into()),
-        ]
-        .iter()
-        .map(trace_line)
-        .collect();
-        assert_eq!(
-            lines,
-            [
-                "call D3D_MakeRequestedSpace from 0x0002d5f0",
-                "swallow: arming, draining what was queued first",
-                "swallow: armed for 1 draws",
-                "draw inline Begin/End QuadList x0, an inline array of 24 words, its End pushed at 0x80100040, into 0x8007c000, after 12 draws: mismatch",
-                "draw D3DDevice_DrawVertices TriangleStrip x4, into 0x8007c000, after 11 draws",
-                "hook: armed true",
-            ]
-        );
-        let call = ScreenEffect { datum: EGOR.0, values: 0x0050_0000, columns: 2, rows: 2, corners: 0x0050_0010 };
-        assert_eq!(
-            effect_line(call, 0x0001_3b57),
-            "0x0002d140(egor 0xe0000001, values 0x00500000, columns 2, rows 2, corners 0x00500010) from 0x00013b57"
-        );
-        let args = [0x0012_3450, 15, 0, u32::MAX, 1, 0];
-        assert_eq!(
-            template_line(args, 0x0002_d4bc, Ok(true)),
-            "0x00016610(shader 0x00123450, layer 15, implementation 0, selector -1, target 1, 0) from 0x0002d4bc; the port says it draws"
-        );
-        assert!(template_line(args, 0x0002_d4bc, Ok(false)).ends_with("; the port says it skips"));
-        assert!(template_line(args, 0x0002_d4bc, Err("Data".into())).ends_with("; the port fails: Data"));
-        assert_eq!(post_feature::return_line("0x00016610", 0x1234_5600), "0x00016610 returned, AL 0");
-    }
-
-    /// `H2_POST_TRACE=N` traces each egor's first `N` calls, numbered
-    /// across them, one at a time.
-    #[test]
-    fn each_egor_gets_its_own_traces() {
-        let mut t = Traces::new();
-        assert_eq!(t.end(), None, "none running");
-        assert_eq!(t.start(EGOR.0, 2), Some(1));
-        assert_eq!(t.end(), Some(1));
-        assert_eq!(t.end(), None, "ended once");
-        assert_eq!(t.start(EGOR.0, 2), Some(2));
-        assert_eq!(t.start(EGOR.0, 2), None, "its two");
-        assert_eq!(t.end(), Some(2));
-        assert_eq!(t.start(0xe0ff_0001, 2), Some(3), "another egor's first");
     }
 }
