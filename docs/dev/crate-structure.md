@@ -345,7 +345,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | Window | Plain merge | Why |
 |---|---|---|
 | W1 | works | Pure renames: git matches all 2,668 files at the default 50% (the lowest are `lockstep/Cargo.toml` at 56% and `boot/Cargo.toml` at 60%, hence the lower threshold). `directoryRenames` puts a lane's new files in the new directories. A lane's new `path = "../x"` or new crate still needs the script: run `python3 scripts/moves/w1-domains.py` after the merge |
-| W2 | works unless the lane edited a line that says `feature::` | 1,048 one-word edits in 194 files; conflicts are those lines. New lane code that says `feature::` needs the script |
+| W2 | works unless the lane edited a line that says `feature::` | 1,047 one-word edits in 193 files; conflicts are those lines. New lane code that says `feature::` needs the script |
 | W3 | replay | `crate::` becomes `crate::<module>::` on 366 lines of the merged sources, so a lane's edits beside them conflict (3 files of `h1-bg-prompts`' 7) |
 | S3 to S7 | replay | Files change crate; `crate::` and `pub(crate)` lines change with them |
 
@@ -354,7 +354,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | # | Window | Script | Moves | Ready |
 |---|---|---|---|---|
 | W1 | Every crate into its domain directory | `w1-domains.py` | 86 `git mv`, 2,668 files renamed, 513 edited | now |
-| W2 | `feature` becomes `hooks` | `w2-hooks.py` | 91 files renamed, 194 edited | after W1 |
+| W2 | `feature` becomes `hooks` | `w2-hooks.py` | 91 files renamed, 193 edited | after W1 |
 | W3 | Eleven Halo 1 crates become five | `w3-h1-merge.py` | 99 files renamed, 7 manifests removed, 121 edited | after W1; `h1-contract` first (below) |
 | S1 | Small renames and deletions | `rename-crate.py` | 2 crates renamed, 1 deleted | needs decisions 2 and 3 |
 | S2 | `guest-layout` and `hooks` take `engine`'s hooking parts | the `guest-layout` lane | 8 files, about 4,000 lines | when that lane lands |
@@ -391,7 +391,7 @@ comment lines, 8 fixed edits.
 `scripts/moves/w2-hooks.py`. `crates/hooking/feature` becomes
 `crates/hooking/hooks`; the package name; the dependency key in `boot`,
 `agent`, `lockstep` and `live-telemetry`; `"feature/native-render"` in
-`boot`'s features; 1,048 `feature::` paths in Rust (`boot` has about 750);
+`boot`'s features; 1,047 `feature::` paths in Rust (`boot` has about 750);
 7 `-p feature` in docs; the symbol prefix in
 `scripts/sim-attribution/attribute.py`; the two exceptions in the rules
 file.
@@ -403,7 +403,9 @@ file.
   `docs/engine/feature-engine.md`'s name.
 - `rename_crate` in `movelib.py` is the whole of it;
   `scripts/moves/rename-crate.py <old> <new>` renames any other crate the
-  same way.
+  same way. It rewrites Rust only in the renamed crate and the crates
+  that depend on it, and leaves, and names, a file where the old name is
+  a module or an import of something else.
 
 ### W3. The Halo 1 merge
 
@@ -450,7 +452,10 @@ into one `h1-assets = ...`, in `[features]` too.
 `scripts/moves/rename-crate.py sim sim-bench` and
 `scripts/moves/rename-crate.py apple-host h2host` (the package takes its
 library's name; `platform/apple/build.sh` and `platform/xbox/build.sh`
-name the package and are edited by hand). `git rm -r` of `fastmem-proto`.
+name the package and are edited by hand). On the scratch tree the first
+renames 84 `sim::` paths in `boot` and `cli` and leaves
+`cli/src/agent_sim.rs`, where `sim` is `agent_proto::sim`; the second
+changes no Rust. `git rm -r` of `fastmem-proto`.
 `oracle`'s WMA oracle (`src/wma.rs`, a test, an example) moves into `wma`
 behind an `oracle` feature, which clears the `oracle` → `wma` exception.
 `viewer`: decision 3.
@@ -594,8 +599,9 @@ removed afterwards. Splits were forced past their `--check`.
 | Step | Script exit | `layers --check` | Result |
 |---|---|---|---|
 | W1 | 0 | 0 | 2,668 renames and 201 other files, no add or delete at `-M50%`; second run changes nothing |
-| W2 | 0 | 0 | 91 renames, 194 edited; no `feature::` path left |
+| W2 | 0 | 0 | 91 renames, 193 edited; no `feature::` path left in a crate that depends on it |
 | W3 | 0 | 0 | 99 renames, 2 added, 7 removed; every `mod x;` of the merged crates finds its file; second run changes nothing |
+| S1 renames (2) | 0 | 0 | `sim`: 9 renames, 19 edited. `apple-host`: 8 renames, 11 edited |
 | `s3-*` (3) | 0 | 0 | |
 | S5 | 0 | 0 | `boot/src` is `lib.rs` and `registration` |
 | `s6-*` (6), `s7-*` (10) | 0 | 0 | 99 packages at the end |
@@ -840,8 +846,8 @@ edited by hand, and each item is that owner's to confirm or change.
    `live_query` and `live_recovery` are placed in `cmd-live` by their
    names; say if they are the art pipeline's.
 6. **`sim` becomes `sim-bench`** (S1), which frees the name before
-   `sim-*` multiply. It renames `sim::` in `sim_glue.rs`, `host_lobby.rs`
-   and `sim_cmd.rs`.
+   `sim-*` multiply. It renames 84 `sim::` paths in `boot` (`sim_glue`,
+   `host_lobby`, `host_mem`, `theater`) and `cli` (`sim_cmd`).
 7. **`live_server::identity::write_private`** is `cli`'s only use of
    `live-server` outside the desktop feature, and puts 51,962 lines and
    axum, sqlx, reqwest and object_store in the dedicated host's build. In
