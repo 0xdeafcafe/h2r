@@ -128,7 +128,7 @@ pub fn plan_verbose() -> bool {
 }
 
 /// Whether `H2_NATIVE_VERBOSE=1`: the native renderer's per-definition
-/// and per-material load lines, and its comparison dumps, print. Without
+/// and per-material load lines print. Without
 /// it each stage prints one summary line per level load (the environment
 /// table in `docs/runtime/BOOT.md`). Read once.
 pub fn native_verbose() -> bool {
