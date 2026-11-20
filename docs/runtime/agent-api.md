@@ -712,12 +712,16 @@ h2 agent render.parity '{"arm": true}'
   instances the guest still draws (`remainder`), its parts by how they
   draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
   `subparts`, `aux_depth`;
-  framescene.md, slice 3), and carried ops by slot
+  framescene.md, slice 3), its model decorator draws (one per
+  placement), their instances and the draws the guest still draws
+  (`decorators`, `decorator_instances`, `decorator_remainder`;
+  native-decorators.md), and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
-  did not read), and from `d3d::scene_stage`
+  did not read), `scene_decorator_draws`, `scene_decorator_instances`,
+  `scene_decorator_remainder`, and from `d3d::scene_stage`
   `scene_stages_world`, `scene_stages_objects`, the scene stages queued
   to the render thread, and `scene_dropped_world`,
   `scene_dropped_objects`, those it could not record after the guest

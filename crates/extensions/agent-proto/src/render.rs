@@ -424,6 +424,15 @@ pub struct SceneViewRecord {
     pub carried: BTreeMap<String, u32>,
     #[serde(default)]
     pub camera_use: BTreeMap<String, u32>,
+    /// Model decorator draws (one per placement) of the view's layer 3,
+    /// their instances, and the draws the guest still draws (refused by
+    /// extraction; docs/graphics/native-decorators.md).
+    #[serde(default)]
+    pub decorators: u32,
+    #[serde(default)]
+    pub decorator_instances: u32,
+    #[serde(default)]
+    pub decorator_remainder: u32,
 }
 
 /// `render.parity`: arm the in-process two-path comparison for one frame

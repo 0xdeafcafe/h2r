@@ -20,6 +20,7 @@
 //! |---|---|---|
 //! | (none yet) | | |
 
+pub mod decorators;
 pub mod extract;
 mod guest;
 pub mod layout;

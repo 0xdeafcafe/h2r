@@ -73,6 +73,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
             .iter()
             .map(|v| {
                 let c = scene.counts(v);
+                let d = scene.decorator_counts(v);
                 SceneViewRecord {
                     key: v.key.to_string(),
                     cut: v.cut,
@@ -92,6 +93,9 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: BTreeMap::new(),
                     camera_use: BTreeMap::new(),
+                    decorators: d.draws,
+                    decorator_instances: d.instances,
+                    decorator_remainder: d.remainder,
                 }
             })
             .collect(),
@@ -184,6 +188,12 @@ mod tests {
         b.push_layer_item(world.clone(), &[]).unwrap();
         b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();
         b.add_layer_remainder(1).unwrap();
+        let decorator = frame_scene::DecoratorDraw {
+            slot: 6, layer: 3, set: 1, shader: 2, variant: 0, pass: 0, argument: 0, lod_constant: [0.0; 4], instances: 0..0,
+        };
+        let instance = frame_scene::DecoratorInstance { index: 0, model: 0, first_index: 0, index_count: 3, registers: [[0.0; 4]; 5] };
+        b.push_decorator(decorator, &[instance, instance]).unwrap();
+        b.add_decorator_remainder(1).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
         assert!(r.sealed);
@@ -196,6 +206,7 @@ mod tests {
         assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));
         assert_eq!((v.layer_items.clone(), v.layer_remainder), (BTreeMap::from([("5".to_owned(), 2)]), 1));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
+        assert_eq!((v.decorators, v.decorator_instances, v.decorator_remainder), (1, 2, 1));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }
 }

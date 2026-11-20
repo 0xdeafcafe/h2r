@@ -9,6 +9,7 @@
 
 pub mod builder;
 pub mod camera;
+pub mod decorator;
 pub mod layer;
 pub mod light;
 pub mod node;
@@ -18,6 +19,7 @@ pub mod summary;
 
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
+pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
 pub use layer::{LayerItem, LayerOwner, LayerPass};
 pub use light::{LightStep, LightTarget, SceneLight};
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
