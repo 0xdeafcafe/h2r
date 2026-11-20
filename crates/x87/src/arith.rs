@@ -2,12 +2,10 @@
 //! precise value rounded once.
 #![forbid(unsafe_code)]
 
-use core::cmp::Ordering;
-
 use crate::round::{
-    Fin, Pre, Unp, inf, nan1, prelude2, round_int, round_pack, shr_sticky, unpack, zero,
+    Fin, Pre, SIGN, Unp, inf, nan1, prelude2, round_int, round_pack, shr_sticky, unpack, zero,
 };
-use crate::{F80, Flags, Mode, Partial, Rc};
+use crate::{Class, F80, Flags, Mode, Partial, Rc};
 
 fn pack(f: Fin, m: Mode) -> (F80, Flags) {
     round_pack(f.neg, f.sig as u128, f.exp as i64, 0, m.pc.bits(), m.rc)
@@ -424,42 +422,107 @@ pub enum Cmp {
 /// operands and SNaNs set IE; a QNaN sets IE unless `quiet` (the FUCOM
 /// forms). A denormal operand of an ordered comparison sets DE.
 pub fn compare(a: F80, b: F80, quiet: bool) -> (Cmp, Flags) {
-    let (ua, ub) = (unpack(a), unpack(b));
-    if matches!(ua, Unp::Bad) || matches!(ub, Unp::Bad) {
+    let (ca, cb) = (a.classify(), b.classify());
+    if matches!(ca, Class::Unsupported | Class::SNaN)
+        || matches!(cb, Class::Unsupported | Class::SNaN)
+    {
         return (Cmp::Unordered, Flags::IE);
     }
-    if a.is_nan() || b.is_nan() {
-        let ie = a.is_snan() || b.is_snan() || !quiet;
-        return (Cmp::Unordered, if ie { Flags::IE } else { Flags::NONE });
+    if ca == Class::QNaN || cb == Class::QNaN {
+        return (Cmp::Unordered, if quiet { Flags::NONE } else { Flags::IE });
     }
-    let fl = if ua.denorm() || ub.denorm() {
-        Flags::DE
-    } else {
-        Flags::NONE
+
+    // Ordered extended values sort by their biased exponent and explicit
+    // significand. Nonzero exponent-zero encodings use effective exponent
+    // 1, so a pseudo-denormal sorts exactly with its normal alias.
+    let key = |x: F80| {
+        let exp = (x.se & !SIGN).max(u16::from(x.sig != 0));
+        let negative = (x.se & SIGN != 0) & (x.sig != 0);
+        let flip = 0u64.wrapping_sub(u64::from(negative));
+        ((exp | SIGN) ^ flip as u16, x.sig ^ flip)
     };
-    let key = |u: &Unp| -> (bool, u8, i32, u64) {
-        match *u {
+    let ((ae, am), (be, bm)) = (key(a), key(b));
+    let same_exp = ae == be;
+    let less = (ae < be) | (same_exp & (am < bm));
+    let greater = (ae > be) | (same_exp & (am > bm));
+    const RELATIONS: [Cmp; 4] = [Cmp::Equal, Cmp::Less, Cmp::Greater, Cmp::Equal];
+    let relation = RELATIONS[usize::from(less) | (usize::from(greater) << 1)];
+    let denormal = ca == Class::Denormal || cb == Class::Denormal;
+    (relation, if denormal { Flags::DE } else { Flags::NONE })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cmp::Ordering;
+
+    // Order normalized numbers as the arithmetic unit sees them. Keep the
+    // reference independent of the encoded key (including pseudo-denormals).
+    fn reference(a: F80, b: F80, quiet: bool) -> (Cmp, Flags) {
+        let (a_unp, b_unp) = (unpack(a), unpack(b));
+        if matches!(a_unp, Unp::Bad) || matches!(b_unp, Unp::Bad) {
+            return (Cmp::Unordered, Flags::IE);
+        }
+        if a.is_nan() || b.is_nan() {
+            let invalid = a.is_snan() || b.is_snan() || !quiet;
+            return (Cmp::Unordered, if invalid { Flags::IE } else { Flags::NONE });
+        }
+        let fl = if a_unp.denorm() || b_unp.denorm() {
+            Flags::DE
+        } else {
+            Flags::NONE
+        };
+        let key = |u| match u {
             Unp::Zero(_) => (false, 0, 0, 0),
             Unp::Fin(f) => (f.neg, 1, f.exp, f.sig),
-            Unp::Inf(n) => (n, 2, 0, 0),
+            Unp::Inf(neg) => (neg, 2, 0, 0),
             _ => unreachable!(),
+        };
+        let ((an, ac, ae, am), (bn, bc, be, bm)) = (key(a_unp), key(b_unp));
+        let ord = bn.cmp(&an).then_with(|| {
+            let magnitude = (ac, ae, am).cmp(&(bc, be, bm));
+            if an { magnitude.reverse() } else { magnitude }
+        });
+        let relation = match ord {
+            Ordering::Less => Cmp::Less,
+            Ordering::Equal => Cmp::Equal,
+            Ordering::Greater => Cmp::Greater,
+        };
+        (relation, fl)
+    }
+
+    #[test]
+    fn encoded_compare_matches_normalized_ordering_and_special_flags() {
+        const INT: u64 = 1 << 63;
+        const EXPS: [u16; 6] = [0, 1, 2, 0x3fff, 0x7ffe, 0x7fff];
+        const SIGS: [u64; 9] = [
+            0,
+            1,
+            INT - 1,
+            INT,
+            INT + 1,
+            INT + 2,
+            INT | (1 << 62),
+            INT | (1 << 62) | 1,
+            u64::MAX,
+        ];
+        let values = [0, SIGN]
+            .into_iter()
+            .flat_map(|sign| {
+                EXPS.into_iter()
+                    .flat_map(move |exp| SIGS.into_iter().map(move |sig| F80 { se: sign | exp, sig }))
+            })
+            .collect::<std::vec::Vec<_>>();
+        for &a in &values {
+            for &b in &values {
+                for quiet in [false, true] {
+                    assert_eq!(
+                        compare(a, b, quiet),
+                        reference(a, b, quiet),
+                        "{a:?} vs {b:?}, quiet={quiet}"
+                    );
+                }
+            }
         }
-    };
-    let (ka, kb) = (key(&ua), key(&ub));
-    let ord = if ka.0 != kb.0 {
-        if ka.0 {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        }
-    } else {
-        let mag = (ka.1, ka.2, ka.3).cmp(&(kb.1, kb.2, kb.3));
-        if ka.0 { mag.reverse() } else { mag }
-    };
-    let c = match ord {
-        Ordering::Less => Cmp::Less,
-        Ordering::Equal => Cmp::Equal,
-        Ordering::Greater => Cmp::Greater,
-    };
-    (c, fl)
+    }
 }

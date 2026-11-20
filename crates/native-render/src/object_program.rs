@@ -30,7 +30,7 @@ use crate::look::{PassLook, Refusal, implementation_look};
 use crate::object_lighting::{
     Defaults, LIGHTING_SCALARS, LIGHTING_VECTORS, Lighting, ShaderValues, scalar_input, vector_input,
 };
-use crate::program::{MODEL_ROWS, MaterialProgram, PassParts, TEXCOORD_DECOMPRESSION, VIEW_CONSTANTS, translate_pass};
+use crate::program::{MODEL_ROWS, MaterialProgram, PassParts, TEXCOORD_DECOMPRESSION, VIEW_CONSTANTS, translate_pass_with_pixel};
 
 /// The scalar inputs every draw of a shader holds the same
 /// (`0x0001bbf0` copies them from the `shad`), and the integer ones.
@@ -87,7 +87,7 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
     if !imp.engine_stage_states.is_empty() {
         return Err("engine-driven stage states".into());
     }
-    let mut state = crate::pass_state::pass_state(&imp.render_states).map_err(|e| format!("{e:?}"))?;
+    let mut state = crate::pass_state::pass_state_with_fog(&imp.render_states, true).map_err(|e| format!("{e:?}"))?;
     if state.blend.is_some() {
         return Err("the pass blends".into());
     }
@@ -112,6 +112,9 @@ pub fn sets_cull(imp: &ResolvedImplementation) -> bool {
 #[derive(Clone, Debug)]
 pub struct ObjectPass {
     pub program: MaterialProgram,
+    /// The object program supplies D3D's default final combiner using
+    /// the fog and specular uniforms.
+    pub default_final: bool,
     pub implementation: ResolvedImplementation,
     /// The stages that sample the vector normalization cube (empty in
     /// `program.stages`; the host binds the cube).
@@ -145,6 +148,7 @@ pub fn object_pass(
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
     let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
+    let default_final = !program.def.has_final_combiner();
     program.state = Some(state);
     program.inherits_cull = !sets_cull(imp);
     let count = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?.instructions.len();
@@ -155,7 +159,7 @@ pub fn object_pass(
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let options = shaders::vsh::VertexOptions { provided_inputs: provided, input_fetch: fetch, ..Default::default() };
-    Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum, words, options })
+    Ok(ObjectPass { program, default_final, implementation: imp.clone(), normalization, texaccum, words, options })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an
@@ -310,7 +314,7 @@ pub fn compile_object_stages(
             }
         }
     }
-    let t = translate_pass(&PassParts {
+    let t = translate_pass_with_pixel(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
         dims: std::array::from_fn(|n| {
@@ -330,7 +334,7 @@ pub fn compile_object_stages(
         provided_inputs,
         input_fetch,
         w_buffer: true,
-    })?;
+    }, shaders::psh::translate_with_default_final_uniform)?;
     let mut vertex = t.vertex;
     vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression_rows(&Compression::default()));
     Ok(MaterialProgram {

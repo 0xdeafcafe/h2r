@@ -24,13 +24,18 @@ fn location(loc: Loc) -> [u8; 2] {
 }
 
 fn signature(sig: Sig) -> Vec<u8> {
+    // Preserve the existing encodings of function entries (at least four
+    // bytes) and opaque points (empty). A site resumes within a function.
+    let (args, ret, pop) = match sig {
+        Sig::Opaque => return Vec::new(),
+        Sig::Site => return vec![1],
+        Sig::Fn { args, ret, pop } => (args, ret, pop),
+    };
     let mut bytes = Vec::new();
-    if let Sig::Fn { args, ret, pop } = sig {
-        bytes.extend_from_slice(&pop.to_le_bytes());
-        bytes.extend_from_slice(&ret.map_or([0, 0], location));
-        for &(_, loc) in args {
-            bytes.extend_from_slice(&location(loc));
-        }
+    bytes.extend_from_slice(&pop.to_le_bytes());
+    bytes.extend_from_slice(&ret.map_or([0, 0], location));
+    for &(_, loc) in args {
+        bytes.extend_from_slice(&location(loc));
     }
     bytes
 }
@@ -64,6 +69,19 @@ fn hook_digest(plan: &feature::Plan, installed: &feature::Installed) -> String {
             );
             serde_json::to_writer(&mut bytes, &row).expect("fixed primitive hook signature");
             bytes.push(b'\n');
+            let (native, generated) = hook.continuation_sites();
+            if chain.addr == chain.point.base
+                && hook.kind() == feature::Kind::Implement
+                && !(native.is_empty() && generated.is_empty())
+            {
+                let row = (
+                    "continuations",
+                    native.iter().collect::<BTreeSet<_>>(),
+                    generated.iter().collect::<BTreeSet<_>>(),
+                );
+                serde_json::to_writer(&mut bytes, &row).expect("fixed hook continuation addresses");
+                bytes.push(b'\n');
+            }
         }
     }
     for entry in plan.entries.iter().filter(|e| placed.contains(&e.addr)) {
@@ -149,6 +167,35 @@ mod tests {
     }
 
     #[test]
+    fn hook_contract_distinguishes_native_and_generated_resumes() {
+        let point = engine::sim_physics::PORTS[0].point;
+        let digest = |native: &'static [u32], generated: &'static [u32]| {
+            let mut registry = feature::Registry::new(feature::Switches::defaults());
+            let port = feature::FnFeature {
+                manifest: feature::Manifest::new("port-test", "Resume fixture"),
+                build: move |b: &mut feature::Builder| {
+                    b.raw()
+                        .implement(point, "port", |_, _, _| unreachable!())
+                        .resumes(native)
+                        .generated_resumes(generated);
+                    Ok(())
+                },
+            };
+            registry.add(&port).unwrap();
+            let plan = registry.build(&feature::Base).unwrap();
+            let mut installed = feature::Installed::default();
+            installed.placed.push(point.base);
+            hook_digest(&plan, &installed)
+        };
+        assert_ne!(digest(&[], &[]), digest(&[0x1000], &[]));
+        assert_ne!(digest(&[0x1000], &[]), digest(&[], &[0x1000]));
+        assert_eq!(
+            digest(&[], &[0x1000, 0x2000]),
+            digest(&[], &[0x2000, 0x1000])
+        );
+    }
+
+    #[test]
     fn simulation_signature_uses_the_guest_calling_convention() {
         let sig = |args| Sig::Fn {
             args,
@@ -164,5 +211,7 @@ mod tests {
             signature(sig(&[("update", Loc::Stack(1))]))
         );
         assert_ne!(signature(sig(&[])), signature(Sig::Opaque));
+        assert_ne!(signature(Sig::Site), signature(Sig::Opaque));
+        assert_ne!(signature(Sig::Site), signature(sig(&[])));
     }
 }

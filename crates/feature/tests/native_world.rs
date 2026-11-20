@@ -299,3 +299,20 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
     native_world::restore_pending(&mut m);
 }
+
+#[test]
+fn the_world_build_switch_places_only_context_only_scene_hooks() {
+    let labels = ["native_world_visible_sections", "native_world_build_section",
+        "native_world_build_entry", "native_world_empty_entries", "native_world_shader_states"];
+    for (settings, enabled) in [("", true), ("impl.render.native_world_skip_build=off", false),
+        ("impl.render.native=off", false)] {
+        let mut r = Registry::new(Switches::parse(settings).unwrap());
+        r.add(&NativeWorld).unwrap();
+        let plan = r.build(&Base).unwrap();
+        let text = plan.text();
+        for label in labels {
+            assert_eq!(text.contains(label), enabled, "{settings}: {label}");
+        }
+        assert!(plan.chains.values().all(|c| c.render_thread().is_ok()));
+    }
+}

@@ -195,7 +195,7 @@ impl Request {
     pub fn game(&self) -> String {
         match self.kind {
             Kind::Campaign => self.difficulty.to_string(),
-            Kind::Multiplayer => mp_setup().map_or_else(|| "slayer".into(), |s| s.label.clone()),
+            Kind::Multiplayer => "slayer".into(),
         }
     }
 }
@@ -562,12 +562,8 @@ pub enum Step {
     Fill,
     /// `VARIANT_DEFAULTS(options + OPT_VARIANT, GAME_TYPE_SLAYER)`.
     Variant,
-    /// `OPTIONS_PLAYERS(1, options)`; after the mode is written, which it
-    /// reads. Sim mode's [`MpSetup`] gives the count.
+    /// `OPTIONS_PLAYERS(1, options)` after the mode is written.
     Players,
-    /// Sim mode's variant settings ([`MpSetup::settings`]) written over the
-    /// defaults the game built ([`edit_variant`]). Ours, as `Fill` is.
-    VariantEdit,
     /// `OPTIONS_CHECK(options)`, reported only.
     Check,
     /// `OPTIONS_QUEUE`, the block in EAX.
@@ -576,81 +572,15 @@ pub enum Step {
 
 /// The steps for `kind`.
 pub fn steps(kind: Kind) -> Vec<Step> {
-    steps_for(kind, None)
-}
-
-/// The steps for `kind` with sim mode's multiplayer setup: its settings
-/// edited into the variant after the game's defaults.
-pub fn steps_for(kind: Kind, setup: Option<&MpSetup>) -> Vec<Step> {
     match kind {
         Kind::Campaign => vec![Step::New, Step::Fill, Step::Players, Step::Check, Step::Queue],
-        Kind::Multiplayer => {
-            let mut v = vec![Step::New, Step::Fill, Step::Variant];
-            if setup.is_some_and(|s| !s.settings.is_empty()) {
-                v.push(Step::VariantEdit);
-            }
-            v.extend([Step::Players, Step::Check, Step::Queue]);
-            v
-        }
+        Kind::Multiplayer => vec![
+            Step::New, Step::Fill, Step::Variant, Step::Players, Step::Check, Step::Queue,
+        ],
     }
 }
 
-/// Sim mode's multiplayer game (docs/runtime/sim.md §5, "The direct path"):
-/// how many local players, which built-in game type, and the variant
-/// settings over its defaults. Process-wide: [`set_mp_setup`] before
-/// [`install`], read when the request runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MpSetup {
-    /// Local players, 1 to 4 (`OPTIONS_PLAYERS`'s count).
-    pub players: u32,
-    /// The built-in game type's list index (`VARIANT_DEFAULTS`' second
-    /// argument; `variants::GameType::ALL` order).
-    pub game_type: u32,
-    /// `(setting id, value)`, as `variants::GameVariant::set` takes them.
-    pub settings: Vec<(u32, i32)>,
-    /// What the `requesting` line calls the game type.
-    pub label: String,
-}
-
-impl Default for MpSetup {
-    fn default() -> Self {
-        MpSetup { players: 1, game_type: GAME_TYPE_SLAYER, settings: Vec::new(), label: "slayer".into() }
-    }
-}
-
-static MP_SETUP: std::sync::OnceLock<MpSetup> = std::sync::OnceLock::new();
-
-/// Sets the multiplayer setup the level boot uses (once; sim mode).
-pub fn set_mp_setup(s: MpSetup) -> Result<()> {
-    if !(1..=4).contains(&s.players) {
-        bail!("level boot: {} local players: 1 to 4", s.players);
-    }
-    MP_SETUP.set(s).map_err(|_| anyhow::anyhow!("level boot: the multiplayer setup is already set"))
-}
-
-/// The multiplayer setup, if sim mode set one.
-pub fn mp_setup() -> Option<&'static MpSetup> {
-    MP_SETUP.get()
-}
-
-/// Writes `settings` over the variant record in the options at `buf`, as
-/// the game's own setting writer stores them (`variants::GameVariant::set`).
-/// The record is read, edited and written back whole; nothing is written
-/// when a setting is refused.
-pub fn edit_variant<M: Gm>(m: &mut M, buf: u32, settings: &[(u32, i32)]) -> std::result::Result<(), String> {
-    let at = buf + OPT_VARIANT;
-    let mut raw = vec![0u8; VARIANT_SIZE as usize];
-    if !m.rd(at, &mut raw) {
-        return Err(format!("the variant at {at:#x} is unreadable"));
-    }
-    let v = configured_variant(&raw, settings)?;
-    if !m.wr(at, &v.to_bytes()) {
-        return Err(format!("the variant at {at:#x} is unwritable"));
-    }
-    Ok(())
-}
-
-/// Apply match settings to retail's default variant in either startup path.
+/// Apply match settings to the System Link lobby's default variant.
 pub(super) fn configured_variant(
     raw: &[u8],
     settings: &[(u32, i32)],
@@ -674,19 +604,11 @@ pub struct GuestCall {
 
 /// The guest call for a step; `None` for [`Step::Fill`], which is ours.
 pub fn call_of(step: Step, buf: u32) -> Option<GuestCall> {
-    call_of_with(step, buf, None)
-}
-
-/// [`call_of`] with sim mode's multiplayer setup: its game type and its
-/// player count.
-pub fn call_of_with(step: Step, buf: u32, setup: Option<&MpSetup>) -> Option<GuestCall> {
-    let game_type = setup.map_or(GAME_TYPE_SLAYER, |s| s.game_type);
-    let players = setup.map_or(1, |s| s.players);
     let (target, args, eax, esi) = match step {
         Step::New => (OPTIONS_NEW, vec![], None, Some(buf)),
-        Step::Fill | Step::VariantEdit => return None,
-        Step::Variant => (VARIANT_DEFAULTS, vec![buf + OPT_VARIANT, game_type], None, None),
-        Step::Players => (OPTIONS_PLAYERS, vec![players, buf], None, None),
+        Step::Fill => return None,
+        Step::Variant => (VARIANT_DEFAULTS, vec![buf + OPT_VARIANT, GAME_TYPE_SLAYER], None, None),
+        Step::Players => (OPTIONS_PLAYERS, vec![1, buf], None, None),
         Step::Check => (OPTIONS_CHECK, vec![buf], None, None),
         Step::Queue => (OPTIONS_QUEUE, vec![], Some(buf), None),
     };
@@ -823,7 +745,7 @@ fn request_level(cpu: &mut CpuAbi, ctx: &mut ExecCtx, req: Arc<Request>) -> Resu
         req.map as i32
     );
     let entry = Entry { ret_pc, esp: cpu.esp, esi: cpu.esi };
-    let todo = steps_for(req.kind, mp_setup()).into();
+    let todo = steps(req.kind).into();
     run_from(cpu, ctx, req, todo, entry)
 }
 
@@ -855,16 +777,7 @@ fn run_from(
             }
             continue;
         }
-        if step == Step::VariantEdit {
-            let settings = mp_setup().map(|s| s.settings.as_slice()).unwrap_or(&[]);
-            match edit_variant(&mut *mem, BUFFER, settings) {
-                Ok(()) => eprintln!("level boot: {} variant setting(s) written", settings.len()),
-                // The game's defaults stand; the match still starts.
-                Err(e) => eprintln!("level boot: the variant settings were not written ({e}); the defaults stand"),
-            }
-            continue;
-        }
-        let Some(GuestCall { target, args, eax, esi }) = call_of_with(step, BUFFER, mp_setup()) else { continue };
+        let Some(GuestCall { target, args, eax, esi }) = call_of(step, BUFFER) else { continue };
         for a in args.iter().rev() {
             cpu.esp = cpu.esp.wrapping_sub(4);
             mem.set_u32(cpu.esp, *a)?;
@@ -1123,54 +1036,6 @@ mod tests {
         // The variant fits in the options block.
         const { assert!(OPT_VARIANT + VARIANT_SIZE <= OPTIONS_SIZE) };
         const { assert!(OPT_VARIANT_INDEX + 4 == OPT_VARIANT) };
-    }
-
-    fn sim_setup(settings: Vec<(u32, i32)>) -> MpSetup {
-        MpSetup { players: 4, game_type: 4, settings, label: "ctf".into() }
-    }
-
-    #[test]
-    fn sim_setup_sets_the_players_the_type_and_an_edit_step() {
-        let b = BUFFER;
-        // No setup: as before.
-        assert_eq!(steps_for(Kind::Multiplayer, None), steps(Kind::Multiplayer));
-        let s = sim_setup(vec![(10, 300)]);
-        assert_eq!(
-            steps_for(Kind::Multiplayer, Some(&s)),
-            [Step::New, Step::Fill, Step::Variant, Step::VariantEdit, Step::Players, Step::Check, Step::Queue]
-        );
-        // Nothing to edit: no step.
-        assert!(!steps_for(Kind::Multiplayer, Some(&sim_setup(vec![]))).contains(&Step::VariantEdit));
-        // Campaign ignores it.
-        assert_eq!(steps_for(Kind::Campaign, Some(&s)), steps(Kind::Campaign));
-        assert_eq!(call_of_with(Step::Variant, b, Some(&s)).unwrap().args, vec![b + OPT_VARIANT, 4]);
-        assert_eq!(call_of_with(Step::Players, b, Some(&s)).unwrap().args, vec![4, b]);
-        assert_eq!(call_of_with(Step::VariantEdit, b, Some(&s)), None);
-        assert_eq!(call_of_with(Step::Check, b, Some(&s)), call_of(Step::Check, b));
-        assert_eq!(MpSetup::default().players, 1);
-    }
-
-    #[test]
-    fn the_variant_edit_writes_settings_over_the_defaults() {
-        let mut m = Fake::default();
-        defaulted(&mut m, BUFFER);
-        let slayer = variants::GameVariant::blank(variants::GameType::Slayer);
-        m.wr(BUFFER + OPT_VARIANT, &slayer.to_bytes());
-        edit_variant(&mut m, BUFFER, &[(10, 300), (2, 25), (91, 1)]).unwrap();
-        let mut raw = vec![0; VARIANT_SIZE as usize];
-        assert!(m.rd(BUFFER + OPT_VARIANT, &mut raw));
-        let v = variants::GameVariant::from_bytes(&raw).unwrap();
-        assert_eq!(v.get(variants::SettingId(10)), Some(300));
-        assert_eq!(v.get(variants::SettingId(2)), Some(25));
-        assert_eq!(v.get(variants::SettingId(91)), Some(1));
-        // Nothing past the record.
-        assert_eq!(m.u8(BUFFER + OPT_VARIANT + VARIANT_SIZE), Some(0xcc));
-        // A refused setting writes nothing.
-        let before = raw.clone();
-        assert!(edit_variant(&mut m, BUFFER, &[(10, 60), (91, 7)]).is_err());
-        assert!(m.rd(BUFFER + OPT_VARIANT, &mut raw));
-        assert_eq!(raw, before);
-        assert!(edit_variant(&mut Fake::default(), BUFFER, &[(10, 60)]).is_err());
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! (docs/runtime/second-executor.md, section 2).
 //!
 //! Linux x86-64 reserves live RAM between two guard pages. Other hosts use
-//! a heap block. On macOS, a snapshot can share the same pages through
+//! a heap block by default. Flat RAM uses a shared memfd on Linux and a
+//! dedicated anonymous mapping on macOS. A macOS snapshot can share pages through
 //! `mach_vm_remap(copy = TRUE)`. With that mapping,
 //! the kernel copies a host page on the first write to it from either side,
 //! so each side keeps its own writes. Other snapshots copy all RAM bytes.
@@ -34,12 +35,18 @@ enum Backing {
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     Heap,
     #[cfg(target_os = "macos")]
+    MachLive,
+    #[cfg(target_os = "macos")]
     MachCopy,
     #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
     /// A whole-file private mapping ([`Ram::become_private_of`]).
     FilePrivate,
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    Guarded { base: NonNull<u8>, size: usize },
+    Guarded {
+        base: NonNull<u8>,
+        size: usize,
+        file: Option<std::os::fd::OwnedFd>,
+    },
 }
 
 // SAFETY: `Ram` owns its block outright (like a `Box<[u8]>`); access goes
@@ -53,7 +60,34 @@ impl Ram {
     pub(crate) fn zeroed(len: usize) -> Self {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            linux::reserve(len, linux::PREFERRED_BASE).expect("reserve guarded guest physical RAM")
+            linux::reserve(len, linux::PREFERRED_BASE, crate::flat::enabled())
+                .expect("reserve guarded guest physical RAM")
+        }
+        #[cfg(target_os = "macos")]
+        if crate::flat::enabled() {
+            // A dedicated mapping guarantees host-page alignment for shared
+            // aliases, independent of the selected global allocator.
+            let p = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if p != libc::MAP_FAILED {
+                if let Some(ptr) = NonNull::new(p.cast()) {
+                    return Self {
+                        ptr,
+                        len,
+                        backing: Backing::MachLive,
+                        cow_base: None,
+                    };
+                }
+                unsafe { libc::munmap(p, len) };
+            }
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         Self::from_box(vec![0u8; len].into_boxed_slice())
@@ -86,6 +120,42 @@ impl Ram {
         let copy = Self::from_box(self[..].into());
         (copy, CopyKind::Copied)
     }
+    /// Install a shared alias over a host-page-aligned subrange of a
+    /// private address-space reservation.
+    ///
+    /// # Safety
+    /// The caller owns the aligned destination for the entire length.
+    /// It synchronizes alias accesses with the canonical RAM owner.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) unsafe fn alias(&self, dst: *mut u8, offset: usize, len: usize) -> bool {
+        if offset.checked_add(len).is_none_or(|end| end > self.len) {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: the caller owns dst and we own the source bytes.
+            unsafe { mach::alias(dst as usize, self.ptr.as_ptr().add(offset) as usize, len) }
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            use std::os::fd::AsRawFd;
+            let Backing::Guarded { file: Some(fd), .. } = &self.backing else {
+                return false;
+            };
+            // SAFETY: MAP_FIXED only replaces the caller's reservation.
+            unsafe {
+                libc::mmap(
+                    dst.cast(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED | libc::MAP_FIXED,
+                    fd.as_raw_fd(),
+                    offset as libc::off_t,
+                ) != libc::MAP_FAILED
+            }
+        }
+    }
+
 
     /// Make this block a private copy-on-write view of `file`, which must
     /// hold exactly this block's bytes: every read comes from the file's
@@ -130,6 +200,13 @@ impl Ram {
             };
             if raw == libc::MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
+            }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                // MAP_FIXED replaced the memfd-backed data pages. Keeping
+                // that fd would let a new flat alias map the old RAM.
+                let Backing::Guarded { file, .. } = &mut self.backing;
+                *file = None;
             }
             #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
             {
@@ -217,6 +294,11 @@ impl Drop for Ram {
                 }
             }
             #[cfg(target_os = "macos")]
+            Backing::MachLive => {
+                // SAFETY: this is the original live anonymous mapping.
+                unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
+            }
+            #[cfg(target_os = "macos")]
             Backing::MachCopy => {
                 // SAFETY: remap_copy transferred ownership of this mapping.
                 unsafe { mach::deallocate(self.ptr.as_ptr() as usize, self.len) };
@@ -228,7 +310,7 @@ impl Drop for Ram {
                 unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            Backing::Guarded { base, size } => {
+            Backing::Guarded { base, size, .. } => {
                 // SAFETY: includes both guard pages, exclusively owned by Ram.
                 unsafe { libc::munmap(base.as_ptr().cast(), size) };
             }
@@ -243,7 +325,7 @@ mod linux {
 
     pub(super) const PREFERRED_BASE: usize = 0x4000_0000;
 
-    pub(super) fn reserve(len: usize, preferred: usize) -> io::Result<Ram> {
+    pub(super) fn reserve(len: usize, preferred: usize, shared: bool) -> io::Result<Ram> {
         // SAFETY: sysconf takes no pointers.
         let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         let page = usize::try_from(page)
@@ -287,6 +369,9 @@ mod linux {
             };
             // SAFETY: the first and last host pages stay inaccessible.
             let ptr = unsafe { base.add(page) };
+            // Only an opted-in Guest needs a file descriptor. Keep the
+            // private anonymous backing if the kernel refuses memfd.
+            let file = shared.then(|| shared_backing(ptr, len)).flatten();
             let result = unsafe {
                 libc::mprotect(
                     ptr.as_ptr().cast(),
@@ -303,11 +388,35 @@ mod linux {
             return Ok(Ram {
                 ptr,
                 len,
-                backing: Backing::Guarded { base, size },
+                backing: Backing::Guarded { base, size, file },
                 cow_base: None,
             });
         }
         Err(io::Error::other("could not map non-null guest RAM"))
+    }
+
+    fn shared_backing(ptr: NonNull<u8>, len: usize) -> Option<std::os::fd::OwnedFd> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        // SAFETY: the fd is new and the fixed destination is our reservation.
+        unsafe {
+            let raw = libc::memfd_create(c"h2-ram".as_ptr(), libc::MFD_CLOEXEC);
+            if raw < 0 {
+                return None;
+            }
+            let fd = OwnedFd::from_raw_fd(raw);
+            if libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) != 0 {
+                return None;
+            }
+            let map = libc::mmap(
+                ptr.as_ptr().cast(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_FIXED | libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            );
+            (map != libc::MAP_FAILED).then_some(fd)
+        }
     }
 }
 
@@ -345,6 +454,30 @@ mod mach {
     pub(super) fn page_size() -> usize {
         // SAFETY: set once by libSystem before main; read-only after.
         unsafe { vm_page_size }
+    }
+
+    pub(super) unsafe fn alias(dst: usize, src: usize, len: usize) -> bool {
+        let mut target = dst as u64;
+        let (mut cur, mut max) = (0, 0);
+        // VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, shared (copy=false).
+        // SAFETY: src is RAM, dst is reserved, both are host-page aligned.
+        unsafe {
+            mach_vm_remap(
+                mach_task_self_,
+                &mut target,
+                len as u64,
+                0,
+                0x4000,
+                mach_task_self_,
+                src as u64,
+                0,
+                &mut cur,
+                &mut max,
+                VM_INHERIT_COPY,
+            ) == KERN_SUCCESS
+                && target == dst as u64
+                && cur & 3 == 3
+        }
     }
 
     /// A copy-semantics mapping of `[addr, addr + len)` at an address the
@@ -406,7 +539,7 @@ mod tests {
         let mut first = Ram::zeroed(LEN);
         first[0] = 0xa5;
         let Backing::Guarded { base, .. } = first.backing;
-        let mut other = linux::reserve(LEN, base.as_ptr() as usize).unwrap();
+        let mut other = linux::reserve(LEN, base.as_ptr() as usize, false).unwrap();
         assert_ne!(first.as_ptr(), other.as_ptr());
         assert_eq!(other[0], 0);
         other[LEN - 1] = 0x5a;
@@ -425,8 +558,13 @@ mod tests {
         for ram in [&first, &other] {
             let start = ram.as_ptr() as usize;
             assert_eq!(permissions(start - 1), Some("---p"));
-            assert_eq!(permissions(start), Some("rw-p"));
-            assert_eq!(permissions(start + LEN - 1), Some("rw-p"));
+            let access = if matches!(ram.backing, Backing::Guarded { file: Some(_), .. }) {
+                "rw-s"
+            } else {
+                "rw-p"
+            };
+            assert_eq!(permissions(start), Some(access));
+            assert_eq!(permissions(start + LEN - 1), Some(access));
             assert_eq!(permissions(start + LEN), Some("---p"));
         }
     }

@@ -369,7 +369,7 @@ impl Scene {
                 continue;
             }
             let model =
-                crate::native_objects_glue::tag_of(&self.map, obj.definition).and_then(|id| {
+                native_map::tag_of(&self.map, obj.definition).and_then(|id| {
                     let loaded = native_render::model_load::load_object_model(
                         &mut self.map,
                         &self.ctx,
@@ -535,8 +535,8 @@ impl MountedView {
                 viewport,
             );
         }
-        arena.flush(&gfx.queue);
-        gfx.queue.submit([encoder.finish()]);
+        let patches = arena.upload_commands(&gfx.queue);
+        gfx.queue.submit(patches.into_iter().chain([encoder.finish()]));
         gfx.queue.on_submitted_work_done(move || drop(arena));
         (self.output.present)(target.color, SIZE)?;
         self.blank = blank;

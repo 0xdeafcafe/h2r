@@ -2,7 +2,8 @@
 use crate::{
     CpuAbi, Event, ExecCtx, TransferAbi, abi,
     dispatch::Handler,
-    handler::{Invocation, execute},
+    entry_stats::{self as es, DispatchCount},
+    handler::{Invocation, execute_dispatched},
     kernel,
 };
 pub const HARNESS_EXIT: u32 = 0xffff_fffc;
@@ -33,34 +34,54 @@ impl Runner {
         // hands the direct-call budget back as the outer one set it.
         let outer = ctx.direct_budget();
         let result = ctx.measure(crate::perf::Scope::Runner, |ctx| {
-            self.run_inner(cpu, ctx, transfer)
+            self.run_inner::<false>(cpu, ctx, transfer, (0, 0))
         });
         ctx.set_direct_budget(outer);
         result
     }
-    fn run_inner(
+    /// Run a scoped guest call on its existing stack. Stop when its actual
+    /// return has popped the entry slot, before dispatching the caller.
+    pub(crate) fn scoped(
+        &self,
+        cpu: &mut CpuAbi,
+        ctx: &mut ExecCtx,
+        transfer: TransferAbi,
+        entry_esp: u32,
+        return_pc: u32,
+    ) -> TransferAbi {
+        let outer = ctx.direct_budget();
+        let result = self.run_inner::<true>(cpu, ctx, transfer, (entry_esp, return_pc));
+        ctx.set_direct_budget(outer);
+        result
+    }
+
+    fn run_inner<const SCOPED: bool>(
         &self,
         cpu: &mut CpuAbi,
         ctx: &mut ExecCtx,
         mut transfer: TransferAbi,
+        scope: (u32, u32),
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
         // H2_ENTRY_STATS: what returned `transfer`.
-        let stats = crate::entry_stats::enabled();
-        let mut came = crate::entry_stats::Came::Start;
+        let stats = es::enabled();
+        let census = ctx.runtime().dispatch_census.is_some();
+        let mut came = es::Came::Start;
         loop {
             if let Some(id) = ctx.pending_fault.take() {
                 return TransferAbi::fault(id);
             }
-            if transfer.valid_abi()
-                && transfer.kind == abi::FAULT
+            if !transfer.valid_abi() {
+                return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
+            }
+            if transfer.kind == abi::FAULT
                 && transfer.route == abi::ENTRY
                 && transfer.event_id != 0
                 && ctx.event(transfer.event_id).is_some()
             {
                 return transfer;
             }
-            if !transfer.valid_abi() || !cpu.valid_abi() {
+            if !cpu.valid_abi() {
                 return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
             }
             let valid = match transfer.kind {
@@ -101,10 +122,18 @@ impl Runner {
             if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
                 ctx.defer_preempt(reasons);
                 transfer = call;
-                came = crate::entry_stats::Came::Interrupt;
+                came = es::Came::Interrupt;
                 continue;
             }
+            let slice_expired = census && ctx.slice.expired;
             if let Some(stop) = ctx.preempt_decide(reasons, transfer) {
+                if let Some(census) = &ctx.runtime().dispatch_census {
+                    census.note(if slice_expired {
+                        DispatchCount::SlicePreempt
+                    } else {
+                        DispatchCount::RequestPreempt
+                    });
+                }
                 return stop;
             }
             // Diagnostic call chain only; the guest stack decides control.
@@ -120,7 +149,12 @@ impl Runner {
                 abi::RETURN => {}
                 _ => ctx.frames.enter(transfer.target_pc),
             }
-            if transfer.kind == abi::RETURN && transfer.target_pc == HARNESS_EXIT {
+            let returned = if SCOPED {
+                cpu.esp > scope.0 && transfer.target_pc == scope.1
+            } else {
+                transfer.target_pc == HARNESS_EXIT
+            };
+            if transfer.kind == abi::RETURN && returned {
                 cpu.eip = HARNESS_EXIT;
                 return TransferAbi::stop(ctx.emit(Event::HarnessExit));
             }
@@ -136,11 +170,11 @@ impl Runner {
             {
                 cpu.eip = transfer.target_pc;
                 if stats {
-                    crate::entry_stats::note(crate::entry_stats::CONTINUATION, &transfer);
-                    came = crate::entry_stats::Came::Rust;
+                    es::note(es::CONTINUATION, &transfer);
+                    came = es::Came::Rust;
                 }
                 ctx.direct_begin(remaining);
-                transfer = execute(
+                transfer = execute_dispatched(
                     Invocation::Continuation(continuation),
                     cpu,
                     ctx,
@@ -190,19 +224,16 @@ impl Runner {
                 generation,
                 ..
             } = resolution;
-            // Generated code may now invoke this entry's handler directly
-            // (direct.rs) while the dispatch generation stays the same.
-            if transfer.route == abi::ENTRY && selector == transfer.target_pc {
-                ctx.note_direct(transfer.target_pc, &handler, generation);
-            }
+            let native = matches!(handler, Handler::Native(_) | Handler::NativeAdapter(_));
+            let generated = matches!(handler, Handler::Native(_));
             cpu.eip = transfer.target_pc;
             ctx.frames.enter(function);
-            let generated = matches!(handler, Handler::Native(_));
             if stats {
-                use crate::entry_stats as es;
                 let c = if generated {
-                    let routed = transfer.route == abi::ENTRY && matches!(transfer.kind, abi::CALL | abi::JUMP);
-                    let slot = routed.then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
+                    let routed = transfer.route == abi::ENTRY
+                        && matches!(transfer.kind, abi::CALL | abi::JUMP);
+                    let slot = routed
+                        .then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
                     es::cause(came, &transfer, slot)
                 } else {
                     es::RUST_HANDLER
@@ -210,20 +241,35 @@ impl Runner {
                 es::note(c, &transfer);
                 came = if generated { es::Came::Native } else { es::Came::Rust };
             }
+            // Sample the slot before warming it. Generated code may now
+            // use the resolution while the generation stays the same.
+            if generated && transfer.route == abi::ENTRY && selector == transfer.target_pc {
+                ctx.note_direct(transfer.target_pc, &handler, generation);
+            }
             // Direct calls the handler makes spend this run's transfers.
             ctx.direct_begin(remaining);
             // The access trap's HLE census (trap.rs): which Rust handler runs.
-            let hle = (!generated && crate::trap::hle_census()).then(|| {
+            let hle = (!native && crate::trap::hle_census()).then(|| {
                 let target = transfer.target_pc;
                 let thread = timeline::phase::running_guest_thread().unwrap_or(crate::trap::NO_THREAD);
                 (crate::trap::hle_enter(target), target, thread)
             });
-            transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);
+            transfer = execute_dispatched(Invocation::Handler(handler), cpu, ctx, selector);
             if let Some((prev, target, thread)) = hle {
                 crate::trap::hle_leave(prev, target, thread, transfer.kind == abi::STOP);
             }
             remaining = ctx.direct_end(remaining);
-            if generated
+            if census {
+                let count = if generated {
+                    DispatchCount::native_exit(transfer)
+                } else {
+                    DispatchCount::Hle
+                };
+                if let Some(census) = &ctx.runtime().dispatch_census {
+                    census.note(count);
+                }
+            }
+            if native
                 && transfer.kind == abi::STOP
                 && transfer.valid_abi()
                 && let Some(recover) = ctx.runtime().stop_recovery()

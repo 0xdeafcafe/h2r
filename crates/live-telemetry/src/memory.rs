@@ -1820,19 +1820,15 @@ mod tests {
         assert!(object(&guest, 0x90020000).unwrap().is_none());
     }
 
-    /// A Clanker signed into a local slot (docs/game/bots.md §4.2) reads
-    /// as any local player, with its own name and its controller port,
-    /// which is how telemetry knows it for a bot; a remote player has no
-    /// port.
     #[test]
-    fn reads_a_local_bot_slot_with_its_controller_port() {
+    fn reads_local_players_with_their_controller_ports() {
         let mut guest = fixture::memory();
         fixture::put_player(&mut guest, 0, "Halo0001", 0, true, u32::MAX);
-        fixture::put_player(&mut guest, 1, "Clanker 2", 1, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "Guest 2", 1, true, u32::MAX);
         fixture::put_player(&mut guest, 2, "Remote", 0, false, u32::MAX);
-        let bot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
-        guest.set_u16(bot + layout::PLAYER_LOCAL_USER, 1).unwrap();
-        guest.set_u32(bot + layout::PLAYER_CONTROLLER, 2).unwrap();
+        let guest_slot = fixture::PLAYER_DATA + layout::PLAYER_SIZE;
+        guest.set_u16(guest_slot + layout::PLAYER_LOCAL_USER, 1).unwrap();
+        guest.set_u32(guest_slot + layout::PLAYER_CONTROLLER, 2).unwrap();
         // A remote player's controller field is -1; any value reads as none.
         guest
             .set_u32(
@@ -1849,7 +1845,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 ("Halo0001", Some(0), Some(0)),
-                ("Clanker 2", Some(1), Some(2)),
+                ("Guest 2", Some(1), Some(2)),
                 ("Remote", None, None),
             ]
         );
@@ -1857,7 +1853,7 @@ mod tests {
         assert_eq!(players[1].player.local, Some(true));
         // An unbound local controller (-1) reads as none.
         guest
-            .set_u32(bot + layout::PLAYER_CONTROLLER, u32::MAX)
+            .set_u32(guest_slot + layout::PLAYER_CONTROLLER, u32::MAX)
             .unwrap();
         assert_eq!(players_after(&guest, &mut []).unwrap()[1].controller, None);
     }

@@ -126,6 +126,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> feature::Reg
     let pipeline = super::pipeline_for(
         feature::pipeline_render::PipelineRender::with(true, feature::pipeline_render::Addrs::HALO2),
         lockstep.enabled(),
+        false,
     );
     register_late_for_profile(
         &mut features,
@@ -185,6 +186,8 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
         assert_eq!(ids.contains(&"native-map-work"), profile == Gpu);
         assert_eq!(ids.contains(&"native-world"), profile == Gpu);
         assert_eq!(ids.contains(&"native-hud"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-scene-lists"), profile == Gpu);
+        assert_eq!(ids.contains(&"native-light-walk"), profile == Gpu);
         assert!(ids.contains(&"h1-scope-zoom"));
         assert!(ids.contains(&"occlusion"));
         if profile == Slim {
@@ -192,6 +195,39 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
                 h.feature != "render-loop" && !h.feature.starts_with("native-")
             }));
         }
+    }
+}
+
+#[test]
+fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
+    use feature::pipeline_render::{Addrs, PipelineRender, SWITCH};
+
+    for (switches, lockstep, light, expected) in [
+        ("", false, false, false),
+        ("impl.render.native=on", false, false, false),
+        (SWITCH, false, false, true),
+        (
+            "impl.render.native=on,impl.render.pipelined_frame=on",
+            false,
+            false,
+            true,
+        ),
+        (SWITCH, false, true, false),
+        (SWITCH, true, false, false),
+    ] {
+        let mut features = feature::Registry::new(feature::Switches::parse(switches).unwrap());
+        let pipeline = super::pipeline_for(
+            PipelineRender::with(false, Addrs::HALO2),
+            lockstep,
+            light,
+        );
+        features.add(&pipeline).unwrap();
+        let plan = features.build(&feature::Base).unwrap();
+        assert_eq!(
+            plan.chains.contains_key(&feature::points::RENDER_FRAME.base),
+            expected,
+            "{switches}, lockstep={lockstep}, light={light}"
+        );
     }
 }
 

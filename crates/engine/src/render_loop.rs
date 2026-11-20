@@ -24,6 +24,12 @@
 use crate::memory::{GuestMemory, MemFault};
 
 pub mod layer;
+pub mod world_lightmap;
+pub mod world_registers;
+pub mod opaque_texture;
+pub mod opaque_material;
+pub mod opaque_animation;
+pub mod world_walk;
 pub mod occlusion;
 pub mod scene;
 pub mod states;

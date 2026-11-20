@@ -27,7 +27,8 @@
 //! the scheduler) runs, the scope is suspended and its time goes back to
 //! the phase it interrupted.
 
-use std::cell::Cell;
+use crate::native::WorldMaterials;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -157,6 +158,18 @@ pub enum Counter {
     /// (open, read, write, metadata, directory queries), on any guest
     /// thread: the async I/O pool's thread competes with the game's.
     FileIoUs = 16,
+    LightWalkNative,
+    LightWalkFallback,
+    LightWalkGraph,
+    LightWalkEmpty,
+    LightWalkMemory,
+    LightWalkCallback,
+    LightWalkMaterial,
+    LightWalkGeometry,
+    LightWalkGpu,
+    LightWalkBuilds,
+    LightWalkHandlersSkipped,
+    ShadowWalkLayers,
 }
 
 /// Number of [`Counter`]s.
@@ -168,7 +181,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 17] = [
+    pub const ALL: [Counter; 29] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -186,6 +199,18 @@ impl Counter {
         Counter::PassCounted,
         Counter::PassSide,
         Counter::FileIoUs,
+        Counter::LightWalkNative,
+        Counter::LightWalkFallback,
+        Counter::LightWalkGraph,
+        Counter::LightWalkEmpty,
+        Counter::LightWalkMemory,
+        Counter::LightWalkCallback,
+        Counter::LightWalkMaterial,
+        Counter::LightWalkGeometry,
+        Counter::LightWalkGpu,
+        Counter::LightWalkBuilds,
+        Counter::LightWalkHandlersSkipped,
+        Counter::ShadowWalkLayers,
     ];
 
     pub fn label(self) -> &'static str {
@@ -206,12 +231,25 @@ impl Counter {
             Counter::PassDiscard => "pass_discard",
             Counter::PassCounted => "pass_counted",
             Counter::PassSide => "pass_side",
+            Counter::LightWalkFallback => "lights_walked_fallback",
+            Counter::LightWalkGraph => "lights_walk_fallback_graph",
+            Counter::LightWalkEmpty => "lights_walk_empty",
+            Counter::LightWalkNative => "lights_walked_native",
+            Counter::LightWalkMemory => "lights_walk_fallback_memory",
+            Counter::LightWalkCallback => "lights_walk_fallback_callback",
+            Counter::LightWalkMaterial => "lights_walk_fallback_material",
+            Counter::LightWalkGeometry => "lights_walk_fallback_geometry",
+            Counter::LightWalkGpu => "lights_walk_fallback_gpu",
+            Counter::LightWalkBuilds => "light_walk_layer_builds",
+            Counter::LightWalkHandlersSkipped => "light_walk_handlers_skipped",
+            Counter::ShadowWalkLayers => "shadow_walk_layers",
             Counter::FileIoUs => "file_io_us",
         }
     }
 }
 
 static ON: AtomicBool = AtomicBool::new(false);
+static MATERIAL_DETAILS: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// True while frame stats are being collected. One relaxed load.
@@ -252,6 +290,7 @@ struct Local {
 const NO_THREAD: u32 = u32::MAX;
 
 thread_local! {
+    static WORLD_MATERIALS: RefCell<WorldMaterials> = const { RefCell::new(WorldMaterials::new()) };
     static LOCAL: Local = const {
         Local {
             generation: Cell::new(0),
@@ -500,6 +539,7 @@ pub fn thread_ns(phase: Phase) -> Option<u64> {
 }
 
 fn reset_local(l: &Local) {
+    WORLD_MATERIALS.with(RefCell::take);
     l.started.set(false);
     l.current.set(Phase::Guest as u8);
     for a in l
@@ -550,6 +590,19 @@ pub(crate) fn count_index(index: usize, n: u64) {
             let c = &l.counts[index];
             c.set(c.get() + n);
         });
+    }
+}
+
+pub(crate) fn world_material(record: impl FnOnce(&mut WorldMaterials)) {
+    if MATERIAL_DETAILS.load(Ordering::Relaxed) {
+        WORLD_MATERIALS.with_borrow_mut(record);
+    }
+}
+
+pub(crate) fn world_section(record: impl FnOnce(&mut WorldMaterials, bool)) {
+    if enabled() {
+        LOCAL.with(prepare_local);
+        WORLD_MATERIALS.with_borrow_mut(|m| record(m, MATERIAL_DETAILS.load(Ordering::Relaxed)));
     }
 }
 
@@ -606,9 +659,11 @@ impl WorkerFrame {
                 *d = c.replace(0);
             }
             s.phase_ns[Phase::Guest as usize] = 0;
-            s
+            (s, WORLD_MATERIALS.with(RefCell::take))
         });
         if let Some(p) = r.pending.get_mut(&self.index) {
+            let (sample, materials) = sample;
+            p.world_materials.merge(materials);
             p.received += 1;
             for (a, n) in p.worker.phase_ns.iter_mut().zip(sample.phase_ns) {
                 *a += n;
@@ -675,12 +730,14 @@ pub fn frame_end(index: u64) {
             *d = c.replace(0);
         }
         l.frame_start.set(now);
-        Some(s)
+        Some((s, WORLD_MATERIALS.with(RefCell::take)))
     });
-    if let Some(s) = sample {
+    if let Some((s, materials)) = sample {
         let mut g = global();
         if let Some(r) = g.as_mut() {
-            r.pending.entry(index).or_default().game = Some(s);
+            let pending = r.pending.entry(index).or_default();
+            pending.game = Some(s);
+            pending.world_materials.merge(materials);
             r.publish_ready();
         }
     }
@@ -755,7 +812,7 @@ pub fn start(config: Config) -> std::io::Result<()> {
             let counts: Vec<&str> = counter_columns().map(|(_, label)| label).collect();
             writeln!(
                 f,
-                "frame,end_ms,total_us,{},{}",
+                "frame,end_ms,total_us,{},{},native_world_opaque_materials",
                 phases.join(","),
                 counts.join(",")
             )?;
@@ -763,10 +820,12 @@ pub fn start(config: Config) -> std::io::Result<()> {
         }
         None => None,
     };
+    let details = csv.is_some() || !config.quiet;
     let mut recorder = Recorder::new(config, csv);
     let mut g = global();
     recorder.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     *g = Some(recorder);
+    MATERIAL_DETAILS.store(details, Ordering::Relaxed);
     ON.store(true, Ordering::Relaxed);
     Ok(())
 }
@@ -791,6 +850,7 @@ pub fn start_from_env() -> bool {
 pub fn stop() -> Option<String> {
     let mut g = global();
     ON.store(false, Ordering::Relaxed);
+    MATERIAL_DETAILS.store(false, Ordering::Relaxed);
     let mut r = g.take()?;
     drop(g);
     if let Some(f) = r.csv.as_mut() {
@@ -951,6 +1011,7 @@ fn global() -> MutexGuard<'static, Option<Recorder>> {
 struct PendingFrame {
     game: Option<FrameSample>,
     worker: FrameSample,
+    world_materials: WorldMaterials,
     expected: u64,
     received: u64,
 }
@@ -967,6 +1028,7 @@ pub struct Recorder {
     totals_us: Vec<u32>,
     phase_sum: [u64; PHASES],
     count_sum: [u64; COUNTERS],
+    world_materials: WorldMaterials,
     worst: Vec<FrameSample>,
     /// Since the last [`take_interval`].
     interval: Interval,
@@ -991,6 +1053,7 @@ impl Recorder {
             totals_us: Vec::new(),
             phase_sum: [0; PHASES],
             count_sum: [0; COUNTERS],
+            world_materials: WorldMaterials::default(),
             worst: Vec::new(),
             interval: Interval::default(),
             capture: None,
@@ -1013,7 +1076,7 @@ impl Recorder {
                 *a += n;
             }
             let now = s.end_ns;
-            self.push(s);
+            self.push_with_materials(s, p.world_materials);
             if let Some(every) = self.config.log_every_ns
                 && now.saturating_sub(self.last_log_ns) >= every
             {
@@ -1026,17 +1089,23 @@ impl Recorder {
     }
 
     pub fn push(&mut self, s: FrameSample) {
+        self.push_with_materials(s, WorldMaterials::default());
+    }
+
+    fn push_with_materials(&mut self, mut s: FrameSample, mut materials: WorldMaterials) {
+        materials.finish_sections(&mut s.counts);
         if let Some(f) = self.csv.as_mut() {
             let phases: Vec<String> = s.phase_ns.iter().map(|n| (n / 1000).to_string()).collect();
             let counts: Vec<String> = s.counts.iter().map(u64::to_string).collect();
             let _ = writeln!(
                 f,
-                "{},{:.3},{},{},{}",
+                "{},{:.3},{},{},{},\"{}\"",
                 s.index,
                 s.end_ns as f64 / 1e6,
                 s.total_ns / 1000,
                 phases.join(","),
-                counts.join(",")
+                counts.join(","),
+                materials.to_string().replace('"', "\"\""),
             );
         }
         self.window.push_back(s);
@@ -1063,6 +1132,7 @@ impl Recorder {
         if s.index < self.config.report_from {
             return;
         }
+        self.world_materials.merge(materials);
         self.totals_us
             .push((s.total_ns / 1000).min(u32::MAX as u64) as u32);
         for (a, b) in self.phase_sum.iter_mut().zip(s.phase_ns) {
@@ -1120,6 +1190,9 @@ impl Recorder {
                 label,
                 self.count_sum[i] as f64 / n as f64
             );
+        }
+        if !self.world_materials.is_empty() {
+            out += &format!("\n  opaque world materials: {}", self.world_materials);
         }
         out += "\n  worst frames:\n";
         for w in &self.worst {
@@ -1383,6 +1456,7 @@ mod tests {
                 worker,
                 expected: 1,
                 received: 1,
+                ..Default::default()
             },
         );
         r.publish_ready();
@@ -1444,6 +1518,89 @@ mod tests {
         assert_eq!(got.iter().map(|f| f.index).collect::<Vec<_>>(), [1, 2, 3]);
         r.push(frame(4, 100, 20));
         assert!(r.capture.is_none());
+    }
+
+    #[test]
+    fn world_sections_union_game_and_worker_parts_once_per_path_view_and_bsp() {
+        use crate::native::WorldSection::{Cluster, Placement};
+
+        let _serial = crate::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::default()).unwrap();
+        let index = crate::frames() + 1;
+        frame_end(index - 1);
+        let worker = forward_frame().unwrap();
+        let mixed = Cluster { view: 0, bsp: 41, index: 3 };
+        let other_view = Cluster { view: 1, bsp: 41, index: 3 };
+        let other_bsp = Cluster { view: 0, bsp: 42, index: 3 };
+        mixed.taken();
+        mixed.taken();
+        other_view.taken();
+        mixed.fallback(7, "texture");
+        mixed.fallback(7, "texture");
+        frame_end(index);
+        std::thread::spawn(move || {
+            mixed.taken();
+            mixed.fallback(7, "texture");
+            mixed.fallback(7, "program");
+            other_bsp.taken();
+            other_bsp.fallback(7, "texture");
+            Placement { view: 0, bsp: 41, index: 3 }.taken();
+            worker.finish();
+        }).join().unwrap();
+        mixed.taken();
+        mixed.fallback(7, "texture");
+        frame_end(index + 1);
+
+        let rows = totals().unwrap();
+        let count = |name| rows.counts[counter_columns().find(|(_, label)| *label == name).unwrap().0];
+        assert_eq!(rows.frames, 2);
+        assert_eq!(count("native_world_opaque_taken_sections"), 4 + 1);
+        assert_eq!(count("native_world_opaque_fallback_sections"), 2 + 1);
+        let report = stop().unwrap();
+        assert!(report.contains(r#"refused_sections["program"]=1 refused_sections["texture"]=3"#));
+    }
+
+    #[test]
+    fn world_handler_counts_track_dispositions_and_subdraws_by_material() {
+        use crate::native::{world_handler_fallback, world_handler_indexed, world_handler_taken};
+
+        let _serial = crate::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let csv = std::env::temp_dir().join(format!("h2-opaque-stats-{}.csv", std::process::id()));
+        start(Config { csv: Some(csv.clone()), ..Default::default() }).unwrap();
+        frame_end(0);
+        world_handler_taken(7, 3);
+        world_handler_fallback(7, "missing page");
+        world_handler_fallback(9, "missing page");
+        world_handler_taken(7, 0);
+        world_handler_indexed(7, "attachment", 2);
+        frame_end(1);
+        world_handler_fallback(7, "missing page");
+        world_handler_fallback(7, "missing texture");
+        world_handler_indexed(7, "attachment", 1);
+        frame_end(2);
+
+        let totals = totals().unwrap();
+        let count = |name| {
+            let i = counter_columns().find(|(_, label)| *label == name).unwrap().0;
+            totals.counts[i]
+        };
+        assert_eq!(count("native_world_opaque_handlers_taken"), 4);
+        assert_eq!(count("native_world_opaque_handlers_fallback"), 4);
+        assert_eq!(count("native_world_opaque_handler_draws"), 6);
+        assert_eq!(count("native_world_opaque_handlers_indexed"), 2);
+        assert_eq!(count("native_world_opaque_handler_indexed_draws"), 3);
+        let report = stop().unwrap();
+        assert!(report.contains(r#"0x00000007 taken=4 draws=6 refused["missing page"]=2 refused["missing texture"]=1 indexed_draws=3 indexed["attachment"]=2"#));
+        let contents = std::fs::read_to_string(&csv).unwrap();
+        std::fs::remove_file(csv).unwrap();
+        let mut lines = contents.lines();
+        assert!(lines.next().unwrap().ends_with("native_world_opaque_materials"));
+        let first = lines.next().unwrap();
+        assert!(first.contains(r#"0x00000007 taken=3 draws=5 refused[""missing page""]=1 indexed_draws=2 indexed[""attachment""]=1"#));
+        assert!(first.contains(r#"0x00000009 taken=0 draws=0 refused[""missing page""]=1"#));
+        let second = lines.next().unwrap();
+        assert!(second.contains(r#"0x00000007 taken=1 draws=1 refused[""missing page""]=1 refused[""missing texture""]=1 indexed_draws=1 indexed[""attachment""]=1"#));
+        assert!(!second.contains("0x00000009"));
     }
 
     #[test]

@@ -236,15 +236,15 @@ million entries. JSON payloads are UTF-8.
 | Tag | Contents after decompression |
 | --- | --- |
 | `HEAD` | JSON machine header. The first has `version: 2`, film ID, source, generated image stamp, runtime source fingerprint, XBE SHA-256, title ID, epoch, UTC start in Unix milliseconds, feature switches, executor budget, network settings and lease and canonical game IDs when hosted. Later headers update the display metadata and boot-relative duration. |
-| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration, when applicable. |
+| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
 | `MOVI` | Effective movie selection when Bink is enabled. Maps engine movie names to SHA-256 of the local transcodes. An empty map selects the skip path. |
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
-| `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. Late arrivals have a join event. |
+| `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
-| `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input, bot pads and reads between ticks. |
+| `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
 | `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
 | `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
-| `BOTR` | Sparse local/phantom bot roster changes by management boundary. |
+| `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
 | `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT` and `BTAP`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
@@ -420,7 +420,8 @@ that breaks those contracts must bump the ABI. The sealed header also stores
 `simulation_hooks`, a SHA-256 of the installed simulation hook chains in
 execution order and the core game, clock, player and object table addresses.
 It includes hook owners, guest addresses, calling conventions, hook kinds,
-guest-callable entries and the allocations placed for those features.
+instruction sites, permitted continuation addresses, guest-callable entries
+and the allocations placed for those features.
 The player checks it after installing its features and before entering the
 guest. The guest image has its own stamp. Editing Live, the web viewer,
 codecs, diagnostic labels or documentation leaves this contract intact.

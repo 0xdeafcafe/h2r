@@ -146,7 +146,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "H2_SIM",
             "H2_LEVEL",
             "H2_BOOT_INPUT",
-            "H2_BOTS",
             "H2_INPUT_REPLAY",
             "H2_INPUT_RECORD",
         ] {

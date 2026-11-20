@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 /// same way, into the first `slot_mask + 1`.
 pub(crate) const SLOTS: usize = 8192;
 /// Slots in use: a power of two up to [`SLOTS`] from `H2_DIRECT_SLOTS`
-/// (runtime environment), else 256.
+/// (runtime environment), else 4096.
 fn slots_in_use() -> u32 {
     static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
@@ -46,7 +46,7 @@ fn slots_in_use() -> u32 {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|n| n.is_power_of_two() && *n as usize <= SLOTS)
-            .unwrap_or(256)
+            .unwrap_or(4096)
     })
 }
 /// The deepest nesting the block has room to record.
@@ -140,7 +140,7 @@ impl Drop for Direct {
 }
 
 impl Direct {
-    pub(crate) fn new(runtime: &crate::Runtime) -> (Direct, DirectPtr) {
+    pub(crate) fn new(runtime: &crate::Runtime) -> Self {
         // About 200 KiB: built in place, all zeros (every field's empty
         // value: null pointers, None handlers), not on the stack.
         // SAFETY: all-zero bytes are a valid DirectState.
@@ -150,8 +150,26 @@ impl Direct {
         state.cap = DEFAULT_DEPTH;
         state.slot_mask = slots_in_use() - 1;
         let owned = NonNull::from(Box::leak(state));
-        (Direct { owned }, DirectPtr(owned.as_ptr()))
+        Self { owned }
     }
+
+    /// Reset invocation state while keeping the warmed entries. Their
+    /// generation and execute checks still run on each use.
+    pub(crate) fn restart(&mut self) {
+        let s = self.state();
+        s.budget = 0;
+        s.depth = 0;
+        s.cap = DEFAULT_DEPTH;
+        s.frames_len = 0;
+        s.gate = 0;
+        s.view = std::ptr::null_mut();
+        s.acc = 0;
+    }
+
+    pub(crate) fn as_ptr(&self) -> DirectPtr {
+        DirectPtr(self.owned.as_ptr())
+    }
+
     fn state(&mut self) -> &mut DirectState {
         // SAFETY: owned by self; generated code writes it only while it runs
         // with this context, never concurrently with a Rust borrow.
@@ -275,12 +293,15 @@ impl ExecCtx {
     pub(crate) fn note_direct(&mut self, pc: u32, handler: &Handler, generation: u64) {
         if let Handler::Native(f) = handler {
             let s = self.direct.state();
-            s.slots[slot_of(pc, s.slot_mask)] = Slot {
-                generation,
-                handler: Some(*f),
-                pc,
-                _pad: 0,
-            };
+            let slot = &mut s.slots[slot_of(pc, s.slot_mask)];
+            if slot.generation != generation || slot.pc != pc {
+                *slot = Slot {
+                    generation,
+                    handler: Some(*f),
+                    pc,
+                    _pad: 0,
+                };
+            }
         }
     }
 }

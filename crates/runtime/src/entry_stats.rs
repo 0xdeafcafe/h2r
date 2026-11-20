@@ -2,8 +2,7 @@
 //! runner's invocations of generated handlers by why the runner made them
 //! and generated code did not (a direct call or an inline return), and
 //! print the counts to stderr every 2^24 of them, with the transfers that
-//! made the most. Off, the runner pays one load of a cached flag per
-//! transfer and changes nothing else.
+//! made the most. Off, the runner reads the cached flag once per run.
 //!
 //! What led to the invocation:
 //! - `start`: the run's first transfer (a run started or resumed).
@@ -120,5 +119,78 @@ pub(crate) fn note(c: usize, t: &TransferAbi) {
     top.sort_unstable_by(|a, b| b.cmp(a));
     for (n, (c, target, resume)) in top.into_iter().take(40) {
         eprintln!("h2 runner entries:   {n} {} target {target:#010x} resume {resume:#010x}", CAUSES[c]);
+    }
+}
+
+
+/// Match-wide census. These count native handlers handing control back to
+/// the runner, plus the runner's HLE dispatches and actual preemptions.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum DispatchCount {
+    Call,
+    Jump,
+    Resume,
+    Return,
+    Stop,
+    Fault,
+    Other,
+    Hle,
+    SlicePreempt,
+    RequestPreempt,
+}
+use DispatchCount::*;
+
+const DISPATCH_COUNTS: [(DispatchCount, &str); 10] = [
+    (Call, "call"),
+    (Jump, "jump"),
+    (Resume, "resume"),
+    (Return, "return"),
+    (Stop, "stop"),
+    (Fault, "fault"),
+    (Other, "other"),
+    (Hle, "hle"),
+    (SlicePreempt, "slice_preempt"),
+    (RequestPreempt, "request_preempt"),
+];
+
+impl DispatchCount {
+    pub(crate) fn native_exit(t: TransferAbi) -> Self {
+        match (t.kind, t.route) {
+            (abi::CALL, abi::ENTRY) => Call,
+            (abi::JUMP, abi::ENTRY) => Jump,
+            (abi::JUMP, abi::RESUME) => Resume,
+            (abi::RETURN, _) => Return,
+            (abi::STOP, abi::ENTRY) => Stop,
+            (abi::FAULT, abi::ENTRY) => Fault,
+            _ => Other,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DispatchCensus([AtomicU64; DISPATCH_COUNTS.len()]);
+
+impl DispatchCensus {
+    pub(crate) fn note(&self, count: DispatchCount) {
+        self.0[count as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn snapshot(&self) -> DispatchCounts {
+        DispatchCounts(std::array::from_fn(|i| self.0[i].load(Ordering::Relaxed)))
+    }
+}
+
+/// A snapshot of the monotonic counters of one runtime.
+#[derive(Clone, Copy, Default)]
+pub struct DispatchCounts([u64; DISPATCH_COUNTS.len()]);
+
+impl DispatchCounts {
+    /// Totals between two snapshots of the same runtime.
+    pub fn since(self, start: Self) -> impl Iterator<Item = (&'static str, u64)> {
+        DISPATCH_COUNTS.into_iter().map(move |(kind, name)| {
+            let index = kind as usize;
+            (name, self.0[index].wrapping_sub(start.0[index]))
+        })
     }
 }

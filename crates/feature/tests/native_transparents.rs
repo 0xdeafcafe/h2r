@@ -36,7 +36,7 @@ fn on_its_snapshot_policy_is_stateless() {
 }
 
 #[test]
-fn only_the_scene_wraps_the_guest_body_for_cleanup() {
+fn the_scene_and_its_cleanup_share_the_render_thread() {
     let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
     assert!(r.add(&NativeTransparents).unwrap());
     let plan = r.build(&Base).unwrap();
@@ -44,16 +44,14 @@ fn only_the_scene_wraps_the_guest_body_for_cleanup() {
     for (point, label) in [
         ("TRANSPARENT_GEOMETRY", "native_transparents_entry"),
         ("GAME_ACTIVATE", "native_transparents_generation"),
+        ("SCENE_TRANSPARENTS", "native_transparents_view"),
+        ("SCENE_TRANSPARENTS_END", "native_transparents_end"),
     ] {
         assert!(text.contains(label), "{text}");
         let chain = plan.chains.values().find(|c| c.point.name == point).unwrap();
         assert!(!chain.needs_shadow(), "{point}");
         assert!(chain.render_thread().is_ok(), "{point}");
     }
-    assert!(text.contains("native_transparents_view"), "{text}");
-    assert!(text.contains("native_transparents_end"), "{text}");
-    let scene = plan.chains.values().find(|c| c.point.name == "SCENE_TRANSPARENTS").unwrap();
-    assert!(scene.needs_shadow());
 }
 
 const GLOBALS: u32 = 0x005e_0000;

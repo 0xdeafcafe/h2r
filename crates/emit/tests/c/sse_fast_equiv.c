@@ -119,13 +119,13 @@ int main(int argc, char **argv) {
         uint32_t xm = authority(op, packed, &m_ref, a, b, &r_ref);
         int took;
         (void)m_scalar; (void)r_scalar;
-#if defined(__aarch64__)
+#if defined(__aarch64__) || (defined(__x86_64__) && H2_SSE_PACKED_X86)
         if (packed) {
             took = h2sn_arith4(&m_fast, op, op == 4 ? 0 : a, b, &r_fast);
             int took_scalar = h2sn_arith(&m_scalar, op, op == 4 ? 0 : a, b, 4, &r_scalar);
-            if (took != took_scalar) return fail("NEON and scalar guards disagree", op, packed, mx, a, b);
+            if (took != took_scalar) return fail("packed and scalar guards disagree", op, packed, mx, a, b);
             if (took && (r_fast != r_scalar || m_fast != m_scalar))
-                return fail("NEON and scalar results differ", op, packed, mx, a, b);
+                return fail("packed and scalar results differ", op, packed, mx, a, b);
         } else
 #endif
             took = h2sn_arith(&m_fast, op, a, b, packed ? 4 : 1, &r_fast);

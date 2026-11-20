@@ -65,6 +65,50 @@ fn only_written_registers_are_homed() {
 }
 
 #[test]
+fn sse_run_resamples_after_memory_and_control_flow() {
+    let text = c_of(true, |a| {
+        let mut join = a.create_label();
+        a.addps(xmm0, xmm1)?;
+        a.mulps(xmm0, xmm2)?;
+        a.movups(xmm0, xmmword_ptr(esi))?;
+        a.addps(xmm0, xmm3)?;
+        a.jz(join)?;
+        a.addss(xmm0, xmm4)?;
+        a.set_label(&mut join)?;
+        a.subps(xmm0, xmm5)?;
+        a.ret()
+    });
+    let mut samples = Vec::new();
+    let mut n = 0;
+    for line in text.lines() {
+        if line.contains("h2fp_ = H2_FP_SAMPLE()") {
+            n += 1;
+        }
+        if line.contains("H2_SSE_RUN(") {
+            samples.push(n);
+        }
+    }
+    assert_eq!(samples, [1, 1, 2, 3, 4], "{text}");
+}
+
+#[test]
+fn x87_agreeing_paths_specialize_but_different_depths_join_dynamically() {
+    let text = c_of(true, |a| {
+        let mut join = a.create_label();
+        a.fld(dword_ptr(esi))?;
+        a.fadd(dword_ptr(esi + 4))?;
+        a.jz(join)?;
+        a.fld1()?;
+        a.set_label(&mut join)?;
+        a.fadd(dword_ptr(esi + 8))?;
+        a.ret()
+    });
+    assert!(text.contains("H2X87_AT(0u, ld_f32"), "{text}");
+    assert!(text.contains("H2X87_AT(7u, arith"), "{text}");
+    assert!(text.contains("h2x87n_arith(&cpu->x87"), "{text}");
+}
+
+#[test]
 fn partial_writes_home_the_whole_register() {
     // AL, AH and CX writes merge into the rest of the register, which must
     // be current in the local: EAX, ECX homed, BL's EBX not.

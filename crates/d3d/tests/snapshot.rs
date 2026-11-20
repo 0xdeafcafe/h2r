@@ -237,3 +237,36 @@ fn normal_snapshots_keep_the_v1_payload_and_warm_restore_rules() {
     other.load_snapshot(&film).unwrap();
     assert!(matches!(other.load_film_snapshot(&film, &ram), Err(SnapshotError::Mismatch(_))));
 }
+
+#[test]
+fn opaque_simple_matches_serial_pushed_state_at_a_guest_boundary() {
+    let (mut a, mut ma) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    let (mut b, mut mb) = create(RecordingBackend::new(), UploadPolicy::Tracked);
+    let header = synthetic_encode()[RS_ZFUNC as usize];
+    a.set_render_state_simple(&mut ma, header, 0x203).unwrap();
+    b.set_render_state_simple(&mut mb, header, 0x203).unwrap();
+
+    // Make the guest array already hold the next requested value while
+    // the GPU still holds 0x203. The pushed register must still change.
+    let slot = d3d::GuestLayout::HALO2.render_state_slot(RS_ZFUNC);
+    ma.write_u32(slot, 0x207).unwrap();
+    mb.write_u32(slot, 0x207).unwrap();
+    a.set_render_state_simple(&mut ma, header, 0x207).unwrap();
+    assert!(b.try_opaque_simple(&mb, header, 0x207));
+    a.set_render_state_simple(&mut ma, header, 0x207).unwrap();
+    assert!(b.try_opaque_simple(&mb, header, 0x207));
+    assert_eq!(a.stats().simple_state_calls, b.stats().simple_state_calls);
+    let (mut wa, mut wb) = (writer(), writer());
+    a.save_snapshot(&mut ma, &mut wa).unwrap();
+    b.save_snapshot(&mut mb, &mut wb).unwrap();
+    assert_eq!(wa.finish().unwrap(), wb.finish().unwrap());
+
+    // A queued command must be drained by the next ordinary D3D entry.
+    let dev = mb.read_u32(d3d::GuestLayout::HALO2.p_device).unwrap();
+    let put = mb.read_u32(dev).unwrap();
+    mb.write_u32(put, header).unwrap();
+    mb.write_u32(put + 4, 0x201).unwrap();
+    mb.write_u32(dev, put + 8).unwrap();
+    assert!(!b.try_opaque_simple(&mb, header, 0x204));
+    assert_eq!(a.stats().simple_state_calls, b.stats().simple_state_calls);
+}

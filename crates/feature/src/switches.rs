@@ -107,9 +107,34 @@ pub(crate) fn native_stage_on(switches: &Switches, stage: &str) -> bool {
     switches.feature(stage, native_render_default(switches))
 }
 
+/// Scene walks require both the master renderer and the owning stage.
+pub(crate) fn native_walk_on(switches: &Switches, stage: &str, walk: &str) -> bool {
+    native_render_default(switches) && native_stage_on(switches, stage) && switches.feature(walk, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_walks_default_on_and_require_the_owning_stage_and_master() {
+        let enabled = |spec| {
+            let switches = Switches::parse(spec).unwrap();
+            [
+                crate::native_transparents::walk_on(&switches),
+                crate::native_decals::walk_on(&switches),
+                crate::native_particles::walk_on(&switches),
+                crate::native_particles::effects_walk_on(&switches),
+                crate::native_first_person::walk_on(&switches),
+                crate::native_hud::walk_on(&switches),
+                crate::native_post::walk_on(&switches),
+            ]
+        };
+        assert_eq!(enabled(""), [true; 7]);
+        assert_eq!(enabled("impl.render.native=off,impl.render.native_hud_walk=on,impl.render.native_hud=on"), [false; 7]);
+        assert_eq!(enabled("impl.render.native_particles_walk=off"), [true, true, false, true, true, true, true]);
+        assert_eq!(enabled("impl.render.native_particles=off"), [true, true, false, false, true, true, true]);
+    }
 
     #[test]
     fn parse_and_lookup() {

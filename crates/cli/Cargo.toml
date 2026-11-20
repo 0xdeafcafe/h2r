@@ -47,8 +47,6 @@ host-data = { path = "../host-data" }
 bots = { path = "../bots" }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
 sim = { path = "../sim" }
-# h2 sim batch --fork: the snapshot store's variable.
-snapshot = { path = "../snapshot" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).

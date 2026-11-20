@@ -279,16 +279,13 @@ pub fn add_host_methods(agent: &agent::Agent) {
     );
 }
 
-/// `sim.*` (crates/agent's `sim`): its players are the process-wide local
+/// `sim.*` (crates/agent's `sim`): its players are the process's phantom
 /// bots ([`crate::sim_bots`]), and the session kind is read as `coop_probe`
 /// reads it.
 fn install_sim(agent: &agent::Agent, allow_bot_add: bool) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
-        Box::new(crate::sim_bots::LocalBots::new(
-            bots::local::global().clone(),
-            allow_bot_add,
-        )),
+        Box::new(crate::sim_bots::SimBots::new(allow_bot_add)),
         Some(Box::new(session_view)),
     )
 }

@@ -43,6 +43,10 @@ impl RuntimeMemory<'_> {
 }
 
 impl GuestMemory for RuntimeMemory<'_> {
+    fn take_write_watch(&mut self, id: runtime::WatchId) -> Result<Vec<runtime::DirtyRange>, runtime::WatchError> {
+        self.guest.take_dirty(id)
+    }
+
     fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
         self.guest
             .read_bytes(addr, buf, 1)
@@ -58,6 +62,10 @@ impl GuestMemory for RuntimeMemory<'_> {
 /// one trait reads it directly. A fault's reason is dropped ([`MemFault`]
 /// has none); [`invoke`] keeps it where it matters.
 impl GuestMemory for Guest {
+    fn take_write_watch(&mut self, id: runtime::WatchId) -> Result<Vec<runtime::DirtyRange>, runtime::WatchError> {
+        self.take_dirty(id)
+    }
+
     fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
         self.read_bytes(addr, buf, 1).map_err(|_| MemFault {
             addr,
@@ -71,6 +79,20 @@ impl GuestMemory for Guest {
             len: data.len() as u32,
             write: true,
         })
+    }
+}
+
+impl GuestMemory for runtime::guest::WritebackView<'_> {
+    fn take_write_watch(&mut self, id: runtime::WatchId) -> Result<Vec<runtime::DirtyRange>, runtime::WatchError> {
+        self.take_dirty(id)
+    }
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), MemFault> {
+        runtime::guest::WritebackView::read(self, addr, buf)
+            .map_err(|_| MemFault { addr, len: buf.len() as u32, write: false })
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
+        runtime::guest::WritebackView::write(self, addr, data)
+            .map_err(|_| MemFault { addr, len: data.len() as u32, write: true })
     }
 }
 

@@ -10,6 +10,8 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub use feature::scene_effect_instruction_entries;
+
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;
@@ -125,6 +127,8 @@ pub mod native_water_glue;
 pub mod native_world_glue;
 #[cfg(feature = "gpu")]
 mod native_world_layers_glue;
+#[cfg(feature = "gpu")]
+mod opaque_streams;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
@@ -779,13 +783,13 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
         }
         rt.edit_dispatch(|d| -> Result<()> {
-            for &(addr, f) in &rows {
-                let f = if trampoline {
-                    fallback::trampoline as runtime::GuestFn
-                } else {
-                    f
-                };
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, f)
+            if !trampoline {
+                d.register_generated_module(m, *version)
+                    .context("registering generated module")?;
+                return Ok(());
+            }
+            for &(addr, _) in &rows {
+                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
                     .with_context(|| format!("entry {addr:#x}"))?;
             }
             for r in resumes {
@@ -1089,7 +1093,7 @@ fn run_configured(
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
         None if replay.is_some() => (None, None),
-        None => (sim_glue::from_env(&opts.data_root)?, None),
+        None => (sim_glue::from_env()?, None),
     };
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
@@ -1129,11 +1133,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
-    let bots = opts.xapi
-        && (!host_light
-            || sim_mode.is_some()
-            || host.host_bots
-            || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
+    let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let slim_stamp = host_light.then(|| current_slim_stamp(xbe_bytes, dylib)).flatten();
@@ -1192,10 +1192,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        let unread = fallback::install_unread_targets(&loaded.runtime);
-        crate::log::note(&format!(
-            "fallback: {unread} unread jump-table targets registered"
-        ));
+        fallback::start_analysis(&loaded.runtime);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -1214,7 +1211,7 @@ fn run_configured(
         .then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
     let sim_network = sim_mode
         .as_ref()
-        .filter(|s| !replaying && s.matched().distributed())
+        .filter(|_| !replaying)
         .map(|_| sim_glue::hosted::Network::reserve())
         .transpose()?;
     let _live = if let Some(r) = &replay {
@@ -1315,7 +1312,7 @@ fn run_configured(
     #[cfg(feature = "desktop-runtime")]
     if opts.xapi && host.input.is_none() {
         if sim_mode.is_some() || !cfg!(feature = "local-io") {
-            // Start without a local pad. Sim can attach its bots below.
+            // A simulated host starts playerless. Its bots are network peers.
             host.input = Some(input::InputManager::new(Default::default())?);
         } else {
             let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
@@ -1480,7 +1477,10 @@ fn run_configured(
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     let level = match (host.level.take(), &sim_mode) {
         (Some(l), _) => Some(l),
-        (None, Some(s)) => s.level_request(&opts.disc, &opts.data_root)?,
+        (None, Some(s)) => {
+            s.select_map(&opts.disc, &opts.data_root)?;
+            None
+        }
         (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     if let Some(session) = &film {
@@ -1662,8 +1662,9 @@ fn run_configured(
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
             Some((view, scale)) => {
-                let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
+                let single = d3d_glue::single_copy(host.settings.as_deref())?;
+                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {scale}x; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
@@ -1688,14 +1689,16 @@ fn run_configured(
             None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
-        (true, None) => Some(d3d_glue::install_headless_for_profile(&loaded.runtime, interp, render_hooks)?),
+        (true, None) => Some(d3d_glue::install_headless_for_profile(
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(),
+        )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
     let mut d3d_calls = opts.d3d.then(|| {
         if host_light {
             d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)
         } else {
-            d3d_glue::install(&loaded.runtime)
+            d3d_glue::install_headless_cpu_for_profile(&loaded.runtime, render_hooks)
         }
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
@@ -1759,10 +1762,6 @@ fn run_configured(
             mixer.set_distance_reverb(features.switches().distance_reverb());
         }
     }
-    if bots && let Some(input) = host.input.as_mut() {
-        // Local bots' pads (docs/game/bots.md): after the host's own.
-        input.add_backend(Box::new(bots::local::global().backend()));
-    }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
     let host_pads = host.input.as_ref().map(input::InputManager::host_report);
@@ -1818,14 +1817,11 @@ fn run_configured(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline =
-        registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
-    // Sim mode skips the render it would pipeline (both implement the frame).
-    let pipeline = if sim_mode.is_some() || host_light {
-        pipeline.disabled("the world render is skipped (sim-frame)")
-    } else {
-        pipeline
-    };
+    let pipeline = registration::pipeline_for(
+        d3d_glue::pipeline_render(d3d_calls.as_ref()),
+        lockstep_on,
+        host_light,
+    );
     #[cfg(feature = "desktop-runtime")]
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
@@ -1894,6 +1890,11 @@ fn run_configured(
             host.perf_overlay.clone(),
         );
     }
+    if sim_mode.is_some() || host_light {
+        features
+            .add(&feature::sim_native::SimNative::new(&loaded.runtime))
+            .map_err(anyhow::Error::msg)?;
+    }
     registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {
         let frame = match &sim_mode {
@@ -1961,14 +1962,15 @@ fn run_configured(
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
     })?;
-    for line in plan.text().lines() {
-        eprintln!("feature plan: {line}");
-    }
+    let verbose_plan = feature::plan_verbose();
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
     if let Some(session) = &film {
         session.check_simulation_hooks(&plan, &installed)?;
+    }
+    for line in plan.startup_text(&installed, verbose_plan).lines() {
+        eprintln!("feature plan: {line}");
     }
     if let Some(audit) = &audit {
         if let Some(why) = installed.off_reason("host-audit") {
@@ -1989,9 +1991,6 @@ fn run_configured(
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
-    for n in &installed.notes {
-        eprintln!("feature plan: {n}");
-    }
     if let Some(a) = &agent {
         a.set_plan(&plan, &installed);
         if let Some(why) = installed.off_reason("agent") {
@@ -1999,17 +1998,19 @@ fn run_configured(
             eprintln!("agent: answering between slices only, no pausing: {why}");
         }
     }
-    if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
-        eprintln!("{}", skulls::report(&plan, &installed, store));
-    }
-    if skulls_mp_on {
-        eprintln!("{}", skulls_mp::report(&plan, &installed));
-    }
-    if skulls_custom_on {
-        eprintln!("{}", skulls_custom::report(&plan, &installed));
-    }
-    if health_on {
-        eprintln!("{}", health::report(&plan, &installed));
+    if verbose_plan {
+        if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+            eprintln!("{}", skulls::report(&plan, &installed, store));
+        }
+        if skulls_mp_on {
+            eprintln!("{}", skulls_mp::report(&plan, &installed));
+        }
+        if skulls_custom_on {
+            eprintln!("{}", skulls_custom::report(&plan, &installed));
+        }
+        if health_on {
+            eprintln!("{}", health::report(&plan, &installed));
+        }
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
@@ -2365,11 +2366,7 @@ fn run_configured(
                         telemetry.finish_sim(report).map_err(anyhow::Error::msg)
                     }
                 }),
-            Err(error) if uploading_sim || s.matched().distributed() => Err(error),
-            Err(error) => {
-                eprintln!("sim: {error:#}");
-                Ok(())
-            }
+            Err(error) => Err(error),
             Ok(_) => Ok(()),
         },
         None => Ok(()),
@@ -2609,8 +2606,12 @@ fn run_configured(
 
 /// Shared note sink (stderr when `H2_BOOT_VERBOSE` is set).
 pub mod log {
+    pub(crate) fn verbose() -> bool {
+        std::env::var_os("H2_BOOT_VERBOSE").is_some()
+    }
+
     pub fn note(s: &str) {
-        if std::env::var_os("H2_BOOT_VERBOSE").is_some() {
+        if verbose() {
             eprintln!("note: {s}");
         }
     }

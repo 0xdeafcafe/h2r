@@ -74,9 +74,9 @@ work only; it does not remove the per-particle property evaluation.
 `ImmediateAdmission` host and `DrawAdmission` implementation. When the
 switch is off it installs neither, avoiding extra D3D snapshot work.
 
-The original six hooks only observe, with no Rust continuation:
+The original six hooks run with the walks disabled and use no Rust continuation:
 particle entry, publication (`0x0023ef77`) and epilogue (`0x0023ef79`), and
-dynamic entry, post-builder/pre-publication (`0x0004b286`) and epilogue
+dynamic entry, post-builder/pre-publication (`0x0004b28c`) and epilogue
 (`0x0004b2a3`). At entry the decoder captures the producer inputs. Before
 publication, the adapter reads the completed dynamic bytes and drains
 only previously published commands, with no admission active. It then
@@ -228,8 +228,8 @@ also match a researched caller; another caller gives `UnownedCaller`.
 | Weather particle lines | `0x000391f0`, resolved LineList | Complete line pairs, bounded at 65,536 vertices |
 | Weather particle points | Same helper, resolved PointList | `WeatherPointRasterization`: point size/expansion is not represented by this renderer |
 
-Boundary pairs (before END / after END) are `0x00048497/0x0004849c`,
-`0x00048ae5/0x00048aea`, and `0x00038342/0x00038347`. Weather particles
+Boundary pairs (before END / after END) are `0x00048497/0x0004849d`,
+`0x00048ae5/0x00048aeb`, and `0x00038342/0x00038349`. Weather particles
 write END inline: observe before its put publication at `0x000396f7`, then
 finish at `0x000396f9`. Early-out paths never arm. The saved-caller stack
 offsets are `+0x24` and `+0x30` for the two billboard emitters.
@@ -337,3 +337,22 @@ Reference **and** Display receipts at 1x/2x. Query results and weather/beam
 simulation state must match the D3D baseline. Unsupported point and layered
 geometry draws must retain D3D receipts. No pixel-parity or performance
 claim is made before those runs.
+
+## Walking completed emission inputs
+
+`impl.render.native_particles_walk` tries the direct emitter at
+`0x0023ed5c` after the allocator succeeds. The native issue uses the live
+declaration and the same carried attributes as the inline quad. A
+successful reservation bypasses the emitter's guest packet and preserves
+the final default registers. A refused reservation restores the
+defaults and the guest emits the quad in place.
+
+`impl.render.native_effects_walk` admits the effect quad at
+`0x0004b252` from the builder's source and contrails at `0x0004b28c`
+from the builder's output. The return frame and caller arguments must
+still describe the same dynamic call. The quad's known builder only
+copies the four vertices. Contrails run their original builder before
+native issue. All switches default on under native rendering.
+`H2_NATIVE_PARTICLES_COMPARE` keeps the original emitters for its geometry
+pairing. The earlier effect leaves and query paths keep their documented
+admission and fallback boundaries.

@@ -8,20 +8,41 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::{BuildError, Builder, Feature, Manifest};
+use crate::{BuildError, Builder, Feature, Flow, Manifest};
 use engine::memory::GuestMemory;
 use engine::points::{Point, Sig};
+use timeline::native::{Metric, Stage};
 use native_render::camera::GuestRead;
 use native_render::effect_geometry::{self, DynamicCall};
 use native_render::particles::{self, Emission};
 
 pub const ID: &str = "native-particles";
 pub const SWITCH: &str = "impl.render.native_particles";
+pub const WALK_SWITCH: &str = "impl.render.native_particles_walk";
+pub const EFFECTS_WALK_SWITCH: &str = "impl.render.native_effects_walk";
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+}
+
+pub fn effects_walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, EFFECTS_WALK_SWITCH)
+}
+
 /// Lane-local named point; no changes to the sorted-transparent dispatcher.
 pub const EMIT: Point = Point::new(
     "PARTICLE_EMIT_QUAD",
     particles::EMIT_QUAD,
-    Sig::Opaque,
+    Sig::Site,
+    "docs/graphics/native-particles.md",
+);
+
+// After the allocator succeeds and the caller's preserved ESI/EDI have
+// been popped. ESP is still one word below the emitter's entry frame.
+pub const EMIT_READY: Point = Point::new(
+    "PARTICLE_EMIT_READY",
+    0x0023_ed5c,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 
@@ -30,31 +51,38 @@ pub const EMIT: Point = Point::new(
 pub const EMIT_PUBLISH: Point = Point::new(
     "PARTICLE_PUBLISH",
     0x0023_ef77,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const EMIT_END: Point = Point::new(
     "PARTICLE_END",
     0x0023_ef79,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC: Point = Point::new(
     "EFFECT_DYNAMIC",
     effect_geometry::DYNAMIC_DRAW,
-    Sig::Opaque,
+    Sig::Site,
+    "docs/graphics/native-particles.md",
+);
+// Shared with the UI rectangle hook. The planner keys points by identity.
+pub static DYNAMIC_QUAD_READY: Point = Point::new(
+    "EFFECT_QUAD_READY",
+    0x0004_b252,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC_PUBLISH: Point = Point::new(
     "EFFECT_PUBLISH",
-    0x0004_b286,
-    Sig::Opaque,
+    0x0004_b28c,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 pub const DYNAMIC_END: Point = Point::new(
     "EFFECT_END",
     0x0004_b2a3,
-    Sig::Opaque,
+    Sig::Site,
     "docs/graphics/native-particles.md",
 );
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +110,9 @@ pub struct Call {
 }
 
 pub trait Host: Send + Sync {
+    fn try_emit(&self, _mem: &mut dyn GuestMemory, _call: &Call) -> bool { false }
+    fn try_dynamic(&self, _mem: &mut dyn GuestMemory, _esp: u32, _data: Option<u32>) -> bool { false }
+
     /// Arm one call-scoped capture, not a global "next quad" match. False
     /// leaves the entire call on D3D. True is *armed*, never proof of a
     /// replaced draw. The adapter cancels on return with no matching draw,
@@ -142,25 +173,35 @@ impl GuestRead for Read<'_> {
 /// Always lets the guest execute. Snapshot creation and successful command
 /// recording are the adapter's responsibility, never inferred from arming.
 pub fn on_emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) {
+    let _ = emit(mem, esp, ebx, false);
+}
+
+fn emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32, walk: bool) -> bool {
     let ordinal = CALLS.fetch_add(1, Ordering::Relaxed);
     let compare = compare_budget();
     if compare.is_some_and(|budget| ordinal >= budget) {
-        return;
+        return false;
     }
     let mode = if compare.is_some() {
         Mode::Compare
     } else {
         Mode::Native
     };
+    if walk {
+        Stage::Particles.count(Metric::WalkExamined, 1);
+    }
     let emission = particles::read_emission(&Read(mem), esp, ebx);
     let Ok(emission) = emission else {
+        if walk {
+            Stage::Particles.count(Metric::WalkRefusedInputs, 1);
+        }
         if mode == Mode::Compare {
             eprintln!("native-particles-compare: call={ordinal} decode={emission:?}");
         }
-        return;
+        return false;
     };
     let Ok(return_address) = mem.u32(esp) else {
-        return;
+        return false;
     };
     DECODED.fetch_add(1, Ordering::Relaxed);
     let call = Call {
@@ -169,6 +210,13 @@ pub fn on_emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) {
         emission,
     };
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if walk {
+        if host.as_ref().is_some_and(|h| h.try_emit(mem, &call)) {
+            Stage::Particles.count(Metric::WalkSuppressed, 1);
+            return true;
+        }
+        Stage::Particles.count(Metric::WalkRefusedReservation, 1);
+    }
     let armed = host.as_ref().is_some_and(|h| h.arm(mem, &call, mode));
     if armed {
         ARMED.fetch_add(1, Ordering::Relaxed);
@@ -179,6 +227,7 @@ pub fn on_emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) {
             host.is_some()
         );
     }
+    false
 }
 
 pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
@@ -201,6 +250,9 @@ pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
             return;
         }
     };
+    if call.return_address == engine::points::ui_render::RECT_SUBMIT_RETURN {
+        return;
+    }
     let ordinal = DYNAMIC_CALLS.fetch_add(1, Ordering::Relaxed);
     let compare = compare_budget();
     if compare.is_some_and(|budget| ordinal >= budget) {
@@ -233,6 +285,34 @@ fn boundary(mem: &mut dyn GuestMemory, producer: Producer, data: Option<u32>) {
     }
 }
 
+struct DynamicTail {
+    edi: u32,
+    esi: u32,
+    ebx: u32,
+    return_slot: u32,
+}
+
+fn walk_dynamic(mem: &mut dyn GuestMemory, esp: u32, data: Option<u32>) -> Option<DynamicTail> {
+    let return_slot = esp.checked_add(12)?;
+    let tail = DynamicTail {
+        edi: mem.u32(esp).ok()?,
+        esi: mem.u32(esp + 4).ok()?,
+        ebx: mem.u32(esp + 8).ok()?,
+        return_slot,
+    };
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    host.try_dynamic(mem, return_slot, data).then_some(tail)
+}
+
+fn return_dynamic(c: &mut crate::Call<'_>, tail: DynamicTail) -> Result<Flow, runtime::GuestFault> {
+    c.cpu.edi = tail.edi;
+    c.cpu.esi = tail.esi;
+    c.cpu.ebx = tail.ebx;
+    c.cpu.esp = tail.return_slot;
+    c.cpu.eax = u32::MAX;
+    c.ret(20).map(Flow::Return)
+}
+
 pub struct NativeParticles;
 impl Feature for NativeParticles {
     fn manifest(&self) -> Manifest {
@@ -246,12 +326,30 @@ impl Feature for NativeParticles {
         if !on(b.switches()) {
             return Ok(());
         }
-        b.raw()
-            .observe_before(&EMIT, "native_particles_emit", |o| {
-                let mut mem = o.guest();
-                on_emit(&mut *mem, o.cpu.esp, o.cpu.ebx);
-            })
-            .context_only();
+        if walk_on(b.switches()) && compare_budget().is_none() {
+            b.raw().before(&EMIT_READY, "native_particles_walk_emit", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let Some(esp) = c.cpu.esp.checked_add(4) else { return Ok(Flow::Continue) };
+                let saved_ebp = {
+                    let mut mem = rt.memory();
+                    let Ok(ebp) = mem.u32(c.cpu.esp) else { return Ok(Flow::Continue) };
+                    if !emit(&mut *mem, esp, c.cpu.ebx, true) {
+                        return Ok(Flow::Continue);
+                    }
+                    ebp
+                };
+                c.cpu.ebp = saved_ebp;
+                c.cpu.esp = esp;
+                c.ret(u32::from(particles::STACK_BYTES)).map(Flow::Return)
+            }).context_only().optional();
+        } else {
+            b.raw()
+                .observe_before(&EMIT, "native_particles_emit", |o| {
+                    let mut mem = o.guest();
+                    on_emit(&mut *mem, o.cpu.esp, o.cpu.ebx);
+                })
+                .context_only();
+        }
         b.raw()
             .observe_before(&DYNAMIC, "native_particles_dynamic", |o| {
                 let mut mem = o.guest();
@@ -263,13 +361,35 @@ impl Feature for NativeParticles {
                 let mut mem = o.guest();
                 boundary(&mut *mem, Producer::Particle, Some(0));
             })
-            .context_only();
+            .context_only()
+            .optional();
+        let walk_effects = effects_walk_on(b.switches()) && compare_budget().is_none();
+        if walk_effects {
+            b.raw().before(&DYNAMIC_QUAD_READY, "native_effects_walk_quad", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let tail = walk_dynamic(&mut *rt.memory(), c.cpu.esp, None);
+                match tail {
+                    Some(tail) => return_dynamic(c, tail),
+                    None => Ok(Flow::Continue),
+                }
+            }).context_only().optional();
+        }
         b.raw()
-            .observe_before(&DYNAMIC_PUBLISH, "native_particles_dynamic_publish", |o| {
-                let mut mem = o.guest();
-                boundary(&mut *mem, Producer::Dynamic, Some(o.cpu.esi));
+            .before(&DYNAMIC_PUBLISH, "native_particles_dynamic_publish", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let data = c.cpu.esi;
+                if walk_effects
+                    && let Some(tail) = walk_dynamic(&mut *mem, c.cpu.esp, Some(data))
+                {
+                    drop(mem);
+                    return return_dynamic(c, tail);
+                }
+                boundary(&mut *mem, Producer::Dynamic, Some(data));
+                Ok(Flow::Continue)
             })
-            .context_only();
+            .context_only()
+            .optional();
         for (point, producer) in [
             (&EMIT_END, Producer::Particle),
             (&DYNAMIC_END, Producer::Dynamic),
@@ -279,7 +399,8 @@ impl Feature for NativeParticles {
                     let mut mem = o.guest();
                     boundary(&mut *mem, producer, None);
                 })
-                .context_only();
+                .context_only()
+                .optional();
         }
         crate::native_effects::build(b);
         b.snapshot(crate::SnapshotPolicy::Stateless);

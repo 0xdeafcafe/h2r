@@ -15,7 +15,7 @@ use tags::shader::StageStates;
 use crate::gpu::{Image, texture};
 use crate::look::{PassLook, Stage, WorldPass};
 use crate::pass_state::PassState;
-use crate::world::{LightmapKey, ModelRows, Owner, World, WorldVertex};
+use crate::world::{LightmapKey, ModelRows, Owner, World, WorldDraw, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
 /// (`d3d::VIEW_CONSTANTS`).
@@ -154,6 +154,15 @@ pub fn compile_pass(
     microcode: &[u8],
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
 ) -> Result<MaterialProgram, String> {
+    compile_with_textures(look, microcode, alpha_test, stage_dims(look))
+}
+
+fn stage_dims(look: &PassLook) -> [Option<TextureDim>; 4] {
+    look.textures.map(|stage| (stage != Stage::Empty).then_some(TextureDim::D2))
+}
+
+fn compile_with_textures(look: &PassLook, microcode: &[u8],
+    alpha_test: Option<(wgpu::CompareFunction, u8)>, dims: [Option<TextureDim>; 4]) -> Result<MaterialProgram, String> {
     if look.per_draw_inputs {
         // Resolved with the instance's inputs only; per-draw ones (object
         // functions, lighting, time) are not evaluated here.
@@ -162,7 +171,7 @@ pub fn compile_pass(
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
-        dims: look.textures.map(|s| (s != Stage::Empty).then_some(TextureDim::D2)),
+        dims,
         // Only a stage's own bitmap is stored biased here.
         biased: look.textures.map(|s| matches!(s, Stage::Bitmap { .. })),
         stage_states: &look.stage_states,
@@ -204,9 +213,14 @@ pub fn compile_pass(
 /// - [`world_parity`]: nothing the D3D path takes from device state the
 ///   native pass does not have (fog, bump matrices, the eye, borders).
 pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgram, String> {
+    compile_section(pass, microcode, stage_dims(&pass.look))
+}
+
+/// Compile with the texture shapes of this implementation's actual images.
+pub fn compile_section(pass: &WorldPass, microcode: &[u8], dims: [Option<TextureDim>; 4]) -> Result<MaterialProgram, String> {
     world_parity(&pass.look)?;
     world_constants_read(&pass.look, microcode)?;
-    let mut p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+    let mut p = compile_with_textures(&pass.look, microcode, pass.state.alpha_test, dims)?;
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
@@ -246,6 +260,11 @@ pub fn compile_pass_rigid(
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     microcode: &[u8],
 ) -> Result<RigidProgram, String> {
+    compile_section_rigid(look, alpha_test, microcode, stage_dims(look))
+}
+
+pub fn compile_section_rigid(look: &PassLook, alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    microcode: &[u8], dims: [Option<TextureDim>; 4]) -> Result<RigidProgram, String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("rigid vertex program: {e:?}"))?;
     let read = constants_read(&program)?;
     if !(MODEL_ROWS..MODEL_ROWS + 3).all(|c| read.contains(&(c as u8))) {
@@ -255,7 +274,7 @@ pub fn compile_pass_rigid(
     if let Some(c) = read.into_iter().find(|&c| !set(c)) {
         return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
     }
-    let p = compile_pass(look, microcode, alpha_test)?;
+    let p = compile_with_textures(look, microcode, alpha_test, dims)?;
     let words = microcode[4..4 + 16 * program.instructions.len()]
         .chunks_exact(4)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -386,6 +405,16 @@ const ADDRESS_BORDER: u8 = 4;
 /// `page` reports whether it decoded. One part that cannot be drawn keeps
 /// the whole material on the D3D path.
 pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> Result<(), String>) -> Result<(), String> {
+    for d in world.draws.iter().filter(|d| d.material == material) {
+        part_fit(d, program.inputs, program, page)?;
+    }
+    Ok(())
+}
+
+/// Validate this part against the vertex classification that will draw
+/// it. Two sections can use the same material with different streams.
+pub fn part_fit(d: &WorldDraw, inputs: u16, program: &MaterialProgram,
+    page: &dyn Fn(LightmapKey) -> Result<(), String>) -> Result<(), String> {
     const NAMES: [&str; 7] = [
         "positions",
         "texture coordinates",
@@ -400,18 +429,13 @@ pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: 
         .iter()
         .zip(&program.dims)
         .any(|(s, d)| *s == Stage::Lightmap && d.is_some());
-    for d in world.draws.iter().filter(|d| d.material == material) {
-        let missing = program.inputs & !d.inputs;
-        if missing != 0 {
-            let n = missing.trailing_zeros() as usize;
-            return Err(format!("a part has no {} (v{n})", NAMES.get(n).unwrap_or(&"stream")));
-        }
-        if lightmap {
-            let Some(key) = d.lightmap else {
-                return Err("a part has no lightmap page".into());
-            };
-            page(key)?;
-        }
+    let missing = inputs & !d.inputs;
+    if missing != 0 {
+        let n = missing.trailing_zeros() as usize;
+        return Err(format!("a part has no {} (v{n})", NAMES.get(n).unwrap_or(&"stream")));
+    }
+    if lightmap {
+        page(d.lightmap.ok_or("a part has no lightmap page")?)?;
     }
     Ok(())
 }
@@ -457,6 +481,12 @@ pub(crate) struct Translated {
 /// The vertex program and pixel shader through `shaders`, and the uniforms
 /// with the instance's constants; or why the pass stays on the D3D path.
 pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
+    translate_pass_with_pixel(p, psh::translate)
+}
+
+pub(crate) fn translate_pass_with_pixel(
+    p: &PassParts<'_>, translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
+) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
     if unsupplied != 0 {
@@ -486,7 +516,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
         }
         options.alpha_kill[n] = s.alpha_kill != 0;
     }
-    let ps = psh::translate(&def, &options);
+    let ps = translate_pixel(&def, &options);
     if !ps.warnings.is_empty() {
         return Err(format!("pixel shader: {}", ps.warnings.join("; ")));
     }
@@ -624,14 +654,16 @@ pub fn describe_image(image: &Image, bc: bool) -> String {
 /// Stores the signed channels of an RGBA8 image as `s + 128`, so that
 /// filtering interpolates signed values (`shaders::psh::PixelOptions::color_sign`).
 pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
-    let flip: [u8; 4] = signed.map(|s| if s { 0x80 } else { 0 });
-    if flip == [0; 4] {
-        return;
+    if signed.iter().any(|&s| s) {
+        // BC blocks no longer represent the biased channels.
+        image.blocks = None;
+        bias_levels(&mut image.rgba, &mut image.mips, signed);
     }
-    // A signed channel keeps a DXT image off BC, as on the D3D path
-    // (`gfx::texture::DecodeOptions::signed`).
-    image.blocks = None;
-    for level in std::iter::once(&mut image.rgba).chain(image.mips.iter_mut()) {
+}
+
+fn bias_levels(rgba: &mut [u8], mips: &mut [Vec<u8>], signed: [bool; 4]) {
+    let flip = signed.map(|s| if s { 0x80 } else { 0 });
+    for level in std::iter::once(rgba).chain(mips.iter_mut().map(Vec::as_mut_slice)) {
         for px in level.chunks_exact_mut(4) {
             for (b, f) in px.iter_mut().zip(flip) {
                 *b ^= f;
@@ -897,16 +929,14 @@ impl Gpu {
             ],
         });
         let mut entries = Vec::new();
-        for (n, d) in program.dims.iter().enumerate() {
-            if d.is_none() {
-                continue;
-            }
+        for (n, &dim) in program.dims.iter().enumerate() {
+            let Some(dim) = dim else { continue };
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 2 * n as u32,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: crate::light_gpu::view_dimension(dim),
                     multisampled: false,
                 },
                 count: None,
@@ -1268,6 +1298,18 @@ impl ProgramSet {
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
+        Self::with_layered(device, queue, world, programs, stage_image, lightmap, &HashMap::new())
+    }
+
+    pub fn with_layered(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        world: &World,
+        programs: HashMap<u16, MaterialProgram>,
+        stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
+        lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
+        layered: &HashMap<(map::TagId, u32), crate::light_gpu::LayeredImage>,
+    ) -> Self {
         let mut materials = HashMap::new();
         let mut rigid = HashMap::new();
         let mut images = HashMap::new();
@@ -1275,6 +1317,21 @@ impl ProgramSet {
             let g = Gpu::with_images(device, program, &mut |stage, signed| {
                 let Stage::Bitmap { bitmap, image } = stage else { return None };
                 images.entry((bitmap, image, signed)).or_insert_with(|| {
+                    if let Some(image) = layered.get(&(bitmap, image)) {
+                        let biased;
+                        let pixels = if signed.iter().any(|&s| s) {
+                            biased = {
+                                let mut pixels = image.clone();
+                                bias_levels(&mut pixels.rgba, &mut pixels.mips, signed);
+                                pixels
+                            };
+                            &biased
+                        } else {
+                            image
+                        };
+                        return Some((crate::light_gpu::layered_texture(device, queue, pixels, "native world stage"),
+                            format!("{:?} {}x{}", pixels.dim, pixels.width, pixels.height)));
+                    }
                     let mut decoded = stage_image(stage)?;
                     bias_signed(&mut decoded, signed);
                     Some((
@@ -2106,6 +2163,9 @@ mod tests {
             Err("a part's lightmap page does not decode".to_string())
         };
         assert_eq!(world_fit(&world, 1, &p, &all), Ok(()));
+        assert!(part_fit(&world.draws[1], p.inputs, &p, &all).is_ok());
+        assert!(part_fit(&world.draws[2], p.inputs, &p, &all).is_err());
+        assert!(part_fit(&world.draws[2], p.inputs & !(1 << 5), &p, &all).is_ok());
         assert_eq!(world_fit(&world, 2, &p, &all), Err("a part has no lighting vectors (v5)".to_string()));
         assert_eq!(world_fit(&world, 3, &p, &all), Err("a part has no lightmap coordinates (v6)".to_string()));
         assert_eq!(world_fit(&world, 1, &p, &missing), Err("a part's lightmap page does not decode".to_string()));

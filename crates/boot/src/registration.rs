@@ -263,14 +263,12 @@ pub(crate) fn register_core_film(
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
-    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
-    // signed in on the players screen, their views and listeners hidden.
-    // `H2_BOTS` adds brains at boot; idle with none.
+    // Bots (docs/game/bots.md): phantom peers in a session this console
+    // hosts. Idle with none.
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
-        bot_glue::add_from_env(i.data_root, i.settings.as_deref());
         let bot_tape = film.filter(|f| f.has_bot_tape());
         bots_on = bot_glue::install_film(features, i.data_root, bot_tape).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
@@ -316,13 +314,17 @@ pub struct LateInputs<'a> {
     pub data_root: &'a Path,
 }
 
-/// The pipelined render as the plan gets it: off for a lockstep run, which
-/// compares serial runs.
+/// Light hosts replace the frame entry with the skip implementation.
+/// Full headless simulations keep the entry and can opt in for hash comparisons.
 pub fn pipeline_for(
-    pipeline: feature::pipeline_render::PipelineRender, lockstep_on: bool,
+    pipeline: feature::pipeline_render::PipelineRender,
+    lockstep_on: bool,
+    host_light: bool,
 ) -> feature::pipeline_render::PipelineRender {
     if lockstep_on {
         pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
+    } else if host_light {
+        pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
     }
@@ -407,6 +409,8 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&feature::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    features.add(&feature::sim_physics::NativePhysics)
+        .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features
@@ -419,7 +423,7 @@ pub(crate) fn register_late_for_profile(
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
-    // H2_PIPELINE_RENDER=1: the render front-end one frame behind the
+    // impl.render.pipelined_frame: the render front-end one frame behind the
     // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
     // prototype"). Pipelined and serial runs are not lockstep-compatible.
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
@@ -490,6 +494,9 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&feature::native_residual::NativeResidual)
             .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
+        features
+            .add(&feature::native_scene_lists::NativeSceneLists)
+            .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features
@@ -517,6 +524,9 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&feature::native_lights::NativeLights)
             .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+        features
+            .add(&feature::native_lights::walk::NativeLightWalk)
+            .map_err(|e| anyhow::anyhow!("native light walk: {e}"))?;
         // Shader-driven gels: observe target-13 production before light consumption.
         features
             .add(&feature::native_gels::NativeGels)
@@ -543,13 +553,8 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&feature::native_post::NativePost)
             .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
-        // The HUD's and the UI's screen draws on the native GPU renderer
-        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
-        // turns them off for the comparison against the D3D path, or
-        // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
-        // context-only hooks on the screen-quad batch (text) and the HUD shader
-        // quad. Its host (native_hud_glue) draws accepted quads natively and
-        // pairs the plans for D3D draws in compare mode.
+        // Native UI producers and the ordered menu, HUD and loading callbacks.
+        // impl.render.native_ui=off returns these draws to the ordinary device path.
         features
             .add(&feature::native_hud::NativeHud)
             .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;

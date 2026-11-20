@@ -22,7 +22,8 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::view::players;
 
 use crate::guest;
-use crate::local::PadSource;
+use crate::pad_source::PadSource;
+use crate::think::{Mode, Source, Thinker, lock_source};
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.
@@ -111,7 +112,10 @@ impl std::error::Error for Error {}
 
 struct Phantom {
     info: PhantomInfo,
-    source: Box<dyn PadSource>,
+    /// Shared with a think in flight (`crate::think`).
+    source: Source,
+    /// Bumped by every input reset, so a think from before it is dropped.
+    generation: u64,
     /// Its peer is in the host's session.
     made: bool,
     buttons: action::GatherState,
@@ -126,7 +130,8 @@ impl Phantom {
     fn reset_input(&mut self) {
         self.buttons = Default::default();
         self.uplink.clear();
-        self.source.reset_input();
+        self.generation = self.generation.wrapping_add(1);
+        lock_source(&self.source).reset_input();
     }
 }
 
@@ -168,6 +173,10 @@ struct Books {
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
     gone: Vec<[u8; 6]>,
+    /// How pads are sampled (`crate::think`, docs/game/bots.md §5.5).
+    thinker: Thinker,
+    /// The batch sampled at a tick of a hosted game: each phantom's pad.
+    batch: Option<Batch>,
     /// Phantoms join only once a game runs and leave when it ends (the
     /// lobby join off, [`LOBBY_ENV`]).
     game_only: bool,
@@ -175,6 +184,13 @@ struct Books {
     /// matchmaking life cycle, types 6 to 9), never the party's lobby
     /// ([`Phantoms::set_match_only`]).
     match_only: bool,
+}
+
+/// One tick's batched pads ([`Mode::Batched`]).
+struct Batch {
+    session: u32,
+    tick: u32,
+    pads: Vec<(PhantomHandle, input::host::HostPadState)>,
 }
 
 /// Why a Clankermatch's phantom waits outside the match.
@@ -236,7 +252,8 @@ impl Phantoms {
                 player: None,
                 state: State::Pending,
             },
-            source,
+            source: std::sync::Arc::new(Mutex::new(source)),
+            generation: 0,
             made: false,
             buttons: Default::default(),
             uplink,
@@ -336,9 +353,22 @@ impl Phantoms {
         self.lock()
             .list
             .iter()
-            .find(|p| p.info.handle == handle)?
-            .source
-            .brain_view()
+            .find(|p| p.info.handle == handle)
+            .and_then(|p| lock_source(&p.source).brain_view())
+    }
+
+    /// How phantom pads are sampled ([`crate::think::Mode`]): serial by
+    /// default, or [`crate::think::THREADS_ENV`] and
+    /// [`crate::think::PIPELINE_ENV`] for [`global`]. A think in flight
+    /// finishes first.
+    pub fn set_think_mode(&self, mode: Mode) {
+        let mut b = self.lock();
+        b.batch = None;
+        b.thinker.set_mode(mode);
+    }
+
+    pub fn think_mode(&self) -> Mode {
+        self.lock().thinker.mode()
     }
 
     /// Marks a phantom failed (the game thread could not make it).
@@ -436,11 +466,14 @@ impl Phantoms {
         };
         if b.hosted_game != hosted_game {
             b.opening_fade = None;
+            b.batch = None;
             if b.hosted_game.is_some() {
                 for p in &mut b.list {
                     p.reset_input();
                 }
             }
+            // Pipelined thinks for the game that ended say nothing more.
+            b.thinker.settle();
         }
         b.hosted_game = hosted_game;
         let live = session::live_session(&*m);
@@ -653,6 +686,7 @@ pub fn global() -> &'static Phantoms {
     G.get_or_init(|| {
         let p = Phantoms::default();
         p.set_lobby(lobby_wanted(std::env::var(LOBBY_ENV).ok().as_deref()));
+        p.set_think_mode(Mode::from_env());
         p
     })
 }

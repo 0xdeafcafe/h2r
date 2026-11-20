@@ -1,6 +1,6 @@
 //! Clankers in custom games (docs/game/bots.md, section 7 and stage 7): the
 //! settings, the Clankers page, its row on a custom game's Game Setup, and
-//! the driver that keeps that many local bots.
+//! the driver that keeps that many phantom bots.
 //!
 //! **The settings** (`clankers.*`) are kept in the profile store like any
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]), so they persist and
@@ -25,12 +25,11 @@
 //! stack. Every hook is ordered after the Halo 1 row's, and each passes any
 //! other action on.
 //!
-//! **The driver** ([`Driver`]) keeps `min(count, free ports)` brains in
-//! [`bots::local::global`] while `clankers.enabled` is on, on ports 1 to 3
-//! that no other bot asked for, and takes its own off when it goes off.
-//! They join on the players screen like `H2_BOTS` bots. A difficulty
-//! change reaches the bots it already has at their next frame; a count
-//! change adds or takes off bots at once.
+//! **The driver** ([`Driver`]) keeps `count` brains in
+//! [`bots::phantom::global`] while `clankers.enabled` is on, each a remote
+//! peer of a session this console hosts, and takes its own off when it
+//! goes off. A difficulty change reaches the bots it already has at their
+//! next frame; a count change adds or takes off bots at once.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,8 +41,8 @@ use runtime::GuestFault;
 use runtime::guest::Permissions;
 use settings::{Apply, Choice, Def, Kind, Scope, Store, Tier, Unit, Value};
 
-use bots::local::{self, BotHandle, Local};
 use bots::mind::Skill;
+use bots::pad_source::{Frame, PadSource, Sampled};
 use bots::phantom::{Identity, PhantomHandle, Phantoms};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
@@ -100,17 +99,15 @@ const fn choice(value: i64, name: &'static str, label: &'static str) -> Choice {
 pub static ENABLED: Def = def(
     "clankers.enabled",
     "Clankers",
-    "Bots join custom games: by default the first 3 use this machine's free controller \
-     ports, the rest as players of their own; all show in the pregame lobby \
-     (docs/game/bots.md).",
+    "Bots join custom games as remote peers of this machine's session, never on a \
+     controller port; all show in the pregame lobby (docs/game/bots.md).",
     Kind::Bool,
     Value::Bool(false),
 );
 pub static COUNT: Def = def(
     "clankers.count",
     "Count",
-    "How many bots join, up to 15: by default the first 3 use free controller ports, the \
-     rest as players of their own.",
+    "How many bots join, up to 15, all remote peers of this machine's session.",
     Kind::Int {
         valid: 1..=15,
         steps: &[],
@@ -265,11 +262,12 @@ pub fn page(store: Arc<Store>) -> KitScreen {
 
 // --- The driver -----------------------------------------------------------
 
-/// The skill of a bot on `port` at difficulty `d` (a [`DIFFICULTY`] value):
-/// Mixed is Normal, Heroic and Easy on ports 1, 2 and 3.
-pub fn skill(d: i64, port: u8) -> Skill {
+/// The skill of the bot with Mixed slot `slot` (1 to 3 in turn) at
+/// difficulty `d` (a [`DIFFICULTY`] value): Mixed is Normal, Heroic and
+/// Easy in turn.
+pub fn skill(d: i64, slot: u8) -> Skill {
     let d = if d == MIXED {
-        [1, 2, 0][usize::from(port.saturating_sub(1)) % 3]
+        [1, 2, 0][usize::from(slot.saturating_sub(1)) % 3]
     } else {
         d
     };
@@ -444,9 +442,6 @@ struct Fill {
     bots: usize,
     /// The playlist's teams (0 free for all).
     teams: u32,
-    /// How many of the bots may be local bots ([`MATCH_LOCAL`]); the rest
-    /// are phantoms.
-    local: usize,
     schedule: Vec<std::time::Duration>,
     started: std::time::Instant,
     /// How many are in now.
@@ -464,18 +459,8 @@ struct Fill {
 /// (a few seconds, §9.5), short enough that leaving ends it.
 const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How many of a Clankermatch's bots go on this console's controller
-/// ports: none (docs/game/bots.md §8.4, "Phantoms only"). Every bot is a
-/// phantom, a remote peer in the match's target session, as the players a
-/// search finds are. A local bot is a local user, and the game's
-/// local-player pass (`0x65770`) adds a signed-in local user to every live
-/// session, the party's squad session too, so it showed in the human's
-/// party (the user's run on f5d3010c); and the matchmade start checks each
-/// local player's controller, which a bot's port fails ("Player 2's
-/// controller is not plugged in", back to the lobby).
-pub const MATCH_LOCAL: usize = 0;
-
-/// What the driver seats: the page's bots, or a Clankermatch's.
+/// What the driver seats: the page's bots, or a Clankermatch's. Every bot
+/// is a phantom peer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Seating {
     /// Bots wanted in all (the roster's count).
@@ -483,11 +468,8 @@ struct Seating {
     /// Of those, how many are in now.
     seated: usize,
     /// A Clankermatch: nobody is seated before its roster comes (or is
-    /// refused), and no more than `local` of the seated are local bots.
+    /// refused).
     fill: bool,
-    /// The most local bots: the page's count, or a Clankermatch's
-    /// [`MATCH_LOCAL`].
-    local: usize,
     /// The teams to balance the phantoms over (0: none).
     teams: u32,
     /// The roster's skill: the page's difficulty's, or none for a
@@ -499,17 +481,12 @@ struct Seating {
 }
 
 impl Seating {
-    fn of(want: Want, fill: Option<&Fill>, all_phantom: bool) -> Seating {
+    fn of(want: Want, fill: Option<&Fill>) -> Seating {
         match fill {
             Some(f) => Seating {
                 count: f.bots,
                 seated: f.seated.min(f.bots),
                 fill: true,
-                local: if all_phantom {
-                    0
-                } else {
-                    f.local.min(f.seated)
-                },
                 teams: f.teams,
                 skill: None,
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
@@ -518,7 +495,6 @@ impl Seating {
                 count: want.count,
                 seated: want.count,
                 fill: false,
-                local: if all_phantom { 0 } else { want.count },
                 teams: 0,
                 skill: request_skill(want.difficulty),
                 host_team: 0,
@@ -580,22 +556,14 @@ struct Clanker {
     taunts: Arc<AtomicBool>,
     /// Its taunt with Taunts on: the default, or a roster bot's own.
     taunt: f32,
-    /// Identity and taunt to restore when a local bot goes offline.
-    fallback: (u64, f32),
     /// The page's Glitches (a [`GLITCHES`] value; shared by every
     /// Clanker of the driver).
     glitches: Arc<AtomicU8>,
 }
 
-impl local::PadSource for Clanker {
+impl PadSource for Clanker {
     fn brain_view(&self) -> Option<bots::BrainView> {
         Some(self.brain.view())
-    }
-
-    fn set_roster_personality(&mut self, personality: Option<(u64, f32)>) {
-        let (seed, taunt) = personality.unwrap_or(self.fallback);
-        self.brain.set_identity_seed(seed);
-        self.taunt = taunt;
     }
 
     fn reset_input(&mut self) {
@@ -606,7 +574,30 @@ impl local::PadSource for Clanker {
         self.brain.phantom_latency()
     }
 
-    fn pad(&mut self, f: &local::Frame<'_>) -> input::host::HostPadState {
+    fn pad(&mut self, f: &Frame<'_>) -> input::host::HostPadState {
+        self.follow_page();
+        self.brain.pad(f)
+    }
+
+    // The split sample (bots::think): the page is read with the guest, the
+    // brain thinks wherever it is sent.
+    fn observe(&mut self, f: &Frame<'_>) -> Sampled {
+        self.follow_page();
+        self.brain.observe(f)
+    }
+
+    fn think(&mut self) -> input::host::HostPadState {
+        self.brain.think()
+    }
+
+    fn conclude(&mut self) {
+        self.brain.conclude();
+    }
+}
+
+impl Clanker {
+    /// The page's skill, taunts and glitches, as they are now.
+    fn follow_page(&mut self) {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
         self.brain.set_skill(want);
         self.brain.mind.emote.taunt = if self.taunts.load(Ordering::Relaxed) {
@@ -616,7 +607,6 @@ impl local::PadSource for Clanker {
         };
         self.brain.mind.glitches =
             bots::glitches::Glitches::from_index(self.glitches.load(Ordering::Relaxed));
-        self.brain.pad(f)
     }
 }
 
@@ -664,43 +654,37 @@ impl Want {
     }
 }
 
-/// Where one of the page's bots is.
+/// Where one of the page's bots is: a phantom peer, the `n`th of the
+/// page's bots (from 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Seat {
-    /// A local bot on this controller port.
-    Port(u8, BotHandle),
-    /// A phantom peer, the `n`th of the page's bots (from 1).
-    Phantom(u32, PhantomHandle),
+pub struct Seat {
+    number: u32,
+    handle: PhantomHandle,
 }
 
 /// One of the driver's bots.
 struct Own {
     seat: Seat,
     skill: Arc<AtomicU8>,
-    /// A phantom's xuid; a local bot's bot account's, once a roster gave
-    /// it one (0 none).
+    /// A phantom's xuid, once a roster gave it one (0 none).
     xuid: u64,
     /// A roster bot: its skill is the server's, not the page's.
     rostered: bool,
 }
 
-/// Keeps the page's bots: local bots on free ports first, then, with
-/// phantoms, phantom peers for the rest (docs/game/bots.md, stage 6).
+/// Keeps the page's bots: phantom peers, every one (docs/game/bots.md,
+/// stage 6).
 ///
 /// With Live ([`Driver::with_rosters`]) and a session this console hosts,
 /// every bot is one of the server's bot accounts (§9.5): the driver asks
 /// for a roster of the whole count (`POST /v1/games/bots`) and, once it
-/// comes, the local bots take its first bots as their accounts (they go on
-/// Live as them, not as the human's guests) and the phantoms run the rest
-/// in place of the host-made "Clanker N"s. It asks again when the count,
-/// the difficulty or the session changes; a new roster replaces the old.
-/// Without Live, or until a roster comes (or when none does), local bots
-/// have no account (on Live, the human's guests) and phantoms are
-/// host-made: local xuids, which no game record ever carries.
+/// comes, the phantoms run its bots in place of the host-made "Clanker
+/// N"s. It asks again when the count, the difficulty or the session
+/// changes; a new roster replaces the old. Without Live, or until a
+/// roster comes (or when none does), the phantoms are host-made: local
+/// xuids, which no game record ever carries.
 pub struct Driver {
-    all_phantom: bool,
-    local: Local,
-    phantoms: Option<Phantoms>,
+    phantoms: Phantoms,
     own: Mutex<Vec<Own>>,
     taunts: Arc<AtomicBool>,
     glitches: Arc<AtomicU8>,
@@ -722,28 +706,20 @@ pub struct Driver {
     host_team: Mutex<Option<u8>>,
 }
 
-/// The bot accounts among `own`: local bots with one, and rostered
-/// phantoms whose players the game made (`joined`).
+/// The bot accounts among `own`: rostered phantoms whose players the game
+/// made (`joined`).
 fn session_bots_of(own: &[Own], joined: impl Fn(PhantomHandle) -> bool) -> Vec<live_proto::Xuid> {
     own.iter()
-        .filter(|o| {
-            o.xuid != 0
-                && match o.seat {
-                    Seat::Port(..) => true,
-                    Seat::Phantom(_, h) => o.rostered && joined(h),
-                }
-        })
+        .filter(|o| o.xuid != 0 && o.rostered && joined(o.seat.handle))
         .map(|o| live_proto::Xuid(o.xuid))
         .collect()
 }
 
 impl Driver {
-    /// Local bots only.
-    pub fn new(local: Local) -> Self {
+    /// Phantom peers only.
+    pub fn new(phantoms: Phantoms) -> Self {
         Driver {
-            all_phantom: false,
-            local,
-            phantoms: None,
+            phantoms,
             own: Mutex::new(Vec::new()),
             taunts: Arc::new(AtomicBool::new(true)),
             glitches: Arc::new(AtomicU8::new(0)),
@@ -755,14 +731,6 @@ impl Driver {
             reported: AtomicBool::new(false),
             fill: Mutex::new(None),
             host_team: Mutex::new(None),
-        }
-    }
-
-    /// Local bots, then phantoms.
-    pub fn with_phantoms(local: Local, phantoms: Phantoms) -> Self {
-        Driver {
-            phantoms: Some(phantoms),
-            ..Driver::new(local)
         }
     }
 
@@ -950,58 +918,41 @@ impl Driver {
     }
 
     /// The bots the next game runs with, for its record (docs/game/bots.md
-    /// §6): every Clanker goes out as a bot. Local bots by their ports (the
-    /// driver's and any other on the books, `sim.*`'s too), phantoms by
-    /// machine id. While a server roster is in force (its session, while
+    /// §6): every Clanker goes out as a bot, each a phantom by its machine
+    /// id. While a server roster is in force (its session, while
     /// this console still hosts it), the game names that session and each
     /// rostered phantom carries its rostered xuid; no other bot has one.
     /// `None` when there are no bots and no roster.
     pub fn bots_in_force(&self) -> Option<telemetry::Bots> {
         let session_id = self.roster_in_force();
         let own = self.own.lock().unwrap_or_else(|e| e.into_inner());
-        // Only bit 0..7 can be a port.
-        let mut ports = (self.local.port_mask() & 0xff) as u8;
         let mut machines = Vec::new();
-        let mut accounts = Vec::new();
         for o in own.iter() {
-            match o.seat {
-                Seat::Port(p, _) => {
-                    ports |= 1u8.checked_shl(u32::from(p)).unwrap_or(0);
-                    if o.xuid != 0 && session_id.is_some() {
-                        accounts.push((p, live_proto::Xuid(o.xuid)));
-                    }
-                }
-                Seat::Phantom(_, h) => {
-                    let xuid = if o.rostered && session_id.is_some() {
-                        o.xuid
-                    } else {
-                        0
-                    };
-                    machines.push((bots::phantom::machine_id(h), live_proto::Xuid(xuid)));
-                }
-            }
+            let xuid = if o.rostered && session_id.is_some() {
+                o.xuid
+            } else {
+                0
+            };
+            machines.push((bots::phantom::machine_id(o.seat.handle), live_proto::Xuid(xuid)));
         }
         drop(own);
         // Phantoms someone else added (`sim.player.add`): bots, no xuid.
-        for p in self.phantoms.iter().flat_map(|ph| ph.list()) {
+        for p in self.phantoms.list() {
             if !machines.iter().any(|(m, _)| *m == p.machine) {
                 machines.push((p.machine, live_proto::Xuid(0)));
             }
         }
-        if ports == 0 && machines.is_empty() && session_id.is_none() {
+        if machines.is_empty() && session_id.is_none() {
             return None;
         }
         Some(telemetry::Bots {
             session_id,
             machines,
-            ports,
-            accounts,
         })
     }
 
     /// The bot accounts in the hosted game while a server roster is in
-    /// force: the local bots' accounts, and the rostered phantoms the game
-    /// made players for. Empty with no roster in force. The hosted Live
+    /// force: rostered phantoms with in-game players. Empty with no roster in force. The hosted Live
     /// session is told of them as players (§9.5), so it counts every
     /// player the game has.
     pub fn session_bots(&self) -> Vec<live_proto::Xuid> {
@@ -1010,8 +961,8 @@ impl Driver {
         }
         let joined: Vec<PhantomHandle> = self
             .phantoms
-            .iter()
-            .flat_map(|ph| ph.list())
+            .list()
+            .into_iter()
             .filter(|p| p.state == bots::phantom::State::Joined)
             .map(|p| p.handle)
             .collect();
@@ -1061,50 +1012,33 @@ impl Driver {
         let seating = Seating::of(
             want,
             self.fill.lock().unwrap_or_else(|e| e.into_inner()).as_ref(),
-            self.all_phantom,
         );
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         self.taunts.store(want.taunts, Ordering::Relaxed);
         self.glitches.store(want.glitches, Ordering::Relaxed);
-        // Fewer: the last added go first. A Clankermatch's local bots are
-        // its first, so they are the last to go.
+        // Fewer: the last added go first.
         while own.len() > seating.seated {
             let o = own.pop().expect("more than wanted");
             self.take_off(o.seat, &mut log);
         }
-        let port_count = |own: &[Own]| {
-            own.iter()
-                .filter(|o| matches!(o.seat, Seat::Port(..)))
-                .count()
-        };
-        while port_count(&own) > seating.local {
-            let i = own
-                .iter()
-                .rposition(|o| matches!(o.seat, Seat::Port(..)))
-                .expect("a local bot");
-            let o = own.remove(i);
-            self.take_off(o.seat, &mut log);
-        }
         for o in own.iter().filter(|o| !o.rostered) {
             o.skill.store(
-                skill_index(skill(want.difficulty, seat_port(o.seat))),
+                skill_index(skill(want.difficulty, mixed_slot(o.seat.number))),
                 Ordering::Relaxed,
             );
         }
         self.wants_roster
             .store(seating.count > 0, Ordering::Relaxed);
-        // With Live, every bot is a server bot account: the local bots take
-        // the roster's first, the phantoms the rest.
-        let mut roster = if seating.count > 0 {
+        // With Live, every bot is a server bot account.
+        let roster = if seating.count > 0 {
             self.rostered(seating.count, seating.skill, seating.teams > 1, &mut log)
         } else {
             None
         }
         .map(Vec::into_iter);
         // A Clankermatch waits for its roster rather than seat host-made
-        // bots that the roster would replace (or local bots that would go
-        // on Xbox Live as the human's guests first); refused, it takes them.
+        // bots that the roster would replace; refused, it takes them.
         let hold = seating.fill
             && roster.is_none()
             && !self
@@ -1112,105 +1046,16 @@ impl Driver {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .refused;
-        // More local bots: on the lowest ports no bot asked for. The page's
-        // count fills them before any phantom; a Clankermatch fills up to
-        // its `local` first.
-        while !hold
-            && if seating.fill {
-                port_count(&own) < seating.local
-            } else {
-                own.len() < seating.local
-            }
-        {
-            let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
-            let Some(port) = (1..=3u8).find(|p| !taken.contains(p)) else {
-                break;
-            };
-            let k = skill(want.difficulty, port);
-            let (src, s) = self.clanker(k, 0xc1a4 ^ u64::from(port), bots::emote::DEFAULT_TAUNT);
-            let name = format!("Clanker {port}");
-            match self.local.add(port, &name, Box::new(src)) {
-                Ok(h) => {
-                    log.push(format!("{name} on ({k:?})"));
-                    // A Clankermatch's local bots go before its phantoms,
-                    // so they take the roster's first bots.
-                    let at = own
-                        .iter()
-                        .position(|o| matches!(o.seat, Seat::Phantom(..)))
-                        .unwrap_or(own.len());
-                    own.insert(
-                        at,
-                        Own {
-                            seat: Seat::Port(port, h),
-                            skill: s,
-                            xuid: 0,
-                            rostered: false,
-                        },
-                    );
-                }
-                Err(e) => {
-                    log.push(format!("{name}: {e}"));
-                    break;
-                }
-            }
-        }
-        let ports = port_count(&own);
-        let wanted = if hold {
-            0
-        } else {
-            seating.seated.saturating_sub(ports)
-        };
-        for o in own.iter_mut() {
-            let Seat::Port(port, h) = o.seat else {
-                continue;
-            };
-            let entry = roster.as_mut().and_then(Iterator::next);
-            // A Clankermatch's local bot plays at its roster bot's skill
-            // (the server's, from the human's level), as a phantom would.
-            if let Some(r) = entry.as_ref().filter(|_| seating.fill) {
-                o.skill.store(skill_index(r.skill), Ordering::Relaxed);
-            }
-            let personality = entry.as_ref().map(|r| (r.seed, r.taunt));
-            let account = entry.map(|r| bots::guest::BotAccount {
-                xuid: r.identity.xuid,
-                gamertag: r.identity.gamertag,
-            });
-            let xuid = account.as_ref().map_or(0, |a| a.xuid);
-            if xuid != o.xuid {
-                match &account {
-                    Some(a) => log.push(format!(
-                        "Clanker {port} is {} on Xbox Live (bot account {:016x})",
-                        a.gamertag, a.xuid
-                    )),
-                    None => log.push(format!("Clanker {port} has no bot account")),
-                }
-            }
-            if self
-                .local
-                .set_roster_account(h, account, personality)
-                .is_ok()
-            {
-                o.xuid = xuid;
-            }
-        }
+        let wanted = if hold { 0 } else { seating.seated };
         if wanted == 0 {
             return log;
         }
-        let Some(ph) = &self.phantoms else {
-            log.push(format!(
-                "{} asked for, {} on this machine: no free port",
-                want.count,
-                own.len()
-            ));
-            return log;
-        };
         // The phantoms: the server's roster's bots, else host-made ones.
         let mut seats: Vec<(RosterSeat, bool)> = match roster {
             Some(r) => r.map(|s| (s, true)).collect(),
-            None => (0..seating.count.saturating_sub(ports))
-                .map(|i| {
-                    let n = (ports + i + 1) as u32;
-                    let k = skill(want.difficulty, ((n - 1) % 3 + 1) as u8);
+            None => (1..=seating.count as u32)
+                .map(|n| {
+                    let k = skill(want.difficulty, mixed_slot(n));
                     (
                         RosterSeat {
                             identity: Identity {
@@ -1237,11 +1082,6 @@ impl Driver {
             // its level) and the bots the roster put on a team are fixed;
             // the rest are balanced around them.
             let mut fixed = vec![(seating.host_team, mean)];
-            // A Clankermatch's local bots are the human's party: on its
-            // team (a console's players play on one team).
-            if seating.fill {
-                fixed.extend(std::iter::repeat_n((seating.host_team, mean), ports));
-            }
             fixed.extend(seats.iter().filter_map(|(s, _)| Some((s.team?, k(s)))));
             let free: Vec<f32> = seats
                 .iter()
@@ -1256,26 +1096,16 @@ impl Driver {
         seats.truncate(wanted);
         // The phantoms there already stay while they are the first of
         // these; otherwise (a new roster) they all go.
-        let have: Vec<(u64, bool)> = own
-            .iter()
-            .filter(|o| matches!(o.seat, Seat::Phantom(..)))
-            .map(|o| (o.xuid, o.rostered))
-            .collect();
-        let keep = have.len() <= seats.len()
-            && have
-                .iter()
-                .zip(&seats)
-                .all(|(h, (s, r))| h.0 == s.identity.xuid && h.1 == *r);
+        let keep = own.len() <= seats.len()
+            && own.iter().zip(&seats).all(|(have, (seat, rostered))| {
+                have.xuid == seat.identity.xuid && have.rostered == *rostered
+            });
         if !keep {
-            while let Some(i) = own
-                .iter()
-                .rposition(|o| matches!(o.seat, Seat::Phantom(..)))
-            {
-                let o = own.remove(i);
-                self.take_off(o.seat, &mut log);
+            while let Some(bot) = own.pop() {
+                self.take_off(bot.seat, &mut log);
             }
         }
-        let start = if keep { have.len() } else { 0 };
+        let start = own.len();
         for (seat, rostered) in seats.into_iter().skip(start) {
             let n = own.len() as u32 + 1;
             let (src, s) = self.clanker(seat.skill, seat.seed, seat.taunt);
@@ -1285,11 +1115,11 @@ impl Driver {
                 if rostered { ", rostered" } else { "" }
             );
             let xuid = seat.identity.xuid;
-            match ph.add(seat.identity, seat.team, Box::new(src)) {
+            match self.phantoms.add(seat.identity, seat.team, Box::new(src)) {
                 Ok(h) => {
                     log.push(format!("{name} on ({:?})", seat.skill));
                     own.push(Own {
-                        seat: Seat::Phantom(n, h),
+                        seat: Seat { number: n, handle: h },
                         skill: s,
                         xuid,
                         rostered,
@@ -1311,29 +1141,19 @@ impl Driver {
             skill: Arc::clone(&s),
             taunts: Arc::clone(&self.taunts),
             taunt,
-            fallback: (seed, taunt),
             glitches: Arc::clone(&self.glitches),
         };
         (c, s)
     }
 
     fn take_off(&self, seat: Seat, log: &mut Vec<String>) {
-        let (name, r) = match seat {
-            Seat::Port(port, h) => (
-                format!("Clanker {port}"),
-                self.local.remove(h).map_err(|e| e.to_string()),
-            ),
-            Seat::Phantom(n, h) => (
-                self.phantoms
-                    .as_ref()
-                    .and_then(|p| p.list().into_iter().find(|i| i.handle == h))
-                    .map_or_else(|| phantom_name(n), |i| i.identity.gamertag),
-                self.phantoms
-                    .as_ref()
-                    .map_or(Ok(()), |p| p.remove(h).map_err(|e| e.to_string())),
-            ),
-        };
-        match r {
+        let name = self
+            .phantoms
+            .list()
+            .into_iter()
+            .find(|bot| bot.handle == seat.handle)
+            .map_or_else(|| phantom_name(seat.number), |bot| bot.identity.gamertag);
+        match self.phantoms.remove(seat.handle) {
             Ok(()) => log.push(format!("{name} off")),
             Err(e) => log.push(format!("{name}: {e}")),
         }
@@ -1414,18 +1234,14 @@ impl Driver {
                     // "Phantoms only"): they join the match's target
                     // session as peers, never the party, and count toward
                     // the playlist's fewest players, so the game starts it.
-                    let local = MATCH_LOCAL;
                     log.push(format!(
-                        "clankermatch: {local} local bots join the lobby on free controller ports; \
-                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\"), \
-                         in the match only",
-                        bots - local
+                        "clankermatch: {bots} phantoms join the lobby as peers \
+                         (\"bots: phantom ... joins\"), in the match only"
                     ));
                     *fill = Some(Fill {
                         hopper: mark.hopper_id,
                         bots,
                         teams: mark.teams,
-                        local,
                         schedule,
                         started: now,
                         seated: 0,
@@ -1457,28 +1273,17 @@ impl Driver {
         // party's lobby before the search or after the game. Set before
         // any phantom is seated, and cleared only once they are gone.
         let filling = self.filling();
-        if let (Some(ph), true) = (&self.phantoms, filling) {
-            ph.set_match_only(true);
+        if filling {
+            self.phantoms.set_match_only(true);
         }
         if changed {
             let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
             log.extend(self.apply(want.unwrap_or(Want::OFF)));
         }
-        if let (Some(ph), false) = (&self.phantoms, filling) {
-            ph.set_match_only(false);
+        if !filling {
+            self.phantoms.set_match_only(false);
         }
         log
-    }
-
-    /// The ports of the local bots it keeps.
-    pub fn ports(&self) -> Vec<u8> {
-        self.seats()
-            .into_iter()
-            .filter_map(|s| match s {
-                Seat::Port(p, _) => Some(p),
-                Seat::Phantom(..) => None,
-            })
-            .collect()
     }
 
     /// Every bot it keeps, in the order added.
@@ -1496,13 +1301,10 @@ fn phantom_name(n: u32) -> String {
     format!("Clanker {n}")
 }
 
-/// The port a seat's Mixed skill follows: its own, or for the `n`th bot
-/// as a phantom, 1 to 3 in turn.
-fn seat_port(s: Seat) -> u8 {
-    match s {
-        Seat::Port(p, _) => p,
-        Seat::Phantom(n, _) => ((n - 1) % 3 + 1) as u8,
-    }
+/// The Mixed-difficulty slot a seat follows: the `n`th bot's, 1 to 3 in
+/// turn.
+fn mixed_slot(number: u32) -> u8 {
+    ((number - 1) % 3 + 1) as u8
 }
 
 /// The driver [`install`] started, for [`frame`] and telemetry.
@@ -1568,7 +1370,6 @@ fn build_soon_on(was: bool, now: bool) {
 /// Starts `driver` over `store`: matches it now and on every change.
 pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
     let d = Arc::new_cyclic(|me| Driver {
-        all_phantom: crate::setting_defs::bots_all_phantom(store),
         me: me.clone(),
         ..driver
     });
@@ -1781,8 +1582,7 @@ pub fn install(
         .add(&SetupRow { page })
         .map_err(|e| anyhow::anyhow!("clankers row: {e}"))?;
     // The driver lives as long as the store's change callbacks hold it.
-    let mut driver =
-        Driver::with_phantoms(local::global().clone(), bots::phantom::global().clone());
+    let mut driver = Driver::new(bots::phantom::global().clone());
     if let Some(hle) = live {
         driver = driver.with_rosters(hle);
     }

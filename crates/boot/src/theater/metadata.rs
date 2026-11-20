@@ -247,7 +247,7 @@ impl Capture {
             active.insert(seat, datum);
             if let Some(player) = joining {
                 if self.descriptor.host_id.is_none()
-                    && matches!(player.kind, SeatKind::Local | SeatKind::Bot)
+                    && player.kind == SeatKind::Local
                     && s.is_none()
                 {
                     self.descriptor.host_id = player
@@ -324,16 +324,9 @@ impl Capture {
         let port = u8::try_from(g.u32(row.addr.wrapping_add(layout::PLAYER_CONTROLLER))?)
             .ok()
             .filter(|&v| v < 4);
-        let bot = port.and_then(|port| {
-            bots::local::list()
-                .into_iter()
-                .find(|b| b.port == Some(port))
-        });
         let phantom = bots::phantom::handle_of(machine);
         let kind = if phantom.is_some() {
             SeatKind::Phantom
-        } else if bot.is_some() {
-            SeatKind::Bot
         } else if row.local_user(g).is_ok_and(|u| (0..4).contains(&u)) {
             SeatKind::Local
         } else {
@@ -341,10 +334,6 @@ impl Capture {
         };
         let xuid = session
             .and_then(|s| session_xuid(g, s, machine, row.addr))
-            .or_else(|| {
-                bot.as_ref()
-                    .and_then(|b| bots::local::global().account_of(b.handle).map(|a| a.xuid))
-            })
             .or_else(|| {
                 phantom.and_then(|h| {
                     bots::phantom::list()
@@ -355,16 +344,12 @@ impl Capture {
             })
             .or_else(|| port.and_then(|p| self.live.upgrade().map(|h| h.user(usize::from(p)))))
             .filter(|&id| id != 0);
-        let bot_params = if matches!(kind, SeatKind::Bot | SeatKind::Phantom) {
-            self.sim_bots.iter().find(|b| match b.port {
-                Some(p) => Some(p) == port,
-                None => xuid == Some(live_proto::bots::local_xuid(u32::from(b.seat)+1).0),
-            }).map(|b| json!({"skill": format!("{:?}", b.skill), "seed": b.seed, "tuning": b.params}))
-            .or_else(|| bot.and_then(|b| bots::local::global().brain_view(b.handle))
-                .or_else(|| phantom.and_then(|h| bots::phantom::global().brain_view(h))).map(brain_parameters))
-        } else {
-            None
-        };
+        let bot_params = phantom.and_then(|h| {
+            self.sim_bots.iter()
+                .find(|b| xuid == Some(live_proto::bots::local_xuid(u32::from(b.seat) + 1).0))
+                .map(|b| json!({"skill": format!("{:?}", b.skill), "seed": b.seed, "tuning": b.params}))
+                .or_else(|| bots::phantom::global().brain_view(h).map(brain_parameters))
+        });
         Ok(Seat {
             seat,
             name,

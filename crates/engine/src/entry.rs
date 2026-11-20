@@ -42,7 +42,7 @@ use std::task::{Context, Poll, Waker};
 
 use crate::memory::{GuestMemory, MemFault};
 
-/// The integer registers at an entry, or after a guest call returns.
+/// The integer registers and the XMM0 return register at entry or after a guest call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Regs {
     pub eax: u32,
@@ -53,6 +53,7 @@ pub struct Regs {
     pub ebp: u32,
     pub esi: u32,
     pub edi: u32,
+    pub xmm0: u128,
 }
 
 /// One call into the guest: the target, the registers to set (unset ones
@@ -68,6 +69,9 @@ pub struct GuestCall {
     pub ebx: Option<u32>,
     pub esi: Option<u32>,
     pub edi: Option<u32>,
+    pub xmm0: Option<u128>,
+    pub xmm1: Option<u128>,
+    pub xmm2: Option<u128>,
     pub args: Vec<u32>,
 }
 
@@ -102,6 +106,18 @@ impl GuestCall {
         self.edi = Some(v);
         self
     }
+    pub fn xmm0(mut self, v: u128) -> Self {
+        self.xmm0 = Some(v);
+        self
+    }
+    pub fn xmm1(mut self, v: u128) -> Self {
+        self.xmm1 = Some(v);
+        self
+    }
+    pub fn xmm2(mut self, v: u128) -> Self {
+        self.xmm2 = Some(v);
+        self
+    }
     /// Stack arguments, first argument first.
     pub fn args(mut self, args: impl IntoIterator<Item = u32>) -> Self {
         self.args = args.into_iter().collect();
@@ -116,11 +132,19 @@ impl GuestCall {
 pub struct Ret {
     pub eax: u32,
     pub pop: u16,
+    /// A native sorted loop may complete additional iterations in one call.
+    /// Its caller's ESI must then point at the last entry it consumed.
+    pub esi: Option<u32>,
 }
 
 impl Ret {
     pub fn new(eax: u32, pop: u16) -> Self {
-        Ret { eax, pop }
+        Ret { eax, pop, esi: None }
+    }
+
+    pub fn with_esi(mut self, esi: u32) -> Self {
+        self.esi = Some(esi);
+        self
     }
 }
 

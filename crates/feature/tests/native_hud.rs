@@ -11,36 +11,78 @@ use feature::native_hud::{self, Host, HudQuadCall, NativeHud};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 
-fn placed(switches: &str) -> Option<feature::plan::Plan> {
-    let mut r = Registry::new(Switches::parse(switches).unwrap());
-    r.add(&NativeHud).unwrap();
-    let plan = r.build(&Base).unwrap();
-    plan.text().contains("native_hud_quad").then_some(plan)
+fn plan(switches: &str) -> feature::plan::Plan {
+    let mut registry = Registry::new(Switches::parse(switches).unwrap());
+    registry.add(&NativeHud).unwrap();
+    registry.build(&Base).unwrap()
 }
 
 #[test]
-fn the_switch_places_it_and_every_chain_runs_on_the_render_thread() {
-    if native_hud::compare_spec().is_none() {
-        assert!(
-            placed("impl.render.native_hud=off").is_none(),
-            "off: nothing"
-        );
-    }
-    let plan = placed("impl.render.native_hud=on").expect("placed");
-    for point in [
-        "SCREEN_QUADS_BEGIN",
-        "SCREEN_QUAD",
-        "SCREEN_QUADS_END",
-        "HUD_SHADER_QUAD",
+fn the_native_ui_switch_defaults_on_and_the_master_disables_it() {
+    for (spec, expected) in [
+        ("", true),
+        ("impl.render.native_ui=on", true),
+        ("impl.render.native_ui=off", false),
+        ("impl.render.native_hud=off", false),
+        ("impl.render.native=off,impl.render.native_ui=on", false),
+        ("impl.render.native_ui=on,impl.render.native=off", false),
     ] {
-        let chain = plan
-            .chains
-            .values()
-            .find(|c| c.point.name == point)
+        assert_eq!(native_hud::on(&Switches::parse(spec).unwrap()), expected);
+    }
+    assert!(plan("impl.render.native=off,impl.render.native_ui=on").chains.is_empty());
+}
+
+#[test]
+fn the_ui_hooks_can_run_on_the_render_thread() {
+    let plan = plan("");
+    let points: &[&str] = if native_hud::compare_spec().is_some() {
+        &["SCREEN_QUADS_BEGIN", "SCREEN_QUAD", "SCREEN_QUADS_END", "HUD_SHADER_QUAD"]
+    } else {
+        &[
+            "UI_RENDER_LAYERS", "UI_ITEM_CALL", "UI_ITEM_RETURN", "UI_SCREEN_QUAD_READY",
+            "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY",
+        ]
+    };
+    for point in points {
+        let chain = plan.chains.values().find(|c| c.point.name == *point)
             .unwrap_or_else(|| panic!("placed at {point}"));
         assert!(!chain.needs_shadow(), "{point}: nothing after the body");
         assert!(chain.render_thread().is_ok(), "{point}");
     }
+}
+
+#[test]
+fn ui_shares_the_loading_and_effect_points_with_other_features() {
+    use engine::points::ui_render::LOADING_DRAW;
+    use feature::native_particles::{DYNAMIC_QUAD_READY, NativeParticles, compare_budget};
+    use feature::render_timing::RenderTiming;
+
+    let mut registry = Registry::new(Switches::parse(
+        "render-timing,impl.render.native_ui=on,impl.render.native_particles=on,impl.render.native_effects_walk=on",
+    ).unwrap());
+    registry.add(&NativeHud).unwrap();
+    registry.add(&NativeParticles).unwrap();
+    registry.add(&RenderTiming::new()).unwrap();
+    let plan = registry.build(&Base).unwrap();
+    assert!(std::ptr::eq(plan.chains[&LOADING_DRAW.base].point, &LOADING_DRAW));
+    if native_hud::compare_spec().is_none() && compare_budget().is_none() {
+        assert!(std::ptr::eq(
+            plan.chains[&DYNAMIC_QUAD_READY.base].point,
+            &DYNAMIC_QUAD_READY,
+        ));
+        let text = plan.text();
+        assert!(text.contains("native_ui_inline_rect"));
+        assert!(text.contains("native_effects_walk_quad"));
+    }
+}
+
+#[test]
+fn scene_effect_instruction_entries_are_unique() {
+    let mut seen = std::collections::HashSet::new();
+    for address in feature::scene_effect_instruction_entries() {
+        assert!(seen.insert(address), "duplicate entry {address:#010x}");
+    }
+    assert!(seen.contains(&feature::native_particles::DYNAMIC_QUAD_READY.base));
 }
 
 #[test]

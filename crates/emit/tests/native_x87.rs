@@ -11,24 +11,28 @@ use x87::{
 const WRAPPER: &str = r#"
 #undef H2_X87_NATIVE
 #define H2_X87_NATIVE 1
+#undef H2_X87_TOP
+#define H2_X87_TOP 1
 #include "h2gen.h"
 H2_EXPORT uint32_t n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
-    return h2x87n_arith(s, op, dst, kind, src);
+    /* All eight real TOPs occur in the sweep. Check the constant-slot
+     * path at TOP=7 and the dynamic fallback at every other TOP. */
+    return H2X87_AT(7u, arith, s, op, dst, kind, src);
 }
 H2_EXPORT uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
-H2_EXPORT uint32_t n_load(X87Abi *s, uint64_t bits) { return h2x87n_ld_f64(s, bits); }
+H2_EXPORT uint32_t n_load(X87Abi *s, uint64_t bits) { return H2X87_AT(5u, ld_f64, s, bits); }
 H2_EXPORT uint32_t n_copy(X87Abi *s, uint32_t i) { return h2x87n_ld_st(s, i); }
-H2_EXPORT uint32_t n_load32(X87Abi *s, uint32_t b) { return h2x87n_ld_f32(s, b); }
-H2_EXPORT uint32_t n_ld_i32(X87Abi *s, int32_t v) { return h2x87n_ld_i32(s, v); }
-H2_EXPORT uint32_t n_ld_i16(X87Abi *s, int16_t v) { return h2x87n_ld_i16(s, v); }
+H2_EXPORT uint32_t n_load32(X87Abi *s, uint32_t b) { return H2X87_AT(5u, ld_f32, s, b); }
+H2_EXPORT uint32_t n_ld_i32(X87Abi *s, int32_t v) { return H2X87_AT(5u, ld_i32, s, v); }
+H2_EXPORT uint32_t n_ld_i16(X87Abi *s, int16_t v) { return H2X87_AT(5u, ld_i16, s, v); }
 H2_EXPORT uint32_t n_const(X87Abi *s, uint32_t i) { return h2x87n_ld_const(s, i); }
 H2_EXPORT uint32_t n_st_st(X87Abi *s, uint32_t i, uint32_t pop) { return h2x87n_st_st(s, i, pop); }
-H2_EXPORT uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return h2x87n_store_commit(s, sw, pop); }
+H2_EXPORT uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return H2X87_AT(5u, store_commit, s, sw, pop); }
 H2_EXPORT uint32_t n_store64(X87Abi *s, uint32_t i, uint64_t *v, uint16_t *sw) {
-    return h2x87n_st_f64(s, i, v, sw);
+    return H2X87_AT(5u, st_f64, s, i, v, sw);
 }
 H2_EXPORT uint32_t n_store(X87Abi *s, uint32_t i, uint32_t *v, uint16_t *sw) {
-    return h2x87n_st_f32(s, i, v, sw);
+    return H2X87_AT(5u, st_f32, s, i, v, sw);
 }
 H2_EXPORT uint32_t n_eligible(X87Abi *s) {
     double v; return h2x87n_mode(s) && h2x87n_get(s, h2x87n_phys(s, 0), &v);
@@ -261,6 +265,55 @@ fn transport_store_status_and_host_rounding_fallback() {
             got, want,
             "host directed rounding must take the integer fallback"
         );
+    }
+}
+
+#[test]
+fn ext80_store_rounds_all_significand_bits_in_each_mode() {
+    type Store32 = unsafe extern "C" fn(&X87Abi, u32, &mut u32, &mut u16) -> u32;
+    type Store64 = unsafe extern "C" fn(&X87Abi, u32, &mut u64, &mut u16) -> u32;
+    // SAFETY: the wrappers read the live state and write only to the two
+    // supplied result slots. The library outlives the symbols.
+    let (store32, store64) = unsafe {
+        (native().get::<Store32>(b"n_store").unwrap(), native().get::<Store64>(b"n_store64").unwrap())
+    };
+    for pc in 0..4 {
+        for rc in 0..4 {
+            for mask in [0x1f, 0x3f] {
+                let cw = pc << 8 | rc << 10 | mask;
+                for frac in [23, 52] {
+                    let half = 1u64 << (62 - frac);
+                    for sig in [1 << 63, (1 << 63) + half - 1, (1 << 63) + half,
+                        (1 << 63) + half + 1, (1 << 63) + 3 * half, u64::MAX] {
+                        for exp in [16383 - 1023, 16383 - 1022, 16383 - 127, 16383 - 126,
+                            16383, 16383 + 127, 16383 + 128, 16383 + 1023] {
+                            for sign in [0, 0x8000] {
+                                let mut s = state(F80::new(exp | sign, sig), F80::ZERO, cw, 5);
+                                s.status &= !0x20;
+                                s.status |= 0x200; // C1 must also clear on an exact store.
+                                let (mut v, mut sw) = (0, 0);
+                                if frac == 23 {
+                                    let (code, expected) = abi::st_f32(&s, 0);
+                                    let actual = unsafe { store32(&s, 0, &mut v, &mut sw) };
+                                    assert_eq!(actual, code);
+                                    if code == abi::status::OK {
+                                        assert_eq!((v, sw), (expected.value, expected.status));
+                                    }
+                                } else {
+                                    let mut v64 = 0;
+                                    let (code, expected) = abi::st_f64(&s, 0);
+                                    let actual = unsafe { store64(&s, 0, &mut v64, &mut sw) };
+                                    assert_eq!(actual, code);
+                                    if code == abi::status::OK {
+                                        assert_eq!((v64, sw), (expected.value, expected.status));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

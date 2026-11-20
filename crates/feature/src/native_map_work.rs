@@ -125,6 +125,13 @@ impl MapWork {
     }
 }
 
+// Also distinguishes a reload into the same BSP address on revert or switch.
+static BSP_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn bsp_generation() -> u64 {
+    BSP_GENERATION.load(Ordering::Acquire)
+}
+
 static MAP: MapWork = MapWork::new();
 pub(crate) static BSP_LOAD_PENDING: AtomicBool = AtomicBool::new(true);
 
@@ -136,6 +143,7 @@ pub fn reset() {
     crate::native_water::forget_pending();
     crate::native_objects::forget_pending();
     MAP.reset();
+    BSP_GENERATION.fetch_add(1, Ordering::Release);
     request_bsp_load();
 }
 
@@ -187,7 +195,10 @@ impl Feature for NativeMapWork {
         if needs_bsp {
             for point in [&points::BSP_SWITCH, &points::GAME_STATE_REVERT] {
                 b.raw()
-                    .observe_after(point, "native_bsp_reload", |_| request_bsp_load())
+                    .observe_after(point, "native_bsp_reload", |_| {
+                        BSP_GENERATION.fetch_add(1, Ordering::Release);
+                        request_bsp_load();
+                    })
                     .optional();
             }
             b.raw()

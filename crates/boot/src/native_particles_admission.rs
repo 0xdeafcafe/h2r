@@ -17,6 +17,7 @@ use native_render::particle_gpu::*;
 use native_render::particles::{self, Declaration, DrawIdentity, Vertex};
 
 use crate::native_lights_glue::DeviceMemory;
+use timeline::native::{Metric, Stage};
 
 #[derive(Clone)]
 enum Source {
@@ -78,6 +79,59 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
     }
 }
 impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
+    fn try_emit(&self, mem: &mut dyn GuestMemory, call: &Call) -> bool {
+        let data = [[0i16, 0, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0], [0, 1, 0, 0]]
+            .into_iter().flatten().flat_map(i16::to_le_bytes).collect();
+        let carried = call.emission.attributes.map(|r| r.map(|v| v.map(f32::from_bits)));
+        let pending = Pending {
+            source: Source::Particle(call.clone()),
+            mode: Mode::Native,
+            id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
+        };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
+        self.device.lock().is_ok_and(|mut device| {
+            device.try_native_inline_draw(
+                &mut DeviceMemory(mem), PrimitiveType::QuadList, data, &carried, &candidate,
+            ).ok() == Some(true)
+        })
+    }
+
+    fn try_dynamic(&self, mem: &mut dyn GuestMemory, esp: u32, data: Option<u32>) -> bool {
+        let pending = self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).waiting.clone();
+        let Some(mut pending) = pending else { return false };
+        let Source::Dynamic(call, bytes) = &mut pending.source else { return false };
+        let data = match (call.kind, data) {
+            (effect_geometry::Kind::EffectQuad, None) => call.context,
+            (effect_geometry::Kind::Contrail, Some(data)) => data,
+            _ => return false,
+        };
+        Stage::Effects.count(Metric::WalkExamined, 1);
+        if effect_geometry::read_call(&Read(mem), esp, call.stride) != Ok(*call) {
+            Stage::Effects.count(Metric::WalkRefusedInputs, 1);
+            return false;
+        }
+        let Ok(generated) = effect_geometry::read_generated(&Read(mem), data, call) else {
+            Stage::Effects.count(Metric::WalkRefusedInputs, 1);
+            return false;
+        };
+        let Some(primitive) = PrimitiveType::from_xbox(call.primitive) else {
+            Stage::Effects.count(Metric::WalkRefusedInputs, 1);
+            return false;
+        };
+        *bytes = generated.clone();
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
+        let drawn = self.device.lock().is_ok_and(|mut device| {
+            device.try_native_inline_draw(
+                &mut DeviceMemory(mem), primitive, generated, &[None; 16], &candidate,
+            ).ok() == Some(true)
+        });
+        if drawn {
+            self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).waiting = None;
+        }
+        Stage::Effects.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
+        drawn
+    }
+
     fn arm(&self, _: &mut dyn GuestMemory, call: &Call, mode: Mode) -> bool {
         self.arm(Source::Particle(call.clone()), mode)
     }
@@ -315,6 +369,29 @@ impl DrawAdmission for Admission {
             .unwrap_or_else(|e| e.into_inner())
             .issuing
             .take()?;
+        self.plan(snapshot, &pending, Stage::Particles)
+    }
+}
+
+struct Direct<'a> {
+    admission: &'a Admission,
+    pending: Pending,
+    stage: Stage,
+}
+
+impl DrawAdmission for Direct<'_> {
+    fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        self.admission.plan(snapshot, &self.pending, self.stage)
+    }
+}
+
+impl Admission {
+    fn plan(
+        &self,
+        snapshot: &DrawSnapshot<'_>,
+        pending: &Pending,
+        stage: Stage,
+    ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let result = geometry(snapshot.draw, &pending.source);
         if pending.mode == Mode::Compare {
             eprintln!(
@@ -371,7 +448,7 @@ impl DrawAdmission for Admission {
         }
         Some((
             ExternalPlan {
-                stage: timeline::native::Stage::Particles,
+                stage,
                 view: 4,
                 ranges: 1,
                 slots: Vec::new(),

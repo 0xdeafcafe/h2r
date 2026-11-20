@@ -5,7 +5,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use std::sync::{Arc, Mutex};
 
 use assets::{Region, ResourceFiles};
-use map::{Map, ResourceFile};
+use map::{Map, ResourceFile, TagId};
 use native_render::load::Error;
 use vfs::{FileSource, Vfs};
 
@@ -15,6 +15,17 @@ pub(crate) trait MapReader: Read + Seek + Send {}
 impl<R: Read + Seek + Send> MapReader for R {}
 
 pub(crate) type NativeMap = Map<Box<dyn MapReader>>;
+
+/// Resolve a live datum by its map tag index when the salt differs.
+pub(crate) fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
+    if let Ok(tag) = map.tag(TagId(datum)) {
+        return Some(tag.id);
+    }
+    map.tags()
+        .iter()
+        .find(|tag| tag.id.0 & 0xffff == datum & 0xffff)
+        .map(|tag| tag.id)
+}
 
 static VFS: Mutex<Option<Arc<Mutex<Vfs>>>> = Mutex::new(None);
 

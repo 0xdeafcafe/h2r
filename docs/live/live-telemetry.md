@@ -579,14 +579,11 @@ stays the in-game profile name. Other local slots and remote players have no
 Clanker bots ([bots.md](../game/bots.md) §6) are players like any other,
 keyed by their game slot (`index`): roster, scores, kills, frames and the
 final standings carry them under their own names ("Clanker 1"). Their
-roster entries add `bot: true`. The boot's bots locator (asked at each
-multiplayer start) names the bots: a local-slot Clanker by its controller
-port (player `+0x24`, read as `PlayerState::controller`), a phantom by its
-machine id. Only a phantom from a server roster in force carries an `xuid`
-(its rostered one, with the roster's `session_id` on the game); every
-other bot has none, so no account, stats page, career or rank. A bot is
-never given the signed-in account, even on local slot 0. A local bot added
-after the game started is not known as a bot until the next start.
+roster entries add `bot: true`. On multiplayer start, the boot's bot
+locator identifies phantoms by machine id. A phantom from the active
+server roster carries its rostered `xuid`, and the game carries the
+roster's `session_id`. A host-made phantom has no Live account, stats
+page, career or rank.
 
 ## Scenario objects
 

@@ -705,7 +705,7 @@ impl Live {
                         )));
                     }
                     if game.started.game.sim.is_some() && (!p.is_bot() || p.xuid.is_some()) {
-                        return Err(invalid("simulation players must be local bots"));
+                        return Err(invalid("simulation players must be bots without an account ID"));
                     }
                     author.check_players(
                         &self.model.read(),

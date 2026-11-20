@@ -229,8 +229,8 @@ pub struct RenderStats {
     /// `d3d::interp::InterpStats`, every field, including the hold reasons
     /// (`unsure_*`, `mismatch_*`, `dropped`).
     pub interp: Value,
-    /// The pipelined render (`H2_PIPELINE_RENDER`): frames pipelined and
-    /// completed, why frames ran serially, fallbacks by call, joins, ms.
+    /// The pipelined render (`impl.render.pipelined_frame`): frame counts,
+    /// serial and fallback reasons, joins, snapshot coverage and times in ms.
     pub pipeline: Value,
     /// Calls into each native render path (`impl.render.*` placed as an
     /// implementation) since the start; 0 for a path that is off.

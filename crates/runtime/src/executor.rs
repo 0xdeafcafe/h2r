@@ -144,8 +144,32 @@ impl SecondExecutor {
     /// own memory); kernel imports are refused unless allowed the same way
     /// by their token address. Nothing runs until [`snapshot`](Self::snapshot).
     pub fn new(main: &Runtime, allow: impl Fn(u32, &str) -> bool) -> Self {
+        Self::fork(main, true, allow)
+    }
+
+    /// A preparation pass that can discard its private execution and retry
+    /// on the owner. Even a context-only host observer can count or emit a
+    /// draw, so stop before every installed override.
+    pub fn generated_only(main: &Runtime) -> Self {
+        Self::fork(main, false, |_, _| false)
+    }
+
+    /// Stop before executing this generated entry, with its actual call
+    /// registers and pushed arguments available through `refused_cpu`.
+    pub fn stop_before(&mut self, at: u32, name: &str) {
+        self.runtime.edit_dispatch(|d| {
+            d.register_override_handler(at, name.into(), refusal(&self.refused, at, name));
+        });
+    }
+
+    fn fork(main: &Runtime, context_only: bool, allow: impl Fn(u32, &str) -> bool) -> Self {
         let refused = Arc::new(Mutex::new(None));
-        let mut dispatch = main.fork_dispatch(&allow, |addr, name| refusal(&refused, addr, name));
+        let mut dispatch = main.fork_dispatch(context_only, &allow, |addr, name| {
+            refusal(&refused, addr, name)
+        });
+        if !context_only {
+            dispatch.clear_stop_recovery();
+        }
         for import in kernel::FUNCTION_IMPORTS {
             let token = kernel::function_token(import.ordinal);
             if dispatch.override_name(token).is_none() || !allow(token, import.name) {
@@ -278,6 +302,16 @@ impl SecondExecutor {
         self.run_from(cpu, TransferAbi::jump(entry))
     }
 
+    /// Enter a callee whose caller and return address are already in the
+    /// COW stack. The outer frame returns to `HARNESS_EXIT` as in `call`.
+    pub fn enter(&mut self, cpu: &mut CpuAbi) -> Result<CallOutcome, ExecutorError> {
+        if self.base.is_none() {
+            return Err(ExecutorError::NoSnapshot);
+        }
+        let entry = cpu.eip;
+        self.run_from(cpu, TransferAbi::jump(entry))
+    }
+
     /// Carry a run on by returning to `cpu.eip` with `cpu` as it is (nothing
     /// pushed; generated code's resume points take it):
     /// after an [`ExecutorError::Refused`] whose call someone else made, with
@@ -297,13 +331,39 @@ impl SecondExecutor {
         cpu: &mut CpuAbi,
         transfer: TransferAbi,
     ) -> Result<CallOutcome, ExecutorError> {
+        self.execute(cpu, transfer, None)
+    }
+
+    /// Execute a segment up to its existing caller, or the first refused entry.
+    pub fn run_to_return(
+        &mut self,
+        cpu: &mut CpuAbi,
+        transfer: TransferAbi,
+        entry_esp: u32,
+        return_pc: u32,
+    ) -> Result<CallOutcome, ExecutorError> {
+        self.execute(cpu, transfer, Some((entry_esp, return_pc)))
+    }
+
+    fn execute(
+        &mut self,
+        cpu: &mut CpuAbi,
+        transfer: TransferAbi,
+        scope: Option<(u32, u32)>,
+    ) -> Result<CallOutcome, ExecutorError> {
+        if self.base.is_none() {
+            return Err(ExecutorError::NoSnapshot);
+        }
         *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.refused_cpu = None;
         self.ctx.take_slice_spent();
-        let t = Runner {
+        let runner = Runner {
             max_transfers: self.max_transfers,
-        }
-        .run_from(cpu, &mut self.ctx, transfer);
+        };
+        let t = match scope {
+            Some((esp, pc)) => runner.scoped(cpu, &mut self.ctx, transfer, esp, pc),
+            None => runner.run_from(cpu, &mut self.ctx, transfer),
+        };
         let accesses = self.ctx.take_slice_spent();
         self.last_accesses = accesses;
         if t.kind == abi::STOP && cpu.eip == crate::exec::HARNESS_EXIT {
@@ -521,6 +581,38 @@ mod tests {
     fn executor_is_send() {
         assert_send::<SecondExecutor>();
         assert_send::<CancelHandle>();
+    }
+
+    #[test]
+    fn scoped_return_pops_the_original_slot_and_stops_before_the_caller() {
+        let main = main_runtime();
+        let esp = STACK - 8;
+        {
+            let mut m = main.memory();
+            m.set_u32(esp, HOOK).unwrap();
+            m.set_u32(esp + 4, 17).unwrap();
+        }
+        main.edit_dispatch(|d| assert!(d.mark_context_only(CODE)));
+        let mut exec = SecondExecutor::generated_only(&main);
+        exec.snapshot(&main);
+        let mut cpu = CpuAbi {
+            esp,
+            ..Default::default()
+        };
+        assert!(
+            matches!(exec.run_to_return(&mut cpu, TransferAbi::jump(CODE), esp, HOOK),
+            Err(ExecutorError::Refused(r)) if r.target == CODE)
+        );
+        assert_eq!(exec.runtime().memory().u32(DATA + 4), Ok(0));
+
+        let mut exec = SecondExecutor::new(&main, |_, _| false);
+        exec.snapshot(&main);
+        exec.run_to_return(&mut cpu, TransferAbi::jump(CODE), esp, HOOK)
+            .unwrap();
+        assert_eq!(cpu.esp, STACK);
+        let view = exec.runtime().memory();
+        assert_eq!(view.u32(esp), Ok(HOOK));
+        assert_eq!(view.u32(DATA + 4), Ok(17));
     }
 
     #[test]

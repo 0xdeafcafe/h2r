@@ -5,9 +5,10 @@
 //!
 //! One context-only observer before `LAYER_DRAW` acts only on the layer-3
 //! call in `0x0003fdf0` (return `0x00040136`). Both invocations are
-//! independent: accepted items are planned in list order, exactly the planned
-//! ones keep their bits cleared until the next layer draw, and `0x000404b0`
-//! and the following transparent call stay untouched.
+//! independent. A sole supported layer item can skip before the list build.
+//! Mixed lists keep the guest sort and can replace contiguous ranges at
+//! issue through the standard emitter. The light pass at `0x000404b0`
+//! and the subsequent transparent call have their own paths.
 //!
 //! Each record's `+4` mode, which can differ from its owner's third-person
 //! definition, keys the loaded model. The owner supplies lighting; the item's
@@ -19,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
+use timeline::native::{Metric, Stage};
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::objects::{
     self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, RECORD_MODEL,
@@ -35,6 +37,13 @@ use crate::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
 pub const SWITCH: &str = "impl.render.native_first_person";
+pub const WALK_SWITCH: &str = "impl.render.native_first_person_walk";
+pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+
+pub fn walk_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_walk_on(switches, SWITCH, WALK_SWITCH)
+}
+
 
 pub fn on(switches: &crate::Switches) -> bool {
     crate::switches::native_stage_on(switches, SWITCH)
@@ -126,7 +135,6 @@ fn record_model(m: &dyn GuestRead, record: u16) -> Option<u32> {
 /// entire call; an unsupported part simply keeps its own D3D draw.
 fn admission(m: &dyn GuestRead, set: &NativeSet, host: &dyn Host) -> Option<HashMap<u16, u32>> {
     const MAX_ITEMS: u32 = 1 << 16;
-    const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
     const FIRST_PERSON_RECORD_COUNT: u32 = 0x0050_943c;
     let list = m.read_u32(CURRENT_LIST)?;
     if list == 0 {
@@ -283,6 +291,34 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     }
 }
 
+/// The guest builds and sorts the layer list before calling its draws.
+/// Hoisting more than one candidate across that sort requires its sort keys
+/// and knowledge of the neighbouring fallbacks. A single item can be moved.
+fn single_layer_item(m: &dyn GuestRead) -> Option<bool> {
+    let list = m.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = m.read_u32(list.checked_add(4)?)?;
+    let first = m.read_u32(list.checked_add(0xc)?)?;
+    let items = m.read_u32(list.checked_add(0x14)?)?;
+    if items != FIRST_PERSON_ITEMS || count.checked_sub(first)? > 1 << 16 {
+        return None;
+    }
+    let mut found = false;
+    for i in first..count {
+        let at = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
+        let mask = m.read_u32(at.checked_add(0x10)?)?;
+        if mask & (1 << LIGHTMAP_LAYER) != 0 {
+            if found {
+                return Some(false);
+            }
+            found = true;
+        }
+    }
+    Some(found)
+}
+
 pub struct NativeFirstPerson;
 
 impl Feature for NativeFirstPerson {
@@ -295,14 +331,26 @@ impl Feature for NativeFirstPerson {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) {
+        if !walk_on(b.switches()) {
             return Ok(());
         }
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_first_person_skip", |o| {
                 let mut guest = o.guest();
+                restore_pending(&mut *guest);
                 let ret = guest.u32(o.cpu.esp).unwrap_or(0);
-                before_layer(&mut *guest, ret);
+                let mem = Mem(&mut *guest);
+                if ret == FIRST_PERSON_LAYER3_RETURN && single_layer_item(&mem) == Some(true) {
+                    let skipped = ITEMS.load(Ordering::Relaxed);
+                    Stage::FirstPerson.count(Metric::WalkExamined, 1);
+                    before_layer(mem.0, ret);
+                    let drawn = ITEMS.load(Ordering::Relaxed).saturating_sub(skipped);
+                    if drawn > 0 {
+                        Stage::FirstPerson.count(Metric::WalkSuppressed, drawn);
+                    } else {
+                        Stage::FirstPerson.count(Metric::WalkRefusedReservation, 1);
+                    }
+                }
             })
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)

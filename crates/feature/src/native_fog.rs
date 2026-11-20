@@ -174,6 +174,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left });
 }
 
+pub(crate) fn has_claim() -> bool {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|claim| !claim.cleared.items.is_empty())
+}
+
 /// Sets back the bits the last layer 16 cleared, on the items that still
 /// hold the mask it left: an item list built again since (a new frame
 /// whose render never reached another layer draw) is left alone.

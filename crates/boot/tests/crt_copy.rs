@@ -22,7 +22,7 @@ fn memmove_sweep_through_the_fallback() {
     let rt = loaded.runtime;
     boot::fallback::init(&bytes, &[], &[]).unwrap();
     boot::fallback::set_recovery(true);
-    boot::fallback::install_unread_targets(&rt);
+    boot::fallback::start_analysis(&rt);
     rt.edit_dispatch(|d| {
         d.register_override(CRT_COPY, "test: CRT copy in the fallback", |cpu, ctx, _| {
             cpu.eip = CRT_COPY;

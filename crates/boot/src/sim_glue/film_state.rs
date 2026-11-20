@@ -1,5 +1,5 @@
 //! A film keyframe can resume a sim after lobby creation, spawning, the
-//! seed and team writes. Those one-time guest mutations must never repeat.
+//! initial seed write. Those one-time guest mutations must never repeat.
 //! The match report itself is only produced by the recording process.
 use super::{Inner, Phase, State, hosted};
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ impl Playing {
                 .chain(self.machines.keys())
                 .any(|seat| !valid_seat(seat))
             || self.bindings.values().any(|&player| player >= 16)
-            || (sim.matched.distributed() && self.bindings.len() != sim.matched.bots.len())
+            || self.bindings.len() != sim.matched.bots.len()
         {
             return Err("invalid film sim seat bindings".into());
         }
@@ -55,7 +55,7 @@ impl Playing {
 
 pub(super) fn policy(
     sim: &Arc<Inner>,
-    lobby: Option<Arc<Mutex<hosted::LobbyState>>>,
+    lobby: Arc<Mutex<hosted::LobbyState>>,
     playback: bool,
 ) -> feature::SnapshotPolicy {
     let check = sim.clone();
@@ -70,14 +70,12 @@ pub(super) fn policy(
             let state = check.lock();
             let ready = state.phase == Phase::Playing && state.set_up && state.tally.ticks() > 0;
             drop(state);
-            let lobby_ready = check_lobby.as_ref().is_none_or(|lobby| {
-                lobby
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .setup_complete()
-            });
+            let lobby_ready = check_lobby
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .setup_complete();
             (!ready || !lobby_ready)
-                .then(|| "sim lobby, seat binding or initial seed/team setup is in progress".into())
+                .then(|| "sim lobby, seat binding or initial seed setup is in progress".into())
         },
         move || {
             if !crate::theater::in_keyframe() {
@@ -94,12 +92,10 @@ pub(super) fn policy(
             }
             let state: Playing = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             state.restore(&load)?;
-            if let Some(lobby) = &lobby {
-                lobby
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .resume_match();
-            }
+            lobby
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .resume_match();
             Ok(())
         },
     )

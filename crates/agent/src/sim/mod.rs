@@ -3,9 +3,8 @@
 //! flows from one running game.
 //!
 //! - `sim.player.add` / `remove` / `list` / `pad`: players made by the bots
-//!   ([`bots::Bots`], the seam to docs/game/bots.md's `bots::local` and
-//!   `bots::phantom`, which boot implements), driven by a
-//!   [`bots::PadSource`].
+//!   ([`bots::Bots`], implemented over `bots::phantom` in boot), driven by
+//!   a [`bots::PadSource`].
 //! - `sim.state.set`: host writes to a player ([`state`]), at a tick
 //!   boundary, refused where they would desync a co-op session. A position
 //!   or facing goes through the game's own teleport ([`calls`]), answered
@@ -32,7 +31,7 @@ use agent_proto::sim::{
     self as wire, AddParams, DriveParams, ExpectParams, GiveParams, PlayerKind, RemoveParams,
     SessionKind, SessionView, SetParams, SimPlayer, SourceKind, SpawnParams, ViewParams, method,
 };
-use agent_proto::{Boundary, Kind, Object, ObjectId, RpcError, code};
+use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
 use input::backend::remote::Remote;
 use serde_json::{Map, Value, json};
@@ -51,7 +50,7 @@ struct Entry {
     bot: Bot,
     source: SourceKind,
     team: Option<i32>,
-    identity: Option<agent_proto::sim::Identity>,
+    identity: wire::Identity,
     /// The script queue, for a `script` source.
     script: Option<Remote>,
 }
@@ -176,40 +175,37 @@ impl Sim {
             .ok_or_else(|| RpcError::new(code::GONE, format!("no simulated player {id}")))
     }
 
-    /// The players-array index a simulated player became, if it has one:
-    /// a local bot is the player on its port, a phantom the one the
-    /// backend says.
-    fn game_player(&self, e: &Entry, objects: &[Object]) -> Option<u32> {
-        match e.bot {
-            Bot::Local { port } => {
-                let port = self.bots.placed_port(port)?;
-                local_player(port, objects)
-            }
-            Bot::Phantom { handle } => self.bots.phantom_player(handle),
-        }
-    }
-
-    fn describe(&self, n: u32, e: &Entry, objects: &[Object]) -> SimPlayer {
+    fn describe(&self, n: u32, e: &Entry) -> SimPlayer {
         SimPlayer {
             id: format!("sim.{n}"),
-            kind: match e.bot {
-                Bot::Local { .. } => PlayerKind::Local,
-                Bot::Phantom { .. } => PlayerKind::Phantom,
-            },
+            kind: PlayerKind::Phantom,
             source: e.source,
             team: e.team,
-            port: match e.bot {
-                Bot::Local { port } => Some(self.bots.placed_port(port).unwrap_or(port)),
-                Bot::Phantom { .. } => None,
-            },
-            identity: e.identity.clone(),
-            player: self.game_player(e, objects).map(|i| format!("player.{i}")),
+            identity: Some(e.identity.clone()),
+            player: self
+                .bots
+                .phantom_player(e.bot.handle)
+                .map(|i| format!("player.{i}")),
             brain: self.bots.brain_view(e.bot),
         }
     }
 
-    fn player_add(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+    fn player_add(&mut self, v: Value, _: &mut GameCtx<'_>) -> R {
+        if v.get("kind").and_then(Value::as_str) == Some("local") {
+            return Err(invalid(
+                "controller seats are for people. Use kind = \"phantom\" and provide an identity",
+            ));
+        }
         let p: AddParams = params(v)?;
+        let identity = p.identity.ok_or_else(|| {
+            invalid(
+                "a phantom needs \"identity\": {xuid, gamertag}, issued by the local \
+                 embedded Live server (sim never makes accounts)",
+            )
+        })?;
+        if identity.xuid.trim().is_empty() || identity.gamertag.trim().is_empty() {
+            return Err(invalid("identity: xuid and gamertag"));
+        }
         let (source, script) = match p.source {
             SourceKind::Script => {
                 let steps = crate::tap::pad_steps(&p.steps).map_err(invalid)?;
@@ -238,64 +234,23 @@ impl Sim {
         if p.source != SourceKind::Recording && p.recording.is_some() {
             return Err(invalid("recording goes with a recording source"));
         }
-        let bot = match p.kind {
-            PlayerKind::Local => {
-                if p.identity.is_some() {
-                    return Err(invalid(
-                        "a local player signs in on its port; identity is for phantoms",
-                    ));
-                }
-                let bots = &self.bots;
-                if let Ok(Some(why)) = ctx.with_guest(|m| Ok(bots.local_refusal(&*m))) {
-                    return Err(RpcError::new(code::UNAVAILABLE, why));
-                }
-                let port = self
-                    .bots
-                    .add_local(p.port, source)
-                    .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-                Bot::Local { port }
-            }
-            PlayerKind::Phantom => {
-                if p.port.is_some() {
-                    return Err(invalid("a phantom has no controller port"));
-                }
-                let id = p.identity.as_ref().ok_or_else(|| {
-                    invalid(
-                        "a phantom needs \"identity\": {xuid, gamertag}, issued by the local \
-                         embedded Live server (sim never makes accounts)",
-                    )
-                })?;
-                if id.xuid.trim().is_empty() || id.gamertag.trim().is_empty() {
-                    return Err(invalid("identity: xuid and gamertag"));
-                }
-                let handle = self
-                    .bots
-                    .add_phantom(id, p.team, source)
-                    .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-                Bot::Phantom { handle }
-            }
-        };
+        let handle = self
+            .bots
+            .add_phantom(&identity, p.team, source)
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
         let n = self.next;
         self.next += 1;
         self.players.insert(
             n,
             Entry {
-                bot,
+                bot: Bot { handle },
                 source: p.source,
                 team: p.team,
-                identity: p.identity,
+                identity,
                 script,
             },
         );
-        let objects = ctx.reader.objects().unwrap_or_default();
-        let e = &self.players[&n];
-        let mut out = serde_json::to_value(self.describe(n, e, &objects)).expect("serialises");
-        // A local bot's team is the lobby's or a host write's, once it plays.
-        if matches!(bot, Bot::Local { .. }) && p.team.is_some() {
-            out["team_pending"] =
-                json!("set it with sim.state.set {team} once the player is in a multiplayer game");
-        }
-        Ok(out)
+        Ok(serde_json::to_value(self.describe(n, &self.players[&n])).expect("serialises"))
     }
 
     fn player_remove(&mut self, v: Value, _: &mut GameCtx<'_>) -> R {
@@ -327,71 +282,36 @@ impl Sim {
         Ok(json!({ "removed": removed, "failed": failed }))
     }
 
-    fn players_json(&self, objects: &[Object]) -> Vec<SimPlayer> {
-        self.players
-            .iter()
-            .map(|(n, e)| self.describe(*n, e, objects))
-            .collect()
-    }
-
     fn player_list(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
-        let objects = ctx.reader.objects().unwrap_or_default();
-        let mut clankers = ctx
+        let clankers = ctx
             .with_guest(|m| Ok(self.bots.clankers(Some(m))))
             .unwrap_or_else(|_| self.bots.clankers(None));
-        for bot in &mut clankers {
-            if let Some(port) = bot.port {
-                bot.player = local_player(port, &objects).map(|i| format!("player.{i}"));
-            }
-        }
-        Ok(json!({ "players": self.players_json(&objects), "clankers": clankers }))
+        let players: Vec<_> = self.players.iter().map(|(n, e)| self.describe(*n, e)).collect();
+        Ok(json!({ "players": players, "clankers": clankers }))
     }
 
-    fn player_pad(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+    fn player_pad(&mut self, v: Value, _: &mut GameCtx<'_>) -> R {
         let p: DriveParams = params(v)?;
         let (_, e) = self.entry(&p.id)?;
-        let steps = crate::tap::pad_steps(&p.steps).map_err(invalid)?;
-        match (&e.script, e.bot) {
-            (Some(r), _) => {
-                let n = steps.len();
-                if p.append {
-                    r.append(steps);
-                } else {
-                    r.replace(steps);
-                }
-                Ok(json!({ "id": p.id, "queued": n, "via": "script" }))
-            }
-            // Another source on a local port: input.pad merges over it
-            // (docs/game/bots.md 4.1).
-            (None, Bot::Local { port }) => {
-                let port = self.bots.placed_port(port).ok_or_else(|| {
-                    RpcError::new(
-                        code::UNAVAILABLE,
-                        "this bot has no port yet (the input manager places it)",
-                    )
-                })?;
-                let pad = json!({ "player": port, "steps": p.steps, "append": p.append });
-                let r = ctx
-                    .host(agent_proto::method::INPUT_PAD, pad)
-                    .unwrap_or_else(|| {
-                        Err(RpcError::new(
-                            code::UNAVAILABLE,
-                            "no input tap (the game has no XAPI input)",
-                        ))
-                    })?;
-                Ok(json!({ "id": p.id, "queued": r["queued"], "via": "input.pad", "port": port }))
-            }
-            (None, Bot::Phantom { .. }) => Err(RpcError::new(
+        let Some(remote) = &e.script else {
+            return Err(RpcError::new(
                 code::INVALID_REQUEST,
-                "this phantom's pad comes from its brain or recording; add it with a script \
-                 source to drive it",
-            )),
+                "this phantom's pad comes from its brain or recording. Add it with a script source to drive it",
+            ));
+        };
+        let steps = crate::tap::pad_steps(&p.steps).map_err(invalid)?;
+        let queued = steps.len();
+        if p.append {
+            remote.append(steps);
+        } else {
+            remote.replace(steps);
         }
+        Ok(json!({ "id": p.id, "queued": queued, "via": "script" }))
     }
 
     /// `player.<n>` or a simulated player's `sim.<n>` as a players-array
     /// index.
-    fn target(&self, who: &str, ctx: &mut GameCtx<'_>) -> Result<u32, RpcError> {
+    fn target(&self, who: &str) -> Result<u32, RpcError> {
         if let Some(id) = ObjectId::parse(who) {
             if id.kind == Kind::Player {
                 return Ok(id.key);
@@ -399,11 +319,7 @@ impl Sim {
             return Err(invalid(format!("{who}: a player.<n> or sim.<n>")));
         }
         let (_, e) = self.entry(who)?;
-        let objects = ctx
-            .reader
-            .objects()
-            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-        self.game_player(e, &objects).ok_or_else(|| {
+        self.bots.phantom_player(e.bot.handle).ok_or_else(|| {
             RpcError::new(code::GONE, format!("{who} isn't a player in the game yet"))
         })
     }
@@ -412,7 +328,7 @@ impl Sim {
         let p: SetParams = params(v)?;
         state::validate(&p)?;
         let session = self.host_write(ctx)?;
-        let index = self.target(&p.player, ctx)?;
+        let index = self.target(&p.player)?;
         let facing = p.facing_vector().map_err(invalid)?;
         if p.pos.is_none() && facing.is_none() {
             let wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
@@ -504,7 +420,7 @@ impl Sim {
             state::validate_ammo(a)?;
         }
         let session = self.host_write(ctx)?;
-        let index = self.target(&p.player, ctx)?;
+        let index = self.target(&p.player)?;
         let q = self.calls()?;
         let tag = self.find_tag(&p.weapon, &["weap"])?;
         if tag.group != "weap" {
@@ -704,21 +620,13 @@ impl Sim {
             let mut s = Map::new();
             s.insert("count".into(), json!(self.players.len()));
             for (n, e) in &self.players {
-                let d = self.describe(*n, e, &objects);
+                let d = self.describe(*n, e);
                 s.insert(n.to_string(), serde_json::to_value(d).expect("serialises"));
             }
             out.insert("sim".into(), Value::Object(s));
         }
         Ok(Value::Object(out))
     }
-}
-
-fn local_player(port: u32, objects: &[Object]) -> Option<u32> {
-    objects
-        .iter()
-        .find(|o| o.kind == Kind::Player && o.local_user.map(u32::from) == Some(port))
-        .and_then(|o| ObjectId::parse(&o.id))
-        .map(|id| id.key)
 }
 
 #[cfg(test)]

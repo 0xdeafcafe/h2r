@@ -28,10 +28,10 @@ fn no_plan_line_no_file() {
 }
 
 #[test]
-fn a_fresh_run_has_twelve_pending_checks() {
+fn a_fresh_run_has_nine_pending_checks() {
     let v = json(&log_of(&[]), false);
     let checks = v["checks"].as_array().unwrap();
-    assert_eq!(checks.len(), 12);
+    assert_eq!(checks.len(), 9);
     assert!(checks.iter().all(|c| c["state"] == "pending"));
     assert_eq!(v["finished"], false);
     assert_eq!(v["phase"], "-");

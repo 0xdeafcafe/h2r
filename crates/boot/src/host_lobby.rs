@@ -16,7 +16,7 @@ use crate::map_select::Catalogue;
 use crate::new_maps::{Disc, IsoDisc};
 
 mod retail;
-pub(crate) use retail::Machine as PlayerlessLobby;
+pub(crate) use retail::{Machine as PlayerlessLobby, SimStart};
 mod variants;
 use self::variants::Variants;
 #[cfg(test)]
@@ -185,8 +185,9 @@ fn methods(agent: &Agent, shared: &Shared, maps: Catalogue, variants: Variants, 
                 ctx.reader
                     .with_guest(&mut |m| observed = Some(q.machine.observe(m)));
                 if let Some(result) = observed {
-                    let (state, needs_retail_check) = result?;
-                    if !needs_retail_check {
+                    let (state, blocker) = result?;
+                    // Only an eligible lobby needs retail's start check.
+                    if blocker.is_some() {
                         return Ok(json!(state));
                     }
                 }

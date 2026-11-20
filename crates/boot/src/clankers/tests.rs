@@ -54,79 +54,18 @@ fn mixed_is_normal_heroic_and_easy_by_port() {
 }
 
 #[test]
-fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
-    let local = Local::default();
-    // An H2_BOTS bot on port 1.
-    let other = local
-        .add(1, "Clanker 1", Box::new(bots::Brain::default()))
-        .unwrap();
-    let d = Driver::new(local.clone());
-    let log = d.apply(Want {
-        count: 5,
-        difficulty: 2,
-        taunts: true,
-        glitches: 0,
-    });
-    assert_eq!(d.ports(), vec![2, 3]);
-    assert!(log.last().unwrap().contains("no free port"), "{log:?}");
-    assert_eq!(local.list().len(), 3);
-
-    d.apply(Want {
-        count: 1,
-        difficulty: 2,
-        taunts: true,
-        glitches: 0,
-    });
-    assert_eq!(d.ports(), vec![2], "the last added goes first");
-    d.apply(Want {
-        count: 0,
-        difficulty: 2,
-        taunts: true,
-        glitches: 0,
-    });
-    assert_eq!(d.ports(), Vec::<u8>::new());
-    let left: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
-    assert_eq!(left, vec![other], "the driver takes off only its own");
-}
-
-#[test]
-fn all_phantom_keeps_every_local_port_free_as_the_roster_changes() {
-    use crate::setting_defs::{ALL, BOTS_ALL_PHANTOM};
-    let (settings, problems) = Store::load(
-        ALL,
-        None,
-        &|k| (k == BOTS_ALL_PHANTOM.env.unwrap()).then(|| "1".to_owned()),
-        &[],
-    );
-    assert!(problems.is_empty());
-    let store = Arc::new(settings);
-    let local = Local::default();
+fn the_driver_seats_that_many_phantoms() {
     let ph = Phantoms::default();
-    let _driver = drive(&store, Driver::with_phantoms(local.clone(), ph.clone()));
-    for count in [1, 3, 7, 2] {
-        on(&store, count, 1);
-        assert!(local.list().is_empty());
-        assert_eq!(ph.list().len(), count as usize);
-    }
-    store.set(ENABLED.key, Value::Bool(false)).unwrap();
-    assert!(ph.list().is_empty());
-}
-
-#[test]
-fn past_the_free_ports_the_driver_adds_phantoms() {
-    let local = Local::default();
-    let ph = bots::phantom::Phantoms::default();
-    let d = Driver::with_phantoms(local.clone(), ph.clone());
+    let d = Driver::new(ph.clone());
     let log = d.apply(Want {
         count: 5,
         difficulty: MIXED,
         taunts: true,
         glitches: 0,
     });
-    assert_eq!(d.ports(), vec![1, 2, 3]);
     let l = ph.list();
     let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
-    assert_eq!(tags, ["Clanker 4", "Clanker 5"]);
+    assert_eq!(tags, ["Clanker 1", "Clanker 2", "Clanker 3", "Clanker 4", "Clanker 5"]);
     assert!(
         l.iter()
             .all(|p| live_proto::bots::is_local_xuid(live_proto::Xuid(p.identity.xuid))),
@@ -142,16 +81,32 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
         taunts: true,
         glitches: 0,
     });
-    assert!(
-        ph.list().is_empty(),
-        "the phantoms go first, last added first"
-    );
-    assert_eq!(d.ports(), vec![1, 2, 3]);
+    assert_eq!(ph.list().len(), 3, "the last added go first");
+    d.apply(Want {
+        count: 0,
+        difficulty: MIXED,
+        taunts: true,
+        glitches: 0,
+    });
+    assert!(ph.list().is_empty());
+}
+
+#[test]
+fn the_roster_follows_the_store_as_the_count_changes() {
+    let s = store();
+    let ph = Phantoms::default();
+    let _driver = drive(&s, Driver::new(ph.clone()));
+    for count in [1, 3, 7, 2] {
+        on(&s, count, 1);
+        assert_eq!(ph.list().len(), count as usize);
+    }
+    s.set(ENABLED.key, Value::Bool(false)).unwrap();
+    assert!(ph.list().is_empty());
 }
 
 #[test]
 fn a_difficulty_change_reaches_the_bots_already_there() {
-    let d = Driver::new(Local::default());
+    let d = Driver::new(Phantoms::default());
     d.apply(Want {
         count: 2,
         difficulty: 0,
@@ -173,28 +128,27 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
         taunts: true,
         glitches: 0,
     });
-    assert_eq!(skills(&d), vec![1, 2], "Normal on port 1, Heroic on 2");
-    assert_eq!(d.ports(), vec![1, 2], "the same bots");
+    assert_eq!(skills(&d), vec![1, 2], "Normal then Heroic in turn");
 }
 
 #[test]
 fn taunts_off_reaches_the_bots_already_there() {
     let s = store();
-    let local = Local::default();
-    let d = drive(&s, Driver::new(local.clone()));
+    let ph = Phantoms::default();
+    let d = drive(&s, Driver::new(ph.clone()));
     on(&s, 1, 1);
     assert!(d.taunts.load(Ordering::Relaxed), "on by default");
     s.set(TAUNTS.key, Value::Bool(false)).unwrap();
     assert!(!d.taunts.load(Ordering::Relaxed));
-    assert_eq!(d.ports(), vec![1], "the same bot");
+    assert_eq!(ph.list().len(), 1, "the same bot");
 }
 
 #[test]
 fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
     let s = store();
     assert_eq!(Want::read(&s).glitches, 0, "off by default");
-    let local = Local::default();
-    let d = drive(&s, Driver::new(local.clone()));
+    let ph = Phantoms::default();
+    let d = drive(&s, Driver::new(ph.clone()));
     on(&s, 1, 1);
     assert_eq!(d.glitches.load(Ordering::Relaxed), 0);
     // Lots, then Some: the bot it has takes each at its next frame.
@@ -207,7 +161,7 @@ fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
     s.set(GLITCHES.key, Value::Int(1)).unwrap();
     assert_eq!(Want::read(&s).glitches, 1);
     assert_eq!(d.glitches.load(Ordering::Relaxed), 1);
-    assert_eq!(d.ports(), vec![1], "the same bot");
+    assert_eq!(ph.list().len(), 1, "the same bot");
     // The page has the row, last, with Off, Some and Lots.
     assert_eq!(DEFS.last().map(|d| d.key), Some("clankers.glitches"));
     assert_eq!(ROWS.len(), DEFS.len());
@@ -216,37 +170,18 @@ fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
 #[test]
 fn the_driver_follows_the_store() {
     let s = store();
-    let local = Local::default();
-    let d = drive(&s, Driver::new(local.clone()));
-    assert!(local.is_empty(), "off by default");
+    let ph = Phantoms::default();
+    let d = drive(&s, Driver::new(ph.clone()));
+    assert!(ph.list().is_empty(), "off by default");
     assert!(!d.on());
     on(&s, 3, 1);
     assert!(d.on());
-    assert_eq!(d.ports(), vec![1, 2, 3]);
+    assert_eq!(ph.list().len(), 3);
     s.set(COUNT.key, Value::Int(1)).unwrap();
-    assert_eq!(d.ports(), vec![1]);
+    assert_eq!(ph.list().len(), 1);
     s.set(ENABLED.key, Value::Bool(false)).unwrap();
     assert!(!d.on());
-    assert!(local.is_empty());
-    // Taken off, the bots keep their pads (idle) until the game glue signs
-    // them out and unplugs them: no "controller disconnected".
-    assert_eq!(local.leaving().len(), 3);
-}
-
-#[test]
-fn clankers_on_again_takes_the_leaving_bots_pads_back() {
-    let s = store();
-    let local = Local::default();
-    let d = drive(&s, Driver::new(local.clone()));
-    on(&s, 2, 1);
-    let first: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
-    s.set(ENABLED.key, Value::Bool(false)).unwrap();
-    assert_eq!(local.leaving().len(), 2);
-    s.set(ENABLED.key, Value::Bool(true)).unwrap();
-    assert_eq!(d.ports(), vec![1, 2]);
-    let again: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
-    assert_eq!(again, first, "the same pads: the game never saw them go");
-    assert!(local.leaving().is_empty());
+    assert!(ph.list().is_empty());
 }
 
 // --- Server rosters (stage 6c) ---
@@ -372,19 +307,15 @@ fn rostered_driver(session: Option<&str>) -> (Arc<Store>, Arc<FakeLive>, Phantom
     let live = Arc::new(FakeLive::default());
     *live.session.lock().unwrap() = session.map(str::to_owned);
     let ph = Phantoms::default();
-    let d = drive(
-        &s,
-        Driver::with_phantoms(Local::default(), ph.clone()).with_rosters(live.clone()),
-    );
+    let d = drive(&s, Driver::new(ph.clone()).with_rosters(live.clone()));
     (s, live, ph, d)
 }
 
 #[test]
-fn with_live_every_bot_is_a_server_bot_account_locals_first() {
+fn with_live_every_phantom_is_a_server_bot_account() {
     const SESSION: &str = "0123456789abcdef";
     let (s, live, ph, d) = rostered_driver(Some(SESSION));
     on(&s, 5, 2);
-    assert_eq!(d.ports(), vec![1, 2, 3]);
     assert_eq!(
         live.requests(),
         vec![RosterRequest {
@@ -395,59 +326,32 @@ fn with_live_every_bot_is_a_server_bot_account_locals_first() {
             teams: false,
             carry_from: None,
         }],
-        "every bot, local and phantom, at the page's difficulty"
+        "every bot at the page's difficulty"
     );
-    // Until the answer, host-made phantoms and local bots with no account;
-    // the game record names none.
+    // Until the answer, host-made phantoms; the game record names none.
     assert!(
         ph.list()
             .iter()
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
     );
-    let local_accounts = |d: &Driver| -> Vec<Option<u64>> {
-        d.seats()
-            .into_iter()
-            .filter_map(|s| match s {
-                Seat::Port(_, h) => Some(d.local.account_of(h).map(|a| a.xuid)),
-                Seat::Phantom(..) => None,
-            })
-            .collect()
-    };
-    assert_eq!(local_accounts(&d), vec![None, None, None]);
     let before = d.bots_in_force().expect("the bots, as bots");
     assert_eq!(before.session_id, None, "no roster yet: no session named");
-    assert_eq!(before.ports, 0b1110, "the local bots by port");
-    assert_eq!(before.accounts, vec![]);
-    assert_eq!(before.machines.len(), 2);
+    assert_eq!(before.machines.len(), 5);
     assert!(
         before.machines.iter().all(|(_, x)| x.0 == 0),
         "no xuid without a roster"
     );
 
     live.answer(0, Ok(roster(SESSION, 5, 0.67)));
-    // The local bots take the first three as their accounts.
     let x = |n: u64, i: u64| SERVER_XUID_MARK | (0x100 * n + i);
-    assert_eq!(
-        local_accounts(&d),
-        vec![Some(x(5, 1)), Some(x(5, 2)), Some(x(5, 3))]
-    );
-    let acct = d.local.account_of(match d.seats()[0] {
-        Seat::Port(_, h) => h,
-        Seat::Phantom(..) => unreachable!(),
-    });
-    assert_eq!(acct.unwrap().gamertag, "Rusty Lugnut 1");
-    // The phantoms the rest.
     let l = ph.list();
     let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
-    assert_eq!(tags, ["Rusty Lugnut 4", "Rusty Lugnut 5"]);
+    assert_eq!(
+        tags,
+        ["Rusty Lugnut 1", "Rusty Lugnut 2", "Rusty Lugnut 3", "Rusty Lugnut 4", "Rusty Lugnut 5"]
+    );
     let bots = d.bots_in_force().expect("the roster in force");
     assert_eq!(bots.session_id.as_deref(), Some(SESSION));
-    assert_eq!(bots.ports, 0b1110);
-    assert_eq!(
-        bots.accounts,
-        vec![(1, Xuid(x(5, 1))), (2, Xuid(x(5, 2))), (3, Xuid(x(5, 3)))],
-        "each local bot by its port, with its bot account"
-    );
     assert_eq!(
         bots.machines,
         l.iter()
@@ -466,16 +370,17 @@ fn with_live_every_bot_is_a_server_bot_account_locals_first() {
     s.set(DIFFICULTY.key, Value::Int(3)).unwrap();
     assert_eq!(live.requests().len(), 2);
     assert_eq!(live.requests()[1].skill, Some(live_proto::bots::LEGENDARY));
-    assert_eq!(
-        local_accounts(&d),
-        vec![None, None, None],
-        "no account while a new roster is asked for"
+    assert!(
+        ph.list()
+            .iter()
+            .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid))),
+        "no roster while a new one is asked for"
     );
     s.set(COUNT.key, Value::Int(6)).unwrap();
     assert_eq!(live.requests().len(), 3, "a count change asks again");
     assert_eq!(live.requests()[2].count, 6);
     live.answer(1, Ok(roster(SESSION, 5, 1.0)));
-    assert_eq!(ph.list().len(), 3, "an old answer is dropped");
+    assert_eq!(ph.list().len(), 6, "an old answer is dropped");
     assert!(
         ph.list()
             .iter()
@@ -483,34 +388,30 @@ fn with_live_every_bot_is_a_server_bot_account_locals_first() {
     );
     live.answer(2, Ok(roster(SESSION, 6, 1.0)));
     let l = ph.list();
-    assert_eq!(l.len(), 3);
+    assert_eq!(l.len(), 6);
     assert!(
         l.iter()
             .all(|p| p.identity.xuid >> 8 & 0xff == 6 && p.identity.gamertag.starts_with("Rusty")),
         "the new roster's bots: {l:?}"
     );
-    assert_eq!(
-        local_accounts(&d),
-        vec![Some(x(6, 1)), Some(x(6, 2)), Some(x(6, 3))]
-    );
-    assert_eq!(d.bots_in_force().unwrap().machines.len(), 3);
+    assert_eq!(d.bots_in_force().unwrap().machines.len(), 6);
 
-    // Fewer than the free ports: no phantoms, and the local bots still
-    // ask for their accounts.
+    // Fewer: the last added go.
     s.set(COUNT.key, Value::Int(2)).unwrap();
-    assert!(ph.list().is_empty());
     assert_eq!(live.requests().len(), 4);
     assert_eq!(live.requests()[3].count, 2);
     live.answer(3, Ok(roster(SESSION, 2, 1.0)));
-    assert_eq!(local_accounts(&d), vec![Some(x(2, 1)), Some(x(2, 2))]);
     let bots = d.bots_in_force().unwrap();
-    assert_eq!(bots.machines, vec![]);
-    assert_eq!(bots.accounts.len(), 2);
+    assert_eq!(bots.machines.len(), 2);
 }
 
 #[test]
 fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
+    use engine::testing::FakeGuest;
+    use engine::view::{fake, players};
+
     const SESSION: &str = "0123456789abcdef";
+    const PLAYERS: u32 = 0x0060_0000;
     let (s, live, ph, d) = rostered_driver(Some(SESSION));
     on(&s, 5, 2);
     d.report_players();
@@ -521,38 +422,46 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     assert_eq!(d.session_bots(), vec![]);
     live.answer(0, Ok(roster(SESSION, 5, 0.67)));
     let x = |i: u64| Xuid(SERVER_XUID_MARK | (0x100 * 5 + i));
-    // The phantoms' players are not made yet: only the local bots.
-    assert_eq!(d.session_bots(), vec![x(1), x(2), x(3)]);
+    // The phantoms' players are not made yet: none of them are the
+    // session's to be told of.
+    assert_eq!(d.session_bots(), vec![]);
     d.report_players();
-    assert_eq!(*live.players.lock().unwrap(), vec![vec![x(1), x(2), x(3)]]);
-    // Named for the session the roster is for, so no other session this
-    // console advertises (a Clankermatch's party lobby) is told of them.
-    assert_eq!(
-        *live.player_sessions.lock().unwrap(),
-        vec![Some(SESSION.to_owned())]
-    );
-    // Once the game made them, the phantoms too.
-    let own = d.own.lock().unwrap();
-    let all: Vec<PhantomHandle> = ph.list().iter().map(|p| p.handle).collect();
-    assert_eq!(
-        session_bots_of(&own, |h| all.contains(&h)),
-        vec![x(1), x(2), x(3), x(4), x(5)]
-    );
-    assert_eq!(
-        session_bots_of(&own, |h| h == all[1]),
-        vec![x(1), x(2), x(3), x(5)]
-    );
-    drop(own);
-    // Clankers off: told once that none are left, then nothing.
+    assert!(live.players.lock().unwrap().is_empty());
+    // The second phantom is still waiting for a player.
+    let phantoms = ph.list();
+    let mut guest = FakeGuest::new();
+    guest.put_u32(engine::points::PLAYERS.base, PLAYERS);
+    let player_rows = fake::datums::<players::Player>(&mut guest, PLAYERS, 5);
+    for (i, phantom) in phantoms.iter().enumerate() {
+        if i == 1 {
+            continue;
+        }
+        let (_, player) = fake::push(&mut guest, &player_rows);
+        player.set_local_user(&mut guest, -1).unwrap();
+        guest.put(player.addr + players::MACHINE, &phantom.machine);
+    }
+    ph.refresh(&guest).unwrap();
+    d.report_players();
+    let four_joined = vec![x(1), x(3), x(4), x(5)];
+    assert_eq!(*live.players.lock().unwrap(), vec![four_joined.clone()]);
+
+    let (_, player) = fake::push(&mut guest, &player_rows);
+    player.set_local_user(&mut guest, -1).unwrap();
+    guest.put(player.addr + players::MACHINE, &phantoms[1].machine);
+    ph.refresh(&guest).unwrap();
+    d.report_players();
+
+    // Clankers off clears the previously reported accounts once.
     s.set(ENABLED.key, Value::Bool(false)).unwrap();
     d.report_players();
     d.report_players();
-    assert_eq!(live.players.lock().unwrap().len(), 2);
-    assert_eq!(live.players.lock().unwrap()[1], vec![]);
     assert_eq!(
-        live.player_sessions.lock().unwrap()[1],
-        None,
-        "users only now"
+        *live.players.lock().unwrap(),
+        vec![four_joined, vec![x(1), x(2), x(3), x(4), x(5)], vec![]]
+    );
+    assert_eq!(
+        *live.player_sessions.lock().unwrap(),
+        vec![Some(SESSION.to_owned()), Some(SESSION.to_owned()), None]
     );
 }
 
@@ -561,14 +470,15 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
     let (s, live, ph, d) = rostered_driver(Some("0123456789abcdef"));
     on(&s, 4, 1);
     live.answer(0, Err("refused".into()));
-    assert_eq!(ph.list().len(), 1);
-    assert_eq!(ph.list()[0].identity.gamertag, "Clanker 4");
+    let phantoms = ph.list();
+    assert_eq!(phantoms.len(), 4);
+    assert_eq!(phantoms[0].identity.gamertag, "Clanker 1");
     let bots = d.bots_in_force().expect("still bots");
     assert_eq!(bots.session_id, None);
     assert_eq!(
         bots.machines,
-        vec![(ph.list()[0].machine, Xuid(0))],
-        "a bot with no xuid"
+        phantoms.iter().map(|p| (p.machine, Xuid(0))).collect::<Vec<_>>(),
+        "each host-made phantom keeps its machine ID and has no reported XUID"
     );
     // A roster for another session is not taken.
     s.set(COUNT.key, Value::Int(5)).unwrap();
@@ -618,9 +528,8 @@ fn the_bots_keep_who_they_are_when_the_game_moves_to_a_new_session() {
     };
     let before = who(&d);
     let phantoms = ph.list();
-    assert_eq!(phantoms.len(), 2);
+    assert_eq!(phantoms.len(), 5);
     assert!(before.iter().all(|(_, x)| *x != 0));
-    let accounts = d.bots_in_force().unwrap().accounts;
 
     // The lobby's session deleted, the next not advertised yet: nothing
     // changes, and a page change in the gap keeps the roster.
@@ -658,11 +567,10 @@ fn the_bots_keep_who_they_are_when_the_game_moves_to_a_new_session() {
     assert_eq!(ph.list(), phantoms);
     let bots = d.bots_in_force().unwrap();
     assert_eq!(bots.session_id.as_deref(), Some(GAME));
-    assert_eq!(bots.accounts, accounts);
     assert_eq!(
         d.session_bots().len(),
-        3,
-        "the local bots (the phantoms are not made)"
+        0,
+        "no phantom's player is made yet"
     );
 
     // A carry the server refuses: a new roster is asked for.
@@ -685,7 +593,7 @@ fn a_session_made_after_the_page_was_set_gets_its_roster() {
     let (s, live, ph, d) = rostered_driver(None);
     on(&s, 4, 0);
     assert!(live.requests().is_empty(), "no session: host-made, no ask");
-    assert_eq!(ph.list().len(), 1);
+    assert_eq!(ph.list().len(), 4);
     // The h2 bots test run of 2026-11-18 never signed the game in to Live
     // and said nothing about a roster: the log now says why none.
     let log = d.apply(Want::read(&s));
@@ -700,16 +608,12 @@ fn a_session_made_after_the_page_was_set_gets_its_roster() {
     d.refresh();
     assert_eq!(live.requests().len(), 1);
     assert_eq!(live.requests()[0].session_id, "00000000000000aa");
-    assert_eq!(
-        live.requests()[0].count,
-        4,
-        "the local bots and the phantom"
-    );
+    assert_eq!(live.requests()[0].count, 4, "every bot a phantom");
     assert!(d.refresh().is_empty(), "asked once");
     live.answer(0, Ok(roster("00000000000000aa", 4, 0.0)));
-    assert_eq!(ph.list()[0].identity.gamertag, "Rusty Lugnut 4");
+    assert_eq!(ph.list()[0].identity.gamertag, "Rusty Lugnut 1");
     // Without Live, nothing to refresh.
-    let plain = Driver::with_phantoms(Local::default(), Phantoms::default());
+    let plain = Driver::new(Phantoms::default());
     assert!(plain.refresh().is_empty());
     assert_eq!(plain.bots_in_force(), None);
 }
@@ -810,24 +714,6 @@ fn hopper(hopper_id: u32, players: u32, teams: u32) -> live_proto::hopper::clank
     }
 }
 
-fn local_accounts(d: &Driver) -> Vec<Option<u64>> {
-    d.seats()
-        .into_iter()
-        .filter_map(|s| match s {
-            Seat::Port(_, h) => Some(d.local.account_of(h).map(|a| a.xuid)),
-            Seat::Phantom(..) => None,
-        })
-        .collect()
-}
-
-/// The user's run on f5d3010c: the local bots showed in the party, and
-/// the matchmade start said player 2's controller was not plugged in. A
-/// Clankermatch's bots are all phantoms.
-#[test]
-fn a_clankermatch_takes_no_controller_port() {
-    assert_eq!(MATCH_LOCAL, 0);
-}
-
 /// The fill marks its phantoms the match's alone while it runs, so they
 /// never join the party's lobby, and clears it once they are gone.
 #[test]
@@ -852,7 +738,7 @@ fn a_clankermatchs_phantoms_are_the_matchs_alone() {
 }
 
 #[test]
-fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams() {
+fn a_clankermatch_lobby_fills_phantoms_on_balanced_teams() {
     use std::time::{Duration, Instant};
     const SESSION: &str = "00000000000000c1";
     // A 4 v 4 clanker hopper hosted by this console (descriptor 9).
@@ -860,10 +746,9 @@ fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams()
     let t0 = Instant::now();
     let log = d.tick_match(t0);
     assert!(log.iter().any(|l| l.contains("7 bots join")), "{log:?}");
-    // The run says which bots sit in the lobby and which join the game.
+    // The run says the bots join the lobby as peers, in the match only.
     assert!(
-        log.iter()
-            .any(|l| l.contains("0 local bots join the lobby") && l.contains("7 phantoms join")),
+        log.iter().any(|l| l.contains("7 phantoms join the lobby as peers")),
         "{log:?}"
     );
     assert!(d.on(), "the nav mesh is wanted");
@@ -880,8 +765,7 @@ fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams()
             carry_from: None,
         }]
     );
-    // Nobody seated before the roster: no local bot on Live as the
-    // human's guest, no host-made bot for it to replace.
+    // Nobody seated before the roster: no host-made bot for it to replace.
     d.tick_match(t0 + Duration::from_secs(60));
     assert!(d.seats().is_empty() && ph.list().is_empty());
     let (live, ph, d) = clankermatch(SESSION, hopper(9, 8, 2));
@@ -897,8 +781,6 @@ fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams()
         }
         d.tick_match(t0 + *at);
         assert_eq!(d.seats().len(), i + 1, "bot {i} at {at:?}");
-        // Every one a phantom: no controller port.
-        assert!(d.ports().is_empty(), "bot {i}");
         assert_eq!(ph.list().len(), i + 1, "bot {i}");
     }
     assert_eq!(live.requests().len(), 1, "asked once, not per bot");
@@ -928,8 +810,7 @@ fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams()
     // Left for good: they go.
     d.tick_match(end + FILL_GONE + Duration::from_secs(2));
     assert!(ph.list().is_empty());
-    assert!(d.ports().is_empty() && d.seats().is_empty());
-    assert!(d.local.list().is_empty(), "nothing on the local books");
+    assert!(d.seats().is_empty());
     assert!(!d.on());
 }
 
@@ -978,8 +859,7 @@ fn a_clankermatch_of_two_v_two_is_three_phantoms() {
     d.tick_match(t0);
     live.answer(0, Ok(roster(SESSION, 3, 0.5)));
     d.tick_match(t0 + Duration::from_secs(60));
-    // No port: one phantom with the human (red, 0), two on blue.
-    assert!(d.ports().is_empty());
+    // One phantom with the human (red, 0), two on blue.
     let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
     assert_eq!(
         teams.iter().filter(|t| **t == Some(0)).count(),
@@ -1003,8 +883,7 @@ fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
     d.tick_match(t0 + Duration::from_secs(60));
     assert!(d.seats().is_empty(), "waiting for the roster");
     live.answer(0, Err("refused".into()));
-    // Free for all of 8: seven host-made phantoms, no port.
-    assert!(d.ports().is_empty());
+    // Free for all of 8: seven host-made phantoms.
     let l = ph.list();
     assert_eq!(l.len(), 7);
     assert!(
@@ -1095,25 +974,9 @@ fn the_page_has_quick_options_header() {
 }
 
 #[test]
-fn temperament_local_roster_bots_use_the_server_seed_and_restore_the_port_seed() {
-    let local = Local::default();
-    let driver = Driver::new(local.clone());
-    let k = Skill::Heroic;
-    let (source, _) = driver.clanker(k, 12, 0.3);
-    let h = local.add(1, "Clanker 1", Box::new(source)).unwrap();
-    let offline = local.brain_view(h).unwrap();
-    let account = bots::guest::BotAccount {
-        xuid: 9,
-        gamertag: "Persistent".into(),
-    };
-    local
-        .set_roster_account(h, Some(account), Some((99, 0.4)))
-        .unwrap();
-    assert_eq!(local.brain_view(h).unwrap(), bots::Brain::new(k, 99).view());
-    assert_ne!(
-        local.brain_view(h).unwrap().personality,
-        offline.personality
-    );
-    local.set_roster_account(h, None, None).unwrap();
-    assert_eq!(local.brain_view(h), Some(offline));
+fn a_rostered_phantom_uses_the_server_seed_and_taunt() {
+    let driver = Driver::new(Phantoms::default());
+    let (source, _) = driver.clanker(Skill::Heroic, 99, 0.4);
+    assert_eq!(source.brain_view(), Some(bots::Brain::new(Skill::Heroic, 99).view()));
+    assert_eq!(source.taunt, 0.4);
 }

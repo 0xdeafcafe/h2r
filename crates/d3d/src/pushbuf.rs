@@ -325,6 +325,15 @@ impl Immediate {
         self.vertices.len()
     }
 
+    /// The producer published only Begin. No attribute or inline array data
+    /// can be left for a replacement to accidentally absorb.
+    pub(crate) fn empty_begin(&self, primitive: PrimitiveType) -> bool {
+        self.open.is_some_and(|(p, _)| p == primitive)
+            && self.written == 0
+            && self.vertices.is_empty()
+            && self.inline.is_empty()
+    }
+
     /// Current (persistent) register values.
     pub fn registers(&self) -> &ImmediateVertex {
         &self.regs
@@ -748,6 +757,26 @@ mod tests {
             decode_one(&m, 0x1000, 0x1004),
             Err(PushError::Truncated { .. })
         ));
+    }
+
+    #[test]
+    fn empty_begin_checks_primitive_and_any_pending_attribute() {
+        let mut original = Immediate::default();
+        original.begin(PrimitiveType::LineStrip, 0).unwrap();
+        assert!(original.empty_begin(PrimitiveType::LineStrip));
+        assert!(!original.empty_begin(PrimitiveType::LineList));
+        let mut candidate = original.clone();
+        candidate.set(0, 9, &[0.25, 0.5, 0.75, 1.0], 0, true).unwrap();
+        assert!(!candidate.empty_begin(PrimitiveType::LineStrip));
+        assert!(original.empty_begin(PrimitiveType::LineStrip));
+        candidate.set(0, 0, &[4.0, 6.0, 0.0, 1.0], 0, true).unwrap();
+        assert_eq!(candidate.end(0).unwrap().vertices.len(), 1);
+        candidate.begin(PrimitiveType::LineStrip, 0).unwrap();
+        assert_eq!(candidate.registers()[9], [0.25, 0.5, 0.75, 1.0]);
+        assert!(candidate.end(0).unwrap().vertices.is_empty());
+
+        original.inline_word(0, 42).unwrap();
+        assert!(!original.empty_begin(PrimitiveType::LineStrip));
     }
 
     #[test]

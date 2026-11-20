@@ -19,6 +19,7 @@ pub struct Runtime {
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
+    pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -74,8 +75,16 @@ impl Runtime {
             tsc: Tsc::default(),
             words: Default::default(),
             coverage: OnceLock::new(),
+            dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
+                .then(crate::entry_stats::DispatchCensus::default),
         })
     }
+    /// Runtime dispatch counters, enabled when constructed with
+    /// `H2_DISPATCH_STATS=1`.
+    pub fn dispatch_counts(&self) -> Option<crate::DispatchCounts> {
+        self.dispatch_census.as_ref().map(|census| census.snapshot())
+    }
+
     /// Install the generated registry before any execution contexts are built.
     pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry], resumes: &[crate::H2GenResume]) {
         let _ = self.coverage.set(crate::coverage::Coverage::new(entries, resumes));
@@ -166,7 +175,7 @@ impl Runtime {
         &self.dispatch_gen
     }
     /// The dispatch tables' generation (see [`edit_dispatch`](Self::edit_dispatch)).
-    pub(crate) fn dispatch_generation(&self) -> u64 {
+    pub fn dispatch_generation(&self) -> u64 {
         self.dispatch_gen.load(Ordering::Acquire)
     }
     /// Resolve a transfer to (handler, start selector, function), plus the
@@ -179,9 +188,24 @@ impl Runtime {
         &self,
         t: TransferAbi,
     ) -> (u64, Option<(Handler, u32, u32)>) {
-        let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
-        let generation = self.dispatch_gen.load(Ordering::Acquire);
-        (generation, Self::resolve_in(&d, t))
+        loop {
+            let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
+            let generation = self.dispatch_gen.load(Ordering::Acquire);
+            let found = Self::resolve_in(&d, t);
+            if found.is_some() || !matches!(t.route, abi::ENTRY | abi::RETURN_TARGET) {
+                return (generation, found);
+            }
+            let Some(fallback) = d.entry_fallback() else {
+                return (generation, None);
+            };
+            drop(d);
+            let pc = t.target_pc;
+            let found = fallback(pc).map(|h| (h, pc, pc));
+            // A slow entry fallback can race a new explicit registration.
+            if self.dispatch_generation() == generation {
+                return (generation, found);
+            }
+        }
     }
     fn resolve_in(d: &Dispatch, t: TransferAbi) -> Option<(Handler, u32, u32)> {
         let entry = |pc: u32| d.resolve(pc).map(|h| (h, pc, pc));
@@ -195,13 +219,19 @@ impl Runtime {
     /// [`Dispatch::fork`] of this runtime's tables, under their read lock.
     pub(crate) fn fork_dispatch(
         &self,
+        context_only: bool,
         keep: impl Fn(u32, &str) -> bool,
         refuse: impl Fn(u32, &str) -> Handler,
     ) -> Dispatch {
         self.dispatch
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .fork(keep, refuse)
+            .fork(context_only, keep, refuse)
+    }
+    /// Original owner and selector for a guest return or loop checkpoint.
+    pub fn resolve_original_resume(&self, pc: u32) -> Option<(OriginalHandler,u32)> {
+        self.dispatch.read().unwrap_or_else(|e| e.into_inner()).original_resume(pc)
+            .map(|(handler,selector)| (OriginalHandler(handler),selector))
     }
     pub fn resolve_original(&self, pc: u32) -> Option<OriginalHandler> {
         self.dispatch

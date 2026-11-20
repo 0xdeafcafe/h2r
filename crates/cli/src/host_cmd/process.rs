@@ -143,8 +143,7 @@ impl Game {
             .env_remove("H2_FILM_OUT")
             .env_remove("H2_SIM")
             .env_remove("H2_BOOT_INPUT")
-            .env_remove("H2_INPUT_REPLAY")
-            .env_remove("H2_BOTS");
+            .env_remove("H2_INPUT_REPLAY");
         if opts.archive == live_proto::hosts::HostArchive::Film {
             // The lease's film is the host's archive for this child.
             cmd.env_remove("H2_TELEMETRY_FILE").env_remove("H2_TELEMETRY");
@@ -225,7 +224,7 @@ impl Drop for Game {
 }
 
 #[cfg(target_os = "linux")]
-fn stop_on_parent_death(cmd: &mut Command) {
+pub(super) fn stop_on_parent_death(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the child uses only syscalls and constructs errors without allocation.

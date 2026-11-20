@@ -7,31 +7,6 @@ use std::path::Path;
 
 use settings::{Apply, Choice, Def, Flag, Kind, Menu, Problem, Scope, Store, Tier, Unit, Value};
 
-/// Which seats automatic bot rosters use. Read when creating the driver or sim plan.
-pub static BOTS_ALL_PHANTOM: Def = Def {
-    key: "clankers.all_phantom",
-    label: "All phantom bots",
-    help: "Seat every bot as a remote peer and keep controller ports free for humans.",
-    kind: Kind::Bool,
-    default: Value::Bool(false),
-    env: Some("H2_BOTS_ALL_PHANTOM"),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Restart,
-    scope: Scope::Sim,
-    tier: Tier::Advanced,
-    menu: None,
-};
-
-pub fn bots_all_phantom(store: &Store) -> bool {
-    store.get(BOTS_ALL_PHANTOM.key) == Some(Value::Bool(true))
-}
-
-pub fn bots_all_phantom_at(data: &Path) -> bool {
-    bots_all_phantom(&load(data, &[]).0)
-}
-
 /// The retail first-person field of view, in degrees.
 pub const FOV_RETAIL: i64 = 70;
 
@@ -131,6 +106,23 @@ pub static RENDER_SCALE: Def = Def {
         screen: "video",
         order: 30,
     }),
+};
+
+/// Select the readback and draw policy when rendering above guest resolution.
+pub static SINGLE_COPY: Def = Def {
+    key: "graphics.single_copy",
+    label: "Single-copy scaled rendering",
+    help: "Draw once at the selected resolution. Guest reads sample that image at guest pixel positions. Disable for exact 1x readbacks.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_SINGLE_COPY"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::Advanced,
+    menu: None,
 };
 
 /// [`LIGHTING`]'s values.
@@ -754,6 +746,7 @@ pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
     &RENDER_SCALE,
+    &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
     &PAD_MUTE,
@@ -811,7 +804,6 @@ pub static ALL: &[&Def] = &[
     &crate::voice_settings::OUTPUT_VOLUME,
     // The Clankers page of a custom game's Game Setup (crate::clankers,
     // docs/game/bots.md section 7).
-    &BOTS_ALL_PHANTOM,
     &crate::clankers::ENABLED,
     &crate::clankers::COUNT,
     &crate::clankers::DIFFICULTY,
@@ -911,6 +903,7 @@ mod tests {
         assert_eq!(s.get(FOV.key), Some(Value::Int(95)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(true)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(true)));
         // `fov = 0` was retail.
@@ -921,14 +914,13 @@ mod tests {
     #[test]
     fn the_variables_read_as_before() {
         let data = tmp("env");
-        assert!(!bots_all_phantom(&Store::defaults(ALL)));
         let (s, p) = with_env(
             &data,
             &[
-                ("H2_BOTS_ALL_PHANTOM", "1"),
                 ("H2_FOV", "0"),
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
+                ("H2_SINGLE_COPY", "0"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
                 ("H2_LIVE_VISIBILITY", "friends"),
@@ -967,7 +959,6 @@ mod tests {
             assert_eq!((h.input_volume.get(), h.output_volume.get()), (50, 80));
             assert_eq!((h.input_device.get(), h.output_device.get()), (0, 0));
         }
-        assert!(bots_all_phantom(&s));
         assert_eq!(coop_max_players(&s), 4);
         assert!(!coop_join_in_progress(&s));
         assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));
@@ -991,6 +982,7 @@ mod tests {
         assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
+        assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
         assert!(

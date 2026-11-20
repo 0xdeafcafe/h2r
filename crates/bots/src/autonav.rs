@@ -11,7 +11,10 @@
 //! A [`Worker`] goes through the maps a `scan` finds ([`Source`]s: a host
 //! file, a region of the disc image, a file the VFS serves), builds each
 //! stale multiplayer map and writes it atomically ([`write_atomic`]): the
-//! other structure BSPs first, `<map>.0.bots` (the one checked) last. A map
+//! other structure BSPs first, `<map>.0.bots` (the one checked) last. Each
+//! BSP's visibility grid (`crate::vis`) is built with it and written
+//! first; a map whose `.bots` is fresh but whose `.vis` is not gets only
+//! the grid built. A map
 //! asked for with [`Handle::want`] (the map being loaded) goes to the front
 //! of the queue, scanned again so a map installed since boot is found.
 //! `h2 bots nav` runs the same worker once, in the foreground; the game
@@ -173,11 +176,19 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Writes a map's structure BSPs' data, stamped with `fingerprint`, to
 /// `dir/<map>.<bsp>.bots`, BSP 0 last: once it is there, so are the rest.
+/// Each BSP's visibility grid, when it has one, goes first, to
+/// `dir/<map>.<bsp>.vis` (`crate::vis`). Returns the `.bots` paths.
 pub fn write_map(dir: &Path, map: &str, fingerprint: u64, bsps: &[MapData]) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let stamp = Stamp::now(fingerprint);
+    let order = || bsps.iter().enumerate().skip(1).chain(bsps.iter().enumerate().take(1));
+    for (k, d) in order() {
+        if let Some(v) = d.walls.vis() {
+            write_atomic(&dir.join(crate::vis::file_name(map, k)), &v.to_bytes(stamp))?;
+        }
+    }
     let mut written = Vec::with_capacity(bsps.len());
-    for (k, d) in bsps.iter().enumerate().skip(1).chain(bsps.iter().enumerate().take(1)) {
+    for (k, d) in order() {
         let file = dir.join(cache::file_name(map, k));
         write_atomic(&file, &d.to_bytes(stamp))?;
         written.push(file);
@@ -551,11 +562,17 @@ impl Worker {
         }
         let status = status(&self.dir, &header.name, header.fingerprint);
         if !status.stale() && !self.force {
-            sum.fresh += 1;
+            match crate::vis::status(&self.dir, &header.name) {
+                crate::vis::Status::Fresh => sum.fresh += 1,
+                vis => self.vis_only(&header.name, vis, sum),
+            }
             return;
         }
         let t = Instant::now();
         let built = src.build().and_then(|bsps| {
+            for d in &bsps {
+                d.walls.set_vis(Arc::new(crate::vis::build(&d.nav, &d.walls)));
+            }
             write_map(&self.dir, &header.name, header.fingerprint, &bsps)
                 .map(|_| bsps)
                 .map_err(|e| format!("writing {}: {e}", self.dir.display()))
@@ -564,13 +581,14 @@ impl Worker {
             Ok(bsps) => {
                 let d = &bsps[0];
                 (self.log)(&format!(
-                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{} in {:.1} s",
+                    "bots: built the nav mesh for {} ({}): {} polygons, {} links, {} wall triangles{}, visibility grid: {} in {:.1} s",
                     header.name,
                     status.why(),
                     d.nav.polys.len(),
                     d.nav.edges.len(),
                     d.walls.tris.len(),
                     if bsps.len() > 1 { format!(", {} BSPs", bsps.len()) } else { String::new() },
+                    d.walls.vis().map_or_else(|| "none".into(), |v| v.summary()),
                     t.elapsed().as_secs_f32()
                 ));
                 (self.on_built)(&header.name, d);
@@ -579,6 +597,36 @@ impl Worker {
             Err(e) => {
                 (self.log)(&format!("bots: nav mesh for {} not built: {e}", header.name));
                 sum.failed.push(header.name);
+            }
+        }
+    }
+}
+
+impl Worker {
+    /// A map whose nav files are up to date but whose visibility grid is
+    /// `why` stale: builds only the grid, from the `.bots` files.
+    fn vis_only(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary) {
+        let t = Instant::now();
+        match crate::vis::rebuild(&self.dir, map) {
+            Ok(d) => {
+                (self.log)(&format!(
+                    "bots: built the visibility grid for {map} ({}): {} in {:.1} s",
+                    why.why(),
+                    d.walls.vis().map_or_else(|| "none".into(), |v| v.summary()),
+                    t.elapsed().as_secs_f32()
+                ));
+                // Into the running map's data in place: the bots keep
+                // their routes and memory, and every answer is the same.
+                if let Some(v) = d.walls.vis()
+                    && offer_vis(map, Arc::clone(v))
+                {
+                    (self.log)(&format!("bots: {map}: the new visibility grid is in use"));
+                }
+                sum.built.push(map.to_owned());
+            }
+            Err(e) => {
+                (self.log)(&format!("bots: visibility grid for {map} not built: {e}"));
+                sum.failed.push(map.to_owned());
             }
         }
     }
@@ -662,6 +710,17 @@ pub fn offer(map: &str, data: MapData, built: bool) -> bool {
     }
     cache::set_current(Some(Arc::new(data)));
     true
+}
+
+/// Attaches `vis` to the loaded map's data, in place, when `map` is the
+/// loaded map and its walls are the ones `vis` was built from. Returns
+/// whether it went in.
+pub fn offer_vis(map: &str, vis: Arc<crate::vis::Vis>) -> bool {
+    let l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    if l.name.is_empty() || !l.name.eq_ignore_ascii_case(map) {
+        return false;
+    }
+    cache::current().is_some_and(|d| vis.fits(&d.walls) && d.walls.set_vis(vis))
 }
 
 static HANDLE: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();

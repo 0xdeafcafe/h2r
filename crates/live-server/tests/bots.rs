@@ -110,7 +110,7 @@ async fn try_start(h: &Harness, u: &User, game: Value) -> Resp {
 }
 
 fn bot_entry(index: u32, x: Xuid) -> Value {
-    json!({"index": index, "name": "Bot", "xuid": x, "team": 1, "local": true, "bot": true})
+    json!({"index": index, "name": "Bot", "xuid": x, "team": 1, "local": false, "bot": true})
 }
 
 #[tokio::test]
@@ -479,15 +479,17 @@ async fn only_the_sessions_host_records_its_roster() {
 async fn a_hosts_own_clankers_are_game_only_bots() {
     let h = harness().await;
     let a = h.create("Host").await;
-    let clanker = |index: u32, port: u32| json!({"index": index, "name": format!("Clanker {port}"), "team": 1, "local": true, "bot": true});
-    let mut game = custom(&a, "0123456789abcdef", json!([clanker(1, 1)]));
+    let clanker = |index: u32| {
+        json!({"index": index, "name": format!("Clanker {index}"), "team": 1, "local": false, "bot": true})
+    };
+    let mut game = custom(&a, "0123456789abcdef", json!([clanker(1)]));
     game.as_object_mut().unwrap().remove("session_id");
     let id = h.start_game(&a, game).await;
     let events = h.batch(
         &a,
         &id,
         &[
-            ("PlayerJoined", json!({"tick": 10, "player": clanker(2, 2)})),
+            ("PlayerJoined", json!({"tick": 10, "player": clanker(2)})),
             (
                 "PlayerKilled",
                 json!({"tick": 30, "victim": 1, "killer": 0, "weapon": "battle_rifle", "kind": "kill"}),
@@ -561,9 +563,8 @@ async fn an_xuid_less_bot_does_not_loosen_the_roster_check() {
 
 /// Bot accounts (§9.5): a rostered bot reads as an account with `bot:
 /// true` and its games, by its gamertag; it is not in the accounts list,
-/// has no keys, cannot sign in, cannot be recovered, and a local-slot
-/// Clanker of the roster is taken in a game record under its xuid like a
-/// phantom.
+/// has no keys, cannot sign in, and cannot be recovered. The game record
+/// stores a rostered phantom's XUID.
 #[tokio::test]
 async fn a_rostered_bot_is_an_account_that_never_signs_in() {
     let h = harness().await;
@@ -572,12 +573,12 @@ async fn a_rostered_bot_is_an_account_that_never_signs_in() {
     let r = roster(&h, &a, json!({"session_id": session, "count": 2})).await;
     let (b0, b1) = (&r.bots[0], &r.bots[1]);
 
-    // A local-slot Clanker (`local: true`) and a phantom, both the roster's.
+    // Two phantoms from the session's roster.
     let game = custom(
         &a,
         &session,
         json!([bot_entry(1, b0.xuid), {
-            "index": 2, "name": b1.gamertag, "xuid": b1.xuid, "team": 1, "bot": true
+            "index": 2, "name": b1.gamertag, "xuid": b1.xuid, "team": 1, "local": false, "bot": true
         }]),
     );
     let id = h.start_game(&a, game).await;

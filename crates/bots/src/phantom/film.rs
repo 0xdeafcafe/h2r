@@ -49,7 +49,10 @@ impl Phantoms {
             }
             list.push(Phantom {
                 info: info.clone(),
-                source: Box::new(crate::local::Recorded::new(Vec::new())),
+                source: std::sync::Arc::new(Mutex::new(Box::new(
+                    crate::pad_source::Recorded::new(Vec::new()),
+                ))),
+                generation: 0,
                 made: *made,
                 buttons: buttons.restore()?,
                 uplink: action::Uplink::new(info.identity.xuid),
@@ -66,6 +69,10 @@ impl Phantoms {
             playerless_host: r.playerless_host,
             game_only: r.game_only,
             match_only: r.match_only,
+            // Replay consumes the recorded retail actions, so there are no
+            // pending brain jobs or buffered plans to reinstate.
+            thinker: Thinker::default(),
+            batch: None,
         };
         Ok(())
     }
@@ -85,7 +92,7 @@ mod tests {
                     gamertag: format!("Bot {xuid}"),
                 },
                 Some(1),
-                Box::new(crate::local::Recorded::new(vec![])),
+                Box::new(crate::pad_source::Recorded::new(vec![])),
             )
             .unwrap()
         };

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod state;
 mod view;
+mod writeback;
+pub use writeback::{Writeback, WritebackView};
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
 pub use view::{FrozenRam, HandBack, LINE_SIZE, WrittenPage};
 
@@ -145,6 +147,10 @@ pub(crate) struct FastPage {
 }
 
 pub struct Guest {
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    flat: Option<crate::flat::Arena>,
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    flat_requested: bool,
     ram: crate::cow::Ram,
     mappings: Vec<Mapping>,
     // Hints only: every hit rechecks the current mapping's virtual range.
@@ -166,6 +172,8 @@ pub struct Guest {
     /// For a copy-on-write view ([`Guest::cow_refresh`]): the source's
     /// layout its mappings and page table were last copied under (0: none).
     cow_source_layout: u64,
+    /// RAM replaced without per-page notifications (COW refresh or rollback).
+    watch_revision: u64,
 }
 
 /// Guest ABI outputs. The caller recreates zeroed allocations with
@@ -224,6 +232,10 @@ impl Guest {
     /// RAM starts zeroed and entirely unmapped, including guest address zero.
     pub fn new() -> Self {
         Self {
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+            flat: None,
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+            flat_requested: crate::flat::enabled(),
             ram: crate::cow::Ram::zeroed(RAM_SIZE),
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| AtomicUsize::new(usize::MAX)),
@@ -237,7 +249,7 @@ impl Guest {
             hle_writes: None,
             layout: fresh_layout(),
             trap: None,
-            cow_source_layout: 0,
+            cow_source_layout: 0, watch_revision: 0,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -248,6 +260,30 @@ impl Guest {
     pub(crate) fn layout_id(&self) -> u64 {
         self.layout
     }
+    /// Identity of the virtual layout and revision of unreported RAM replacements.
+    /// Together with a write subscription these validate cached virtual reads.
+    pub fn write_watch_epoch(&self) -> (u64, u64) {
+        (self.layout, self.watch_revision)
+    }
+
+    /// Subscribe to the physical pages backing a previously read virtual range.
+    /// A layout change requires subscribing to its new backing pages.
+    pub fn watch_virtual_read(&mut self, id: crate::WatchId, addr: u32, len: usize)
+        -> Result<(), crate::watch::WatchError> {
+        use crate::watch::{CONTIGUOUS_BASE, WatchError};
+        let mut index = self.checked_start(addr, len, Access::Read, 1)
+            .ok().flatten().ok_or(WatchError::InvalidRange)?;
+        let mut at = u64::from(addr);
+        let end = at + len as u64;
+        while at < end {
+            let range = self.span(index, at, end);
+            self.watch_writes(id, CONTIGUOUS_BASE + range.start as u32, range.len() as u32)?;
+            at += range.len() as u64;
+            index += 1;
+        }
+        Ok(())
+    }
+
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
     }
@@ -767,6 +803,8 @@ impl Guest {
         if let Some(pages) = &mut self.fast_pages {
             pages[(start >> 12) as usize..(end >> 12) as usize].fill(FastPage::default());
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        self.refresh_flat(start, end);
     }
 
     /// Zero physical bytes, reporting the change to the write watch.
@@ -827,6 +865,8 @@ impl Guest {
                 pages[page].permissions &= !still;
             }
         }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        self.refresh_flat(start, end);
     }
 
     /// Installs the access trap ([`crate::trap`]), keeping up to `cap` hits
@@ -998,10 +1038,48 @@ impl Guest {
             }
         }
         if let Some(pages) = &mut self.fast_pages {
+            // Disarming a census trap changes only the permission bits.
+            let flags = pages[page].permissions & !7;
             pages[page] = FastPage {
                 physical: entry.physical,
-                permissions: entry.permissions & !still,
+                permissions: flags | (entry.permissions & !still),
             };
+        }
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    fn refresh_flat(&mut self, start: u64, end: u64) {
+        let Some(pages) = &mut self.fast_pages else {
+            return;
+        };
+        if self
+            .flat
+            .as_mut()
+            .is_some_and(|f| !f.refresh(&self.ram, pages, start, end))
+        {
+            self.flat = None;
+        }
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn flat_view(&mut self) -> Option<crate::flat::View> {
+        let pages = self.fast_pages.as_mut()?;
+        if self.trap.is_some() {
+            return None;
+        }
+        if self.flat_requested {
+            self.flat_requested = false;
+            self.flat = crate::flat::Arena::new(&self.ram, pages);
+        }
+        let arena = self.flat.as_mut()?;
+        arena.rearm(&self.watch);
+        Some(arena.view(&self.ram, &self.watch))
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn publish_flat(&mut self) {
+        if let Some(arena) = &mut self.flat {
+            arena.publish(&mut self.watch);
         }
     }
 

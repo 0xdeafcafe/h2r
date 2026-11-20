@@ -10,10 +10,8 @@
 //! **Off unless a microphone is chosen.** With `voice.input_device` at
 //! System default the mask stays 0, so the game sees no communicator, as
 //! before voice. Once a microphone is chosen on the pause menu's Voice
-//! screen, every port with a player's pad gets a communicator: a local
-//! bot's port (docs/game/bots.md, `bots::local::Local::port_mask`) gets
-//! none ([`player_pads`]), so the game opens no headphone for a bot and
-//! plays no one's voice to it on the one host output.
+//! screen, every port with a player's pad gets a communicator. Bots are
+//! phantom peers with no pads, so every connected pad is a person's.
 //!
 //! **Talker.** In open-mic mode, it is the first such port. In push-to-talk
 //! mode it is the first such port whose pad holds the chosen button, as the
@@ -80,11 +78,11 @@ pub fn push_to_talk_button(value: i64) -> Option<Buttons> {
     })
 }
 
-/// The connected pads (`connected`, a port mask) less the local bots'
-/// ports (`bots`): a bot's pad is synthesised, so it has no headset to
-/// talk into or play to.
-pub fn player_pads(connected: u32, bots: u32) -> u32 {
-    connected & !bots & 0xf
+/// The connected pads (`connected`, a port mask), capped to the four
+/// controller ports: bots are phantom peers, so every connected pad is a
+/// person's.
+pub fn player_pads(connected: u32) -> u32 {
+    connected & 0xf
 }
 
 /// The ports whose pad holds `button`, from each port's last state.
@@ -239,8 +237,6 @@ impl Link {
         let input = self.handles.input_device.get();
         let output = self.handles.output_device.get();
         let mode = self.handles.mode.get();
-        // Read before XAPI's lock is taken, so the two locks never nest here.
-        let bots = bots::local::global().port_mask();
         let (pads, held) = {
             let xapi = lock(&self.xapi);
             let held = if mode == MODE_PUSH {
@@ -249,7 +245,7 @@ impl Link {
             } else {
                 0
             };
-            (player_pads(xapi.input.connected_mask(), bots), held)
+            (player_pads(xapi.input.connected_mask()), held)
         };
         let plan = plan(input, self.handles.mic_muted.get(), mode, pads, held);
 
@@ -379,23 +375,17 @@ mod tests {
     }
 
     #[test]
-    fn a_bots_port_gets_no_communicator() {
-        // The human on port 0, Clankers on 1 to 3: their pads are
-        // connected, but only the human's port has a communicator.
-        let pads = player_pads(0b1111, 0b1110);
-        assert_eq!(pads, 0b0001);
+    fn every_connected_pad_is_a_persons() {
+        let pads = player_pads(0b1111);
+        assert_eq!(pads, 0b1111);
         assert_eq!(
             plan(42, false, MODE_OPEN, pads, 0),
             Plan {
-                ports: 0b0001,
+                ports: 0b1111,
                 talker: Some(0)
             }
         );
-        // A bot holding the push-to-talk button (its pad is idle, but
-        // even so) never talks.
-        assert_eq!(plan(42, false, MODE_PUSH, pads, 0b0010).talker, None);
-        assert_eq!(player_pads(0b0101, 0), 0b0101, "no bots: every pad");
-        assert_eq!(player_pads(0b0010, 0b0010), 0, "only a bot");
+        assert_eq!(player_pads(0b0101), 0b0101);
     }
 
     #[test]

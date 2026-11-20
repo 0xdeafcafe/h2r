@@ -41,7 +41,7 @@ pub mod glow;
 pub mod gpu;
 pub mod hud;
 #[cfg(feature = "gpu")]
-pub mod hud_gpu;
+pub mod ui_gpu;
 pub mod instances;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
@@ -71,6 +71,7 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
+pub mod object_walk;
 pub mod objects;
 pub mod particles;
 #[cfg(feature = "gpu")]
@@ -93,3 +94,4 @@ pub mod world;
 pub mod world_layers;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;
+pub mod world_ranges;

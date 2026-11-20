@@ -124,18 +124,19 @@ fn queued_frame_stats_and_game_thread_waits_reach_csv() {
     std::fs::remove_file(&csv).unwrap();
     let mut lines = text.lines();
     let header: Vec<_> = lines.next().unwrap().split(',').collect();
-    let rows: Vec<Vec<u64>> = lines
-        .map(|l| {
-            l.split(',')
-                .enumerate()
-                .map(|(i, v)| if i == 1 { 0 } else { v.parse().unwrap() })
-                .collect()
-        })
+    // The last field is a quoted material report that may contain commas.
+    assert_eq!(header.last().copied(), Some("native_world_opaque_materials"));
+    let rows: Vec<Vec<_>> = lines
+        .map(|line| line.splitn(header.len(), ',').collect())
         .collect();
     assert_eq!(rows.len(), 2, "{text}");
     let col = |name: &str| header.iter().position(|c| *c == name).unwrap();
+    let value = |row: &[&str], name: &str| {
+        row[col(name)].parse::<u64>().unwrap_or_else(|err| panic!("{name}: {err}: {text}"))
+    };
     for (i, row) in rows.iter().enumerate() {
-        assert_eq!(row[col("frame")], first + i as u64);
+        assert_eq!(row.len(), header.len(), "{text}");
+        assert_eq!(value(row, "frame"), first + i as u64);
         for counter in [
             "draws",
             "submits",
@@ -144,31 +145,31 @@ fn queued_frame_stats_and_game_thread_waits_reach_csv() {
             "uploads",
             "readbacks",
         ] {
-            assert_eq!(row[col(counter)], i as u64 + 1, "{counter}: {text}");
+            assert_eq!(value(row, counter), i as u64 + 1, "{counter}: {text}");
         }
         for timer in ["encode_us", "submit_us", "gpu-wait_us"] {
-            assert!(row[col(timer)] >= 1000, "{timer}: {text}");
+            assert!(value(row, timer) >= 1000, "{timer}: {text}");
         }
-        assert_eq!(row[col("read_bytes")], [123, 456][i]);
-        assert_eq!(row[col("native_world_upload_bytes")], 8);
-        assert_eq!(row[col("native_world_buffers")], 1);
-        assert_eq!(row[col("native_objects_upload_bytes")], (i as u64 + 1) * 32);
-        assert!(row[col("native_world_prepare_ns")] > 0);
-        assert!(row[col("native_objects_encode_ns")] > 0);
-        assert_eq!(row[col("native_world_v1_display_recorded")], 2);
-        assert_eq!(row[col("native_world_v1_display_ranges")], 0);
-        assert_eq!(row[col("native_world_v1_display_invariants")], 1);
-        assert_eq!(row[col("native_world_v1_reference_invariants")], 0);
+        assert_eq!(value(row, "read_bytes"), [123, 456][i]);
+        assert_eq!(value(row, "native_world_upload_bytes"), 8);
+        assert_eq!(value(row, "native_world_buffers"), 1);
+        assert_eq!(value(row, "native_objects_upload_bytes"), (i as u64 + 1) * 32);
+        assert!(value(row, "native_world_prepare_ns") > 0);
+        assert!(value(row, "native_objects_encode_ns") > 0);
+        assert_eq!(value(row, "native_world_v1_display_recorded"), 2);
+        assert_eq!(value(row, "native_world_v1_display_ranges"), 0);
+        assert_eq!(value(row, "native_world_v1_display_invariants"), 1);
+        assert_eq!(value(row, "native_world_v1_reference_invariants"), 0);
     }
-    assert!(rows[1][col("render-wait_us")] > 0, "{text}");
+    assert!(value(&rows[1], "render-wait_us") > 0, "{text}");
     // Game-thread self time still accounts for its whole wall interval;
     // parallel render times are extra observations, not subtracted twice.
     for row in &rows {
         let self_us: u64 = ["cpu_us", "decode_us", "pace_us", "render-wait_us"]
-            .map(|c| row[col(c)])
+            .map(|c| value(row, c))
             .iter()
             .sum();
-        assert!(row[col("total_us")].abs_diff(self_us) <= 4, "{text}");
+        assert!(value(row, "total_us").abs_diff(self_us) <= 4, "{text}");
     }
 
     // Stopping with a queued boundary reports an incomplete tail, and a
@@ -196,6 +197,7 @@ fn queued_frame_stats_and_game_thread_waits_reach_csv() {
     std::fs::remove_file(&csv).unwrap();
     let rows: Vec<_> = text.lines().collect();
     assert_eq!(rows.len(), 2, "{text}");
-    let fields: Vec<_> = rows[1].split(',').collect();
+    let fields: Vec<_> = rows[1].splitn(header.len(), ',').collect();
+    assert_eq!(fields.len(), header.len(), "{text}");
     assert_eq!(fields[col("draws")], "4", "old-session work leaked: {text}");
 }

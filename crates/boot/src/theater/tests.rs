@@ -1,4 +1,4 @@
-mod bot_inputs;
+mod pad_inputs;
 
 use super::*;
 use agent_proto::theater as api;

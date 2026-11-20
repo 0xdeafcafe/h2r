@@ -326,6 +326,34 @@ fn a_missing_shared_map_skips_only_the_sounds_that_need_it() {
 }
 
 #[test]
+fn empty_cache_slots_are_skipped_and_can_be_indexed_after_publication() {
+    let t = Temp::new("empty-cache");
+    let path = t.0.join("cache000.map");
+    let device = r"\Device\Harddisk0\Partition5";
+    assert!(is_cache_slot(device, "CACHE000.MAP"));
+    assert!(!is_cache_slot(device, "junk.map"));
+    assert!(!is_cache_slot(r"\Device\CdRom0", "cache000.map"));
+
+    let mut ix = PadIndexer::new(&config(), [None, None, None]);
+    std::fs::write(&path, []).unwrap();
+    assert!(ix.add_map(&whole(&path), true).unwrap().is_none());
+
+    let m = maps();
+    let mut unpublished = m.level.clone();
+    unpublished[..0x800].fill(0);
+    std::fs::write(&path, unpublished).unwrap();
+    let slot = whole(&path);
+    assert!(ix.add_map(&slot, true).unwrap().is_none());
+    std::fs::write(&path, &m.level).unwrap();
+    assert_eq!(whole(&path), slot);
+    assert!(ix.add_map(&slot, true).unwrap().is_some());
+
+    let broken = t.0.join("cache001.map");
+    std::fs::write(&broken, b"nonzero data").unwrap();
+    assert!(ix.add_map(&whole(&broken), true).is_err());
+}
+
+#[test]
 fn opening_a_map_through_the_vfs_installs_a_router() {
     let t = Temp::new("vfs");
     let m = maps();

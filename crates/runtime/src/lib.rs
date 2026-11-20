@@ -8,6 +8,9 @@ pub mod atomic;
 mod continuation;
 #[allow(unsafe_code)]
 mod cow;
+#[allow(unsafe_code)]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+mod flat;
 pub mod cpu;
 #[allow(unsafe_code)]
 pub mod direct;
@@ -43,6 +46,7 @@ pub use cow::CopyKind;
 pub use coverage::GuestCoverage;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
+pub use entry_stats::DispatchCounts;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
 pub use ffi::ExecCtxOpaque;
 pub use generated::{H2GenEntry, H2GenModule, H2GenResume, RegisteredModule};

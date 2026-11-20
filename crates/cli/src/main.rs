@@ -180,6 +180,7 @@ const USAGE: &str = "usage: h2 <command>
   serve <disc> --system-link --host-light
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
+  host pack ...           run several leased matches in one container
   theater play FILM --render-every 0
                           replay a host film headlessly
   sim <run|batch|compare> run or compare bot matches
@@ -1175,7 +1176,10 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let a = analyze::analyze(&x)?;
+        let mut a = analyze::analyze(&x)?;
+        if x.certificate.title_id == 0x4d53_0064 && x.entry == 0x002d_0aee {
+            a.expose_instructions(boot::scene_effect_instruction_entries());
+        }
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;

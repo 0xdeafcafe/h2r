@@ -10,18 +10,15 @@ const MAX_ROSTER: usize = 1 << 20;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Books {
-    local: bots::local::film::Roster,
     remote: bots::phantom::film::Roster,
 }
 impl Books {
     pub(crate) fn capture() -> Self {
         Self {
-            local: bots::local::global().film_roster(),
             remote: bots::phantom::global().film_roster(),
         }
     }
     pub(crate) fn load(&self) -> Result<(), String> {
-        bots::local::global().restore_film_roster(&self.local)?;
         bots::phantom::global().restore_film_roster(&self.remote)
     }
 }
@@ -35,7 +32,7 @@ struct Change {
 pub(super) struct BotTape {
     enabled: bool,
     cursor: u64,
-    last: Option<(u64, u64)>,
+    last: Option<u64>,
     next: usize,
     entries: Vec<film::Entry>,
     pending: Option<Change>,
@@ -116,10 +113,7 @@ impl Session {
         }
         match &mut s.mode {
             Mode::Record(rec) => {
-                let rev = (
-                    bots::local::global().roster_revision(),
-                    bots::phantom::global().roster_revision(),
-                );
+                let rev = bots::phantom::global().roster_revision();
                 if t.last != Some(rev)
                     && let Some(out) = &mut rec.out
                 {
