@@ -1377,8 +1377,15 @@ the bodies make every stack store retail makes so they match.
 `e5930`, `1faf30`, `e6900`, `10f820`, `de080` (0); `e3380`, `e0ef0`,
 `bfa40` (4); `e01d0`, `dc5c0`, `e3c90`, `e40d0`, `e4450` (8); `e24f0`,
 `e4d90` (`c`); `10f430` (`1c`); and the shared `1e5af0`, `e6830` (4),
-`b58c0`, `111650` (8), `b8d30` (`c`), `30bf0`, `113e40` (0). Fused bodies
-in the tree: `bba20`, `ba1d0` (slice 4), `cba50` (slice 6a).
+`b58c0` (8), `b8d30` (`c`), `30bf0`, `113e40` (0). Fused bodies in the
+tree: `bba20`, `ba1d0` (slice 4), `cba50` (slice 6a), `111650` (slice
+6c).
+
+**A split block.** Function discovery takes `de336`, the look update's
+third clamp step, for a function start (`h2 analyze --explain de336`:
+"found by TailCall", from the `jmp short` at `de32c` and `de331`), so
+the lifter marks those jumps as tail calls. The body runs it as its own
+block; the harness's lifted side steps on through it (`SPLITS`).
 
 **Not ported.** The movement and animation steps `e01d0`, `dc5c0`,
 `e24f0`, `e0ef0`, `e3c90`, `e40d0`, `e4450` (with `df380` and `e0dc0`

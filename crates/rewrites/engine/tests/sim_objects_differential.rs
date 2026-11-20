@@ -283,6 +283,14 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 /// the lifter marks the jump as a tail call.
 const TAILS: &[u32] = &[0xbf380];
 
+/// Blocks inside a body that function discovery takes for function
+/// starts (`h2 analyze --explain`), so the lifter marks the body's own
+/// jumps to them as tail calls: `de336`, the look update `de190`'s third
+/// clamp step, "found by TailCall" from the `jmp short` at `de32c` and
+/// `de331`. The body runs them as its own blocks; the lifted side steps
+/// on through them.
+const SPLITS: &[u32] = &[0xde336];
+
 /// Guest leaves a body runs inline, with the push, frame and return
 /// address the guest call makes: the node matrices `bd090` runs the root
 /// transform `bdc40`, the pose matrix `1421f0` and the composition
@@ -609,7 +617,7 @@ impl Harness<'_> {
                         return TransferAbi::call(target, continuation);
                     }
                 }
-                Flow::Jump { target, tail } if tail || TAILS.contains(&target) => {
+                Flow::Jump { target, tail } if (tail && !SPLITS.contains(&target)) || TAILS.contains(&target) => {
                     if !self.tree(target) || (rust && self.table.owns(target)) {
                         return TransferAbi::jump(target);
                     }
@@ -2423,11 +2431,22 @@ fn vec3(g: &mut Guest, at: u32, v: [f32; 3]) {
     }
 }
 
+/// A unit's actor (body `+12c`): none, or one of the first records of
+/// the actor array [`damage_info`] sets up (`888` bytes each). [`dress`]
+/// writes the type flags of items and projectiles there, which for a unit
+/// index records far past the harness RAM once the team update `c6990`
+/// (slice 6c, reached through the unit shell) reads the actor's team.
+fn unit_actor(g: &mut Guest, case: u32) {
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    word(g, body + 0x12c, [u32::MAX, 0x00e9_0000, u32::MAX, 0x00e9_0001][case as usize % 4]);
+}
+
 /// [`dress`], then the fields the slice 6a bodies branch on, varied by
 /// `case`: the definition's rates and early-out bit, the unit's
 /// directions, its limits record, its record word and held weapons.
 fn unit_dress(g: &mut Guest, case: u32) {
     dress(g, case);
+    unit_actor(g, case);
     let c = case as usize % 6;
     // Aim rates `+144`, `+148`, the scale `+14c`, look rates `+150`, `+154`.
     let rates = [
@@ -2836,6 +2855,7 @@ fn dress_vehicle(g: &mut Guest, case: u32) {
     word(g, VEHICLE_MATG + 0x144, VEHICLE_MATG_RECORD);
     f32w(g, VEHICLE_MATG_RECORD + 0x5c, [-10.0, 10.0][c % 2]);
     word(g, VEHICLE_MATG_RECORD + 0x28, 0x00e6_0004);
+    unit_actor(g, case);
 }
 
 #[test]
@@ -3644,6 +3664,7 @@ fn dress_biped(g: &mut Guest, case: u32) {
     vec3(g, body + 0x168, [0.8, 0.6, 0.0]);
     byte(g, body + 0x3c8, [0, 1][(c / 2) % 2]);
     vec3(g, body + 0x3cc, [0.5, -2.0, 0.25]);
+    unit_actor(g, case);
 }
 
 /// The arguments of a slice 7a root: the biped on the stack (`dd360`,
