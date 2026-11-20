@@ -559,7 +559,7 @@ fn every_particle_converts() {
                 let Some(Val::Ref { target: Target::Id(stem), .. }) = r.at("shader_template") else {
                     panic!("{name}: stem")
                 };
-                let stem_name = if p.blend == 6 {
+                let stem_name = if matches!(p.blend, 6 | 7) {
                     c.tree.tags[stem.index()].0.clone()
                 } else {
                     base.name(*stem).unwrap().1.to_owned()
@@ -894,28 +894,51 @@ fn every_pctl_part_becomes_particle_systems() {
 
 #[test]
 #[ignore = "reads the Halo 1 and Halo 2 discs"]
-fn all_47_maximum_particle_draws_keep_their_mask_and_motion() {
-    use h1convert::shad::program::glass::ParticleCoordinates;
-    use h1objects::{base::Base, convert::Converter, particles::H1Particle};
+fn retail_maximum_and_premultiplied_particles_keep_their_mask_and_motion() {
+    use h1convert::shad::program::glass::{ParticleBlend, ParticleCoordinates};
+    use h1objects::{
+        base::Base,
+        convert::Converter,
+        particles::{H1Particle, particle_system_types},
+    };
     use tags::{
         defs::{self, Defs, Target, Val},
         effects::function::{Function, FunctionType},
     };
-    let mut count = 0;
+    let (mut maps, mut maximum, mut ice) = (0, 0, 0);
+    let mut states = 0;
     for (base_name, levels) in level_sets() {
         let base = Base::read(&mut h2_map(base_name)).unwrap();
         for level in levels {
             let Some(h1) = h1_level(&level) else { continue };
+            maps += 1;
+            for system in h1.tags().iter().filter(|t| t.group == Group::new(b"pctl")) {
+                for ty in particle_system_types(&h1, system).unwrap() {
+                    for state in ty.states {
+                        assert!(
+                            ParticleBlend::from_source(state.blend).is_none(),
+                            "{level} {}: state {} needs a rebuilt particle shader",
+                            system.name, state.name
+                        );
+                        states += 1;
+                    }
+                }
+            }
             let mut c = Converter::new(&h1, &base);
             for t in h1.tags().iter().filter(|t| t.group == Group::new(b"part")) {
-                if H1Particle::read(&h1, t).unwrap().blend != 6 {
+                let source = H1Particle::read(&h1, t).unwrap();
+                let Some(blend) = ParticleBlend::from_source(source.blend) else {
                     continue;
-                }
+                };
                 let mode = match t.name.rsplit('\\').next().unwrap() {
                     "glass breakable" => ParticleCoordinates::Sprite,
                     "glass death" => ParticleCoordinates::Screen,
+                    "ice" => {
+                        assert_eq!(blend, ParticleBlend::Premultiplied, "{level}");
+                        ParticleCoordinates::Screen
+                    }
                     "glowingdrip goo" => ParticleCoordinates::Primary,
-                    other => panic!("unexpected blend 6 source {level}/{other}"),
+                    other => panic!("unexpected rebuilt particle {level}/{other}"),
                 };
                 let id = c.particle(t).unwrap().unwrap();
                 let read = |id: map::TagId| {
@@ -931,7 +954,7 @@ fn all_47_maximum_particle_draws_keep_their_mask_and_motion() {
                 else {
                     panic!()
                 };
-                assert_eq!(c.tree.tags[stem.index()].0, mode.stem());
+                assert_eq!(c.tree.tags[stem.index()].0, blend.stem(mode));
                 assert_eq!(
                     p.at("vertex_shader"),
                     Some(&Val::Int(if mode == ParticleCoordinates::Sprite {
@@ -955,6 +978,8 @@ fn all_47_maximum_particle_draws_keep_their_mask_and_motion() {
                     assert_eq!(b.len(), 1);
                     assert_eq!(p.at("sequence_count"), Some(&Val::Int(1)));
                 } else {
+                    assert_eq!(p.at("first_sequence"), Some(&Val::Int(0)));
+                    assert_eq!(p.at("sequence_count"), Some(&Val::Int(4)));
                     let Some(Val::Datum(Target::Id(mask))) = b[1].at("bitmap") else {
                         panic!()
                     };
@@ -977,9 +1002,12 @@ fn all_47_maximum_particle_draws_keep_their_mask_and_motion() {
                         assert_eq!(p.at(&format!("{path}.input_b")), Some(&Val::Float(period)));
                     }
                 }
-                count += 1;
+                match blend {
+                    ParticleBlend::Maximum => maximum += 1,
+                    ParticleBlend::Premultiplied => ice += 1,
+                }
             }
         }
     }
-    assert_eq!(count, 47);
+    assert_eq!((maps, states, maximum, ice), (23, 629, 47, 23));
 }

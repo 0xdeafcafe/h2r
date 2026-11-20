@@ -106,17 +106,35 @@ pub enum ParticleCoordinates {
     Screen,
 }
 
-impl ParticleCoordinates {
-    pub fn stem(self) -> &'static str {
-        match self {
-            Self::Primary => PARTICLE_MAX,
-            Self::Sprite => r"h1\transparent\particle_maximum_sprite_mask",
-            Self::Screen => r"h1\transparent\particle_maximum_screen_mask",
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticleBlend {
+    Maximum,
+    Premultiplied,
+}
+
+impl ParticleBlend {
+    pub fn from_source(blend: u16) -> Option<Self> {
+        match blend {
+            6 => Some(Self::Maximum),
+            7 => Some(Self::Premultiplied),
+            _ => None,
+        }
+    }
+
+    pub fn stem(self, coordinates: ParticleCoordinates) -> &'static str {
+        use ParticleCoordinates::*;
+        match (self, coordinates) {
+            (Self::Maximum, Primary) => PARTICLE_MAX,
+            (Self::Maximum, Sprite) => r"h1\transparent\particle_maximum_sprite_mask",
+            (Self::Maximum, Screen) => r"h1\transparent\particle_maximum_screen_mask",
+            (Self::Premultiplied, Primary) => r"h1\transparent\particle_premultiplied",
+            (Self::Premultiplied, Sprite) => r"h1\transparent\particle_premultiplied_sprite_mask",
+            (Self::Premultiplied, Screen) => r"h1\transparent\particle_premultiplied_screen_mask",
         }
     }
 }
 
-pub fn maximum_graph(pass: TagId, coordinates: ParticleCoordinates) -> TemplatePostprocess {
+pub fn particle_graph(pass: TagId, coordinates: ParticleCoordinates) -> TemplatePostprocess {
     let count = if coordinates == ParticleCoordinates::Primary {
         1
     } else {
@@ -149,11 +167,11 @@ pub fn maximum_graph(pass: TagId, coordinates: ParticleCoordinates) -> TemplateP
     )
 }
 
-pub fn maximum_template(graph: &TemplatePostprocess) -> Result<Block> {
+pub fn particle_template(graph: &TemplatePostprocess) -> Result<Block> {
     stem(graph, |id| id)
 }
 
-fn maximum_pixel(mask: bool) -> PixelShaderDef {
+fn particle_pixel(blend: ParticleBlend, mask: bool) -> PixelShaderDef {
     let mut pixel = PixelShaderDef {
         combiner_count: if mask { 3 } else { 2 },
         texture_modes: if mask { 0x21 } else { 1 },
@@ -178,16 +196,30 @@ fn maximum_pixel(mask: bool) -> PixelShaderDef {
     let last = if mask { 2 } else { 1 };
     pixel.rgb_inputs[last] = 0x0c15_0000;
     pixel.rgb_outputs[last] = 0xc0;
+    if blend == ParticleBlend::Premultiplied {
+        // H1 0x67039 scales sampled alpha by visibility/opacity as well.
+        // ONE_MINUS_SRC_ALPHA consumes this value in the framebuffer blend.
+        pixel.alpha_inputs[last] = 0x1c15_0000;
+        pixel.alpha_outputs[last] = 0xc0;
+    }
     pixel
 }
 
-pub fn maximum_pass(vertex: TagId, coordinates: ParticleCoordinates) -> Result<Block> {
+pub fn particle_pass(
+    vertex: TagId,
+    coordinates: ParticleCoordinates,
+    blend: ParticleBlend,
+) -> Result<Block> {
     let mask = coordinates != ParticleCoordinates::Primary;
     let textures: &[(u8, u8)] = if mask { &[(0, 0), (1, 0)] } else { &[(0, 0)] };
-    // E 0x7f4e0, table entry 6: ONE, ONE, MAX. H1 writes RGB only.
+    // H1 0x7f4e0, blend table entries 6 and 7. Both write RGB only.
+    let (destination, operation) = match blend {
+        ParticleBlend::Maximum => (1, 0x8008),
+        ParticleBlend::Premultiplied => (0x303, 0x8006),
+    };
     pass(
         vertex,
-        &maximum_pixel(mask),
+        &particle_pixel(blend, mask),
         textures,
         1,
         2,
@@ -195,8 +227,8 @@ pub fn maximum_pass(vertex: TagId, coordinates: ParticleCoordinates) -> Result<B
             (67, 0x10101),
             (59, 1),
             (62, 1),
-            (63, 1),
-            (74, 0x8008),
+            (63, destination),
+            (74, operation),
             (64, 0),
             (60, 0),
             (147, 0),
@@ -228,10 +260,10 @@ mod tests {
         );
     }
 
-    struct Textures;
+    struct Textures(f32);
     impl interp::Sampler for Textures {
         fn sample(&self, stage: usize, _: TextureDim, _: [f32; 3]) -> [f32; 4] {
-            [[1., 0.5, 0.25, 0.], [0.5, 1., 0.25, 0.75]][stage]
+            [[1., 0.5, 0.25, self.0], [0.5, 1., 0.25, 0.75]][stage]
         }
     }
 
@@ -244,7 +276,7 @@ mod tests {
         ] {
             let mask = coordinates != ParticleCoordinates::Primary;
             let rgba = interp::run(
-                &maximum_pixel(mask),
+                &particle_pixel(ParticleBlend::Maximum, mask),
                 &PixelOptions::default(),
                 &interp::Inputs {
                     d1: [1., 0.5, 1., 0.5],
@@ -253,7 +285,7 @@ mod tests {
                     ..Default::default()
                 },
                 &interp::Uniforms::default(),
-                &Textures,
+                &Textures(0.),
             )
             .unwrap();
             let expected = if mask {
@@ -262,7 +294,7 @@ mod tests {
                 [0.5, 0.125, 0.125, 0.]
             };
             assert_eq!(rgba, expected);
-            let pass = maximum_pass(TagId(1), coordinates).unwrap();
+            let pass = particle_pass(TagId(1), coordinates, ParticleBlend::Maximum).unwrap();
             let r = defs::from_built(def(b"spas"), &pass).unwrap();
             let Some(Val::Block(states)) = r.at("postprocess[0].render_states") else {
                 panic!()
@@ -273,6 +305,41 @@ mod tests {
                         && s.at("value") == Some(&int(value)))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn premultiplied_ice_attenuates_the_destination_by_both_textures_and_opacity() {
+        let coordinates = ParticleCoordinates::Screen;
+        let blend = ParticleBlend::Premultiplied;
+        let pass = particle_pass(TagId(1), coordinates, blend).unwrap();
+        let record = defs::from_built(def(b"spas"), &pass).unwrap();
+        let Some(Val::Block(states)) = record.at("postprocess[0].render_states") else {
+            panic!("missing particle render states")
+        };
+        for (state, value) in [(67, 0x10101), (59, 1), (62, 1), (63, 0x303), (74, 0x8006)] {
+            assert!(
+                states
+                    .iter()
+                    .any(|s| s.at("state") == Some(&int(state))
+                        && s.at("value") == Some(&int(value)))
+            );
+        }
+        for alpha in [0., 0.5, 1.] {
+            let src = interp::run(
+                &particle_pixel(blend, true),
+                &PixelOptions::default(),
+                &interp::Inputs {
+                    d1: [1., 0.5, 1., 0.5],
+                    t: [[0., 0., 0., 1.]; 4],
+                    front: true,
+                    ..Default::default()
+                },
+                &interp::Uniforms::default(),
+                &Textures(alpha),
+            )
+            .unwrap();
+            assert_eq!(src, [0.25, 0.125, 0.03125, alpha * 0.75 * 0.5]);
         }
     }
 }

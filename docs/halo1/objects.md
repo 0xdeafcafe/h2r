@@ -186,6 +186,10 @@ Glass breakable samples its moving secondary texture at the sprite UVs.
 Glass death projects that texture in screen coordinates. Glowingdrip goo
 uses the primary sprite alone. The compiler writes the texture bindings,
 vertex transforms, motion properties and colour combiner for each case.
+Blend 7 ice uses the same moving screen-space mask as glass death. Its
+compiled pass adds the tinted sprite to the scene, attenuating the scene
+by one minus the product of sprite alpha, mask alpha, particle opacity and
+fog visibility.
 
 `h1objects::particles::H1Particle` and `Converter::particle`: the stem
 by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,

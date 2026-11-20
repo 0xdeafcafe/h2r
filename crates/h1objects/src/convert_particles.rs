@@ -110,27 +110,28 @@ impl Converter<'_> {
         if !proven {
             return Err(fail(format!("no particle program for blend {}", p.blend)).into());
         }
+        let rebuilt = glass::ParticleBlend::from_source(p.blend);
         let mut mask = None;
         let mut orientation = 0;
-        if p.blend == 6 {
+        if let Some(blend) = rebuilt {
             if p.bitmap.is_none() {
-                return Err(fail("blend 6 has no primary bitmap".into()).into());
+                return Err(fail(format!("particle blend {} has no primary bitmap", p.blend)).into());
             }
             let m = particles::Mask::read(source, tag)?;
             let data = source.tag_data(tag)?;
             orientation = u16::from_le_bytes(data[0xac..0xae].try_into().unwrap());
             let fade = u16::from_le_bytes(data[0xdc..0xde].try_into().unwrap());
             if fade != 0 && orientation != 0 {
-                return Err(fail(format!("unsupported blend 6 angular fade {fade}")).into());
+                return Err(fail(format!("unsupported particle angular fade {fade}")).into());
             }
             if orientation > 1 {
                 return Err(fail(format!(
-                    "unsupported blend 6 particle orientation {orientation}"
+                    "unsupported particle orientation {orientation}"
                 ))
                 .into());
             }
             let coordinates = m.map_or(glass::ParticleCoordinates::Primary, |m| m.coordinates);
-            want = coordinates.stem();
+            want = blend.stem(coordinates);
             if !self
                 .particle_shaders
                 .as_ref()
@@ -149,10 +150,13 @@ impl Converter<'_> {
                         .find(b"vrtx", glass::PARTICLE_VERTEX)
                         .ok_or_else(|| fail(format!("missing {}", glass::PARTICLE_VERTEX)))?
                 };
-                let pass =
-                    self.program_tag(want, b"spas", glass::maximum_pass(vertex, coordinates)?);
-                let template = glass::maximum_graph(pass, coordinates);
-                let stem = self.program_tag(want, b"stem", glass::maximum_template(&template)?);
+                let pass = self.program_tag(
+                    want,
+                    b"spas",
+                    glass::particle_pass(vertex, coordinates, blend)?,
+                );
+                let template = glass::particle_graph(pass, coordinates);
+                let stem = self.program_tag(want, b"stem", glass::particle_template(&template)?);
                 let mut vectors = vec![[1., 1., 0., 0.], [0., 0., 0., 1.]];
                 if m.is_some() {
                     vectors.push([1., 1., 0., 0.]);
@@ -182,10 +186,10 @@ impl Converter<'_> {
             .ok_or_else(|| fail(format!("missing particle program {want}")))?;
         let bitmap = p.bitmap.map(|id| self.particle_bitmap(id)).transpose()?;
         let mut particle = p.clone();
-        if p.blend == 6 {
+        if rebuilt.is_some() {
             let total = bitmap.expect("checked primary bitmap").1;
-            let (first, count) = particles::maximum_sequences(p.sequences, total)
-                .ok_or_else(|| fail("unsupported blend 6 sprite sequence phases".into()))?;
+            let (first, count) = particles::sprite_sequences(p.sequences, total)
+                .ok_or_else(|| fail("unsupported particle sprite sequence phases".into()))?;
             particle.sequences = [first, count, 0, 0];
         }
         let bitmap = bitmap.map(|(binding, _)| binding);
@@ -213,7 +217,7 @@ impl Converter<'_> {
         let collision = effect(self, p.collision_effect, &mut rep)?;
         let death = effect(self, p.death_effect, &mut rep)?;
         rep.no_home.push("Lifespan, fade times, radius, frame animation, physics, contact deterioration and fade sizes belong to the emitter".into());
-        if p.blend != 6 {
+        if rebuilt.is_none() {
             rep.no_home
                 .push("Particle orientation and secondary map are not carried".into());
         }

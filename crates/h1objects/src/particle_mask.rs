@@ -5,7 +5,7 @@ use h1convert::shad::program::glass::ParticleCoordinates;
 /// H1 0x10e0ed..0x10e223 selects a random sequence within each
 /// successive phase, then clamps to the bitmap's last sequence. A single
 /// H2 random range represents these phases when their effective range agrees.
-pub(crate) fn maximum_sequences(
+pub(crate) fn sprite_sequences(
     [first, initial, looping, final_count]: [u16; 4],
     total: usize,
 ) -> Option<(u16, u16)> {
@@ -48,13 +48,13 @@ impl Mask<H1TagId> {
     pub(crate) fn read(map: &H1Map, tag: &Tag) -> Result<Option<Self>> {
         let fail = |why: &str| h1convert::Error::no_rebuild(&map.header().name, &tag.name, why);
         if tag.group != h1map::Group::new(b"part") {
-            return Err(fail("missing source effect shader for blend 6").into());
+            return Err(fail("missing source particle effect shader").into());
         }
         let d = tag_bytes(map, tag, b"part", H1_PART_SIZE)?;
         let half = |at| u16::from_le_bytes(d[at..at + 2].try_into().unwrap());
         let float = |at| f32::from_le_bytes(d[at..at + 4].try_into().unwrap());
         if half(0xd8) != 0 || half(0xde) != 0 {
-            return Err(fail("unsupported blend 6 shader or sampler flags").into());
+            return Err(fail("unsupported particle shader or sampler flags").into());
         }
         let reference = h1map::TagRef::read(d, 0xfc).ok_or_else(|| fail("short secondary map"))?;
         if reference.group != h1map::Group::new(b"bitm") {
@@ -199,12 +199,12 @@ impl Mask<(TagId, u16, u16)> {
 
 #[cfg(test)]
 mod tests {
-    use super::maximum_sequences;
+    use super::sprite_sequences;
 
     #[test]
     fn sprite_phases_clamp_to_the_source_bitmap() {
-        assert_eq!(maximum_sequences([0, 1, 1, 0], 1), Some((0, 1)));
-        assert_eq!(maximum_sequences([0, 4, 0, 0], 4), Some((0, 4)));
-        assert_eq!(maximum_sequences([0, 1, 1, 0], 2), None);
+        assert_eq!(sprite_sequences([0, 1, 1, 0], 1), Some((0, 1)));
+        assert_eq!(sprite_sequences([0, 4, 0, 0], 4), Some((0, 4)));
+        assert_eq!(sprite_sequences([0, 1, 1, 0], 2), None);
     }
 }

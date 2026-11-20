@@ -24,7 +24,7 @@ use crate::{Error, Result};
 
 #[path = "particle_mask.rs"]
 mod particle_mask;
-pub(crate) use particle_mask::{Mask, maximum_sequences};
+pub(crate) use particle_mask::{Mask, sprite_sequences};
 
 /// Halo 1 `cont` root size (V: every one is `0x144` plus `0x68` per point,
 /// its point block at `+0x138`).
@@ -316,10 +316,9 @@ pub fn particle_postprocess(s: &ParticleShader, bitmap: Option<(TagId, u16, u16)
 // `+0xda` holds 0, 3, 6 or 7 (V), and the particles Halo 2 ships again
 // pair them with Halo 2's stems (V: smoke, blood and debris are 0 and
 // alpha blend in Halo 2; flashes and sparks 3 and additive; ice 7 and
-// alpha-multiply-add, `particle_alpha_multiply_add` holding only
-// `solids\ice`). Its bitmap (`+0x4`) is the stem's one bitmap parameter
-// (`alpha_map_texture`, the name every particle stem's parameter has on
-// the disc), its sprite sequences Halo 1's (`+0x98` first, `+0x9a`
+// premultiplied). Blends 6 and 7 build the pass and the secondary-map
+// bindings from the H1 effect shader. Its primary bitmap (`+0x4`) is the
+// stem's `alpha_map_texture`, its sprite sequences Halo 1's (`+0x98` first, `+0x9a`
 // initial and `+0x9c` looping counts: one random sequence per particle
 // among them, prt3 flag `0x10`), its collision and death effects
 // (`+0x48`, `+0x58`) converted. The five properties are constants as the
@@ -384,13 +383,15 @@ impl H1Particle {
 }
 
 /// The Halo 2 stem for a Halo 1 blend function, and whether the pairing
-/// is proven. For 6 the secondary map selects a compiled program variant.
+/// is proven. For 6 and 7 the secondary map selects a compiled program variant.
 pub fn particle_stem(blend: u16) -> (&'static str, bool) {
+    use h1convert::shad::program::glass::{ParticleBlend, ParticleCoordinates};
+    if let Some(program) = ParticleBlend::from_source(blend) {
+        return (program.stem(ParticleCoordinates::Primary), true);
+    }
     match blend {
         0 => ("shaders\\shader_templates\\transparent\\particle_alpha_blend", true),
         3 => ("shaders\\shader_templates\\transparent\\particle_additive", true),
-        6 => (h1convert::shad::program::glass::PARTICLE_MAX, true),
-        7 => ("shaders\\shader_templates\\transparent\\particle_alpha_multiply_add", true),
         _ => ("shaders\\shader_templates\\transparent\\particle_additive", false),
     }
 }
@@ -451,7 +452,7 @@ pub(crate) fn particle_with_mask(
     set(&mut r, "vertex_shader", Val::Int(orientation.into()))?;
     // H1 0x10e9f9/0x10ea10 randomize each allowed mirror axis. H2
     // performs the corresponding per-particle U/V mirroring at draw time.
-    let flags = if p.blend == 6 {
+    let flags = if matches!(p.blend, 6 | 7) {
         0x30 | ((p.flags >> 9) & 6)
     } else {
         0x10
