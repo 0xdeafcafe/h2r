@@ -756,7 +756,10 @@ fn run_configured(
         host.gfx = Some(display.as_only_display());
     }
     #[cfg(feature = "gpu")]
-    if opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none()) && interp.is_none() && let Some(b) = &mut host.gfx {
+    // Match the paired reference path even when a film has no visible copy.
+    if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
+        && interp.is_none() && let Some(b) = &mut host.gfx
+    {
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()

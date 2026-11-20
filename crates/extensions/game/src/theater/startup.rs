@@ -20,6 +20,10 @@ pub struct Startup {
     theater_menu: bool,
     keyboard: bool,
     render_thread: bool,
+    /// Whether guest D3D read real GPU surfaces. A GPU-capable executable
+    /// can also record a local game with the CPU headless backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_draws: Option<bool>,
     // Source name and whether the original Auto policy saw a physical pad.
     icons: Option<(String, bool)>,
     execution: Execution,
@@ -313,6 +317,16 @@ impl Settings {
 }
 
 impl Startup {
+    /// Select the guest backend for a local film played without a window.
+    /// Older desktop recordings retain the play window's settings store or
+    /// render-thread flag, but no separate flag for offscreen GPU capture.
+    pub fn local_gpu_draws(&self, hooks: Option<film::RenderHooks>) -> bool {
+        self.d3d && self.gpu_draws.unwrap_or_else(|| {
+            !matches!(hooks, Some(film::RenderHooks::Slim | film::RenderHooks::Desktop))
+                && (self.render_thread || self.host_settings.is_some())
+        })
+    }
+
     /// Guest geometry from the startup of a film that recorded both the
     /// legacy render scale and LOD Distance. Viewer raster size is separate.
     pub fn legacy_lod_multiplier(&self) -> Option<f32> {
@@ -526,6 +540,12 @@ impl Session {
                     keyboard,
                     icons,
                     render_thread,
+                    gpu_draws: Some({
+                        #[cfg(feature = "gpu")]
+                        { opts.d3d && (host.gfx.is_some() || std::env::var_os("H2_BOOT_GFX").is_some()) }
+                        #[cfg(not(feature = "gpu"))]
+                        { false }
+                    }),
                     execution: Execution::capture()?,
                     movies: Values::new(),
                     xapi: opts.xapi,
@@ -571,6 +591,34 @@ fn movie_assets(_: &Path, _: &Path) -> Result<Values> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_film_selects_its_recorded_gpu_readback_backend() {
+        use film::RenderHooks::{Gpu, Slim};
+        let data = serde_json::json!({ "values": {}, "locked": {}, "profiles": {} });
+        let mut wire = serde_json::json!({
+            "dedicated": false, "theater_menu": false, "keyboard": false, "render_thread": false,
+            "execution": {
+                "coop": crate::coop_live::film::Options::capture(), "old_glue": false, "trampoline": false,
+            },
+            "xapi": true, "stopgaps": true, "d3d": true, "dsound": true, "bink": false,
+            "data_settings": data.clone(),
+        });
+        let gpu = |wire: &serde_json::Value, hooks| {
+            serde_json::from_value::<Startup>(wire.clone()).unwrap().local_gpu_draws(hooks)
+        };
+        assert!(!gpu(&wire, Some(Gpu)), "legacy CPU run with GPU-capable hooks");
+        wire["host_settings"] = data;
+        assert!(gpu(&wire, Some(Gpu)), "legacy play-window recording");
+        assert!(!gpu(&wire, Some(Slim)));
+        wire["gpu_draws"] = false.into();
+        assert!(!gpu(&wire, Some(Gpu)), "an explicit CPU backend takes priority");
+        wire["host_settings"] = serde_json::Value::Null;
+        wire["gpu_draws"] = true.into();
+        assert!(gpu(&wire, Some(Gpu)), "offscreen GPU recording");
+        wire["d3d"] = false.into();
+        assert!(!gpu(&wire, Some(Gpu)));
+    }
 
     #[test]
     fn pipeline_execution_options_restore_the_recorded_handback_and_legacy_defaults() {

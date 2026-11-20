@@ -259,14 +259,33 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     };
     let host_bots = film.header.host_bots;
     if opts.every == 0 {
-        return run(
-            boot::Host {
-                host_light: true,
-                host_bots,
-                ..Default::default()
-            },
-            None,
-        );
+        let host = boot::Host { host_light: true, host_bots, ..Default::default() };
+        if film.header.meta.source == film::Source::Local {
+            let hooks = film.header.render_hooks;
+            let startup = boot::theater::Startup::read(&mut film)?.context("missing startup for local film")?;
+            if startup.local_gpu_draws(hooks) {
+                #[cfg(not(feature = "desktop"))]
+                bail!("this local film requires an exact offscreen GPU reference; use a desktop build");
+                #[cfg(feature = "desktop")]
+                {
+                    let retail: boot::run_opts::NativeSize = std::sync::Arc::new(|| boot::setting_defs::GUEST_FRAME);
+                    // Install the same render hook plan as a drawing run. The
+                    // sole target and the projection are fixed to retail.
+                    let host = boot::Host {
+                        gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
+                        gfx_view: Some(boot::run_opts::DisplayView {
+                            backend: None,
+                            native_size: retail.clone(),
+                            viewer_output: Some(retail),
+                            display_size: std::sync::Arc::new(|size| size),
+                        }),
+                        ..host
+                    };
+                    return run(host, None);
+                }
+            }
+        }
+        return run(host, None);
     }
     #[cfg(not(feature = "desktop"))]
     bail!("rendered film playback requires the desktop feature");

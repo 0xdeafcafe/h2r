@@ -236,7 +236,7 @@ million entries. JSON payloads are UTF-8.
 | Tag | Contents after decompression |
 | --- | --- |
 | `HEAD` | JSON machine header. The first has `version: 2`, film ID, source, generated image stamp, runtime source fingerprint, XBE SHA-256, title ID, epoch, UTC start in Unix milliseconds, feature switches, executor budget, network settings and lease and canonical game IDs when hosted. Later headers update the display metadata and boot-relative duration. |
-| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
+| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. `gpu_draws` records whether guest D3D used GPU surfaces. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
 | `MOVI` | Effective movie selection when Bink is enabled. Maps engine movie names to SHA-256 of the local transcodes. An empty map selects the skip path. |
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
@@ -494,7 +494,15 @@ In local playback the guest renders its original camera, first-person weapon
 and HUD. Its exact 640x480 reference provides guest readbacks, while
 the viewer chooses the window resolution. A v3 local film can display
 one split-screen viewport. Its guest-pixel edges map onto the displayed
-raster so the selection tracks resolution changes. The slot is the player's seat in the film roster.
+raster so the selection tracks resolution changes. The slot is the player's
+seat in the film roster.
+
+For a local GPU recording, `--render-every 0` runs the reference offscreen
+in the desktop player. CPU recordings and playerless hosts retain their
+headless backend. When an older film lacks the backend field, Theater uses
+the recorded render hooks, window settings and render-thread flag. A legacy
+offscreen GPU recording with none of the window or thread evidence is
+indistinguishable from a CPU recording.
 
 ```sh
 h2 agent theater.camera '{"mode":"first_person","seat":0}'

@@ -492,7 +492,7 @@ pub fn install_headless_for_profile(
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
             );
-            if interp.is_none() {
+            if !protected_readbacks && interp.is_none() {
                 crate::native_shadows_glue::configure_single(&mut backend);
             }
             // Backend work (shader preparation, encoding, uploads,
@@ -690,6 +690,14 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
         Some(path) => backend.with_pipeline_cache(path),
         None => backend,
     }
+}
+
+/// An offscreen retail GPU reference for local film verification. Its raster
+/// stays at the guest dimensions and it never presents to a window.
+#[cfg(feature = "gpu")]
+pub fn offscreen_film_reference() -> anyhow::Result<d3d::GfxBackend> {
+    let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("offscreen film GPU: {e}"))?;
+    Ok(configure_gfx(d3d::GfxBackend::new(ctx)))
 }
 
 #[cfg(feature = "gpu")]
