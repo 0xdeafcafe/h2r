@@ -255,11 +255,12 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
 +--------------------------------------------------------------------+
 ```
 
-- **Rail** (`.vo-rail`): `top: 8px; left: 8px; right: 8px`, a flex row
-  with `gap: 4px`. Controls are 24px high (32px under `max-width: 640px`
-  or `pointer: coarse`), padding `0 9px`, the label type, fill `rgba(0,
-  0, 0, .55)`, border `1px solid var(--vo-line)`. Hover: border
-  `--vo-accent`. Pressed: `--vo-on`.
+- The **rail** (`.vo-rail`) has an 8px inset from the top and sides and
+  4px gaps. `viewer.css` sets the buttons in regular 11px UI type with
+  sentence-case labels, a translucent navy fill and muted blue keylines.
+  They are 22px high on desktop and at least 36px by 32px under
+  `max-width: 640px` or `pointer: coarse`. An active button has a deeper
+  blue fill and a pale blue underline.
 - **Stays visible:** the camera tabs **Orbit**, **Top**, **Fly** (one
   segmented group); the **Follow** chip, which shows the followed
   player's name and opens a picker list of the roster (no arrows, no
@@ -590,8 +591,7 @@ in [viewer-effects.md](viewer-effects.md#build-order).
   shader recompiles when it ends (`bun run bench:viewer`, the
   `h2-viewer:revealed` mark).
 - How the sweep's shadow fade reads on the viewer's supported GPUs.
-- That 24px rail controls and the tags read on a phone in full
-  screen.
+- That the rail controls and tags read on a phone in full screen.
 
 ## Related
 
