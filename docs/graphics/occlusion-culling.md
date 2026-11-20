@@ -141,8 +141,11 @@ accounts for the viewport and FOV, including split screen. Retail selects
 the original pixel size at every resolution. See the
 [Video settings](../game/settings-menu.md#video-screen).
 
-- **BSP clusters and placements.** The record reset at `0x0002cb30` installs
-  the scaled vertical projection for the two structure walks. The guest
+- **BSP clusters and placements.** The record reset at `0x0002cb30` samples
+  the LOD factor once per view. Guest and native record builders read that
+  factor from the view's guest memory, including on a render worker. The
+  reset restores any projection saved by an interrupted walk before
+  installing the scaled vertical projection for the two structure walks. The guest
   walks and the Rust `world_walk` rewrite read the same value. A placement's
   world-space radius still decides whether to apply its small-object
   factor. The adjusted pixel size controls its fade and zero-alpha cull.

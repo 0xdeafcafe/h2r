@@ -184,7 +184,7 @@ then `running`.
 | `--replay NAME` | `H2_INPUT_REPLAY=recordings/NAME/input.bin`; level and difficulty from its manifest unless given |
 | `--record NAME` | `H2_INPUT_RECORD=recordings/NAME/input.bin` and its manifest |
 | `--perf` | `H2_PROFILE=runs/<id>/profile`, `H2_PERF_FROM=level`, and the `perf` feature |
-| `--env KEY=VALUE` | one of `H2_FRAME_STATS`, `H2_FRAME_STATS_FROM`, `H2_BOOT_STOP_AT_PRESENT`, `H2_PERF_FROM`, `H2_PROFILE_HZ`, `H2_HOST_PERF`, `H2_AUDIO_STATS`, `H2_FPS`, `H2_RENDER_SCALE`, `H2_WATERMARK`, `H2_MAPPACK`, `H2_HALO1`, `H2_FEATURES`, `H2_LOCKSTEP_TICKS`, `H2_ICONS` |
+| `--env KEY=VALUE` | one of `H2_FRAME_STATS`, `H2_FRAME_STATS_FROM`, `H2_BOOT_STOP_AT_PRESENT`, `H2_PERF_FROM`, `H2_PROFILE_HZ`, `H2_HOST_PERF`, `H2_AUDIO_STATS`, `H2_FPS`, `H2_RENDER_SCALE`, `H2_LOD_DISTANCE`, `H2_WATERMARK`, `H2_MAPPACK`, `H2_HALO1`, `H2_FEATURES`, `H2_LOCKSTEP_TICKS`, `H2_ICONS` |
 | `-- FLAGS` | `h2 play` flags from a fixed list: `--no-audio`, `--no-vsync`, `--unpaced`, `--fps N`, `--set KEY=VALUE`, ... |
 | `--fresh-data` | an empty data root for this run, removed after it |
 | `--wait [--to DIR]` | wait for the end, then fetch |
@@ -289,6 +289,13 @@ non-zero) stops the run and says so; its logs stay in `runs/<id>` for
 quiet machine is the point. A bench starts the level at its beginning, and
 two runs of one level drift apart over minutes (agent-api.md), so keep the
 window short and compare percentiles, not frames.
+
+Report both render scale and LOD Distance with results above 1x. With the
+default distance of 1x, higher resolutions also retain more detailed geometry.
+For a comparison against timings taken with 480-line LOD choices, pass
+`--env H2_LOD_DISTANCE=retail` at each scale. To measure the cost of
+retaining higher detail, keep the scale fixed and compare
+`--env H2_LOD_DISTANCE=retail` with `--env H2_LOD_DISTANCE=1`.
 
 ## Recordings
 
