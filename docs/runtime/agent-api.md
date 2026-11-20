@@ -1067,8 +1067,9 @@ h2 agent render.parity '{"arm": true}'
   frame. The reference readback uses the ordinary display surface,
   before gamma, at its display scale. The reference requires Retail display
   lighting. An E3 display returns `UNAVAILABLE` because its scaled shadow
-  maps use a different filter from the sealed renderer's baseline. The worker renders that same
-  present's sealed inputs on fresh targets at the matching scale.
+  maps use a different filter from the sealed renderer's baseline. The
+  worker draws that present's sealed inputs on fresh targets at the
+  observed scale. Smaller auxiliary levels retain their guest dimensions.
   The reply carries the sealed scene's `tick` and the pixel comparison
   returned by `render.compare`. The comparison covers the carried
   guest commands. Pixel parity of a typed substitution needs a separate

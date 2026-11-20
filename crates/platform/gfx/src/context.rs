@@ -20,7 +20,8 @@ pub enum GfxError {
     Frame(String),
 }
 
-/// Owns the wgpu instance, adapter, device and queue.
+/// Owns the wgpu instance, adapter, device and queue. Clones share the device.
+#[derive(Clone)]
 pub struct GfxContext {
     /// The instance (kept alive for the surface's lifetime).
     pub instance: wgpu::Instance,
