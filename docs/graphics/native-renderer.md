@@ -122,8 +122,13 @@ World placement transforms are initialized once at map load.
 | `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
 | `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
 | `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
+| `cache_hits`, `cache_misses` | Draws whose pipeline and bindings were already resident, and draws that created one. |
+| `command_buffers` | Committed recordings with a private command buffer (`record_ranges`). Each also ends the open encoder and adds a render pass. Packets (`record_draws`) and bundles add none. |
 | `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
 | `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
+
+The frame-wide `command_buffers` counter counts every command buffer the
+wgpu backend hands to `queue.submit`, next to `submits` and `passes`.
 
 `V` is player view `0` through `3`, or `other`. `C` is `reference` or
 `display`. Confirmed passes account for both physical copies and count a
@@ -3604,6 +3609,73 @@ render thread the bottleneck.
 
 All native switches stay off by default until a paired A/B shows
 native at least as fast as D3D with identical frames.
+
+### Native cost (2026-11-20)
+
+On, against off, Old Mombasa gameplay at 4x on the M3: 32.35 against
+34.34 fps. Submit was 1.6 ms higher, d3d 0.9 ms and decode 0.3 ms, and
+p99 49.7 against 39.5 ms. Objects counted 25 cache misses a frame of 49
+draws.
+
+Causes found in the code (Code):
+
+- Objects and first person recorded render bundles and ran them in a
+  render pass of their own ("native draw run"). Every run ended the
+  merged D3D pass, then loaded and stored colour, depth and stencil again
+  at 4x. First person used a private command buffer, which also closed
+  the open encoder.
+- The object bundle cache keyed each bundle on its uniform bind group and
+  offsets. Those come from the submission's upload arena, which rotates
+  through the pool, so about half the lookups missed and a new bundle was
+  encoded and validated on the game thread. Every objects recording was
+  also validated by encoding it into a throwaway encoder.
+- On the render thread, an objects reservation pins its attachments once
+  per run. But the previous run's commit was queued as an ordinary
+  command, which counted as intervening work, so every run paid a
+  synchronous worker round trip.
+
+Changes:
+
+- `LitObjects::draws` builds ordered `gfx::RecordedDraw` packets. They use
+  persistent pipelines and texture groups, plus the submission's resident
+  uniform run for the changed constant rows. Objects (`ObjectsPass`) and
+  first person (`FirstPersonPass`) return them from `record_draws`, so they
+  join the D3D pass already open on the same attachments, as world layers
+  and the UI do. There is no extra pass, command buffer or bundle.
+  `cache_hits` now means that the pipeline and texture group were
+  resident.
+- `ThreadedBackend::commit_external` queues packet and bundle commits with
+  `push_external`, so the commit does not invalidate a pinned run.
+  Adjacent object runs share one round trip. Standalone command buffers
+  still invalidate it.
+- New counters: `native_<stage>_command_buffers` and the frame
+  `command_buffers` above.
+
+Expected: `native_objects_reference_passes` and `display_passes`, and
+`native_first_person_command_buffers`, fall to about 0. `passes` and
+`command_buffers` fall by the number of object runs. `native_objects_cache_misses`
+goes to 0 after warm-up, `native_objects_worker_round_trips` falls to
+about the number of non-adjacent object runs, and `native_objects_encode_ns`
+and `native_objects_prepare_ns` fall.
+
+Still open:
+
+- Stages that record with `record_ranges` still use their own command
+  buffer and render pass, and pay a synchronous worker round trip: world,
+  fog, water, decals, particles, gels and post. Read
+  `native_<stage>_command_buffers` and `worker_round_trips` to rank them.
+  The world needs its per-view uniforms in the submission arena, rather
+  than encoder copies, before it can return packets.
+- Dynamic lights admitted at the resolved draw (`RunPass`) still record
+  bundles every frame into their own run pass.
+- At a render scale above 1, side passes are not deferred, so each costs
+  its own submissions. Compare `submits` and `pass_side` with native on
+  and off.
+- The object walk still returns about 14 objects a frame to D3D as
+  `walk_unsupported`. Their parts use stencil marking, conditional
+  stream ranges or the auxiliary state toggle (`object_walk::read_part`).
+  This is fallback, not drawing twice: those objects are not drawn
+  natively.
 
 ## Native scene walks for effects and overlays
 
