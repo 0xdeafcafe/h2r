@@ -85,6 +85,10 @@ pub mod method {
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";
     pub const TAG_BLOCK_REMOVE: &str = "tag.block.remove";
     pub const TAG_BLOCK_DUPLICATE: &str = "tag.block.duplicate";
+    pub const TAG_BROWSE: &str = "tag.browse";
+    pub const TAG_RESOURCES: &str = "tag.resources";
+    pub const TAG_EXPORT: &str = "tag.export";
+    pub const TAG_IMPORT: &str = "tag.import";
 
     pub const SCENARIO_BLOCKS: &str = "scenario.blocks";
     pub const SCENARIO_LIST: &str = "scenario.list";

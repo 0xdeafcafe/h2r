@@ -1057,19 +1057,35 @@ it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
 points at. Open a map in **Maps** first (a disc map, one of your
 packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
 
-- **The tag tree** (left) lists the map's tags by group (`weap`, `proj`,
-  `vehi`, ...). Type in the search box to find a tag by its group or by
-  part of its name. A `*` marks a tag you have edited; `(read-only)` one
-  you can look at but not change.
+- **Which map** (the list at the top left): the map open in the Scenario
+  tool, which you can edit, or any other map of your disc to look at:
+  `shared` and `single_player_shared` (what the multiplayer maps and the
+  campaign levels have in common), `mainmenu`, another level. Another
+  map's tags are read-only; pick the open map again to go back. Picking
+  `shared` or `single_player_shared` in **Maps** shows them here, as
+  they are not levels.
+- **The tag tree** (left) lists the map's tags by **Groups** (`weap`,
+  `proj`, `vehi`, ...) or by **Paths**, a folder tree of their names
+  (`objects`, `weapons`, `rifle`, ...). Type words in the search box to
+  narrow it: each word must be in the tag's group or name (`weap rifle`).
+  A `*` marks a tag you have edited; `(read-only)` one you can look at
+  but not change. A mark in brackets says where the tag's data lives
+  when it isn't all in this map: `[shared]`, `[sp shared]`, `[mainmenu]`
+  for pictures, models and sounds kept in a shared map, `[in shared]`
+  for a tag whose fields are there.
 - **The fields** (centre) are the selected tag's fields, top to bottom.
   Fields we have a name for show it in white; the rest show grey, named
   by where they are (`+0x14`), with their value shown the way it looks
   most likely (a decimal number, a whole number or hex). Right-click a
   grey field to see it another way. Hover a field for its type, where it
   is and what we know about it.
-- **The bytes** (right) show the raw bytes of the part of the tag under
-  the mouse, the hovered field lit in blue and bytes you changed in
-  orange.
+- **Data and bytes** (right): the tag's data and resources first: each
+  block of raw data inside the tag with its size, and each resource
+  (pixels, model geometry, sound) with the map it is in (`local` for this
+  one, or `shared`, `single_player_shared`, `mainmenu`), where and how
+  big. A bitmap has **Preview**, which draws its first image. Then the
+  raw bytes of the part of the tag under the mouse, the hovered field
+  lit in blue and bytes you changed in orange.
 
 How to change things:
 
@@ -1106,6 +1122,36 @@ Scenario tool: **File > Save map as...** or **Save as package...** writes
 your tag edits and your placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
+### Export and import a tag
+
+**Export...** above the fields writes the selected tag to a file of its
+own, a *tag bundle* (`.h2tag`): its fields, its lists, the tags it
+points at by name and its names as text. Tick **references** to put the
+tags it points at in the same file (and the ones they point at), and
+**resources** to copy its pictures and geometry in too (the file gets
+large). You can export from any map, the shared ones included. Bundles
+hold what is on your disc, so keep them out of Git repositories: the
+editor won't write one inside a checkout.
+
+**Import over this tag...** replaces the selected tag of the open map
+with a bundle's tag of the same kind; **Import tags...** (with no tag
+selected) replaces each tag of the open map that has the same group and
+name as one in the bundle. An import is one undo step and is saved with
+the map like any other edit. What to know:
+
+- It replaces tags; it can't add a tag the map doesn't have yet.
+- A tag it points at must already be in the map (by name), or the import
+  stops and says which.
+- Lists take the bundle's length. A list longer than the map's needs
+  **Edit > Allow growing full blocks**, as when you add to it by hand.
+- Raw data inside the tag keeps its length; a bundle with another length
+  is refused.
+- Pictures and models in the shared maps carry over between maps of the
+  same disc. Ones inside the bundle's own map only carry over into that
+  map; elsewhere the tag keeps the map's own, and the log says how many.
+- Sounds only import into the map they came from.
+- If anything is refused, nothing changes.
+
 ## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
@@ -1139,6 +1185,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 | The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
+| Exported tags (tag bundles) | Wherever you save the `.h2tag` (never inside a Git checkout); `<data>/tag-bundles/` when an agent gives no path | Not directly: import it in the Tags tool and save the map. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
 | The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 

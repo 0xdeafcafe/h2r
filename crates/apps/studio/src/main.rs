@@ -17,7 +17,7 @@ use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
@@ -56,6 +56,8 @@ struct Args {
     hud_widget: Option<String>,
     /// The Tags tool's tag, `group:path`.
     tag: Option<String>,
+    /// Another map of the source browsed in the Tags tool (`shared`).
+    tags_map: Option<String>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -107,6 +109,7 @@ fn args() -> Result<Args> {
         hud: None,
         hud_widget: None,
         tag: None,
+        tags_map: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -164,6 +167,7 @@ fn args() -> Result<Args> {
             "--hud" => a.hud = Some(value()?),
             "--hud-widget" => a.hud_widget = Some(value()?),
             "--tag" => a.tag = Some(value()?),
+            "--tags-map" => a.tags_map = Some(value()?),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
@@ -389,11 +393,18 @@ fn main() -> Result<()> {
             app.dispatch(Action::HudSelect(Some(key)));
         }
     }
+    if let Some(m) = &args.tags_map {
+        app.dispatch(Action::SetTool(ToolKind::Tags));
+        app.dispatch(Action::BrowseTags(Some(m.clone())));
+        if app.browsing().is_none() {
+            bail!("--tags-map: {m} could not be browsed (the log says why)");
+        }
+    }
     if let Some(t) = &args.tag {
         app.dispatch(Action::SetTool(ToolKind::Tags));
-        match studio::app::tag_api::find_tag(&app.tags, t) {
+        match studio::app::tag_api::find_tag(app.shown_tags(), t) {
             Some(id) => app.dispatch(Action::Tag(studio::app::TagAction::Select(id))),
-            None => bail!("--tag: no tag {t:?} in the open map"),
+            None => bail!("--tag: no tag {t:?} in the map shown"),
         }
     }
     if let Some(i) = args.variant {

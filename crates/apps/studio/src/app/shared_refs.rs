@@ -120,21 +120,80 @@ fn walk(doc: &TagDoc, at: u32, layout: &Layout, h: &mut Homes, budget: &mut usiz
     }
 }
 
+impl Homes {
+    /// Pointers into a shared map (not this one).
+    pub fn away(&self) -> usize {
+        self.mainmenu + self.shared + self.single_player_shared
+    }
+    /// A short mark for the tag tree: the shared maps the raw data is in
+    /// (`shared`, `sp shared`, `mainmenu`), empty when none.
+    pub fn badge(&self) -> String {
+        let mut out = Vec::new();
+        if self.shared > 0 {
+            out.push("shared");
+        }
+        if self.single_player_shared > 0 {
+            out.push("sp shared");
+        }
+        if self.mainmenu > 0 {
+            out.push("mainmenu");
+        }
+        out.join(", ")
+    }
+    /// As JSON for the agent API: pointers by map.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "local": self.local,
+            "mainmenu": self.mainmenu,
+            "shared": self.shared,
+            "single_player_shared": self.single_player_shared,
+        })
+    }
+}
+
+impl TagDoc {
+    /// [`raw_homes`] of tag `id`, kept until block counts or addresses may
+    /// have changed ([`TagDoc::shape_rev`]): raw pointers are structural,
+    /// so field edits leave them, and the tag tree can mark every row it
+    /// draws.
+    pub fn homes(&self, id: TagId) -> Option<Homes> {
+        let rev = self.shape_rev();
+        {
+            let cache = self.homes_cache.borrow();
+            if cache.0 == rev
+                && let Some(h) = cache.1.get(&id)
+            {
+                return *h;
+            }
+        }
+        let h = raw_homes(self, id);
+        let mut cache = self.homes_cache.borrow_mut();
+        if cache.0 != rev {
+            *cache = (rev, Default::default());
+        }
+        cache.1.insert(id, h);
+        h
+    }
+}
+
 impl App {
     /// The Tags tool's line on where tag `id`'s raw data lives, when any
-    /// of it is in a shared map. Kept for the tag and the document's
+    /// of it is in a shared map, for the document shown
+    /// ([`App::shown_tags`]). Kept for the tag, the document and its
     /// revision, so drawing it every frame costs one walk.
     pub fn tag_shared_note(&self, id: TagId) -> Option<String> {
-        let rev = self.tags.rev();
+        let doc = self.shown_tags();
+        // The browsed map's document and the open map's are told apart by
+        // the map browsed.
+        let key = (id, doc.rev(), self.browsing().map(str::to_owned));
         let mut cache = self.tag_homes.borrow_mut();
-        if let Some((cid, crev, note)) = cache.as_ref()
-            && *cid == id
-            && *crev == rev
+        if let Some((cid, crev, cmap, note)) = cache.as_ref()
+            && (*cid, *crev, cmap.clone()) == key
         {
             return note.clone();
         }
-        let note = raw_homes(&self.tags, id).and_then(|h| h.note());
-        *cache = Some((id, rev, note.clone()));
+        let note = raw_homes(doc, id).and_then(|h| h.note());
+        *cache = Some((key.0, key.1, key.2, note.clone()));
         note
     }
 }
