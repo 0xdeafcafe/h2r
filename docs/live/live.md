@@ -821,7 +821,9 @@ The four transport channels are:
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
 
-Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is reserved for the co-op
+Base+2 (3076) is the HLE QoS responder. Its worker sleeps until a query
+arrives or network cleanup signals it to stop, then releases the socket.
+Base+4 (3078) is reserved for the co-op
 pad-exchange transport (`coop::link::UdpLink`, [live-coop.md](live-coop.md),
 section 8), which would bind it on the host itself; nothing binds it today,
 since Co-op over Live uses the game's own path, and no guest socket maps to it.
