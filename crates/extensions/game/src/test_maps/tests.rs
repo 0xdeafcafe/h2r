@@ -157,6 +157,24 @@ fn a_package_is_found_in_the_list_by_its_alias() {
     assert_eq!(listed_in(&maps, "short"), None);
 }
 
+#[test]
+fn an_installed_package_is_selected_by_full_id_even_with_identical_alias_suffixes() {
+    let one = content::MapId([1; 32]);
+    let mut other = one;
+    other.0[31] = 2;
+    let maps = crate::map_select::Catalogue::new([1, 2].map(|id| crate::map_select::Map {
+        id,
+        name: "Shared title".into(),
+        sort: id as i32,
+        path: format!(r"t:\$c\4d5300648000000{id}\identical"),
+    }));
+    let lookup = |path: &str| {
+        if path.contains("80000001") { Some(one) } else { Some(other) }
+    };
+    assert_eq!(listed_package(&maps, other, lookup).unwrap().id, 2);
+    assert!(listed_package(&maps, content::MapId([0; 32]), lookup).is_none());
+}
+
 fn temp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("boot-test-maps-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -231,6 +249,7 @@ fn the_methods_list_build_and_remove_through_the_dispatcher() {
     let c = Client::connect(&agent);
     let methods = c.call(&agent, 1, method::METHODS, json!({}));
     for m in [
+        method::MAPS_LOAD,
         method::MAPS_TEST_LIST,
         method::MAPS_TEST_CREATE,
         method::MAPS_TEST_LOAD,

@@ -612,7 +612,8 @@ Players share custom and modded maps through the server's content store
 
 | endpoint | does |
 |---|---|
-| `GET /v1/admin/content` | `{maps, blobs, reports, uploads_off, position}`: every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
+| `GET /v1/admin/content` | `{packs, maps, blobs, reports, uploads_off, position}`: every pack (including members, state and count of pack and member reports), every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
+| `POST /v1/admin/mod-packs/{id}/{action}` | applies one action to a pack and all of its members |
 | `POST /v1/admin/maps/{map_id}/{action}` | acts on a package |
 | `POST /v1/admin/content/{sha256}/{action}` | acts on a blob, by hash |
 | `PUT /v1/admin/uploads/{gamertag}` `{allowed}` | switches an account's uploads and publishes off or on |
@@ -629,11 +630,20 @@ The actions, and the `state` they leave:
   publishes answer 410). A hash can be blocked before anyone uploads it.
   `unblock` leaves it deleted.
 
+Taking down a pack prevents downloads of its member manifests, images and
+exclusive layers. Sessions cannot advertise any of those members. A layer
+shared with a visible mod stays available to that mod. The admin can still
+inspect the pack and its reports. The public event log also omits the
+pack, member and exclusive blob streams. Unhiding the pack restores access to
+members that have no separate takedown. Unblocking leaves the pack deleted
+until its uploader republishes it.
+
 A package is refused in sessions (410) when it, or any of its layers, is
 hidden, deleted or blocked; a deleted layer alone shows up in the package's
 `missing` list. Each action is a server-signed `ContentModerated` event on
 the target's stream (`{target, id, action, by}`, `by` the admin's xuid),
-reports are `ContentReported` (`POST /v1/maps/{id}/report` or
+reports are `ContentReported` (`POST /v1/mod-packs/{id}/report`,
+`/v1/maps/{id}/report` or
 `/v1/content/{sha256}/report` by any account), the upload switch is
 `ContentUploadsSet` on the account's stream, and pins are `HopperPinsSet`
 on `hopper-<id>`. All of it replays from the log, so it survives restarts.
@@ -660,9 +670,9 @@ the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
 
 The Halo Admin's **Custom content** tab (`/games/halo2/admin?tab=content`, linked
-from the dashboard's "halo admin" pod) lists packages and blobs with their state and
-report counts, the actions valid for each, the reports and the upload
-switch; the playlist builder pins published packages per hopper.
+from the dashboard's "halo admin" pod) lists packs with expandable member
+maps, standalone maps and blobs. It shows their states, report counts, available
+actions, reports and upload switch; the playlist builder pins published packages per hopper.
 
 ## 8. Player reports
 

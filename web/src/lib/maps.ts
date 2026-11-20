@@ -56,6 +56,7 @@ export interface MapSummary {
   /** The map pack it came out in, by id, and the pack's name when known. */
   pack?: string;
   pack_name?: string;
+  mod_pack?: string;
 }
 
 /** A map pack (`GET /v1/mappacks`, a map's `pack_info`): its images are
@@ -170,6 +171,7 @@ export function parseMapSummary(raw: unknown): MapDetail | null {
   if (report) out.report = report;
   const pack = text(r.pack), packName = text(r.pack_name);
   if (pack) out.pack = pack;
+  if (typeof r.mod_pack === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(r.mod_pack)) out.mod_pack = r.mod_pack;
   if (packName) out.pack_name = packName;
   const packInfo = parseMapPack(r.pack_info);
   if (packInfo) out.pack_info = packInfo;

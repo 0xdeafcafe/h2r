@@ -6,6 +6,15 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// `render.spawn_view`: select a player starting location, or release the camera.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpawnViewParams {
+    pub index: Option<u32>,
+    pub yaw_offset: Option<f32>,
+    pub reset: bool,
+}
+
 /// `render.frame`: record the next whole frame (`arm`), or read the last
 /// one recorded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

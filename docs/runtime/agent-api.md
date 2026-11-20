@@ -37,6 +37,7 @@ connection to hold `session.claim`.
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -61,7 +62,7 @@ connection to hold `session.claim`.
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
-| `maps.test.list`, `create`, `load`, `remove` | read, act, act, act | [Test maps](#test-maps) |
+| `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -738,6 +739,9 @@ sim report's tally.
 
 ```sh
 h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no game
+h2 agent render.spawn_view '{"index": 0}'
+h2 agent render.capture '{}'
+h2 agent render.spawn_view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
 h2 agent render.scene '{"dump": true}'
@@ -748,6 +752,7 @@ h2 agent render.parity '{"arm": true}'
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
+| `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -769,6 +774,18 @@ h2 agent render.parity '{"arm": true}'
   `data.path`). The decode runs on the game thread; `h2 agent frame
   compare A B [--diff D]` runs the same function in the CLI with no
   socket and exits 1 outside the bar.
+- **`render.spawn_view`.** Selects a player starting location from the
+  loaded scenario by its zero-based index. The eye is 0.64 world units
+  above the start, looking along its facing. `yaw_offset` turns it in
+  radians. The reply includes the number of starts and the eye position
+  and heading used for the picture. The method answers when the world
+  renderer accepts the private view. A following `render.capture {}`
+  takes the next tick's frame. The camera stays selected until reset or
+  the next game activation. A new selection interrupts a pending request.
+  An invalid index gives `INVALID_PARAMS`, a missing or unreadable start
+  gives `UNAVAILABLE`, and a session that draws no world frames times out.
+  `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
+  playerless world view in `spectator_view.rs`.
 - **`render.capture`.** The frame of game tick `tick` (as `at.tick`
   counts it; default the next one, at most 240 ahead). On the D3D path
   the frame of a tick is the present that follows it: the first guest
@@ -778,7 +795,7 @@ h2 agent render.parity '{"arm": true}'
   `render.frame` and `H2_BOOT_GFX`'s `frame-N.png` do. Without `pass`,
   the image is the presented frame at the render scale, the same image
   `H2_BOOT_GFX` writes as `frame-N.png`, written as
-  `frames/capture-<seq>-tick-<tick>.png` under the cache directory. That
+  `frames/capture-<pid>-<seq>-tick-<tick>.png` under the cache directory. That
   needs a run that renders on the GPU with `H2_BOOT_GFX` (use
   `H2_BOOT_GFX_EVERY=never` to write nothing else); without it the answer
   is `UNAVAILABLE`, and under `H2_BOOT_GFX_LIGHTING_AB` too. With `pass`,
@@ -1059,9 +1076,9 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   screen instances, and the game-shell channel's saved screen IDs
   (`history`, nearest parent first). Each screen has `id`, `instance`
   (a guest address valid for that screen's lifetime), and `parent` where
-  a return is known. The two map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`), with the open `folder`
-  named on the maps stage and the active picker row in `focused_row`
+  a return is known. The map picker stages share an ID and have
+  distinct `mode` values (`folders`, `maps`, `pack`), with the open
+  category or pack named in `folder`. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). `input` identifies the screen taking player one's menu
   input. `back` gives the instance that closes and its parent where
   known, with action `close`, `reopen` (recreate a parent), or `wait`
@@ -1991,6 +2008,7 @@ rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
 
 | Method | Access | Params and result |
 |---|---|---|
+| `maps.load` | act | `{map_id}` → `{name, map {id, path}, check, queued, expect}`. Queues a local Slayer game on the installed multiplayer package with this full hash. The VFS verifies the list slot's package identity. Wait for gameplay on the basename of the returned path before driving the camera. |
 | `maps.test.list` | read | `{name?}` → `{recipes, maps}`: the built-in recipes (`name`, `title`, `base`, `fidelity`, `purpose`, `note`) and each test map (`name`, `base`, `state` `building`/`ready`/`failed`, `dir`, `error`, `map_id`, `listed {id, path}` once it has a multiplayer slot, `built`: the build report with `anchor`, `placed`, `counts`, `notes`, `expect`) |
 | `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread, then the offers are installed again. `base` builds on another disc map (`<recipe>-<base>`) |
 | `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game on the map is queued through the `agent-calls` feature (`Call::QueueGame`, the level boot's steps). Wait for it with `session.wait` or `h2 agent maps load` |

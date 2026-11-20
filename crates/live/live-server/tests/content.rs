@@ -741,6 +741,208 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
 }
 
 #[tokio::test]
+async fn pack_takedown_covers_member_reads_sessions_and_exclusive_blobs() {
+    let h = content_harness(small()).await;
+    let u = h.create("Publisher").await;
+    let reader = h.create("Reader").await;
+    let shared = b"shared layer";
+    let exclusive = b"exclusive layer";
+    let shared_hash = upload(&h, &u, shared).await;
+    let exclusive_hash = upload(&h, &u, exclusive).await;
+
+    let mut first = manifest(shared);
+    first.package.name = "Sky Pack: lockout".into();
+    let mut second = manifest(exclusive);
+    second.base.map = "zanzibar".into();
+    second.package.name = "Sky Pack: zanzibar".into();
+    let mut outside = manifest(shared);
+    outside.base.map = "ascension".into();
+    outside.package.name = "Hilltop".into();
+    for map in [&first, &second, &outside] {
+        assert_eq!(
+            publish(&h, &u, &doc(map.clone())).await.status,
+            StatusCode::CREATED
+        );
+    }
+    let mut staged_map = manifest(exclusive);
+    staged_map.base.map = "foundation".into();
+    let staged_id = MapId::of(&staged_map);
+    let mut staged = doc(staged_map);
+    staged.staged_for = Some("tomorrow".into());
+    assert_eq!(publish(&h, &u, &staged).await.status, StatusCode::CREATED);
+    let first_id = MapId::of(&first);
+    let second_id = MapId::of(&second);
+    let outside_id = MapId::of(&outside);
+    let view = h.get(&format!("/v1/maps/{first_id}")).await.json();
+    let id = view["map"]["pack"].as_str().expect("migrated pack ID");
+    let path = format!("/v1/mod-packs/{id}");
+    let map_log = format!("/v1/events?stream=package-{first_id}");
+    assert!(
+        !h.get(&map_log).await.json()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let report = |reason: &str| json!({"reason": reason}).to_string();
+    for report_path in [
+        format!("{path}/report"),
+        format!("/v1/maps/{first_id}/report"),
+    ] {
+        let response = h
+            .call(
+                Method::POST,
+                &report_path,
+                &[h.bearer(&reader, lxm::CONTENT_WRITE)],
+                report("wrong credit"),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::CREATED);
+    }
+    let forbidden = h
+        .call(
+            Method::POST,
+            &format!("/v1/admin/mod-packs/{id}/hide"),
+            &[h.bearer(&u, lxm::CONTENT_MODERATE)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "hide").await.status,
+        StatusCode::OK
+    );
+    let admin = h
+        .call(
+            Method::GET,
+            "/v1/admin/content",
+            &[moderator(&h)],
+            Body::empty(),
+        )
+        .await
+        .json();
+    let row = admin["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap();
+    assert_eq!(row["state"], "hidden");
+    assert_eq!(row["reports"], 2);
+    assert_eq!(row["members"].as_array().unwrap().len(), 2);
+    assert!(
+        admin["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["target"] == "pack" && r["id"] == id)
+    );
+
+    assert!(
+        h.get(&map_log).await.json()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let public_packs = h.get("/v1/mod-packs").await.json();
+    assert!(
+        public_packs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != id)
+    );
+    for uri in [
+        &path[..],
+        &format!("/v1/maps/{first_id}"),
+        &format!("/v1/maps/{second_id}"),
+        &format!("/v1/content/{exclusive_hash}"),
+    ] {
+        assert_eq!(h.get(uri).await.status, StatusCode::GONE, "{uri}");
+    }
+    assert_eq!(
+        advertise(&h, &u, &session("custom", None, Some(first_id)))
+            .await
+            .status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        publish(&h, &u, &doc(first.clone())).await.status,
+        StatusCode::GONE
+    );
+    let mut relabeled = manifest(exclusive);
+    relabeled.base.map = "midship".into();
+    assert_eq!(
+        publish(&h, &u, &doc(relabeled)).await.status,
+        StatusCode::GONE
+    );
+    let new_pack = json!({"name": "Tomorrow", "authors": ["Painter"], "members": [staged_id]});
+    let late = h
+        .call(
+            Method::PUT,
+            "/v1/mod-packs/tomorrow",
+            &[h.bearer(&u, lxm::CONTENT_WRITE)],
+            new_pack.to_string(),
+        )
+        .await;
+    assert_eq!(
+        late.status,
+        StatusCode::GONE,
+        "moderation changed between staging and publication"
+    );
+    assert_eq!(
+        put(&h, &u, &exclusive_hash, exclusive).await.status,
+        StatusCode::GONE
+    );
+
+    assert_eq!(
+        h.get(&format!("/v1/maps/{outside_id}")).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/content/{shared_hash}")).await.status,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unhide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(h.get(&path).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{second_id}")).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/content/{exclusive_hash}")).await.status,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "block").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(h.get(&path).await.status, StatusCode::GONE);
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unhide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/maps/{first_id}")).await.status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unblock").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&path).await.status,
+        StatusCode::GONE,
+        "unblock leaves the pack deleted"
+    );
+}
+
+#[tokio::test]
 async fn ranked_sessions_take_retail_or_pinned_maps_only() {
     let h = content_harness(small()).await;
     let u = h.create("Host").await;

@@ -42,6 +42,16 @@ interface MockPackage {
   source_url?: string;
 }
 
+interface MockPackInfo {
+  name: string;
+  authors: string[];
+  version?: string;
+  description?: string;
+  source_url?: string;
+  year?: number;
+  advisory?: "not_for_online" | "cheating_pack";
+}
+
 type Category = "gameplay" | "weapons" | "vehicles" | "visuals" | "maps" | "other";
 const CATEGORIES: readonly string[] = ["gameplay", "weapons", "vehicles", "visuals", "maps", "other"];
 
@@ -94,10 +104,13 @@ export function customFor(key: string, map: string): string | undefined {
 
 export class Content {
   readonly packages: MockPackage[];
-  private reports: { target: "map" | "content"; id: string; by: string; reason: string; at: string }[] = [];
+  private packState = new Map<string, State>();
+  private reports: { target: "map" | "pack" | "content"; id: string; by: string; reason: string; at: string }[] = [];
   private blobState = new Map<string, State>();
   private uploadsOff = new Set<string>();
   private pins = new Map<number, string[]>();
+  private packMembership = new Map<string, string>();
+  private packMetadata = new Map<string, MockPackInfo>();
 
   constructor(private world: World, private admin: Admin) {
     const people = [...world.accounts.values()];
@@ -116,7 +129,7 @@ export class Content {
       },
       {
         map_id: IDS.towers, name: "Orchard Towers",
-        author: by(1), base: { map: "orchard", derived: false }, layers: [layer("towers", 9_800_000), layer("towers pack", 3_100_000, "pack")],
+        author: by(0), base: { map: "orchard", derived: false }, layers: [layer("towers", 9_800_000), layer("towers pack", 3_100_000, "pack")],
         geometry: sha("mock towers geometry"), published_at: at(120), state: "ok", position: 31, downloads: 7, category: "maps",
         // Not a web link: the page must not show it.
         source_url: "javascript:alert(1)",
@@ -137,6 +150,16 @@ export class Content {
         };
       }),
     ];
+    for (const p of this.packages) {
+      const id = p.map_id === IDS.crates || p.map_id === IDS.towers ? "harbour-works" : p.map_id;
+      this.packMembership.set(p.map_id, id);
+      this.packMetadata.set(id, { name: p.name, authors: p.credit ? [p.credit] : [], description: p.description, source_url: p.source_url });
+    }
+    this.packMetadata.set("harbour-works", {
+      name: "Harbour Works", authors: ["Old Crate Co.", "Harbour Club"], version: "2.0", year: 2006,
+      description: "New cover and towers across the harbour.", source_url: "https://mods.example.net/harbour-works",
+      advisory: "not_for_online",
+    });
     this.reports.push({ target: "map", id: this.byId(IDS.party).map_id, by: by(3).gamertag, reason: "Not what it says it is.", at: at(50) });
     this.pins.set(1, [IDS.crates]);
   }
@@ -153,23 +176,78 @@ export class Content {
   }
 
   private summary(p: MockPackage) {
+    const id = this.packMembership.get(p.map_id);
+    const pack = id ? this.packMetadata.get(id) : undefined;
+    const authors = p.credit ? [p.credit] : pack?.authors ?? [];
+    const source = p.source_url ?? pack?.source_url;
     return {
+      mod_pack: id, pack_name: pack?.name,
       map_id: p.map_id, name: p.name, ...(p.description ? { description: p.description } : {}),
       author: p.author, base: p.base, layers: p.layers, size: p.layers.reduce((n, l) => n + l.size, 0),
       ...(p.image ? { image: p.image.sha256 } : {}), ...(p.geometry ? { geometry: p.geometry } : {}), published_at: p.published_at,
-      position: p.position, downloads: this.downloads(p), ...(p.credit ? { credit: p.credit, credits: { authors: [p.credit] } } : {}),
-      ...(p.category ? { category: p.category } : {}), ...(p.source_url ? { source_url: p.source_url } : {}),
+      position: p.position, downloads: this.downloads(p), ...(authors.length ? { credit: authors.join(", "), credits: { authors } } : {}),
+      ...(p.category ? { category: p.category } : {}), ...(source ? { source_url: source } : {}),
     };
   }
 
+  private packRows(includeUnavailable = false) {
+    const packs = [];
+    for (const [id, info] of this.packMetadata) {
+      const maps = this.packages.filter((p) => this.packMembership.get(p.map_id) === id);
+      if (!maps[0] || (!includeUnavailable && ((this.packState.get(id) ?? "ok") !== "ok" || maps.some((p) => p.state !== "ok")))) continue;
+      const members = maps.map((m) => this.summary(m));
+      packs.push({ ...info, id, members, uploader: maps[0].author, images: [], map_count: members.length,
+        size: members.reduce((n, m) => n + m.size, 0), position: Math.max(...maps.map((p) => p.position)) });
+    }
+    return packs.sort((a, b) => b.position - a.position);
+  }
+
+  private async packRequest(req: Request, id: string, report: boolean): Promise<Reply> {
+    const all = this.packRows(true).find((p) => p.id === id);
+    if (!all) return fail(404, "not_found", "no such pack");
+    const pack = this.packRows().find((p) => p.id === id);
+    if (!pack) return fail(410, "gone", "this pack is unavailable");
+    const position = this.world.log.length;
+    if (!report && req.method === "GET") return ok({ pack, position });
+    const by = this.who(req.headers.get("authorization"));
+    if (!by) return fail(401, "unauthorized", "sign in first");
+    if (report && req.method === "POST") {
+      const body = await req.json().catch(() => null) as { reason?: unknown } | null;
+      if (typeof body?.reason !== "string" || !body.reason.trim()) return fail(400, "invalid", "a report needs a reason");
+      this.reports.unshift({ target: "pack", id, by, reason: body.reason.trim().slice(0, 500), at: new Date().toISOString() });
+      return ok({ ok: true, position }, 201);
+    }
+    if (!report && req.method === "PUT") {
+      if (pack.uploader.gamertag !== by || this.uploadsOff.has(by)) return fail(403, "forbidden", "uploads are not allowed");
+      const body = await req.json().catch(() => null) as Partial<MockPackInfo & { members: string[] }> | null;
+      if (!body?.name?.trim() || !Array.isArray(body.authors) || !body.authors.length ||
+          !body.authors.every((a) => typeof a === "string" && a.trim()) || !Array.isArray(body.members) ||
+          body.members.length !== pack.map_count || !pack.members.every((m) => body.members!.includes(m.map_id))) {
+        return fail(400, "invalid", "invalid pack metadata or membership");
+      }
+      this.packMetadata.set(id, { name: body.name.trim(), authors: body.authors, version: body.version, description: body.description,
+        source_url: body.source_url, year: body.year, advisory: body.advisory });
+      return ok({ pack: this.packRows().find((p) => p.id === id), position });
+    }
+    return fail(405, "unsupported", "method not supported");
+  }
+
   private listed(): MockPackage[] {
-    return this.packages.filter((p) => p.state === "ok");
+    const hidden = new Set(this.packRows(true)
+      .filter((pack) => (this.packState.get(pack.id) ?? "ok") !== "ok")
+      .flatMap((pack) => pack.members.map((member) => member.map_id)));
+    return this.packages.filter((p) => p.state === "ok" && !hidden.has(p.map_id));
   }
 
   async handle(req: Request, u: URL, image: (bytes: Uint8Array) => Response): Promise<Reply | Response | null> {
     const path = u.pathname;
     const pos = this.world.log.length;
     let m: RegExpMatchArray | null;
+    if (path === "/v1/mod-packs" && req.method === "GET") return ok({ items: this.packRows(), position: pos });
+    if ((m = path.match(/^\/v1\/mod-packs\/([^/]+)(\/report)?$/))) return this.packRequest(req, m[1]!, !!m[2]);
+    if (/^\/v1\/(mod-packs|maps)\/[^/]+\/screenshots\//.test(path)) {
+      return fail(501, "mock", "Connect to a Live server to store screenshots.");
+    }
     if (path === "/v1/maps" && req.method === "GET") return this.list(u.searchParams, pos);
     if ((m = path.match(/^\/v1\/maps\/([0-9a-f]{64})(\/image|\/report)?$/))) {
       const p = this.packages.find((x) => x.map_id === m![1]);
@@ -181,7 +259,7 @@ export class Content {
         this.reports.unshift({ target: "map", id: p.map_id, by, reason: String(b?.reason ?? ""), at: new Date().toISOString() });
         return ok({ ok: true, position: pos });
       }
-      if (p.state !== "ok") return fail(410, "gone", `this map was ${p.state} by an admin`);
+      if (!this.listed().includes(p)) return fail(410, "gone", "this map is unavailable");
       if (m[2] === "/image") return p.image ? image(p.image.png) : fail(404, "not_found", "this map has no image");
       // A token here is the console fetching the manifest: a download.
       const fetcher = this.who(req.headers.get("authorization"));
@@ -199,10 +277,17 @@ export class Content {
       this.pins.set(Number(m[1]), b.map_ids.filter((x): x is string => typeof x === "string"));
       return ok({ ok: true, position: pos });
     }
-    if (!path.startsWith("/v1/admin/content") && !path.startsWith("/v1/admin/maps/") && !path.startsWith("/v1/admin/uploads/")) return null;
+    if (!path.startsWith("/v1/admin/content") && !path.startsWith("/v1/admin/maps/") && !path.startsWith("/v1/admin/mod-packs/") && !path.startsWith("/v1/admin/uploads/")) return null;
     const c = this.admin.caller(req.headers.get("authorization"), "content.moderate");
     if (!c.ok) return c.reply;
     if (path === "/v1/admin/content" && req.method === "GET") return ok(this.adminList());
+    if ((m = path.match(/^\/v1\/admin\/mod-packs\/([^/]+)\/(hide|unhide|delete|block|unblock)$/)) && req.method === "POST") {
+      const id = decodeURIComponent(m[1]!);
+      if (!this.packRows(true).some((pack) => pack.id === id)) return fail(404, "not_found", "no such pack");
+      const states = { hide: "hidden", unhide: "ok", delete: "deleted", block: "blocked", unblock: "deleted" } as const;
+      this.packState.set(id, states[m[2] as keyof typeof states]);
+      return ok({ ok: true, position: pos });
+    }
     if ((m = path.match(/^\/v1\/admin\/(maps|content)\/([0-9a-f]{64})\/(hide|unhide|delete|block|unblock)$/)) && req.method === "POST") {
       const next: State = { hide: "hidden", unhide: "ok", delete: "deleted", block: "blocked", unblock: "ok" }[m[3] as "hide"] as State;
       if (m[1] === "maps") {
@@ -266,8 +351,12 @@ export class Content {
   }
 
   private adminList() {
-    const count = (target: "map" | "content", id: string) => this.reports.filter((r) => r.target === target && r.id === id).length;
+    const count = (target: "map" | "pack" | "content", id: string) => this.reports.filter((r) => r.target === target && r.id === id).length;
     return {
+      packs: this.packRows(true).map((pack) => ({
+        ...pack, state: this.packState.get(pack.id) ?? "ok",
+        reports: pack.members.reduce((total, member) => total + count("map", member.map_id), count("pack", pack.id)),
+      })),
       maps: this.packages.map((p) => ({ ...this.summary(p), state: p.state, reports: count("map", p.map_id) })),
       blobs: this.blobs().map((b) => ({ sha256: b.sha256, size: b.size, uploader: b.uploader, state: this.blobState.get(b.sha256) ?? "ok", reports: count("content", b.sha256), stored_at: b.stored_at })),
       reports: this.reports,

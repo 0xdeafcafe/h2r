@@ -1167,6 +1167,7 @@ impl Live {
             .then(|| read.last().map(|e| e.position.to_string()))
             .flatten();
         let items: Vec<WireEvent> = {
+            let catalog = self.catalog.read();
             let s = self.model.read();
             read.iter()
                 .filter_map(|e| match viewer {
@@ -1176,6 +1177,7 @@ impl Live {
                     {
                         None
                     }
+                    _ if !viewer.is_admin() && catalog.hides_content_stream(&e.body.stream) => None,
                     _ => crate::sessions::wire_for(&s, e, viewer),
                 })
                 .collect()

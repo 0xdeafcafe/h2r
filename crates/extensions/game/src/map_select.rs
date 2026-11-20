@@ -21,6 +21,10 @@
 //! read again when a package is installed while the game runs
 //! ([`packages_changed`]), and the game refreshes its content slots.
 
+pub(crate) mod packs;
+pub use packs::remember_packs;
+use packs::{InstalledPack, PackIndex};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -180,6 +184,9 @@ impl Map {
 pub struct Catalogue {
     groups: Vec<(Category, Vec<Map>)>,
     overflow: usize,
+    package_slots: BTreeMap<content::MapId, u32>,
+    packs: Vec<InstalledPack>,
+    active_pack: Option<String>,
 }
 
 impl Catalogue {
@@ -215,8 +222,22 @@ impl Catalogue {
             .collect();
         Catalogue {
             groups,
-            overflow: 0,
+            ..Default::default()
         }
+    }
+
+    fn pack_row(&self, id: u32) -> Option<&InstalledPack> {
+        self.packs.iter().find(|p| p.representative() == id)
+    }
+
+    fn active_pack(&self) -> Option<&InstalledPack> {
+        let key = self.active_pack.as_deref()?;
+        self.packs.iter().find(|p| p.key == key)
+    }
+
+    fn original_row(&self) -> Option<u32> {
+        self.active_pack()?;
+        self.maps(Category::Halo2).first().map(|m| m.id)
     }
 
     pub fn with_overflow(mut self, overflow: usize) -> Self {
@@ -343,8 +364,17 @@ pub fn read(slots: &[Vec<u8>], content_root: &Path) -> Catalogue {
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     dirs.sort();
-    maps.extend(dirs.iter().filter_map(|d| map_of_package(d)));
-    Catalogue::new(maps)
+    let mut slots = BTreeMap::new();
+    for dir in dirs {
+        let Some(map) = map_of_package(&dir) else { continue };
+        if let Some(id) = crate::new_maps::package_id(&dir, &map.file()) {
+            slots.insert(id, map.id);
+        }
+        maps.push(map);
+    }
+    let mut catalogue = Catalogue::new(maps);
+    catalogue.package_slots = slots;
+    catalogue
 }
 
 // ---- the screens ----
@@ -356,6 +386,7 @@ pub fn read(slots: &[Vec<u8>], content_root: &Path) -> Catalogue {
 #[derive(Default)]
 pub struct Selection {
     catalogue: Mutex<Arc<Catalogue>>,
+    pack_index: Mutex<PackIndex>,
     generation: std::sync::atomic::AtomicU64,
     /// A content package (a new map) was added or removed this session:
     /// the game's own content scan runs again before the list is next
@@ -377,8 +408,12 @@ impl Selection {
         Arc::clone(&lock(&self.catalogue))
     }
     /// Publish the refreshed catalogue and notify the game of changed offers.
-    pub fn set(&self, catalogue: Catalogue, content: bool) {
-        *lock(&self.catalogue) = Arc::new(catalogue);
+    pub fn set(&self, mut catalogue: Catalogue, content: bool) {
+        let index = lock(&self.pack_index);
+        let mut current = lock(&self.catalogue);
+        catalogue.packs = index.installed(&catalogue);
+        catalogue.active_pack.clone_from(&current.active_pack);
+        *current = Arc::new(catalogue);
         if content {
             self.content_changed
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -560,6 +595,8 @@ pub enum Mode {
     Categories,
     /// The category's maps, in its order.
     Maps(Category),
+    /// An installed pack's maps. Its first member represents its folder.
+    Pack(u32),
 }
 
 /// The element ids and lock bytes a Select Map in `mode` is built from
@@ -572,7 +609,22 @@ pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(
             .iter()
             .filter_map(|&c| cat.category_id(c).map(|id| (id, 0)))
             .collect(),
-        Mode::Maps(c) => cat.maps(c).iter().map(|m| (m.id, flags(m.id))).collect(),
+        Mode::Maps(Category::Mods) => {
+            let mut rows: Vec<_> = cat.original_row().into_iter().map(|id| (id, 0)).collect();
+            rows.extend(cat.maps(Category::Mods).iter().filter_map(|m| {
+                match cat.packs.iter().find(|p| p.members.iter().any(|(id, _)| *id == m.id)) {
+                    Some(pack) => (m.id == pack.representative()).then_some((m.id, 0)),
+                    None => Some((m.id, flags(m.id))),
+                }
+            }));
+            rows
+        }
+        Mode::Maps(c) => cat.maps(c).iter().map(|m| {
+            let member = c.game_order().then(|| cat.active_pack()?.slot_for(m)).flatten();
+            (member.unwrap_or(m.id), flags(m.id))
+        }).collect(),
+        Mode::Pack(id) => cat.pack_row(id).into_iter().flat_map(|p| p.members.iter())
+            .map(|(id, _)| (*id, flags(*id))).collect(),
     }
 }
 
@@ -690,6 +742,10 @@ impl Flow {
         });
     }
 
+    fn open(&self, mode: Mode) {
+        *lock(&self.next) = Some(OpenList { mode, focus: None });
+    }
+
     fn opening(&self) -> Option<OpenList> {
         lock(&self.next).take()
     }
@@ -749,14 +805,29 @@ fn focus_handle(mem: &dyn GuestMemory, array: u32, id: u32) -> Option<u32> {
 const LABEL_LEN: u32 = 0x80;
 
 pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> {
-    if mode != Mode::Categories {
-        return None;
+    let slot_label = || {
+        let i = cat.all().position(|map| map.id == id)?;
+        Some(Category::ALL.len() as u32 + i as u32)
+    };
+    match mode {
+        Mode::Categories => {
+            let c = cat.categories().into_iter().find(|&c| cat.category_id(c) == Some(id))?;
+            Some((c.index(), cat.category_label(c)))
+        }
+        Mode::Maps(Category::Mods) if cat.original_row() == Some(id) =>
+            Some((slot_label()?, "Use original maps".into())),
+        Mode::Maps(Category::Mods) => Some((slot_label()?, cat.pack_row(id)?.name.clone())),
+        Mode::Pack(group) => {
+            let (_, base) = cat.pack_row(group)?.members.iter().find(|(slot, _)| *slot == id)?;
+            Some((slot_label()?, live_hle::mods::base_title(base)))
+        }
+        Mode::Maps(c) if c.game_order() => {
+            let pack = cat.active_pack()?;
+            let base = cat.maps(c).iter().find(|map| pack.slot_for(map) == Some(id))?;
+            Some((slot_label()?, format!("{} ({})", base.name, pack.name)))
+        }
+        _ => None,
     }
-    let category = cat
-        .categories()
-        .into_iter()
-        .find(|&c| cat.category_id(c) == Some(id))?;
-    Some((category.index(), cat.category_label(category)))
 }
 
 fn utf16z(text: &str) -> Vec<u8> {
@@ -1038,8 +1109,25 @@ impl hooks::Feature for MapSelect {
                 let (Some(id), Some((window, slot))) = (id, stack) else {
                     return Ok(F::Continue);
                 };
-                match mode {
-                    Mode::Maps(_) => {
+                let catalogue = sel.catalogue();
+                let next = match mode {
+                    Mode::Categories => catalogue.categories().into_iter()
+                        .find(|&k| catalogue.category_id(k) == Some(id)).map(Mode::Maps),
+                    Mode::Maps(Category::Mods) if catalogue.original_row() == Some(id) => {
+                        Arc::make_mut(&mut *lock(&sel.catalogue)).active_pack = None;
+                        Some(Mode::Maps(Category::Halo2))
+                    }
+                    Mode::Maps(Category::Mods) => catalogue.pack_row(id).map(|_| Mode::Pack(id)),
+                    _ => None,
+                };
+                match next {
+                    None if mode == Mode::Categories => c.ret(8).map(F::Return),
+                    None => {
+                        if let Mode::Pack(group) = mode
+                            && let Some(pack) = catalogue.pack_row(group)
+                        {
+                            Arc::make_mut(&mut *lock(&sel.catalogue)).active_pack = Some(pack.key.clone());
+                        }
                         // With Clankers on, the map's nav mesh is asked for now
                         // (docs/game/bots.md §10 stage 2).
                         let cat = sel.catalogue();
@@ -1054,15 +1142,7 @@ impl hooks::Feature for MapSelect {
                         }
                         Ok(F::Continue)
                     }
-                    Mode::Categories => {
-                        let catalogue = sel.catalogue();
-                        let Some(cat) = catalogue
-                            .categories()
-                            .into_iter()
-                            .find(|&k| catalogue.category_id(k) == Some(id))
-                        else {
-                            return c.ret(8).map(F::Return);
-                        };
+                    Some(next) => {
                         let mask = {
                             let mem = c.ctx.runtime().memory();
                             chain.and_then(|ch| {
@@ -1073,8 +1153,7 @@ impl hooks::Feature for MapSelect {
                             return c.ret(8).map(F::Return);
                         };
                         eprintln!(
-                            "map select: {} picked; its maps on window {window}, slot {slot}",
-                            cat.label()
+                            "map select: {next:?} on window {window}, slot {slot}"
                         );
                         let request = crate::skulls_mp::open_request(
                             mask as u16,
@@ -1086,7 +1165,7 @@ impl hooks::Feature for MapSelect {
                         c.answer_async(move |cx| {
                             Box::pin(async move {
                                 cx.write(|m| m.write(request_at, &request))?;
-                                nav.maps.pick(cat);
+                                nav.maps.open(next);
                                 let opened = cx
                                     .call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
                                     .await;
@@ -1122,10 +1201,14 @@ impl hooks::Feature for MapSelect {
                     c.cpu.eax = 1;
                     c.ret(4).map(F::Return)
                 }
-                (ui_back::Back::Reopen, Some(source), Mode::Maps(category)) => {
+                (ui_back::Back::Reopen, Some(source), mode @ (Mode::Maps(_) | Mode::Pack(_))) => {
                     let nav = Arc::clone(&nav);
                     c.answer_async(move |cx| Box::pin(async move {
-                        nav.maps.categories(Some(category));
+                        match mode {
+                            Mode::Maps(category) => nav.maps.categories(Some(category)),
+                            Mode::Pack(_) => nav.maps.pick(Category::Mods),
+                            Mode::Categories => unreachable!(),
+                        }
                         let opened = ui_back::reopen(&cx, request_at, source, CHANGE_MAP_LOADER).await;
                         let _ = nav.maps.opening();
                         nav.inherit_setup(screen, opened?);
@@ -1164,7 +1247,17 @@ impl hooks::Feature for MapSelect {
             nav.maps.freed(o.cpu.ecx);
         });
         let nav = Arc::clone(&self.navigation);
-        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || nav.maps.snapshot_live()));
+        let (save, load) = (Arc::clone(&self.sel), Arc::clone(&self.sel));
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
+            move || nav.maps.snapshot_live(),
+            move || save.catalogue().active_pack.as_deref().unwrap_or_default().as_bytes().to_vec(),
+            move |bytes, _| {
+                let key = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+                Arc::make_mut(&mut *lock(&load.catalogue)).active_pack =
+                    (!key.is_empty()).then(|| key.to_owned());
+                Ok(())
+            },
+        ));
         Ok(())
     }
 }
@@ -1205,6 +1298,10 @@ pub fn selected_path(id: u32) -> Option<String> {
     let cat = PREPARED.get()?.catalogue();
     let map = cat.all().find(|map| map.id == id)?;
     crate::map_slots::slot_file(&format!("{}.map", map.path))
+}
+
+pub(super) fn opened_pack_name(id: u32) -> Option<String> {
+    Some(PREPARED.get()?.catalogue().pack_row(id)?.name.clone())
 }
 
 /// The category of the selected map, using the catalogue kept at boot
@@ -1293,8 +1390,13 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path, overflow: usize) -> Option
         0 | 1 => eprintln!("map select: one category; the retail list"),
         _ => eprintln!("map select: by category ({})", summary(&cat)),
     }
+    let index = PackIndex::read(data_root);
+    let mut cat = cat;
+    cat.packs = index.installed(&cat);
+    let sel = prepare(cat);
+    *lock(&sel.pack_index) = index;
     let _ = SOURCES.set(sources);
-    Some(prepare(cat))
+    Some(sel)
 }
 
 /// Whether the boot prepared the catalogue ([`packages_changed`] has

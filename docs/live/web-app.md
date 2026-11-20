@@ -169,18 +169,23 @@ id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
 
 ### Mods
 
-The stats site's Mods tab (`/games/halo2/mods`, `stats/Mods.tsx`)
-browses the server's map packages (`GET /v1/maps`): Newest or Most
-Downloaded, filtered by base map, category and a search box, paged with the
-server's `next` cursor (the earlier cursors are kept in the page so
-"Previous" works). The query lives in the URL (`?sort=popular&base=teacup&category=&q=&author=`).
-A mod's page (`/games/halo2/mods/:id`) shows its picture (else the base map's),
-author and credit, description, source link (http and https only), size,
-downloads, files, and Report for signed-in players. Downloading happens in
-the game. The page asks for the package without a token, because a token
-there counts a download. The pure rules are in `src/lib/mods.ts`. The mock serves eight more invented mods beside
-the three above, with categories, credits, source links and download
-counts, and sorts, filters and pages them as the server does.
+The Mods tab (`/games/halo2/mods`, `web/src/stats/Mods.tsx`) reads the
+pack catalog from `GET /v1/mod-packs`. One row shows the release, its
+makers, uploader, version, year, online-play advisory, source, map count
+and download size when available. Expand **View maps** to reach the
+individual map pages. Newest and Most Downloaded, base map, category,
+text and uploader filters apply to whole packs. The filters stay in the
+URL, and each results page holds up to twenty packs.
+
+A pack page (`/games/halo2/mods/packs/:id`) shows its cover, credits,
+description, source and gallery. With no pack artwork it uses its members'
+screenshots. A stock map preview is labelled **Stock map picture**.
+Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
+contents and layer sizes. Signed-in players can report a pack or a
+member. Its uploader can edit the release metadata and upload PNG, JPEG
+or WebP screenshots to a cover and two additional slots on either page.
+The Live server validates and stores the images. Installation runs in
+the game. The mock serves invented pack metadata and member artwork.
 
 ### Server stats
 

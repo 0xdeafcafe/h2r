@@ -447,6 +447,11 @@ impl Live {
         if viewer == Viewer::Operator {
             return Some(e.to_wire());
         }
+        if !viewer.is_admin() && live_proto::maps::KINDS.contains(&e.body.kind.as_str())
+            && self.catalog.read().hides_content_stream(&e.body.stream)
+        {
+            return None;
+        }
         wire_for(&self.model.read(), e, viewer)
     }
 
@@ -617,6 +622,10 @@ pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
     let b = &e.body;
     let xuid = |k: &str| b.data[k].as_str().and_then(|v| Xuid::parse(v).ok());
     match b.kind.as_str() {
+        live_proto::maps::MAP_PUBLISHED if b.data["staged_for"].is_string() => {
+            matches!((viewer, Author::parse(&b.author)),
+                (Viewer::Account(me), Some(Author::Account { xuid, .. })) if me == xuid)
+        }
         live_proto::maps::CONTENT_REPORTED
         | live_proto::maps::MAP_DOWNLOADED
         | live_proto::reports::PLAYER_REPORTED
