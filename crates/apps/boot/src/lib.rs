@@ -745,7 +745,7 @@ fn run_configured(
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
                 d3d_glue::install_scaled_view(
-                    &loaded.runtime, b, interp, host.render_thread, render_hooks, private, host.settings.as_deref(),
+                    &loaded.runtime, b, interp, host.render_thread, render_hooks, private,
                 )?
             }
             None => d3d_glue::install_game_view(

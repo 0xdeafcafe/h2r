@@ -234,17 +234,15 @@ impl PrivateScenes {
 
     /// Taps the ordinary display backend for an armed parity comparison.
     /// Captures draw independently on the worker and never call this tap.
-    pub fn install(
+    fn install(
         self,
         display: &mut d3d::GfxBackend,
-        scale: u32,
-        live: Option<&settings::Store>,
+        scale: impl Fn() -> u32 + Send + Sync + 'static,
     ) -> anyhow::Result<crate::frame_owner::Service> {
-        let scale_row = live.map(|s| s.handle::<u32>(crate::setting_defs::RENDER_SCALE.key));
         let worker = crate::frame_owner::Service::new(
             d3d::GfxBackend::new(share_context(&display.ctx)),
             self.mode,
-            Box::new(move || scale_row.as_ref().map_or(scale, |s| s.get())),
+            Box::new(scale),
         )?;
         display.observe_guest_present(worker.reference_observer());
         Ok(worker)
@@ -485,7 +483,7 @@ pub fn install_headless_with_scenes(
                 eprintln!(
                     "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
-                return install_scaled_view(rt, b, interp, render_thread_requested(), profile, private, None);
+                return install_scaled_view(rt, b, interp, render_thread_requested(), profile, private);
             }
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
@@ -925,7 +923,7 @@ pub fn install_game_view(
 ) -> anyhow::Result<Installed> {
     let scenes = if let Some(private) = private {
         Some(SceneOutput {
-            service: private.install(&mut backend, 1, None)?,
+            service: private.install(&mut backend, || 1)?,
             owner: crate::frame_cutover::owner(current_lighting(settings, d3d::Lighting::Retail)),
         })
     } else {
@@ -943,19 +941,17 @@ pub fn install_scaled_view(
     threaded: bool,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
-    settings: Option<&settings::Store>,
 ) -> anyhow::Result<Installed> {
+    let stats = backend.shared_stats();
     let scenes = if let Some(private) = private {
-        let scale = backend.scale();
-        let lighting = backend.lighting();
+        let effective = Arc::clone(&stats);
         Some(SceneOutput {
-            service: private.install(backend.view_mut(), scale, settings)?,
-            owner: crate::frame_cutover::scaled_owner(current_lighting(settings, lighting)),
+            service: private.install(backend.view_mut(), move || effective.lock().unwrap_or_else(|e| e.into_inner()).scale)?,
+            owner: crate::frame_cutover::scaled_owner(),
         })
     } else {
         None
     };
-    let stats = backend.shared_stats();
     let report = scale_report(&mut backend);
     let installed = install_gpu_for_profile(rt, backend, Some(report), interp, threaded, profile, scenes)?;
     Ok(installed.with_gpu_view(Some(stats)))
