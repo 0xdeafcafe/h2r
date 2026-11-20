@@ -25,14 +25,14 @@ pub const TICK_MS: f64 = 1000.0 / 30.0;
 /// The dedicated host's late-tick threshold.
 pub const LATE_TICK_MS: u64 = 36;
 /// Matches per container unless configured.
-pub const DEFAULT_MAX_MATCHES: usize = 3;
+pub const DEFAULT_MAX_MATCHES: usize = 5;
+/// Maximum blast radius of a large pack.
+pub const MAX_PACK_MATCHES: usize = 10;
 /// Share of each vCPU's tick the summed matches may use.
 pub const DEFAULT_CPU_BUDGET: f64 = 0.70;
-/// Assumed cost of a match with no measurement yet: the top of the
-/// observed 6-10 ms per tick for a light dedicated host.
-pub const DEFAULT_MS_PER_TICK: f64 = 10.0;
-/// Assumed memory of a match with no measurement yet (observed ~340 MB RSS).
-pub const DEFAULT_RSS_MIB: u64 = 340;
+/// Admission estimates before the pack has measured the lease's map.
+pub const DEFAULT_MS_PER_TICK: f64 = 5.0;
+pub const DEFAULT_RSS_MIB: u64 = 170;
 /// Kept free for the supervisor, the kernel and short spikes.
 pub const DEFAULT_RESERVE_MIB: u64 = 256;
 
@@ -88,6 +88,16 @@ impl Limits {
     }
 }
 
+/// The same admission envelope on both homes. Cloudflare provisions at
+/// least 3 GiB per vCPU on its capped, default scheduling policy.
+pub fn class_limits(class: &crate::hosts::HostClass, configured_matches: Option<usize>) -> Limits {
+    let (cap, vcpus, memory_mib) = match class {
+        crate::hosts::HostClass::Small => (DEFAULT_MAX_MATCHES, 1.0, 1536),
+        crate::hosts::HostClass::Large => (MAX_PACK_MATCHES, 2.0, 3072),
+    };
+    Limits::new(configured_matches.unwrap_or(cap).clamp(1, cap), vcpus, memory_mib)
+}
+
 /// One running match's measured cost. `None` until the supervisor has
 /// enough samples; admission then assumes the configured default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -117,6 +127,8 @@ pub struct MatchLoad {
 pub enum Refusal {
     #[error("the pack already runs {running} of {max} matches")]
     Full { running: usize, max: usize },
+    #[error("tick deadline: wall p99 of {wall_ms_per_tick_p99:.1} ms exceeds 36 ms")]
+    Late { wall_ms_per_tick_p99: f64 },
     #[error("CPU: {projected_ms:.1} ms per tick would exceed the {budget_ms:.1} ms budget")]
     Cpu { projected_ms: f64, budget_ms: f64 },
     #[error("memory: {projected_mib} MiB would exceed the {budget_mib} MiB budget")]
@@ -142,6 +154,11 @@ pub fn admit(
             running: running.len(),
             max: limits.max_matches,
         });
+    }
+    if let Some(late) = running.iter().filter_map(|m| m.wall_ms_per_tick_p99)
+        .filter(|&p99| p99 > LATE_TICK_MS as f64).max_by(f64::total_cmp)
+    {
+        return Err(Refusal::Late { wall_ms_per_tick_p99: late });
     }
     let budget_ms = limits.tick_budget_ms();
     let projected_ms = running

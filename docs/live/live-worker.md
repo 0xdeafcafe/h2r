@@ -441,7 +441,7 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 | Worker setting | Purpose |
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
-| `LIVE_HOST_PACK_MATCHES` | Matches per host container. Defaults to 3, at most 8. Each container still admits a match only when its measured load leaves room. |
+| `LIVE_HOST_PACK_MATCHES` | Optional slot cap per container. Small packs have five slots and large packs ten. A numeric value lowers the class cap. Admission also checks gameplay tick p99, CPU and memory. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
 | `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |

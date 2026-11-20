@@ -5,9 +5,9 @@ Code: `crates/apps/cli/src/host_cmd/pack.rs` (the pack supervisor), `crates/live
 Controls and experimental profile settings are listed in [switches.md](../runtime/switches.md).
 
 A light match costs 6–10 ms of CPU per 33 ms tick and about 340 MB of
-resident memory, and a pack runs three of them in a 1 vCPU / 3 GiB container
-([Packed hosts](dedicated-host.md#packed-hosts)). This design halves both
-figures per match, starts a match in under 2 s from a template process, and
+resident memory in the original three-match, 1 vCPU / 3 GiB sizing model
+([Packed hosts](dedicated-host.md#packed-hosts)). The targets are to halve both
+figures per match, start a match in under 2 s from a template process, and
 lets the fleet follow lease demand from one match to a thousand. One rule
 holds throughout: a host is ad hoc. Nothing runs, warm or otherwise, unless
 somebody is searching or playing, and every mechanism here works on the
@@ -21,7 +21,7 @@ Targets, per match in a full pack:
 | Memory (Pss: private plus its share of shared pages) | about 210 MiB (**S**; 340 MiB resident) | ≤ 170 MiB | 75–115 MiB |
 | Matches per vCPU | 3 | 4–6 | 4 at 5 ms, 5 at 4 ms |
 | Allocation to joinable, pack running | about 20 s | < 2 s | 1–2 s |
-| Cloudflare cost per match-hour, full pack | $0.027 | ≤ $0.014 | $0.012–0.015 |
+| Cloudflare cost per match-hour, full pack | $0.027 | ≤ $0.014 | $0.018–0.020 |
 
 The all-phantom baseline and acceptance results are pending. Collect them on the quiet laptop after the host can form a squad session.
 
@@ -234,27 +234,25 @@ about a second more.
 
 ### Pack density and admission
 
-The supervisor's rule stays: refuse when the summed cost plus one more
-match passes 70% of 33.3 ms per vCPU, or when memory plus one more match
-passes the limit less 256 MiB. What changes:
+The supervisor refuses a match above the slot limit, when any running
+match has a gameplay tick p99 above 36 ms, when projected CPU exceeds 70%
+of 33.3 ms per vCPU, or when projected memory leaves less than 256 MiB
+free. It estimates new loads from recent measured gameplay on the same map,
+using 5 ms and 170 MiB in the absence of observations. Newly allocated slots
+reserve memory during boot, before their pages appear in the cgroup.
 
-- **Defaults follow measurement.** The cost of a match with fewer than
-  three samples is the pack's own running median for that map, and 5 ms
-  and 170 MiB when the pack has none. Today's 10 ms and 340 MiB would
-  refuse a fourth 5 ms match on one vCPU.
-- **Lateness counts.** A match whose `wall_ms_per_tick` p99 over the last
-  30 s exceeds 36 ms marks the pack full, whatever its CPU mean says. CPU
-  time is what is billed; the deadline is what players feel.
-- **The template is counted.** Its private pages come off the pack's
-  memory before any match is admitted.
-- **Sizes fit the pack.** Cloudflare takes custom instance types, so the
-  small class is 1 vCPU / 1,536 MiB for four or five matches and the
-  large class 2 vCPU / 3,072 MiB for eight to ten
-  (`crates/live/live-worker/wrangler.toml`). `LIVE_HOST_PACK_MATCHES`
-  goes to 5 and 10. Disk stays 12 GB until the store bundle is measured.
-- **A pack is the blast radius.** One container fault ends every match in
-  it. Ten is the ceiling for that reason, not for CPU: a 4 vCPU / 12 GiB
-  instance could hold twenty.
+| Pack class | vCPUs | Supervisor memory limit | Slots | Provisioned Cloudflare memory |
+|---|---:|---:|---:|---:|
+| Small | 1 | 1,536 MiB | 5 | 3 GiB |
+| Large | 2 | 3,072 MiB | 10 | 6 GiB |
+
+Both Cloudflare classes reserve 12 GB of disk. The deployment uses the
+scheduling policy that enforces Wrangler’s `max_instances` and requires
+at least 3 GiB of memory per vCPU. The smaller limits are admission and
+qualification budgets. Billing uses the provisioned memory. The density
+gate runs four real-time matches on one vCPU with a physical 1,536 MiB
+limit for 30 minutes, checking every pack sample for a tick p99 under 36 ms.
+[Cloudflare instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/) · [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
 
 ### Warm capacity from demand
 
@@ -385,7 +383,7 @@ every later slice and by admission.
 | Billing | CPU on use; memory and disk as provisioned, in 10 ms steps, until the instance sleeps | the whole Machine per second while running; a stopped Machine pays rootfs storage only |
 | Player path | WebSocket tunnel through the Worker; no inbound UDP | UDP on the app's dedicated IPv4; 14,000 ports is 2,000 seven-port windows per address |
 | Start | 1–3 s cold, then the bundle fetch on a new instance | tens of seconds to create, about a second to start a stopped Machine |
-| Today | packs of 3, `max_instances` 4 | one Machine per lease, native Live only |
+| Current deployment | up to 5/10 slots per small/large pack | one Machine per lease, native Live only |
 
 [Cloudflare limits](https://developers.cloudflare.com/containers/platform-details/limits/) ·
 [Cloudflare pricing](https://developers.cloudflare.com/containers/pricing/) ·
@@ -399,21 +397,21 @@ minutes without demand.
 ### Cost per player-hour
 
 All **S**. Eight players a match; the projected 5 ms and four matches per
-1 vCPU / 1,536 MiB / 12 GB pack; rates from
+1 vCPU / 3 GiB / 12 GB pack; rates from
 [Cost and budget](dedicated-host.md#cost-and-budget). A Cloudflare pack is
-$0.0165 an hour for memory and disk plus $0.0108 per match for CPU. Fill
+$0.0300 an hour for memory and disk plus $0.0108 per match for CPU. Fill
 is 85% at 100 matches and 90% at 1,000, for regions and churn.
 
 | Concurrent matches | Containers | Cloudflare per match-hour | Cloudflare per player-hour | Today's design per player-hour | Fly, packed, per player-hour |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 1 | $0.027 | $0.0034 | $0.0059 | $0.0058 |
-| 10 | 3 | $0.016 | $0.0020 | $0.0037 | $0.0017 |
-| 100 | 30 | $0.016 | $0.0020 | $0.0037 | $0.0017 |
-| 1,000 | 278 | $0.015 | $0.0019 | $0.0036 | $0.0016 |
+| 1 | 1 | $0.041 | $0.0051 | $0.0059 | $0.0058 |
+| 10 | 3 | $0.020 | $0.0025 | $0.0037 | $0.0017 |
+| 100 | 30 | $0.020 | $0.0025 | $0.0037 | $0.0017 |
+| 1,000 | 278 | $0.019 | $0.0024 | $0.0036 | $0.0016 |
 
 Add egress on both: at the estimate's 0.03 GB per player-hour it is
 $0.00075 on Cloudflare after the included terabyte and $0.0006 on Fly, a
-quarter of the total at scale. A thousand matches cost about $15 an hour
+quarter of the total at scale. A thousand matches cost about $19 an hour
 in compute and $6 in egress. Fly today, one Machine per lease, is $0.0058
 per player-hour at any size. "Today's design" is priced as if its caps
 allowed the count. Cloudflare is cheaper when packs are part full, Fly
@@ -427,7 +425,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
-| 8 | Admission defaults, lateness and pack sizes | `host_cmd/pack.rs`, `pack_measure.rs`, `crates/live/live-worker/wrangler.toml`, `live-worker/src/settings.rs` | `pack_tests.rs`: a fourth 5 ms match is admitted, a late pack refuses | Four matches on 1 vCPU / 1,536 MiB for 30 minutes, none late |
 | 9 | Demand-driven warm slots | the pool in `hostroom.rs` and `local_pack.rs`, `hosts/lifecycle.rs`, `matchmaking/dedicated.rs` (the demand figure) | `tests/hostroom.rs` and `local_pack_tests.rs` with a fake clock: start on search, linger out on silence, never a pack with zero demand | First match of a session joinable within 2 s of its cohort forming, in both homes |
 | 10 | Region probes without a host | `matchmaking/dedicated.rs`, `selection.rs`, `crates/live/live-hle/src/qos.rs`, the pool room's echo route, `docs/live/live-matchmaking.md` | `matchmaking/tests.rs`: the three sources in order, the warm tie-break, the peer fallback | Probe RTT within 10 ms of the in-match RTT for the same client and region |
 | 11 | Cost by share and the caps | `host_costs.rs`, `live-proto/src/hosts.rs`, `hosts/lifecycle.rs`, `wrangler.toml` | `host_costs.rs` tests: four matches in one pack sum to one container | The month's estimate within 20% of the invoice |

@@ -9,7 +9,7 @@
 //! the running ones leaves room ([`live_proto::host_pack::admit`]). The pack
 //! exits after it has run nothing for `--linger-s`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
@@ -32,7 +32,7 @@ mod measure;
 use measure::Meter;
 
 pub(super) const USAGE: &str = "usage:
-  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 3]
+  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 5]
                [--vcpus N] [--memory-mib MIB] [--linger-s 60]
                [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
                [--agent-port 14720] [--data DIR]";
@@ -96,8 +96,8 @@ impl Options {
             .map_or(Ok(host_pack::DEFAULT_MAX_MATCHES), |v| v.parse())
             .context("--max-matches must be an integer")?;
         ensure!(
-            (1..=64).contains(&max_matches),
-            "--max-matches must be in 1..=64"
+            (1..=host_pack::MAX_PACK_MATCHES).contains(&max_matches),
+            "--max-matches must be in 1..=10"
         );
         let vcpus = value("--vcpus", "H2_PACK_VCPUS")
             .map(|v| v.parse::<f64>())
@@ -162,6 +162,7 @@ type Launch = Box<dyn Fn(&AddMatch, u16, SlotPorts) -> io::Result<Child> + Send>
 struct Slot {
     lease: String,
     ports: SlotPorts,
+    map: Option<String>,
     child: Child,
     stopping_since: Option<Instant>,
     meter: Meter,
@@ -180,8 +181,47 @@ enum AddError {
     Spawn(io::Error),
 }
 
+/// Recent trusted observations across this pack. A single bounded history
+/// also bounds the number of distinct mod maps a long-lived pack retains.
+#[derive(Default)]
+struct MapCosts(VecDeque<(String, f64, Option<u64>)>);
+
+impl MapCosts {
+    fn observe(&mut self, map: &str, load: MatchLoad) {
+        // A low-CPU menu or a busy boot is not a sample of this map.
+        if load.wall_ms_per_tick_p99.is_some()
+            && let Some(ms) = load.ms_per_tick.filter(|ms| ms.is_finite() && *ms >= 0.0)
+        {
+            if self.0.len() == 256 {
+                self.0.pop_front();
+            }
+            self.0.push_back((map.to_owned(), ms, load.rss_mib.filter(|m| *m > 0)));
+        }
+    }
+
+    fn estimate(&self, map: Option<&str>, mut limits: Limits) -> Limits {
+        let Some(map) = map else { return limits };
+        let mut times = Vec::new();
+        let mut memory = Vec::new();
+        for (_, ms, mib) in self.0.iter().filter(|(key, _, _)| key == map) {
+            times.push(*ms);
+            memory.extend(*mib);
+        }
+        if !times.is_empty() {
+            times.sort_by(f64::total_cmp);
+            limits.new_ms_per_tick = (times[(times.len() - 1) / 2] + times[times.len() / 2]) / 2.0;
+        }
+        if !memory.is_empty() {
+            memory.sort_unstable();
+            limits.new_rss_mib = memory[(memory.len() - 1) / 2].midpoint(memory[memory.len() / 2]);
+        }
+        limits
+    }
+}
+
 pub(super) struct Pack {
     limits: Limits,
+    history: MapCosts,
     /// UDP, tunnel and agent port bases for slot 0.
     bases: (u16, u16, u16),
     slots: Vec<Option<Slot>>,
@@ -202,6 +242,7 @@ impl Pack {
     ) -> Self {
         Self {
             bases,
+            history: MapCosts::default(),
             slots: (0..limits.max_matches).map(|_| None).collect(),
             limits,
             container_mib: None,
@@ -223,10 +264,8 @@ impl Pack {
         if !valid_lease(&add.lease) {
             return Err(AddError::Invalid("invalid lease ID".into()));
         }
-        let lease_id = serde_json::from_str::<serde_json::Value>(&add.lease_json)
-            .ok()
-            .and_then(|v| v.get("id").and_then(|id| id.as_str()).map(str::to_owned));
-        if lease_id.as_deref() != Some(add.lease.as_str()) {
+        let lease = serde_json::from_str::<serde_json::Value>(&add.lease_json).unwrap_or_default();
+        if lease["id"].as_str() != Some(add.lease.as_str()) {
             return Err(AddError::Invalid("lease_json does not name this lease".into()));
         }
         if let Some((slot, existing)) = self.find(&add.lease) {
@@ -243,8 +282,27 @@ impl Pack {
             return Err(AddError::Refused(Refusal::Draining));
         }
         // Stopping matches still hold their slot and CPU until reaped.
-        let running: Vec<MatchLoad> = self.slots.iter().flatten().map(|s| s.meter.load()).collect();
-        host_pack::admit(&self.limits, &running, self.container_mib).map_err(AddError::Refused)?;
+        let mut running = Vec::new();
+        let mut reserved_mib = 0u64;
+        for slot in self.slots.iter().flatten() {
+            let mut load = slot.meter.load();
+            if load.wall_ms_per_tick_p99.is_none() || load.ms_per_tick.is_none() || load.rss_mib.is_none() {
+                let estimate = self.history.estimate(slot.map.as_deref(), self.limits);
+                load.ms_per_tick = Some(load.ms_per_tick.unwrap_or(0.0).max(estimate.new_ms_per_tick));
+                let observed = load.rss_mib.unwrap_or(0);
+                // A just-started match may not have faulted its RAM yet.
+                // Add only its outstanding reservation to the cgroup sample.
+                let outstanding = estimate.new_rss_mib.saturating_sub(observed);
+                reserved_mib = reserved_mib.saturating_add(outstanding);
+                load.rss_mib = Some(observed.max(estimate.new_rss_mib));
+            }
+            running.push(load);
+        }
+        // Packaged maps are identified by content even if the scenario name matches.
+        let map = lease["map_id"].as_str().or_else(|| lease["map"].as_str());
+        let estimate = self.history.estimate(map, self.limits);
+        let committed_mib = self.container_mib.map(|used| used.saturating_add(reserved_mib));
+        host_pack::admit(&estimate, &running, committed_mib).map_err(AddError::Refused)?;
         let slot = self
             .slots
             .iter()
@@ -262,6 +320,7 @@ impl Pack {
         );
         self.slots[slot] = Some(Slot {
             lease: add.lease.clone(),
+            map: map.map(str::to_owned),
             ports,
             child,
             stopping_since: None,
@@ -313,6 +372,9 @@ impl Pack {
             }
             if let Some(usage) = sample(slot.child.id()) {
                 slot.meter.observe(now, usage);
+            }
+            if let Some(map) = &slot.map {
+                self.history.observe(map, slot.meter.load());
             }
         }
         self.container_mib = container_mib;

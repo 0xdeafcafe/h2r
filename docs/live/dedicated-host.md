@@ -172,8 +172,8 @@ runs it. [Packed hosts](#packed-hosts) Otherwise it passes `H2_LEASE`,
 `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and optional
 `H2_REGION` to `h2 host run` for a single lease, as in a local Docker
 smoke test. The host verifies the bundle hash and caches the data in
-`/var/cache/h2`. The image exposes UDP 31000–31020 for three slots of game
-ports, TCP 31099 for pack control and TCP 31100–31102 for the slots'
+`/var/cache/h2`. The image exposes UDP 31000–31069 for ten slots of game
+ports, TCP 31099 for pack control and TCP 31100–31109 for the slots'
 datagram tunnels.
 
 ## Packed hosts
@@ -198,20 +198,20 @@ group. A removal sends SIGTERM to the group, so `h2 host run` reports
 a pipe from the supervisor and stop if it dies. A pack that has run
 nothing for `H2_PACK_LINGER_S` (default 60 s) exits.
 
-**Admission.** The supervisor samples each child's process group every
-2 seconds from `/proc`: CPU time per 33 ms of wall time and proportional
-resident memory (`Pss`). After three samples a match's cost is the higher
-of its smoothed and latest value. Until then it counts at 10 ms per tick
-and 340 MiB. A new match is refused when the pack already runs
-`H2_PACK_MAX_MATCHES` (default 3), when the summed cost plus 10 ms for the
-new match would pass 70% of 33.3 ms per vCPU, or when memory plus 340 MiB
-would pass the container limit less 256 MiB. Memory comes from the cgroup's
-`memory.current` less inactive file pages. Without a cgroup, it uses the
-matches' own figures. `H2_PACK_VCPUS` and `H2_PACK_MEMORY_MIB` set the
-size; otherwise the cgroup's `cpu.max` and `memory.max` do. On one vCPU,
-two matches measured at 6 ms leave room for a third (22 ms of a 23.3 ms
-budget). Two at 9 ms do not. Off Linux nothing is measured, so the
-defaults and the match cap decide.
+**Admission.** The supervisor samples the match process group every two
+seconds on Linux. The game agent supplies gameplay tick p99 on both homes.
+On other platforms the pack uses the game process’s CPU and resident memory.
+The pack estimates cold matches from the median of recent measured loads
+on that map. Without history it reserves 5 ms per tick and 170 MiB per match.
+Admission keeps 30% of each vCPU and 256 MiB of memory free. It accounts
+for boot reservations even before resident memory grows. A rolling
+30-second gameplay p99 over 36 ms also closes admission.
+
+Small packs admit up to five slots on one vCPU within 1,536 MiB. Large
+packs admit up to ten slots on two vCPUs within 3,072 MiB. Cloudflare
+provisions and bills 3 and 6 GiB respectively under its capped scheduling
+policy. The supervisor accepts explicit CPU, memory and slot limits.
+[Sizing and qualification](host-halving.md#pack-density-and-admission)
 
 **Routing.** On Cloudflare the hub still calls one room per lease. That
 room asks the class's pool room for its location
@@ -228,7 +228,7 @@ match from its pack. When that was the pack's last lease, the pack room
 destroys the container instead. Pack names are never reused. Each room
 keeps an alarm at its latest lease deadline as a backstop for a lost stop.
 `LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
-(default 3, at most 8).
+(five for small, ten for large, or a lower configured limit).
 
 Native Live uses the same pool logic and supervisor when
 `LIVE_HOST_PACK_MATCHES` is set. It starts one local `h2 host pack` per

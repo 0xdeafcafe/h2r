@@ -398,6 +398,7 @@ impl Room {
             });
         }
         let max_matches = pack_matches(
+            &class,
             env.var("LIVE_HOST_PACK_MATCHES")
                 .ok()
                 .map(|v| v.to_string())

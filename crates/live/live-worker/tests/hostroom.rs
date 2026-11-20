@@ -85,14 +85,17 @@ fn rooms_are_told_apart_by_name() {
 }
 
 #[test]
-fn pack_size_defaults_to_three_and_stays_below_the_control_port() {
-    assert_eq!(pack_matches(None), 3);
-    assert_eq!(pack_matches(Some("2")), 2);
-    assert_eq!(pack_matches(Some("0")), 1);
-    assert_eq!(pack_matches(Some("99")), 8);
-    assert_eq!(pack_matches(Some("x")), 3);
+fn pack_size_follows_the_class_and_stays_below_the_control_port() {
+    use live_proto::hosts::HostClass::{Small, Large};
+    assert_eq!(pack_matches(&Small, None), 5);
+    assert_eq!(pack_matches(&Large, None), 10);
+    assert_eq!(pack_matches(&Small, Some("2")), 2);
+    assert_eq!(pack_matches(&Small, Some("0")), 1);
+    assert_eq!(pack_matches(&Small, Some("99")), 5);
+    assert_eq!(pack_matches(&Large, Some("99")), 10);
+    assert_eq!(pack_matches(&Large, Some("auto")), 10);
     use live_proto::host_pack::{AGENT_PORT, BASE_PORT, CONTROL_PORT, SlotPorts, UDP_WIDTH};
-    let last = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 7).unwrap();
+    let last = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 9).unwrap();
     assert!(last.base_port + UDP_WIDTH - 1 < CONTROL_PORT);
     assert!(last.tunnel_port > CONTROL_PORT);
 }
@@ -100,16 +103,16 @@ fn pack_size_defaults_to_three_and_stays_below_the_control_port() {
 #[test]
 fn pack_containers_get_their_class_size_and_no_lease() {
     use live_proto::hosts::HostClass;
-    let small = pack_env(&HostClass::Small, 3);
+    let small = pack_env(&HostClass::Small, 5);
     assert_eq!(small["H2_PACK"], "1");
-    assert_eq!(small["H2_PACK_MAX_MATCHES"], "3");
+    assert_eq!(small["H2_PACK_MAX_MATCHES"], "5");
     assert_eq!(small["H2_PACK_VCPUS"], "1");
-    assert_eq!(small["H2_PACK_MEMORY_MIB"], "3072");
+    assert_eq!(small["H2_PACK_MEMORY_MIB"], "1536");
     assert_eq!(small["H2_PACK_CONTROL"], "0.0.0.0:31099");
-    let large = pack_env(&HostClass::Large, 3);
-    assert_eq!((large["H2_PACK_VCPUS"].as_str(), large["H2_PACK_MEMORY_MIB"].as_str()), ("2", "6144"));
+    let large = pack_env(&HostClass::Large, 10);
+    assert_eq!((large["H2_PACK_VCPUS"].as_str(), large["H2_PACK_MEMORY_MIB"].as_str()), ("2", "3072"));
     assert!(small.keys().all(|key| !key.contains("TOKEN") && !key.contains("LEASE")));
-    // Each class's sizes match wrangler.toml's instance types.
+    // The capped Cloudflare scheduling policy needs at least 3 GiB per vCPU.
     let config = include_str!("../wrangler.toml");
     assert!(config.contains("instance_type = { vcpu = 1, memory_mib = 3072"));
     assert!(config.contains("instance_type = { vcpu = 2, memory_mib = 6144"));

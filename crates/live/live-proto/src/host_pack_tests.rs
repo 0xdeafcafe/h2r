@@ -10,7 +10,7 @@ fn measured(ms: f64, mib: u64) -> MatchLoad {
 }
 
 fn small() -> Limits {
-    Limits::new(3, 1.0, 3072)
+    class_limits(&crate::hosts::HostClass::Small, None)
 }
 
 // -- Admission ----------------------------------------------------------------
@@ -19,7 +19,7 @@ fn small() -> Limits {
 fn budget_is_seventy_percent_of_a_tick_per_vcpu() {
     assert!((small().tick_budget_ms() - 23.333).abs() < 0.01);
     assert!((Limits::new(3, 2.0, 6144).tick_budget_ms() - 46.667).abs() < 0.01);
-    assert_eq!(small().memory_budget_mib(), 3072 - 256);
+    assert_eq!(small().memory_budget_mib(), 1536 - 256);
 }
 
 #[test]
@@ -29,22 +29,22 @@ fn empty_pack_admits_its_first_match() {
 }
 
 #[test]
-fn measured_light_matches_pack_three_to_a_vcpu() {
-    // 6 + 6 + 10 (assumed for the new match) = 22 ms <= 23.3 ms.
-    let running = [measured(6.0, 340), measured(6.0, 340)];
+fn three_five_ms_matches_leave_room_for_a_fourth() {
+    // Three measured matches plus one new one cost 20 ms of the 23.3 ms budget.
+    let running = [measured(5.0, 170); 3];
     assert_eq!(admit(&small(), &running, Some(800)), Ok(()));
 }
 
 #[test]
 fn refuses_when_summed_tick_cost_passes_the_budget() {
-    // 9 + 9 + 10 = 28 ms > 23.3 ms.
-    let running = [measured(9.0, 340), measured(9.0, 340)];
+    // 10 + 10 + 5 = 25 ms > 23.3 ms.
+    let running = [measured(10.0, 170); 2];
     match admit(&small(), &running, Some(800)) {
         Err(Refusal::Cpu {
             projected_ms,
             budget_ms,
         }) => {
-            assert!((projected_ms - 28.0).abs() < 1e-9);
+            assert!((projected_ms - 25.0).abs() < 1e-9);
             assert!((budget_ms - 23.333).abs() < 0.01);
         }
         other => panic!("{other:?}"),
@@ -52,40 +52,52 @@ fn refuses_when_summed_tick_cost_passes_the_budget() {
 }
 
 #[test]
+fn wall_p99_refuses_a_late_pack_before_cpu_and_memory() {
+    let mut load = measured(1.0, 170);
+    load.wall_ms_per_tick_p99 = Some(36.0);
+    assert_eq!(admit(&small(), &[load], None), Ok(()));
+    load.ms_per_tick = Some(100.0);
+    load.wall_ms_per_tick_p99 = Some(36.1);
+    assert_eq!(admit(&small(), &[load], Some(1536)), Err(Refusal::Late {
+        wall_ms_per_tick_p99: 36.1,
+    }));
+}
+
+#[test]
 fn unmeasured_matches_count_at_the_default_cost() {
-    // Two just-started matches: 10 + 10 + 10 = 30 ms > 23.3 ms on one vCPU.
-    let running = [MatchLoad::default(), MatchLoad::default()];
+    // Five just-started matches cost 25 ms of the 23.3 ms budget.
+    let running = [MatchLoad::default(); 4];
     assert!(matches!(admit(&small(), &running, None), Err(Refusal::Cpu { .. })));
-    // Two vCPUs take three unmeasured matches.
-    let large = Limits::new(3, 2.0, 6144);
+    // Two vCPUs take five unmeasured matches.
+    let large = class_limits(&crate::hosts::HostClass::Large, None);
     assert_eq!(admit(&large, &running, None), Ok(()));
 }
 
 #[test]
 fn refuses_past_the_match_cap_even_with_cpu_to_spare() {
-    let running = [measured(1.0, 100); 3];
+    let running = [measured(1.0, 100); 5];
     assert_eq!(
         admit(&small(), &running, Some(300)),
-        Err(Refusal::Full { running: 3, max: 3 })
+        Err(Refusal::Full { running: 5, max: 5 })
     );
 }
 
 #[test]
 fn refuses_when_memory_would_pass_the_container_limit() {
     let running = [measured(5.0, 340)];
-    // 2600 measured + 340 assumed > 3072 - 256.
+    // 2600 measured + 340 assumed > 1536 - 256.
     assert_eq!(
-        admit(&small(), &running, Some(2600)),
+        admit(&small(), &running, Some(1200)),
         Err(Refusal::Memory {
-            projected_mib: 2940,
-            budget_mib: 2816
+            projected_mib: 1370,
+            budget_mib: 1280
         })
     );
     // Without a container figure, the matches' own RSS is summed.
     let tight = Limits::new(3, 4.0, 1024);
     assert!(matches!(
-        admit(&tight, &[measured(1.0, 500)], None),
-        Err(Refusal::Memory { projected_mib: 840, budget_mib: 768 })
+        admit(&tight, &[measured(1.0, 650)], None),
+        Err(Refusal::Memory { projected_mib: 820, budget_mib: 768 })
     ));
     assert_eq!(admit(&tight, &[measured(1.0, 400)], None), Ok(()));
 }

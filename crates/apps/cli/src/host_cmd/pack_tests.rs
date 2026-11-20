@@ -6,7 +6,7 @@ use super::*;
 fn add(lease: &str) -> AddMatch {
     AddMatch {
         lease: lease.into(),
-        lease_json: json!({ "id": lease }).to_string(),
+        lease_json: json!({ "id": lease, "map": "fixture-a" }).to_string(),
         live: "http://127.0.0.1:8074".into(),
         token: "lease-token".into(),
         data_url: "https://data.example/bundle?sig=a".into(),
@@ -58,9 +58,9 @@ fn usage(cpu_ms: f64) -> Usage {
 // -- Options --------------------------------------------------------------------
 
 #[test]
-fn options_default_to_three_matches_on_the_container_ports() {
+fn options_default_to_five_matches_on_the_container_ports() {
     let opts = Options::parse_with(std::iter::empty::<String>(), |_| None).unwrap();
-    assert_eq!(opts.max_matches, 3);
+    assert_eq!(opts.max_matches, 5);
     assert_eq!(opts.control.port(), host_pack::CONTROL_PORT);
     assert_eq!(opts.tunnel.port(), host_pack::TUNNEL_PORT);
     assert_eq!(opts.base_port, host_pack::BASE_PORT);
@@ -97,10 +97,11 @@ fn options_read_the_environment_and_prefer_flags() {
 fn options_reject_bad_values() {
     for args in [
         &["--max-matches", "0"][..],
+        &["--max-matches", "11"],
         &["--vcpus", "-1"],
         &["--bogus", "1"],
         &["--max-matches", "3", "--max-matches", "3"],
-        // Slot 2's UDP range would pass 65535.
+        // The last slot's UDP range would pass 65535.
         &["--base-port", "65520"],
     ] {
         let owned = args.iter().map(|s| s.to_string());
@@ -149,6 +150,24 @@ fn meter_reports_cpu_per_tick_after_warmup() {
 
 // -- Admission and teardown -----------------------------------------------------
 
+fn gameplay_sample(pack: &mut Pack, p99: f64) {
+    for slot in pack.slots.iter_mut().flatten() {
+        let reading = serde_json::from_value(json!({ "wall_ms_per_tick_p99": p99 })).unwrap();
+        slot.meter.observe_agent(Instant::now(), Some(reading));
+    }
+}
+
+#[test]
+fn a_late_match_pauses_admission_until_its_tick_window_recovers() {
+    let (mut pack, _) = pack(roomy());
+    pack.add(&add("hl-a")).unwrap();
+    gameplay_sample(&mut pack, 39.0);
+    assert!(matches!(pack.add(&add("hl-b")), Err(AddError::Refused(Refusal::Late { .. }))));
+    gameplay_sample(&mut pack, 34.0);
+    assert!(pack.add(&add("hl-b")).is_ok());
+    pack.shutdown();
+}
+
 #[test]
 fn admits_up_to_the_cap_with_disjoint_ports_and_refuses_the_next() {
     let (mut pack, launched) = pack(roomy());
@@ -172,12 +191,11 @@ fn admits_up_to_the_cap_with_disjoint_ports_and_refuses_the_next() {
 
 #[test]
 fn measured_cpu_refuses_a_match_that_would_pass_the_budget() {
-    // One vCPU: 23.3 ms per tick. Two matches measured at 9 ms leave no room
-    // for a third assumed at 10 ms.
+    // A third fixture-a match is estimated from the first two: 3 × 9 > 23.3 ms.
     let (mut pack, _) = pack(Limits::new(3, 1.0, 64 * 1024));
     pack.add(&add("hl-a")).unwrap();
-    // Unmeasured, the first counts at 10 ms: a second fits (20 ms), a third would not.
     pack.add(&add("hl-b")).unwrap();
+    gameplay_sample(&mut pack, 33.4);
     let start = Instant::now();
     for i in 0..=4u32 {
         let at = start + Duration::from_secs(u64::from(i));
@@ -189,21 +207,26 @@ fn measured_cpu_refuses_a_match_that_would_pass_the_budget() {
         pack.add(&add("hl-c")),
         Err(AddError::Refused(Refusal::Cpu { .. }))
     ));
+    // No history for fixture-b: the cold estimate of 5 ms fits the remaining margin.
+    let mut other = add("hl-c");
+    other.lease_json = json!({ "id": other.lease, "map": "fixture-b" }).to_string();
+    assert!(pack.add(&other).is_ok());
     pack.shutdown();
 }
 
 #[test]
-fn light_measured_matches_let_a_third_in() {
-    let (mut pack, _) = pack(Limits::new(3, 1.0, 64 * 1024));
+fn three_five_ms_matches_leave_room_for_a_fourth() {
+    let (mut pack, _) = pack(host_pack::class_limits(&live_proto::hosts::HostClass::Small, None));
     pack.add(&add("hl-a")).unwrap();
     pack.add(&add("hl-b")).unwrap();
+    pack.add(&add("hl-c")).unwrap();
+    gameplay_sample(&mut pack, 33.4);
     let start = Instant::now();
     for i in 0..=4u32 {
         let at = start + Duration::from_secs(u64::from(i));
-        // 6 ms per tick each: 6 + 6 + 10 = 22 ms <= 23.3 ms.
-        pack.tick(at, &|_| Some(usage(180.0 * f64::from(i))), Some(1000));
+        pack.tick(at, &|_| Some(usage(150.0 * f64::from(i))), Some(900));
     }
-    assert!(pack.add(&add("hl-c")).is_ok());
+    assert!(pack.add(&add("hl-d")).is_ok());
     pack.shutdown();
 }
 
@@ -211,10 +234,23 @@ fn light_measured_matches_let_a_third_in() {
 fn container_memory_refuses_a_match_that_would_not_fit() {
     let (mut pack, _) = pack(Limits::new(3, 8.0, 3072));
     pack.add(&add("hl-a")).unwrap();
-    pack.tick(Instant::now(), &|_| None, Some(2600));
+    pack.tick(Instant::now(), &|_| None, Some(2700));
     assert!(matches!(
         pack.add(&add("hl-b")),
         Err(AddError::Refused(Refusal::Memory { .. }))
+    ));
+    pack.shutdown();
+}
+
+#[test]
+fn rapid_adds_reserve_memory_until_the_children_fault_it() {
+    let (mut pack, _) = pack(Limits::new(5, 2.0, 1024));
+    pack.tick(Instant::now(), &|_| None, Some(400));
+    pack.add(&add("hl-a")).unwrap();
+    pack.add(&add("hl-b")).unwrap();
+    assert!(matches!(
+        pack.add(&add("hl-c")),
+        Err(AddError::Refused(Refusal::Memory { projected_mib: 910, budget_mib: 768 }))
     ));
     pack.shutdown();
 }
