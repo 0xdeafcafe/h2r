@@ -487,6 +487,7 @@ fn entry_access_benchmark() {
         );
         let mut mem = Guest::new();
         mem.map_zeroed(A, 0x20000, Permissions::RX).unwrap();
+        mem.guard_code(A, 0x20000).unwrap();
         mem.map_zeroed(TABLE, 0x2000, Permissions::RW).unwrap();
         mem.map_zeroed(BENCH_STACK & !0xfff, 0x1000, Permissions::RW).unwrap();
         for i in 0..CALLEES {
@@ -524,6 +525,7 @@ fn generated_counts_match_executed_work() {
         let (_lib, dispatch) = module(kind, 11, true, true);
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+        mem.guard_code(A, 4096).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch), 1);
@@ -541,16 +543,15 @@ fn generated_counts_match_executed_work() {
             _ => 1,
         };
         assert_eq!(p.transfers, transfers);
-        // With direct calls (on unless H2_DIRECT_CALLS=0) the first trip
-        // goes through the runner, which fills the context's slots; the
-        // other ten call B directly (and B tail-jumps to C directly), and
-        // the return to A continues inline. Transfers count the same; those
-        // made directly pass no runner safe point, and the caller's handler
-        // does not exit in between.
+        // With direct calls (on unless H2_DIRECT_CALLS=0) every trip calls
+        // B directly from the first (the entry table needs no warming), B
+        // tail-jumps to C directly, and the return to A continues inline.
+        // Transfers count the same; those made directly pass no runner
+        // safe point, and the caller's handler does not exit in between.
         let direct = std::env::var("H2_DIRECT_CALLS").as_deref() != Ok("0");
         let (direct_transfers, inline_returns) = match kind {
-            "call" if direct => (20, 10),
-            "tail" if direct => (30, 10),
+            "call" if direct => (22, 11),
+            "tail" if direct => (33, 11),
             _ => (0, 0),
         };
         assert_eq!(p.direct_transfers, direct_transfers);

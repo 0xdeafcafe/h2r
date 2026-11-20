@@ -468,6 +468,9 @@ typedef struct H2GenModule {
     uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;    /* entry_count rows, then a zero row */
     const H2GenResume *resumes;   /* resume_count rows, then a zero row */
+    /* H2GEN_FEATURE_ENTRY_TABLE only: */
+    const uint16_t *pcmap;        /* text_hi - text_lo entry indices, or NULL */
+    uint32_t text_lo, text_hi;
 } H2GenModule;
 ```
 
@@ -484,7 +487,18 @@ typedef struct H2GenModule {
 - `features` is a bit set of optional schemes the module's handlers use:
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
   §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
-  section), or 0. It was `reserved`, always 0.
+  section), `H2GEN_FEATURE_ENTRY_TABLE` (8, below), or 0. It was
+  `reserved`, always 0.
+- **The entry table** (feature 8, on every module `h2gen.h` builds). The
+  entry rows are sorted by address, and row `r` has entry index `r + 1`;
+  0 is no entry, so a module has at most 65,535 rows. `pcmap` holds, for
+  each byte of `[text_lo, text_hi)`, the index of the entry at exactly
+  that address, or 0; the emitter writes it as designated initialisers of
+  the entries alone (`h2gen_registry.c`). A static direct call names its
+  callee's index as a constant; an indirect one looks it up in `pcmap`.
+  The module's loop polls and `h2_fast_movs` mask the preempt word's
+  `IRQ_QUEUED` bit (§4, "Loop safe points"). A struct without the feature
+  ends at `resumes`; the runtime reads the last three fields only with it.
 
 ## 3. Registration adapter (**new**)
 
@@ -512,6 +526,15 @@ Its semantics:
    runtime's implementation is all-or-nothing. Duplicates are a generator
    bug. Every resume `owner` is a kind-0 row of the same module, and the
    emitter never produces anything else.
+5. With `H2GEN_FEATURE_ENTRY_TABLE`: at most 65,535 rows, and `pcmap`
+   non-zero exactly at the rows' addresses in its range, each holding its
+   row's index (`RegistrationError::EntryTable` otherwise; a row outside
+   the range is allowed, and calls to it take the runner). One such module
+   per dispatch (`SecondEntryTable`). The rows become the dispatch's entry
+   table, from which the runtime keeps `live` (§4, "Direct calls"), and the
+   runtime turns `Runtime::enable_leave_word` on. A module with
+   `H2GEN_FEATURE_DIRECT_CALLS` and no entry table, an image built before
+   it, is refused (`DirectCallsWithoutEntryTable`): rebuild it.
 
 ## 4. How the runtime drives handlers
 
@@ -599,15 +622,16 @@ Its semantics:
     `JUMP`/`RESUME` it returned continues the loop. A runtime that never
     sets the word sees no change at all; the test host's `Ctx` has the
     pointer first too.
-  - Bit 16 (`IRQ_QUEUED`) is not a wake reason: once
-    `Runtime::enable_leave_word` is called the runtime keeps it set on
-    every word exactly while the interrupt queue is non-empty, so the word
-    alone says whether the runner's safe point would do anything. Code
-    that polls with `word != 0` would leave a loop on every trip while it
-    is set, so only a module whose loop polls (and `h2_fast_movs`) mask it
-    out may turn it on (contract change slice T2,
-    `docs/runtime/contract-thin-transfers-flat-ram.md`). Until then no
-    runtime sets it.
+  - Bit 16 (`IRQ_QUEUED`, `H2_IRQ_QUEUED` in `h2fastmem.h`) is not a wake
+    reason, and a poll masks it out: the header leaves while the word has
+    any other bit. Once `Runtime::enable_leave_word` is called the runtime
+    keeps it set on every word exactly while the interrupt queue is
+    non-empty, so the whole word says whether the runner's safe point
+    would do anything (a direct call's quiet test, below). The runtime
+    calls it when dispatch first has a module with the entry table (§2),
+    whose polls all mask the bit; a loop that polled with `word != 0`
+    would leave on every trip while an interrupt for another thread
+    waits. A runtime without such a module never sets it.
   - No shim event code is used for this: the exit is an ordinary
     resumable transfer, so it records no event.
 - **Direct calls** (**new**, `H2_DIRECT_CALLS`, module feature 2). A
@@ -619,31 +643,39 @@ Its semantics:
   - The object behind `ExecCtxOpaque *` has a second pointer after the
     preempt word's: the context's `H2Direct` block (h2gen.h,
     `runtime::direct`), or null, in which case no call is direct (the test
-    host; `ExecCtx::enable_direct_calls(false)`). A runtime without the
-    block refuses the module by its feature bit.
+    host; `ExecCtx::enable_direct_calls(false)`). The block starts with
+    the runtime's entry table `live` (null until the runtime has one), the
+    module's `pcmap` and its text range. A runtime without the block
+    refuses the module by its feature bit, and a direct-call module needs
+    the entry table (§2, §3).
+  - `live[i]` is the handler a call to entry index `i` may invoke, or 0.
+    The runtime keeps it (`runtime::direct::Live`): a function entry's row
+    handler while no enabled override takes its address and the address
+    is lifted code (`Guest::guard_code`) with the execute bit; 0 for an
+    interior entry and for everything else. `edit_dispatch` rewrites the
+    overridden elements before it returns, so an override registered,
+    enabled, disabled or replaced (from any thread) stops or allows direct
+    calls to that entry at once; a direct call never bypasses an override,
+    and no call needs a runner dispatch first. The execute bit is read
+    when the table is checked against the guest's code identity
+    (`Guest::code_id`, which moves when a guard is added, when a
+    whole-mapping `Guest::protect` touches lifted code, and when a
+    snapshot or view layout is adopted), at the runner's next handler
+    invocation after it moved; `map`, `unmap` and `protect_range` cannot
+    take Execute from lifted code, so no call reads the page.
   - A static `call` or tail `jmp` to a function entry of the module may
-    use its linked symbol (`H2_DCALL`, `H2_DJUMP`). Indirect calls and
-    jumps may use the cached handler for the evaluated target PC
-    (`H2_ICALL`, `H2_IJUMP`). Both call
-    forms require a continuation selector in the calling handler. Lazy
-    flags and the access count are settled before entering the target.
-  - It is direct only if, at that moment: the preempt word is 0 and the
-    runtime's interrupt queue is empty (so the runner's safe point would do
-    nothing); the block's `budget` (the runner's `max_transfers` left) is
-    non-zero; `depth` is under `cap`; the block's slot for the target holds
-    the target, this very handler and the runtime's current dispatch
-    generation; and the target's page has the execute bit in the inline RAM
-    view (taken with the gate; no view, a busy gate or no bit is a no).
-    Otherwise the handler leaves with the ordinary `CALL`/`JUMP`, exactly
-    as without the flag.
-  - The runner learns slots from generated registry entries reached through
-    an entry route with selector = target, recording the generation it resolved
-    at. Standalone native adapters and overrides go through the runner. The
-    per-context cache uses 4096 of its 8192 slots (`slot_mask`).
-    Any `edit_dispatch` moves the generation, so an override
-    registered, enabled, disabled or replaced (from any thread) stops every
-    direct call to that entry: the next call goes to the runner, which
-    resolves it again. A direct call therefore never bypasses an override.
+    use its linked symbol (`H2_DCALL`, `H2_DJUMP`, with the callee's entry
+    index). Indirect calls and jumps look the evaluated target PC up in
+    `pcmap` and use the handler `live` holds for that index (`H2_ICALL`,
+    `H2_IJUMP`). Both call forms require a continuation selector in the
+    calling handler. Lazy flags and the access count are settled before
+    entering the target.
+  - It is direct only if, at that moment: `live` holds the target's
+    handler (for a static site, exactly its linked symbol); `depth` is
+    under `cap`; the whole preempt word, `IRQ_QUEUED` included, is 0 (so
+    the runner's safe point would do nothing); and the block's `budget`
+    (the runner's `max_transfers` left) is non-zero. Otherwise the handler
+    leaves with the ordinary `CALL`/`JUMP`, exactly as without the flag.
   - The handler takes a transfer and a nesting level, records the frame
     (kind, target, continuation, ESP) at `frames[depth]`, spills its state
     to `CpuAbi` (x87 pointers too), sets `eip` = target and calls the
@@ -663,8 +695,9 @@ Its semantics:
     handler entered through the runner always acquires.
   - The callee's result continues inline only if it is `RETURN`/
     `RETURN_TARGET` to exactly the continuation, with no event, ESP above
-    the return slot, and again a quiet safe point, a transfer left and an
-    executable continuation page. The handler takes one more transfer,
+    the return slot, and again a quiet safe point and a transfer left (the
+    continuation is in the caller's own function: no page check). The
+    handler takes one more transfer,
     drops the frame, reloads everything a fresh entry with that start would
     load and goes on from the continuation's label (`P_` for a loop header,
     as the runner's resume skips the poll). The runner would have resumed
@@ -679,10 +712,12 @@ Its semantics:
     call would match it. `Dispatch::set_stop_recovery` installs a hook the
     runner calls with every STOP a generated handler returns, handed up or
     not, and the CPU as it is; the runner carries on with what it returns.
-  - After every invocation the runner takes back the budget left (direct
-    transfers count in `transfers` and `direct_transfers`) and replays the
-    frames still recorded into the shadow stack as it would have recorded
-    them (`unwind`, `call`, `enter`). An event recorded while C is nested
+  - A hand-up leaves `depth` where it is, so `frames[0..depth]` are the
+    direct calls and jumps still live. After every invocation the runner
+    takes back the budget left (direct transfers count in `transfers` and
+    `direct_transfers`) and replays those frames into the shadow stack as
+    it would have recorded them (`unwind`, `call`, `enter`), then zeroes
+    `depth`. An event recorded while C is nested
     takes its backtrace with those frames on top. A call that returns
     inline leaves the shadow stack as it found it; the one difference is
     that the runner's `unwind` at that return is skipped, so a stale record

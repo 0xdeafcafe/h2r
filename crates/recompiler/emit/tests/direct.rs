@@ -57,6 +57,9 @@ const COLL: u32 = CODE + 0x1213;
 const VEC_CALLER: u32 = CODE + 0x1800;
 const VEC_CALLEE: u32 = CODE + 0x1900;
 const VEC_SCRATCH: u32 = DATA + 0x80;
+/// A loop that calls nothing: only its header's poll can leave it.
+const SPIN: u32 = CODE + 0x1a00;
+const SPIN_COUNT: u32 = DATA + 0x44;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -358,6 +361,15 @@ fn funcs() -> Vec<IrFunction> {
             a.movss(xmm7, dword_ptr(VEC_SCRATCH))?;
             a.ret()
         }),
+        function(SPIN, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 50)?;
+            a.set_label(&mut l)?;
+            a.add(dword_ptr(SPIN_COUNT), 1)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
         // An interrupt callback.
         function(ISR, |a| {
             log(a, 18)?;
@@ -456,6 +468,8 @@ fn build(direct: bool, old: bool) -> Module {
             direct,
             "{features:#x}"
         );
+        // Every module has the entry table, direct calls or not.
+        assert_ne!(features & runtime::generated::FEATURE_ENTRY_TABLE, 0, "{features:#x}");
         Module {
             table: *table,
             version,
@@ -537,8 +551,16 @@ struct Machine {
 
 impl Machine {
     fn new(mode: Mode) -> Machine {
+        Machine::with_guard(mode, true)
+    }
+    /// `guarded`: the code pages are lifted code (`Guest::guard_code`), as
+    /// the loader makes an XBE's; only then can the entry table hold them.
+    fn with_guard(mode: Mode, guarded: bool) -> Machine {
         let mut mem = Guest::new();
         mem.map_zeroed(CODE, 8192, Permissions::RX).unwrap();
+        if guarded {
+            mem.guard_code(CODE, 8192).unwrap();
+        }
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
@@ -602,9 +624,14 @@ impl Machine {
 
 /// Run `scenario` in every mode; all must agree.
 fn agree(name: &str, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
+    agree_on(name, true, scenario);
+}
+
+/// [`agree`] on machines whose code is lifted code or not.
+fn agree_on(name: &str, guarded: bool, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
     let mut results = Vec::new();
     for mode in MODES {
-        let mut m = Machine::new(mode);
+        let mut m = Machine::with_guard(mode, guarded);
         results.push((mode, scenario(&mut m)));
     }
     for (mode, r) in &results[1..] {
@@ -617,7 +644,7 @@ fn agree(name: &str, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
 
 fn run_twice(entry: u32) -> impl Fn(&mut Machine) -> Vec<Outcome> {
     move |m| {
-        // The first run fills the context's slots; the second calls directly.
+        // Two runs: whatever a run leaves behind must not change the next.
         let a = m.run(&Runner::default(), TransferAbi::jump(entry));
         m.reset();
         let b = m.run(&Runner::default(), TransferAbi::jump(entry));
@@ -656,9 +683,11 @@ fn nested_calls_and_a_stdcall_callee() {
     assert_eq!(direct_count(NEST, None), 12);
 }
 
-/// Calls through a register (`H2_ICALL`): the warm run finds both targets in their slots and calls them directly, and
-/// every mode still ends the same; an override on one target between runs
-/// stops its calls going direct, and disabling it lets them again.
+/// Calls through a register (`H2_ICALL`): the module's pcmap gives both
+/// targets' entry indices and the entry table their handlers, so they are
+/// called directly, and every mode still ends the same; an override on one
+/// target between runs stops its calls going direct, and disabling it lets
+/// them again.
 #[test]
 fn indirect_calls() {
     let calls = Arc::new(AtomicU32::new(0));
@@ -754,17 +783,102 @@ fn a_native_override_is_never_learned_as_an_indirect_target() {
     assert_eq!(m.direct_transfers(), 0);
 }
 
-/// Two callees that would share a slot in a 256-slot table: the runtime's
-/// 4096 slots keep both, and every mode ends the same.
+/// Two callees whose addresses once shared a slot of a hashed table: each
+/// has its own element of the entry table, and every mode ends the same.
 #[test]
-fn callees_sharing_a_slot() {
-    let n = (CL ^ (CL >> 8), NEST_B ^ (NEST_B >> 8), COLL ^ (COLL >> 8));
-    assert_eq!(n.1 & 255, n.2 & 255);
-    assert_ne!(n.1 & 4095, n.2 & 4095);
-    agree("shared slot", run_twice(CL));
+fn callees_at_nearby_addresses() {
+    agree("nearby callees", run_twice(CL));
     // 3 trips: NEST_B's call of NEST_C and its return, and CL's two calls
     // and their returns.
     assert_eq!(direct_count(CL, None), 18);
+}
+
+/// The transfers a fresh machine's first run of `entry` made directly.
+fn first_run_direct(entry: u32, guarded: bool) -> u64 {
+    let mut m = Machine::with_guard(Mode::On, guarded);
+    m.run_counting(entry)
+}
+
+/// No warm-up: the very first run of a fresh context calls entries the
+/// runner has never dispatched, through a register, directly; as many
+/// transfers as a later run.
+#[test]
+fn indirect_call_to_cold_entry_is_direct() {
+    assert_eq!(first_run_direct(IND, true), direct_count(IND, None));
+    assert_eq!(first_run_direct(IND, true), 18);
+    assert_eq!(first_run_direct(NEST, true), 12);
+}
+
+/// Code that is not lifted code (`Guest::guard_code`) is never in the entry
+/// table: every call takes the runner, which checks the execute bit, and
+/// every mode still ends as with lifted code.
+#[test]
+fn entry_outside_code_guard_goes_to_runner() {
+    for entry in [NEST, IND, TAIL, OVR] {
+        assert_eq!(first_run_direct(entry, false), 0, "{entry:#x}");
+        agree_on(&format!("unguarded {entry:#x}"), false, run_twice(entry));
+    }
+    // Guarded later, as the loader does after mapping: from the next run.
+    let mut m = Machine::with_guard(Mode::On, false);
+    assert_eq!(m.run_counting(NEST), 0);
+    m.ctx.memory().guard_code(CODE, 8192).unwrap();
+    m.reset();
+    m.ctx.enable_profiling(true);
+    assert_eq!(m.run_counting(NEST), 12);
+}
+
+/// `edit_dispatch` rewrites the entry table before it returns: the first
+/// run after an override is registered calls none of its entry directly,
+/// and the first run after it is disabled calls it directly again, with
+/// no runner dispatch in between to relearn it.
+#[test]
+fn override_stops_direct_calls_at_once() {
+    let mut m = Machine::new(Mode::On);
+    let run = |m: &mut Machine| {
+        m.reset();
+        m.ctx.enable_profiling(true);
+        m.run_counting(OVR)
+    };
+    // Four calls of O and their returns.
+    assert_eq!(run(&mut m), 8);
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = calls.clone();
+    m.ctx.runtime().edit_dispatch(|d| {
+        d.register_override(O, "test override", move |cpu, ctx, _| {
+            seen.fetch_add(1, Ordering::Relaxed);
+            ctx.memory().ret(cpu, 0)
+        })
+    });
+    assert_eq!(run(&mut m), 0);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    m.ctx.runtime().edit_dispatch(|d| d.set_enabled(O, false));
+    assert_eq!(run(&mut m), 8);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    // Enabled again, from another thread: the same at once.
+    let rt = m.ctx.runtime().clone();
+    std::thread::spawn(move || rt.edit_dispatch(|d| d.set_enabled(O, true)))
+        .join()
+        .unwrap();
+    assert_eq!(run(&mut m), 0);
+    assert_eq!(calls.load(Ordering::Relaxed), 8);
+}
+
+/// Lifted code made not executable (a whole-mapping protect, which the
+/// guard does not refuse) leaves the entry table at the next runner
+/// invocation, and the runner's execute check faults as before; made
+/// executable again, it is called directly again.
+#[test]
+fn protecting_lifted_code_empties_the_entry_table() {
+    let mut m = Machine::new(Mode::On);
+    assert_eq!(m.run_counting(NEST), 12);
+    m.ctx.memory().protect(CODE, Permissions::READ).unwrap();
+    m.reset();
+    let t = Runner::default().run(&mut m.cpu, &mut m.ctx, NEST);
+    assert_eq!(t.kind, abi::FAULT, "{:?}", m.ctx.events());
+    m.ctx.memory().protect(CODE, Permissions::RX).unwrap();
+    m.reset();
+    m.ctx.enable_profiling(true);
+    assert_eq!(m.run_counting(NEST), 12);
 }
 
 #[test]
@@ -1016,6 +1130,34 @@ fn a_pending_interrupt_at_a_direct_call() {
     m.ctx.runtime().raise_interrupt(interrupt(Some(2)));
     m.reset();
     assert_eq!(m.run_counting(NEST), 0);
+}
+
+/// While an interrupt for another thread waits, the leave word (on since
+/// the module's entry table was registered) has IRQ_QUEUED set; a loop's
+/// header polls mask it, so the loop leaves for the runner at most once,
+/// for the wake the raise sent, not on every trip.
+#[test]
+fn a_loop_ignores_a_queued_interrupt_for_another_thread() {
+    agree("spin", |m| {
+        let quiet = m.run(&Runner::default(), TransferAbi::jump(SPIN));
+        assert_eq!(m.ctx.leave_word(), 0);
+        assert_eq!(
+            m.ctx.runtime().raise_interrupt(interrupt(Some(2))),
+            Raise::Queued
+        );
+        assert_ne!(m.ctx.leave_word() & runtime::preempt::IRQ_QUEUED, 0);
+        m.reset();
+        let queued = m.run(&Runner::default(), TransferAbi::jump(SPIN));
+        assert!(
+            queued.transfers <= quiet.transfers + 1,
+            "{} transfers with an interrupt queued elsewhere, {} without",
+            queued.transfers,
+            quiet.transfers
+        );
+        // Still queued, and still on the word.
+        assert_ne!(m.ctx.leave_word() & runtime::preempt::IRQ_QUEUED, 0);
+        vec![quiet, queued]
+    });
 }
 
 /// An interrupt for this thread queued at a direct call is delivered there:

@@ -312,7 +312,6 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
         handler,
         selector,
         function,
-        generation,
         ..
     } = resolution;
     let native = matches!(handler, Handler::Native(_) | Handler::NativeAdapter(_));
@@ -323,19 +322,13 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
         let c = if generated {
             let routed =
                 transfer.route == abi::ENTRY && matches!(transfer.kind, abi::CALL | abi::JUMP);
-            let slot =
-                routed.then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
+            let slot = routed.then(|| ctx.live_state(transfer.target_pc));
             es::cause(diag.came, &transfer, slot)
         } else {
             es::RUST_HANDLER
         };
         es::note(c, &transfer);
         diag.came = if generated { es::Came::Native } else { es::Came::Rust };
-    }
-    // Sample the slot before warming it. Generated code may now
-    // use the resolution while the generation stays the same.
-    if generated && transfer.route == abi::ENTRY && selector == transfer.target_pc {
-        ctx.note_direct(transfer.target_pc, &handler, generation);
     }
     // Direct calls the handler makes spend this run's transfers.
     ctx.direct_begin(*remaining);

@@ -1,9 +1,10 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Nothing was built or run for it. This is the spec for
+Written 2026-11-20. Slices T1, F1 and T2 are built (section 6); none
+has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
-[architecture-review-2026-11.md](../architecture-review-2026-11.md):
+[2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
 cheaper guest/host transfers, and flat RAM as the only memory model. The
 block clock, imprecise faults and the other review items are not in scope
 and nothing here depends on them.
@@ -120,32 +121,30 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
 
 ### 2.3 A call between generated functions
 
-**Code.** `H2_CALL_SLOT_` (`h2gen.h:1200`), from `H2_DCALL` at
-`crates/recompiler/emit/src/c.rs:1184` and `H2_ICALL` at `:1205`. In order:
+**Code** (after T2). `H2_CALL_SLOT_` (`crates/recompiler/emit/c/h2gen.h`),
+from `H2_DCALL` and `H2_ICALL` (`crates/recompiler/emit/src/c.rs`,
+`Emitter::control`). In order:
 
-1. load the context's `H2Direct` block; test depth against the cap; hash
-   the target into one of 4,096 slots; compare the slot's PC and handler
-   (`h2_direct_lookup`, `:1140`);
-2. drop the gate and flush the access count (`H2_DCALL_GATE_`, `:1077`);
-3. compare the slot's dispatch generation with the runtime's
-   (`h2_direct_enter`, `:1147`);
-4. test the transfer budget, the preempt word and, through a second
-   pointer, the interrupt count (`h2_direct_quiet`, `:1134`);
-5. take the gate again to read the target page's execute bit
-   (`h2_direct_exec`, `:1122`);
-6. write a 16-byte frame record and three counters;
-7. spill dirty registers, set `eip`, lend the RAM view, call;
-8. on return (`h2_direct_back`, `:1165`): five tests on the returned
-   `TransferAbi` (20 bytes, returned through memory), the quiet test
-   again, the gate and the execute bit again, the budget again;
-9. reload the homed registers, re-read the access budget, go to the
+1. load the context's `H2Direct` block; test it, its `live` pointer and
+   depth against the cap; load `live[i]` (`h2_direct_static`, `i` the
+   callee's entry index, a constant), or for an indirect call test the
+   target against `[text_lo, text_hi)` and load `pcmap[pc - text_lo]`
+   first (`h2_direct_indirect`);
+2. drop the gate and flush the access count (`H2_DCALL_GATE_`);
+3. test the transfer budget and the preempt word, `IRQ_QUEUED` included
+   (`h2_direct_quiet`, one load);
+4. write a 16-byte frame record at `frames[depth]` and take a transfer;
+5. spill dirty registers, set `eip`, lend the RAM view, call;
+6. on return (`h2_direct_back`): five tests on the returned `TransferAbi`
+   (20 bytes, returned through memory), the quiet test again, the budget
+   again;
+7. reload the homed registers, re-read the access budget, go to the
    continuation.
 
-A slot is filled only when the runner itself dispatches that entry to a
-generated handler (`ExecCtx::note_direct`, `crates/runtime/runtime/src/direct.rs:284`,
-called at `crates/runtime/runtime/src/runner.rs:246-248`). Hooks, HLE functions
-and kernel imports never get a slot. Any `edit_dispatch` moves the
-generation and empties every slot at once (`direct.rs:12-17`).
+`live` is the runtime's entry table (section 4.2), filled without any
+runner dispatch: a call to an entry the runner never saw is direct.
+Hooks, HLE functions and kernel imports have a 0 element and go to the
+runner.
 
 ### 2.4 The runner
 
@@ -157,7 +156,8 @@ frame list (`frames.unwind`, then `call` or `enter`); the scope test; the
 transfer limit; `take_continuation`; the token test; `resolve_cached`
 (`crates/runtime/runtime/src/exec.rs:170`); the kernel-token test;
 `check_execute_cached` (`exec.rs:218`); the entry-stats and census
-branches; `note_direct`; `direct_begin`; the HLE census; then
+branches; `direct_begin` (which checks the entry table again when the
+guest's lifted code changed); the HLE census; then
 `execute_dispatched` (`crates/runtime/runtime/src/handler.rs:34`), which checks
 coverage, calls `ffi::call_native` (`crates/runtime/runtime/src/ffi.rs:27`),
 checks the pending fault and validates both ABIs again.
@@ -401,41 +401,70 @@ With `IRQ_QUEUED` set they would leave on every trip while an interrupt
 for another thread (or a masked one) waits, which changes the transfer
 count. So those polls mask it out (`word & ~IRQ_QUEUED`, one more
 instruction), and the runtime keeps the bit only once a module that
-does so asks (`Runtime::enable_leave_word`). T1 adds the runtime side
-dormant; T2's image masks its polls and turns it on.
+does so asks (`Runtime::enable_leave_word`). A module with the entry
+table (feature bit 8) masks its polls, and the runtime turns the bit on
+when dispatch first has one.
 
-**The entry table.** The emitter gives every `H2GenEntry` row a dense
-index. Each `Runtime` owns `live`, an array of handler pointers with one
-element per row, and the context's fourth word points to it. `live[i]`
-is:
+**The entry table** (built in T2). The emitter numbers every `H2GenEntry`
+row: row `r` has entry index `r + 1`, and 0 is no entry
+(`entry_rows`, `crates/recompiler/emit/src/lib.rs`). A module has at most
+65,535 rows; the image has about 18,900. Module feature bit 8,
+`H2GEN_FEATURE_ENTRY_TABLE`, says the module has the table, and every
+module `h2gen.h` builds has it, with direct calls or without. Registration
+checks the module's `pcmap` against its rows, keeps the rows in `Dispatch`
+(one such module per dispatch, `RegistrationError::SecondEntryTable`), and
+refuses a module with direct calls but no table
+(`DirectCallsWithoutEntryTable`): an image built before T2 must be
+rebuilt.
 
-- the generated handler, when the entry resolves to it and its address is
-  inside a code guard with the execute bit;
-- the host-call thunk (below), when the entry is overridden;
-- null for an interior entry or anything else, which leaves for the
-  runner as today.
+Each `Runtime` owns `live` (`runtime::direct::Live`), an array of
+handler pointers with one element per index. The context's `H2Direct`
+block points to it (its first word, beside the module's `pcmap` and text
+range), so a context with direct calls disabled reaches neither.
+`live[i]` is:
 
-`edit_dispatch` rewrites the affected elements. There is no generation
-compare, no hash, no collision and no warm-up. A static call is:
+- the row's generated handler, when the row is a function entry, no
+  enabled override takes its address, and the address is lifted code
+  (`Guest::guard_code`) with the execute bit;
+- 0 for an interior entry, an overridden entry, or anything else, which
+  leaves for the runner as before. (T3 puts the host-call thunk in an
+  overridden entry's element.)
+
+`Runtime::edit_dispatch` brings the overridden elements in step before it
+returns, under the dispatch write lock: it walks the enabled overrides,
+zeroes their elements and restores those no longer overridden. There is
+no generation compare, no hash, no collision and no warm-up. A static
+call is, in effect:
 
 ```c
-if (*h2_pre_ == 0 && d_->depth < d_->cap && d_->budget
-    && (f_ = live_[IDX]) != NULL) { /* spill, frame, call */ }
+if (d_ && d_->live && d_->depth < d_->cap && live_[IDX] == h2fn_target
+    && *h2_pre_ == 0 && d_->budget) { /* spill, frame, call h2fn_target */ }
 ```
 
-**No execute-bit read per call.** `Guest::map`, `unmap` and `protect`
-already refuse to touch a guarded code range (`touches_code`,
-`guest.rs:323`; `check_code`, `:755`), and a restore requires equal
-guards (`state.rs:260`). So the bit is checked once, when `live` is
-filled. The return's check goes too: a continuation is in the caller's
-own function.
+It calls the linked symbol, a direct branch, once the element matches it.
+
+**No execute-bit read per call.** `Guest::map`, `unmap` and
+`protect_range` already refuse to take Execute from a guarded code range
+(`touches_code`, `check_code`), and a restore requires equal guards
+(`state.rs`). The whole-mapping `Guest::protect` is not guarded, and the
+kernel uses it to make a section writable for a moment. So the guest has
+a code identity, `Guest::code_id`, that moves when a guard is added, when
+a whole-mapping protect touches lifted code, and when a snapshot layout or
+a view's source layout is adopted; a memory guard publishes it as it ends,
+as it does the layout. The runner, about to invoke a handler
+(`ExecCtx::direct_begin`), compares it with the identity `live` was
+checked under (two loads) and, when it moved, reads every row's execute
+bit under one guard and rewrites the table (`Runtime::check_live`). The
+return's check goes too: a continuation is in the caller's own function.
 
 **Indirect calls.** The module exports `pcmap`, a read-only array of
 16-bit entry indices, one per byte of `[text_lo, text_hi)`, zero for
-none. About 7 MiB, demand-paged, touched only where address-taken
-functions live. An indirect call is a bounds test, `pcmap[pc - text_lo]`,
-then the static path. A target outside the range (a kernel import token,
-a continuation token) calls the thunk.
+none, written as designated initialisers of the entries only. About
+7 MiB for the image, in the module's read-only data. Registration reads
+all of it once to check it is non-zero exactly at the rows. An indirect
+call is a bounds test, `pcmap[pc - text_lo]`, then `live` at that index.
+A target outside the range (a kernel import token, a continuation token)
+goes to the runner; T3 calls the thunk there.
 
 **The host-call thunk.** `h2rt_thunk` is an `extern "C"` function in the
 runtime with the handler signature. It is one iteration of the runner
@@ -454,9 +483,12 @@ a continuation or raises a preemption therefore reaches the runner
 exactly as it does now. An HLE function that just returns no longer
 costs its callers their host frames.
 
-**Frames.** The record shrinks to `{resume, esp}` and `frames_len` merges
-with `depth`: increment at a call, decrement at an inline return, left
-alone on a hand-up; the runner replays `frames[0..depth]` and zeroes it.
+**Frames.** `frames_len` merges with `depth`: increment at a call, back at
+an inline return, left alone on a hand-up; the runner replays
+`frames[0..depth]` and zeroes it. The record keeps its 16 bytes
+(`kind, target, resume, slot`): the replay needs the kind and the target
+to give the shadow stack, and so every event's backtrace, what the runner
+would have recorded.
 
 **A lean runner.** `run_inner` gets a second const parameter, `DIAG`.
 The lean instance has no entry stats, census, profile counters, coverage,
@@ -500,9 +532,8 @@ different macros and files and can alternate. Slices that change
 - `runner.rs`: `run_inner::<SCOPED, DIAG>`; move the per-transfer body
   into one `step` function that T3 will reuse.
 - `preempt.rs`, `interrupt.rs`: `IRQ_QUEUED`, kept in step with the queue
-  once `Runtime::enable_leave_word` is called (nothing calls it before
-  T2; see 4.2 on loop polls). `direct.rs`: `H2Direct.interrupts` stays
-  for now (old images read it).
+  once `Runtime::enable_leave_word` is called (T2's entry table calls it;
+  see 4.2 on loop polls).
 - Tests: `leave_word_matches_old_quiet` (property test over queue, mask
   and raise sequences: word non-zero iff old test fails);
   `lean_and_diag_runners_agree` (same transfers, events and final CPU on
@@ -512,21 +543,34 @@ different macros and files and can alternate. Slices that change
 
 ### T2. Entry table, indirect map, no per-call execute read
 
-- `crates/recompiler/emit/src/lib.rs` (registry emission, `:481`): dense indices,
-  `pcmap`, module feature bit 8. A module with bit 8 masks `IRQ_QUEUED`
-  out of `H2_POLLED` and `h2_fast_movs`, compares the whole word in
-  `h2_direct_quiet`, and its registration calls
-  `Runtime::enable_leave_word`.
-- `h2gen.h`: `H2_CALL_SLOT_` and `H2_JUMP_SLOT_` on `live`; delete
-  `H2DirectSlot`, `h2_direct_slot`, `h2_direct_lookup`, `h2_direct_exec`;
-  slim frames. `c.rs:1141-1205` passes indices.
-- `direct.rs`: `live` per `Runtime`, filled at registration and by
-  `edit_dispatch`; delete `note_direct` and the slot table (196 KiB per
-  context).
-- Tests: `override_stops_direct_calls_at_once` (existing behaviour, new
-  mechanism); `indirect_call_to_cold_entry_is_direct`;
-  `entry_outside_code_guard_goes_to_runner`; the direct-call suite in
-  `crates/recompiler/emit/tests/direct.rs` updated.
+- `crates/recompiler/emit/src/lib.rs` (`entry_rows`, `function_indices`,
+  `registry`): dense indices, `pcmap`, module feature bit 8 on every
+  module. A module with bit 8 masks `IRQ_QUEUED` out of `H2_POLLED` and
+  `h2_fast_movs` and compares the whole word in `h2_direct_quiet`; the
+  runtime turns `Runtime::enable_leave_word` on when dispatch first has
+  such a module, before the table can hold anything.
+- `h2gen.h`: `H2_CALL_SLOT_` and `H2_JUMP_SLOT_` on `live`
+  (`h2_direct_static`, `h2_direct_indirect`); `H2Direct` loses the
+  generation and interrupt-count pointers and the 196 KiB slot table
+  (`H2DirectSlot`, `h2_direct_slot`, `h2_direct_lookup`, `h2_direct_exec`
+  are gone), `frames_len` merges with `depth`. `c.rs` passes indices.
+- `direct.rs`: `Live` per `Runtime`, kept by `edit_dispatch` and checked
+  against `Guest::code_id` at `direct_begin`; `note_direct` and the slot
+  table are gone. `H2_ENTRY_STATS` splits runner calls and jumps by what
+  `live` held: `live`, `null`, `none`.
+- Tests: `override_stops_direct_calls_at_once`,
+  `indirect_call_to_cold_entry_is_direct`,
+  `entry_outside_code_guard_goes_to_runner`,
+  `protecting_lifted_code_empties_the_entry_table`,
+  `a_loop_ignores_a_queued_interrupt_for_another_thread` and the rest of
+  the direct-call suite (`crates/recompiler/emit/tests/direct.rs`, now on
+  guarded code); the registry's numbering and map
+  (`registry_numbers_rows_and_maps_each_entry_byte`); registration
+  (`an_entry_table_maps_each_row_and_nothing_else`,
+  `direct_calls_need_an_entry_table`, `one_entry_table_per_dispatch`,
+  `an_entry_table_turns_the_leave_word_on`,
+  `crates/runtime/runtime/tests/generated.rs`); `Live` itself
+  (`runtime::direct` unit tests).
 - Exit: hash gate; runner entries per tick from `H2_ENTRY_STATS=1` down by
   the indirect-entry rows (M2); ms/tick not worse.
 
@@ -778,7 +822,7 @@ coordinator builds once per step above and both lanes measure on it.
   costs microseconds per access. The fixup counter is always on, in the
   sim report and the agent API, and F3's gate is zero per tick.
 - **R4. Debuggers.** lldb stops on every `EXC_BAD_ACCESS`. With faults
-  only on wild accesses this is rare; [fastmem-proto.md](../perf/fastmem-proto.md)
+  only on wild accesses this is rare; [fastmem-proto.md](../perf/notes/fastmem-proto.md)
   "lldb" has the `process handle` line.
 - **R5. `asm` accesses hide loads from the optimiser.** Clang can no
   longer fold a load into an x86 arithmetic instruction or remove a
