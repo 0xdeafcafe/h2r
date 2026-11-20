@@ -283,6 +283,15 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 /// the lifter marks the jump as a tail call.
 const TAILS: &[u32] = &[0xbf380];
 
+/// Guest leaves a body runs inline, with the push, frame and return
+/// address the guest call makes: the node matrices `bd090` runs the root
+/// transform `bdc40`, the pose matrix `1421f0` and the composition
+/// `142a60` through `sim_native` (docs/engine/object-update.md, "Slice 4
+/// bodies"). The lifted side steps through them as part of the tree, as
+/// `sim_physics_differential.rs` does, so neither side makes them a
+/// callout.
+const INLINED: &[u32] = &[0xbdc40, 0x1421f0, 0x142a60];
+
 /// The type callbacks the dispatchers reach through the descriptors'
 /// slots (docs/engine/sim-rewrite-objects.md section 2): `+40` and `+44`
 /// take `(object)`, `+6c` four arguments, `+70` two.
@@ -346,6 +355,9 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     if slice_5_answer(cpu, g, target) {
         return;
     }
+    // The registers at the call: the stubs below that write through an
+    // argument register read it here, not after the clobber.
+    let at_call = cpu.gpr;
     let sp = cpu.gpr[4];
     let ret = g.u32(sp).unwrap();
     if target == STACK_PROBE {
@@ -430,7 +442,9 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         }
     }
     answer_floats(cpu, target, n, case);
-    slice_6a_answer(cpu, g, target, n, case);
+    slice_4_answer(cpu, g, &at_call, target, n, case);
+    step_answer(cpu, g, &at_call, target, case);
+    slice_6a_answer(cpu, g, &at_call, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -461,15 +475,62 @@ impl PartialEq for Callout {
     }
 }
 
-/// All memory except the dead stack below `esp`.
-fn digest(g: &Guest, esp: u32) -> u64 {
+/// The harness RAM of a run.
+fn ram_of(g: &Guest) -> &[u8] {
     let start = g.mappings()[0].physical_start as usize;
-    let ram = &g.physical_ram()[start..start + RAM];
+    &g.physical_ram()[start..start + RAM]
+}
+
+/// The chunk the digest compares with the baseline at a time.
+const CHUNK: usize = 0x1000;
+
+std::thread_local! {
+    /// The memory the run started with, and its hash. Every run of a
+    /// root and case starts from the same memory, so [`digest`] hashes
+    /// the baseline's hash and the chunks that differ from it, not all
+    /// 8 MiB at every callout: the same comparison, at the cost of a
+    /// `memcmp`.
+    static BASELINE: std::cell::RefCell<(Vec<u8>, u64)> = const { std::cell::RefCell::new((Vec::new(), 0)) };
+}
+
+/// Take `g`'s memory as the baseline of the run starting on it; hashed
+/// again only when it differs from the last run's.
+fn baseline(g: &Guest) {
+    let ram = ram_of(g);
+    BASELINE.with(|b| {
+        let mut b = b.borrow_mut();
+        if b.0.as_slice() != ram {
+            let mut h = DefaultHasher::new();
+            h.write(ram);
+            *b = (ram.to_vec(), h.finish());
+        }
+    });
+}
+
+/// All memory except the dead stack below `esp`: the baseline's hash,
+/// then the address and bytes of every chunk of the live memory that
+/// differs from the baseline.
+fn digest(g: &Guest, esp: u32) -> u64 {
+    let ram = ram_of(g);
     let dead = (STACK_LOW as usize)..(esp.clamp(STACK_LOW, STACK) as usize);
-    let mut h = DefaultHasher::new();
-    h.write(&ram[..dead.start]);
-    h.write(&ram[dead.end..]);
-    h.finish()
+    BASELINE.with(|b| {
+        let b = b.borrow();
+        assert_eq!(b.0.len(), RAM, "a run sets its baseline first");
+        let mut h = DefaultHasher::new();
+        h.write_u64(b.1);
+        for live in [0..dead.start, dead.end..RAM] {
+            let mut at = live.start;
+            while at < live.end {
+                let end = ((at / CHUNK + 1) * CHUNK).min(live.end);
+                if ram[at..end] != b.0[at..end] {
+                    h.write_usize(at);
+                    h.write(&ram[at..end]);
+                }
+                at = end;
+            }
+        }
+        h.finish()
+    })
 }
 
 fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
@@ -522,10 +583,11 @@ struct Harness<'a> {
 }
 
 impl Harness<'_> {
-    /// The root and every body: code a run executes itself. Everything
-    /// else is a callout.
+    /// The root, every body, and the guest leaves a body runs inline
+    /// ([`INLINED`]): code a run executes itself. Everything else is a
+    /// callout.
     fn tree(&self, pc: u32) -> bool {
-        pc == self.root || self.table.owns(pc)
+        pc == self.root || self.table.owns(pc) || INLINED.contains(&pc)
     }
 
     /// Step the lifted code from `cpu.eip` to the next transfer the run
@@ -563,6 +625,7 @@ impl Harness<'_> {
     /// `k` (`resumes[0]` the root).
     fn run(&mut self, mut cpu: Cpu, mut g: Guest, rust: &dyn Fn(usize) -> bool) -> Record {
         let entry_esp = cpu.gpr[4];
+        baseline(&g);
         let mut rec = Record { callouts: Vec::new(), resumes: Vec::new(), end: callout(&cpu, &g, TransferAbi::ret(0)) };
         for _ in 0..4096 {
             let k = rec.callouts.len();
@@ -1543,6 +1606,18 @@ const STEP_CALLEES: &[(u32, u32)] = &[
     (0xfc330, 12),
 ];
 
+/// The collision `fc030 (object: ecx, ..., record: stack 0)` fills the
+/// record the step reads after a hit; its stub writes the fraction of
+/// the move made (`+4`), which scales the time left: all of it, which
+/// ends the sub-step loop, in half the cases; half of it, or none (the
+/// loop runs on until a miss or its tenth hit), in the rest.
+fn step_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, case: u32) {
+    if target == 0xfc030 && cpu.gpr[0] & 0xff == 1 {
+        let record = g.u32(at_call[4] + 4).unwrap();
+        f32w(g, record + 4, [1.0, 0.5, 1.0, 0.0][case as usize % 4]);
+    }
+}
+
 /// The gravity the step reads through `[51e9c4]`.
 const STEP_GRAVITY: u32 = 0x0064_5200;
 const GRAVITY_OWNER: u32 = 0x0051_e9c4;
@@ -1697,6 +1772,20 @@ const SLICE_4_CALLEES: &[(u32, u32)] = &[
     (0xa98b0, 0),
     (0xa9940, 0),
 ];
+
+/// The component's velocity leaves `1d09d0` and `1d0ad0` that `bc5e0`
+/// calls, `(component: edx, index: eax, out: ecx)`: they fill the vector
+/// at `out` and return with `ecx` still pointing at it, which `bc5e0`
+/// then hands to `b7740` as the angular velocity. Their stubs keep `ecx`
+/// and write a vector varied by the call and the case.
+fn slice_4_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, n: usize, case: u32) {
+    if matches!(target, 0x1d09d0 | 0x1d0ad0) {
+        let out = at_call[1];
+        cpu.gpr[1] = out;
+        let k = (n as u32 + case) as f32;
+        vec3(g, out, [0.25 * k, -0.5, if target == 0x1d09d0 { 1.0 } else { 0.125 }]);
+    }
+}
 
 /// Where the slice 4 roots' synthetic tags, vectors and outputs live.
 const SHELL_MODEL: u32 = 0x0066_0000;
@@ -2287,8 +2376,10 @@ std::thread_local! {
 /// The slice 6a stubs' effects beyond [`answer`]'s: `_ftol2` pops the
 /// x87 stack (always; the dispatcher roots reach it too). Under a unit
 /// root, the state tests answer no but one, the weapon test by turns, the
-/// frame and the matrix are written.
-fn slice_6a_answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
+/// frame and the matrix are written, through the argument registers as
+/// they were at the call (`at_call`: [`answer`] has clobbered `ecx` and
+/// `edx` by now).
+fn slice_6a_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, n: usize, case: u32) {
     if target == FTOL2 {
         let x = &mut cpu.x87;
         let top = (x.status >> 11) & 7;
@@ -2303,12 +2394,12 @@ fn slice_6a_answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u3
         0x100880 => cpu.gpr[0] = (n as u32 + case) % 2,
         // `b9fc0 (unit: eax, out: esi, edi)`.
         0xb9fc0 => {
-            vec3(g, cpu.gpr[6], [1.0, 0.0, 0.0]);
-            vec3(g, cpu.gpr[7], [0.0, 0.0, 1.0]);
+            vec3(g, at_call[6], [1.0, 0.0, 0.0]);
+            vec3(g, at_call[7], [0.0, 0.0, 1.0]);
         }
         // `1420f0`: a matrix at `edx`, turned about z by the case.
         0x1420f0 => {
-            let m = cpu.gpr[2];
+            let m = at_call[2];
             let (s, c) = (0.4 * case as f32).sin_cos();
             f32w(g, m, 1.0);
             vec3(g, m + 4, [c, s, 0.0]);

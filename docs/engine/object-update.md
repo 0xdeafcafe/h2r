@@ -572,7 +572,9 @@ changed radius is `ucomiss` (unordered counts as changed). Callees:
 owns the arithmetic, this phase the orchestration). Its sixteen sites
 are the body's; the after-root dispatcher `1090d0` fuses. The pose
 matrix `1421f0`, the composition `142a60` and the root transform
-`bdc40` run inline through `sim_native`. `sim-anim` has no
+`bdc40` run inline through `sim_native`, so they are no callouts: the
+harness steps them on the lifted side as part of the tree (`INLINED`).
+`sim-anim` has no
 `build_matrices` yet (phase 1b has not landed it); when it does, it
 replaces those inline leaves for the skeleton walk, and the frame and
 callouts here stay.
@@ -591,7 +593,7 @@ in `ebx`.
 record, `ret`), `1d1ca0` (`edi` record, `ret`), `1d4360` (`edi` record,
 `ret 4`), `b91d0` (`eax`, `esi`, `edi`; `ret`), `b7430` and `b7740`
 (bodies, fused), `1d09d0` and `1d0ad0` (`eax` 0, `edx` record, `ecx`
-out; `ret`), `1d96d0` (`eax` handle, `ret`). The network mode test is a
+out, kept: `bc5e0` passes it on to `b7740`; `ret`), `1d96d0` (`eax` handle, `ret`). The network mode test is a
 byte `cmp al, 4`.
 
 **Setters and getters** (`transform.rs`). `b7430` keeps a one-dword
@@ -785,11 +787,12 @@ after it); `faa30` is entered with `xmm0` set. Callee cleanup: `fd410`,
   `1e9700` (`xmm0`) and `24590` (`st(0)`). Other callees that return a
   float in a register leave it as the caller had it, so a body's reading
   of their answer is checked only as far as that value goes.
-- The projectile step's harness pool is synthetic: the stubs for `f87f0`
-  (the target's point) and `fc030` (the collision record) do not fill
-  their out buffers, so the homing and hit arithmetic runs on what the
-  stack held. A capture from a level with homing projectiles and
-  ricochets covers those values.
+- The projectile step's harness pool is synthetic: the stub for `f87f0`
+  (the target's point) does not fill its out buffer, and the stub for
+  `fc030` fills only the collision record's fraction (`+4`), so the
+  homing and the rest of the hit arithmetic run on what the stack held.
+  A capture from a level with homing projectiles and ricochets covers
+  those values.
 - Callee `ret` sizes for `1d24a0` and `1c6620` are read from their tails
   (`1c6620` jumps to `1c6560`, `ret 4`); the rest from their first `ret`.
 
