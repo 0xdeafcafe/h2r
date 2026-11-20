@@ -438,8 +438,7 @@ fn visibility_wait() {
     bench();
 }
 
-/// The same stream can be drawn privately before and after its canonical
-/// draw. Only the canonical draw answers the report, in guest pixel units.
+/// The same stream can be drawn privately before its canonical draw. Only the canonical draw answers the report, in guest pixel units.
 #[cfg(feature = "gpu")]
 #[test]
 fn native_flare_feedback_uses_guest_pixels_and_private_draws_leave_it_pending() {
@@ -456,7 +455,8 @@ fn native_flare_feedback_uses_guest_pixels_and_private_draws_leave_it_pending() 
             Some(SlotAt { slot: Slot::Transparents, view: 0 })
         }).with_replay(move |frame| tx.send(frame).unwrap());
         let (mut d, mut m) = device(sink, false);
-        d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+        use d3d::device::clear_flags::{STENCIL, TARGET, ZBUFFER};
+        d.clear(&mut m, 0, 0, TARGET | ZBUFFER | STENCIL, 0, 1.0, 0).unwrap();
         begin_inline(&mut m);
         inline_quad(&mut m, 0.0, 0.0, 32.0, 16.0, [0, 255, 0, 255]);
         inline_quad(&mut m, 40.0, 50.0, 47.0, 61.0, [0, 0, 255, 255]);
