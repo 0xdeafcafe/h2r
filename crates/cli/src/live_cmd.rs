@@ -157,6 +157,14 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the map packages the server has
+  hosts start --map MAP [--variant VARIANT] [--max-players N]
+                 [--class small|large] [--region R] [--transport udp|tunnel]
+                 [--no-launch] [--live URL] [--data DIR | --as GAMERTAG]
+                          start a custom dedicated host as an admin
+                          (docs/live/dedicated-host.md): launched on the
+                          server's provider, or with --no-launch print
+                          H2_LEASE, H2_HOST_LEASE_JSON, H2_TOKEN and H2_LIVE
+                          lines to eval before a manual docker run
   q <what> [--server URL] [--json|--jsonl]
                           query the service; `h2 live q --help` lists what
 
@@ -188,6 +196,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
         ("team", _) => team_command(rest),
         ("maps", _) => crate::live_maps::run(rest),
+        ("hosts", Some("start")) => crate::live_hosts::start(rest.shift()),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("assets", Some("check")) => assets_check(rest.shift()),

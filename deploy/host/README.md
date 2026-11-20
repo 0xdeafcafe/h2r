@@ -44,6 +44,15 @@ For a UDP lease through Docker, set `H2_PUBLIC_ADDR` to the Docker host's
 IPv4 address reachable by clients. If you change `H2_BASE_PORT`, publish
 the matching seven-port UDP range.
 
+To get `H2_LEASE`, `H2_HOST_LEASE_JSON`, `H2_TOKEN` and `H2_LIVE` in one
+step, reserve the lease on the server and eval what it prints:
+
+```sh
+eval "$(h2 live hosts start --map lockout --no-launch --live http://127.0.0.1:8074)"
+```
+
+Then run the container:
+
 ```sh
 docker run --rm --name h2host-smoke --platform linux/amd64 \
   -p 31000-31006:31000-31006/udp \

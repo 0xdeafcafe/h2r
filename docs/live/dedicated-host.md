@@ -226,6 +226,53 @@ off until indirect reads and uncovered equipment are accounted for. The
 optional clang host module faults with a guest address on an uncovered
 entry. Use the full light image for live games.
 
+### Starting one by hand
+
+`h2 live hosts start` is the admin's way to run a custom dedicated host
+outside matchmaking. It signs an `admin.write` request — with the server
+key in `--data` (the operator, the default) or an admin account's key with
+`--as GAMERTAG` — and `POST`s `/v1/admin/hosts`
+([API](live-api.md#dedicated-hosts)):
+
+```sh
+h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
+  [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
+  [--live URL] [--data DIR | --as GAMERTAG]
+```
+
+Without `--no-launch` the server reserves the lease (budget,
+`LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
+configured provider starts the container; the command prints the lease
+JSON. With `--no-launch` no provider is started: the server records the
+lease as `requested` and answers its host token, and the command prints
+shell lines a manual container run can `eval` — the only place the token
+is ever shown:
+
+```sh
+eval "$(h2 live hosts start --map lockout --no-launch --live http://127.0.0.1:8074)"
+```
+
+sets `H2_LEASE`, `H2_HOST_LEASE_JSON`, `H2_TOKEN` and `H2_LIVE` (the JSON
+single-quoted so `eval` cannot split on it). Export the data-bundle values
+the same way (`H2_DATA_URL`, `H2_DATA_SHA` from `h2 host bundle`), then run
+the image as [deploy/host/README.md](../../deploy/host/README.md) shows:
+
+```sh
+docker run --rm --name h2host-smoke --platform linux/amd64 \
+  -p 31000-31006:31000-31006/udp \
+  -e H2_LEASE -e H2_HOST_LEASE_JSON -e H2_LIVE -e H2_TOKEN \
+  -e H2_DATA_URL -e H2_DATA_SHA \
+  -e H2_REGION -e H2_OPT -e H2_BASE_PORT=31000 -e H2_PUBLIC_ADDR \
+  h2host:local
+```
+
+The manual container owns the same lifecycle as a launched one: it
+registers its endpoint with the token (moving the lease straight from
+`requested` to `joinable` — no provider boot event exists to wait for),
+reports playing and ended, and a lease whose container never registers
+times out on the same boot deadline as any `requested` lease. Pre-pull the
+image: the boot budget is 60 seconds from `hosts start`.
+
 ### `h2 host run`
 
 Start one host for an existing Live lease. The provider supplies the full
