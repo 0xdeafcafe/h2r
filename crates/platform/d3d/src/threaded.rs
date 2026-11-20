@@ -64,6 +64,8 @@
 
 pub mod owner;
 
+use crate::scene_sink::ReplaySample;
+
 /// Synchronous light reservations submitted to an actual worker thread.
 pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -100,6 +102,10 @@ type Job<B> = Box<dyn FnOnce(&mut Worker<B>) + Send>;
 /// One queued backend command.
 enum Cmd<B: Backend> {
     Job(Job<B>),
+    /// Resolves a shader resource at this exact point in the command list.
+    /// The original callback includes the backend's depth-alias fallback.
+    Sample { surface: u32, proxy: u64, how: ReplaySample, original: Job<B> },
+    ReleaseTexture(u64),
     /// The hot path, without a boxed closure. The draw is freed on the
     /// render thread; its stream buffers go back to the guest's side
     /// ([`Shared::spent`]), and so does its emptied box
@@ -303,6 +309,14 @@ impl<B: Backend> Worker<B> {
     fn depth(&self, id: Option<u32>) -> Result<Option<B::Surface>, String> {
         id.map(|d| self.surface(d)).transpose()
     }
+    fn issue_report(&mut self, proxy: u64) -> Result<(), String> {
+        match self.inner.report_pixel_count()? {
+            Some(ticket) => { self.tickets.insert(proxy, ticket); }
+            None => self.shared.miss("report_pixel_count returned None".into()),
+        }
+        Ok(())
+    }
+
     /// Moves the pixel counts the GPU has written into
     /// [`Shared::landed`]. Same values as a read: only the wait goes.
     /// Reports finish in order, so it stops at the first not back.
@@ -365,7 +379,8 @@ impl<B: Backend> Worker<B> {
         match cmd {
             Cmd::Render(op) => self.run(|worker| op.issue(worker)),
             Cmd::OwnerPresent(_) => unreachable!("a present terminates the owner transaction"),
-            Cmd::Job(job) => job(self),
+            Cmd::Sample { original, .. } | Cmd::Job(original) => original(self),
+            Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
             }
@@ -449,9 +464,7 @@ impl<B: Backend + 'static> Drop for ProxyTexture<B> {
     fn drop(&mut self) {
         let id = self.id;
         // After the render thread exits there is nothing left to free.
-        let _ = self.queue.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
-            w.textures.remove(&id);
-        })));
+        let _ = self.queue.push(Cmd::ReleaseTexture(id));
     }
 }
 
@@ -699,6 +712,17 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
 
     fn post(&self, f: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static) {
         self.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| w.run(f))));
+    }
+
+    fn post_sample(
+        &self, surface: u32, proxy: u64, how: Option<ReplaySample>,
+        issue: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static,
+    ) {
+        let original: Job<B> = Box::new(move |w| w.run(issue));
+        self.push(match how {
+            Some(how) => Cmd::Sample { surface, proxy, how, original },
+            None => Cmd::Job(original),
+        });
     }
 
     fn push(&self, cmd: Cmd<B>) {
@@ -1019,7 +1043,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         if let Some(owner) = self.frame_owner.as_mut() {
             let candidate = (owner.select)(n);
             let declined = owner.declined;
-            self.push(Cmd::OwnerPresent(owner::Present { n, surface, at, flags, gamma, candidate, declined }));
+            let failed = owner.failed;
+            self.push(Cmd::OwnerPresent(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed }));
         } else {
             self.post(move |w| {
                 let s = w.surface(surface)?;
@@ -1150,7 +1175,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Snapshot { opaque });
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.snapshot_surface(s, opaque)? {
                 Some(h) => {
@@ -1165,25 +1191,24 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.check()?;
-        self.post(|w| w.inner.clear_pixel_count());
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::BeginQuery));
+        } else {
+            self.post(|w| w.inner.clear_pixel_count());
+        }
         Ok(())
     }
 
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
         self.check()?;
-        let ticket = self.next_ticket;
+        let proxy = self.next_ticket;
         self.next_ticket += 1;
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
-            match w.inner.report_pixel_count()? {
-                Some(t) => {
-                    w.tickets.insert(ticket, t);
-                }
-                None => shared.miss("report_pixel_count returned None".into()),
-            }
-            Ok(())
-        });
-        Ok(Some(ticket))
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::EndQuery { proxy }));
+        } else {
+            self.post(move |w| w.issue_report(proxy));
+        }
+        Ok(Some(proxy))
     }
 
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
@@ -1494,7 +1519,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(true);
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Depth);
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.depth_level_texture(s)? {
                 Some(h) => {
@@ -1550,7 +1576,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let id = t.id;
         let desc = desc.clone();
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Alias { format, width, height, pitch, generation, offset, desc: desc.clone(), options });
+        self.post_sample(depth, id, sample, move |w| {
             // A backend that makes the texture itself (`GfxBackend` decodes
             // the words on the GPU) does, with no read-back here.
             if w.inner.defers_depth_aliases() || w.inner.handles_surface_aliases() {
@@ -1605,7 +1632,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::InPlace);
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.surface_texture(s)? {
                 Some(h) => {
