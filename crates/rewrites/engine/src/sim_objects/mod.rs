@@ -33,6 +33,8 @@ mod device;
 mod item;
 mod machine;
 mod projectile;
+// Slice 11, the projectile step `f8eb0` (x87 and `xmm` lane).
+mod projectile_step;
 mod scenery;
 mod sse;
 
@@ -124,6 +126,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
     Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
     Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
+    // Slice 11, the projectile step `f8eb0`: fused into `f8de0`'s call.
+    Body { point: &points::PROJECTILE_STEP, sites: &projectile_step::STEP_SITES, run: projectile_step::projectile_step },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

@@ -239,6 +239,8 @@ fn object_on_stack(root: u32) -> bool {
         &points::CRATE_UPDATE,
         &points::CREATURE_UPDATE,
         &points::CREATURE_POST_UPDATE,
+        // Slice 11, the projectile step.
+        &points::PROJECTILE_STEP,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -311,6 +313,7 @@ fn cleanup(target: u32) -> u32 {
             FUNCTION_CALLOUTS.iter().find(|&&(c, _)| c == t).unwrap().1
         }
         t if let Some(&(_, pop)) = SLICE_11_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = STEP_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -366,6 +369,10 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         0xd5b60 => if (n + case as usize) % 4 == 3 { 0 } else { DAMAGE_INFO },
         0xd9f70 | 0x138880 | 0xd8b50 => (seed >> 3) % 2,
         0x14de90 => if n % 2 == 0 { u32::MAX } else { handle(3) },
+        // The projectile step's: the attachment handle (none for some),
+        // and the collision, flyby and refresh answers in `al`.
+        0xfd410 => if (n + case as usize) % 3 == 0 { u32::MAX } else { handle(3) },
+        0xfc030 | 0x1897c0 | 0xb9d20 => (n as u32 + case) % 2,
         _ => 0x006e_1000 | (seed & 0xff),
     };
     cpu.gpr[1] = seed.rotate_left(9);
@@ -1476,6 +1483,149 @@ fn creature_post_update() {
 fn type_update_dispatch_reaches_the_small_types() {
     dressed(&points::OBJECT_TYPE_UPDATE, 13);
     dressed(&points::OBJECT_TYPE_POST_UPDATE, 13);
+}
+
+// Slice 11, the projectile step `f8eb0`: entered directly over a pool
+// dressed for it, and through the projectile update, which fuses it.
+
+/// Every guest function the projectile step calls that no table above
+/// lists, with the bytes its `ret` pops (`1e9700` through its tail jump
+/// to `1e96a0`).
+const STEP_CALLEES: &[(u32, u32)] = &[
+    (0xfd410, 0),
+    (0x17c880, 0),
+    (0x16ba40, 0),
+    (0xfd460, 4),
+    (0x17bbd0, 8),
+    (0x1e9700, 4),
+    (0xf87f0, 4),
+    (0x30bf0, 0),
+    (0xb75a0, 12),
+    (0xfaa30, 0),
+    (0xfc030, 4),
+    (0x1ca9f0, 8),
+    (0xfaa60, 20),
+    (0x1ca690, 20),
+    (0x1897c0, 16),
+    (0x11d000, 0),
+    (0xb7740, 4),
+    (0xb9b90, 4),
+    (0xb9d20, 0),
+    (0xb8b70, 0),
+    (0xfc330, 12),
+];
+
+/// The gravity the step reads through `[51e9c4]`.
+const STEP_GRAVITY: u32 = 0x0064_5200;
+const GRAVITY_OWNER: u32 = 0x0051_e9c4;
+
+/// The fields the projectile step branches on, on the object a root is
+/// called on and its definition, over a [`dress`]ed pool: the flags that
+/// skip the attachment, the loop and the drag; the state word `+130`;
+/// a target to home on or none; the arming and age timers; the spin; the
+/// definition's kind word, its orientation and homing flags, drag,
+/// gravity scales and the flyby sound.
+fn dress_step(g: &mut Guest, case: u32) {
+    let k = case as usize;
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    word(g, GRAVITY_OWNER, STEP_GRAVITY);
+    f32w(g, STEP_GRAVITY, 4.5);
+    word(g, body + 0x12c, [0x0, 0x2, 0x101, 0x20, 0x8, 0x4000, 0x1, 0x102][k % 8]);
+    byte(g, body + 0xc1, u8::from(k % 8 == 4));
+    g.set_u16(body + 0x130, [0, 0, 1, 0, 2, 1, 0, 2][k % 8]).unwrap();
+    word(g, body + 0x4, (1 << 8) | (u32::from(k % 2 == 1) << 3));
+    word(g, body + 0x144, if k % 3 == 0 { u32::MAX } else { handle(3) });
+    word(g, body + 0x14c, 0);
+    for (off, v) in [
+        (0x158, 0.25f32),
+        (0x15c, 0.5),
+        (0x160, [0.25, 2.0][k % 2]),
+        (0x164, [0.0, 0.125][(k / 2) % 2]),
+        (0x168, 3.0),
+        (0x16c, 0.75),
+        (0x170, [1.0, 10.0][(k / 2) % 2]),
+        (0x174, 0.5),
+        (0x178, -0.25),
+        (0x17c, 0.75),
+        (0x180, 0.125),
+        (0x184, 0.875),
+        (0x18c, [0.0, 0.5][k % 2]),
+        (0x190, 1.5),
+        (0x194, 2.0),
+    ] {
+        f32w(g, body + off, v);
+    }
+    g.set_u16(body + 0x1aa, 7).unwrap();
+    word(g, body + 0xc4, 0x00e6_0004);
+    for (i, v) in [1.0f32, 2.0, 3.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
+        f32w(g, body + 0x64 + 4 * i as u32, v);
+    }
+    word(g, DEFINITION + 0xbc, [0x1, 0x0, 0x101, 0x40, 0x1, 0x141][k % 6]);
+    g.set_u16(DEFINITION + 0xc0, (k % 4) as u16).unwrap();
+    g.set_u16(DEFINITION + 0xc2, 3).unwrap();
+    word(g, DEFINITION + 0x13c, if k % 2 == 0 { u32::MAX } else { 0x00e7_0005 });
+    for (off, v) in [
+        (0xd8, [0.0f32, 0.5][k % 2]),
+        (0xe0, [0.0, 5.0, 2.0][k % 3]),
+        (0x164, 1.0),
+        (0x170, 0.5),
+        (0x17c, [0.0, 0.25][(k / 3) % 2]),
+        (0x180, 1.0),
+        (0x18c, 0.5),
+        (0x194, 0.25),
+    ] {
+        f32w(g, DEFINITION + off, v);
+    }
+}
+
+/// [`dressed`] with [`dress_step`] on top.
+fn dressed_step(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (cpu, mut g) = start(ram, point.base, case);
+            dress(&mut g, case);
+            dress_step(&mut g, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+}
+
+#[test]
+fn projectile_step() {
+    dressed_step(&points::PROJECTILE_STEP, 12);
+}
+
+/// The projectile update reaches the step by a fused call.
+#[test]
+fn projectile_update_fuses_the_step() {
+    dressed_step(&points::PROJECTILE_UPDATE, 12);
 }
 
 /// The float comparison on its own: a run that differs from another only

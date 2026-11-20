@@ -7,8 +7,9 @@ dispatchers, the wake leaves and the early-mover wake), slice 3's
 (function values, the export evaluator, the import dispatcher, the seven
 type import handlers and change colours, all segments), slice 8's (the
 damage update, and the `Damage` and `Kill` events), and slice 11's (the
-small type updates, except the projectile step `f8eb0`, which stays a
-callout). The contracts they keep are in
+small type updates and the projectile step `f8eb0`). The differential
+harness compares the XMM registers and the x87 state at every callout of
+every root. The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
@@ -804,7 +805,8 @@ The plan's ladder, with these specifics.
    `differential` feature). The existing harness model: run the owner's XBE
    on the IR interpreter to the next call or return and compare with the
    Rust segment. Compared: all memory at and above `ESP`, all memory outside
-   the stack, eight integer registers, defined flags, transfer target.
+   the stack, eight integer registers, defined flags, the XMM registers,
+   the x87 state, transfer target.
    Masked: the dead stack below `ESP`. Seeded callee answers exercise
    register clobbers and changes to the live set (create, delete, relink,
    pool compaction that moves the body) between segments. Add two things the
