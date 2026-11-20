@@ -732,6 +732,54 @@ impl Stream {
         self.fx_state.phase_off
     }
 
+    pub(crate) fn advance_packet_clock(&mut self, mut frames: usize, host_rate: u32) {
+        if self.paused {
+            return;
+        }
+        let step = f64::from(self.params.frequency) / f64::from(host_rate);
+        while frames != 0 {
+            let Some(packet) = self.queue.front() else {
+                break;
+            };
+            let end = packet.frame_count as f64;
+            // Common 48/24 kHz voices: cursor and step are exact multiples
+            // of half a frame. Bound the integers so the bulk addition is
+            // bit-identical to the sequence of f64 adds in the renderer.
+            let spent = if matches!(step, 0.5 | 1.0 | 2.0)
+                && (self.pos * 2.0).fract() == 0.0
+                && end < (1u64 << 50) as f64
+            {
+                let n = frames.min(((end - self.pos) / step).ceil() as usize);
+                self.pos += n as f64 * step;
+                n
+            } else {
+                // At arbitrary rates repeated additions can round differently
+                // from multiplication. Preserve even a one-frame completion.
+                let mut n = 0;
+                while n < frames && self.pos < end {
+                    self.pos += step;
+                    n += 1;
+                }
+                n
+            };
+            self.fx_state.clock += spent as u64;
+            frames -= spent;
+            // Downsampling can finish several short packets on one frame.
+            while let Some(packet) = self.queue.front() {
+                if self.pos < packet.frame_count as f64 {
+                    break;
+                }
+                self.pos -= packet.frame_count as f64;
+                let done = self.queue.pop_front().expect("front exists");
+                self.completed.push((done.id, PacketStatus::Success));
+            }
+            if self.queue.is_empty() {
+                self.pos = 0.0;
+                break;
+            }
+        }
+    }
+
     pub(crate) fn render(&mut self, out: &mut [f32], host_rate: u32, gain: (f32, f32)) {
         self.play_frames(out.len() / 2, Some(out), host_rate, gain);
     }
@@ -1137,6 +1185,12 @@ impl Listener {
 }
 
 impl Listener {
+    /// Clock-only buffers need the playback rate. Gain, cone and pan affect
+    /// only the rendered samples. Doppler is unity outside Normal mode.
+    pub(crate) fn clock_pitch(&self, src: &Source3d) -> f64 {
+        self.doppler(src, src.position.sub(self.position))
+    }
+
     /// The Doppler term of [`Listener::spatial`]; `rel` points from the
     /// listener to the source.
     fn doppler(&self, src: &Source3d, rel: Vec3) -> f64 {
@@ -1223,6 +1277,62 @@ mod tests {
                 assert_eq!(clock.is_playing(), rendered.is_playing());
             }
         }
+    }
+
+    #[test]
+    fn clock_pitch_matches_spatial_pitch_in_all_modes() {
+        let listener = Listener::default();
+        for mode in [Mode3d::Normal, Mode3d::HeadRelative, Mode3d::Disabled] {
+            for z in [8.0, 0.0, f32::NAN] {
+                let src = Source3d {
+                    position: Vec3::new(0.0, 0.0, z),
+                    velocity: Vec3::new(0.0, 0.0, -60.0),
+                    mode,
+                    ..Default::default()
+                };
+                assert_eq!(listener.clock_pitch(&src), listener.spatial(&src).pitch);
+            }
+        }
+    }
+
+    #[test]
+    fn silent_stream_matches_render_at_every_packet_boundary() {
+        let fmt = WaveFormat::pcm16(1, 48_000).unwrap();
+        let mut audible = Stream::new(fmt).unwrap();
+        let mut silent = Stream::for_clock(fmt);
+        for hz in [48_000, 44_100, 24_000, 96_000, 192_000, 48_000] {
+            for v in [&mut audible, &mut silent] {
+                v.set_frequency(hz);
+            }
+            for n in [1, 1, 9, 0, 31, 130] {
+                assert_eq!(
+                    audible.submit(&vec![0; n * 2]).unwrap(),
+                    silent.submit_for_clock(n * 2).unwrap()
+                );
+            }
+            for (frames, pause) in [
+                (0, false),
+                (4, true),
+                (1, false),
+                (3, false),
+                (19, false),
+                (127, false),
+            ] {
+                audible.pause(pause);
+                silent.pause(pause);
+                audible.render(&mut vec![0.; frames * 2], 48_000, (1., 1.));
+                silent.advance_packet_clock(frames, 48_000);
+                assert_eq!(audible.pos.to_bits(), silent.pos.to_bits());
+                assert_eq!(audible.fx_state.clock, silent.fx_state.clock);
+                assert_eq!(audible.take_completed(), silent.take_completed());
+                assert_eq!(audible.pending(), silent.pending());
+            }
+        }
+        audible.render(&mut vec![0.; 4096], 48_000, (1., 1.));
+        silent.advance_packet_clock(2048, 48_000);
+        assert_eq!(audible.take_completed(), silent.take_completed());
+        assert_eq!(audible.fx_state.clock, silent.fx_state.clock);
+        assert_eq!(silent.pending(), 0);
     }
 
     fn mono16(samples: &[i16]) -> Vec<u8> {
