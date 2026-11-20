@@ -105,6 +105,16 @@ describe("server facts and status", () => {
     expect(adminSourceWords("granted")).toBe("granted");
   });
 
+  test("unreported uptime stays unknown and a fresh native start keeps its zero", () => {
+    const worker = parseAdminStatus({ id: "live.example.net" });
+    expect(worker.started_at).toBeNull();
+    expect(worker.uptime_s).toBeNull();
+    expect(parseAdminStatus({ ...STATUS, uptime_s: -1 }).uptime_s).toBeNull();
+    expect(parseAdminStatus({ ...STATUS, uptime_s: Infinity }).uptime_s).toBeNull();
+    expect(parseAdminStatus({ ...STATUS, uptime_s: 0 }).uptime_s).toBe(0);
+    expect(formatUptime(0)).toBe("0s");
+  });
+
   test("an old server without /v1/server reads as null", async () => {
     const { f } = recorder(() => jsonResponse({ error: "not_found", message: "no such endpoint" }, 404));
     expect(await fetchServerFacts("http://h/v1", f)).toBeNull();

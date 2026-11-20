@@ -131,10 +131,16 @@ function PublicPlate(props: { info: ServerInfo }) {
 
 function AdminPlate(props: { s: AdminStatus }) {
   const s = () => props.s;
+  const uptime = () => {
+    const seconds = s().uptime_s;
+    return seconds === null ? null : formatUptime(seconds);
+  };
   return (
     <Plate small="your server" title={s().id || host()} main>
       <dl class="dx-server-facts">
-        <dt>up</dt><dd>{formatUptime(s().uptime_s)}</dd>
+        <Show when={uptime()}>
+          {(label) => <><dt>up</dt><dd>{label()}</dd></>}
+        </Show>
         <dt>reached</dt><dd title={s().public.url ?? ""}>{reachWords(s().public)}</dd>
         <dt>sign-up</dt><dd>{yes(s().invite_only, "invite only", "open to anyone")} <span>{s().invites.open} open invites</span></dd>
         <dt>reads</dt><dd>{yes(s().private, "private", "public")}</dd>

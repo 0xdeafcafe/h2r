@@ -220,7 +220,8 @@ pub struct Live {
     pub(crate) mute_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
-    /// Unix seconds the service started.
+    /// Unix seconds the native service started.
+    #[cfg(feature = "native")]
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
     /// Where content, cloud saves and published art are kept
@@ -605,6 +606,7 @@ impl Live {
             mutes,
             mute_writes: Default::default(),
             cloud: Default::default(),
+            #[cfg(feature = "native")]
             started_at: now(),
             data_dir: Default::default(),
             blobs: Default::default(),

@@ -534,9 +534,11 @@ the art extractor version `h2 live assets extract` now records in the
 manifest (null for older art). Nothing secret is in it: no keys, no file
 contents, no database URL; `data_dir` only when the caller is on this
 machine (a loopback peer with no proxy header, as for game art), so not
-through a tunnel. The plate shows uptime, how the server is reached,
-sign-up, reads, players, game art and the log's length (not the data
-directory or the admin list, which are long). Its pods: **invites**,
+through a tunnel. Native servers report `started_at` and `uptime_s` for the
+running service. Workers omit both fields because the Durable Object can
+cold-start while the service remains available. The plate shows uptime when
+reported, along with how the server is reached, sign-up, reads, players,
+game art and the log's length. Its pods: **invites**,
 **accounts**, **halo admin** (`/games/halo2/admin`) and another server.
 
 **Accounts** (`/dash/server/accounts`, admins): the counts, then blades

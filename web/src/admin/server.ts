@@ -59,7 +59,7 @@ export interface AdminEntry { gamertag: string; source: "configured" | "granted"
 
 export interface AdminStatus extends ServerFacts {
   started_at: string | null;
-  uptime_s: number;
+  uptime_s: number | null;
   public: { url: string | null; tunnel: TunnelKind | null };
   game_art: GameArtFacts;
   admins: AdminEntry[];
@@ -111,10 +111,11 @@ export function parseAdminStatus(body: unknown): AdminStatus {
   const log = obj(o.log);
   const inv = obj(o.invites);
   const tunnel = pub.tunnel === "quick" || pub.tunnel === "named" || pub.tunnel === "proxy" ? pub.tunnel : null;
+  const uptime = o.uptime_s;
   return {
     ...parseServerFacts(body),
     started_at: str(o.started_at),
-    uptime_s: num(o.uptime_s),
+    uptime_s: typeof uptime === "number" && Number.isFinite(uptime) && uptime >= 0 ? uptime : null,
     public: { url: str(pub.url) ?? str(o.url), tunnel },
     game_art: {
       present: art.present === true,
