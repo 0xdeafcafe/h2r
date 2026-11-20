@@ -49,8 +49,6 @@ mod world_layers {
 
 pub const ID: &str = "pipeline-render";
 pub const SWITCH: &str = "impl.render.pipelined_frame";
-/// Legacy default for the exact implementation switch.
-pub const ENV: &str = "H2_PIPELINE_RENDER";
 /// `H2_PIPELINE_WATCH=0x485a80,...`: guest words to watch. Each change is
 /// printed with the step it showed up after (`pipeline: watch ...`), so a
 /// run says whether a merge of ours or the game itself changed a word.
@@ -879,11 +877,10 @@ impl Default for PipelineRender {
 impl PipelineRender {
     /// Configures the runtime feature from the environment.
     pub fn new() -> Self {
-        let on = std::env::var(ENV).is_ok_and(|v| v == "1");
         let watch = parse_watch(std::env::var(WATCH_ENV).ok().as_deref());
         let env = |name| std::env::var(name).ok();
         let refuse = parse_watch(env(REFUSE_ENV).as_deref());
-        Self::with(on, Addrs::HALO2)
+        Self::with(false, Addrs::HALO2)
             .check_snapshot(true)
             .print(true)
             .watch(&watch)
@@ -1033,9 +1030,9 @@ impl PipelineRender {
         self
     }
 
-    /// Resolve the exact switch with the old variable as its fallback.
-    pub fn requested(switches: &crate::Switches, legacy: Option<&str>) -> bool {
-        switches.feature(SWITCH, legacy == Some("1"))
+    /// Whether the exact switch asks for it (off unless set).
+    pub fn requested(switches: &crate::Switches) -> bool {
+        switches.feature(SWITCH, false)
     }
 
     /// The conflict report so far (tests): the lines
@@ -3112,7 +3109,9 @@ mod tests {
     fn the_frame_pipeline_uses_its_exact_switch() {
         use crate::{Base, Registry, Switches};
 
-        for (spec, legacy, expected) in [
+        // `on` is the feature's own default (`PipelineRender::with`); the
+        // exact switch overrides it either way.
+        for (spec, on, expected) in [
             ("", false, false),
             ("impl.render.pipelined_frame=on", false, true),
             ("impl.render.native=off,impl.render.pipelined_frame=on", false, true),
@@ -3121,14 +3120,12 @@ mod tests {
             ("impl.render=off", true, true),
         ] {
             let switches = Switches::parse(spec).unwrap();
-            assert_eq!(
-                PipelineRender::requested(&switches, legacy.then_some("1")),
-                expected,
-                "{spec}"
-            );
+            if !on {
+                assert_eq!(PipelineRender::requested(&switches), expected, "{spec}");
+            }
             let mut registry = Registry::new(switches);
             registry
-                .add(&PipelineRender::with(legacy, Addrs::HALO2))
+                .add(&PipelineRender::with(on, Addrs::HALO2))
                 .unwrap();
             let plan = registry.build(&Base).unwrap();
             assert_eq!(

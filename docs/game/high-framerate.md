@@ -753,7 +753,7 @@ in the game yet.
 | `H2_FEATURES=impl.render.interpolate` | wraps the window's backend in `d3d::InterpBackend`, inside the render thread. Only this exact switch: `impl.render=on` does not turn it on |
 | Frame Rate row / `H2_FPS` / `h2 play --fps` | 30: the replay records nothing and forwards every call (the plain path). 60, 120 and uncapped: in-between frames at 60 (`interp::pacing::MAX_REPLAY_HZ`; 120 waits on measured headroom) |
 | `H2_RENDER_THREAD=0` | the replay stays off (it runs only on the render thread) |
-| `H2_PIPELINE_RENDER` (anything but `0`) | the replay stays off: the lockstep harness can't certify the combination |
+| `H2_FEATURES=impl.render.pipelined_frame=on` | the replay stays off: the lockstep harness can't certify the combination |
 
 No image rebuild: it is Rust in `d3d` and `boot`. Rebuild the `h2` binary.
 
@@ -1018,8 +1018,8 @@ at that scale, D's made frames have the guest's pixels exactly and E1's
 (a still camera) agree within filtering on over 98% of pixels.
 
 `cargo test -p boot --lib interpolation` checks the switch's decision
-(off by default, needs the render thread, off under
-`H2_PIPELINE_RENDER`) and `H2_FPS` parsing.
+(off by default, needs the render thread, off with
+`impl.render.pipelined_frame`) and `H2_FPS` parsing.
 
 ### Left
 
@@ -1055,7 +1055,7 @@ game yet.
 | `H2_FEATURES=impl.render.interpolate` | D (section 7). With a reproject switch also on, E1 wins |
 
 Off by default; exact switches only (`impl.render=on` turns none of them
-on). Same rules as D: render thread only, off under `H2_PIPELINE_RENDER`,
+on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`,
 the Frame Rate row above 30 (in-between frames at 60). No image rebuild:
 Rust in `d3d`, `gfx` and `boot`. Rebuild and reinstall the `h2` binary.
 
@@ -1094,7 +1094,7 @@ h2 agent render          # "interp": frames, warps, the held split
   host has a GPU backend is `d3d_glue::interp_render_thread`. Without
   `H2_BOOT_GFX` (the recorder draws nothing) and under
   `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. The refusals
-  stand: `H2_RENDER_THREAD=0` and `H2_PIPELINE_RENDER` turn them off.
+  stand: `H2_RENDER_THREAD=0` and `impl.render.pipelined_frame` turn them off.
 - **Pacing.** No display, so no vsync: the in-between frames are paced on
   the wall clock at the frame rate, the same schedule a window uses (the
   backend's own clock, `pacing::Schedule`), a display clock of their own.

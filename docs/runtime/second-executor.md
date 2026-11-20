@@ -1,7 +1,7 @@
 # A second executor
 
 Status: **runtime building block, tested on synthetic code; used by the
-pipelined-render prototype** (`H2_PIPELINE_RENDER=1`,
+pipelined-render prototype** (`impl.render.pipelined_frame=on`,
 docs/graphics/pipelined-render.md, "The prototype"). It is the prerequisite for pipelined rendering
 (docs/graphics/pipelined-render.md): run guest code on a second host
 thread, at the same time as the game thread, against a copy-on-write

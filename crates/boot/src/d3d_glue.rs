@@ -645,9 +645,8 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    let legacy = std::env::var(feature::pipeline_render::ENV).ok();
-    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches, legacy.as_deref());
-    if !interpolation_from(true, render_thread, pipeline.then_some("1")) {
+    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches);
+    if !interpolation_from(true, render_thread, pipeline) {
         return None;
     }
     match mode {
@@ -712,12 +711,8 @@ pub fn interp_render_thread(
 
 #[cfg(feature = "gpu")]
 /// [`interpolation`]'s decision: the switch, the render thread, and
-/// `H2_PIPELINE_RENDER` unset or `0`.
-pub fn interpolation_from(
-    switch: bool,
-    render_thread: bool,
-    pipeline_render: Option<&str>,
-) -> bool {
+/// `impl.render.pipelined_frame` off.
+pub fn interpolation_from(switch: bool, render_thread: bool, pipelined: bool) -> bool {
     if !switch {
         return false;
     }
@@ -727,7 +722,7 @@ pub fn interpolation_from(
         );
         return false;
     }
-    if pipeline_render.is_some_and(|v| v != "0") {
+    if pipelined {
         eprintln!(
             "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off with impl.render.pipelined_frame"
         );
@@ -1773,14 +1768,10 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true, None), "off by default");
-        assert!(interpolation_from(true, true, None));
-        assert!(interpolation_from(true, true, Some("0")));
-        assert!(!interpolation_from(true, false, None), "no render thread");
-        assert!(
-            !interpolation_from(true, true, Some("1")),
-            "pipelined render"
-        );
+        assert!(!interpolation_from(false, true, false), "off by default");
+        assert!(interpolation_from(true, true, false));
+        assert!(!interpolation_from(true, false, false), "no render thread");
+        assert!(!interpolation_from(true, true, true), "pipelined render");
     }
 
     #[cfg(feature = "gpu")]
