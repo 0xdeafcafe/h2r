@@ -152,6 +152,96 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
 }
 
 #[test]
+fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
+    use crate::{
+        Brain, arms,
+        cache::MapData,
+        los::Walls,
+        mind::{Doing, Skill},
+        tuning::{AimModel, Tuning},
+    };
+    use engine::tags::{entry_layout, index_layout};
+    use engine::view::objects;
+    use std::sync::Arc;
+
+    // A tiny move across the wall's edge used to reuse a blocked ray
+    // until the next visibility phase. Both endpoints are in gun range.
+    let wall = [[2., -3., -1.], [2., 0., -1.], [2., 0., 3.], [2., -3., 3.]];
+    let map = Arc::new(MapData {
+        walls: Walls::from_polygons([wall.as_slice()]),
+        ..Default::default()
+    });
+    let mut brain = Brain::new(Skill::Legendary, 17).with_tuning(Tuning {
+        perception_ticks: Some(0),
+        motor_ticks: Some(0),
+        button_sigma_ms: Some(0.0),
+        aim_model: Some(AimModel::Code),
+        burst: Some(false),
+        ..Default::default()
+    });
+    // This fixture has zero transport and controller delay so the action
+    // carries the current brain report. The skill reaction still applies.
+    let (ph, mut g, slot) = game(move |frame| {
+        assert!(frame.machine.is_some());
+        let tick = frame.tick.unwrap();
+        let pad = brain.pad_in_map(frame, Some(&map));
+        assert_eq!(
+            brain.mind.doing == Doing::Fight(2),
+            (101..116).contains(&tick),
+            "phantom chose a target on tick {tick}"
+        );
+        pad
+    });
+
+    game_makes(&mut g, 2, MAC_B, [-1., 0., 0.]);
+    let own = BODY + 0x400;
+    let enemy = BODY + 0x800;
+    g.put_f32(enemy + 0x64, 4.)
+        .put_f32(enemy + 0x6c, 0.2)
+        .put_f32(own + 0xec, 1.)
+        .put_f32(own + 0xf0, 1.);
+
+    // A full battery weapon in the phantom's current weapon slot.
+    const INDEX: u32 = 0x0076_0000;
+    const ENTRIES: u32 = INDEX + 0x1000;
+    const WEAPON_TAG: u32 = ENTRIES + 0x1000;
+    let def = DatumHandle::new(0xa003, 0).raw();
+    let weapon = DatumHandle::new(0xb003, 3);
+    let header = OBJECTS_DATA + 3 * 0xc;
+    let body = BODY + 3 * 0x400;
+    g.put_u32(points::TAG_INDEX.base, INDEX)
+        .put_u32(INDEX + index_layout::TAG_COUNT, 1)
+        .put_u32(points::TAG_ENTRIES.base, ENTRIES)
+        .put_u32(ENTRIES + entry_layout::GROUP, u32::from_be_bytes(*b"weap"))
+        .put_u32(ENTRIES + entry_layout::DATUM, def)
+        .put_u32(ENTRIES + entry_layout::ADDRESS, WEAPON_TAG)
+        .map(WEAPON_TAG, 0x400)
+        .put_u16(header, weapon.salt())
+        .put_u8(header + 3, objects::WEAPON)
+        .put_u32(header + 8, body)
+        .put_u32(body, def)
+        .put_u32(body + 0x14, DatumHandle::new(0xb001, 1).raw())
+        .put_u8(own + arms::UNIT_WEAPON_INDEX, 0)
+        .put_u32(own + arms::UNIT_WEAPONS, weapon.raw());
+    assert!(arms::read(&g, own).unwrap().held.unwrap().ready());
+
+    let mut fired = false;
+    for tick in 100..=116 {
+        let exposed = (101..116).contains(&tick);
+        at_tick(&mut g, tick);
+        g.put_f32(enemy + 0x68, if exposed { 0.04 } else { -0.04 });
+        g = gather(&ph, g, slot);
+        let trigger = g.f32(OUT + 0x14).unwrap();
+        if exposed {
+            fired |= trigger > 0.;
+        } else {
+            assert_eq!(trigger, 0., "phantom fired into cover on tick {tick}");
+        }
+    }
+    assert!(fired, "the phantom must fire while the enemy is exposed");
+}
+
+#[test]
 fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let (ph, g, slot) = game(|f| HostPadState {
         right_trigger: if f.tick == Some(100) { 1. } else { 0. },

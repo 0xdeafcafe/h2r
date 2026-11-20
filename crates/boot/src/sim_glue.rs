@@ -211,7 +211,6 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
             foot_plan_ticks: rate(p.foot_plan_ticks, work.foot_plan_ticks),
             vehicle_plan_ticks: rate(p.vehicle_plan_ticks, work.vehicle_plan_ticks),
             vehicle_lookahead_ticks: rate(p.vehicle_lookahead_ticks, work.vehicle_lookahead_ticks),
-            player_los_ticks: rate(p.player_los_ticks, work.player_los_ticks),
         },
     }
 }
@@ -1091,7 +1090,6 @@ mod tests {
             phantom_jitter_ms: Some(2.5),
             aim_model: Some("net".into()),
             foot_plan_ticks: Some(2),
-            player_los_ticks: Some(4),
             ..BotParams::default()
         };
         let t = tuning(&p);
@@ -1100,7 +1098,6 @@ mod tests {
             t.work,
             bots::tuning::WorkRates {
                 foot_plan_ticks: 2,
-                player_los_ticks: 4,
                 ..Default::default()
             }
         );

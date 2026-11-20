@@ -41,7 +41,10 @@ mod visits;
 pub mod weapons;
 mod work;
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Weak},
+};
 
 use decisions::radio;
 use input::host::HostPadState;
@@ -83,7 +86,7 @@ pub struct Brain {
     spare_observations: Vec<Observation>,
     sampled: Option<(u32, bool)>,
     pending_kills: Vec<emote::Kill>,
-    visibility: perceive::Visibility,
+    map_data: Option<Weak<cache::MapData>>,
     player_unit: Option<(u32, u32)>,
     vehicle_headers: Vec<vehicle::read::VehicleHeader>,
     vehicle_seats: vehicle::read::SeatBuffers,
@@ -148,7 +151,6 @@ impl Brain {
         self.discard_observations(false);
         self.sampled = None;
         self.pending_kills.clear();
-        self.visibility.clear_life();
         self.player_unit = None;
     }
 
@@ -166,7 +168,7 @@ impl Brain {
             spare_observations: Vec::new(),
             sampled: None,
             pending_kills: Vec::new(),
-            visibility: Default::default(),
+            map_data: None,
             player_unit: None,
             vehicle_headers: Vec::new(),
             vehicle_seats: Default::default(),
@@ -372,7 +374,6 @@ impl local::PadSource for Brain {
             self.controller.reset();
         }
         self.player_unit = None;
-        self.visibility.clear_life();
     }
 
     fn phantom_latency(&self) -> tuning::PhantomLatency {
@@ -385,6 +386,16 @@ impl local::PadSource for Brain {
             self.fidget.reset();
             return HostPadState::default();
         }
+        self.pad_in_map(f, cache::current().as_ref())
+    }
+}
+
+impl Brain {
+    fn pad_in_map(
+        &mut self,
+        f: &local::Frame<'_>,
+        map: Option<&Arc<cache::MapData>>,
+    ) -> HostPadState {
         let who = match f.machine {
             Some(id) => guest::Who::Machine(id),
             None => guest::Who::Port(u32::from(f.port)),
@@ -392,14 +403,18 @@ impl local::PadSource for Brain {
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         let cursor = emote::kills().since_into(self.kills_seen, &mut observation.kills);
         let name_change = autonav::loaded_change(&self.map);
-        let map = cache::current();
+        let same_map = match (&self.map_data, map) {
+            (Some(old), Some(new)) => std::ptr::eq(old.as_ptr(), Arc::as_ptr(new)),
+            (None, None) => true,
+            _ => false,
+        };
         // Render can poll a local pad repeatedly within one game tick.
         // Keep processing fresh kill events and same-tick life transitions.
         if observation.kills.is_empty()
             && name_change.is_none()
             && f.tick
                 .is_some_and(|tick| self.sampled == Some((tick, true)))
-            && self.visibility.matches_map(map.as_ref())
+            && same_map
             && self
                 .player_unit
                 .is_some_and(|(slot, unit)| guest::same_live_unit(f.guest, who, slot, unit))
@@ -449,7 +464,8 @@ impl local::PadSource for Brain {
             self.sampled = None;
         }
         self.player_unit = unit;
-        if self.visibility.bind(map.as_ref(), unit, p.tick) {
+        if !same_map {
+            self.map_data = map.map(Arc::downgrade);
             self.mind.invalidate_routes();
             // Observations filtered against old geometry must not guide a
             // pad after the BSP has changed. Keep their kill feed in order.
@@ -473,7 +489,7 @@ impl local::PadSource for Brain {
             self.vehicle_seats.clear_sight(&mut observation.vehicles);
             observation.sounds.clear();
         }
-        if let Some(loaded) = &map
+        if let Some(loaded) = map
             && observation
                 .vehicles
                 .riding
@@ -481,20 +497,19 @@ impl local::PadSource for Brain {
         {
             self.mind.vehicles.paths.bind_map(loaded);
         }
-        observation.visible_players = Some(perceive::observe_cached(
+        let map_data = map.map(|m| m.as_ref());
+        observation.visible_players = Some(perceive::observe_for_brain(
             p,
             &mut observation.vehicles,
             &mut observation.kills,
-            map.as_deref(),
-            &mut self.visibility,
-            self.tuning.unwrap_or_default().work.player_los_ticks,
+            map_data,
             &mut self.vehicle_seats,
         ));
         if map.is_none() {
             observation.sounds.clear();
             observation.grenades.clear();
         }
-        let pad = self.sample(observation, map.as_deref(), radio::host());
+        let pad = self.sample(observation, map_data, radio::host());
         if alive {
             self.fidget.reset();
             return pad;
