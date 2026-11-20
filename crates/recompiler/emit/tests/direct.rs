@@ -494,7 +494,7 @@ fn build(direct: bool, old: bool, split: bool) -> Module {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}-{split}"));
     let src = dir.join("src");
     let parts = if split { emit::c::Split::EVERY_BLOCK } else { emit::c::Split::NEVER };
-    let w = emit::write_module_split(&owners, &src, emit::Codegen { accounting: true }, parts).unwrap();
+    let w = emit::write_module_split(&owners, &src, emit::Codegen::accesses(true), parts).unwrap();
     assert_eq!(w.split > 0, split, "{} handlers cut", w.split);
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");

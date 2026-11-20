@@ -49,6 +49,12 @@ pub(crate) fn execute_dispatched<const DIAG: bool>(
         Invocation::Handler(Handler::Rust(f)) => {
             let _t = timeline::span(timeline::Cat::Hle, timeline::Track::Host, "hle call")
                 .arg("pc", cpu.eip as u64);
+            // The block clock charges a declared constant for Rust code in
+            // place of whatever guest code it stands for (preempt.rs).
+            if ctx.runtime().block_clock() {
+                crate::ffi::sync_accesses(ctx);
+                ctx.spend_accesses(crate::preempt::HLE_COST);
+            }
             f(cpu, ctx, selector)
         }
         Invocation::Continuation(f) => f(cpu, ctx),

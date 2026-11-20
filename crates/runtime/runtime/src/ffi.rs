@@ -12,7 +12,7 @@ pub use memory::{FastAccess, MemoryGuard, h2abi_v1_fast_acquire, h2abi_v1_fast_r
 pub(crate) use memory::{Memory, MemoryShared, OwnedFastAccess, release_lent_gate, sync_accesses};
 
 use crate::{
-    CpuAbi, Dispatch, Event, ExecCtx, GuestFn, TransferAbi,
+    CpuAbi, Dispatch, ExecCtx, GuestFn, TransferAbi,
     cpu::ABI_VERSION,
     dispatch::{Handler, RegistrationError},
 };
@@ -52,7 +52,7 @@ fn status(ctx: &mut ExecCtx, pc: u32, result: Result<(), crate::GuestFault>) -> 
     match result {
         Ok(()) => 0,
         Err(fault) => {
-            let id = ctx.emit(Event::MemoryFault { pc, fault });
+            let id = ctx.emit_memory_fault(pc, fault, crate::fault_census::FaultSource::Generated);
             // Generated code must stop at the first failed access. Preserve
             // that instruction's fault if a broken handler continues issuing
             // helpers; later faults are ordinary, evictable diagnostics.

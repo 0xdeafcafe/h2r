@@ -57,6 +57,10 @@ pub struct Dispatch {
     resumes: HashMap<u32, Resume>,
     stop_recovery: Option<Arc<StopRecovery>>,
     entry_fallback: Option<Arc<EntryFallback>>,
+    /// The features of the generated modules registered, OR-ed, and
+    /// whether there are any (`register_generated_module`).
+    pub(crate) module_features: u32,
+    pub(crate) modules: usize,
     /// The rows of the module registered with an entry table (at most one:
     /// `generated::FEATURE_ENTRY_TABLE`), from which the runtime keeps its
     /// [`Live`](crate::direct::Live) table.
@@ -83,6 +87,14 @@ pub enum RegistrationError {
     /// The module asks for features this runtime does not implement.
     #[error("generated module features {0:#x} are unknown to this runtime")]
     UnknownFeatures(u32),
+    /// The block clock counts through accounting's plumbing: a module with
+    /// `FEATURE_BLOCK_CLOCK` and not `FEATURE_ACCOUNTING` is malformed.
+    #[error("generated module features {0:#x}: the block clock needs accounting")]
+    BlockClockWithoutAccounting(u32),
+    /// One dispatch runs one clock: a module whose clock (block or access)
+    /// differs from a module already registered is refused.
+    #[error("generated module features {module:#x}: its clock differs from the registered modules' ({registered:#x})")]
+    MixedClock { module: u32, registered: u32 },
     /// A table pointer is null while its count is not zero.
     #[error("generated module {0} table is null with a non-zero count")]
     NullTable(ModuleTable),
@@ -328,6 +340,11 @@ impl Dispatch {
     {
         self.stop_recovery = Some(Arc::new(f));
     }
+    /// The features of every generated module registered, OR-ed
+    /// (`crate::generated::FEATURE_*`); 0 before the first.
+    pub fn module_features(&self) -> u32 {
+        self.module_features
+    }
     /// Remove the [`set_stop_recovery`](Self::set_stop_recovery) hook.
     pub fn clear_stop_recovery(&mut self) {
         self.stop_recovery = None;
@@ -391,6 +408,9 @@ impl Dispatch {
             resumes: self.resumes.clone(),
             stop_recovery: self.stop_recovery.clone(),
             entry_fallback: None,
+            // The same handlers, so the same clock.
+            module_features: self.module_features,
+            modules: self.modules,
             entry_table: self.entry_table.clone(),
         }
     }

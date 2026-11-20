@@ -21,12 +21,13 @@ its state from `CpuAbi`.
 Each pass has a name and can be turned off on its own: `H2_PASSES` (read by
 `emit::plan`, the tests and the CLI) or `h2 emit --passes`, a comma-separated
 spec applied left to right: `all`, `none`, `name`, `-name`. The default is
-`all`.
+`all`, which turns every pass on and leaves `imprecise-faults` as it is.
 
 | name | what it does |
 |---|---|
 | `dead-flags` | Removes flag writes that are rewritten on every path before anything above can observe them, then the formulas that only fed them (`flags::dead_flags`, `dce`). |
 | `lazy-flags` | Groups an instruction's flag writes that nothing reads before they are rewritten, apart from a `ReadFlag` in the same block, into one `LazyFlags`: a shared formula over values the instruction computes anyway (`lazy::lazy_flags`). The C keeps the inputs in slots and computes the flags only at an exit or a read, so faults and polls see exact flags without the hot path paying for them. |
+| `imprecise-faults` | Not a pass but a rule change, off unless named (`all,imprecise-faults`): loads and stores stop observing the flags, so `dead-flags` removes writes across them (`flags::Observers::IMPRECISE_FAULTS`). A memory fault then leaves with exact registers and EIP but EFLAGS as they happen to be. The module declares it (feature 128), and it is safe only where nothing goes on from a memory fault ([block-clock-imprecise-faults.md](../../../docs/runtime/block-clock-imprecise-faults.md)). |
 
 `lazy-flags` runs first: it keeps an instruction's flags together, and
 `dead-flags` then removes a `LazyFlags` only if all its flags are dead.
