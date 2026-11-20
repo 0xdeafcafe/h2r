@@ -956,11 +956,12 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   live_menu_row, mode, dialog, age_ms}`, or `UNAVAILABLE` before the first
   read. `dialog` is the dialog up (the first screen on windows 0 to 4, any
   slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
-  tag name (`dialog_live_signin` for the account picker,
+  recognized name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
-  or `null` for an id not named yet. For the Clanker player card
-  `dialog.name` is `clanker_player_options`, resolved from the active
-  screen's kit class; its numeric id belongs to the retail base class and
+  or `null` for an id not named yet. The party leader picker reports
+  `dialog.name = party_leader_picker` with id `0xb1`. The Clanker player
+  card reports `dialog.name = clanker_player_options` from the active
+  screen's kit class. Its numeric id belongs to the retail base class and
   can identify other screens too. Dialogs read as `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).

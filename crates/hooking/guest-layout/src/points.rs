@@ -130,6 +130,17 @@ pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
 
+/// Return addresses for the retail lobby leave and party leader queries.
+pub mod party_leave {
+    pub const LOBBY_BACK_COUNT: u32 = 0x0025_11c5;
+    pub const PAUSE_LEAVE_COUNT: u32 = 0x0023_29c8;
+    pub const LEADER_ROW_LABEL: u32 = 0x002b_8415;
+    pub const LEADER_ROW_BUILD: u32 = 0x002b_8459;
+    pub const LEADER_ROW_PRESS: u32 = 0x002b_84c0;
+    pub const LEADER_AUTO_SELECT: u32 = 0x0019_b4f2;
+    pub const LEADER_APPOINT: u32 = 0x0019_a1a0;
+}
+
 /// The object section loop's call to the shared record writer.
 pub const OBJECT_RECORD_APPEND: Point = Point::new(
     "OBJECT_RECORD_APPEND", 0x0013_41d0, Sig::Site, "docs/graphics/native-renderer.md",
@@ -1010,6 +1021,15 @@ points! { ALL;
     /// a controller with a profile reaches Start Game (`0x250c30`,
     /// `0x25106c`); from one without, the profile chooser (`0x250cc3`).
     PREGAME_LOBBY_INPUT @ 0x0025_0b1e: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/bots.md";
+    /// The squad membership's peer count. Only leave callers treat a
+    /// leader with exclusively phantom opponents as alone.
+    PARTY_PEER_COUNT @ 0x0019_9f34: [fn() -> eax ret 0]; "docs/game/bots.md";
+    /// Whether the player slot in AX is occupied in the squad membership.
+    PARTY_PLAYER_VALID @ 0x0019_a951: [fn(player: eax) -> al ret 0]; "docs/game/bots.md";
+    /// The lobby Back or pause Leave Game has committed to leaving.
+    PARTY_LEAVE @ 0x0019_9e3c: [fn(controller: stack 0) ret 4]; "docs/game/bots.md";
+    /// The player accepted the matchmaking lobby's Back confirmation.
+    MATCHMAKING_CANCEL_CONFIRMED @ 0x0025_2150: [fn(controller: stack 0) -> al ret 4]; "docs/game/bots.md";
     /// The pregame lobby's list item handler (ECX the screen, `ret 8`),
     /// set for its rows at `0x24fb40`: stack 0 a record whose `+0` is the
     /// input event (`+4` the controller), stack 1 the row (a word: 0 Start

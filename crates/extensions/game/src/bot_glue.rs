@@ -65,6 +65,8 @@ impl hooks::Feature for Bots {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        party_leave::install(b, &self.phantoms);
+
         // A phantom's machine has no simulation view, so the game's "is
         // this machine in the game" says no and its player never spawns
         // (docs/game/bots.md §5.1, "Phantoms in the game"): yes for a
@@ -387,3 +389,4 @@ pub fn install_film(
 mod retail_input;
 
 mod film_state;
+mod party_leave;
