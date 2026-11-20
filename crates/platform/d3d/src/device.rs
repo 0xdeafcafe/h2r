@@ -3023,6 +3023,32 @@ impl<B: Backend> Device<B> {
         })
     }
 
+    /// Device and host formats of a native pass over the bound colour and depth.
+    /// Scaled copies recreate these surfaces with the same formats. The upload
+    /// device exists only when all copies share it. Resolve swap-chain formats
+    /// from their creation params, just as `surface_for` uses their live handles.
+    #[cfg(feature = "gpu")]
+    pub fn external_pipeline_target(
+        &self, mem: &dyn GuestMemory,
+    ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
+        if self.render_target == 0 || self.depth_stencil == 0 {
+            return None;
+        }
+        let (device, _) = self.backend.upload_device()?;
+        let color = if self.render_target == self.back_header || self.frame_headers.contains(&self.render_target) {
+            D3DFormat::from_raw(self.params?.back_buffer_format)?
+        } else {
+            self.header_desc(mem, self.render_target).ok()?.format
+        };
+        let depth = if self.depth_stencil == self.depth_header {
+            D3DFormat::from_raw(self.params?.auto_depth_stencil_format)?
+        } else {
+            self.header_desc(mem, self.depth_stencil).ok()?.format
+        };
+        let caps = gfx::translate::Capabilities::from_features(device.features());
+        Some((device, gfx::surface::color_surface_format(color)?, gfx::surface::depth_surface_format(depth, caps)?))
+    }
+
     /// The device's depth full scale (`+0x948`), the D24 one when it is
     /// not a positive finite number; `None` when it does not read.
     fn guest_z_scale(&self, mem: &dyn GuestMemory) -> Option<f32> {

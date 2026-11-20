@@ -515,6 +515,16 @@ persisted through wgpu. What is done instead:
   Several processes may append to it at once; torn or unparsable lines are
   skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
 
+The native world, object, light, fog, water and decorator programs use
+`crates/rewrites/native-render/src/pipelines.rs`. Their utility workers
+compile observed target formats, vertex layouts and render states against
+the current map's shader modules. The archive appends `.native-v1` to the
+configured cache filename and stores shader fingerprints and descriptors.
+The GPU loader reads it on a worker and starts matching variants when
+their programs load. A newly requested variant takes priority over those
+prewarms. D3D draws remain eligible until a later guest swap observes a
+validated pipeline. Disabling the disk cache still permits async compiles.
+
 In frame stats (`H2_FRAME_STATS`) the `pipelines` counter counts the
 pipelines the game thread had to wait for or build at encode time (the
 `pipeline wait` span), not cache misses: a miss a worker finished in time

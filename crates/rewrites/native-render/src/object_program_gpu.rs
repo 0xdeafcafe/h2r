@@ -11,8 +11,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gfx::external::ExternalDraws;
-use gfx::compile::{Pending, PendingPipeline};
-use gfx::pipeline::{PipelineKey, ShaderId};
+use gfx::compile::PendingPipeline;
+use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram};
 use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 
 use shaders::psh::PixelUniforms;
@@ -142,8 +142,7 @@ type InheritedState = std::sync::Mutex<Option<(bool, EntryStates, DrawState)>>;
 
 struct LitProgram {
     pass: ObjectPass,
-    module: wgpu::ShaderModule,
-    layout: wgpu::PipelineLayout,
+    compiler: crate::pipelines::Pipelines,
     textures_layout: wgpu::BindGroupLayout,
     /// The stages' views the program owns, and every stage's sampler.
     views: Vec<(usize, wgpu::TextureView)>,
@@ -300,6 +299,23 @@ pub fn attributes(registers: &[u8], formats: &[Attribute]) -> Vec<wgpu::VertexAt
 }
 
 impl LitObjects {
+    /// An empty draw set whose uniform bindings are compatible with models
+    /// uploaded here. The loader keeps its private normalization cube.
+    pub fn empty_with_layout(&self) -> Self {
+        Self { uniforms_layout: self.uniforms_layout.clone(), models: HashMap::new(), normalization: None }
+    }
+
+    /// Publish a completed upload into the draw set without creating GPU
+    /// resources under the draw set's lock.
+    pub fn move_model_into(&mut self, index: u32, target: &mut Self) -> bool {
+        if self.uniforms_layout != target.uniforms_layout {
+            return false;
+        }
+        let Some(model) = self.models.remove(&index) else { return false };
+        target.models.insert(index, model);
+        true
+    }
+
     pub fn new(device: &wgpu::Device) -> Self {
         Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None }
     }
@@ -412,8 +428,12 @@ impl LitObjects {
             bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
+        let shader = ShaderProgram {
+            module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None,
+        };
+        let compiler = crate::pipelines::Pipelines::new(device, &p.wgsl, shader, "native object program");
         Some(LitProgram {
-            pass, module, layout, textures_layout, views, samplers, textures,
+            pass, compiler, textures_layout, views, samplers, textures,
             accum_groups: Vec::new(), pipelines: HashMap::new(), inherited: Default::default(),
         })
     }
@@ -499,6 +519,52 @@ impl LitObjects {
         s
     }
 
+    /// Request each distinct variant before the guest surrenders a run. A
+    /// change to the inherited state, target or vertex layout uses a new key.
+    pub fn prewarm_draws(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        draws: &[(u32, PlannedDraw)],
+    ) -> bool {
+        let mut ready = !draws.is_empty();
+        for (model, draw) in draws {
+            ready &= self.request_draw(device, color, depth, *model, draw)
+                .is_some_and(|(pending, _)| pending.previous_frame().is_some_and(Option::is_some));
+        }
+        ready
+    }
+
+    fn request_draw(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        model: u32, draw: &PlannedDraw,
+    ) -> Option<(&Arc<PendingPipeline>, bool)> {
+        let model = self.models.get_mut(&model)?;
+        let buffer = model.buffers.get(draw.buffer)?;
+        let program = model.programs.get_mut(draw.program)?;
+        let key = (color, depth, buffer.layout_id, draw.state);
+        let (entry, resident) = match program.pipelines.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => (entry.into_mut(), true),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let descriptor = PipelineKey {
+                    shader: OBJECT_PROGRAM,
+                    vertex_buffers: vec![gfx::vertex::OwnedVertexBufferLayout {
+                        stride: (SLOT * buffer.registers.len()) as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: attributes(&buffer.registers, &buffer.formats),
+                    }],
+                    primitive: draw.state.primitive,
+                    depth_stencil: Some(draw_depth_stencil(&draw.state, depth)?),
+                    color_target: wgpu::ColorTargetState {
+                        format: color, blend: None, write_mask: draw.state.color_writes,
+                    },
+                    samples: 1,
+                };
+                let pending = program.compiler.request(device, &descriptor);
+                (entry.insert((descriptor, pending)), false)
+            }
+        };
+        Some((&entry.1, resident))
+    }
+
     /// Ordered packets for `draws` (each with its model index, planned at
     /// the hook, [`Self::plan`]) on attachments of `color_format` and
     /// `depth_format`, `target_size` texels, the viewport the whole target
@@ -533,59 +599,14 @@ impl LitObjects {
             issued.push((d, blocks));
         }
         // Whether each draw found its pipeline and texture group resident.
-        let mut resident = vec![true; issued.len()];
-        for (i, (planned, _)) in issued.iter().enumerate() {
-            let (model, d) = (planned.0, &planned.1);
-            let m = self.models.get_mut(&model).ok_or("object model unavailable")?;
-            let b = m.buffers.get(d.buffer).ok_or("object buffer unavailable")?;
-            let p = m.programs.get_mut(d.program).ok_or("object program unavailable")?;
-            let key = (color_format, depth_format, b.layout_id, d.state);
-            if p.pipelines.contains_key(&key) {
-                continue;
+        let mut resident = Vec::with_capacity(issued.len());
+        for ((model, draw), _) in &issued {
+            let (pending, hit) = self.request_draw(device, color_format, depth_format, *model, draw)
+                .ok_or("object pipeline unavailable")?;
+            if pending.try_get().and_then(Option::as_ref).is_none() {
+                return Err("object pipeline pending or invalid");
             }
-            resident[i] = false;
-            let depth_stencil = draw_depth_stencil(&d.state, depth_format).ok_or("object stencil unavailable")?;
-            let color_target = wgpu::ColorTargetState {
-                format: color_format,
-                // Refused when it blends (`object_state::resolve`).
-                blend: None,
-                write_mask: d.state.color_writes,
-            };
-            let attrs = attributes(&b.registers, &b.formats);
-            let pipeline = gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("native object program"),
-                layout: Some(&p.layout),
-                vertex: wgpu::VertexState {
-                    module: &p.module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: (SLOT * b.registers.len()) as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attrs,
-                    })],
-                },
-                primitive: d.state.primitive,
-                depth_stencil: Some(depth_stencil.clone()),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &p.module,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(color_target.clone())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            }));
-            let described = PipelineKey {
-                shader: OBJECT_PROGRAM,
-                vertex_buffers: Vec::new(),
-                primitive: d.state.primitive,
-                depth_stencil: Some(depth_stencil),
-                color_target,
-                samples: 1,
-            };
-            p.pipelines.insert(key, (described, Pending::ready(pipeline)));
+            resident.push(hit);
         }
         let uniforms = uploads.resident_uniform_run(
             device, queue, &self.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE],
@@ -608,9 +629,6 @@ impl LitObjects {
             let p = &mut m.programs[d.program];
             let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state))
                 .cloned().ok_or("object pipeline unavailable")?;
-            if pipeline.get().is_none() {
-                return Err("object pipeline invalid");
-            }
             let textures = match &p.textures {
                 Some(textures) => textures.clone(),
                 None => {
@@ -1612,6 +1630,12 @@ mod tests {
             let arena = pool.begin();
             let rows = [[translate; 4]; 3];
             let draw = objects.plan(7, &frame(), &key(0, 0, 0), &rows, &entry()).unwrap();
+            let color = wgpu::TextureFormat::Rgba8Unorm;
+            let depth = wgpu::TextureFormat::Depth24PlusStencil8;
+            let pending = objects.request_draw(&ctx.device, color, depth, 7, &draw).unwrap().0;
+            assert!(pending.get().is_some());
+            timeline::frame();
+            assert!(objects.prewarm_draws(&ctx.device, color, depth, &[(7, draw.clone())]));
             let packets = objects.draws(&ctx.device, &ctx.queue, &arena, wgpu::TextureFormat::Rgba8Unorm,
                 wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, &[(7, draw)], None).unwrap();
             arena.flush(&ctx.queue);

@@ -1,0 +1,228 @@
+//! Native pipeline compilation and per-program prewarming. The private disk
+//! archive contains shader fingerprints and exact pipeline descriptors. The
+//! shader and its bind group layouts come from the current map and device.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak, mpsc};
+
+use d3d::pipeline_store::PipelineStore;
+use gfx::compile::{Compiler, Pending, PendingPipeline, Priority};
+use gfx::pipeline::{PipelineKey, ShaderProgram, create_render_pipeline};
+
+static COMPILER: LazyLock<Arc<Compiler>> = LazyLock::new(|| {
+    Compiler::with_worker_setup(background::workers(), "native pipeline", background::lower_current)
+});
+static ARCHIVE: OnceLock<Option<mpsc::Sender<Message>>> = OnceLock::new();
+
+enum Message {
+    Warm(Weak<Program>),
+    Record(u64, PipelineKey),
+}
+
+/// Open the archive on its own worker. Installed by the GPU runtime only.
+pub fn open_archive(path: PathBuf) {
+    ARCHIVE.get_or_init(|| {
+        let (send, receive) = mpsc::channel();
+        match background::spawn("native pipeline archive", move || run_archive(path, receive)) {
+            Ok(_) => Some(send),
+            Err(error) => {
+                eprintln!("native pipeline archive: {error}");
+                None
+            }
+        }
+    });
+}
+
+fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
+    let (mut store, loaded) = PipelineStore::open::<u64>(&path);
+    let mut recipes: HashMap<u64, HashSet<PipelineKey>> = HashMap::new();
+    for item in loaded.pipelines {
+        if let Some(id) = item.program {
+            recipes.entry(id).or_default().insert(item.key);
+        }
+    }
+    for message in receive {
+        match message {
+            Message::Warm(weak) => {
+                if let Some(program) = weak.upgrade()
+                    && let Some(keys) = recipes.get(&program.id)
+                {
+                    for key in keys {
+                        program.request(key, Priority::Background);
+                    }
+                }
+            }
+            Message::Record(id, key) => {
+                if recipes.entry(id).or_default().insert(key.clone()) {
+                    store.record(Some((id, &id)), false, &key);
+                }
+            }
+        }
+    }
+}
+
+/// FNV-1a over the stage family, entry points and WGSL. A collision can
+/// only schedule an extra compile: the live program owns all GPU handles.
+fn fingerprint(source: &str, shader: &ShaderProgram, label: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for field in [label, &shader.vs_entry, &shader.fs_entry, source] {
+        for byte in field.bytes().chain(std::iter::once(0)) {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+struct Entry {
+    pipeline: Arc<PendingPipeline>,
+    priority: Priority,
+}
+
+struct Program {
+    device: wgpu::Device,
+    shader: ShaderProgram,
+    label: &'static str,
+    id: u64,
+    // The archive can seed this table while the guest requests a variant.
+    // The lock never covers shader compilation or file I/O.
+    entries: Mutex<HashMap<PipelineKey, Entry>>,
+}
+
+impl Program {
+    fn request(self: &Arc<Self>, key: &PipelineKey, priority: Priority) -> Arc<PendingPipeline> {
+        let mut entries = self.entries.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = entries.get_mut(key) {
+            if entry.priority == Priority::Background && priority == Priority::Draw {
+                entry.priority = Priority::Draw;
+                if !entry.pipeline.is_ready() && entry.pipeline.built_on().is_none() {
+                    COMPILER.submit(&entry.pipeline, priority);
+                }
+            }
+            return Arc::clone(&entry.pipeline);
+        }
+        // Queued jobs may outlive the map. They only retain this small key
+        // until claimed; their device, modules and layouts belong to the map.
+        let weak = Arc::downgrade(self);
+        let recipe = key.clone();
+        let pipeline = Pending::new(move || {
+            let program = weak.upgrade()?;
+            let _timer = timeline::setup::Stage::Pipelines.worker();
+            let result = gfx::program::validated_resource(&program.device, || {
+                create_render_pipeline(&program.device, &recipe, &program.shader, program.label)
+            });
+            if result.is_some() && let Some(Some(send)) = ARCHIVE.get() {
+                let _ = send.send(Message::Record(program.id, recipe));
+            }
+            result
+        });
+        COMPILER.submit(&pipeline, priority);
+        entries.insert(key.clone(), Entry { pipeline: Arc::clone(&pipeline), priority });
+        pipeline
+    }
+}
+
+/// One live shader, layout and table of validated pipelines.
+#[derive(Clone)]
+pub struct Pipelines(Arc<Program>);
+
+impl Pipelines {
+    pub fn new(device: &wgpu::Device, source: &str, shader: ShaderProgram, label: &'static str) -> Self {
+        let id = fingerprint(source, &shader, label);
+        let program = Arc::new(Program {
+            device: device.clone(), shader, label, id, entries: Mutex::default(),
+        });
+        if let Some(Some(send)) = ARCHIVE.get() {
+            let _ = send.send(Message::Warm(Arc::downgrade(&program)));
+        }
+        Self(program)
+    }
+
+    /// Queue the exact live variant ahead of speculative prewarms. Admission
+    /// reads `previous_frame`; recording only consumes admitted variants.
+    pub fn request(&self, device: &wgpu::Device, key: &PipelineKey) -> Arc<PendingPipeline> {
+        debug_assert_eq!(device, &self.0.device);
+        // The live shader already selects the table. Diagnostic IDs assigned
+        // by encounter order can differ when the same map is loaded again.
+        let mut recipe = key.clone();
+        recipe.shader = gfx::pipeline::ShaderId(0);
+        self.0.request(&recipe, Priority::Draw)
+    }
+}
+
+/// Queue live native shader translation and module creation on the same
+/// low-QoS workers as pipeline creation.
+pub fn background<T: Send + Sync + 'static>(build: impl FnOnce() -> T + Send + 'static) -> Arc<Pending<T>> {
+    let pending = Pending::new(move || {
+        let _timer = timeline::setup::Stage::Pipelines.worker();
+        build()
+    });
+    COMPILER.submit(&pending, Priority::Draw);
+    pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gfx::pipeline::ShaderId;
+    use gfx::vertex::OwnedVertexBufferLayout;
+
+    const SOURCE: &str = "
+        @vertex fn vs_main(@location(0) p: vec4f) -> @builtin(position) vec4f { return p; }
+        @fragment fn fs_main() -> @location(0) vec4f { return vec4f(1.0); }";
+
+    fn program(device: &wgpu::Device) -> Pipelines {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None, source: wgpu::ShaderSource::Wgsl(SOURCE.into()),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None, bind_group_layouts: &[], immediate_size: 0,
+        });
+        Pipelines::new(device, SOURCE, ShaderProgram {
+            module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None,
+        }, "archive test")
+    }
+
+    #[test]
+    fn a_reloaded_shader_warms_the_exact_instanced_descriptor_from_disk() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let key = PipelineKey {
+            shader: ShaderId(73),
+            vertex_buffers: vec![OwnedVertexBufferLayout {
+                stride: 16, step_mode: wgpu::VertexStepMode::Instance,
+                attributes: wgpu::vertex_attr_array![0 => Float32x4].to_vec(),
+            }],
+            primitive: Default::default(), depth_stencil: None,
+            color_target: wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL,
+            },
+            samples: 1,
+        };
+        let original = program(&ctx.device);
+        assert!(original.request(&ctx.device, &key).get().is_some());
+        let mut recipe = key.clone();
+        recipe.shader = ShaderId(0);
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("h2-native-archive-{}-{stamp}", std::process::id()));
+        let (send, recv) = mpsc::channel();
+        send.send(Message::Record(original.0.id, recipe.clone())).unwrap();
+        drop(send);
+        run_archive(path.clone(), recv);
+        drop(original);
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(!file.contains("vs_main"));
+        assert!(file.contains("instance"));
+
+        let reloaded = program(&ctx.device);
+        let (send, recv) = mpsc::channel();
+        send.send(Message::Warm(Arc::downgrade(&reloaded.0))).unwrap();
+        drop(send);
+        run_archive(path.clone(), recv);
+        let warm = reloaded.0.entries.lock().unwrap()[&recipe].pipeline.clone();
+        let mut current = key;
+        current.shader = ShaderId(95);
+        assert!(Arc::ptr_eq(&warm, &reloaded.request(&ctx.device, &current)));
+        assert!(warm.get().is_some());
+        std::fs::remove_file(path).unwrap();
+    }
+}
