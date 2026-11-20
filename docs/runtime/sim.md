@@ -682,6 +682,37 @@ incremental RAM. With eight effective cores and 12 GiB available, start
 sizing from at most eight workers before allowing for headroom. Use
 `wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
 
+### Post-tick state hashes
+
+Each new sim report records `state_hashes_v1` in guest tick order. A row
+has the guest `tick` and a 16-digit hexadecimal `gameplay` digest. The
+digest covers the shared engine RNG, BSP, cinematic and stats flags, team
+scores, and each player slot's datum, score line, pose, aim, velocity,
+vitality, vehicle, seat, inventory and animation channel. The encoding
+uses fixed-width little-endian words, option presence tags, and the float
+bits from telemetry. Player names and wall time have no bearing on it.
+Repeat observations replace the same tick. Reloading a snapshot restarts
+the list with the tally. A failed snapshot leaves a gap. Older reports
+have no series.
+
+For a stricter comparison, `H2_FEATURES=impl.sim.arena-hash` adds an
+`arena` field to each row using the existing lockstep hash of the
+`0x3fe000`-byte checkpoint arena. It follows the pointer on every tick
+and reuses a read buffer. An unreadable arena leaves the field absent
+and adds a report note. Compare the tick sequence, check every expected
+digest is present, and find the first differing tick. The default digest
+can detect player or RNG divergence before the first kill, while the
+arena check also covers hidden state inside that allocation.
+`H2_LOCKSTEP` provides the wider whole-RAM check. Time matches with arena
+verification off so copying and hashing the arena does not enter the budget.
+
+The silent audio packet clock and the sim's reduced telemetry reads can
+be toggled separately with `-impl.audio.packet-clock` and
+`-impl.sim.metrics-projection` in `H2_FEATURES`. The post-bot-change
+Waterworks all-local run measured 14.12 ms/tick, with 70.76% of main-thread
+samples in guest code. The caller table, skip boundaries and A/B procedure
+are in the [simulation budget](../perf/sim-budget.md).
+
 ### Bot navigation performance
 
 On 2026-11-20, a five-minute all-local Lockout match took about 10 ms/tick.
