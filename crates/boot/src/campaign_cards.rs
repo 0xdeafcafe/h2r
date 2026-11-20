@@ -8,7 +8,7 @@
 //! own). A converted level's card is Halo 1's own picture (written at import
 //! as `<data>/campaigns/<key>/cards/<map>.png`, `h1convert::ui`).
 //!
-//! The cards go into mainmenu as new tags, in the VFS only
+//! The VFS serves mainmenu with the cards as new tags
 //! ([`CardRewrite`], a `vfs::Rewrite` like the button icons' font rewrite):
 //! the disc's map decomposed (`TagSet::from_map`, every tag where it was),
 //! the index given room for more (and the tag-memory bound, which retail
@@ -17,7 +17,8 @@
 //! `campaign0` ([`TEMPLATE`]; `tags::rgba_bitmap`), scaled to cover its
 //! 220x207, put in the template's frame ([`framed`]: retail's frame is in
 //! each picture's pixels, not drawn by the screen), and the map built
-//! again. The free slots' bitmaps are left alone.
+//! again. A host cache keeps the rewritten map and its table together across boots.
+//! The free slots' bitmaps are left alone.
 //! Each card's datum goes into a table the level lists read
 //! (`campaigns::extend`). The rebuilt map's checksum is the builder's; the
 //! cache copy's compare at `0x214616` (the header checksum's one reader,
@@ -25,13 +26,15 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufReader, Cursor};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use map::build::TagSet;
 use map::{FourCC, Map, TagId};
 use tags::rgba_bitmap::{self, Template};
+
+mod cache;
 
 /// The map the level select lives in, as the VFS names it.
 pub const MAINMENU: &str = "maps\\mainmenu.map";
@@ -188,7 +191,7 @@ pub struct Added {
 /// `mainmenu` with one new `bitm` per card, shaped like [`TEMPLATE`] and
 /// in its frame.
 pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<Added> {
-    let mut map = Map::from_reader(Cursor::new(mainmenu.to_vec()))?;
+    let mut map = Map::from_reader(Cursor::new(mainmenu))?;
     let template_id = map
         .tags()
         .iter()
@@ -238,12 +241,23 @@ pub fn add_cards(mainmenu: &[u8], cards: &[Card]) -> Result<Added> {
 pub struct CardRewrite {
     cards: Vec<Card>,
     table: Table,
+    cache: Option<PathBuf>,
 }
 
 impl CardRewrite {
     /// `None` without cards: mainmenu is served as it is.
     pub fn new(cards: Vec<Card>, table: Table) -> Option<Self> {
-        (!cards.is_empty()).then_some(Self { cards, table })
+        (!cards.is_empty()).then_some(Self {
+            cards,
+            table,
+            cache: None,
+        })
+    }
+
+    /// Keep one verified rewrite across boots, outside the mounted partitions.
+    pub fn with_cache(mut self, data_root: &Path) -> Self {
+        self.cache = Some(data_root.join("cache").join("campaign-cards"));
+        self
     }
 }
 
@@ -253,8 +267,26 @@ impl vfs::Rewrite for CardRewrite {
     }
     fn rewrite(&mut self, _path: &str, original: &[u8]) -> Option<Vec<u8>> {
         let started = std::time::Instant::now();
+        let key = self.cache.as_ref().map(|_| cache::key(original, &self.cards));
+        if let Some((path, key)) = self.cache.as_ref().zip(key)
+            && let Some(added) = cache::load(path, key)
+        {
+            eprintln!(
+                "campaigns: {} level pictures from cache ({} ms)",
+                added.table.len(),
+                started.elapsed().as_millis()
+            );
+            *self.table.lock().unwrap_or_else(|e| e.into_inner()) = added.table;
+            return Some(added.map);
+        }
         match add_cards(original, &self.cards) {
-            Ok(Added { map, table, framed }) => {
+            Ok(added) => {
+                if let Some((path, key)) = self.cache.as_ref().zip(key)
+                    && let Err(e) = cache::store(path, key, &added)
+                {
+                    eprintln!("campaigns: could not cache level pictures: {e}");
+                }
+                let Added { map, table, framed } = added;
                 eprintln!(
                     "campaigns: {} level pictures added to mainmenu{} ({} ms)",
                     table.len(),

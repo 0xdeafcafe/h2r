@@ -1209,6 +1209,7 @@ fn run_configured(
             campaign_cards::read_cards(&opts.data_root, &levels),
             s.cards.clone(),
         )
+        .map(|r| r.with_cache(&opts.data_root))
     });
     // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
     // the icon sets.

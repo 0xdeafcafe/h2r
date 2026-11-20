@@ -67,6 +67,14 @@ fn main() {
         analysis = analysis.wrapping_mul(0x100_0000_01b3);
     }
     println!("cargo:rustc-env=ANALYSIS_SOURCE_HASH={analysis:016x}");
+    // The card cache holds a built map and its tag IDs. Invalidate both
+    // whenever the rewrite or the encoder it calls changes.
+    let cards = hash(
+        &["../map/src", "../tags/src", "src/campaign_cards"],
+        &["rs"],
+        &["src/campaign_cards.rs", "../../Cargo.lock"],
+    );
+    println!("cargo:rustc-env=CAMPAIGN_CARDS_SOURCE_HASH={cards:016x}");
     let unread = hash(&["../analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
     let generator = hash(
