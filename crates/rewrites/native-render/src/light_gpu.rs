@@ -805,9 +805,11 @@ mod tests {
             z_scale: 1., w_clip: None,
         };
         let gel = texture(device, queue, &Image::solid([255; 4]), "test light gel");
+        let range = 0..3;
         let draw = LightDraw {
             program: &program, key: light_gpu_key(&program), cull: None, colours: [[0.; 3]; 2],
-            frame: &[0; FRAME_DWORDS], gel: None, gel_view: Some(&gel), gel_scale: None, ranges: &[0..3],
+            frame: &[0; FRAME_DWORDS], gel: None, gel_view: Some(&gel), gel_scale: None,
+            ranges: std::slice::from_ref(&range),
             model: None,
         };
         let pool = gfx::ring::UploadPool::default();
@@ -913,8 +915,9 @@ mod tests {
                 frame: &[0; FRAME_DWORDS], gel: None, gel_view: None, gel_scale: None, ranges, model: None,
             }
         }
-        let (once, twice): ([std::ops::Range<u32>; 1], [std::ops::Range<u32>; 2]) = ([0..3], [3..6, 0..3]);
-        let draws = [draw(&red, &once), draw(&blue, &twice)];
+        let once = 0..3;
+        let twice = [3..6, 0..3];
+        let draws = [draw(&red, std::slice::from_ref(&once)), draw(&blue, &twice)];
         let buffer = |usage, bytes: &[u8]| {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytes, usage })

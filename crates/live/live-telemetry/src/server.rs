@@ -315,6 +315,7 @@ impl ServerSink {
     }
 
     /// Starts and events not yet answered for.
+    #[cfg(test)]
     pub fn waiting_events(&self) -> usize {
         self.outbox.len()
     }

@@ -7,9 +7,7 @@
 //! image box-filtered down must be the reference's. Synthetic resources;
 //! the GPU tests skip without an adapter.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::hw::method as hw;
 use d3d::scaled::ScaledBackend;

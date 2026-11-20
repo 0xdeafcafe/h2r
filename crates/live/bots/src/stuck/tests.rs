@@ -213,7 +213,7 @@ fn penned_in_between_two_waypoints_gives_up_the_goal() {
         }
     }
     let t = repath_at.expect("it gave up");
-    assert!(t >= PEN_TICKS && t <= PEN_TICKS + 2, "{t}");
+    assert!((PEN_TICKS..=PEN_TICKS + 2).contains(&t), "{t}");
     assert!(s.blocked(GOAL, t), "the goal is blacklisted");
     assert!(s.blocked([0.8, 0.0, 0.0], t), "and the waypoint");
 }

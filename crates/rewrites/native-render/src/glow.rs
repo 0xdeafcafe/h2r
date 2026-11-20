@@ -612,7 +612,7 @@ impl QuadDrawer {
             entries: &entries,
         });
         let (vertices, ranges) = match strips {
-            None => (None, vec![0..4]),
+            None => (None, std::iter::once(0..4).collect()),
             Some(strips) => {
                 let bytes: &[u8] = bytemuck::cast_slice(&all);
                 let (buffer, offset) = uploads.stage(device, queue, bytes);

@@ -369,13 +369,7 @@ pub fn property_value(property: &AnimatedProperty, index: usize, time: Option<f6
     if function.is_raw_output() {
         return Ok(v);
     }
-    let v = if 0.0 > v {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    };
+    let v = v.clamp(0.0, 1.0);
     let [lo, hi] = function.range;
     Ok((hi - lo) * v + lo)
 }

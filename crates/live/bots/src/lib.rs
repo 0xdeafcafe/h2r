@@ -714,7 +714,6 @@ impl Brain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use input::host::HostButton;
     use pad_source::{Frame, PadSource};
 
     #[test]

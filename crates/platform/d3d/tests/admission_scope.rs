@@ -1,6 +1,6 @@
 //! Boundary drains must never consume a guest interrupt callback.
-mod common;
-use common::*;
+
+use crate::common::*;
 use d3d::pushbuf::method;
 use d3d::{GuestMemory, RecordingBackend, UploadPolicy};
 

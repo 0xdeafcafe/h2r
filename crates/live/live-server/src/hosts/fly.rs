@@ -454,7 +454,7 @@ pub fn alive_state(state: Option<&str>) -> Option<bool> {
     Some(match state? {
         "created" | "starting" | "started" | "replacing" => true,
         "stopping" | "stopped" | "exited" | "destroyed" | "deleting" | "suspended" => false,
-        other => return None,
+        _ => return None,
     })
 }
 
@@ -975,7 +975,7 @@ mod tests {
         assert_eq!(said, "not enough credits");
         assert_eq!(fly_message(br#"{"message":"slow down"}"#), "slow down");
         assert_eq!(fly_message(b"plain text"), "plain text");
-        let long: String = std::iter::repeat('x').take(400).collect();
+        let long = "x".repeat(400);
         assert_eq!(fly_message(long.as_bytes()).chars().count(), 240);
     }
 }

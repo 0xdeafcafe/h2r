@@ -5,9 +5,7 @@
 //! fixed-function textured quad. Every shader and texture is synthetic.
 //! Skips when no adapter is available.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::{Event, GfxBackend, GuestMemory, SparseMemory, UploadPolicy};
 use gfx::GfxContext;
 use gfx::surface::HostPixelOrder;

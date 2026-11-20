@@ -45,7 +45,7 @@ fn never_is_certain(vis: &Vis, walls: &Walls) -> usize {
     assert!(walls.vis().is_none(), "check against the bare walk");
     let top: V3 = std::array::from_fn(|k| vis.origin[k] + vis.size[k] * vis.dims[k] as f32);
     let mut r = Lcg(7);
-    let mut point = |r: &mut Lcg| -> V3 {
+    let point = |r: &mut Lcg| -> V3 {
         let snap = r.next() < 0.3;
         std::array::from_fn(|k| {
             let v = vis.origin[k] + (top[k] - vis.origin[k]) * r.next();

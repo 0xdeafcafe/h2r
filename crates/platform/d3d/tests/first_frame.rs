@@ -3,9 +3,7 @@
 //! words, as Halo's game code writes them), Swap, and the pixels that come
 //! out. Plus CPU-only tests of caching, invalidation and the stop paths.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::backend::Recorded;
 use d3d::{Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};

@@ -1,11 +1,9 @@
 //! Synthetic post calls over the real D3D device and push buffer.
 
-mod common;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use common::*;
+use crate::common::*;
 use d3d::{
     Backend, Device, ExternalPass, ExternalRefusal, ExternalTarget, GfxBackend, GuestMemory,
     Recorded, RecordingBackend, SparseMemory, Swallow, SwallowCall, SwallowPass, SwallowRefusal,

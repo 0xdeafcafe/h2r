@@ -117,11 +117,11 @@ For `h1objects` (27 files), `h1convert` (16), `engine` (16) and `d3d`
 (37 of 50), the integration test files now build into one executable
 named `it`. 96 executables become 4.
 
-- No test file moved. `tests/it.rs` names each file as a module with
-  `#[path = "name.rs"]`. A file loaded that way resolves its own
-  `mod common;` beside itself, exactly as it did as a crate root, so the
-  files needed no edits (one exception: `d3d/tests/draw_frame/mod.rs`
-  said `crate::common` and now says `super::common`).
+- Each test file stays in place. `tests/it.rs` names it as a module with
+  `#[path = "name.rs"]`. In `d3d`, this target loads
+  `tests/common/mod.rs` once as `crate::common`. Standalone test and
+  benchmark targets declare their own `common` module when they use
+  these helpers.
 - The crate sets `autotests = false`, so cargo no longer builds every
   file under `tests/` by itself. To keep a new file from silently never
   running, `it.rs` ends with a shared guard test

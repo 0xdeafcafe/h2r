@@ -7,6 +7,8 @@
 //! a `[[test]]` of its own in Cargo.toml when it must have a process to
 //! itself (the last test here fails until it has one or the other).
 
+mod common;
+
 #[path = "admission_scope.rs"]
 mod admission_scope;
 #[path = "batching.rs"]

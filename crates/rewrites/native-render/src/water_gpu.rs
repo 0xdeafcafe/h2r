@@ -21,7 +21,7 @@
 //! parts ([`crate::world::World::transparents`]): one item draws them in
 //! layer 15 and again in layer 6, and only layer 6 is taken here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 use crate::fog_gpu::{supplied_layer_passes, FogPass, FogProgram, FogWords};
 use crate::gpu::{Image, texture};
@@ -61,6 +61,8 @@ pub(crate) struct WaterItem {
 /// `items` as packets for the D3D pass already open on these attachments:
 /// the whole target as viewport and scissor, the world's program vertices
 /// and indices ([`crate::gpu::GpuWorld::water_draws`]).
+// wgpu compares and hashes pipelines by their stable handle identity.
+#[allow(clippy::mutable_key_type)]
 pub(crate) fn item_packets(
     items: &[WaterItem],
     cache: &mut HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,
@@ -382,13 +384,16 @@ impl WaterSet {
                 return Err("a selected water part draws nothing");
             }
             let m = self.materials.get(&material).ok_or("a selected water material did not bind")?;
-            let at = (material, lightmap);
-            if !groups.contains_key(&at) {
-                let views = self.groups_for(device, m, lightmap, copy, sampled)
-                    .ok_or("a water part's textures or supplied views did not bind")?;
-                groups.insert(at, views);
-            }
-            for ((g, state), textures) in m.passes.iter().zip(&groups[&at]) {
+            let views = match groups.entry((material, lightmap)) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let views = self
+                        .groups_for(device, m, lightmap, copy, sampled)
+                        .ok_or("a water part's textures or supplied views did not bind")?;
+                    entry.insert(views)
+                }
+            };
+            for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
                 let pipeline = g.pipelines.get(&(color_format, depth_format)).ok_or("a water pipeline is not made")?;
                 items.push(WaterItem {
                     key: described_pipeline(WATER_PROGRAM, color_format, depth_format, Some(state), None, stencil.clone()),
@@ -453,12 +458,16 @@ impl WaterSet {
         for key in selected {
             let Some(&(first_index, index_count, lightmap, material)) = self.parts.get(key) else { return 0 };
             let Some(m) = self.materials.get(&material) else { return 0 };
-            let key = (material, lightmap);
-            if !groups.contains_key(&key) {
-                let Some(views) = self.groups_for(device, m, lightmap, copy, sampled) else { return 0 };
-                groups.insert(key, views);
-            }
-            for ((g, state), textures) in m.passes.iter().zip(&groups[&key]) {
+            let views = match groups.entry((material, lightmap)) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let Some(views) = self.groups_for(device, m, lightmap, copy, sampled) else {
+                        return 0;
+                    };
+                    entry.insert(views)
+                }
+            };
+            for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
                 let Some(pipeline) = g.pipelines.get(&(color_format, depth_format)) else { return 0 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &g.uniforms, &[]);

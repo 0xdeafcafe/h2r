@@ -322,14 +322,18 @@ pub fn revision(parts: &[&[u8]]) -> String {
         .collect()
 }
 
-pub fn query_revision(query: Option<&str>) -> Result<Option<&str>, ()> {
+#[derive(Debug, thiserror::Error)]
+#[error("invalid emblem revision query")]
+pub struct InvalidRevisionQuery;
+
+pub fn query_revision(query: Option<&str>) -> Result<Option<&str>, InvalidRevisionQuery> {
     let Some(query) = query else {
         return Ok(None);
     };
     let version = query
         .strip_prefix("v=")
         .filter(|v| v.len() == 32 && lower_hex(v));
-    version.map(Some).ok_or(())
+    version.map(Some).ok_or(InvalidRevisionQuery)
 }
 
 pub fn redirect(path: &str, version: &str, cache_control: &str) -> Response {

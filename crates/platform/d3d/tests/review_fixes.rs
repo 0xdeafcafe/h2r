@@ -1,9 +1,7 @@
 //! Regression tests for the first independent review of the D3D HLE, one
 //! (or a few) per finding. The numbers refer to that review.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::{self, Regs};
 use d3d::pushbuf::{PushError, method};
 use d3d::resource::SurfaceHeader;
@@ -378,7 +376,7 @@ fn a_stage_palette_reads_back_its_entries() {
     p8_texture(&mut m);
     assert_eq!(d.stage_palette(&m, 2), None);
     m.write_u32(0x8000_0000 | PAL_DATA, 0xFF80_7F01).unwrap();
-    m.write_u32(0x8000_0000 | PAL_DATA + 4, 0x0102_0304).unwrap();
+    m.write_u32(0x8000_0000 | (PAL_DATA + 4), 0x0102_0304).unwrap();
     d.set_palette(&mut m, 2, PAL_A).unwrap();
     let p = d.stage_palette(&m, 2).unwrap();
     assert_eq!(p.len(), 256);

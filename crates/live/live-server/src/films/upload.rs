@@ -475,7 +475,7 @@ pub(crate) async fn upload_host_film(
     }
     let (mut slot, previous) = Slot::load(store, &id).await?;
     let previous = match previous {
-        Some(p) if &p.candidate().reservation != &*grant => {
+        Some(p) if p.candidate().reservation != *grant => {
             if matches!(request, Request::Part(0) | Request::Single) {
                 None
             } else {
