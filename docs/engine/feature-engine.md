@@ -702,7 +702,14 @@ the direct-call fast path (Code: `runtime/src/direct.rs`).
 **Switches.** Every feature has `features.<id>`; every subsystem entry
 has `impl.<subsystem>[.<entry>]`. Off means not in the plan. A feature
 marked `Toggle::Live` can also be switched while running (one atomic
-check per link).
+check per link). Every `impl.*` switch is a row of
+`feature::switches::table` (default, owner, age, removal); one not there
+does not parse ([guest-layout.md](guest-layout.md)).
+
+**Point shapes.** Each point expects a shape at its address (a function
+start, a call, a frame prologue; `engine::point_shapes`). Install checks
+it against the loaded image, and a point that is not what it says turns
+its features off with its name ([guest-layout.md](guest-layout.md)).
 
 **Version key.** `Plan::build` takes `&dyn ImageAddrs`: identity for the
 base image, the local address map for a title update. A point resolves
@@ -733,6 +740,9 @@ charged to the guest's access count (Doc: [e3-lighting.md](../graphics/e3-lighti
 
 **Views.** An address plus accessors; the layout is constants in one
 place with the evidence beside them, as `engine::render::lights` does.
+Shared game structures (objects, units, players, game globals) and the
+globals table are in `crates/guest-layout` ([guest-layout.md](guest-layout.md));
+`record!` takes their offsets by name.
 
 ```rust
 record! {
