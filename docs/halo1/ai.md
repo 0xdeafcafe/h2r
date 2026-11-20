@@ -511,6 +511,15 @@ engine tick rate. An AI can speak its own spree line. The player is a
 silent speaker whose nearby ally can give the dedicated response,
 as in the Halo 1 silent-response dispatch at `0x1472a9`.
 
+**Built.** Friendly injury reply rule 24 at `0x1eff38` selects
+the exact attacker from the victim's damage event. Its salted
+handle is associated with the accepted speech row until that
+utterance finishes or is replaced. Grenade, flame and vehicle
+kill responses use the original damage category. The silent
+player kill takes the nearby allied reply route directly. An AI
+with the generic kill remark can also draw the grenade response.
+As in Halo 1, an interrupted remark does not start a reply.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

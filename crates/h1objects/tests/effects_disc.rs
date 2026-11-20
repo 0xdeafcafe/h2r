@@ -868,6 +868,19 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
                 && u16_at(row, 6) == slot(response)
         }));
     }
+    for (category, offset) in [(3, 0x560), (7, 0x590), (9, 0x5b0)] {
+        assert!(responses.chunks_exact(0x24).any(|row| {
+            u16_at(row, 0) == slot(0x360)
+                && u16_at(row, 2) == category
+                && u16_at(row, 4) == 2
+                && u16_at(row, 6) == slot(offset)
+        }));
+    }
+    assert!(responses.chunks_exact(0x24).any(|row| {
+        u16_at(row, 0) == slot(0x1e0)
+            && u16_at(row, 4) == 3
+            && u16_at(row, 6) == slot(0x1f0)
+    }));
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [

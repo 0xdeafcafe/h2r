@@ -11,7 +11,7 @@ use super::{
 };
 
 const OBJECT_CAPACITY: u32 = 2048;
-const RECORD_SIZE: u32 = 16;
+const RECORD_SIZE: u32 = 28;
 const BYTES: u32 = OBJECT_CAPACITY * RECORD_SIZE;
 const AI_GLOBALS: u32 = 0x004f_55d0;
 const INJURY_FROM_DAMAGE: u32 = 0x000c_a517;
@@ -23,6 +23,11 @@ const INJURY_PRIORITY: u32 = 3;
 /// The next per-unit speech update consumes it using the current voice.
 #[derive(Clone, Copy)]
 pub(super) struct Queue(u32);
+
+pub(super) struct Scheduled {
+    pub(super) line: Line,
+    pub(super) other: u32,
+}
 
 impl Queue {
     fn record(self, unit: u32) -> Option<u32> {
@@ -48,18 +53,38 @@ impl Queue {
         priority: u32,
         due: u32,
     ) -> Result<(), MemFault> {
+        self.push_with_other(m, unit, offset, priority, due, NONE)
+    }
+
+    fn push_with_other(
+        self,
+        m: &mut dyn GuestMemory,
+        unit: u32,
+        offset: usize,
+        priority: u32,
+        due: u32,
+        other: u32,
+    ) -> Result<(), MemFault> {
         if let Some(record) = self.record(unit)
             && (m.u32(record)? != unit || m.u32(record + 8)? < priority)
         {
+            if m.u32(record)? != unit {
+                m.fill(record, RECORD_SIZE, 0)?;
+            }
             m.set_u32(record, unit)?;
             m.set_u32(record + 4, offset as u32)?;
             m.set_u32(record + 8, priority)?;
             m.set_u32(record + 12, due)?;
+            m.set_u32(record + 16, other)?;
         }
         Ok(())
     }
 
-    pub(super) fn take(self, m: &mut dyn GuestMemory, unit: u32) -> Result<Option<Line>, MemFault> {
+    pub(super) fn take(
+        self,
+        m: &mut dyn GuestMemory,
+        unit: u32,
+    ) -> Result<Option<Scheduled>, MemFault> {
         let Some(record) = self.record(unit) else {
             return Ok(None);
         };
@@ -77,11 +102,50 @@ impl Queue {
         let offset = m.u32(record + 4)? as usize;
         m.set_u32(record + 8, 0)?;
         let row = dialogue::source_offset_row(m, unit, offset)?;
-        Ok(row.map(|row| Line {
-            speaker: unit,
-            row,
-            priority,
+        let other = m.u32(record + 16)?;
+        Ok(row.map(|row| Scheduled {
+            line: Line {
+                speaker: unit,
+                row,
+                priority,
+            },
+            other,
         }))
+    }
+
+    pub(super) fn associate(
+        self,
+        m: &mut dyn GuestMemory,
+        line: Line,
+        other: u32,
+    ) -> Result<(), MemFault> {
+        if other != NONE
+            && let Some(record) = self.record(line.speaker)
+        {
+            if m.u32(record)? != line.speaker {
+                m.fill(record, RECORD_SIZE, 0)?;
+                m.set_u32(record, line.speaker)?;
+            }
+            m.set_u32(record + 20, line.row + 1)?;
+            m.set_u32(record + 24, other)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reply_to(
+        self,
+        m: &mut dyn GuestMemory,
+        unit: u32,
+        index: u16,
+    ) -> Result<u32, MemFault> {
+        let Some(record) = self.record(unit) else {
+            return Ok(NONE);
+        };
+        if m.u32(record)? != unit || m.u32(record + 20)? != u32::from(index) + 1 {
+            return Ok(NONE);
+        }
+        m.set_u32(record + 20, 0)?;
+        m.u32(record + 24)
     }
 }
 
@@ -157,7 +221,8 @@ fn injury(
         (None, None) => None,
     };
     if let Some((speaker, offset)) = candidate {
-        queue.push(m, speaker, offset, INJURY_PRIORITY)?;
+        let other = if offset == 0x1e0 { attacker } else { NONE };
+        queue.push_with_other(m, speaker, offset, INJURY_PRIORITY, 0, other)?;
     }
     Ok(())
 }
@@ -256,7 +321,7 @@ fn spree(
     m.set_u32(record + 8, if count >= threshold { 0 } else { count })?;
     if count >= threshold {
         if player {
-            replies::player_spree(m, queue, attacker, now, rate)?;
+            replies::player_spree(m, queue, attacker)?;
         } else {
             queue.push(m, attacker, map::H1_KILLING_SPREE_LINE, 4)?;
         }
@@ -293,6 +358,9 @@ fn kill(
         }
     } else {
         spree(m, queue, spree_records, attacker)?;
+        if cast::is_player(m, attacker)? && !cast::is_player(m, victim)? {
+            replies::player_kill(m, queue, attacker, category)?;
+        }
     }
     witness(m, queue, victim, attacker, allied)
 }
@@ -352,6 +420,20 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
             Ok(Flow::Continue)
         },
     );
+    b.raw().before(
+        &points::UNIT_DIALOGUE_SET_LINE,
+        "retire the previous Halo 1 reply context",
+        move |call| {
+            let unit = call.cpu.eax;
+            if let Some(record) = queue.record(unit) {
+                let mut m = call.ctx.memory();
+                if m.u32(record).map_err(guest_fault)? == unit {
+                    m.set_u32(record + 20, 0).map_err(guest_fault)?;
+                }
+            }
+            Ok(Flow::Continue)
+        },
+    );
     Ok(queue)
 }
 
@@ -372,7 +454,7 @@ mod tests {
         queue.push(&mut m, original, 0x210, 4).unwrap();
         queue.push(&mut m, original, 0x160, 3).unwrap();
         assert_eq!(m.u32(record + 4).unwrap(), 0x210);
-        assert_eq!(queue.take(&mut m, replacement).unwrap(), None);
+        assert!(queue.take(&mut m, replacement).unwrap().is_none());
         queue.push(&mut m, replacement, 0x160, 3).unwrap();
         assert_eq!(m.u32(record).unwrap(), replacement);
         assert_eq!(m.u32(record + 4).unwrap(), 0x160);

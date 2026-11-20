@@ -47,8 +47,8 @@ impl feature::Feature for Conversations {
         let pending = b.guest_alloc(voices::BOOTSTRAP_BYTES, Permissions::RW)?;
         leaders::install(b, pending);
         dialogue::install(b, pending);
-        automatic::install(b);
         let reactions = reactions::install(b)?;
+        automatic::install(b, reactions);
         search::install(b, reactions)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(

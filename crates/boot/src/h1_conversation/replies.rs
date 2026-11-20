@@ -82,34 +82,65 @@ fn responder(
     Ok(best)
 }
 
-pub(super) fn player_spree(
+fn queue_reply(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    speaker: u32,
+    reply: Reply,
+) -> Result<bool, MemFault> {
+    let clock = m.u32(points::GAME_TIME.base)?;
+    if clock == 0 || (reply.chance < 100 && cast::draw_voice(m, 100)? >= reply.chance) {
+        return Ok(false);
+    }
+    let delay = u32::from(m.u16(clock + 2)?).div_ceil(2);
+    let due = m.u32(clock + 8)?.wrapping_add(delay).max(1);
+    queue.push_at(m, speaker, reply.offset, reply.priority, due)?;
+    Ok(true)
+}
+
+fn silent_player_reply(
     m: &mut dyn GuestMemory,
     queue: Queue,
     player: u32,
-    now: u32,
-    rate: u32,
+    offset: usize,
+    chance: usize,
 ) -> Result<(), MemFault> {
     let Some(source) = cast::Unit::read(m, player)? else {
         return Ok(());
     };
-    // Halo 1 performs this reply directly when the player is the
-    // unspeaking participant in the multikill stimulus.
     let reply = Reply {
-        offset: map::H1_KILLING_SPREE_REPLY_LINE,
-        chance: 100,
+        offset,
+        chance,
         priority: 3,
         range: RECOGNITION_RANGE,
     };
     if let Some(speaker) = responder(m, player, source, reply)? {
-        queue.push_at(
-            m,
-            speaker,
-            reply.offset,
-            reply.priority,
-            now.wrapping_add(rate.div_ceil(2)).max(1),
-        )?;
+        queue_reply(m, queue, speaker, reply)?;
     }
     Ok(())
+}
+
+pub(super) fn player_spree(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    player: u32,
+) -> Result<(), MemFault> {
+    silent_player_reply(m, queue, player, map::H1_KILLING_SPREE_REPLY_LINE, 100)
+}
+
+pub(super) fn player_kill(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    player: u32,
+    category: u16,
+) -> Result<(), MemFault> {
+    let (offset, chance) = match category {
+        3 => (0x560, 90),
+        7 => (0x590, 90),
+        9 => (0x5b0, 80),
+        _ => return Ok(()),
+    };
+    silent_player_reply(m, queue, player, offset, chance)
 }
 
 pub(super) fn on_speech_tick(
@@ -130,24 +161,48 @@ pub(super) fn on_speech_tick(
         return Ok(());
     }
     let index = m.u16(speech + 0xe)?;
-    let Some(reply) = dialogue::offset_at_row(m, m.u32(speech)?, index)?.and_then(Reply::after)
-    else {
+    let Some(offset) = dialogue::offset_at_row(m, m.u32(speech)?, index)? else {
         return Ok(());
     };
-    let clock = m.u32(points::GAME_TIME.base)?;
-    if clock == 0 || !reactions::ai_vocalizes(m)? {
+    if !reactions::ai_vocalizes(m)? {
         return Ok(());
     }
+    if offset == 0x1e0 {
+        let attacker = queue.reply_to(m, unit, index)?;
+        if cast::Unit::read(m, attacker)?.is_some()
+            && !cast::is_player(m, attacker)?
+            && dialogue::source_offset_row(m, attacker, 0x1f0)?.is_some()
+        {
+            let reply = Reply {
+                offset: 0x1f0,
+                chance: 70,
+                priority: 3,
+                range: 0.0,
+            };
+            queue_reply(m, queue, attacker, reply)?;
+        }
+        return Ok(());
+    }
+    let Some(reply) = Reply::after(offset) else {
+        return Ok(());
+    };
     let Some(source) = cast::Unit::read(m, unit)? else {
         return Ok(());
     };
-    let Some(speaker) = responder(m, unit, source, reply)? else {
-        return Ok(());
-    };
-    if reply.chance == 100 || cast::draw_voice(m, 100)? < reply.chance {
-        let delay = u32::from(m.u16(clock + 2)?).div_ceil(2);
-        let due = m.u32(clock + 8)?.wrapping_add(delay).max(1);
-        queue.push_at(m, speaker, reply.offset, reply.priority, due)?;
+    if offset == 0x360 && queue.reply_to(m, unit, index)? == 3 {
+        let grenade = Reply {
+            offset: 0x560,
+            chance: 50,
+            ..reply
+        };
+        if let Some(speaker) = responder(m, unit, source, grenade)?
+            && queue_reply(m, queue, speaker, grenade)?
+        {
+            return Ok(());
+        }
+    }
+    if let Some(speaker) = responder(m, unit, source, reply)? {
+        queue_reply(m, queue, speaker, reply)?;
     }
     Ok(())
 }

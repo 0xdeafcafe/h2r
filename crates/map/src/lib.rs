@@ -166,8 +166,13 @@ pub const fn h1_friendly_kill_line(offset: usize) -> bool {
 
 /// Nearby allies respond after one of these source utterances finishes.
 pub const fn h1_allied_reply_line(offset: usize) -> bool {
-    matches!(offset, 0x190 | 0x330 | 0x350 | 0x370 | 0x390 | 0x3b0 | 0x3d0 | 0x3f0 | 0x410)
+    matches!(
+        offset,
+        0x190 | 0x1f0 | 0x330 | 0x350 | 0x370 | 0x390 | 0x3b0 | 0x3d0 | 0x3f0 | 0x410
+            | 0x560 | 0x590 | 0x5b0
+    )
 }
+
 /// Ally-witness remarks, after the engine reports a unit's death.
 pub const fn h1_kill_witness_line(offset: usize) -> bool {
     matches!(offset, 0x630 | 0x640 | 0x650 | 0x660 | 0x670 | 0x680 | 0x690)

@@ -9,7 +9,7 @@ use super::{
     cast,
     dialogue::{self, Line},
     leaders::guest_fault,
-    reactions::Queue,
+    reactions::{Queue, Scheduled},
     replies, visibility, *,
 };
 
@@ -221,10 +221,12 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildErro
                 replies::on_speech_tick(m, reactions, saved.eax).map_err(guest_fault)?;
                 match reactions.take(m, saved.eax).map_err(guest_fault)? {
                     Some(line) => Some(line),
-                    None => tick(m, records, saved.eax).map_err(guest_fault)?,
+                    None => tick(m, records, saved.eax)
+                        .map_err(guest_fault)?
+                        .map(|line| Scheduled { line, other: NONE }),
                 }
             };
-            let Some(line) = scheduled else {
+            let Some(Scheduled { line, other }) = scheduled else {
                 return Ok(Flow::Continue);
             };
             let addr = call.addr;
@@ -245,6 +247,11 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildErro
                     UNIT_SPEAK,
                     "halo 1 automatic speech",
                     move |cpu, ctx| {
+                        if cpu.eax as u8 != 0 {
+                            reactions
+                                .associate(&mut *ctx.memory(), line, other)
+                                .map_err(guest_fault)?;
+                        }
                         *cpu = saved;
                         Ok(original.invoke(cpu, ctx, addr))
                     },

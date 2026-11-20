@@ -6,6 +6,7 @@ use super::{
     cast,
     dialogue::{self, Line},
     leaders::guest_fault,
+    reactions::Queue,
     *,
 };
 
@@ -95,6 +96,9 @@ fn kill_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault> 
             row = row_for(offset)?;
         }
     }
+    if row.is_none() && vocalization == 248 && row_for(0x460)?.is_none() {
+        row = row_for(0x360)?;
+    }
     let Some(row) = row else { return Ok(None) };
     let adlg = m.u32(stack + 4)?;
     let vocabulary = m.u32(adlg + 4)?;
@@ -125,7 +129,7 @@ fn flying_death(m: &dyn GuestMemory, stack: u32, unit: u32) -> Result<Option<u32
     Ok(None)
 }
 
-pub(super) fn install(b: &mut Builder) {
+pub(super) fn install(b: &mut Builder, reactions: Queue) {
     b.raw().before(
         &points::UNIT_DIALOGUE_CHECK,
         "resolve the Halo 1 flying-death line for the victim",
@@ -143,17 +147,22 @@ pub(super) fn install(b: &mut Builder) {
     b.raw().before(
         &points::AI_DIALOGUE_ENQUEUE,
         "queue the Halo 1 weapon or victim-specific kill line",
-        |call| {
+        move |call| {
             let stack = call.cpu.esp;
-            let line = kill_line(&*call.ctx.runtime().memory(), stack).map_err(guest_fault)?;
-            let Some(Line {
+            let (line, grenade_fallback) = {
+                let m = call.ctx.runtime().memory();
+                let Some(line) = kill_line(&*m, stack).map_err(guest_fault)? else {
+                    return Ok(Flow::Continue);
+                };
+                let generic =
+                    dialogue::source_offset_row(&*m, line.speaker, 0x360).map_err(guest_fault)?;
+                (line, generic == Some(line.row))
+            };
+            let Line {
                 speaker,
                 row,
                 priority,
-            }) = line
-            else {
-                return Ok(Flow::Continue);
-            };
+            } = line;
             call.answer_async(move |cx| {
                 Box::pin(async move {
                     let queued = cx.arg(6)?;
@@ -167,6 +176,9 @@ pub(super) fn install(b: &mut Builder) {
                                 .args([speaker, priority, 0]),
                         )
                         .await?;
+                    if grenade_fallback && result.eax as u8 != 0 {
+                        cx.write(|m| reactions.associate(m, line, 3))?;
+                    }
                     Ok(Ret::new(result.eax & 0xff, 28))
                 })
             })
