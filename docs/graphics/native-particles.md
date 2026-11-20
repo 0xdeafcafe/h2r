@@ -151,8 +151,8 @@ cargo test -p native-render --no-default-features --lib effect_geometry::
 cargo test -p native-render --test particles_gpu
 cargo test -p feature --test native_particles
 cargo test -p boot native_particles
-cargo test -p d3d --test admission_scope
-cargo test -p d3d --test external_pass
+cargo test -p d3d --test it admission_scope::
+cargo test -p d3d --test it external_pass::
 ```
 
 The GPU test uses invented microcode/geometry, draws two distinguishable

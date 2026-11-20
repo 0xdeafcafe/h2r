@@ -4,6 +4,8 @@ description = "Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Hal
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [features]
 default = ["gpu"]
@@ -83,3 +85,59 @@ harness = false
 [[bench]]
 name = "draw_main"
 harness = false
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "alias_mirror"
+path = "tests/alias_mirror.rs"
+
+[[test]]
+name = "draw_bench"
+path = "tests/draw_bench.rs"
+
+[[test]]
+name = "draw_churn"
+path = "tests/draw_churn.rs"
+
+[[test]]
+name = "gpu_depth_alias"
+path = "tests/gpu_depth_alias.rs"
+
+[[test]]
+name = "hot_overrides"
+path = "tests/hot_overrides.rs"
+
+[[test]]
+name = "pipeline_cache"
+path = "tests/pipeline_cache.rs"
+
+[[test]]
+name = "pipeline_cost"
+path = "tests/pipeline_cost.rs"
+
+[[test]]
+name = "render_churn"
+path = "tests/render_churn.rs"
+
+[[test]]
+name = "shader_corpus"
+path = "tests/shader_corpus.rs"
+
+[[test]]
+name = "threaded"
+path = "tests/threaded.rs"
+
+[[test]]
+name = "threaded_frame_stats"
+path = "tests/threaded_frame_stats.rs"
+
+[[test]]
+name = "vblank_clock"
+path = "tests/vblank_clock.rs"
+
+[[test]]
+name = "visibility_async"
+path = "tests/visibility_async.rs"

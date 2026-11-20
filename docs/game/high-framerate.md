@@ -985,7 +985,7 @@ part instead (section 8).
 perspective split and rebuild, camera blending, cuts, pacing: 60 shows two
 frames per tick, a catch-up frame blends over its longer gap, a gap holds
 the newest frame, a late frame holds at 1, settings map to rates) and
-`cargo test -p d3d --test interp` (synthetic frames through the recording
+`cargo test -p d3d --test it interp::` (synthetic frames through the recording
 backend):
 
 - in-between frames at alpha 0 (frame N's draws with frame N-1's camera
@@ -1015,7 +1015,7 @@ background) are shown as drawn in D and both E1 variants; E1 holds world
 draws in screen space or in a sub-viewport; a made frame of another host
 size is not shown; slots are dropped while the GPU is busy; a sampled
 render target replays from its snapshot, and a copied-in surface holds.
-`cargo test -p d3d --test interp_gpu` runs D and E1 on the GPU through
+`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through
 `ScaledBackend` at 2x and 3x: every presented frame is the guest's size
 at that scale, D's made frames have the guest's pixels exactly and E1's
 (a still camera) agree within filtering on over 98% of pixels.
@@ -1352,7 +1352,7 @@ one are read, screen-space lookups from the clip position are allowed,
 pass-throughs, missing divides, a scale read or a window position read
 elsewhere, a second clip `w` and a relative read below the scale are not,
 and through the shader interpreter the overscan moves the position about
-the centre and leaves the rest alone. `cargo test -p d3d --test interp`
+the centre and leaves the rest alone. `cargo test -p d3d --test it interp::`
 adds, through the recording backend (the test draws run a real program
 with Halo 2's epilogue, `c[10]`/`c[11]`):
 
@@ -1398,7 +1398,7 @@ with Halo 2's epilogue, `c[10]`/`c[11]`):
   position moves in by the overscan about the centre;
 - the held counters name the guard.
 
-`cargo test -p d3d --test interp_gpu` draws E1 through the XDK's own
+`cargo test -p d3d --test it interp_gpu::` draws E1 through the XDK's own
 epilogue (`c-38`/`c-37`), and on one plain `GfxBackend` as a headless run
 has it: the in-between frame goes to the replay hook (flags 0), never the
 present hook, and is the guest's picture within filtering with the camera
@@ -1422,7 +1422,7 @@ frame in 3,000 guest frames writes its two neighbours and no more (the
 live bug), and that N slots write at most N in-between and 2N guest
 frames.
 
-`cargo test -p d3d --test interp` `the_hold_log_names_every_draw_that_held_a_frame`
+`cargo test -p d3d --test it interp::` `the_hold_log_names_every_draw_that_held_a_frame`
 and `the_hold_log_says_off_centre_and_after_the_overlay`: on a frame with
 a shadow pass first, a full-target pass-through quad and an orthographic
 quad among the level's draws, the log has both kinds (the quad first in
@@ -1432,7 +1432,7 @@ target; an off-centre perspective and a level draw after the weapon are
 named; a frame with no camera is not logged. `cargo test -p boot --test
 headless_interp` checks `interp.holds` is in `render.stats`.
 
-`cargo test -p d3d --test interp`
+`cargo test -p d3d --test it interp::`
 `screen_space_sprites_and_layers_in_the_world_turn_with_it`: a level with a
 sprite, a full-target layer that only moves its inputs and one with a
 texture matrix blends; the guest's own draws are untouched, the world

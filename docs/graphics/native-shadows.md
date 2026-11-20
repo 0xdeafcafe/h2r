@@ -67,7 +67,7 @@ cargo test -p native-render --lib shadows::tests
 cargo test -p native-render --test shadow_gpu -- --nocapture
 cargo test -p boot --lib native_shadows -- --nocapture
 cargo test -p shaders --test shadow
-cargo test -p d3d --test external_pass --test depth_textures --test render_scale
+cargo test -p d3d --test it -- external_pass:: depth_textures:: render_scale::
 cargo test -p feature --test native_shadows --test plan
 H2_XBE="$PWD/disc/default.xbe" cargo test -p engine --features differential --test it -- layer_differential:: shadow_constants_differential:: --nocapture
 ```
