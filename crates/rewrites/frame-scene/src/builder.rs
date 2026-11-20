@@ -524,7 +524,14 @@ mod tests {
     #[test]
     fn a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own() {
         use crate::layer::{LayerItem, LayerOwner, LayerPass};
-        let pass = |layer| LayerPass { layer, stencil_off: false, texaccum: layer == 1, items: 0..0, remainder: 0 };
+        let pass = |layer| LayerPass {
+            layer,
+            stencil_off: false,
+            texaccum: layer == 1,
+            items: 0..0,
+            remainder: 0,
+            inputs: Default::default(),
+        };
         let entry = |slot, owner| LayerItem { slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());

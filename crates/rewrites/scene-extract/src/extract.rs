@@ -14,6 +14,7 @@ use frame_scene::{
 use crate::GuestRead;
 use crate::layout::aux_depth;
 use crate::layout::camera::{self, RENDER_CAMERA};
+use crate::layout::layer_inputs;
 use crate::layout::object_nodes::{RECORD_KEY, texaccum_bound};
 use crate::layout::object_walk::Entry;
 use crate::layout::objects::{RECORD_MODEL, RecordOwner, item_key, read_object, record_owner, record_rows};
@@ -84,8 +85,9 @@ pub struct Layer {
 /// The current list's `layer` items into a new layer draw of the open
 /// view, in the list's order: each geometry item with its key, owner and
 /// model; an object's with its palette rows ([`record_rows`]) and, with
-/// `lighting`, its owner's lighting. `Ok(None)`, nothing written, when
-/// the list does not read.
+/// `lighting`, its owner's lighting. The draw takes the material inputs
+/// that hold at its begin ([`layer_inputs::read`]). `Ok(None)`, nothing
+/// written, when the list does not read.
 pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut SceneBuilder) -> Result<Option<Layer>, BuildError> {
     let Some((items, first, end)) = current_list(mem) else {
         return Ok(None);
@@ -99,6 +101,7 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
         texaccum: texaccum_bound(mem),
         items: 0..0,
         remainder: 0,
+        inputs: layer_inputs::read(mem),
     })?;
     let bit = 1u32 << layer;
     let mut out = Layer::default();
@@ -525,6 +528,7 @@ mod tests {
         let passes = s.layers_of(v);
         assert_eq!(passes.len(), 2);
         assert_eq!((passes[0].layer, passes[0].remainder), (7, 1));
+        assert_eq!(passes[0].inputs, crate::layout::layer_inputs::read(&m), "the draw's material inputs");
         let items = s.items_of(&passes[0]);
         assert_eq!(items.iter().map(|i| i.slot).collect::<Vec<_>>(), [1, 2, 3]);
         assert_eq!(items[0].owner, LayerOwner::Cluster(5));

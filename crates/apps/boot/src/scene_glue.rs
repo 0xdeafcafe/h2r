@@ -179,7 +179,7 @@ mod tests {
         };
         b.push_light(light(1, 4), &[step(11), step(12)]).unwrap();
         b.push_light(light(2, 0), &[step(12)]).unwrap();
-        b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0 }).unwrap();
+        b.push_layer(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0, inputs: Default::default() }).unwrap();
         let world = LayerItem { slot: 0, key, owner: LayerOwner::Cluster(3), model: u32::MAX, rows: 0..0, lighting: None };
         b.push_layer_item(world.clone(), &[]).unwrap();
         b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();

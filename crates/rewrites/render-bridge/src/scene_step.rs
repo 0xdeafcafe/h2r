@@ -156,7 +156,10 @@ fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
     }
     let m = Ro(mem);
     let Ok(layer) = u8::try_from(layer) else { return };
-    with_step(|step| match extract::layer(&m, layer, kind == ViewKind::FirstPerson, &mut step.builder) {
+    // Every object item takes its owner's lighting: the layer stage's
+    // lighting inputs read it, and the lightmap cycle reaches the draw
+    // only through it (`frame_scene::LayerInputs`).
+    with_step(|step| match extract::layer(&m, layer, true, &mut step.builder) {
         Ok(Some(got)) => {
             LAYERS.fetch_add(1, Ordering::Relaxed);
             LAYER_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);

@@ -5,7 +5,8 @@
 //! instances (key, definition, model, nodes, sphere, lighting, defaults),
 //! parts (slot, key, layer, flags, subparts, rows), lights (handle,
 //! definition, flags, additional casters, steps) and layer draws (layer,
-//! flags, remainder, items with their owner, model, rows and lighting).
+//! flags, remainder, material inputs, items with their owner, model, rows
+//! and lighting).
 //! Floats by their
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
@@ -142,6 +143,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             h.word(u32::from(p.stencil_off));
             h.word(u32::from(p.texaccum));
             h.word(p.remainder);
+            inputs(&mut h, &p.inputs);
             let items = scene.items_of(p);
             h.word(items.len() as u32);
             for i in items {
@@ -192,6 +194,43 @@ fn lighting(h: &mut Fnv, l: Option<&Lighting>) {
         }
         None => h.word(0),
     }
+}
+
+/// A layer draw's material inputs: the time's bits, then each given
+/// input after its mask.
+fn inputs(h: &mut Fnv, i: &crate::layer::LayerInputs) {
+    match i.time {
+        Some(t) => {
+            let bits = t.to_bits();
+            h.word(1);
+            h.word(bits as u32);
+            h.word((bits >> 32) as u32);
+        }
+        None => h.word(0),
+    }
+    for mask in [i.scalars_given, i.vectors_given] {
+        h.word(mask as u32);
+        h.word((mask >> 32) as u32);
+    }
+    for (n, &w) in i.scalars.iter().enumerate() {
+        if i.scalars_given >> n & 1 != 0 {
+            h.word(w);
+        }
+    }
+    for (n, v) in i.vectors.iter().enumerate() {
+        if i.vectors_given >> n & 1 != 0 {
+            for &w in v {
+                h.word(w);
+            }
+        }
+    }
+    h.word(u32::from(i.ints_given));
+    for (n, &w) in i.ints.iter().enumerate() {
+        if i.ints_given >> n & 1 != 0 {
+            h.word(w);
+        }
+    }
+    defaults(h, i.defaults.as_ref());
 }
 
 fn defaults(h: &mut Fnv, d: Option<&Defaults>) {
@@ -258,5 +297,24 @@ mod tests {
         };
         assert_ne!(with(Some(0)), summary_hash(&scene(1, 0.0)), "a light");
         assert_ne!(with(Some(0)), with(None), "its stencil change");
+    }
+
+    #[test]
+    fn a_layer_draws_material_inputs_count_in_the_hash() {
+        use crate::layer::{LayerInputs, LayerPass};
+        let with = |inputs: LayerInputs| {
+            let mut s = (*scene(1, 0.0)).clone();
+            s.layer_passes.push(LayerPass { layer: 5, stencil_off: false, texaccum: false, items: 0..0, remainder: 0, inputs });
+            s.views[0].layers = 0..1;
+            summary_hash(&s)
+        };
+        let none = with(LayerInputs::default());
+        assert_ne!(with(LayerInputs { time: Some(1.5), ..LayerInputs::default() }), none, "the render time");
+        let mut given = LayerInputs::default();
+        given.set_scalar(12, 1.0f32.to_bits());
+        assert_ne!(with(given), none, "a given scalar");
+        let mut hidden = LayerInputs::default();
+        hidden.scalars[12] = 1.0f32.to_bits();
+        assert_eq!(with(hidden), none, "a word not given does not count");
     }
 }
