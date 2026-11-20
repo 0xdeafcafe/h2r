@@ -1,7 +1,7 @@
 # Expanded settings menu
 
 Status: Built. Our settings are native game screens (a Video screen, extra Controls rows, Video Settings and Voice Settings rows on both pause menus, a Voice Chat row on Edit Profile), driven by a schema of `settings::Def`s. Per-player mute is not built (see "Per-player mute").
-Code: `crates/apps/boot/src/video_screen.rs`, `crates/apps/boot/src/pause_menu.rs`, `crates/apps/boot/src/voice_settings.rs`, `crates/apps/boot/src/profile_voice_row.rs`, `crates/apps/boot/src/fov_row.rs`, `crates/apps/boot/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
+Code: `crates/extensions/game/src/video_screen.rs`, `crates/extensions/game/src/pause_menu.rs`, `crates/extensions/game/src/voice_settings.rs`, `crates/extensions/game/src/profile_voice_row.rs`, `crates/extensions/game/src/fov_row.rs`, `crates/extensions/game/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
 Switch: one variable per setting, in `setting_defs.rs` and listed in [switches.md](../runtime/switches.md).
 
 The screens are the game's own list class with our rows, so they look native and

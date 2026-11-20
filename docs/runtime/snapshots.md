@@ -5,13 +5,13 @@ the game ("Not verified").
 Code: `crates/runtime/snapshot` (container, RAM page codec, store, guest sections),
 `crates/runtime/runtime` (`Guest::layout`, `restore_with`, continuations),
 `crates/runtime/kernel/src/snapshot.rs`, `quiesce.rs`, `crates/hooking/hooks/src/snapshot.rs`,
-`crates/apps/boot/src/snapshot_glue.rs`, `snapshot_probe.rs`,
+`crates/extensions/game/src/snapshot_glue.rs`, `snapshot_probe.rs`,
 `crates/extensions/agent/src/exec/snap.rs`, `crates/extensions/agent-proto/src/state.rs`.
 Tests: `crates/runtime/snapshot/tests/machine.rs`, `crates/runtime/kernel/tests/snapshot.rs`,
 `crates/runtime/kernel/tests/quiesce.rs`, `crates/platform/d3d/tests/snapshot.rs`,
 `crates/platform/audio/tests/snapshot.rs`, `crates/platform/dsound/tests/snapshot.rs`,
 `crates/platform/xapi/tests/snapshot.rs`, `crates/extensions/agent/src/exec/snap/tests.rs`,
-`crates/apps/boot/src/snapshot_glue/tests.rs`.
+`crates/extensions/game/src/snapshot_glue/tests.rs`.
 Switch: `H2_SNAPSHOTS` (store root), `H2_SNAPSHOT_PROBE` (off), listed in
 [switches.md](switches.md).
 
@@ -504,9 +504,9 @@ and `write_surface` if the first frame after a load matters to
 ## Wiring: `state.*`
 
 Code: `crates/extensions/agent-proto/src/state.rs`, `crates/extensions/agent/src/exec/snap.rs`,
-`crates/apps/boot/src/snapshot_glue.rs`. Tests: `crates/extensions/agent/src/exec/snap/tests.rs`
+`crates/extensions/game/src/snapshot_glue.rs`. Tests: `crates/extensions/agent/src/exec/snap/tests.rs`
 (a save waits for a tick; retries per tick then `BUSY`; load, fork, drop;
-name checks; a paused game; exit) and `crates/apps/boot/src/snapshot_glue/tests.rs`
+name checks; a paused game; exit) and `crates/extensions/game/src/snapshot_glue/tests.rs`
 (through the agent over fake parts: save and load orders, the file in the
 store and its header, a RAM hash mismatch naming the MiB, blockers by owner,
 a blocker that appears during the save, the build key).
@@ -551,7 +551,7 @@ a blocker that appears during the save, the build key).
 
 ## Quiescence probe
 
-Code: `crates/runtime/kernel/src/quiesce.rs`, `crates/apps/boot/src/snapshot_probe.rs`;
+Code: `crates/runtime/kernel/src/quiesce.rs`, `crates/extensions/game/src/snapshot_probe.rs`;
 tests: `crates/runtime/kernel/src/quiesce.rs` and `crates/runtime/kernel/tests/quiesce.rs`,
 the latter over guests that really run (threads waiting in the kernel are
 quiescent; a thread blocked inside an override's guest callback is a blocker

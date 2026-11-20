@@ -104,7 +104,7 @@ The other build scripts were read and left alone:
 
 - `crates/runtime/recomp/build.rs` names every file it hashes. It also hashes
   `Cargo.lock`, so any dependency change in any crate recompiles `recomp`.
-  `crates/apps/boot/build.rs` hashes only the campaign cards' sources, and
+  `crates/extensions/game/build.rs` hashes only the campaign cards' sources, and
   `Cargo.lock` too, so `boot` still recompiles on a dependency change.
 - `crates/apps/app/build.rs` bakes the commit and build time and reruns when
   `HEAD` moves. That is correct, and costs a rebuild of `app` and `cli`

@@ -42,7 +42,7 @@ pub const UNIT_WEAPON_INDEX: u32 = 0x212;
 pub const UNIT_WEAPONS: u32 = 0x218;
 pub const UNIT_WEAPON_SLOTS: u32 = 4;
 /// Unit `+0x213`: the left-hand weapon's slot when dual wielding (`i8`,
-/// -1 for none; docs/live/live-gamestate.md, `crates/apps/boot/src/touch_glue.rs`,
+/// -1 for none; docs/live/live-gamestate.md, `crates/extensions/game/src/touch_glue.rs`,
 /// `0x186bd4`).
 pub const UNIT_LEFT_WEAPON_INDEX: u32 = 0x213;
 /// Unit `+0x23c`: the grenade type selected (`i8`, an index into

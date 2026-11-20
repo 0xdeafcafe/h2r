@@ -22,8 +22,8 @@ The code:
 | macOS IOKit host | `crates/platform/input/src/steam_pad_iokit.rs` |
 | Mouse-look motion shared with the keyboard backend | `crates/platform/input/src/look.rs` |
 | Platform pads and Steam pads as one backend | `crates/platform/input/src/backend/multi.rs` |
-| The speaker sink | `crates/apps/boot/src/steam_speaker.rs` |
-| Settings | `crates/apps/boot/src/setting_defs.rs` (`steam_pad.*`) |
+| The speaker sink | `crates/extensions/game/src/steam_speaker.rs` |
+| Settings | `crates/extensions/game/src/setting_defs.rs` (`steam_pad.*`) |
 
 ## Sources
 

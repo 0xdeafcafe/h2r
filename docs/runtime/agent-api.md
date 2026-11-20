@@ -1,7 +1,7 @@
 # Agent API: driving the running game without pixels
 
 Status: Built. Every method below is registered by the code; the ones no run has exercised are named under "Not verified".
-Code: `crates/extensions/agent-proto` (wire types, blocking client), `crates/extensions/agent` (server, tick-boundary executor, most methods), `crates/apps/boot/src/agent_glue.rs` (the methods the host answers), `crates/apps/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/extensions/agent/src/exec/tests.rs`, `crates/extensions/agent/src/sim/tests.rs`, `crates/extensions/agent/src/trace/tests.rs`, `crates/apps/boot/tests/feature_plan.rs`.
+Code: `crates/extensions/agent-proto` (wire types, blocking client), `crates/extensions/agent` (server, tick-boundary executor, most methods), `crates/extensions/game/src/agent_glue.rs` (the methods the host answers), `crates/apps/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/extensions/agent/src/exec/tests.rs`, `crates/extensions/agent/src/sim/tests.rs`, `crates/extensions/agent/src/trace/tests.rs`, `crates/apps/boot/tests/feature_plan.rs`.
 Switch: `agent` feature (`H2_FEATURES=-agent` removes the tick hooks), `H2_AGENT` (the socket), listed in [switches.md](switches.md).
 
 An agent, a script or a test reads and drives a running Halo 2 through one
@@ -637,7 +637,7 @@ H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
 ### `render.coop_look`
 
 A read-only host method registered with the Live co-op prediction
-feature (`crates/apps/boot/src/coop_look.rs`). With no parameters it returns
+feature (`crates/extensions/game/src/coop_look.rs`). With no parameters it returns
 the most recent 256 rendered local views, oldest first; `{"after":123}`
 returns samples newer than that cursor. `latest` is the most recent
 sample number, initially zero; a gap in sample numbers means the reader
@@ -884,7 +884,7 @@ The newest host perf line (`boot::host_perf`): `{line, age_ms}`;
 `h2 agent hostmetrics`; no parameters. It reports the latest complete
 window of 30 intervals between returns from `GAME_TICK` (`0x00137fe0`).
 The first reading is available after 31 tick returns; until then it
-answers `UNAVAILABLE` ([`crates/apps/boot/src/host_metrics.rs`](../../crates/apps/boot/src/host_metrics.rs)).
+answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crates/extensions/game/src/host_metrics.rs)).
 
 | Field | Meaning |
 |---|---|
@@ -905,7 +905,7 @@ sustained.
 ### `host.audit`
 
 Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
-method (`crates/apps/boot/src/host_audit.rs`). `h2 agent hostaudit` takes no
+method (`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
 parameters. It writes a snapshot to the configured path and returns the
 path, ticks, observed and registered function counts, tag range count and
 inclusive CPU timing. An orderly exit writes the final snapshot; call the
@@ -916,7 +916,7 @@ Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
 ### `host.lobby`
 
 A System Link light host started with `H2_HOST_LOBBY=1` registers these
-four game methods (`crates/apps/boot/src/host_lobby.rs`, types
+four game methods (`crates/extensions/game/src/host_lobby.rs`, types
 `crates/extensions/agent-proto/src/host_lobby.rs`). Each result also carries `at`.
 
 | Method | Parameters | Result |
@@ -965,7 +965,7 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI
-  watch (`crates/apps/boot/src/campaign_menu.rs`). With no installed Halo 1
+  watch (`crates/extensions/game/src/campaign_menu.rs`). With no installed Halo 1
   campaign it returns `{"installed":false}`. With one it reports `page`
   (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
   `game` (the selected campaign key on the three game-specific pages),
@@ -982,14 +982,14 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
-share one list-screen implementation (`crates/apps/boot/src/list_class.rs`).
+share one list-screen implementation (`crates/extensions/game/src/list_class.rs`).
 Menus are driven with `input.pad` and checked with `ui.screen`; there is no
 widget-level focus or activate method.
 
 ## `audio`: voice routing
 
 `h2 agent audio.voices` takes no parameters and is registered with
-DirectSound (`crates/apps/boot/src/dsound_glue.rs`). The result has
+DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
 `distance_reverb` (host enhancement enabled), `reverb_active` (audible
 environment configured), and `voices`. Each playing buffer, queued
 unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
@@ -1098,7 +1098,7 @@ controllers the host's input layer has, before the game sees anything.
 Use it when a pad, a button or the touchpad does not do what it should. It
 answers from the last input sync (`syncs` counts them), which runs
 whenever the game reads its pads. Boot adds it wherever the game has XAPI
-input (`crates/apps/boot/src/debug_menu_glue.rs`, `crates/extensions/agent/src/hostpads.rs`).
+input (`crates/extensions/game/src/debug_menu_glue.rs`, `crates/extensions/agent/src/hostpads.rs`).
 
 - `devices`: each controller as its own backend reads it, before any
   merging (`input::HostBackend::devices`). From Apple GameController:
@@ -1137,7 +1137,7 @@ h2 agent --socket /tmp/h2-play.sock hostpads
 `state.save`, `load`, `list`, `drop` and `fork` (types in
 `crates/extensions/agent-proto/src/state.rs`, the executor's part in
 `crates/extensions/agent/src/exec/snap.rs`, the machine in
-`crates/apps/boot/src/snapshot_glue.rs`). A snapshot is the whole machine at one
+`crates/extensions/game/src/snapshot_glue.rs`). A snapshot is the whole machine at one
 tick boundary, named. What is in it, how a load works and where files live:
 [snapshots.md](snapshots.md). Snapshots stay in the cache directory, one
 directory per build, and never enter the repository: they contain game
@@ -1208,7 +1208,7 @@ the methods it added beside the agent's own are in
 | `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/extensions/agent/src/menu.rs`) |
 | `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
-| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/apps/boot/src/cheats.rs`) |
+| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
 | `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
 
 ## `sim`: simulated players and direct state
@@ -1503,7 +1503,7 @@ H2_AGENT=/tmp/sim.sock h2 agent match.stop
 ## Theater transport
 
 The game agent lists these host methods in `session.methods`
-(`crates/extensions/agent-proto/src/theater.rs`, `crates/apps/boot/src/theater/controls.rs`).
+(`crates/extensions/agent-proto/src/theater.rs`, `crates/extensions/game/src/theater/controls.rs`).
 In an ordinary CLI-hosted game, `theater.play` with a library ID starts an
 isolated playback process; subsequent transport requests through that
 game agent go to its player. During startup the caller can retry after a

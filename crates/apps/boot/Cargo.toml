@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+game = { path = "../../extensions/game", default-features = false }
 # Build and load (docs/dev/crate-structure.md, S4).
 recomp = { path = "../../runtime/recomp" }
 h1-runtime = { path = "../../extensions/h1-runtime" }
@@ -92,11 +93,11 @@ perf = { path = "../../tools/perf", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io"]
-desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
-gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
-movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
-local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
-perf = ["dep:perf"]
+desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime", "game/desktop-runtime"]
+gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "game/gpu"]
+movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies", "game/movie-playback"]
+local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
+perf = ["dep:perf", "game/perf"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

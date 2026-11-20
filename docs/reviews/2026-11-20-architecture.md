@@ -666,7 +666,7 @@ The crate is 37,000 lines of source and 29,000 of tests. `device.rs` is
 6,657 lines. The `Backend` trait has 55 methods (`backend.rs:1075`) and
 six implementations stacked as decorators
 (`ThreadedBackend<InterpBackend<ScaledBackend<GfxBackend>>>`, composed in
-`crates/apps/boot/src/d3d_glue.rs`), so every new capability is written six
+`crates/extensions/game/src/d3d_glue.rs`), so every new capability is written six
 times.
 
 ### 4.2 The native renderer

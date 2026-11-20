@@ -404,7 +404,7 @@ coordinator's; lanes write code and tests.
   depth and takes the levels a pass samples from their guest headers
   (`crates/platform/d3d/src/device.rs`).
 - **Code** `boot::native_lights_glue`'s `Glue::alone` is the pattern
-  for steps 1 to 6 (`crates/apps/boot/src/native_lights_glue.rs`).
+  for steps 1 to 6 (`crates/extensions/game/src/native_lights_glue.rs`).
 
 ## Not verified
 
