@@ -1156,6 +1156,7 @@ mod tests {
                 teams: vec![],
             },
             ticks: 10,
+            state_hashes_v1: Vec::new(),
             game_seconds: 0.3,
             wall: Default::default(),
             players: vec![p(0, arm_a, 1), p(1, arm_b, kills_b)],
