@@ -251,6 +251,10 @@ points! { ALL;
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
     /// Initializes the unit's speech block from its model and variant name.
     UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Enqueue the selected candidate in the AI dialogue scheduler.
+    AI_DIALOGUE_ENQUEUE @ 0x0020_d0c0: [fn(vocabulary: stack 0, time: stack 1, stimulus: stack 2, candidate: stack 3, context: stack 4, parent: stack 5, queued: stack 6) -> al ret 28]; "docs/halo1/ai.md";
+    /// Check whether a unit can play a line and resolve its sound.
+    UNIT_DIALOGUE_CHECK @ 0x0011_4520: [fn(unit: eax, vocalization: edx, priority: stack 0, speech_time: stack 1, sound: stack 2) -> al ret 12]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

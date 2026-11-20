@@ -2923,9 +2923,8 @@ pub fn decal(
 /// Chief's dialogue tags give the bridge (V): their `death` sound plays
 /// for `dth`, `dth_mjr`, `dth_slnt`, `dth_slw` and `dth_hdsht`, their
 /// `deathfall` / `fall_death` for `dth_fall`, their `pain` for
-/// `pain_mjr`. Halo 1 slots with no line here (the hurt and killed
-/// variants by weapon and by species, the replies, the search and
-/// vehicle chatter) have no Halo 2 vocalization close enough.
+/// `pain_mjr`. Source-only weapon kill lines use the winning kill
+/// candidate in the runtime scheduler instead.
 pub const DIALOGUE: &[(usize, &str)] = &[
     (0x010, "look_noncmbt"),     // idle_non_combat
     (0x020, "look_cmbt"),        // idle_combat
@@ -2939,12 +2938,13 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x100, "dth_mjr"),          // deathviolent
     (0x100, "dth"),              // deathviolent
     (0x110, "dth_fall"),         // deathfalling
-    (0x140, "dth_fall"),         // deathflying
     (0x120, "dth_slw"),          // deathagonizing
     (0x130, "dth_hdsht"),        // deathinstant
     (0x100, "dth_hdsht"),        // deathviolent
+    (0x200, "scld_plr_hrtme"),   // hurtfriendplayer, event 3
     (0x360, "chr_kllfoe"),       // killedenemy
     (0x420, "chr_kllfoe_blt"),   // killedenemybullet
+    (0x460, "chr_kllfoe_bm"),    // killedenemygrenade, event 0 hostile attacker, category 3
     (0x380, "prs_plr_kll"),      // killedenemyplayer
     (0x550, "prs_plr_sniping"),  // playerkillsnipercm, adlg event 0 pattern 27
     (0x610, "lmnt_deadally"),    // frienddied
@@ -2957,8 +2957,11 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x740, "strk_grnd"),        // grenadethrowing
     (0x750, "warn_incmn_grnd"),  // grenadesighted
     (0x840, "srchstart"),        // searchstart
+    (0x870, "srch_allclr"),      // searchreport, event 46 search completion
+    (0x870, "prst_allclr"),      // searchreport, event 48 pursuit completion
     (0x8c0, "newordr_advance"),  // advance
     (0x8e0, "newordr_retreat"),  // retreat
+    (0x950, "grt_plr"),          // sightedfriendlyplayer, event 163
     (0x9b0, "tnt"),              // taunt
     (0x9d0, "flee"),             // flee
     (0x9f0, "fear_rtrt_ldrdead"), // flee_leader_died, adlg event 63 pattern 110

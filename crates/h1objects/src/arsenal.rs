@@ -972,6 +972,12 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     let f = |at: usize| f32::from_bits(u32_at(b, at));
     word(&mut r, "unknown_a0", (f(0xec) / 30.0).to_bits())?;
     let category = u32_at(b, 0x1c4);
+    set(
+        &mut r,
+        "h1_damage_category",
+        Val::Int((map::H1_DAMAGE_CATEGORY | (category >> 16)).into()),
+    )?;
+    set(&mut r, "h1_death_impulse", Val::Float(f(0x1f4)))?;
     // H1 sniper rounds have a distinct category. H2 uses the bullet category.
     let category = if category >> 16 == 5 { (category & 0xffff) | (2 << 16) } else { category };
     word(&mut r, "unknown_10", category)?;
@@ -1016,6 +1022,6 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     built(d, &r)
 }
 
-/// Halo 1's `jpt!` root size: where its first child block starts (V1,
-/// docs/halo1/objects.md); the damage bounds end at `+0x1dc`.
-pub const H1_JPT_MIN: usize = 0x1e4;
+/// The last `jpt!` field this converter reads is the damage impulse
+/// at `+0x1f4` (Halo 1 dialogue selection at `0x4721b`).
+pub const H1_JPT_MIN: usize = 0x1f8;

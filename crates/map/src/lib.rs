@@ -84,3 +84,20 @@ pub const H1_VOICE_VARIANT: u32 = 0x4831_0000;
 /// Marker in a converted udlg source row's word at +0x00, outside the
 /// native indexed vocabulary. Its low word is the Halo 1 slot index.
 pub const H1_DIALOGUE_SLOT: u32 = 0x4831_0000;
+
+/// The original Halo 1 damage category, kept at jpt! +0x34 for dialogue.
+/// Halo 2's own damage category at +0x12 uses Halo 2's numbering.
+pub const H1_DAMAGE_CATEGORY: u32 = 0x4831_0000;
+
+/// Unit death line for the authored Halo 1 damage impulse threshold.
+pub const H1_DEATH_FLYING_LINE: usize = 0x140;
+
+/// Halo 1 kill stimulus 0's attacker lines for damage categories that
+/// have no distinct Halo 2 vocalization. The second word is a source
+/// udlg byte offset.
+pub const H1_WEAPON_KILL_LINES: &[(u16, usize)] = &[
+    (5, 0x450),  // sniper rifle
+    (8, 0x4c0),  // mounted weapon
+    (11, 0x430), // needler
+    (12, 0x4a0), // shotgun
+];

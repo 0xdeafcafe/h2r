@@ -937,11 +937,13 @@ impl<'a> Converter<'a> {
             let voice = self.h1_tag(id)?;
             let source = self.read_dialogue(voice)?;
             let routed = crate::rebuild::dialogue_lines(&source);
-            if let Some(&(slot, id)) = source
-                .lines
-                .iter()
-                .find(|(slot, _)| !routed.iter().any(|(_, at, _)| at == slot))
-            {
+            let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
+            if let Some(&(slot, id)) = source.lines.iter().find(|(slot, _)| {
+                let native = routed.iter().any(|(_, at, _)| at == slot);
+                let weapon_kill =
+                    generic_kill && map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot);
+                !native && !weapon_kill && *slot != map::H1_DEATH_FLYING_LINE
+            }) {
                 let sound = self.h1_tag(id)?;
                 return Err(h1convert::Error::no_rebuild(
                     &self.h1.header().name,

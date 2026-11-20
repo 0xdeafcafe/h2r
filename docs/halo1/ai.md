@@ -408,6 +408,48 @@ campaign lists uses the explicit vocalize atom. In automatic chatter
 the native table also routes sniper praise (H2 `adlg` event 0,
 pattern 27) and flight after a leader dies (event 63, pattern 110).
 
+**Built.** The Halo 1 kill stimulus at `0x149a72` passes the victim,
+killer, relationship and damage category. Its weapon-specific patterns
+select the killer for grenade (3), sniper (5), mounted weapon (8),
+needler (11) and shotgun (12) kills of enemies. Halo 2 event 0
+already has a grenade-category cheer. The other categories keep their
+original value at converted `jpt! +0x34`, including the sniper category
+that the damage converter maps to bullets for Halo 2 gameplay.
+
+Halo 2's damage path calls `0x1c95d0` at `0xca4ed` with the report
+in the caller's EBP. The AI kill wrapper emits event 0 at `0x1c975c`.
+The hook at `0x20d0c0` checks that call chain and applies the original
+category to the winning hostile-killer candidate. It enqueues the
+speaking unit's exact source row through `0x114b60` at the candidate's
+priority. Halo 2 still selects the winning candidate, including any
+witness or player praise.
+
+**Built.** The victim's flying-death line is separate from falling.
+Halo 1 tests `jpt! +0x1f4` against 2.0 at `0x4721b`, with falling
+and fire categories taking precedence at `0x47275`. Converted damage
+keeps that impulse at `jpt! +0x38`. Halo 2 calls its victim's damage
+speech at `0xca45d`. The lethal path checks the victim's speech at
+`0x114a06`, where the hook selects the exact flying-death row.
+
+**Built.** Search completion uses the authored search report. In Halo 1
+the search timer reaches zero before stimulus 18 at `0x16a440`. Halo 2
+validates the finished search or pursuit at `0x1b26c1` and emits event
+46 or 48 at `0x1b26e4` or `0x1b2702`.
+
+**Built.** Halo 1 friendly-fire stimulus 3 picks the victim's
+`hurtfriendplayer` line when the attacker is a friendly player.
+Halo 2's event 3 `scld_plr_hrtme` applies the corresponding
+speaker and relationship checks. Halo 1 stimulus 25 at `0x15718c`
+greets a newly sighted friendly player. Halo 2 event 163 uses
+`grt_plr` for that actor and player pairing.
+
+Halo 1's search query is a separate periodic stimulus (17,
+`0x16814b`) while the actor is searching. Reply rule 34 at
+`0x1f00a0` chooses an eligible ally after the query. Halo 2's search
+entry calls at `0x1b25de` and `0x1b260a` ask actors to investigate
+or pursue. Those calls answer a different question from the periodic
+query.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

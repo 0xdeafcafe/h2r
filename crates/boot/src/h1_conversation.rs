@@ -9,6 +9,7 @@ use feature::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_conversation::{AI, BUILTINS, LONG, NONE, OBJECT, Op, REAL, SHORT, SOUND};
 use runtime::guest::Permissions;
 
+mod automatic;
 mod cast;
 pub(crate) mod dialogue;
 mod leaders;
@@ -43,6 +44,7 @@ impl feature::Feature for Conversations {
         let pending = b.guest_alloc(voices::BOOTSTRAP_BYTES, Permissions::RW)?;
         leaders::install(b, pending);
         dialogue::install(b, pending);
+        automatic::install(b);
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(
             &points::HS_UNUSED_EVALUATOR,

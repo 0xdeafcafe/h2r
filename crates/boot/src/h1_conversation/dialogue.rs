@@ -33,9 +33,17 @@ pub(crate) fn active(m: &dyn GuestMemory, unit: u32) -> Result<u32, MemFault> {
 }
 
 pub(crate) fn source_sound(m: &dyn GuestMemory, unit: u32, slot: u16) -> Result<u32, MemFault> {
+    Ok(source_row(m, unit, slot)?.map_or(NONE, |(_, sound)| sound))
+}
+
+pub(super) fn source_row(
+    m: &dyn GuestMemory,
+    unit: u32,
+    slot: u16,
+) -> Result<Option<(u32, u32)>, MemFault> {
     let dialogue = active(m, unit)?;
     let Some(root) = tag_address(m, dialogue, UDLG)? else {
-        return Ok(NONE);
+        return Ok(None);
     };
     let count = m.u32(root + 0xc)?;
     let rows = m.u32(root + 0x10)?;
@@ -45,12 +53,12 @@ pub(crate) fn source_sound(m: &dyn GuestMemory, unit: u32, slot: u16) -> Result<
         if m.u32(row)? == wanted {
             let sound = m.u32(row + 0xc)?;
             if tag_address(m, sound, SND)?.is_some() {
-                return Ok(sound);
+                return Ok(Some((k, sound)));
             }
             break;
         }
     }
-    Ok(NONE)
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -686,12 +686,15 @@ fn every_dialogue_converts() {
         ));
     }
 
+    let weapon_lines = map::H1_WEAPON_KILL_LINES;
     let udlg = Group::new(b"udlg");
     let mut maps = 0;
     let mut multi_voice = 0;
     for (base_name, levels) in sets {
         let base = Base::read(&mut h2_map(base_name)).unwrap();
         assert!(!base.dialogue_names.is_empty(), "{base_name} has no adlg");
+        assert_eq!(&base.dialogue_names[244], "chr_kllfoe");
+        assert_eq!(&base.dialogue_names[253], "chr_deaddrvsh");
         for level in levels {
             let Some(m) = h1_level(level) else { continue };
             maps += 1;
@@ -706,6 +709,11 @@ fn every_dialogue_converts() {
                 assert!(voices.insert(tag.id, id).is_none());
                 let src = h1::Dialogue::read(&m, tag).unwrap();
                 let routed = h1objects::rebuild::dialogue_lines(&src);
+                for &(_, offset) in weapon_lines {
+                    if src.line(offset).is_some() {
+                        assert!(src.line(0x360).is_some(), "{context}: missing killer cheer");
+                    }
+                }
                 let record = read_back(&c.tree.tags[id.index()].1, &context);
                 let rows = block(&record, "vocalizations");
                 let (native, slots) = rows.split_at(base.dialogue_names.len());
@@ -747,6 +755,59 @@ fn every_dialogue_converts() {
     }
     assert_eq!(maps, 23);
     assert!(multi_voice > 0);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 disc executables"]
+fn automatic_damage_dialogue_has_retail_trigger_evidence() {
+    let default_xbe = |var, fallback| {
+        let mut iso =
+            xiso::Xiso::open(BufReader::new(File::open(disc(var, fallback)).unwrap())).unwrap();
+        let entry = iso
+            .entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.path.eq_ignore_ascii_case("/default.xbe"))
+            .unwrap();
+        iso.read(&entry).unwrap()
+    };
+    let h1_bytes = default_xbe("H1_ISO", "halo1.iso");
+    let h1 = xbe::Xbe::parse(&h1_bytes).unwrap();
+    let start = 0x001e_eb70;
+    let patterns = h1.bytes_at(start, 29 * 0x28).unwrap();
+    for (category, offset) in [(3, 0x460)]
+        .into_iter()
+        .chain(map::H1_WEAPON_KILL_LINES.iter().copied())
+    {
+        let slot = (offset / 0x10 - 1) as u16;
+        assert!(
+            patterns.chunks_exact(0x28).any(|row| {
+                // Kill stimulus, spoken by the attacker after a hostile kill.
+                u16_at(row, 0) == 0
+                    && u16_at(row, 4) == slot
+                    && u16_at(row, 8) == 1
+                    && u16_at(row, 0x1c) == 3
+                    && u16_at(row, 0x24) == category
+            }),
+            "no weapon kill rule for {offset:#x}"
+        );
+    }
+    assert_eq!(h1.bytes_at(0x0004_7293, 5).unwrap(), &[0xb8, 19, 0, 0, 0]);
+    assert_eq!(h1.read_u32(0x001f_0b04).unwrap(), 2.0f32.to_bits());
+
+    let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
+    let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
+    for (call, target) in [
+        (0x000c_a45d, 0x0011_47e0),
+        (0x0011_4a06, 0x0011_4520),
+        (0x000c_a4ed, 0x001c_95d0),
+        (0x001c_975c, 0x0020_ba60),
+        (0x0020_bb49, 0x0020_d0c0),
+    ] {
+        let inst = h2.bytes_at(call, 5).unwrap();
+        assert_eq!(inst[0], 0xe8, "no near call at {call:#x}");
+        assert_eq!((call + 5).wrapping_add(u32_at(inst, 1)), target);
+    }
 }
 
 /// Survey: Halo 1 `foot` tags: the root's block fields (count at each
