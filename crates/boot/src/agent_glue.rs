@@ -100,6 +100,8 @@ impl AgentGlue {
         }
         agent::ai::install(&agent);
         agent::havok::install(&agent);
+        // The native collision world's counters (impl.sim.native.collision).
+        agent::collision::install(&agent);
         agent::raw::install(&agent, &sim);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);

@@ -1730,6 +1730,26 @@ between samples. The raw dump also contains
 pointers, unused slots and padding. A cached surface with an empty manifold
 is still a candidate in the query box.
 
+## `collision`: the native collision world
+
+Counters for the entries `impl.sim.native.collision` takes over. Contract
+and bail reasons: [collision-queries.md](../engine/collision-queries.md).
+This is a game method (`agent::collision::install`). The counters are
+process globals, so it reads no guest memory, and they stay zero while the
+switch is off.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `collision.stats` | read | no params. `switch`; `entries`, one per entry in contract order, each with `name` (`point_to_leaf`, `location`, `vector_test`, `vector_context`), `addr` (8 hex digits), `native` (calls the kernel answered) and `bails` (calls left to the lifted code, by reason: `env`, `float`, `fault`, `data`, `depth`, `alias`); `decodes`, `decode_failures`, `flushes`; `bsps` and `bytes` held now; `precision`, the x87 precision control seen at the vector-test entries (`single`, `reserved`, `double`, `extended`) |
+
+```sh
+h2 agent collision.stats
+```
+
+The bail audit (under 0.1% of calls bailing) reads `bails` against
+`native`. A reason that appears on one architecture only is a determinism
+bug.
+
 ## `world.ai`
 
 `h2 agent --socket <socket> world.ai` returns `{at, actors}` at one game

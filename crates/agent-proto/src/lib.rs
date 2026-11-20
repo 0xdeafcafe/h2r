@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 mod client;
+pub mod collision;
 mod endpoint;
 pub mod expect;
 pub mod havok;

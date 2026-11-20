@@ -22,6 +22,8 @@
 //!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
+//! * [`collision`] answers `collision.stats`: the native collision
+//!   world's call, bail and decode counters.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
@@ -44,6 +46,7 @@
 
 pub mod ai;
 mod capture;
+pub mod collision;
 mod exec;
 pub mod havok;
 pub mod hostpads;
