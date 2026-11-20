@@ -52,6 +52,40 @@ fn the_ui_hooks_can_run_on_the_render_thread() {
 }
 
 #[test]
+fn ui_shares_the_loading_and_effect_points_with_other_features() {
+    use engine::points::ui_render::LOADING_DRAW;
+    use feature::native_particles::{DYNAMIC_QUAD_READY, NativeParticles, compare_budget};
+    use feature::render_timing::RenderTiming;
+
+    let mut registry = Registry::new(Switches::parse(
+        "render-timing,impl.render.native_ui=on,impl.render.native_particles=on,impl.render.native_effects_walk=on",
+    ).unwrap());
+    registry.add(&NativeHud).unwrap();
+    registry.add(&NativeParticles).unwrap();
+    registry.add(&RenderTiming::new()).unwrap();
+    let plan = registry.build(&Base).unwrap();
+    assert!(std::ptr::eq(plan.chains[&LOADING_DRAW.base].point, &LOADING_DRAW));
+    if native_hud::compare_spec().is_none() && compare_budget().is_none() {
+        assert!(std::ptr::eq(
+            plan.chains[&DYNAMIC_QUAD_READY.base].point,
+            &DYNAMIC_QUAD_READY,
+        ));
+        let text = plan.text();
+        assert!(text.contains("native_ui_inline_rect"));
+        assert!(text.contains("native_effects_walk_quad"));
+    }
+}
+
+#[test]
+fn scene_effect_instruction_entries_are_unique() {
+    let mut seen = std::collections::HashSet::new();
+    for address in feature::scene_effect_instruction_entries() {
+        assert!(seen.insert(address), "duplicate entry {address:#010x}");
+    }
+    assert!(seen.contains(&feature::native_particles::DYNAMIC_QUAD_READY.base));
+}
+
+#[test]
 fn the_compare_count_parses() {
     assert_eq!(
         native_hud::parse_compare(""),

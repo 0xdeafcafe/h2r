@@ -149,6 +149,10 @@ pub const TRANSPARENT_GEOMETRY_QUEUED: Point = Point::new(
 /// to expose the interior sites before lifting.
 pub mod ui_render {
     use super::{Point, Sig};
+    pub use super::{
+        UI_FADE_DRAW as FADE_DRAW, UI_HUD_DRAW as HUD_DRAW, UI_LOADING_DRAW as LOADING_DRAW,
+        UI_OVERLAY_RECT_DRAW as OVERLAY_RECT_DRAW,
+    };
 
     const DOC: &str = "docs/graphics/native-renderer.md";
     pub const BACKDROP_WASH: Point =
@@ -179,17 +183,12 @@ pub mod ui_render {
     pub const LAYERS_RETURN: Point = Point::new("UI_LAYERS_RETURN", 0x0014_7cb9, Sig::Site, DOC);
     pub const ITEM_CALL: Point = Point::new("UI_ITEM_CALL", 0x0023_5445, Sig::Site, DOC);
     pub const ITEM_RETURN: Point = Point::new("UI_ITEM_RETURN", 0x0023_544d, Sig::Site, DOC);
-    pub const HUD_DRAW: Point = Point::new("UI_HUD_DRAW", 0x0019_17eb, Sig::Opaque, DOC);
     pub const HUD_RETURN: Point = Point::new("UI_HUD_RETURN", 0x0013_96b9, Sig::Site, DOC);
     pub const HUD_HIDDEN_RETURN: Point =
         Point::new("UI_HUD_HIDDEN_RETURN", 0x0013_96c6, Sig::Site, DOC);
-    pub const FADE_DRAW: Point = Point::new("UI_FADE_DRAW", 0x0004_0890, Sig::Opaque, DOC);
     pub const FADE_RETURN: Point = Point::new("UI_FADE_RETURN", 0x0004_0dbf, Sig::Site, DOC);
-    pub const OVERLAY_RECT_DRAW: Point =
-        Point::new("UI_OVERLAY_RECT_DRAW", 0x0013_c050, Sig::Opaque, DOC);
     pub const OVERLAY_RECT_RETURN: Point =
         Point::new("UI_OVERLAY_RECT_RETURN", 0x0013_c1db, Sig::Site, DOC);
-    pub const LOADING_DRAW: Point = Point::new("UI_LOADING_DRAW", 0x0002_89e0, Sig::Opaque, DOC);
     pub const LOADING_RETURN: Point = Point::new("UI_LOADING_RETURN", 0x0002_906d, Sig::Site, DOC);
     pub const LOADING_EMPTY_RETURN: Point =
         Point::new("UI_LOADING_EMPTY_RETURN", 0x0002_9075, Sig::Site, DOC);
@@ -397,7 +396,11 @@ points! { ALL;
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
     UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
-    UI_RENDER_LAYERS @ 0x0014_7af1: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_RENDER_LAYERS @ 0x0014_7af1: [fn(user: eax, fallback_user: stack 0, bounds: stack 1) ret 8], Optional; "docs/engine/engine-map.md";
+    UI_HUD_DRAW @ 0x0019_17eb: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_FADE_DRAW @ 0x0004_0890: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_OVERLAY_RECT_DRAW @ 0x0013_c050: [fn(bounds: ecx, color: eax) ret 0], Optional; "docs/graphics/native-renderer.md";
+    UI_LOADING_DRAW @ 0x0002_89e0: [fn() -> al ret 0], Optional; "docs/graphics/native-renderer.md";
     NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
     NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
     /// The game-end path; the end latch is game globals `+0x1128`.

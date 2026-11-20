@@ -70,6 +70,7 @@ pub use switches::Switches;
 /// Retail instruction boundaries that the emitter must route through entry
 /// dispatch. Hook bodies keep working on images with only a subset present.
 pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
+    let mut seen = std::collections::HashSet::new();
     [
         native_decals::DECAL_ITEM_GEOMETRY.base,
         native_decals::DECAL_RENDER_END.base,
@@ -86,6 +87,7 @@ pub fn scene_effect_instruction_entries() -> impl Iterator<Item = u32> {
     ].into_iter().chain(native_effects::instruction_entries())
         .chain(native_scene_lists::instruction_entries())
         .chain(native_hud::instruction_entries())
+        .filter(move |&address| seen.insert(address))
 }
 
 /// Log the full startup plan and first use of each hook. Read once.

@@ -241,7 +241,7 @@ pub(super) fn samplers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{PixelRect, TargetInfo, Viewport};
+    use crate::backend::{PixelRect, TargetInfo, TextureInfo, Viewport};
     use crate::shader::ShaderInputs;
     use crate::state::StateWords;
     use gfx::format::D3DFormat;
@@ -265,7 +265,17 @@ mod tests {
         render.shade_mode = ShadeMode::Flat;
         render.fog_enable = true;
         render.fog_color = 0xff_00_00_ff;
-        let fvf = fvf::XYZRHW | fvf::DIFFUSE;
+        let fvf = fvf::XYZRHW | fvf::DIFFUSE | (1 << fvf::TEXCOUNT_SHIFT);
+        let glyph = TextureInfo {
+            header: 0x1000,
+            palette: 0,
+            format: D3DFormat::A8R8G8B8,
+            kind: TextureKind::D2,
+            width: 16,
+            height: 16,
+            depth: 1,
+            levels: 1,
+        };
         ResolvedDraw {
             entry: "synthetic UI fan",
             primitive: PrimitiveType::TriangleFan,
@@ -282,7 +292,7 @@ mod tests {
             },
             shader: ShaderInputs {
                 vertex: VertexProcessing::FixedFunction { fvf },
-                provided_inputs: 0b1001,
+                provided_inputs: (1 << 9) | 0b1001,
                 vertex_defaults: [[0.0; 4]; 16],
                 constants: Arc::new([[0.0; 4]; 192]),
                 pixel_shader: None,
@@ -300,8 +310,8 @@ mod tests {
                 stipple_pattern: [0xa5a5a5a5; 32],
                 ..Default::default()
             },
-            textures: [None; 4],
-            texture_info: [None; 4],
+            textures: [Some(glyph.header), None, None, None],
+            texture_info: [Some(glyph), None, None, None],
             glyph_cache: 1,
         }
     }
@@ -310,8 +320,13 @@ mod tests {
     fn ui_program_carries_alpha_fog_stipple_flat_depth_and_stencil() {
         let mut draw = ui_draw();
         let caps = Capabilities::ALL;
-        let reference = NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1).unwrap();
-        let display = NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 2).unwrap();
+        let present = [true, false, false, false];
+        assert!(matches!(
+            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1),
+            Err(UiProgramError::Texture)
+        ));
+        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2).unwrap();
         assert_eq!(reference.pixel.alpha_ref[0], 91.0);
         assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
@@ -334,7 +349,7 @@ mod tests {
         assert_eq!(depth.depth_write_enabled, Some(true));
         assert_eq!(depth.stencil.front.pass_op, wgpu::StencilOperation::Replace);
         assert!(draw.writes_depth_stencil());
-        let wire = NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1).unwrap();
+        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
         assert!(!wire.key.0.pixel_options.stipple);
     }
 }

@@ -66,7 +66,8 @@ pub const DYNAMIC: Point = Point::new(
     Sig::Site,
     "docs/graphics/native-particles.md",
 );
-pub const DYNAMIC_QUAD_READY: Point = Point::new(
+// Shared with the UI rectangle hook. The planner keys points by identity.
+pub static DYNAMIC_QUAD_READY: Point = Point::new(
     "EFFECT_QUAD_READY",
     0x0004_b252,
     Sig::Site,
