@@ -14,6 +14,8 @@ runtime.workspace = true
 tags.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
 timeline = { path = "../timeline" }
+# Shadow checks of the sim ports against the lifted original (shadow.rs).
+lifted = { path = "../lifted" }
 # The world skip and camera read (pure: no GPU, no map reader).
 native-render = { path = "../native-render", default-features = false, optional = true }
 

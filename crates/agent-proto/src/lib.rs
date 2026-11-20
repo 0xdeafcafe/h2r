@@ -22,6 +22,7 @@ mod load;
 mod pad;
 pub mod raw;
 mod render;
+pub mod shadow;
 pub mod sim;
 pub mod state;
 pub mod theater;

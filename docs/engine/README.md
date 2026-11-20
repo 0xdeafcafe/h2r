@@ -16,6 +16,7 @@ evidence. No disassembly listings or game data.
 | [sim-rewrite-collision.md](sim-rewrite-collision.md) | BSP and MOPP queries, collision query, cluster flood, object visit | design: phase 2 collision world, entries, data layouts, slices |
 | [collision-queries.md](collision-queries.md) | BSP point to leaf `0x14a280`, location `0x11bed0`, vector test `0x1de630`, `0x1de6d0` | Rust (`sim-collision`) + adapters behind `impl.sim.native.collision`, default off |
 | [sim-rewrite-objects.md](sim-rewrite-objects.md) | object walks `0xb6f10`, `0xb7060`, `0xb7150`, per-object update `0xbc470`, `0xbc820`, type update trees, lights `0xc1400` | design: phase 3 of the sim rewrite |
+| [shadow-exec.md](shadow-exec.md) | the native sim ports (`sim.native`, `sim.physics`) | shadow checks against the lifted original in a running game (`shadow.*`), the shared `lifted` test crate, the disc gate |
 | [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/hs` (`hs::vm`); not yet wired into the game |
 | [sim-tier-experiment.md](sim-tier-experiment.md) | compose `0x142a60`, pose `0x1421f0`, MOPP box `0x2ff8b0`, BSP segment `0x1de6d0`, solver `0x31c940` | experiment: `emit::sim` against the reference tier and the hand ports |
 | [sim-tier-writes.md](sim-tier-writes.md) | everything `game_tick` `0x137fe0` reaches | method: static census of the tick's stores |

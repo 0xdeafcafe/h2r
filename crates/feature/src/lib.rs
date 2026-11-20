@@ -64,6 +64,7 @@ pub mod render_census;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;
+pub mod shadow;
 pub mod sim_frame;
 pub mod sim_native;
 pub mod sim_physics;

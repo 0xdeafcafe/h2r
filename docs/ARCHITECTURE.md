@@ -38,7 +38,9 @@ register itself as the override for an address, so the game runs at every
 step and a replacement can be backed out. Overrides are Rust features with
 hooks and switches ([feature-engine.md](engine/feature-engine.md)); the
 rewritten engine functions and their differential tests against the
-generated code are in [engine/README.md](engine/README.md). Booting and
+generated code are in [engine/README.md](engine/README.md), and
+shadow execution checks a port against the original on the states the
+game reaches as it runs ([shadow-exec.md](engine/shadow-exec.md)). Booting and
 running is in [BOOT.md](runtime/BOOT.md).
 
 Statically linked SDK libraries (D3D, DSOUND, XONLINE, XNET, BINK, ...) are
