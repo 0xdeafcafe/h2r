@@ -32,6 +32,9 @@ impl Countdown {
         if name != "d40" {
             return;
         }
+        #[cfg(not(feature = "gpu"))]
+        return;
+        #[cfg(feature = "gpu")]
         let Ok((cache, _)) = crate::native_map::open(name) else {
             return;
         };
