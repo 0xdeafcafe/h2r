@@ -312,6 +312,22 @@ Each kind of placement has its own fields. Some examples:
 
 *Scenery: a palette entry with a position, rotation and scale.*
 
+For one placement with an object or item reference, expand its entry in
+**Tags** below the placement fields. For a weapon, open **Model** for
+its model tag or **Render model** for the mesh tag. For a netgame item,
+open the item collection and then a **Collection entry**. Other links
+appear under **All references**. A tag edit affects every placement
+and tag that uses it. **Undo tag edit** and **Redo tag edit** step
+through tag edits. Saving the map includes both tag and placement edits.
+Use **Show in** on a shared tag to open its cache read-only.
+
+Use a reference field's **Show this tag** button or a node's **Focus
+tag** button to bring that tag to the top of **Tags**. The placement
+stays selected in the viewport. Click a breadcrumb to return to an
+ancestor. **Back** and **Forward** restore the tag and field you were
+viewing. Alt+Left, Alt+Right and the mouse's back and forward buttons
+step through the same history.
+
 ### Move a weapon spawn and play it
 
 1. Click the map in the **Maps** list.

@@ -11,6 +11,7 @@ pub(crate) mod convert;
 pub mod hud;
 mod editing;
 mod library;
+mod navigation;
 pub mod map_cards;
 pub mod map_pack;
 pub mod shared_refs;
@@ -28,6 +29,7 @@ pub use convert::{
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
+pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
@@ -75,6 +77,13 @@ impl ToolKind {
             ToolKind::Tags => "Tags",
         }
     }
+}
+
+/// The primary subject of the scenario inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Placement(BlockKind, usize),
+    Tag(map::TagId),
 }
 
 /// One user command. Everything the menus, toolbar, outliner and keyboard
@@ -152,6 +161,7 @@ pub enum Action {
         ypr: Option<[f32; 3]>,
     },
     Select(Option<(BlockKind, usize)>),
+    Navigate(NavAction),
     /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
     ToggleSelect((BlockKind, usize)),
     /// Select these placements, the first as the primary (Shift+click in
@@ -236,6 +246,10 @@ pub enum Action {
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
+    /// An inspector edit always targets the open map's tag document.
+    InspectorTag(TagAction),
+    /// Open a tag from a shared cache by group and name.
+    BrowseSharedTag(map::TagId),
     /// Show another map of the source in the Tags tool, read-only (a
     /// shared cache), or (`None`) the open map again.
     BrowseTags(Option<String>),
@@ -423,6 +437,7 @@ pub struct App {
     /// Another map of the source shown read-only in the Tags tool (a
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
+    nav: NavHistory,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
@@ -485,6 +500,7 @@ impl App {
             tags: TagDoc::default(),
             tag_homes: Default::default(),
             tag_browse: None,
+            nav: NavHistory::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
@@ -801,9 +817,26 @@ impl App {
                 ypr,
             } => self.move_placement(block, index, position, ypr),
             Action::EditPlaylist(edit) => self.edit_playlist(edit),
-            Action::Select(sel) => self.session.select(sel),
-            Action::ToggleSelect(e) => self.session.toggle_select(e),
-            Action::SelectMany(all) => self.session.select_many(all),
+            Action::Select(sel) => {
+                let before = self.nav_location();
+                self.session.select(sel);
+                self.record_placement_selection(before);
+            }
+            Action::ToggleSelect(e) => {
+                let before = self.nav_location();
+                self.session.toggle_select(e);
+                self.record_placement_selection(before);
+            }
+            Action::SelectMany(all) => {
+                let before = self.nav_location();
+                self.session.select_many(all);
+                self.record_placement_selection(before);
+            }
+            Action::Navigate(action) => {
+                if let Err(e) = self.navigate(action) {
+                    self.error(e);
+                }
+            }
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
@@ -889,6 +922,11 @@ impl App {
             }
             Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
+            Action::InspectorTag(action) => {
+                self.sync_tags();
+                self.run_map_tag(action);
+            }
+            Action::BrowseSharedTag(tag) => self.browse_shared_tag(tag),
             Action::BrowseTags(name) => self.browse_tags(name.as_deref()),
             Action::TagPreview(id) => self.preview_tag(id),
             Action::TagExport { tags, out, options } => {
@@ -1025,6 +1063,11 @@ impl App {
         }
     }
 
+    /// The Scenario inspector's placement or tag selection.
+    pub fn selection(&self) -> Option<Selection> {
+        self.nav_location().selection()
+    }
+
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
@@ -1088,6 +1131,10 @@ impl App {
             }
             return;
         }
+        self.run_map_tag(action);
+    }
+
+    fn run_map_tag(&mut self, action: TagAction) {
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {

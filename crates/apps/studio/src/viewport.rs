@@ -13,7 +13,7 @@ use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
 use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::{BlockKind, geometry};
+use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
 use crate::camera;
@@ -353,13 +353,8 @@ impl ViewportView {
         }
         // Left click picks; with Ctrl/Cmd it adds to or takes from the
         // selection.
-        if clicked {
-            let hit = app.session.pick(&ray);
-            match (cmd, hit) {
-                (true, Some(e)) => actions.push(Action::ToggleSelect(e)),
-                (true, None) => {}
-                (false, hit) => actions.push(Action::Select(hit)),
-            }
+        if clicked && let Some(action) = pick_action(&app.session, &ray, cmd) {
+            actions.push(action);
         }
     }
 
@@ -439,6 +434,15 @@ impl ViewportView {
             app.info(format!("{verb} {what}"));
         }
         (over, using)
+    }
+}
+
+pub(crate) fn pick_action(session: &Session, ray: &geometry::Ray, extend: bool) -> Option<Action> {
+    let hit = session.pick(ray);
+    if extend {
+        hit.map(Action::ToggleSelect)
+    } else {
+        Some(Action::Select(hit))
     }
 }
 

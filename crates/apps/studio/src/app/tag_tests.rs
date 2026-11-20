@@ -773,3 +773,85 @@ fn resources_and_lookups_read_the_shown_document() {
     // The tree marks nothing away: the fixture has no raw data.
     assert_eq!(app.tags.homes(weap_id()).map(|h| h.away()), Some(0));
 }
+
+/// The invented weapon with a model reference, an hlmt and its render model.
+pub(crate) fn placement_map() -> Vec<u8> {
+    let mut b = map();
+    let groups = fixture::INDEX + 32;
+    let old_tags = groups + 4 * 12;
+    let tags = groups + 6 * 12;
+    b.copy_within(old_tags..old_tags + 4 * 16, tags);
+    put(&mut b, fixture::INDEX + 4, 6);
+    put(&mut b, fixture::INDEX + 8, 0x8000_0020 + 6 * 12);
+    put(&mut b, fixture::INDEX + 24, 6);
+    let names_size = u32::from_le_bytes(b[0x2c8..0x2cc].try_into().unwrap());
+    let mut name_offset = names_size;
+    for (slot, name) in [(4, &b"test_model\0"[..]), (5, &b"test_mesh\0"[..])] {
+        put(&mut b, 0x900 + slot * 4, name_offset);
+        let start = 0x980 + name_offset as usize;
+        b[start..start + name.len()].copy_from_slice(name);
+        name_offset += name.len() as u32;
+    }
+    put(&mut b, 0x2c0, 6);
+    put(&mut b, 0x2c8, name_offset);
+    for (slot, group, at, size) in [
+        (4, FourCC(*b"hlmt"), 0x1300, 0x10),
+        (5, FourCC(*b"mode"), 0x1400, 0x10),
+    ] {
+        let g = groups + slot * 12;
+        put(&mut b, g, group.as_u32());
+        put(&mut b, g + 4, u32::MAX);
+        put(&mut b, g + 8, u32::MAX);
+        let t = tags + slot * 16;
+        put(&mut b, t, group.as_u32());
+        put(&mut b, t + 4, fixture::id(slot as u32).0);
+        put(&mut b, t + 8, META + at);
+        put(&mut b, t + 12, size);
+    }
+    // Keep the fixture's weapon fields and put the model after the parts.
+    put(&mut b, META_FILE + 0x1130, FourCC(*b"hlmt").as_u32());
+    put(&mut b, META_FILE + 0x1134, fixture::id(4).0);
+    put(&mut b, META_FILE + 0x1300, FourCC(*b"mode").as_u32());
+    put(&mut b, META_FILE + 0x1304, fixture::id(5).0);
+    // An ordinary reference back to the weapon exercises cycle handling.
+    put(&mut b, META_FILE + 0x1400, FourCC(*b"weap").as_u32());
+    put(&mut b, META_FILE + 0x1404, weap_id().0);
+    b
+}
+
+pub(crate) fn placement_app(path: &Path) -> App {
+    static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "\
+group weap 0x38 align 4
+  0x8 block 0xc align 4
+    0x0 tagref
+  0x30 tagref
+group hlmt 0x8 align 4
+  0x0 tagref
+group mode 0x8 align 4
+  0x0 tagref
+",
+        ).unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into("placement fixture", "\
+group weap 0x38
+  0x0 f32 speed
+  0x8 block parts 0xc align 4
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+  0x30 tagref model groups=hlmt
+group hlmt 0x8
+  0x0 tagref render_model groups=mode
+group mode 0x8
+  0x0 tagref example_back_reference
+").unwrap();
+        Registry::build(&schema, &defs)
+    });
+    let (mut app, _, _) = app_on(path, placement_map());
+    app.tags = TagDoc::new(registry);
+    app.dispatch(Action::SetTool(ToolKind::Scenario));
+    app.sync_tags();
+    app
+}
