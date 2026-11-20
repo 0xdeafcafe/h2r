@@ -6,8 +6,10 @@
 @font-face { font-family: "Barlow Condensed"; src: url("../dash/fonts/BarlowCondensed-Medium.ttf") format("truetype"); font-weight: 500; font-display: swap; }
 @font-face { font-family: "Barlow Condensed"; src: url("../dash/fonts/BarlowCondensed-SemiBold.ttf") format("truetype"); font-weight: 600; font-display: swap; }
 
-.dx {
+.dx, .dk .dk-back {
   --u: min(100vw / 1060, 100dvh / 720);
+}
+.dx {
   --f-tech: "Orbitron", "Michroma", "Eurostile", "Arial Black", sans-serif;
   --f-cond: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
   --g-black: #010a01;
@@ -204,7 +206,7 @@
 
 /* ---- phone: the same pieces stacked on a 400 x 760 stage ---- */
 @media (max-aspect-ratio: 4/5) {
-  .dx { --u: min(100vw / 400, 100dvh / 760); }
+  .dx, .dk .dk-back { --u: min(100vw / 400, 100dvh / 760); }
 
   .dx-panel { left: calc(var(--u) * 6); top: calc(var(--u) * 46); width: calc(var(--u) * 388); height: calc(var(--u) * 398); padding: calc(var(--u) * 66) calc(var(--u) * 26) 0 calc(var(--u) * 38); transform: none; }
   .dx-panel::before, .dx-panel-side { display: none; }

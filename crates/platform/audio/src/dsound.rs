@@ -674,6 +674,12 @@ impl Stream {
         self.queue.len()
     }
 
+    /// Front packet and whole source frames elapsed within it. Pausing
+    /// freezes the cursor. An empty queue has no playhead.
+    pub fn packet_playhead(&self) -> Option<(PacketId, u64)> {
+        self.queue.front().map(|p| (p.id, self.pos as u64))
+    }
+
     /// Takes the completion notifications since the last call, oldest first.
     pub fn take_completed(&mut self) -> Vec<(PacketId, PacketStatus)> {
         std::mem::take(&mut self.completed)

@@ -134,6 +134,14 @@ impl Fetch for HttpFetch<'_> {
 }
 
 impl HttpFetch<'_> {
+    /// Reads private catalogues and layers on behalf of a local account.
+    pub fn get_authenticated(&self, path: &str, cap: u64, token: String) -> Result<Got, String> {
+        if !live_proto::bearer_allowed(&format!("{}{path}", self.api)) {
+            return Err("the Live service needs HTTPS for authenticated downloads".into());
+        }
+        self.send(path, cap, Some(token))
+    }
+
     fn send(&self, path: &str, cap: u64, token: Option<String>) -> Result<Got, String> {
         let mut req = self.agent.get(&format!("{}{path}", self.api));
         if let Some(t) = token {
@@ -616,6 +624,7 @@ mod tests {
         MapAnswer {
             map: MapDetail {
                 summary: MapSummary {
+                    mod_pack: None,
                     map_id: MapId::of(m),
                     name: m.package.name.clone(),
                     description: None,

@@ -1,9 +1,16 @@
 /* Section furniture only. The shell, pods and tunnel belong to dash.css.
    Original CSS geometry: no reference images or console assets. */
-.dx-pages {
-  --page-edge: #80b747;
+.dx-pages, .dk {
   --page-cut: polygon(0 20px, 22px 0, 57% 0, calc(57% + 13px) 8px, calc(100% - 22px) 8px, 100% 28px, 100% calc(100% - 18px), calc(100% - 20px) 100%, 14px 100%, 0 calc(100% - 14px));
+  --page-bevel: linear-gradient(137deg, #d6eea8, #597741 5%, #263d23 21%, #759755 34%, #2a452e 51%, #102b1c 73%, #91ad6a 94%, #344c33);
+  --page-face: linear-gradient(180deg, #8db25c2b, transparent calc(var(--u) * 58)),
+    repeating-linear-gradient(0deg, #0000 0 3px, #071e101e 3px 4px),
+    radial-gradient(ellipse at 0 0, #345934, #183822 46%, #0a2316);
+  --page-inset: inset 0 1px #c6dea361, inset 0 -2px #091c10;
+  --page-focus: #ceef87;
+  --page-row-height: calc(var(--u) * 44);
 }
+.dx-pages { --page-edge: #80b747; }
 
 /* A shallow solid bevel with a dark recessed face, rather than an image border. */
 .dx-pages .dx-panel {
@@ -22,7 +29,7 @@
 .dx-pages .dx-plate-frame::before {
   inset: 0;
   clip-path: var(--page-cut);
-  background: linear-gradient(137deg, #d6eea8, #597741 5%, #263d23 21%, #759755 34%, #2a452e 51%, #102b1c 73%, #91ad6a 94%, #344c33);
+  background: var(--page-bevel);
   box-shadow: none;
 }
 .dx-pages .dx-panel-frame::after,
@@ -36,10 +43,8 @@
   background:
     var(--socket) right calc(var(--u) * 15) top calc(var(--u) * 19) / calc(var(--u) * 11) calc(var(--u) * 11) no-repeat,
     var(--socket) right calc(var(--u) * 15) top calc(var(--u) * 32) / calc(var(--u) * 11) calc(var(--u) * 11) no-repeat,
-    linear-gradient(180deg, #8db25c2b, transparent calc(var(--u) * 58)),
-    repeating-linear-gradient(0deg, #0000 0 3px, #071e101e 3px 4px),
-    radial-gradient(ellipse at 0 0, #345934, #183822 46%, #0a2316);
-  box-shadow: inset 0 1px #c6dea361, inset 0 -2px #091c10;
+    var(--page-face);
+  box-shadow: var(--page-inset);
 }
 .dx-pages .dx-panel-head { height: calc(var(--u) * 12); margin-bottom: calc(var(--u) * 12); }
 .dx-pages .dx-panel-head small {
@@ -49,6 +54,8 @@
 .dx-pages .dx-panel-head h1 {
   position: absolute; top: calc(var(--u) * -35); left: 0;
   font-size: calc(var(--u) * 25); line-height: calc(var(--u) * 34);
+}
+.dx-pages .dx-panel-head h1, .dk-head h1, .dk-panel-head h2 {
   font-family: var(--f-cond); font-weight: 600; letter-spacing: .085em; text-transform: uppercase;
   color: #d6fb92; text-shadow: 0 0 calc(var(--u) * 9) #a5ff5777, 0 1px 1px #122309;
 }
@@ -56,18 +63,22 @@
   height: calc(var(--u) * 350); margin: 0; padding: calc(var(--u) * 3) calc(var(--u) * 24) calc(var(--u) * 3) calc(var(--u) * 4);
   scrollbar-width: none;
 }
-.dx-pages .dx-rows:focus-visible { outline: 1px solid #ceef87; outline-offset: calc(var(--u) * 5); }
+.dx-pages .dx-rows:focus-visible { outline: 1px solid var(--page-focus); outline-offset: calc(var(--u) * 5); }
 .dx-pages .dx-row {
-  height: calc(var(--u) * 44); margin: 0 0 calc(var(--u) * 6);
+  height: var(--page-row-height); margin: 0 0 calc(var(--u) * 6);
   padding: 0 calc(var(--u) * 15); gap: calc(var(--u) * 10);
+  font-size: calc(var(--u) * 24);
+  line-height: 1.1; font-weight: 500; letter-spacing: .055em;
+}
+.dx-pages .dx-row, .dx-page-row {
   border: 1px solid;
   border-color: #385b38 #28492e #58764a #375538;
   border-radius: calc(var(--u) * 2); background: linear-gradient(174deg, #122c19, #193720 47%, #24432a);
   box-shadow: inset 0 calc(var(--u) * 2) calc(var(--u) * 4) #00130066;
-  font-size: calc(var(--u) * 24); line-height: 1.1; font-weight: 500; letter-spacing: .055em;
   color: #d2e4b3; text-shadow: 0 0 calc(var(--u) * 6) #99e76144;
 }
-.dx-pages .dx-row.on {
+.dx-pages .dx-row.on, .dk .dx-page-row:is(:hover, :focus-visible, [aria-expanded="true"]),
+.dk[data-input="gamepad"] .dx-page-row:focus {
   border-radius: calc(var(--u) * 3) calc(var(--u) * 12) calc(var(--u) * 3) calc(var(--u) * 3);
   border-color: #f0ffaf #adbf65 #789644 #d2e88a;
   color: #213515; background: linear-gradient(180deg, #ecffa8, #b9e55d 16%, #afd854 75%, #91b941);
@@ -79,11 +90,13 @@
   flex: 0 1 43%; margin-left: auto; font-size: calc(var(--u) * 15);
   text-align: right; letter-spacing: .035em; opacity: 1;
 }
-.dx-pages .dx-row--empty {
+.dx-pages .dx-row--empty, .dx-page-empty {
   color: #b9e28a; background: linear-gradient(180deg, #122e0b, #204914);
+  border: 1px dashed;
   border-color: #0c2809 #507e35 #507e35 #12350b;
-  height: auto; min-height: calc(var(--u) * 88); white-space: normal; border-style: dashed; line-height: 1.4; padding: calc(var(--u) * 14);
+  white-space: normal; line-height: 1.4; padding: calc(var(--u) * 14);
 }
+.dx-pages .dx-row--empty { height: auto; min-height: calc(var(--u) * 88); }
 .dx-pages .dx-arrow { right: calc(var(--u) * 18); border-left-width: calc(var(--u) * 7); border-right-width: calc(var(--u) * 7); }
 .dx-pages .dx-arrow--up { top: calc(var(--u) * 102); }
 .dx-pages .dx-arrow--down { top: calc(var(--u) * 422); }
@@ -120,7 +133,7 @@
 .dx-pages .dx-plate--main {
   left: calc(var(--u) * 390); top: calc(var(--u) * 414); width: calc(var(--u) * 500); transform: none;
 }
-.dx-pages .dx-prompt:focus-visible { outline: 1px solid #dbff91; outline-offset: calc(var(--u) * 6); border-radius: 4px; }
+.dx-pages .dx-prompt:focus-visible, .dk .dk-back:focus-visible { outline: 1px solid #dbff91; outline-offset: calc(var(--u) * 6); border-radius: 4px; }
 
 /* Sign-up keeps all instructions and validation inside one usable plate. */
 .dx-pages.dx-pods--form .dx-plate--main {
@@ -130,13 +143,14 @@
 .dx-signup-intro { margin: 0 0 calc(var(--u) * 16); color: #d3eab4; text-transform: none; letter-spacing: .02em; font-size: calc(var(--u) * 19); }
 .dx-pages .dx-form { gap: calc(var(--u) * 10) calc(var(--u) * 14); }
 .dx-pages .dx-form label { text-align: left; color: #c0e18c; }
-.dx-pages .dx-form input {
+.dx-pages .dx-form input, .dx-page-field {
   height: calc(var(--u) * 38); border-radius: 2px; border: 1px solid #64983f;
-  background: linear-gradient(#0a2307, #13300a); font-size: max(16px, calc(var(--u) * 19));
+  background: linear-gradient(#0a2307, #13300a);
   box-shadow: inset 0 2px 5px #0008; letter-spacing: .025em;
 }
-.dx-pages .dx-form input::placeholder { color: #a8c487; text-transform: none; letter-spacing: .015em; }
-.dx-pages .dx-form input:focus { border-color: #e6fa85; box-shadow: 0 0 0 1px #e6fa8555, inset 0 2px 5px #0008; }
+.dx-pages .dx-form input { font-size: max(16px, calc(var(--u) * 19)); }
+.dx-pages .dx-form input::placeholder, .dx-page-field::placeholder { color: #a8c487; text-transform: none; letter-spacing: .015em; }
+.dx-pages .dx-form input:focus, .dx-page-field:focus { border-color: #e6fa85; box-shadow: 0 0 0 1px #e6fa8555, inset 0 2px 5px #0008; }
 .dx .dx-pages .dx-go:disabled { filter: none; color: #9cc274; background: linear-gradient(180deg, #1b3f11, #12300b); box-shadow: 0 0 0 1px #507e35; }
 .dx .dx-pages .dx-go {
   height: calc(var(--u) * 38); margin: calc(var(--u) * 3) 0 calc(var(--u) * 6);
@@ -184,12 +198,14 @@
 
 /* Small landscape viewports need scrolling instead of unreadably tiny fields. */
 @media (max-height: 540px) and (min-aspect-ratio: 4/5) {
-  .dx:has(.dx-pages) { position: absolute; min-height: 640px; overflow: auto; --u: min(100vw / 1060, 1px); }
+  .dx:has(.dx-pages), .dk .dk-back { --u: min(100vw / 1060, 1px); }
+  .dx:has(.dx-pages) { position: absolute; min-height: 640px; overflow: auto; }
   .dx:has(.dx-pages) .dx-stage { top: 320px; }
 }
 
 @media (max-height: 740px) and (max-aspect-ratio: 4/5) {
-  .dx:has(.dx-pages) { position: absolute; --u: min(100vw / 400, 1px); min-height: calc(var(--u) * 860); overflow: auto; }
+  .dx:has(.dx-pages), .dk .dk-back { --u: min(100vw / 400, 1px); }
+  .dx:has(.dx-pages) { position: absolute; min-height: calc(var(--u) * 860); overflow: auto; }
   .dx:has(.dx-pages) .dx-stage { top: calc(var(--u) * 430); }
   .dx-pages .dx-prompt--a, .dx-pages .dx-prompt--b { top: calc(var(--u) * 760); }
 }

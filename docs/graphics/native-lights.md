@@ -13,10 +13,15 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
 ### The path (Code, `h2 disasm`)
 
 - **Visible lights.** `0x00031c80` builds the visible-light list
-  (`0x00031910`, from the candidates at `[0x00547f98]`; entries of `0x14`
-  bytes with light datum `+4`, root owner `+8`, weight `+0xc` and
-  screen priority `+0x10`). The original `0x0004a7c0`/`0x0004ac30`
-  helpers merge and rank that list before the pass walks it. For each
+  from the main view's cluster light references and its supplementary
+  unclustered player lights. `0x00031910` checks the handles at
+  `[0x00547f98]` and accepts up to 128. Each accepted row holds the
+  light datum, root owner, weight from the light record's `+0x100`
+  and a separate projected-size priority. `0x0004a7c0` merges the rows
+  by datum into a per-view history of up to 32. `0x0004ac30` promotes
+  local lights, suppresses duplicate owners with exceptions, orders the
+  remaining rows by projected size and fades their weights towards a
+  budget of three. Lights fading out can still draw. For each
   light above the weight threshold (`[0x0045dc58]`) it re-poses an attached light
   (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
   stride `0x408`, at most eight, count `[0x00509440]`), decides the
@@ -27,7 +32,11 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   calls `render_light_passes` once.
 - **One light's passes.** `0x00031170` (`points::RENDER_LIGHT_PASSES`; its
   only caller is `0x00031f26`): EAX the `ligh` datum, ECX a context from
-  `0x000c17f0` (its first word sets per-light flag bit 0), stack `(light
+  `0x000c17f0` (the posed light volume, decoded by
+  `engine::render::light_volume`). Its first word is the effective shape
+  after a scenario placement override. A sphere (zero) sets per-light
+  flag bit 0, while a nonzero shape passes the shape test for casting
+  a shadow. The stack holds `(light
   datum, &position, shadow byte, weight)`, `ret 0x10`. It sets the light's
   constants (`0x0004a1e0`, which takes 1024.0) and the flags
   `[0x004ba014]` and `[0x004ba018]`, then: with the shadow bit, the shadow

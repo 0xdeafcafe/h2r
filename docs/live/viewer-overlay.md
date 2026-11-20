@@ -116,7 +116,7 @@ motion the camera is placed at the end pose at once.
 `Overlay` (`web/src/viewer/Overlay.tsx`, no three.js) is a sibling of
 `.v3-host` inside `.v3`, and is also the `Suspense` fallback in
 `GameViewer`, so the same plate shows while the three.js chunk is fetched.
-`overlayState` (`web/src/viewer/overlay.ts`, pure) maps the load's facts to
+`overlayState` (`web/src/viewer/overlayState.ts`, pure) maps the load's facts to
 one state:
 
 | State | When | Veil | Controls |

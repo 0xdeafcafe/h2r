@@ -26,7 +26,7 @@ use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
-use crate::list_class::{Action, ListClass, ListLayout, OnFree, Rows, TextBlock};
+use crate::list_class::{Action, ListClass, ListLayout, LiveText, OnFree, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
@@ -59,6 +59,11 @@ impl Then {
 }
 
 type Get<T> = Arc<dyn Fn() -> T + Send + Sync>;
+
+struct LiveHelp {
+    get: Get<String>,
+    drawn: Mutex<String>,
+}
 
 enum Kind {
     Action(Get<Then>),
@@ -275,6 +280,7 @@ pub struct KitScreen {
     layout: Option<ListLayout>,
     style: ValueStyle,
     description: Option<TextBlock>,
+    live_help: Option<LiveHelp>,
     prompts: Vec<Prompt>,
     scrolls: bool,
     texts: SlotTexts,
@@ -305,6 +311,7 @@ impl KitScreen {
             layout: None,
             style: ValueStyle::Column,
             description: None,
+            live_help: None,
             prompts: Vec::new(),
             scrolls: false,
             texts: SlotTexts::new(ids),
@@ -361,6 +368,20 @@ impl KitScreen {
         self.description = Some(block);
         self
     }
+    /// A page-wide line that can change while the same row stays focused.
+    pub fn live_help(
+        mut self,
+        block: TextBlock,
+        text: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.description = Some(block);
+        self.live_help = Some(LiveHelp {
+            get: Arc::new(text),
+            drawn: Mutex::default(),
+        });
+        self
+    }
+
     /// Where the focused row's description goes: the screen's own block,
     /// else its dialog base's help line.
     fn description_block(&self) -> Option<TextBlock> {
@@ -687,6 +708,19 @@ impl Rows for KitScreen {
         let text = spec.description_text()?;
         Some(self.texts.set(self.description_slot(i), &text))
     }
+    fn live_text(&self) -> LiveText {
+        let redraw = self.live_help.as_ref().is_some_and(|help| {
+            let current = (help.get)();
+            let mut drawn = Self::lock(&help.drawn);
+            if *drawn == current {
+                return false;
+            }
+            *drawn = current;
+            true
+        });
+        LiveText { redraw, ..Default::default() }
+    }
+
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.poll_keyboard(m)?;
         self.texts.write(m)
@@ -722,6 +756,7 @@ impl Describe for KitScreen {
             })
             .collect();
         s.description = self.description_block().map(spec::DescriptionBlock::from);
+        s.help = self.live_help.as_ref().map(|help| (help.get)());
         s.prompts = self.prompts.clone();
         s.inputs = vec![
             Input::Up,

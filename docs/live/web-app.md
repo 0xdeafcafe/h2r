@@ -46,7 +46,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_STATIC=<dir>`: also serve a built app with SPA fallback, as `h2 live serve` does: `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`.
 - `H2_MOCK_GAME_ART=1`: serve a stand-in `/art/game` manifest so the game-art path runs (see [web-viewer.md](web-viewer.md), "Game art"). Without it `/art/game` has no pictures, like a server with no game art.
 - `H2_MOCK_MAP_GEOMETRY=0`: turn off the mock's own map geometry, which is otherwise served either way; `/art/game` then answers 404.
-- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the dashboard's "find a game" (default 5; 0 shows its empty state).
+- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 hides the table).
 - `H2_MOCK_QUIET=1`: end the games in progress after the history is seeded and start no more, so the stats home's Live Now panel shows the last game on a loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 - `H2_MOCK_ACTORS=1`: put the mock campaign's AI and vehicles (`mock/campaign.ts`: about thirty actors, two vehicles in use and three parked empty, and a `bsp` zone that changes every 25 s, added by a frame hook) into every game's frames; without it only games whose mode is `campaign` get them.
 - `H2_MOCK_INDOOR=1`: shut each arena's glb inside a busy building (an inward-facing shell, partition walls, an upper floor, pillars and two "machines", over two `bsp_<n>` zones and a `machines` node, plus a third zone marked cinematic-only and a `backdrop` of far hills), for trying the 3D view's cutaways and zones.
@@ -64,16 +64,64 @@ waypoints, kills, scores, endings and new games.
 The dashboard (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
 lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
-in, create and recover, then live now, games, find a game, players
+in, create and recover, then live now, games, players
 and settings (the ones that need an account show greyed with a hint).
-Signed in it is live now, games, find a game, friends, players,
+Signed in it is live now, games, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
+Server admins can open **Live admin** (`/dash/admin`) from Settings for
+usage, dedicated hosts, the raw event log and the style sample. On these
+pages, the Back link, B, Escape and Backspace go to the previous page
+when opened from the dashboard or another admin page. Direct visits fall
+back to Settings or Server. The **Live admin** breadcrumb opens the hub.
+In Usage, select a gamertag in **Top Accounts** to open its dashboard
+profile (`/dash/players/:tag`).
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
 The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
+
+### Browser notifications
+
+Signed-in players can open **Settings → notifications** to turn on alerts
+for games with friends or games with other players. Both start off. The
+browser stores the switches per server and account. Select **allow browser
+notifications** on that screen to let the browser show alerts in the
+background. A visible tab shows a dashboard toast regardless of browser
+permission. Both alerts open the session detail, and clicking a browser
+notification also asks the browser to focus the tab.
+
+`web/src/state/notifications.ts` follows session changes on the app's live
+stream. For those changes it reads the open sessions as the current account,
+so endpoint and visibility checks match the server's listing. A host or
+reported roster member can trigger a join alert while the game has a public
+seat and its visibility allows the reader to join. Session advertisements
+supply the lobby and its seats. Presence alone can also describe a solo
+game or a game without a current advertisement. Initial and reconnect reads
+establish a silent baseline. A tab alerts once per session and shows at most
+one alert every eight seconds. The mock streams changes to its seeded sessions
+so the settings and alerts work against the mock.
+
+Direct-message alerts need a message model with recipient-only events, stable
+message IDs and unread state. The current mailbox carries game invitations.
+See [Game-invite mailboxes](live-api.md#game-invite-mailboxes) and the
+[retail Live boundary](live-boundary.md).
+
+#### Offline delivery (not built)
+
+A service worker would subscribe through Web Push after the player opts in,
+display incoming alerts and open or focus the appropriate page. The
+`live-server` would add authenticated subscription registration and removal
+per account and browser, retain the endpoint and encryption keys privately,
+and check visibility and preferences when dispatching an event. Each server
+identity would have a dedicated P-256 VAPID key pair. Discovery would publish
+the public key, and the private key would live with the native server identity
+or in a Worker secret. An event-driven sender would deduplicate deliveries,
+retry transient failures and remove expired subscriptions. Native and
+Cloudflare deployments would share the subscription API, dispatch rules and
+parity tests, with storage and scheduled delivery behind their respective
+bindings. [Live Worker architecture](live-worker.md)
 
 ### Clanker Training
 
@@ -132,25 +180,19 @@ shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
 thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
 the menu column drops under the content.
 
-### Find a game
+### Open Games
 
-The dashboard's "find a game" (`/dash/sessions`,
-`src/dash/Sessions.tsx`) lists the open sessions hosts are advertising
-(`GET /v1/sessions`): the host, the map, the game and players against the
-most, with a plate of details, and one session's own screen with its roster
-at `/dash/sessions/:id`. Both ask the server again every four seconds while
-the tab is showing (`src/state/sessions.ts`). It is read-only: joining
-happens in the game.
+The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
+shows advertised sessions with the host, map, game type and player count.
+It polls `GET /v1/sessions` every four seconds while the tab is showing
+(`src/state/sessions.ts`). Join sessions from the game.
 
 ### Custom maps
 
 Custom maps (docs/game/maps.md §5). A session's advertisement and a game
 may carry a `map_id`, the map package played; `map` is then its base map.
-The app looks each `map_id` up once per page load (`GET /v1/maps/{id}`,
-`src/state/maps.ts`; the rules are pure in `src/lib/maps.ts`). "Find a
-game" shows a custom map's name with a "custom map" tag, its author and
-"needs download (2.4 MB)" from the package size; a 410 (taken down by an
-admin) reads "custom map unavailable", a 404 shows as a plain map. Games
+The app looks each game's `map_id` up once per page load
+(`GET /v1/maps/{id}`, `src/state/maps.ts`). Games
 are titled by the package name, else the base map's; stats and filters
 group by `map_id ?? map`, so a modded level is its own row ("<Base>
 (modded)" until its name is known). The picture is the package's image
@@ -169,18 +211,23 @@ id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
 
 ### Mods
 
-The stats site's Mods tab (`/games/halo2/mods`, `stats/Mods.tsx`)
-browses the server's map packages (`GET /v1/maps`): Newest or Most
-Downloaded, filtered by base map, category and a search box, paged with the
-server's `next` cursor (the earlier cursors are kept in the page so
-"Previous" works). The query lives in the URL (`?sort=popular&base=teacup&category=&q=&author=`).
-A mod's page (`/games/halo2/mods/:id`) shows its picture (else the base map's),
-author and credit, description, source link (http and https only), size,
-downloads, files, and Report for signed-in players. Downloading happens in
-the game. The page asks for the package without a token, because a token
-there counts a download. The pure rules are in `src/lib/mods.ts`. The mock serves eight more invented mods beside
-the three above, with categories, credits, source links and download
-counts, and sorts, filters and pages them as the server does.
+The Mods tab (`/games/halo2/mods`, `web/src/stats/Mods.tsx`) reads the
+pack catalog from `GET /v1/mod-packs`. One row shows the release, its
+makers, uploader, version, year, online-play advisory, source, map count
+and download size when available. Expand **View maps** to reach the
+individual map pages. Newest and Most Downloaded, base map, category,
+text and uploader filters apply to whole packs. The filters stay in the
+URL, and each results page holds up to twenty packs.
+
+A pack page (`/games/halo2/mods/packs/:id`) shows its cover, credits,
+description, source and gallery. With no pack artwork it uses its members'
+screenshots. A stock map preview is labelled **Stock map picture**.
+Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
+contents and layer sizes. Signed-in players can report a pack or a
+member. Its uploader can edit the release metadata and upload PNG, JPEG
+or WebP screenshots to a cover and two additional slots on either page.
+The Live server validates and stores the images. Installation runs in
+the game. The mock serves invented pack metadata and member artwork.
 
 ### Server stats
 
@@ -357,7 +404,8 @@ instead. The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
 inside Solid's `produce` and on plain objects in tests. On a dropped
 connection the client reconnects with exponential backoff and jitter and
 resumes after the last applied position (`from` is exclusive), so pages
-update without polling. Games outside the snapshot (deep links, older
+update without polling. The event reducer also flushes in hidden tabs for
+browser notifications. Games outside the snapshot (deep links, older
 games on a profile) are fetched on demand.
 
 ### Frames are not reactive

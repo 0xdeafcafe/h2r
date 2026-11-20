@@ -20,6 +20,7 @@ pub mod jcs;
 pub mod mailbox;
 pub mod map_details;
 pub mod maps;
+mod mod_packs;
 pub mod motd;
 pub mod mutes;
 pub mod matchmaking;
@@ -430,6 +431,9 @@ pub struct Discovery {
     /// Additional packed ingest versions this server accepts beyond the v7 baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ingest_frame_versions: Vec<u8>,
+    /// Private sim combat previews are accepted on the authenticated ingest socket.
+    #[serde(default)]
+    pub sim_combat: bool,
     pub id: String,
     pub api: String,
     pub keys: Vec<sign::Jwk>,
@@ -735,6 +739,8 @@ pub enum ClientMessage {
     Frame {
         frame: Box<game::Frame>,
     },
+    /// Latest combat diagnostics for one bot in a running private sim.
+    SimCombat { game_id: String, sample: Box<game::SimCombatSample> },
     /// One batch JWS over game event bodies (security §2, Batches).
     Events {
         game_id: String,

@@ -13,6 +13,7 @@ import { USAGE_SORTS, usageView } from "./usageView";
 import UsageBoard from "./UsageBoard";
 import { fetchUsage, fetchUsageAccounts, type AccountSort, type AccountsPage, type UsageOverview } from "../admin/usage";
 import { adminState } from "../admin/state";
+import { LIVE_ADMIN } from "../routes";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 
@@ -61,7 +62,7 @@ export default function UsagePage() {
   const gate = (title: string, body: JSX.Element) => <Panel title={title}><p class="dk-note">{body}</p></Panel>;
   return (
     <DeckPage
-      trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin"], ["usage"]]}
+      trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", LIVE_ADMIN], ["usage"]]}
       title="usage"
       back="/dash/server"
       filters={<Show when={admin() === true}>
@@ -74,8 +75,8 @@ export default function UsagePage() {
         {(me) => (
           <Show when={admin() === true} fallback={gate(admin() === null ? "checking" : "not an admin",
             admin() === null ? <>Asking the server whether {me().gamertag} is an admin…</> : <>{me().gamertag} is not an admin on this server.</>)}>
-            <Show when={error()}>{(e) => <div class="dk-span-12 dk-state dk-state--bad" role="alert"><b>✕</b> usage not read: {e()}</div>}</Show>
-            <Show when={view()} fallback={<Show when={!error()}><div class="dk-span-12 dk-state">reading usage…</div></Show>}>
+            <Show when={error()}>{(e) => <p class="dk-span-12 dk-state dk-state--bad" role="alert">Could not read usage. {e()}</p>}</Show>
+            <Show when={view()} fallback={<Show when={!error()}><p class="dk-span-12 dk-state" role="status">Reading usage…</p></Show>}>
               {(v) => (
                 <div class="dk-span-12 dk-grid dk-subgrid" classList={{ "dk-stale": busy() }}>
                   <UsageBoard view={v()} range={data()!.range} accounts={data()!.accounts.items}

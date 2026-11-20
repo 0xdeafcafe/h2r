@@ -153,6 +153,13 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           anyone reads at URL (its custom domain or r2.dev
                           address), then print the address the Worker's
                           H2_LIVE_GAME_ART_URL takes (docs/live/live-worker.md)
+  mods import DIR_OR_ARCHIVE --pack NAME --author NAME ... --source-url URL
+              [--year YYYY] [--cheating-pack | --not-for-online]
+              [--description TEXT] [--version VERSION] [--disc ISO] [--mappack ISO]
+              [--server URL] [--as GAMERTAG]
+                          import the release over your own retail maps and publish its pack
+  mods capture PACK_ID|MAP_ID [--server URL] [--as GAMERTAG] [--disc ISO] [--out IMAGE_DIR]
+                          capture modded maps and upload their screenshots
   maps publish DIR [--server URL] [--as GAMERTAG]
                           upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
@@ -195,6 +202,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("friend", Some("remove")) => friend(rest.shift(), FriendAction::Remove),
         ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
         ("team", _) => team_command(rest),
+        ("mods", Some("import")) => crate::live_pack_import::run(rest.shift()),
+        ("mods", Some("capture")) => crate::live_mod_capture::run(rest.shift()),
+        ("mods", _) => bail!("{USAGE}"),
         ("maps", _) => crate::live_maps::run(rest),
         ("hosts", Some("start")) => crate::live_hosts::start(rest.shift()),
         ("q", _) => crate::live_query::run(rest),

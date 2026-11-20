@@ -51,7 +51,7 @@
 //! The state is pure over a [`Source`] and tested without a guest or a
 //! server.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -119,7 +119,7 @@ const PACK_DESCRIPTIONS: u32 = PACK_ROWS + MAX_PACK_ROWS as u32;
 const _: () = assert!(PACK_DESCRIPTIONS + MAX_PACK_ROWS as u32 <= TEXTS.len);
 /// Rows the list (and a pack's list) shows at most.
 pub const MAX_ROWS: usize = LIMIT as usize;
-const MAX_PACK_ROWS: usize = MAX_ROWS + 1;
+const MAX_PACK_ROWS: usize = 1 + live_proto::maps::MAX_PACK_MEMBERS;
 /// Rows a map's page has: its action.
 pub const MAX_PAGE_ROWS: usize = 1;
 
@@ -148,7 +148,16 @@ impl Source for LiveSource {
         self.hle.check_mod_list()
     }
     fn list(&self, limit: u32, done: ListDone) -> Result<(), ModsError> {
-        self.hle.mod_list(limit, None, done)
+        self.hle.mod_list(
+            limit,
+            None,
+            Box::new(move |result| {
+                if let Ok(page) = &result {
+                    crate::map_select::remember_packs(&page.items);
+                }
+                done(result);
+            }),
+        )
     }
     fn install(&self, id: MapId, progress: Progress, done: InstallDone) -> Result<(), ModsError> {
         self.hle.install_mod(id, progress, done)
@@ -175,40 +184,53 @@ pub enum List {
     Failed(ModsError),
 }
 
-/// A row of the list: a map on its own, or a map pack (two or more maps
-/// listed with the same `pack`), at its newest map's place, its maps
-/// newest first.
+/// A release from the pack repository or a standalone map from a legacy server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Top {
     Map(ModEntry),
     Pack(String, Vec<ModEntry>),
 }
 
-/// `items` (newest first) as the list's rows ([`Top`]). A pack with only
-/// one map listed is that map's row.
-pub fn tops(items: &[ModEntry]) -> Vec<Top> {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for p in items.iter().filter_map(|e| e.pack.as_deref()) {
-        *counts.entry(p).or_default() += 1;
-    }
-    let mut shown = BTreeSet::new();
-    let mut out = Vec::new();
+/// Index released packs by identity. Entries from the legacy map endpoint
+/// without an explicit pack use their published pack name.
+fn grouped_rows(items: &[ModEntry]) -> Vec<Vec<&ModEntry>> {
+    let mut positions = BTreeMap::new();
+    let mut groups: Vec<Vec<&ModEntry>> = Vec::new();
     for e in items {
-        match e.pack.as_deref() {
-            Some(p) if counts[p] > 1 => {
-                if shown.insert(p) {
-                    let maps = items
-                        .iter()
-                        .filter(|x| x.pack.as_deref() == Some(p))
-                        .cloned()
-                        .collect();
-                    out.push(Top::Pack(p.to_string(), maps));
-                }
-            }
-            _ => out.push(Top::Map(e.clone())),
+        let group = match pack_key(e) {
+            Some(key) => *positions.entry(key).or_insert(groups.len()),
+            None => groups.len(),
+        };
+        if group == groups.len() {
+            groups.push(vec![e]);
+        } else {
+            groups[group].push(e);
         }
     }
-    out
+    groups
+}
+
+fn top(group: Vec<&ModEntry>) -> Top {
+    let first = group[0];
+    if let Some(name) = &first.pack
+        && (group.len() > 1 || first.pack_info.as_ref().is_some_and(|p| p.published_pack))
+    {
+        Top::Pack(name.clone(), group.into_iter().cloned().collect())
+    } else {
+        Top::Map(first.clone())
+    }
+}
+
+/// First-class releases always have a folder, including one-map releases.
+pub fn tops(items: &[ModEntry]) -> Vec<Top> {
+    grouped_rows(items).into_iter().map(top).collect()
+}
+
+fn pack_key(e: &ModEntry) -> Option<&str> {
+    e.pack_info
+        .as_ref()
+        .map(|p| p.id.as_str())
+        .or(e.pack.as_deref())
 }
 
 /// A download, as the screens show it.
@@ -457,6 +479,22 @@ pub struct Repo {
     changed: AtomicU64,
 }
 
+fn published_pack(maps: &[ModEntry]) -> Option<&mods::ModPack> {
+    maps.first()?
+        .pack_info
+        .as_ref()
+        .filter(|p| p.published_pack)
+}
+
+fn pack_action_label(maps: &[ModEntry]) -> Option<&'static str> {
+    let info = published_pack(maps)?;
+    if crate::map_select::packs::active(&info.id) {
+        Some("Use original maps")
+    } else {
+        crate::map_select::packs::playable(&info.id).then_some("Use pack")
+    }
+}
+
 fn newest(items: &[ModEntry]) -> u64 {
     items.iter().filter_map(|e| e.position).max().unwrap_or(0)
 }
@@ -595,7 +633,7 @@ impl Repo {
         let installed = match &r {
             Ok(items) => {
                 // A refresh may omit a map that is still on the current page.
-                let mut ids: BTreeSet<_> = items.iter().take(MAX_ROWS).map(|e| e.id).collect();
+                let mut ids: BTreeSet<_> = items.iter().map(|e| e.id).collect();
                 {
                     let g = self.lock();
                     if g.visiting
@@ -613,8 +651,7 @@ impl Repo {
             g.in_flight = false;
             g.failed = r.is_err();
             match r {
-                Ok(mut items) => {
-                    items.truncate(MAX_ROWS);
+                Ok(items) => {
                     eprintln!(
                         "mods: {} on the server, {} new",
                         items.len(),
@@ -716,7 +753,7 @@ impl Repo {
             return None;
         };
         let r = usize::try_from(row).ok().filter(|r| *r < MAX_ROWS)?;
-        tops(items).into_iter().nth(r)
+        grouped_rows(items).into_iter().nth(r).map(top)
     }
 
     /// The list's rows as they are now (none without a list).
@@ -812,7 +849,11 @@ impl Repo {
         } else if maps.iter().any(|e| Self::status(g, e) == "New") {
             "New".into()
         } else {
-            format!("{} maps", maps.len())
+            format!(
+                "{} {}",
+                maps.len(),
+                if maps.len() == 1 { "map" } else { "maps" }
+            )
         }
     }
 
@@ -905,6 +946,10 @@ impl Repo {
                 makers.push(m);
             }
         }
+        let pack = published_pack(maps);
+        let makers = pack
+            .and_then(|p| p.authors.clone())
+            .unwrap_or_else(|| makers.join(", "));
         let about = match maps.iter().find_map(|e| e.pack_description.as_deref()) {
             Some(d) => text_fit::paragraph(d, text_fit::SUMMARY, 2),
             None => {
@@ -918,10 +963,26 @@ impl Repo {
             }
         };
         let here = maps.iter().filter(|e| Self::is_here(g, &e.id)).count();
-        let size = maps.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
+        let size = pack
+            .and_then(|p| p.size)
+            .unwrap_or_else(|| maps.iter().fold(0u64, |sum, e| sum.saturating_add(e.size)));
+        let about = match pack.and_then(|p| p.advisory) {
+            Some(label) => {
+                let warning = match label {
+                    live_proto::maps::ModPackAdvisory::CheatingPack => "Cheating pack",
+                    live_proto::maps::ModPackAdvisory::NotForOnline => "Not for online",
+                };
+                format!("{warning}\n{}", text_fit::line(&about, text_fit::SUMMARY))
+            }
+            None => about,
+        };
         [
             text_fit::line(
-                &format!("{} maps, by {}", maps.len(), makers.join(", ")),
+                &format!(
+                    "{} {}, by {makers}",
+                    maps.len(),
+                    if maps.len() == 1 { "map" } else { "maps" }
+                ),
                 text_fit::SUMMARY,
             ),
             about,
@@ -937,7 +998,7 @@ impl Repo {
     /// The rows the list opens with.
     pub fn list_count(&self) -> usize {
         match &self.lock().list {
-            List::Loaded(items) => tops(items).len().clamp(1, MAX_ROWS),
+            List::Loaded(items) => grouped_rows(items).len().clamp(1, MAX_ROWS),
             _ => 1,
         }
     }
@@ -947,7 +1008,9 @@ impl Repo {
         let top = Self::top_at(&self.lock(), row);
         match top {
             Some(Top::Map(e)) => self.open_page(&e),
-            Some(Top::Pack(name, _)) => self.open_pack(&name),
+            Some(Top::Pack(name, maps)) => {
+                self.open_pack(&name, pack_key(&maps[0]).unwrap_or(&name))
+            }
             None if row == 0 => {
                 let mut g = self.lock();
                 if g.in_flight || matches!(g.list, List::Loading) {
@@ -980,8 +1043,8 @@ impl Repo {
     }
 
     /// Opens pack `name`'s list.
-    fn open_pack(&self, name: &str) -> Chosen {
-        self.lock().pack = Some(name.to_string());
+    fn open_pack(&self, name: &str, key: &str) -> Chosen {
+        self.lock().pack = Some(key.to_owned());
         self.texts
             .set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
         self.footer(PACK, Some(0));
@@ -1020,25 +1083,39 @@ impl Repo {
 
     /// Downloads every map of pack `name` neither here nor under way.
     fn download_all(self: &Arc<Self>, name: &str, maps: &[ModEntry]) -> String {
-        let wanted: Vec<&ModEntry> = {
-            let g = self.lock();
-            maps.iter()
-                .filter(|e| Self::download_prompt(&g, e).is_some())
-                .collect()
-        };
-        if wanted.is_empty() {
+        let mut queue = VecDeque::new();
+        {
+            let mut g = self.lock();
+            for e in maps {
+                if Self::download_prompt(&g, e).is_some() {
+                    g.installs.insert(
+                        e.id,
+                        Install::Downloading {
+                            done: 0,
+                            total: e.size,
+                        },
+                    );
+                    queue.push_back(e.id);
+                }
+            }
+        }
+        if queue.is_empty() {
             return format!("mods: {name}: every map is installed or downloading");
         }
-        for e in &wanted {
-            self.download(e);
-        }
-        format!("mods: {name}: downloading {} maps", wanted.len())
+        let count = queue.len();
+        self.touch();
+        self.start_next(Arc::new(Mutex::new(queue)));
+        format!(
+            "mods: {name}: downloading {count} {}",
+            if count == 1 { "map" } else { "maps" }
+        )
     }
 
     /// The open pack and its maps, newest first. A vanished pack has no actions.
     pub fn pack(&self) -> Option<(String, Vec<ModEntry>)> {
         let g = self.lock();
-        Some((g.pack.clone()?, Self::pack_maps(&g)?))
+        let maps = Self::pack_maps(&g)?;
+        Some((maps.first()?.pack.clone()?, maps))
     }
 
     fn pack_maps(g: &Inner) -> Option<Vec<ModEntry>> {
@@ -1046,9 +1123,24 @@ impl Repo {
         let List::Loaded(items) = &g.list else {
             return None;
         };
+        // Older snapshots kept the display title instead of the ID. Restore
+        // it only if a single release owns that title on this server.
+        let key = if items.iter().any(|e| pack_key(e) == Some(name.as_str())) {
+            name.as_str()
+        } else {
+            let mut matches = items
+                .iter()
+                .filter(|e| e.pack.as_ref() == Some(name))
+                .filter_map(pack_key);
+            let key = matches.next()?;
+            if matches.any(|other| other != key) {
+                return None;
+            }
+            key
+        };
         let maps: Vec<_> = items
             .iter()
-            .filter(|e| e.pack.as_deref() == Some(name.as_str()))
+            .filter(|e| pack_key(e) == Some(key))
             .cloned()
             .collect();
         (!maps.is_empty()).then_some(maps)
@@ -1064,7 +1156,8 @@ impl Repo {
 
     /// The rows the pack's list has: Download All, then its maps.
     pub fn pack_count(&self) -> usize {
-        self.pack().map_or(1, |(_, maps)| 1 + maps.len())
+        self.pack()
+            .map_or(1, |(_, maps)| 1 + maps.len().min(MAX_PACK_ROWS - 1))
     }
 
     /// Row `row` of the pack's list: Download All (or how the downloads
@@ -1084,7 +1177,13 @@ impl Repo {
             }
             let state = Self::pack_status(&g, &maps);
             return Some(if state == "Installed" {
-                "All Installed".into()
+                if published_pack(&maps).is_some() {
+                    pack_action_label(&maps)
+                        .unwrap_or("No free map slots")
+                        .into()
+                } else {
+                    "All Installed".into()
+                }
             } else {
                 state
             });
@@ -1093,11 +1192,15 @@ impl Repo {
         let g = self.lock();
         // The pack name is already in the header. Keep a distinctive map
         // name visible when the publisher prefixed every title with it.
-        let name = g
+        let name = e
             .pack
             .as_deref()
             .and_then(|pack| e.name.strip_prefix(pack))
-            .and_then(|suffix| suffix.strip_prefix(' '))
+            .and_then(|suffix| {
+                suffix
+                    .strip_prefix(':')
+                    .or_else(|| suffix.strip_prefix(' '))
+            })
             .map(str::trim_start)
             .filter(|suffix| !suffix.is_empty())
             .unwrap_or(&e.name);
@@ -1117,6 +1220,11 @@ impl Repo {
             let g = self.lock();
             let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
             let action = match Self::pack_status(&g, &maps).as_str() {
+                "Installed"
+                    if published_pack(&maps).is_some() && pack_action_label(&maps).is_none() =>
+                {
+                    "Free map slots to use this pack".into()
+                }
                 "Installed" => "Change Map > Mods".into(),
                 s if s.starts_with("Downloading") => s.to_string(),
                 _ => format!("{left} to download"),
@@ -1131,7 +1239,7 @@ impl Repo {
     pub fn press_pack(self: &Arc<Self>, row: i16) -> Chosen {
         if row == 0 {
             return match self.pack() {
-                Some((name, maps)) => Chosen::Stepped(self.download_all(&name, &maps)),
+                Some((name, maps)) => Chosen::Stepped(self.act_on_pack(&name, &maps)),
                 None => Chosen::Nothing,
             };
         }
@@ -1141,12 +1249,29 @@ impl Repo {
         }
     }
 
+    fn act_on_pack(self: &Arc<Self>, name: &str, maps: &[ModEntry]) -> String {
+        let installed = {
+            let g = self.lock();
+            maps.iter().all(|e| Self::is_here(&g, &e.id))
+        };
+        if installed && let Some(info) = published_pack(maps) {
+            let state = match crate::map_select::packs::toggle(&info.id) {
+                Some(true) => "selected for Change Map",
+                Some(false) => "original maps selected",
+                None => "waiting for a free slot for every member",
+            };
+            self.touch();
+            return format!("mods: {name}: {state}");
+        }
+        self.download_all(name, maps)
+    }
+
     /// X on the pack's row `row`: that map downloads; on Download All,
     /// every map not here.
     pub fn x_pack(self: &Arc<Self>, row: Option<i16>) -> String {
         match row {
             Some(0) => match self.pack() {
-                Some((name, maps)) => self.download_all(&name, &maps),
+                Some((name, maps)) => self.act_on_pack(&name, &maps),
                 None => "mods: no pack is open".into(),
             },
             Some(r) => match self.pack_entry(r) {
@@ -1319,7 +1444,17 @@ impl Repo {
             );
         }
         self.touch();
-        let id = e.id;
+        self.start_next(Arc::new(Mutex::new(VecDeque::from([e.id]))));
+        format!("mods: downloading {} ({})", e.name, e.id)
+    }
+
+    /// Queue members up front but install them one at a time. A large pack
+    /// uses one download thread at a time and retries only missing members.
+    fn start_next(self: &Arc<Self>, queue: Arc<Mutex<VecDeque<MapId>>>) {
+        let Some(id) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
+            return;
+        };
+        let next = Arc::clone(&queue);
         let (a, b) = (Arc::downgrade(self), Arc::downgrade(self));
         let r = self.source.install(
             id,
@@ -1334,13 +1469,14 @@ impl Repo {
             Box::new(move |r| {
                 if let Some(me) = b.upgrade() {
                     me.install_done(id, r.map(|_| ()));
+                    me.start_next(next);
                 }
             }),
         );
         if let Err(err) = r {
             self.install_done(id, Err(err));
+            self.start_next(queue);
         }
-        format!("mods: downloading {} ({})", e.name, e.id)
     }
 
     /// An install's end.
@@ -1475,9 +1611,13 @@ impl Repo {
             );
             self.texts.set(DETAIL_TITLE, &title);
         }
-        if let Some(name) = &pack {
+        if let Some(key) = &pack {
+            let name = self
+                .pack()
+                .map(|(name, _)| name)
+                .unwrap_or_else(|| key.clone());
             self.texts
-                .set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
+                .set(PACK_TITLE, &text_fit::line(&name, text_fit::TITLE));
         }
         self.set_panel();
         self.texts.rewrite_all();
@@ -1617,7 +1757,12 @@ impl Repo {
             },
             (PACK, Some(r)) => match Self::pack_maps(&g) {
                 Some(maps) if r == 0 => {
-                    let action = bulk(&maps);
+                    let action = bulk(&maps).or_else(|| {
+                        maps.iter()
+                            .all(|e| Self::is_here(&g, &e.id))
+                            .then(|| pack_action_label(&maps))
+                            .flatten()
+                    });
                     (action, action)
                 }
                 Some(maps) if r > 0 => match maps.get(r as usize - 1) {

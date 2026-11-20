@@ -4,9 +4,14 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, gameHref, movedStatsPath, movedTheaterPath, statsPath, theaterHref } from "../src/routes";
+import { dashboardPlayerHref, GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, gameHref, movedStatsPath, movedTheaterPath, statsPath, theaterHref } from "../src/routes";
 
 const ROOT = resolve(import.meta.dir, "../..");
+
+test("a Live account link opens the dashboard player and encodes the gamertag", () => {
+  expect(dashboardPlayerHref("Sneaky Pete")).toBe("/dash/players/Sneaky%20Pete");
+  expect(dashboardPlayerHref("R&D #1")).toBe("/dash/players/R%26D%20%231");
+});
 
 describe("the stats site's address", () => {
   test("it is Halo 2's, under /games", () => {

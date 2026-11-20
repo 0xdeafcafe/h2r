@@ -79,7 +79,7 @@ pub mod sim_physics;
 
 // The guest boundary and the named points live in guest-layout
 // (docs/dev/crate-structure.md, S2); these keep `engine::` paths.
-pub use guest_layout::{datum, handle, memory, points, tags, testing, view};
+pub use guest_layout::{datum, handle, memory, points, sound, tags, testing, view};
 pub use guest_layout::{point_loc, point_ret, point_sig, record};
 
 pub use handle::DatumHandle;

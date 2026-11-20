@@ -131,6 +131,30 @@ impl App {
         }
     }
 
+    pub(super) fn browse_shared_tag(&mut self, id: TagId) {
+        let Some(t) = self.tags.tag(id) else {
+            return;
+        };
+        let Some(cache) = t.elsewhere.as_deref() else {
+            return;
+        };
+        let result = self.open_browse(cache).and_then(|mut browse| {
+            let id = browse.doc.tags().iter()
+                .find(|tag| tag.group == t.group && tag.name == t.name && tag.size > 0)
+                .map(|tag| tag.id)
+                .ok_or_else(|| format!("{} is unavailable in {cache}", t.name))?;
+            browse.doc.selected = Some(id);
+            Ok(browse)
+        });
+        match result {
+            Ok(browse) => {
+                self.tag_browse = Some(browse);
+                self.tool = super::ToolKind::Tags;
+            }
+            Err(e) => self.error(format!("tags: {e}")),
+        }
+    }
+
     fn open_browse(&self, name: &str) -> Result<Browse, String> {
         let source = self
             .source

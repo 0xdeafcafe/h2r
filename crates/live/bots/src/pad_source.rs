@@ -63,6 +63,10 @@ pub trait PadSource: Send {
         None
     }
 
+    fn combat_stats(&self) -> Option<&crate::stats::CombatStats> {
+        None
+    }
+
     /// The phantom's action stream was interrupted by a new unit or match.
     fn reset_input(&mut self) {}
 

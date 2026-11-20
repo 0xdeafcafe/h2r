@@ -12,6 +12,7 @@ import { Show, createEffect, createSignal, on, onCleanup, onMount, type JSX } fr
 import { useLocation, useNavigate } from "@solidjs/router";
 import { CROSS_IN_MS, CROSS_OUT_MS, crosses, sideOf, type Side } from "./cross";
 import "../styles/dash-veil.css";
+import { NotificationToast } from "./Notifications";
 
 interface VeilState { to: Side; phase: "in" | "out" }
 
@@ -89,6 +90,7 @@ export default function Veil(props: { children?: JSX.Element }) {
     <>
       <Show when={side() === "stats"}><i class="xf-echo" aria-hidden="true" /></Show>
       {props.children}
+      <NotificationToast />
       <Show when={veil()}>{(v) => <div class={`xf xf--to-${v().to} xf--${v().phase}`} aria-hidden="true"><i class="xf-n" /><i class="xf-g" /></div>}</Show>
     </>
   );

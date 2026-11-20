@@ -322,6 +322,7 @@ mod management_tests {
 
     fn discovery() -> Discovery {
         Discovery {
+            sim_combat: false,
             ingest_frame_versions: Vec::new(),
             id: "live.test".into(),
             api: "/v1".into(),

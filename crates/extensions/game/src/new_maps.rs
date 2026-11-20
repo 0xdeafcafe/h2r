@@ -443,6 +443,13 @@ struct Marker {
     map_id: MapId,
 }
 
+/// The full package identity of the offer whose record names `file`.
+pub(super) fn package_id(dir: &Path, file: &str) -> Option<MapId> {
+    let marker = std::fs::read_to_string(dir.join(MARKER)).ok()?;
+    let marker: Marker = toml::from_str(&marker).ok()?;
+    marker.map.eq_ignore_ascii_case(file).then_some(marker.map_id)
+}
+
 /// Write the data the retail content scan consumes. The .map entry is
 /// a directory placeholder, with the actual bytes resolved by the VFS.
 fn install_one(

@@ -2,7 +2,7 @@
 // (docs/live/live-api.md "Sessions"). The web only reads them; joining happens
 // in the game. Everything here is pure.
 
-import { dedicatedHostLabel, type DedicatedHostFields } from "./hosts";
+import type { DedicatedHostFields } from "./hosts";
 
 export interface SessionSlots {
   public_filled: number;
@@ -84,13 +84,6 @@ export function campaignLine(s: Pick<Session, "flags" | "campaign">, title?: (st
   return isCoop(s) && s.campaign ? `${levelName(s.campaign, title)}, ${difficultyName(s.campaign.difficulty)}` : null;
 }
 
-/** A co-op session's players by gamertag: the host first, then those who
- *  joined in XUID order. `tagOf` names an XUID the web may know. */
-export function coopPlayers(s: Pick<Session, "host_xuid" | "host_gamertag" | "players">, tagOf: (xuid: string) => string | undefined = () => undefined): string[] {
-  const guests = Object.keys(s.players).filter((x) => x !== s.host_xuid).sort().map((x) => tagOf(x) ?? "guest");
-  return [s.host_gamertag, ...guests];
-}
-
 export type Visibility = "public" | "friends" | "invite";
 
 const visibility = (v: unknown): Visibility => (v === "friends" || v === "invite" ? v : "public");
@@ -149,11 +142,6 @@ export function listed(s: Pick<Session, "visibility">): boolean {
   return s.visibility !== "invite";
 }
 
-/** Who the host lets find the game, in words. */
-export function visibilityText(s: Pick<Session, "visibility">): string {
-  return s.visibility === "friends" ? "friends only" : s.visibility === "invite" ? "invite only" : "everyone";
-}
-
 /** Players in the session and the most it holds. The slots are the host's
  *  own count; a longer reported roster wins, up to the room there is. */
 export function seats(s: Session): { filled: number; max: number; open: number } {
@@ -193,40 +181,4 @@ export function sortSessions(list: readonly Session[]): Session[] {
     return Number(a.open === 0) - Number(b.open === 0) || b.filled - a.filled
       || x.host_gamertag.localeCompare(y.host_gamertag) || x.session_id.localeCompare(y.session_id);
   });
-}
-
-/** A list row: the host, then the map and players against the most.
- *  `custom` is a custom map's package name, which replaces the map's. */
-export function sessionRow(s: Session, title?: (stem: string) => string, custom?: string | null): { key: string; label: string; meta: string } {
-  const n = seats(s);
-  const label = dedicatedHostLabel(s) ?? s.host_gamertag;
-  if (isCoop(s) && s.campaign) {
-    const ping = pingText(s);
-    return { key: s.session_id, label, meta: `co-op ${levelName(s.campaign, title)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
-  }
-  return { key: s.session_id, label, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
-}
-
-/** "3 open", "full", or "closed" for a session no longer open. */
-export function roomText(s: Session): string {
-  if (s.state !== "open") return s.state === "expired" ? "expired" : "closed";
-  const n = seats(s);
-  return n.open ? `${n.open} open` : "full";
-}
-
-/** How long ago something started, in words: "just opened", "4 min", "2 h". */
-export function openFor(since: string | null, now: number): string {
-  const t = since ? Date.parse(since) : NaN;
-  if (!Number.isFinite(t)) return "unknown";
-  const s = Math.max(0, (now - t) / 1000);
-  if (s < 60) return "just opened";
-  if (s < 3600) return `${Math.floor(s / 60)} min`;
-  return `${Math.floor(s / 3600)} h`;
-}
-
-/** Keeps the selection on the same session when the list refreshes: its
- *  new index, else the nearest row that still exists. */
-export function keepSelection(rows: readonly { key: string }[], key: string | null, index: number): number {
-  const i = key ? rows.findIndex((r) => r.key === key) : -1;
-  return i >= 0 ? i : Math.max(0, Math.min(index, rows.length - 1));
 }

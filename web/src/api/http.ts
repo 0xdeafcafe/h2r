@@ -1,7 +1,7 @@
 // REST helpers. Every URL derives from the chosen server target.
 
 import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
-import type { SimDetail, SimFilter, SimRun } from "../admin/simRuns";
+import type { SimDetail, SimFilter, SimFilterOptions, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
 import { openHostFilm } from "./host-film";
@@ -183,8 +183,12 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
-    simRuns: async (filters: SimFilter, s?: AbortSignal) =>
-      page<SimRun>(await getJson(u("/admin/sim-runs", { ...filters }), s, await who())),
+    simRuns: async (filters: SimFilter, s?: AbortSignal) => {
+      const body = await getJson<Page<SimRun> & { options?: SimFilterOptions }>(
+        u("/admin/sim-runs", { ...filters }), s, await who(),
+      );
+      return { ...page<SimRun>(body), options: body.options };
+    },
     simRun: async (id: string, s?: AbortSignal) =>
       getJson<SimDetail>(u("/admin/sim-runs/" + encodeURIComponent(id)), s, await who()),
     /** All recorded frames in a tick range: from the game's frame chunks
@@ -221,12 +225,20 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  credit, author and base map. Sent without a token. */
     maps: async (q: { sort?: "new" | "popular"; base?: string; author?: string; category?: string; q?: string; limit?: number; cursor?: string | null } = {}, s?: AbortSignal) =>
       page<unknown>(await getJson(u("/maps", q), s)),
+    modPacks: async (s?: AbortSignal) => page<unknown>(await getJson(u("/mod-packs"), s, await who())),
+    modPack: async (id: string, s?: AbortSignal) =>
+      getJson<{ pack: unknown }>(u("/mod-packs/" + encodeURIComponent(id)), s, await who()),
     /** Every published package, following cursors (bounded). */
     allMaps: (q: { base?: string; author?: string } = {}, s?: AbortSignal) => all<unknown>("/maps", { ...q, limit: 100 }, s, 20),
     /** One package by map_id, as status and body: 404 (not a package) and
      *  410 (taken down) are answers, not errors (lib/maps.ts reads them). */
     mapPackage: async (id: string, s?: AbortSignal): Promise<{ status: number; body?: unknown }> => {
-      const r = await fetch(u("/maps/" + encodeURIComponent(id)), { signal: s, headers: { accept: "application/json" } });
+      const url = u("/maps/" + encodeURIComponent(id));
+      const init = { signal: s, headers: { accept: "application/json" } };
+      // An authenticated manifest fetch counts a download. Use it only
+      // when a private server specifically asks us to sign in.
+      let r = await fetch(url, init);
+      if (r.status === 401 || r.status === 403) r = await reading(url, init);
       let body: unknown;
       try { body = await r.json(); } catch { /* not JSON */ }
       return { status: r.status, body };
@@ -241,8 +253,6 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  friends, invite-only ones to their players; without it only public ones. */
     coopGames: async (q: { player?: string; limit?: number; cursor?: string } = {}, s?: AbortSignal, bearer?: string | null) =>
       page<unknown>(await getJson(u("/coop/games", q), s, bearer === undefined ? await who() : bearer)),
-    /** One session by id, open or not. */
-    session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
     /** A player's level and experience per ranked playlist (docs/live/live-api.md "Ranks"); the raw body. */
     ranks: async (player: string, s?: AbortSignal) => getJson<unknown>(u("/accounts/" + encodeURIComponent(player) + "/ranks"), s, await who()),
     /** How many players commended `player` (a gamertag or XUID), by kind

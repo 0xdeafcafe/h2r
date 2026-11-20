@@ -798,7 +798,7 @@ impl FrameCapture {
             probe_seq: None,
             bound: None,
             scene_hash: None,
-            path: dir.join(format!("capture-{seq}-tick-{target}.png")),
+            path: dir.join(format!("capture-{}-{seq}-tick-{target}.png", std::process::id())),
             outcome: None,
         };
         if let Some(pass) = p.pass
@@ -1422,7 +1422,7 @@ mod frame_scene_tests {
         c.present(42);
         assert_eq!(c.wanted(41), None, "only the bound present");
         let path = c.wanted(42).unwrap();
-        assert_eq!(path, dir.join(format!("capture-{seq}-tick-12.png")));
+        assert_eq!(path, dir.join(format!("capture-{}-{seq}-tick-12.png", std::process::id())));
         assert_eq!(c.finish(seq), None, "not written yet");
         c.written(42, Ok(()));
         assert_eq!(c.wanted(42), None);

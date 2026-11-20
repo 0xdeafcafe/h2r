@@ -585,6 +585,15 @@ server roster carries its rostered `xuid`, and the game carries the
 roster's `session_id`. A host-made phantom has no Live account, stats
 page, career or rank.
 
+For a streamed Clanker Training run, the frame sender reads completed
+brain diagnostics every five wall seconds and sends one `sim_combat`
+message per bot on the authenticated ingest socket. Discovery advertises
+this optional message through `sim_combat`. Each sample carries the
+bot's decision tick, current goal, weapon and target range, last action,
+combat counters and weapon accuracy. The server keeps the latest sample
+per player for the private run detail. Deferred runs deliver these
+figures in the final report. [Clanker Training](live-api.md#clanker-training)
+
 ## Scenario objects
 
 `Frame.objects` lists the scenario's placed objects that are not where the

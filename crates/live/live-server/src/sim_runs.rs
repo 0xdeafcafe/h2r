@@ -1,7 +1,7 @@
 //! Private Clanker Training matches. Both Live homes use the same game
 //! stream, frame archive, blob store and HTTP handlers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use axum::Router;
@@ -29,7 +29,7 @@ pub(crate) const REPORT_STORED: &str = "SimReportStored";
 pub(crate) const REPORT_PREFIX: &str = "sim/";
 pub(crate) const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAX_TICKS: u64 = 30 * 60 * 60;
-pub(crate) const MAX_REPORT: usize = 512 * 1024;
+pub(crate) const MAX_REPORT: usize = game::MAX_SIM_REPORT_BYTES;
 const MAX_METADATA: usize = 16 * 1024;
 const PAGE_SIZE: usize = 50;
 /// One of the retail session's peer slots belongs to the playerless host.
@@ -179,8 +179,57 @@ fn lookup<'a>(
 pub(crate) struct Filter {
     map: Option<String>,
     tuning: Option<String>,
+    tuning_choice: Option<String>,
+    include_options: Option<u8>,
     batch: Option<String>,
     before: Option<u64>,
+}
+
+#[derive(Default, Serialize)]
+struct FilterOptions<'a> {
+    maps: BTreeSet<&'a str>,
+    arms: BTreeSet<&'a str>,
+    batches: BTreeSet<&'a str>,
+    custom_tuning: bool,
+    default_tuning: bool,
+}
+
+#[derive(PartialEq, Eq)]
+enum Tuning<'a> {
+    Arm(&'a str),
+    Custom,
+    Default,
+}
+
+impl<'a> Tuning<'a> {
+    fn of(bot: &'a Value) -> Self {
+        if let Some(arm) = bot["arm"].as_str().filter(|arm| !arm.is_empty()) {
+            Self::Arm(arm)
+        } else if bot["tuning"]
+            .as_object()
+            .is_some_and(|tuning| !tuning.is_empty())
+        {
+            Self::Custom
+        } else {
+            Self::Default
+        }
+    }
+
+    fn choice(value: &'a str) -> Option<Self> {
+        match value {
+            "custom" => Some(Self::Custom),
+            "default" => Some(Self::Default),
+            _ => value.strip_prefix("arm:").map(Self::Arm),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RunPage<'a> {
+    #[serde(flatten)]
+    page: Page<Run<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<FilterOptions<'a>>,
 }
 
 /// A dedicated start path makes an older server refuse an upload rather
@@ -214,9 +263,35 @@ pub(crate) async fn list(
         .as_deref()
         .filter(|t| !t.is_empty())
         .map(str::to_lowercase);
-    let items: Vec<_> = state
-        .games_newest()
-        .filter(|g| filter.before.is_none_or(|b| g.position < b))
+    let options = (filter.include_options == Some(1)).then(|| {
+        let mut options = FilterOptions::default();
+        for g in state.games.values() {
+            let Some(sim) = &g.started.game.sim else {
+                continue;
+            };
+            options.maps.insert(&g.started.game.map);
+            if let Some(batch) = &sim.batch_id {
+                options.batches.insert(batch);
+            }
+            for bot in &sim.bots {
+                match Tuning::of(bot) {
+                    Tuning::Arm(arm) => {
+                        options.arms.insert(arm);
+                    }
+                    Tuning::Custom => options.custom_tuning = true,
+                    Tuning::Default => options.default_tuning = true,
+                }
+            }
+        }
+        options
+    });
+    let tuning_choice = filter
+        .tuning_choice
+        .as_deref()
+        .map(|value| Tuning::choice(value).ok_or_else(|| invalid("unknown tuning choice")))
+        .transpose()?;
+    let mut items: Vec<_> = state
+        .games_before(filter.before)
         .filter_map(|g| Some((g, g.started.game.sim.as_ref()?)))
         .filter(|(g, sim)| {
             filter
@@ -227,6 +302,9 @@ pub(crate) async fn list(
                     .batch
                     .as_ref()
                     .is_none_or(|id| sim.batch_id.as_ref() == Some(id))
+                && tuning_choice.as_ref().is_none_or(|choice| {
+                    sim.bots.iter().any(|bot| Tuning::of(bot).eq(choice))
+                })
                 && tuning.as_ref().is_none_or(|term| {
                     sim.bots.iter().any(|bot| {
                         bot["arm"]
@@ -241,22 +319,27 @@ pub(crate) async fn list(
                     })
                 })
         })
-        .take(PAGE_SIZE)
+        .take(PAGE_SIZE + 1)
         .collect();
-    let next = items
-        .last()
-        .filter(|_| items.len() == PAGE_SIZE)
-        .map(|(g, _)| g.position.to_string());
+    let next = if items.len() > PAGE_SIZE {
+        items.truncate(PAGE_SIZE);
+        items.last().map(|(g, _)| g.position.to_string())
+    } else {
+        None
+    };
     let items = items
         .into_iter()
         .map(|(g, sim)| Run::new(g, sim, live.sim_tick(&g.started.game_id), now))
         .collect();
     Ok(json(
         StatusCode::OK,
-        &Page {
-            items,
-            next,
-            position: live.position(),
+        &RunPage {
+            page: Page {
+                items,
+                next,
+                position: live.position(),
+            },
+            options,
         },
     ))
 }
@@ -265,6 +348,7 @@ pub(crate) async fn list(
 struct Detail<'a> {
     run: Run<'a>,
     game: GameDetail,
+    live_combat: Vec<game::SimCombatSample>,
     report: Option<Value>,
 }
 
@@ -280,11 +364,12 @@ pub(crate) async fn detail(
     };
     let sim = game.started.game.sim.as_ref().expect("looked up a sim");
     let report = read_report(&live, &id, game.sim_report.as_ref()).await?;
-    Ok(json(
+    Ok(private_json(
         StatusCode::OK,
         &Detail {
             run: Run::new(&game, sim, live.sim_tick(&id), now()),
             game: live.game(&id)?,
+            live_combat: if game.ended.is_none() { live.sim_combat(&id) } else { Vec::new() },
             report,
         },
     ))
@@ -413,7 +498,7 @@ fn private_json<T: Serialize>(status: StatusCode, body: &T) -> Response {
     let mut reply = json(status, body);
     reply
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     reply
 }
 

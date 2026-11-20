@@ -77,6 +77,7 @@ What goes through actions, from both sides:
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
+| Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
@@ -119,6 +120,16 @@ and fields it holds (a removal's count word shows as `count`), and the
 blocks that grew; for playlists, which playlists changed and how; for a
 variant, its settings off the defaults.
 
+`source.maps` returns `map_entries` for the open Halo 2 source and
+`halo1_maps` for the read-only Halo 1 source. Each entry has the file
+stem (`map`), display name (`label`) and section (`group`). The groups
+in those arrays are `multiplayer`, `campaign`, `other` and
+`shared_and_menu`, in that order. Each section is sorted by display
+name, using file names while the cards load or when a card is missing.
+`map_pack` and `packages` entries also report `group` (`map_pack`,
+`packages` or `halo1_sandbox`) and use display-name order within each
+group. `maps` remains the array of Halo 2 file stems in source order.
+
 ## Methods
 
 `h2 studio methods` is the full list with shapes and an example per
@@ -139,6 +150,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -163,6 +175,32 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Tag chains.** `tag.chain {"block":"weapons","index":0}` follows a
+  placement's palette or item reference in the open map.
+  `tag.chain {"tag":"weap","depth":2}` starts at a tag in the document
+  shown by the Tags tool. Both read current tag edits. `depth` counts
+  references below the root (default 3, maximum 8). The response is
+  `{root, truncated}`, with a null root for a placement without a tag.
+  Each node has `tag` (ID), `group`, `name`, `via` (the field path),
+  `label` (a named shortcut, or null), `where` (`here` or `shared`),
+  `cache` (the shared cache name, or null), `variant` (model variant
+  name or ID, if known), `cycle` and `children`. A missing target keeps
+  its ID and path with null tag metadata. Cycles stop the current branch.
+  `truncated` means a traversal limit beyond the requested depth cuts
+  the result short. Live handles and usage counts belong to later slices
+  of the [click-to-edit design](click-to-edit.md).
+- **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
+  a tag the inspector's selection and clears the placement selection.
+  `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
+  optionally, one field by its registry path. It keeps the viewport
+  selection. Both resolve tags in the open map. `nav.status`,
+  `nav.back` and `nav.forward` take no params. All `nav.*` methods
+  return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
+  `selected` is a placement `{block,index}`, a tag `{tag}` or null.
+  `tag` and `path` identify the focused tag and field, or are null.
+  Breadcrumbs begin with the placement when selected, followed by tags
+  as `{tag,group,name}`. Back and forward restore the tag and field.
+  At either end of history the call returns the current state.
 - **Other maps and tag bundles.** `tag.browse {"map": "shared"}` shows
   another map of the source in the Tags tool, read-only (`shared`,
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
@@ -203,6 +241,18 @@ Notes on some:
   `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
+- **Live mirror.** The paired window reads the game's `objects` and
+  `players` stream. `mirror.status` reports the stream state, layers,
+  frame rate, presentation delay, dropped and skipped counts, and the
+  store's latest, earliest retained and shown ticks. `mirror.objects`
+  returns `{tick, objects, truncated}` for the viewport sample.
+  `at_tick` selects an exact game sample in the interpolation window
+  and answers `REFUSED` when it has expired. Each object has its salted
+  `id`, tag group `kind`, definition `tag`, `pos`, basis, scale,
+  velocity, flags, parent, vitality, placement and node count. Positions
+  of attached objects are relative to their parents. `near` takes
+  `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
+  streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.

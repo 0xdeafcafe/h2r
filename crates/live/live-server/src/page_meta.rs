@@ -814,8 +814,8 @@ mod tests {
     fn static_pages_have_their_section_and_side() {
         let m = describe_static("/");
         assert_eq!((m.page, m.side), (None, Side::Dash));
-        let m = describe_static("/dash/sessions");
-        assert_eq!((m.page.as_deref(), m.side), (Some("Sessions"), Side::Dash));
+        let m = describe_static("/dash/settings");
+        assert_eq!((m.page.as_deref(), m.side), (Some("Settings"), Side::Dash));
         let m = describe_static("/games/halo2");
         assert_eq!((m.page, m.side), (None, Side::Stats));
         let m = describe_static("/games/halo2/ranks/team-slayer");

@@ -45,7 +45,6 @@ pub const PUBLIC_READS: &[&str] = &[
     "stats",
     "events",
     "teams",
-    "maps",
     "ranks",
     "page-meta",
 ];
@@ -66,7 +65,10 @@ pub fn policy(
     }
     if let Some(rest) = path.strip_prefix("/v1/") {
         let first = rest.split('/').next().unwrap_or("");
-        let public = !authorized && status.is_success() && PUBLIC_READS.contains(&first);
+        // Retail outlines are independent of the moderated mod catalog.
+        let outline = first == "maps" && rest.ends_with("/outline");
+        let public =
+            !authorized && status.is_success() && (PUBLIC_READS.contains(&first) || outline);
         return Some(if public { PUBLIC } else { PRIVATE });
     }
     // Not the app's HTML, which answers a missing asset too (a year of
@@ -178,6 +180,15 @@ mod tests {
             Some(PRIVATE)
         );
         assert_eq!(policy("/v1/sessions", false, ok, false), Some(PRIVATE));
+        assert_eq!(policy("/v1/maps", false, ok, false), Some(PRIVATE));
+        assert_eq!(
+            policy("/v1/maps/sample/image", false, ok, false),
+            Some(PRIVATE)
+        );
+        assert_eq!(
+            policy("/v1/maps/lockout/outline", false, ok, false),
+            Some(PUBLIC)
+        );
         assert_eq!(policy("/v1/admin/server", false, ok, false), Some(PRIVATE));
         assert_eq!(
             policy("/v1/stream", false, StatusCode::SWITCHING_PROTOCOLS, false),

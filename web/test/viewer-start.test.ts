@@ -10,7 +10,7 @@ const roster = [
   { index: 1, name: "Focus", game_name: null, xuid: null },
 ];
 const here = (index: number) => ({ index, alive: false });
-const player = (index: number) => ({ kind: "player", index });
+const player = (index: number) => ({ kind: "player" as const, index });
 
 test("the address accepts names and xuids after matching case and whitespace", () => {
   expect(addressPlayer(roster, " pOiNt ")).toBe(2);

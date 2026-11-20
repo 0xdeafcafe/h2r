@@ -3,6 +3,7 @@ import { Show, createMemo, createResource, createSignal, onCleanup } from "solid
 import { fetchHosts, stopHost, type HostsAdmin } from "../admin/hosts";
 import { adminState } from "../admin/state";
 import type { AdminHosts } from "../lib/hosts";
+import { LIVE_ADMIN } from "../routes";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { DeckPage, Panel } from "./Deck";
@@ -18,7 +19,7 @@ export default function HostsPage() {
   });
 
   return (
-    <DeckPage title="Hosts" trail={[["dashboard", "/"], ["server", SERVER], ["live admin", "/dash/admin"], ["hosts"]]} back={SERVER}>
+    <DeckPage title="Hosts" trail={[["dashboard", "/"], ["server", SERVER], ["live admin", LIVE_ADMIN], ["hosts"]]} back={SERVER}>
       <Show when={identity.me()} fallback={
         <Panel title="Sign in first"><p class="dk-note"><A href="/dash/signin">Sign in</A> with a server admin account to manage hosts.</p></Panel>
       }>
@@ -71,7 +72,7 @@ function HostsInventory(props: { context: HostsAdmin }) {
 
   return (
     <>
-      <div class="dk-span-12">
+      <div class="dk-span-12 dk-toolbar">
         <button type="button" class="dk-pill" onClick={() => void refetch()} disabled={busy()}>
           {hosts.loading ? "Reading hosts…" : "Refresh"}
         </button>

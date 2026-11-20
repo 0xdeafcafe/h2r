@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_proto::RpcError;
+use editor_core::map_groups::MapGroup;
 use scenario_edit::layout;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -14,6 +15,7 @@ use super::params::block_name;
 use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
+use crate::app::map_cards::MapEntry;
 use crate::app::{Action, ToolKind};
 
 /// A `doc` param as a tool (default: the tool shown).
@@ -157,6 +159,15 @@ pub fn outside_git(path: &Path) -> Result<(), RpcError> {
     Ok(())
 }
 
+fn source_entries(entries: Vec<MapEntry<'_>>) -> Vec<Value> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            json!({ "map": entry.stem, "label": entry.label, "group": entry.group.key() })
+        })
+        .collect()
+}
+
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::SOURCE_OPEN => {
@@ -170,12 +181,22 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let log = run(app, Action::OpenSource(path), p.bool("discard")?)?;
             Ok(json!({ "maps": app.maps(), "loaded": app.loaded_map(), "log": log }))
         }
-        m::SOURCE_MAPS => Ok(json!({
-            "source": app.source().map(|s| s.path().display().to_string()),
-            "maps": app.maps(),
-            "loaded": app.loaded_map(),
-            "packages": app.packages().iter().map(|e| json!({"key": e.key(), "label": e.label(), "map": e.map})).collect::<Vec<_>>(),
-        })),
+        m::SOURCE_MAPS => {
+            app.poll_cards();
+            Ok(json!({
+                "source": app.source().map(|s| s.path().display().to_string()),
+                "maps": app.maps(),
+                "map_entries": source_entries(app.halo2_map_entries()),
+                "halo1_maps": source_entries(app.halo1_map_entries()),
+                "loaded": app.loaded_map(),
+                "map_pack": app.map_pack_entries().into_iter().map(|m| json!({
+                    "map": m.map, "label": m.name, "group": MapGroup::MapPack.key(),
+                })).collect::<Vec<_>>(),
+                "packages": app.packages().iter().map(|e| json!({
+                    "key": e.key(), "label": e.label(), "map": e.map, "group": e.map_group().key(),
+                })).collect::<Vec<_>>(),
+            }))
+        }
         m::DOC_LIST => Ok(list(app)),
         m::DOC_OPEN => open(app, p),
         m::DOC_SAVE => save(app, map_for_tags(doc_kind(app, p)?)),

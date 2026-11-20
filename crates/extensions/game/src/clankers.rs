@@ -355,11 +355,8 @@ pub struct RosterSeat {
     /// The roster's team; `None`: the host balances.
     pub team: Option<u8>,
     pub skill: Skill,
-    /// The personality's seed, for the brain: a persistent bot plays the
-    /// same way every game.
+    /// Seed for moment-to-moment play. The gamertag determines trait weights.
     pub seed: u64,
-    /// The personality's taunt (0 never; the page's Taunts off makes it 0).
-    pub taunt: f32,
 }
 
 /// A checked roster supplies the identity, team and brain. The player
@@ -376,7 +373,6 @@ pub fn roster_seats(roster: &live_proto::bots::Roster) -> Vec<RosterSeat> {
             team: b.team,
             skill: skill_of(b.skill),
             seed: b.personality.seed,
-            taunt: b.personality.taunt,
         })
         .collect()
 }
@@ -593,14 +589,18 @@ struct Clanker {
     skill: Arc<AtomicU8>,
     /// The page's Taunts (shared by every Clanker of the driver).
     taunts: Arc<AtomicBool>,
-    /// Its taunt with Taunts on: the default, or a roster bot's own.
-    taunt: f32,
+    /// One atomic sample of both combat choices.
+    style: Arc<AtomicU8>,
     /// The page's Glitches (a [`GLITCHES`] value; shared by every
     /// Clanker of the driver).
     glitches: Arc<AtomicU8>,
 }
 
 impl PadSource for Clanker {
+    fn combat_stats(&self) -> Option<&bots::stats::CombatStats> {
+        Some(self.brain.combat_stats())
+    }
+
     fn brain_view(&self) -> Option<bots::BrainView> {
         Some(self.brain.view())
     }
@@ -635,12 +635,19 @@ impl PadSource for Clanker {
 }
 
 impl Clanker {
-    /// The page's skill, taunts and glitches, as they are now.
+    /// Apply current custom-game choices before sampling this seat.
     fn follow_page(&mut self) {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
         self.brain.set_skill(want);
+        let style = self.style.load(Ordering::Relaxed);
+        let bias = match style & 3 {
+            0 => -0.35,
+            2 => 0.35,
+            _ => 0.0,
+        };
+        self.brain.set_clanker_style(bias, style & TWITCHY_BIT != 0);
         self.brain.mind.emote.taunt = if self.taunts.load(Ordering::Relaxed) {
-            self.taunt
+            bots::emote::DEFAULT_TAUNT
         } else {
             0.0
         };
@@ -649,22 +656,31 @@ impl Clanker {
     }
 }
 
-/// What the page asks for: how many bots (0 when off) at which
-/// difficulty, whether they taunt, and their glitches (a [`GLITCHES`]
-/// value: 0 Off, 1 Some, 2 Lots).
+/// The host's custom-game roster size (zero when off) and combat options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub count: usize,
     pub difficulty: i64,
+    pub aggression: u8,
+    pub twitchy: bool,
     pub taunts: bool,
     pub glitches: u8,
 }
 
+/// The low two bits hold the Aggression row. The next bit selects Twitchy.
+const TWITCHY_BIT: u8 = 4;
+
 impl Want {
+    fn combat_style(self) -> u8 {
+        self.aggression | if self.twitchy { TWITCHY_BIT } else { 0 }
+    }
+
     /// No bots.
     pub const OFF: Want = Want {
         count: 0,
         difficulty: 1,
+        aggression: 1,
+        twitchy: false,
         taunts: true,
         glitches: 0,
     };
@@ -679,6 +695,11 @@ impl Want {
             Some(Value::Int(d)) => d,
             _ => 1,
         };
+        let aggression = match store.get(AGGRESSION.key) {
+            Some(Value::Int(n)) => n.clamp(0, 2) as u8,
+            _ => 1,
+        };
+        let twitchy = matches!(store.get(AIM_STYLE.key), Some(Value::Int(1)));
         let taunts = !matches!(store.get(TAUNTS.key), Some(Value::Bool(false)));
         let glitches = match store.get(GLITCHES.key) {
             Some(Value::Int(g)) => g.clamp(0, 2) as u8,
@@ -687,6 +708,8 @@ impl Want {
         Want {
             count: if on { count } else { 0 },
             difficulty,
+            aggression,
+            twitchy,
             taunts,
             glitches,
         }
@@ -717,14 +740,16 @@ struct Own {
 /// With Live ([`Driver::with_rosters`]) and a session this console hosts,
 /// every bot is one of the server's bot accounts (§9.5): the driver asks
 /// for a roster of the whole count (`POST /v1/games/bots`) and, once it
-/// comes, the phantoms run its bots in place of the host-made "Clanker
-/// N"s. It asks again when the count, the difficulty or the session
+/// comes, the phantoms run its bots in place of the host-made
+/// roster. It asks again when the count, the difficulty or the session
 /// changes; a new roster replaces the old. Without Live, or until a
 /// roster comes (or when none does), the phantoms are host-made: local
 /// xuids, which no game record ever carries.
 pub struct Driver {
     phantoms: Phantoms,
+    local_names: Vec<String>,
     own: Mutex<Vec<Own>>,
+    style: Arc<AtomicU8>,
     taunts: Arc<AtomicBool>,
     glitches: Arc<AtomicU8>,
     rosters: Option<Arc<dyn Rosters>>,
@@ -757,9 +782,15 @@ fn session_bots_of(own: &[Own], joined: impl Fn(PhantomHandle) -> bool) -> Vec<l
 impl Driver {
     /// Phantom peers only.
     pub fn new(phantoms: Phantoms) -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
         Driver {
             phantoms,
+            local_names: live_proto::bots::names::Draw::new(seed).local_roster(),
             own: Mutex::new(Vec::new()),
+            style: Arc::new(AtomicU8::new(Want::OFF.combat_style())),
             taunts: Arc::new(AtomicBool::new(true)),
             glitches: Arc::new(AtomicU8::new(0)),
             rosters: None,
@@ -1054,6 +1085,10 @@ impl Driver {
         );
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
+        // A Clankermatch takes its skill and style from its roster.
+        // Existing seats see a page edit on the next input sample.
+        let style = if seating.fill { Want::OFF } else { want };
+        self.style.store(style.combat_style(), Ordering::Relaxed);
         self.taunts.store(want.taunts, Ordering::Relaxed);
         self.glitches.store(want.glitches, Ordering::Relaxed);
         // Fewer: the last added go first.
@@ -1092,19 +1127,19 @@ impl Driver {
         // The phantoms: the server's roster's bots, else host-made ones.
         let mut seats: Vec<(RosterSeat, bool)> = match roster {
             Some(r) => r.map(|s| (s, true)).collect(),
-            None => (1..=seating.count as u32)
-                .map(|n| {
+            None => self.local_names.iter().take(seating.count).enumerate()
+                .map(|(index, name)| {
+                    let n = index as u32 + 1;
                     let k = skill(want.difficulty, mixed_slot(n));
                     (
                         RosterSeat {
                             identity: Identity {
                                 xuid: live_proto::bots::local_xuid(n).0,
-                                gamertag: phantom_name(n),
+                                gamertag: name.clone(),
                             },
                             team: None,
                             skill: k,
                             seed: 0xc1a4_0000 ^ u64::from(n),
-                            taunt: bots::emote::DEFAULT_TAUNT,
                         },
                         false,
                     )
@@ -1147,7 +1182,7 @@ impl Driver {
         let start = own.len();
         for (seat, rostered) in seats.into_iter().skip(start) {
             let n = own.len() as u32 + 1;
-            let (src, s) = self.clanker(seat.skill, seat.seed, seat.taunt);
+            let (src, s) = self.clanker(seat.skill, seat.seed, &seat.identity.gamertag);
             let name = format!(
                 "{} (phantom{})",
                 seat.identity.gamertag,
@@ -1173,13 +1208,13 @@ impl Driver {
         log
     }
 
-    fn clanker(&self, k: Skill, seed: u64, taunt: f32) -> (Clanker, Arc<AtomicU8>) {
+    fn clanker(&self, k: Skill, seed: u64, name: &str) -> (Clanker, Arc<AtomicU8>) {
         let s = Arc::new(AtomicU8::new(skill_index(k)));
         let c = Clanker {
-            brain: bots::Brain::new(k, seed),
+            brain: bots::Brain::new(k, seed).with_name_profile(name),
             skill: Arc::clone(&s),
             taunts: Arc::clone(&self.taunts),
-            taunt,
+            style: Arc::clone(&self.style),
             glitches: Arc::clone(&self.glitches),
         };
         (c, s)
@@ -1191,7 +1226,7 @@ impl Driver {
             .list()
             .into_iter()
             .find(|bot| bot.handle == seat.handle)
-            .map_or_else(|| phantom_name(seat.number), |bot| bot.identity.gamertag);
+            .map_or_else(|| self.local_names[(seat.number - 1) as usize].clone(), |bot| bot.identity.gamertag);
         match self.phantoms.remove(seat.handle) {
             Ok(()) => log.push(format!("{name} off")),
             Err(e) => log.push(format!("{name}: {e}")),
@@ -1336,10 +1371,6 @@ impl Driver {
     }
 }
 
-fn phantom_name(n: u32) -> String {
-    format!("Clanker {n}")
-}
-
 /// The Mixed-difficulty slot a seat follows: the `n`th bot's, 1 to 3 in
 /// turn.
 fn mixed_slot(number: u32) -> u8 {
@@ -1428,6 +1459,8 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
         ENABLED.key,
         COUNT.key,
         DIFFICULTY.key,
+        AGGRESSION.key,
+        AIM_STYLE.key,
         TAUNTS.key,
         GLITCHES.key,
     ] {

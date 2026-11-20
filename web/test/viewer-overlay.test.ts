@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
 import type { OverlayProps } from "../src/viewer/Overlay.tsx";
 import type { ViewPanel } from "../src/viewer/ViewMenu";
-import { loadProgress, overlayState } from "../src/viewer/overlay";
+import { loadProgress, overlayState } from "../src/viewer/overlayState";
 
 describe("the viewer overlay state", () => {
   const pending = { sceneReady: true, glb: null };

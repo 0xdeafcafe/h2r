@@ -80,6 +80,18 @@ impl Bounds {
 pub struct RawFiles<R> {
     files: Vec<(ResourceFile, Map<R>)>,
 }
+impl RawFiles<crate::save::MapReader> {
+    pub(crate) fn open(source: &MapSource) -> crate::Result<Self> {
+        let mut files = vec![(ResourceFile::Local, source.open()?)];
+        for (file, shared) in shared_sources(source) {
+            if let Ok(map) = shared.open() {
+                files.push((file, map));
+            }
+        }
+        Ok(Self::new(files))
+    }
+}
+
 impl<R: Read + Seek> RawFiles<R> {
     pub fn new(files: Vec<(ResourceFile, Map<R>)>) -> Self {
         Self { files }

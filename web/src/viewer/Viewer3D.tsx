@@ -18,7 +18,7 @@ import type { CameraStart } from "./start";
 import type { ViewerDirector } from "./camera";
 import { cameraFresh, type CameraRequest } from "./sync";
 import { Overlay } from "./Overlay.tsx";
-import { loadProgress, overlayState } from "./overlay";
+import { loadProgress, overlayState } from "./overlayState";
 import { ViewMenu, type ViewPanel, type ViewRow } from "./ViewMenu";
 import "./viewer.css";
 

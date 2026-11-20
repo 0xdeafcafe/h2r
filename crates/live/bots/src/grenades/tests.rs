@@ -195,7 +195,7 @@ fn the_skills_throw_better_in_order() {
         assert!(w[1].lead >= w[0].lead);
         assert!(w[1].per_minute >= w[0].per_minute);
     }
-    assert!(!s[0].banks && !s[0].stick && !s[0].careful, "Easy");
+    assert!(!s[0].banks && !s[0].stick && s[0].careful, "Easy");
     assert!(!s[1].banks && s[1].stick, "Normal");
     assert!(s[2].banks && s[3].banks);
 }
@@ -447,4 +447,49 @@ fn a_solved_grenade_drops_the_left_gun_then_waits_for_the_empty_hand() {
         }
     }
     panic!("the solved throw never followed the drop");
+}
+
+#[test]
+fn normal_recognizes_an_enemy_rush_group_or_lost_sight_as_a_throw_opportunity() {
+    let mark = Mark { at: [7.0, 0.0, 0.0], vel: [0.0; 3], seen: true };
+    let cluster = [Seen { id: 2, position: [7.5, 0.2, 0.0], team: 1 }];
+    let ready = |mark, enemies: &[Seen], mates: &[Vec3]| {
+        let mut hand = Thrower::new(11);
+        hand.step(&Moment {
+            tick: 30, dt: 30, eye: [0.0, 0.0, 0.6], feet: [0.0; 3],
+            aim: X, mark: Some(mark), enemies, mates,
+            grenades: Some([2, 0]), selected: Some(Kind::Frag), busy: false, pushing: false,
+        }, &Floor(0.0), Skill::Normal);
+        hand.last.is_some()
+    };
+    let rush = Mark { vel: [-1.0, 0.0, 0.0], ..mark };
+    assert!(rush.closing_on([0.0; 3]));
+    assert!(!Mark { vel: [0.0, 1.0, 0.0], ..mark }.closing_on([0.0; 3]));
+    assert!(ready(rush, &[], &[]));
+    assert!(ready(mark, &cluster, &[]));
+    assert!(ready(Mark { seen: false, ..mark }, &[], &[]));
+    assert!(!ready(mark, &cluster, &[[7.5, 0.0, 0.0]]));
+}
+
+#[test]
+fn a_teammate_crossing_a_lined_up_plasma_throw_cancels_lt() {
+    let mut hand = Thrower::new(11);
+    hand.plan = Some(Plan {
+        dir: X,
+        kind: Kind::Plasma,
+        since: 1,
+        press_until: None,
+        swapped: None,
+    });
+    let m = Moment {
+        tick: 2, dt: 1, eye: [0.0, 0.0, 0.6], feet: [0.0; 3], aim: X,
+        mark: Some(Mark { at: [7.0, 0.0, 0.0], vel: [0.0; 3], seen: true }),
+        enemies: &[], mates: &[[1.5, 0.0, 0.0]], grenades: Some([0, 1]),
+        selected: Some(Kind::Plasma), busy: false, pushing: false,
+    };
+    let mut clear = hand.clone();
+    let no_mate = Moment { mates: &[], ..m };
+    assert!(clear.step(&no_mate, &Floor(-2.0), Skill::Easy).throw);
+    let h = hand.step(&m, &Floor(-2.0), Skill::Easy);
+    assert!(!h.throw && !hand.busy());
 }

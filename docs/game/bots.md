@@ -81,11 +81,15 @@ that tag alone does not establish a loader for it.
   skin's first shader bitmap uses the medium emblem material in the
   main menu, shared map and Zanzibar. The card copies that definition
   and feeds the profile to the retail emblem setter at `0x2b12ca`.
-- The host shows the active brain's difficulty and strongest personality
-  trait. A remote or recent server bot resolves by XUID through
-  `GET /v1/games/bots/{xuid}`, which returns its full tag, seed and last
-  rostered skill. A scripted player with no brain, or a remote player
-  whose details cannot be retrieved, shows “Unavailable”.
+- The profile line below the list shows the gamertag’s try-hard band
+  and strongest combat tendencies. The host also shows the active brain’s
+  difficulty and strongest temperament trait. A remote or recent server
+  bot resolves its full name and last rostered skill through
+  `GET /v1/games/bots/{xuid}`. The client derives the baseline temperament
+  from that name and skill. While the lookup is pending or offline, the
+  card uses its available name for the profile. Difficulty and temperament
+  read “Unavailable” when the skill is unknown. On the host, a scripted
+  or recorded seat shows “Unavailable” for its combat profile.
 - Mute and feedback are omitted from the card. A Clanker has no voice
   account to mute and no human player to report. Both server homes
   refuse friend requests and mailbox writes to either reserved XUID
@@ -113,6 +117,18 @@ Clanker in the session as a phantom machine with one player. Each
 simulation tick, the retail input reader and action builder turn its
 arrived pad into an action for the remote gather. The game applies its
 usual movement, aim assist and combat rules.
+
+Clanker difficulty never multiplies damage. A Legendary Clanker and a
+human deal the same damage with the same weapon, hit location and match
+traits. Difficulty changes decisions and controller skill, including
+reaction time, aim, shot placement and grenade timing.
+
+A Normal Clanker uses the motion tracker to investigate movement, draws
+a suitable weapon when rushed, melees at close range and looks for a
+safe grenade against a group, an approaching enemy or recent cover.
+The game decides whether each swing, shot, throw or pickup succeeds.
+Read a running host with `h2 agent bots.stats`. Uploaded simulations
+show their results in Clanker Training.
 
 Custom games on System Link or Xbox Live, Clankermatch and headless sims
 all use phantom peers. A match has up to 16 players, subject to the
@@ -538,12 +554,26 @@ biped's state in the synthetic object table before either brain runs.
 
 | Host input audited | Information the bot receives |
 |---|---|
-| Living unit table, aim and weapon slots | Enemies must pass view cone and BSP sight. Teammate positions act as HUD markers. Aim and the visible held weapon require sight on either team. Exact opponent shields, reserves and magazine counts are unavailable. Body avoidance, weapon seeking and group decisions use the filtered list. |
-| Ground objects and placement records | A visible weapon supplies its model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
+| Living unit table, aim and weapon slots | Enemies must pass view cone and BSP sight. Teammate positions act as HUD markers. Sight reveals aim, the held weapon and a broken shield. Partial shield strength and opponent ammunition stay private. Body avoidance, weapon seeking and group decisions use the filtered list. |
+| Motion tracker | An unzoomed player can investigate the nearest moving hostile blip inside the sensor disc. It gives an approximate horizontal position through walls. The bot needs sight to identify a player or fire. |
+| Ground objects and placement records | Sight reveals loose grenade equipment and a weapon’s model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
 | Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
 | Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. |
 | Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
 | Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
+
+A phantom has no local-user HUD slot. `bots::guest::radar` projects a
+movement contact for its own player using the active variant's motion
+sensor flag (setting 20, or setting 73 on the Juggernaut), the map's
+`hudg +0x290` horizontal range and the player speed threshold read by
+`0x1a1d55`. Slow movement, crouching and allies produce no hostile
+blip. A mounted player's movement comes from its vehicle. The brain gets
+a horizontal point rounded to half a world unit at its own height. A
+glance between fights sets a search direction and turns the head. On a
+route to the contact it looks into the upcoming turn. The glance interval
+uses the skill's reaction ticks. Each available dot gets one opportunity
+per glance, weighted by the Clanker's radar-use trait. This movement-only projection omits
+stationary firing blips.
 
 A visible power item has probability 1 and a visibly empty pad has
 probability 0 for this tick. Away from the pad, an empty observation
@@ -755,22 +785,40 @@ makes the whole pad; on foot, after the order above, boarding a close and
 slow enemy vehicle takes over in a fight or not, and taking a free one
 takes over only when calm and not carrying or rearming.
 
-Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
-At the skill's rate in a fight at 3 to 12 world units, four times that rate
-when another enemy is within 2.5 of the target, three times before pushing
-in with a short gun; and at twice the rate at where an enemy went out of
-view in the last 2 s, while chasing. Each throw is flown against the map's
-collision and aimed to land (`bots::grenades`, "Built: weapon skill" in
-§10). In a dual-wield fight the bot can drop its left-hand gun for a
-throw it has already lined up, then waits for the hand to be free.
+A bot with a known grenade in stock can throw at 3–12 world units. It
+looks for a cluster, an enemy running toward it, or the last position
+where an enemy disappeared within two seconds. Both chasing and holding
+the corner present that opportunity. In these short windows Normal has
+about one chance per second before temperament, collision, aiming and the
+eight-second cooldown. Otherwise a single visible target gets the skill's
+ordinary per-minute rate, tripled on Normal and up when pushing with a
+short gun. The thrower checks the predicted blast and checks the actual
+aim and friendly positions again before pressing LT. A dual-wielding bot
+can drop the left gun to open its throwing hand.
 
 #### Personality and temperament
 
-A Clanker's identity seed fixes its trait draws and favorite weapon family.
-Offline bots use a seat seed. Live roster bots use the server's personality
-seed. A difficulty change maps the same
-draws into the new bands. At the same difficulty, a persistent bot starts
-every match with the same traits and a fresh mood.
+The full gamertag fixes a Clanker's combat profile. System Link draws
+distinct gamertags from the Live name pool and keeps them as seats are
+added and removed. Live games use their rostered names, and simulations
+use their configured names. Each host computes the profile in memory.
+
+`crates/live/bots/src/name_profile.rs` hashes the UTF-8 gamertag with 64-bit FNV-1a, folding ASCII letters
+to lowercase as Live does for account identity. The hash supplies one try-hard score and one
+independent draw per trait. Each row in the trait table blends that score
+(or its inverse) with its own draw, then scales the result into the
+difficulty band. The custom-game style shifts tendencies within the
+band. Changing hosts, seat, match seed or account ID preserves the
+profile. The match seed controls individual choices during play.
+
+A keen player tends to check radar more often, attempt the plasma pistol
+overcharge and headshot follow-up, strafe and jump more, and react with
+less delay. A casual player is more likely to take a compatible second
+gun. A weight of 0.3 on the combo means roughly three attempts in ten
+eligible openings. Holding the same opening for ten ticks gives it one
+chance. The card summarizes the most distinctive tendencies.
+`h2 agent bots.stats` shows their numeric weights for the current
+difficulty and style.
 
 | Trait | What changes in play | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|---|
@@ -784,9 +832,8 @@ every match with the same traits and a fresh mood.
 | Weapon loyalty | Favors a weapon family and may take a short detour for it during a lull | .05–.95 | .13–.88 | .20–.80 | .28–.72 |
 | Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
 
-Each trait is drawn independently and uniformly inside its band's lower and
-upper bounds. The narrower bands give Legendary bots more consistent
-discipline while leaving room for aggressive Clankers. Favorites are drawn
+The narrower Legendary bands give bots more consistent discipline while
+leaving room for different fighting styles. Favorites are drawn
 from automatic guns, precision rifles and pistols, shotguns, snipers, splash
 weapons, and swords. Loyalty biases existing pickup choices and can justify
 a short detour for a visible favorite when the bot is calm and free to rearm.
@@ -807,8 +854,8 @@ sighting. A frightened bot is quicker to withdraw and regroup with a
 teammate. These choices respect combat range, objective and input gates.
 The human-input layer caps extra tracking noise from tilt and fear at 10%.
 Each match pad still passes through the controller's stick slew, button
-timing and thumb coordination limits before reaching a local port or the
-phantom's delayed uplink.
+timing and thumb coordination limits before reaching the phantom's action
+gather.
 
 The map decision layer uses `Personality::wait_weight()` for patience
 near a predicted spawn and `Personality::weapon_interest(role)` to value a
@@ -833,7 +880,7 @@ on a stick.
 | flick overshoot | large | some | little | little |
 | recoil and burst control | sprays | bursts | paced | paced |
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
-| weapon choice by range | no | partly | yes | yes |
+| weapon choice by range | clear mismatches | yes | yes | yes |
 
 The continuous delay covers seeing a rendered change and getting a new
 controller report into the game. Easy and Normal share a five-tick budget
@@ -860,8 +907,8 @@ can travel at most 0.45 stick radii per tick. A full reversal takes at
 least five reports. The model uses a standard two-thumb grip. The right
 thumb can press one of A/B/X/Y/Black/White while the right stick is
 centred, or use the stick or its click. It can switch between those jobs
-once per tick (33 ms) by default. A short press can be missed while the
-stick returns to centre. The left thumb can move its stick and click it.
+once per tick (33 ms) by default. A face-button tap waits for the stick
+to return to centre, then occupies at least one controller report. The left thumb can move its stick and click it.
 The index fingers can use the triggers during a face-button press.
 
 Button and trigger transitions draw independent, centred Gaussian timing
@@ -1183,11 +1230,15 @@ it shoots to (world units):
 | sniper | 12 to 60 | 0 to 80 | 5 |
 | blast | 5 to 25 | 2.5 to 35 | 5 |
 
-**The decision** (`arms::plan`, pure, in order). "By range" is Normal
-skill and up:
+An identified SMG fires within its aim-assist reach, bounded to 4.5–9
+world units. Beyond that the movement closes distance or the player draws
+another weapon. For a visible approaching enemy, the draw considers half
+a second of observed motion, capped at two units of advance.
 
-1. a blade in hand: keep it; by range, with the enemy out of its reach
-   and a ready gun in the other hand, **switch**;
+**The decision** (`arms::plan`, pure, in order):
+
+1. a blade in hand stays out in lunge range. With the enemy out of reach
+   and a better-suited ready gun in the other slot, **switch**;
 2. the held gun is dry (no rounds anywhere, or a battery under 2%):
    - the other has something: **switch** (Y);
    - an enemy in view within 2.5 world units: **melee** (run in, B);
@@ -1195,10 +1246,13 @@ skill and up:
      the best near one (each rating point counts as 3 units nearer);
    - an enemy in view: **melee**; else nothing;
 3. an empty magazine with a reserve: **reload** (X), in a fight or not;
-   by range, with the other gun loaded and the enemy in its band,
+   on Normal and up, with the other gun loaded and the enemy in its band,
    **switch** instead (faster than a reload);
-4. by range: the enemy clearly outside the held gun's band (by more than
-   30% of it) and inside the other's: **switch**;
+4. draw a ready sword in lunge range or a shotgun in its close band,
+   including where the current gun is also usable. A sniper takes over in
+   its band beyond 80% of a rifle's preferred reach. **Switch** when
+   the other gun alone can reach or it improves relative range fit by more than 0.3
+   (0.6 on Easy). With similarly suitable guns the bot keeps its choice;
 5. **reload**: calm (no enemy in view for 1.5 s) and under 35% of a
    magazine with a reserve; or a lull (no enemy in view for 0.5 s) and
    under 60%; or the enemy beyond the gun's range and under 35%;
@@ -1208,7 +1262,9 @@ skill and up:
    for it is the worse;
 7. calm, the held gun under 20% of all it can carry and the other one too
    (or none): **seek** a useful pickup within 12;
-8. otherwise nothing.
+8. a calm bot with a free slot seeks a higher-rated visible gun within
+   15 units. A calm bot low on a specific grenade type (zero or one)
+   walks over a visible pickup of that type within 12 units.
 
 Seeking walks there along the nav mesh. A weapon of a kind it already
 carries is walked over: the game moves its ammunition across by itself
@@ -1240,10 +1296,14 @@ hand and 3/4 for the primary interaction (hold X). A short Y release
 goes through `0x14f96f` and `0x151aa0` to drop the weapon selected by
 `U+0x213`. The fallback action 19 goes through `0xe8de0`, clearing
 the hand at `0xe84f1` and removing the inventory entry through `0xce920`.
-A consumed hold suppresses that release. Normal and above
-seek two SMGs, plasma rifle plus SMG, plasma pistol plus SMG, or two
-needlers. In combat they take a pair only within pickup distance and
-inside both guns' effective bands. Either hand can charge the pistol.
+A consumed hold suppresses that release. Clankers can pair two SMGs,
+a plasma rifle or plasma pistol with an SMG, or two needlers on any
+difficulty. Each Clanker's name sets its chance of wanting a second gun.
+It makes one choice per primary weapon type and compatible ground weapon
+each life. Staying near a declined gun or seeing it again keeps that
+choice. A respawned pickup gets a fresh roll. An active plasma-pistol
+combo or grenade throw keeps priority. In combat they take a pair only
+within pickup distance and inside both guns' effective bands. Either hand can charge the pistol.
 Against a group, a target beyond the left gun's band, or a recently lost
 target, the thrower first solves a safe grenade arc. It taps Y and waits
 for the left slot to clear before using the grenade trigger.
@@ -2713,19 +2773,20 @@ positive assist strength and a fire bit.
 - The profile appearance starts at configuration `+0x40` (traced at
   `0x18fd94`). Phantoms set its colours and emblem from their full tag.
 
-**Phantom ping.** Each phantom has a seeded 40–80 ms round-trip ping by
-default. The host samples its pad at 30 Hz and queues the report for
-one-way delivery after half that ping plus uniform jitter of up to ±4 ms.
-Arrival is rounded up to the next simulation sample, normally one or two
-ticks later. The host builds and stamps the action record at arrival
-using the current weapon and facing. While it waits, it holds the latest
-arrived pad. The latest arrival supplies the stick position. The host
-delivers each trigger's pressure changes in send order, at most one per
-tick after arrival. This lets the retail reader see a tap when the press
-and release arrive together. A new unit or a break in the stream clears
-the pending reports and trigger changes.
-`phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
-`phantom_jitter_ms` sets the one-way jitter bound.
+**Phantom ping.** The host gathers its phantom seats' controller reports
+on the simulation tick that requests them. Perception and motor delays
+come from the brain (§3.4). Real network clients receive the host's
+normal distributed player updates.
+
+A sim can set `phantom_ping_ms` to model a remote controller. With a
+positive round-trip time, the host samples a one-way delay of half the
+ping plus uniform jitter bounded by `phantom_jitter_ms` (default 4 ms),
+rounded up to simulation ticks. A zero or omitted ping delivers the
+current report immediately. In delayed mode the latest arrival supplies
+the stick position. The host delivers each trigger's pressure changes
+in send order, at most one per tick after arrival. A new unit or a break
+in the stream clears buffered reports. The host always builds and stamps
+the retail action at gather with the current weapon and facing.
 
 **Midship replay, 2026-11-19.** In game
 `531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
@@ -2760,7 +2821,7 @@ the 16 machine slots, leaving 15 slots for single-player phantoms.
 Per bot, per tick:
 
 - perception: about 10 to 20 rays, cheap against the BSP;
-- decision, about 5 times a second: microseconds;
+- combat decisions and controller input: every simulation tick;
 - path following: one A\* per re-plan, on a graph of 1 to 10 thousand
   sectors;
 - aim: constant cost.
@@ -2852,11 +2913,13 @@ confirm this (§11).
 
 **Pipelined**, the thinks staged at tick N run while the guest simulates
 N, and their pads are tick N+1's: the bot acts on what it saw a tick ago.
-Phantoms model a network seat, so the uplink takes that tick back off its
-wire delay (`Uplink::think_ticks`). The host then gets the same input on
-the same tick as serial, except on the first tick after the opening fade.
-A pad source that has its pad without a think (a script, a recording) is
-not delayed. A think from before an input reset (generation) or a tick
+Each completed think carries its pad, transport timing and observed target
+range together. Serving later slots can proceed while workers compute the
+following tick’s reports. With immediate
+transport, the pipelined brain's pad reaches the host one tick later than
+the serial brain's. With simulated transport, the uplink credits that
+tick against the requested delay (`Uplink::think_ticks`). A script or
+recording supplies a current pad and gets its full configured delay. A think from before an input reset (generation) or a tick
 gap is dropped, and the seat sends a neutral pad. When the hosted game
 ends, the thinks in flight are settled. The fade gate (§5.4) is
 unchanged: brains observe and plan through the fade, the uplink sends a
@@ -2940,6 +3003,16 @@ layout checks and the `Page` table tests. These are its rows:
 | Aim style | Steady, Twitchy | `clankers.aim_style` |
 | Taunts | On, Off | `clankers.taunts` |
 | Glitches | Off, Some, Lots | `clankers.glitches` (§3.8) |
+
+A host can change Aggression and Aim style on an existing custom-game
+roster. The next input sample picks up the edit. Normal aggression uses
+each bot's seeded traits and current mood. Calm subtracts 0.35 from its
+drive to press, Wild adds 0.35, and the difficulty's awareness and the
+fight still decide whether it advances. Steady uses the difficulty's
+usual hand movement. Twitchy raises that hand's stick engagement by 45%
+and the overshoot on a fresh flick by 35%. The bot keeps its skill's
+tracking error and lead. Reaction timing stays within the skill's window.
+Clankermatch uses its roster's difficulty and each gamertag's profile. Simulation scenarios use their declared tuning.
 
 **Mixed** gives each bot a difficulty drawn around Normal. Per-bot
 difficulty can come later, as a sub-page per bot; the first page does not
@@ -3049,8 +3122,7 @@ the playlist's player limit.
    NUL (`CONFIG_NAME_UNITS` 16). `bots::phantom::session::marked_name`
    writes the gear, a space and the tag; a 14-character tag loses the
    space (the glyph's own gap stays), a 15-character one also its last
-   character. Every Clanker name the host makes ("Clanker 12") fits
-   whole. The game record names a bot without the mark
+   character. Host-made names are at most 14 ASCII characters and fit whole. The game record names a bot without the mark
    (`live_proto::bots::unmarked_units`, in `live-telemetry`'s player
    read), so the stats read model keeps the account's gamertag and the
    site draws its own mark from the bot flag. No player can type U+2699,
@@ -3528,7 +3600,7 @@ server (System Link, offline) the host makes its own from the Clankers page.
       "team": 1,                  // team index, or null for the host to auto-balance
       "skill": 0.62,              // 0..1, continuous; maps onto §3.4 (0 Easy … 1 Legendary)
       "personality": {
-        "seed": 1234567,          // fixed per persistent bot: same quirks every game
+        "seed": 1234567,          // match RNG for this account; the gamertag supplies its combat profile
         "aggression": 0.5,        // 0..1
         "caution": 0.5,
         "objective": 0.7,
@@ -4066,8 +4138,6 @@ game checks.
      turn. It fires within 25 units, melees (B) within 0.9, and throws a
      grenade (left trigger) at a target 3 to 12 units away, at most once
      every 8 s. While fighting it strafes, kept on the nav mesh.
-   - Not yet: weapon choice by range, grenade arcs against collision, and
-     radar or sound awareness.
    - Tests (`cargo test -p bots`): the skills get better in order; a wall
      hides an enemy, and so does the bot's back; the reaction time before
      turning and firing; firing on target and not off it; Easy's bursts;
@@ -4290,8 +4360,8 @@ game checks.
        Link, offline), phantoms are host-made, as in 6b. Once it comes,
        they all go and the roster's bots replace them
        (`clankers::roster_seats`): xuid and gamertag as the `Identity`; the roster's team when not null; a brain at the
-       nearest named skill (`skill_of`), seeded with the personality's
-       seed and taunting at its `taunt` (Taunts off still makes it 0). The
+       nearest named skill (`skill_of`), with the gamertag's profile and the
+       roster seed for individual choices. Taunts off suppresses taunting. The
        page's difficulty never changes a roster bot's skill.
      - Telemetry (`live_telemetry::Bots`, from the driver's
        `bots_in_force` through `Telemetry::set_bots_locator`, asked at
@@ -4425,9 +4495,8 @@ game checks.
      - `taunts`: Off or On; default On;
      - `glitches`: Off, Some or Lots; default Off (§3.8, used).
 
-     Teams, Aggression, Aim style and Taunts are saved but not used yet:
-     they wait for the lobby teams (stage 6), the utility layer and aim
-     styles (stages 4 and 5), and the emotes (stage 4).
+     The custom-game driver applies Aggression, Aim style and Taunts to
+     existing seats as described in §7.
    - **The page** is a kit screen, `clankers`: eight `ChoiceRow`s on the
      lobby's own settings dialog, Quick Options, inside and out
      (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
@@ -4891,19 +4960,23 @@ game checks.
    the movement (getting stuck, strafing, cover) is another lane's.
    - **The weapon is known** (§3.6, "Handling"): role, band, the range
      it shoots to, its trigger, its rate and its projectile's speed.
+   - **Melee.** Within arm's reach all difficulties attempt a beatdown
+     when facing the enemy. A visible shield break or a plasma weapon in
+     hand favors a strike at the outer edge. A sword uses B for a quick
+     slash at arm's length and RT to lunge at a target in its lunge band. The chest direction gates the strike with any gun.
    - **The trigger.** A once-per-pull weapon (magnum, battle rifle,
      carbine, shotgun, sniper, rockets, the plasma pistol's quick
      shots) fired one shot and then held the trigger for nothing: now it
      is pulled for 2 ticks and let go, every `30 / rate` ticks (at least
      4; 8 when the rate is unknown) plus the skill's pace (Easy 12,
      Normal 6, Heroic 3, Legendary 1 tick). Automatics keep the skill's
-     bursts. A blade never pulls; it swings (B) within 1.5.
+     bursts. A blade uses the sword slash and lunge inputs above.
    - **No dry fire.** The trigger stays up with an empty magazine or a
      dead battery; it reloads or switches instead. It fires only in the
      weapon's range: a shotgun no further than 8, rockets never nearer
      than 2.5.
-   - **Weapon choice** (Normal and up): switches to the gun that suits
-     the distance; draws the other gun rather than reload in a fight;
+   - **Weapon choice**: every difficulty switches to the gun that suits
+     the distance. Normal and up can draw the other gun instead of reloading;
      puts rockets away close up and the sword away for a far enemy;
      reloads in a lull or when the enemy is out of reach; goes for a
      power weapon (sniper, rockets, shotgun, sword) within 25 when out of
@@ -4921,7 +4994,7 @@ game checks.
      led four times too far. Heroic and Legendary aim at the head with a
      precise weapon or a sniper rifle, and at the feet with a blast
      weapon; Easy and Normal at the chest.
-   - **Grenades** (Normal and up): none at a target with a teammate
+   - **Grenades** (all difficulties): none at a target with a teammate
      within 3 of it.
    - **Pre-aim** (Normal and up): chasing, it looks where the enemy went
      out of view (within 15, and not more than 100 degrees off the way it
@@ -4991,39 +5064,36 @@ game checks.
      nearest where it should, within 1 world unit or not at all. A moving
      target is led (its velocity times the flight time, then again with
      the flight time of that throw). With none landing straight and banks
-     allowed (Heroic and up), throws 8 to 60 degrees to either side: off a
+     allowed (Heroic and up, also Normal at last-seen cover), tries 8 to 60 degrees to either side: off a
      wall, or rolled past a corner to where someone went out of view. A
      plasma that sticks the target counts as a hit. The arc blocked, it
      does not throw (tries again in 2/3 s).
    - **When and what** (`grenades::Thrower`, the mind's `grenade`). The
-     skill's rate per minute, times 4 into a group (another enemy within
-     2.5 of the target; it then aims between them), 2 at where a target
-     went out of view (2 s at most), 3 before pushing in with a shotgun,
-     SMG, plasma or sword (the target beyond its band). A plasma for a
-     target in view within 8 (Normal and up), a frag otherwise; the type
-     selected (unit `+0x23c`) changed first with Black (switch grenades,
-     Halo 2's default layout). Never one that goes off within 3 of its own
-     feet; from Normal, never within 3 of a teammate. Then it turns to the
+     ordinary rate increases for a cluster, recent cover or a closing enemy
+     (§3.4). It aims between members of a group and favors a frag. Normal
+     and up can stick a lone visible opponent within 8. Black changes
+     grenade type when necessary. A blast within 3 of the bot or a
+     teammate cancels the throw on every difficulty. It turns to the
      throw (the mind looks along it) and lets go once its aim is within
      the skill's tolerance, giving up after 1 s; a human hand: the throw's
      aim is off by the skill's noise. At most one every 8 s.
 
      | | Easy | Normal | Heroic | Legendary |
      |---|---|---|---|---|
-     | banks and rolls | no | no | yes | yes |
+     | banks and rolls | no | at last-seen cover | yes | yes |
      | sticks plasmas | no | yes | yes | yes |
      | lead | 0 | 0.5 | 0.85 | 1 |
      | aim noise (degrees, std. dev.) | 6 | 3 | 1.5 | 0.8 |
      | lets go within (degrees) | 8 | 5 | 4 | 3 |
-     | spares teammates | no | yes | yes | yes |
+     | spares teammates | yes | yes | yes | yes |
      | more before pushing in | no | yes | yes | yes |
 
    - **Weapon ranges** (`weapons::reach`). A gun's band and fire range
      are its role's (§3.6) refined by its tag's aim assist reach
-     (`cone_range`, `pull_range`): a magnum, SMG, shotgun, plasma or
+     (`cone_range`, `pull_range`): a magnum, shotgun, plasma or
      rifle is good to its reach (kept within half and one and a half
-     times its role's band end) and fires to 1.6 times that, so a magnum
-     backs off to the rifle sooner and an SMG is not sprayed at 18. A
+     times its role's band end) and fires to 1.6 times that. An identified
+     SMG closes to its effective band, capped at 9 units, before firing. A
      sniper or splash weapon keeps its role's. A sword's lunge is its
      reach (1 to 3; 1.5 unread), and it swings at that. The weapons
      decision, the movement's band and the fire range all use this.
@@ -5034,19 +5104,19 @@ game checks.
      wanting a reload: switch to it, so it is reloaded out of the fight.
      In a fight, the switches by range and instead of a reload (§3.6) now
      use each gun's reach.
-   - **Combos** (`weapons::Combo`, the mind's `combo`). The **noob
-     combo**: holding a charged plasma pistol (battery 0.15 and up) with
-     a rifle, magnum or SMG in the other hand, a target 1.5 to 14 away:
-     hold the trigger 24 ticks, let go when on target (36 at most: a held
-     charge drains), wait the skill's delay, switch (Y), and shoot for the
-     head; the weapons decision does not switch away for 2 s. With the
-     rifle in hand and the pistol in the other on a fresh target, it draws
-     the pistol first. Once per target, by chance: Easy 10%, Normal 35%,
-     Heroic 70%, Legendary 90%; switch delay 18, 10, 6, 3 ticks. The
-     **melee finish**: close (1.3) to a target it has hit with a gun
-     (pulls on target: Normal 5, Heroic 4, Legendary 3; an automatic one
-     each 8 ticks of fire; after a combo's overcharge, at once), melee.
-     Easy never. Without traced target shields "hits" are pulls on target.
+   - **Combos** (`weapons::Combo`). With a plasma pistol at or above 15%
+     battery, a loaded precision weapon and a visible opponent 1.5 to 14
+     units away, the Clanker rolls the name's combo probability once for
+     the encounter. Briefly losing sight releases the controls and keeps
+     the roll. If needed it draws the pistol, charges for 24 ticks, then
+     releases on aim or at 36 ticks. It draws the rifle or magnum after
+     the skill's switch delay (18, 10, 6 or 3 ticks on Easy through
+     Legendary). A visible shield break brings that switch forward, and
+     every difficulty aims its loaded precision weapon at the head if
+     that point is visible. The follow-up holds the weapon choice for up
+     to two seconds. The melee finish also uses recent pulls on target
+     (5 on Normal, 4 on Heroic, 3 on Legendary, one per 8 ticks for an
+     automatic).
    - **Dual wielding** (unit `+0x213`, the left hand's slot, traced in
      docs/live/live-gamestate.md and `boot::touch_glue`). The left gun
      reads as `Arms::left`; the left trigger fires it with the right's
@@ -5092,10 +5162,7 @@ game checks.
      - the plasma pistol trigger's charging time (the `weap` trigger
        block, `+0x40` stride; which field);
      - the damage effect radius of the frag and plasma explosions (`jpt!`
-       upper radius) for the safety distance (3 assumed);
-     - a target's shield (the body's `+0xf0`, already read for the bot
-       itself in `brain::Me`) in `brain::Seen`, so the melee finish and
-       the noob combo's swap follow real shields, not shots on target.
+       upper radius) for the safety distance (3 assumed).
    - **Game run (the user):** §11.1, "Weapon skill".
 
    **Built: natural feel (sol).** Aim, walking and buttons are driven by

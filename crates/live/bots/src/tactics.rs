@@ -57,7 +57,7 @@ pub struct Style {
     pub feet: bool,
     /// Extra ticks between pulls of a once-per-pull trigger.
     pub pace: u32,
-    /// Picks the weapon by range ([`crate::arms::Situation::by_range`]).
+    /// Refines range fit and enables advanced inventory decisions.
     pub by_range: bool,
     /// Pre-aims at where an enemy went out of view.
     pub pre_aim: bool,
@@ -83,7 +83,7 @@ impl Style {
                 pace: 12,
                 by_range: false,
                 pre_aim: false,
-                careful_grenades: false,
+                careful_grenades: true,
             },
             Skill::Normal => Style {
                 head: false,
@@ -121,7 +121,7 @@ pub enum Pull {
     /// Pulled for 2–3 ticks. The number is the minimum time between
     /// starts: holding a once-per-pull trigger fires only one shot.
     Tap(u32),
-    /// Not at all: a blade swings with melee.
+    /// No gunfire. The mind chooses B or the lunge trigger for a sword.
     Never,
 }
 
@@ -192,6 +192,40 @@ impl Shot {
     pub fn in_range(&self, d: f32) -> bool {
         (self.range.0..self.range.1).contains(&d)
     }
+}
+
+/// Plan the weapon draw for where an approaching opponent will be when
+/// the switch completes. Only consecutive visible samples supply velocity.
+pub(crate) fn draw_distance(me: Vec3, foe: Vec3, velocity: Vec3) -> f32 {
+    let range = crate::decisions::distance(me, foe);
+    let next = std::array::from_fn(|i| foe[i] + 0.5 * velocity[i]);
+    // A bad sample (respawn, teleport) cannot summon a sword at range.
+    crate::decisions::distance(me, next).min(range).max((range - 2.0).max(0.0))
+}
+
+/// A beatdown uses the chest line regardless of where the gun aims.
+/// Commit from the outer edge of reach for a shield break, a plasma
+/// weapon, or a rush. A sword can always use its own lunge.
+pub(crate) fn melee_window(
+    dist: f32,
+    angle: f32,
+    held: Option<Gun>,
+    shield_down: bool,
+    rushing: bool,
+) -> bool {
+    let blade = held.is_some_and(|g| g.role() == Role::Blade && g.ready());
+    let plasma = held.is_some_and(|g| matches!(
+        g.profile.dual,
+        Some(crate::arms::DualGun::PlasmaPistol | crate::arms::DualGun::PlasmaRifle)
+    ));
+    let reach = if blade {
+        held.map_or(0.0, |g| g.reach().lunge)
+    } else if shield_down || plasma || rushing {
+        crate::mind::MELEE_RANGE * 1.3
+    } else {
+        crate::mind::MELEE_RANGE
+    };
+    dist < reach && angle < 0.85
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -280,7 +314,18 @@ impl Tactics {
 
     /// Sample once when the bot takes notice. A return within the grace
     /// window keeps the original deadline, including an unfinished reaction.
-    pub(crate) fn focus(&mut self, id: u32, tick: u32, skill: Skill) -> u32 {
+    #[cfg(test)]
+    fn focus(&mut self, id: u32, tick: u32, skill: Skill) -> u32 {
+        self.focus_with_jitter(id, tick, skill, None)
+    }
+
+    pub(crate) fn focus_with_jitter(
+        &mut self,
+        id: u32,
+        tick: u32,
+        skill: Skill,
+        jitter: Option<f32>,
+    ) -> u32 {
         self.known.retain(|n| tick.wrapping_sub(n.last) <= FORGET);
         let prior = self.known.iter().position(|n| n.id == id);
         if let Some(i) = prior
@@ -302,10 +347,18 @@ impl Tactics {
             Skill::Heroic | Skill::Legendary => 2,
         };
         let shift = if alert { 2 } else { 0 };
-        let delay =
-            (nominal + self.reaction_rng.ticks(0, spread) + self.reaction_rng.ticks(0, spread))
-                .saturating_sub(spread + shift)
-                .max(MIN_REACTION);
+        let roll = match jitter {
+            Some(jitter) => {
+                // Interpolate between two early- and late-skewed draws.
+                // The skill's full allowed window and reaction floor hold.
+                let u = self.reaction_rng.unit();
+                let early = u * u;
+                let late = u * (2.0 - u);
+                ((early + jitter * (late - early)) * (2 * spread) as f32).round() as u32
+            }
+            None => self.reaction_rng.ticks(0, spread) + self.reaction_rng.ticks(0, spread),
+        };
+        let delay = nominal.saturating_add(roll).saturating_sub(spread + shift).max(MIN_REACTION);
         let ready = tick.wrapping_add(delay);
         let notice = Notice {
             id,

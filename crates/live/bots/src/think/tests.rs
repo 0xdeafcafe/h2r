@@ -129,6 +129,10 @@ pub(crate) mod fixture {
         fn brain_view(&self) -> Option<crate::BrainView> {
             Some(self.brain.view())
         }
+
+        fn combat_stats(&self) -> Option<&crate::stats::CombatStats> {
+            Some(self.brain.combat_stats())
+        }
     }
 
     pub struct World {
@@ -184,6 +188,7 @@ use fixture::*;
 #[derive(Debug, PartialEq)]
 struct Run {
     pads: Vec<Vec<HostPadState>>,
+    shot_ranges: Vec<Vec<Option<Option<f32>>>>,
     logs: Vec<Vec<String>>,
     views: Vec<Option<crate::BrainView>>,
     radio: String,
@@ -195,12 +200,19 @@ fn run(mode: Mode) -> Run {
     let w = world(7);
     let mut thinker = Thinker::on_radio(mode, w.board);
     let g = FakeGuest::new();
-    let pads = (0..TICKS)
-        .map(|tick| thinker.sample(tick, &g, &seats(&w, tick)))
-        .collect();
+    let (pads, shot_ranges) = (0..TICKS)
+        .map(|tick| {
+            thinker
+                .sample_reports(tick, &g, &seats(&w, tick))
+                .into_iter()
+                .map(|report| (report.pad, report.shot_range))
+                .unzip::<_, _, Vec<_>, Vec<_>>()
+        })
+        .unzip();
     thinker.settle();
     Run {
         pads,
+        shot_ranges,
         logs: w.logs.iter().map(|l| lock(l).clone()).collect(),
         views: w
             .sources
@@ -236,6 +248,7 @@ fn the_fixture_talks_on_the_radio() {
         .filter(|l| l.contains("Some(Call"))
         .count();
     assert!(reports > 0, "no bot reported a sighting");
+    assert!(serial.shot_ranges.iter().flatten().any(Option::is_some));
     assert!(serial.pads.iter().flatten().any(|p| *p != HostPadState::default()));
 }
 
@@ -255,6 +268,7 @@ fn pipelined_pads_are_the_serial_pads_one_tick_later() {
         assert_eq!(piped.pads[0], vec![HostPadState::default(); BOTS as usize]);
         for tick in 1..TICKS as usize {
             assert_eq!(piped.pads[tick], serial.pads[tick - 1], "tick {tick}, {threads} threads");
+            assert_eq!(piped.shot_ranges[tick], serial.shot_ranges[tick - 1]);
         }
         // The same thinks, the same minds and the same radio: only the
         // pads' timing moved.

@@ -165,6 +165,18 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/maps/{map}", get(crate::content::get_map))
         .route("/v1/maps/{map}/image", get(crate::content::get_map_image))
+        .route(
+            "/v1/maps/{map}/screenshots/{kind}/{slot}",
+            axum::routing::put(crate::content::screenshots::put_map),
+        )
+        .route(
+            "/v1/mod-packs/{id}/screenshots/{kind}/{slot}",
+            axum::routing::put(crate::content::screenshots::put_pack),
+        )
+        .route(
+            "/v1/mod-packs/{id}/images/{n}",
+            get(crate::content::screenshots::get_pack),
+        )
         .route("/v1/maps/{map}/report", post(crate::content::report_map))
         .route(
             "/v1/maps/{map}/credit",
@@ -177,6 +189,11 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route(
             "/v1/maps/{map}/images/{n}",
             get(crate::content::get_map_detail_image),
+        )
+        .route("/v1/mod-packs", get(crate::content::mod_packs::list))
+        .route(
+            "/v1/mod-packs/{id}",
+            get(crate::content::mod_packs::get).put(crate::content::mod_packs::put),
         )
         .route("/v1/mappacks", get(crate::content::list_packs))
         .route(
@@ -192,6 +209,11 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::content::report_content),
         )
         .route("/v1/admin/content", get(crate::content::admin_content))
+        .route("/v1/mod-packs/{id}/report", post(crate::content::report_pack))
+        .route(
+            "/v1/admin/mod-packs/{pack}/{action}",
+            post(crate::content::moderate_pack),
+        )
         .route("/v1/admin/reports", get(crate::reports::get_admin_reports))
         .route(
             "/v1/admin/reports/{id}/{action}",

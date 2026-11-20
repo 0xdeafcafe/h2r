@@ -1,4 +1,4 @@
-//! Grenades (docs/game/bots.md, "Built: weapon skill"): the throw flown
+//! Grenades (docs/game/bots.md, section 3.6): the throw flown
 //! against the map's collision ([`fly`]), the aim that lands it where it
 //! should go off ([`solve`]), and when and what to throw ([`Thrower`]).
 //!
@@ -504,7 +504,7 @@ impl GrenadeSkill {
                 lead: 0.0,
                 noise: deg(6.0),
                 tolerance: deg(8.0),
-                careful: false,
+                careful: true,
                 push: false,
             },
             Skill::Normal => GrenadeSkill {
@@ -566,7 +566,7 @@ pub struct Moment<'a> {
     pub enemies: &'a [Seen],
     /// Teammates' feet.
     pub mates: &'a [Vec3],
-    /// Grenades carried (frag, plasma); `None` not read (frags assumed).
+    /// Grenades carried (frag, plasma); `None` means unknown.
     pub grenades: Option<[i8; 2]>,
     /// The type selected, if read.
     pub selected: Option<Kind>,
@@ -576,16 +576,22 @@ pub struct Moment<'a> {
     pub pushing: bool,
 }
 
+impl Mark {
+    pub(crate) fn closing_on(self, feet: Vec3) -> bool {
+        let to = sub(feet, self.at);
+        self.seen && dot(self.vel, unit(to)) > 0.8
+    }
+}
+
 /// Throws at targets this far (world units).
 pub const RANGE: (f32, f32) = (3.0, 12.0);
 /// Sticks a plasma on a target in view this close.
 pub const STICK_RANGE: f32 = 8.0;
 /// Another enemy this close to the target makes a group...
 pub const GROUP: f32 = 2.5;
-/// ...worth this many times the rate.
-pub const GROUP_RATE: f32 = 4.0;
-/// Where a target went out of view: this many times the rate.
-pub const UNSEEN_RATE: f32 = 2.0;
+/// A brief opening (group, rush or last-seen cover) is evaluated on a
+/// seconds scale rather than the minutes scale of a discretionary throw.
+const OPENING_RATE: f32 = 60.0;
 /// Before pushing in with a short gun: this many times the rate.
 pub const PUSH_RATE: f32 = 3.0;
 /// Ticks between throws at least.
@@ -654,11 +660,16 @@ impl Thrower {
     /// Forgets a throw under way (the bot died).
     pub fn reset(&mut self) {
         self.plan = None;
+        self.ready = 0;
     }
 
     /// A throw is being aimed or made.
     pub fn busy(&self) -> bool {
         self.plan.is_some()
+    }
+
+    pub(crate) fn pressing_trigger(&self) -> bool {
+        self.plan.is_some_and(|plan| plan.press_until.is_some())
     }
 
     /// This tick: aim and make a throw under way, or roll for a new one at
@@ -693,7 +704,7 @@ impl Thrower {
             self.plan = None;
             self.ready = m.tick.wrapping_add(RETRY);
         }
-        self.follow(m, &k)
+        self.follow(m, world, &k)
     }
 
     fn consider(&mut self, m: &Moment<'_>, world: &dyn Solid, k: &GrenadeSkill) {
@@ -701,7 +712,7 @@ impl Thrower {
         if m.busy || m.dt == 0 || m.tick < self.ready {
             return;
         }
-        let have = m.grenades.unwrap_or([1, 0]);
+        let Some(have) = m.grenades else { return };
         if have[0] <= 0 && have[1] <= 0 {
             return;
         }
@@ -710,39 +721,39 @@ impl Thrower {
             return;
         }
         // A group: the enemies near the target. Aimed between them.
-        let near: Vec<Vec3> = m
-            .enemies
-            .iter()
-            .map(|e| e.position)
-            .filter(|p| len(sub(*p, mark.at)) > 0.3 && len(sub(*p, mark.at)) < GROUP)
-            .collect();
-        let mut rate = 1.0;
-        if !near.is_empty() {
-            rate *= GROUP_RATE;
+        let mut sum = mark.at;
+        let mut count = 1;
+        let target = m.enemies.iter().position(|e| e.position == mark.at);
+        for (i, enemy) in m.enemies.iter().enumerate() {
+            if Some(i) != target && len(sub(enemy.position, mark.at)) < GROUP {
+                sum = add(sum, enemy.position);
+                count += 1;
+            }
         }
-        if !mark.seen {
-            rate *= UNSEEN_RATE;
-        }
-        if m.pushing && k.push {
-            rate *= PUSH_RATE;
-        }
-        let chance = k.per_minute / (60.0 * 30.0) * m.dt as f32 * rate;
+        let opening = count > 1 || !mark.seen || mark.closing_on(m.feet);
+        let rate = if opening {
+            OPENING_RATE
+        } else if m.pushing && k.push {
+            PUSH_RATE
+        } else {
+            1.0
+        };
+        let chance = k.per_minute * rate * m.dt as f32 / (60.0 * 30.0);
         if self.uniform() >= chance {
             return;
         }
         // Which: a plasma to stick a target in view and close, a frag
         // otherwise (it bounces into cover); whichever it has.
-        let plasma_stick = k.stick && mark.seen && d < STICK_RANGE && have[1] > 0;
+        let plasma_stick = k.stick && count == 1 && mark.seen && d < STICK_RANGE && have[1] > 0;
         let kind = if plasma_stick || have[0] <= 0 {
             Kind::Plasma
         } else {
             Kind::Frag
         };
-        let mut at = mark.at;
-        if !near.is_empty() && !plasma_stick {
-            let n = near.len() as f32 + 1.0;
-            let sum = near.iter().fold(mark.at, |a, p| add(a, *p));
-            at = scale(sum, 1.0 / n);
+        let at = scale(sum, 1.0 / count as f32);
+        // Check the intended blast before spending time solving a flight.
+        if !safe(at, m.feet, m.mates, k.careful) {
+            return;
         }
         let body = [Body {
             at: mark.at,
@@ -758,7 +769,7 @@ impl Thrower {
             ballistics: kind.ballistics(),
             bodies,
             stick: (kind == Kind::Plasma && mark.seen).then_some(0),
-            banks: k.banks,
+            banks: k.banks || (!mark.seen && k.stick),
         };
         let Some(toss) = solve(world, &ask) else {
             // The arc is blocked: not now.
@@ -782,7 +793,7 @@ impl Thrower {
         });
     }
 
-    fn follow(&mut self, m: &Moment<'_>, k: &GrenadeSkill) -> Hand {
+    fn follow(&mut self, m: &Moment<'_>, world: &dyn Solid, k: &GrenadeSkill) -> Hand {
         let Some(mut plan) = self.plan else {
             return Hand::default();
         };
@@ -800,7 +811,10 @@ impl Thrower {
             }
             return hand;
         }
-        if m.busy || m.tick.wrapping_sub(plan.since) > AIM_WAIT {
+        if m.busy
+            || m.grenades.is_none_or(|counts| counts[plan.kind.index()] <= 0)
+            || m.tick.wrapping_sub(plan.since) > AIM_WAIT
+        {
             self.plan = None;
             self.ready = m.tick + RETRY;
             return Hand::default();
@@ -829,6 +843,29 @@ impl Thrower {
         }
         let off = (dot(unit(m.aim), plan.dir)).clamp(-1.0, 1.0).acos();
         if off < k.tolerance {
+            // The player may have moved during the turn or grenade swap.
+            // Check the actual launch direction and current feet before LT.
+            let mut bodies = Vec::new();
+            if plan.kind == Kind::Plasma {
+                // A teammate can catch a plasma on its way past, even
+                // when the originally predicted blast was across the room.
+                bodies.extend(m.mates.iter().map(|&at| Body { at, vel: [0.0; 3] }));
+                if let Some(mark) = m.mark.filter(|mark| mark.seen) {
+                    bodies.push(Body { at: mark.at, vel: mark.vel });
+                }
+            }
+            let flight = fly(
+                world,
+                m.eye,
+                m.aim,
+                &plan.kind.ballistics(),
+                &bodies,
+            );
+            if !flight.landed || !safe(flight.blast, m.feet, m.mates, k.careful) {
+                self.plan = None;
+                self.ready = m.tick.wrapping_add(RETRY);
+                return Hand::default();
+            }
             plan.press_until = Some(m.tick + PRESS);
             self.ready = m.tick + COOLDOWN;
             hand.throw = true;

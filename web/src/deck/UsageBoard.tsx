@@ -3,14 +3,14 @@
 // six tiles, uploads by kind per day, what is stored, events, messages and
 // players per day, events by type, and the accounts using the most.
 
+import { Show } from "solid-js";
+import { A } from "@solidjs/router";
 import { DenseTable, Legend, Panel, RankBars, SegBar, SeriesTable, StatTile, TimeChart } from "./Deck";
 import { bytes, compact, shortDay } from "./chart";
 import { seriesColor } from "./palette";
 import { sortCol, tileValue, type UsageView } from "./usageView";
 import { UPLOAD_KINDS, type AccountUsage } from "../admin/usage";
-import { STATS_ROOT } from "../routes";
-
-export const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
+import { dashboardPlayerHref } from "../routes";
 
 export default function UsageBoard(props: { view: UsageView; range: number; accounts: readonly AccountUsage[]; accountsNote: string; sort: string }) {
   const v = () => props.view;
@@ -52,25 +52,27 @@ export default function UsageBoard(props: { view: UsageView; range: number; acco
       </Panel>
 
       <Panel title="top accounts" meta={props.accountsNote} span={8}>
-        <Legend items={UPLOAD_KINDS.map((k, i) => ({ label: k.label, color: seriesColor(i) }))} />
-        <DenseTable<AccountUsage>
-          label="Accounts using the most" rows={props.accounts} rowKey={(a) => a.xuid} initialSort={{ col: sortCol(props.sort), dir: "desc" }}
-          cols={[
-            { key: "tag", label: "gamertag", value: name, render: (a) => (a.gamertag ? <a href={playerHref(a.gamertag)}>{a.gamertag}</a> : <span class="dk-dim">{a.xuid}</span>) },
-            { key: "up", label: "uploaded", num: true, bar: true, value: (a) => a.uploaded, render: (a) => bytes(a.uploaded) },
-            {
-              key: "mix", label: "by kind", value: (a) => a.up.frames / Math.max(1, a.uploaded), class: "dk-col-seg",
-              render: (a) => <SegBar parts={UPLOAD_KINDS.map((k) => ({ label: k.label, value: a.up[k.key] }))} format={bytes} label={`${name(a)} uploads by kind`} />,
-            },
-            { key: "stored", label: "stored", num: true, value: (a) => a.stored_total, render: (a) => bytes(a.stored_total) },
-            { key: "events", label: "events", num: true, value: (a) => a.events, render: (a) => compact(a.events) },
-            { key: "msgs", label: "messages", num: true, value: (a) => a.messages_total, render: (a) => compact(a.messages_total) },
-            { key: "games", label: "games", num: true, value: (a) => a.games, render: (a) => compact(a.games) },
-            { key: "reports", label: "reported", num: true, value: (a) => a.reports_received, render: (a) => compact(a.reports_received) },
-            { key: "days", label: "active days", num: true, value: (a) => a.active_days },
-            { key: "seen", label: "last active", value: (a) => a.last_active ?? "", render: (a) => (a.last_active ? shortDay(a.last_active) : "—") },
-          ]}
-        />
+        <Show when={props.accounts.length} fallback={<p class="dx-page-empty dk-empty">No account usage in this range.</p>}>
+          <Legend items={UPLOAD_KINDS.map((k, i) => ({ label: k.label, color: seriesColor(i) }))} />
+          <DenseTable<AccountUsage>
+            label="Accounts using the most" rows={props.accounts} rowKey={(a) => a.xuid} initialSort={{ col: sortCol(props.sort), dir: "desc" }}
+            cols={[
+              { key: "tag", label: "gamertag", value: name, render: (a) => (a.gamertag ? <A href={dashboardPlayerHref(a.gamertag)}>{a.gamertag}</A> : <span class="dk-dim">{a.xuid}</span>) },
+              { key: "up", label: "uploaded", num: true, bar: true, value: (a) => a.uploaded, render: (a) => bytes(a.uploaded) },
+              {
+                key: "mix", label: "by kind", value: (a) => a.up.frames / Math.max(1, a.uploaded), class: "dk-col-seg",
+                render: (a) => <SegBar parts={UPLOAD_KINDS.map((k) => ({ label: k.label, value: a.up[k.key] }))} format={bytes} label={`${name(a)} uploads by kind`} />,
+              },
+              { key: "stored", label: "stored", num: true, value: (a) => a.stored_total, render: (a) => bytes(a.stored_total) },
+              { key: "events", label: "events", num: true, value: (a) => a.events, render: (a) => compact(a.events) },
+              { key: "msgs", label: "messages", num: true, value: (a) => a.messages_total, render: (a) => compact(a.messages_total) },
+              { key: "games", label: "games", num: true, value: (a) => a.games, render: (a) => compact(a.games) },
+              { key: "reports", label: "reported", num: true, value: (a) => a.reports_received, render: (a) => compact(a.reports_received) },
+              { key: "days", label: "active days", num: true, value: (a) => a.active_days },
+              { key: "seen", label: "last active", value: (a) => a.last_active ?? "", render: (a) => (a.last_active ? shortDay(a.last_active) : "—") },
+            ]}
+          />
+        </Show>
       </Panel>
     </>
   );

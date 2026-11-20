@@ -107,6 +107,8 @@ mod live_maps;
 #[cfg(feature = "desktop")]
 mod live_maps_details;
 #[cfg(feature = "desktop")]
+mod live_mod_capture;
+#[cfg(feature = "desktop")]
 mod live_mod_contents;
 #[cfg(feature = "desktop")]
 mod live_mod_features;
@@ -116,6 +118,8 @@ mod live_mod_import;
 mod live_models;
 #[cfg(feature = "desktop")]
 mod live_mods;
+#[cfg(feature = "desktop")]
+mod live_pack_import;
 #[cfg(feature = "desktop")]
 mod live_plasma;
 #[cfg(feature = "desktop")]
@@ -242,7 +246,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --keep, --timeout; docs/game/bots.md, Testing)
   bots verdict <bots.log> print a bots test's verdict again
   lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
-  lighting --all          validate every disc map (optional <map> for one map)
+  lighting --all          validate disc lighting and print the per-BSP lighting census
+                          (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
   object <map> <tag>      object-family tag, its hlmt and default variant;

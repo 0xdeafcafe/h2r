@@ -1905,6 +1905,19 @@ impl DirectSound {
 
     // ---- streams ---------------------------------------------------------
 
+    /// The mixer playhead for a guest stream interface. Returns the
+    /// stream-local packet ID and the whole source-frame offset within that
+    /// packet. Paused streams retain the cursor. Empty queues and unknown
+    /// handles have no playhead.
+    pub fn stream_playhead(&self, ptr: u32) -> Option<(u64, u64)> {
+        let Some(Object::Stream(s)) = self.objects.get(&ptr) else {
+            return None;
+        };
+        let mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        let (packet, source_frame_offset) = mixer.stream(s.audio)?.packet_playhead()?;
+        Some((packet.0, source_frame_offset))
+    }
+
     /// `Process(pSrc, pDst)`: queues one packet. `pDst` is unused by
     /// DirectSound streams (verified: the real `Process` never touches it).
     pub fn stream_process(&mut self, h: &mut dyn Host, ptr: u32, src: u32, _dst: u32) -> R {

@@ -5,6 +5,8 @@
    can run as long as it needs. Chart colours live in src/deck/palette.ts. */
 
 .dk {
+  --u: 1px;
+  --ease: cubic-bezier(.2, .8, .2, 1);
   --f-tech: "Orbitron", "Michroma", "Eurostile", "Arial Black", sans-serif;
   --f-cond: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
   --ink: #e6ffc0;
@@ -18,7 +20,6 @@
   --sel-ink: #082000;
   --good: #7fe230;
   --bad: #ff7a5c;
-  --cut: polygon(0 10px, 14px 0, calc(100% - 20px) 0, 100% 16px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 12px 100%, 0 calc(100% - 12px));
   --cut-s: polygon(0 6px, 6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
   position: fixed; inset: 0; overflow: auto; overscroll-behavior: contain;
   color: var(--ink); font: 500 14px/1.3 var(--f-cond); letter-spacing: .03em;
@@ -33,19 +34,19 @@
 .dk *, .dk *::before, .dk *::after { box-sizing: border-box; }
 .dk a { color: var(--lime); text-decoration: none; }
 .dk a:hover, .dk a:focus-visible { color: var(--sel-1); text-decoration: underline; }
-.dk :focus-visible { outline: 2px solid var(--sel-2); outline-offset: 2px; }
+.dk :focus-visible, .dk[data-input="gamepad"] .dk-event-log :focus { outline: 1px solid var(--page-focus); outline-offset: 2px; }
 
 /* ---- header: trail, title, the way back ---- */
-.dk-head { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "trail back" "title back"; align-items: end; gap: 2px 16px; margin: 0 auto 14px; max-width: 1480px; }
-.dk-trail { grid-area: trail; display: flex; gap: 8px; font-weight: 600; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); }
+.dk-head { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "trail back" "title back"; align-items: center; gap: 4px 16px; margin: 0 auto 16px; max-width: 1480px; }
+.dk-trail { grid-area: trail; display: flex; flex-wrap: wrap; gap: 4px 8px; font-weight: 600; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
 .dk-trail > * + *::before { content: "›"; margin-right: 8px; color: var(--ink-3); }
-.dk-head h1 { grid-area: title; margin: 0; font: 700 28px/1.1 var(--f-tech); letter-spacing: .08em; text-transform: lowercase; color: var(--ink); text-shadow: 0 2px 0 rgba(0, 40, 0, .7), 0 0 12px rgba(180, 255, 100, .45); }
-.dk-back { grid-area: back; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2) !important; text-decoration: none !important; }
-.dk-back i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font: 700 14px/1 var(--f-tech); font-style: normal; color: #fff; background: radial-gradient(circle at 35% 30%, #ff9a8a, #d8261c 60%, #6e0b06); box-shadow: 0 0 0 2px rgba(0, 0, 0, .6), 0 0 10px rgba(255, 80, 60, .35); }
-.dk-back:hover span { color: var(--sel-1); }
+.dk-head h1 { grid-area: title; margin: 0; font-size: 25px; line-height: 1.2; }
+.dk a.dk-back { grid-area: back; position: static; justify-self: end; text-decoration: none; }
 
 /* ---- the filter row: one, above everything it scopes ---- */
-.dk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: 0 auto 14px; max-width: 1480px; }
+.dk-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.dk-filters { margin: 0 auto 16px; max-width: 1480px; }
+.dk-field { flex: 1 1 14rem; min-width: 0; padding: 6px 10px; color: var(--ink); font: 500 16px/1.3 var(--f-cond); }
 .dk-filters-note { color: var(--ink-3); font-size: 13px; }
 .dk-presets { display: flex; align-items: center; gap: 6px; }
 .dk-presets-label { font-weight: 600; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); margin-right: 4px; }
@@ -53,6 +54,7 @@
 .dk-pill:hover { color: var(--ink); border-color: var(--lime); }
 .dk-pill[aria-checked="true"], .dk-pill[aria-pressed="true"] { color: var(--sel-ink); background: linear-gradient(180deg, var(--sel-1), var(--sel-2)); border-color: var(--sel-1); box-shadow: 0 0 10px rgba(200, 255, 80, .35); }
 .dk-pill--small { padding: 3px 9px; font-size: 11px; }
+.dk-pill:is(:disabled, [aria-disabled="true"]) { opacity: .55; cursor: default; }
 
 /* ---- the panel grid ---- */
 .dk-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; max-width: 1480px; margin: 0 auto; align-items: start; }
@@ -66,18 +68,22 @@
   .dk-tile { grid-column: span 6 !important; }
 }
 
-/* A panel: the console plate's bevel (a light-dark-light rim) round a flat
-   translucent green face, both cut on the same corners. */
-.dk-panel { position: relative; padding: 2px; clip-path: var(--cut); background: linear-gradient(126deg, #b5d77a 0, #5c9335 4%, #203f12 7%, #588734 47%, #101f0b 76%, #83b54d 97%, #d1e9a4); filter: drop-shadow(0 0 2px #4f7f2f); min-width: 0; }
-.dk-face { clip-path: var(--cut); background: linear-gradient(135deg, #2c5e1bf2, #133a0ef0 55%, #18420ef2); box-shadow: inset 0 0 20px #06180288; padding: 10px 14px 14px; height: 100%; display: grid; gap: 8px; align-content: start; }
-.dk-panel-head { display: flex; align-items: baseline; gap: 10px; min-height: 22px; border-bottom: 1px solid rgba(155, 227, 78, .22); padding-bottom: 5px; }
-.dk-panel-head h2 { margin: 0; font: 600 15px/1.2 var(--f-cond); letter-spacing: .14em; text-transform: uppercase; color: #f0ffc8; text-shadow: 0 1px 2px rgba(0, 40, 0, .9); }
+/* Panels share the console plate's bevel and recessed face. */
+.dk-panel { position: relative; padding: 3px; clip-path: var(--page-cut); background: var(--page-bevel); min-width: 0; }
+.dk-face { clip-path: var(--page-cut); background: var(--page-face); box-shadow: var(--page-inset); padding: 14px 16px 16px; height: 100%; display: grid; gap: 8px; align-content: start; }
+.dk-panel-head, .dk-table th, .dk-event-columns { border-bottom: 1px solid #67924866; }
+.dk-panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-height: 26px; padding-bottom: 6px; }
+.dk-panel-head h2 { margin: 0; font-size: 17px; line-height: 1.2; }
 .dk-meta { color: var(--ink-3); font-size: 13px; letter-spacing: .06em; flex: 1; }
 .dk-panel-head .dk-pill { margin-left: auto; align-self: center; }
-.dk-note { margin: 0; color: var(--ink-3); font-size: 13px; }
+.dk-note { margin: 0; color: #bfd49d; font-size: 14px; }
+.dk-link-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dk .dx-page-row { min-height: var(--page-row-height); color: #d2e4b3; }
+.dk a.dx-page-row { display: flex; align-items: center; padding: 0 12px; text-decoration: none; text-transform: uppercase; font-size: 16px; letter-spacing: .055em; }
+.dk-empty { margin: 0; padding: 10px 12px; }
 
 /* ---- metric tiles ---- */
-.dk-tile .dk-face { gap: 2px; padding: 9px 12px 10px; }
+.dk-tile .dk-face { gap: 2px; padding: 14px 14px 12px; }
 .dk-tile-label { margin: 0; font: 600 12px/1.2 var(--f-cond); letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
 /* Proportional figures at display size (no tabular-nums). */
 .dk-tile-value { margin: 2px 0 0; font: 600 30px/1.05 var(--f-cond); letter-spacing: .02em; color: var(--ink); text-shadow: 0 0 10px rgba(180, 255, 100, .3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -93,7 +99,7 @@
 /* No clip-path here: it would clip the tooltip. */
 .dk-well { position: relative; background: var(--well); box-shadow: inset 0 1px 6px #000c; border: 1px solid rgba(125, 255, 42, .1); min-width: 0; }
 .dk-well svg { display: block; }
-.dk-well svg:focus-visible { outline: 2px solid var(--sel-2); outline-offset: -2px; }
+.dk-well svg:focus-visible { outline-offset: -1px; }
 .dk-tick { font: 500 11px var(--f-cond); letter-spacing: .04em; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
 .dk-crosshair { stroke: var(--ink-2); stroke-width: 1; shape-rendering: crispEdges; pointer-events: none; }
 .dk-tip { position: absolute; top: 8px; pointer-events: none; z-index: 2; display: grid; gap: 2px; min-width: 120px; padding: 6px 9px; background: rgba(3, 18, 3, .95); border: 1px solid rgba(155, 227, 78, .5); box-shadow: 0 4px 14px #000a; font-size: 13px; white-space: nowrap; }
@@ -124,16 +130,16 @@
 /* ---- the dense table ---- */
 .dk-table-wrap { overflow-x: auto; min-width: 0; background: var(--well); clip-path: var(--cut-s); border: 1px solid rgba(125, 255, 42, .1); }
 .dk-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
-.dk-table th { position: sticky; top: 0; z-index: 1; background: #0e2a0c; text-align: left; padding: 0; border-bottom: 1px solid rgba(155, 227, 78, .35); white-space: nowrap; }
+.dk-table th { position: sticky; top: 0; z-index: 1; background: #142a13; text-align: left; padding: 0; white-space: nowrap; }
 .dk-table th button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 6px 8px; cursor: pointer; font: 600 12px/1.1 var(--f-cond); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
 .dk-table th button:hover { color: var(--ink); }
-.dk-table th button:focus-visible { outline: 2px solid var(--sel-2); outline-offset: -2px; }
+.dk-table th button:focus-visible { outline: 1px solid var(--page-focus); outline-offset: -1px; }
 .dk-table th button i { font-style: normal; font-size: 9px; margin-left: 4px; color: var(--lime); }
 .dk-table th.num button { text-align: right; }
-.dk-table td { position: relative; padding: 4px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; color: var(--ink); }
+.dk-table td { position: relative; height: var(--page-row-height); padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; color: var(--ink); }
 .dk-table td.num { text-align: right; }
 .dk-table tbody tr:nth-child(even) td { background: rgba(125, 255, 42, .025); }
-.dk-table tbody tr:hover td { background: rgba(184, 245, 58, .1); }
+.dk-table tbody tr:is(:hover, :focus-within) td { background: rgba(184, 245, 58, .1); }
 .dk-cellbar { position: absolute; right: 8px; bottom: 2px; height: 2px; max-width: calc(100% - 16px); background: var(--lime); opacity: .55; border-radius: 1px; }
 .dk-col-seg { width: 18%; min-width: 110px; }
 
@@ -148,8 +154,6 @@
 .dk-subgrid { max-width: none; margin: 0; }
 .dk-stale { opacity: .55; }
 @media (prefers-reduced-motion: no-preference) { .dk-subgrid { transition: opacity .15s; } }
-.dk-state { padding: 10px 14px; border: 1px solid rgba(155, 227, 78, .3); background: rgba(3, 18, 3, .7); color: var(--ink-2); }
-.dk-state b { margin-right: 6px; }
+.dk-state { margin: 0; padding: 10px 14px; background: var(--well); border: 1px solid #67924866; color: var(--ink); }
 .dk-state--bad { border-color: var(--bad); color: var(--ink); }
-.dk-state--bad b { color: var(--bad); }
 .dk-dim { color: var(--ink-3); }

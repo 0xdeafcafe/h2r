@@ -76,3 +76,16 @@
   .s-mod-pic { width: 96px; height: 54px; }
   .s-mod-top { grid-template-columns: minmax(0, 1fr); }
 }
+
+.s-pack-expand { margin-top: 4px; }
+.s-pack-expand summary, .s-pack-tools summary, .s-mod-report summary { width: fit-content; color: var(--s-link); cursor: pointer; }
+.s-pack-members { padding: 4px 8px 8px; }
+.s-pack-members li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; padding: 4px 2px; border-bottom: 1px solid #31363c; }
+.s-pack-members li span { color: #aaa; font-size: 11px; }
+.s-pack-tools { margin: 8px; }
+.s-pack-form { display: grid; gap: 8px; max-width: 36rem; padding: 8px 0; }
+.s-pack-form label { display: grid; grid-template-columns: minmax(100px, 1fr) 2fr; gap: 6px; align-items: baseline; }
+.s-pack-form input, .s-pack-form textarea, .s-pack-form select { width: 100%; min-width: 0; }
+.s-pack-form button { justify-self: start; }
+.s-pack-advisory { color: #f3c77b; }
+.s-member-shot { display: block; aspect-ratio: 4 / 3; }

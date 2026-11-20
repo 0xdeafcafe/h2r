@@ -9,12 +9,14 @@ function track(kind: string) {
   return { root, fill, chip };
 }
 
-function draw(track: ReturnType<typeof track>, value: number, edge: number | null) {
+type Track = ReturnType<typeof track>;
+
+function draw(bar: Track, value: number, edge: number | null) {
   const filled = Math.min(1, Math.max(0, value)) * 100;
   const chipped = edge === null ? 0 : Math.min(1, Math.max(0, edge)) * 100 - filled;
-  track.fill.style.width = `${filled}%`;
-  track.chip.style.left = `${filled}%`;
-  track.chip.style.width = `${Math.max(0, chipped)}%`;
+  bar.fill.style.width = `${filled}%`;
+  bar.chip.style.left = `${filled}%`;
+  bar.chip.style.width = `${Math.max(0, chipped)}%`;
 }
 
 export class TagDamage {

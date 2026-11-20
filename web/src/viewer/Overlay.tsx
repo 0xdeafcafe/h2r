@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
-import { LOAD_SEGMENTS, loadProgress, type LoadProgress, type OverlayState } from "./overlay";
+import { LOAD_SEGMENTS, loadProgress, type LoadProgress, type OverlayState } from "./overlayState";
 import "./overlay.css";
 
 export interface OverlayProps {

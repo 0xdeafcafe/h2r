@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
-import { liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
+import { accountByGamertag, liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
 import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
 
@@ -35,6 +35,7 @@ import { ReportsQueue } from "./Reports";
 import { BanControl, BanNotice, BansList } from "./Bans";
 import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
+import { DECK_ENTRY } from "../deck/back";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
@@ -55,25 +56,26 @@ import { useMotd } from "../state/motd";
 import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
-import SessionsScreen from "./Sessions";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
+import { NotificationSettingsPlate, notificationRows, NotificationSession } from "./Notifications";
+import { notifications } from "../state/notifications";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
-import { lockedHint, menuFor, type SectionId } from "./menu";
-import { STATS_ROOT, statsPath } from "../routes";
+import { lockedHint, menuFor, settingsRows, type SectionId } from "./menu";
+import { dashboardPlayerHref, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
+type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "signins";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   games: () => "games",
-  sessions: () => "find a game",
   friends: () => "friends",
   teams: () => "teams",
   players: () => "players",
   settings: () => "settings",
+  session: () => "game session",
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
   signin: () => "sign in",
@@ -87,6 +89,7 @@ const menuItems = (): SectionId[] => menuFor(!!identity.me());
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
+  if (s === "session") return "live";
   if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
@@ -137,19 +140,27 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
+  const playerTag = () => section() === "players" && params.tag ? safeDecode(params.tag) : null;
   const viewed = createMemo((): AccountState | null => {
-    const s = section();
-    if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
-    if ((s === "players" || s === "friends") && params.tag) { const tag = safeDecode(params.tag); return Object.values(live.state.accounts).find((a) => a.gamertag === tag) ?? null; }
-    return null;
+    if (section() === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
+    const tag = playerTag();
+    return tag ? accountByGamertag(live.state, tag) ?? null : null;
   });
+  // A link can name an account outside the local account snapshot.
+  createEffect(on(() => [playerTag(), viewed()?.xuid, live.loadMode(), live.server()] as const, ([tag, xuid, mode]) => {
+    if (!tag || xuid || mode === "snapshot") return;
+    const abort = new AbortController();
+    onCleanup(() => abort.abort());
+    void live.api().account(tag, abort.signal).then((account) => {
+      if (!abort.signal.aborted && !accountByGamertag(live.state, tag)) live.addAccounts([account]);
+    }, () => {});
+  }));
   const screen = createMemo((): ScreenId => {
     const s = section();
     if (!s) return "menu";
     if (s === "games") return "games";
     if (s === "server") return "server";
     if (s === "friends" || s === "teams") return "social";
-    if (s === "sessions") return "sessions";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
@@ -182,10 +193,11 @@ export default function Dashboard() {
     setDir(d);
     // Off to the stats site: the veil carries it (and plays this screen out).
     if (sideOf(href) === "stats") { crossTo(href, { replace }); return; }
-    if (reducedMotion()) { navigate(href, { replace }); return; }
+    const state = !replace && (href === LIVE_ADMIN || href.startsWith(LIVE_ADMIN + "/")) ? DECK_ENTRY : undefined;
+    if (reducedMotion()) { navigate(href, { replace, state }); return; }
     setLeaving(true);
     clearTimeout(timer);
-    timer = setTimeout(() => { navigate(href, { replace }); setLeaving(false); }, 190);
+    timer = setTimeout(() => { navigate(href, { replace, state }); setLeaving(false); }, 190);
   }
   onCleanup(() => clearTimeout(timer));
   createEffect(() => { lastScreen = screen(); });
@@ -199,16 +211,12 @@ export default function Dashboard() {
       : online();
   });
 
-  const settings = createMemo(() => [
-    { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
-    { key: "/dash/games", label: "games", glyph: "disc" },
-    { key: adminState.isMeAdmin() === true ? "/dash/admin/events" : statsPath("/events"), label: "event log", glyph: "history" },
-    { key: "/dash/server", label: "server", glyph: "server" },
-  ] satisfies (Row & { glyph: GlyphName })[]);
+  const notificationScreen = () => section() === "settings" && params.tag === "notifications" && !!identity.me();
+  const settings = createMemo(() => settingsRows(!!identity.me(), adminState.isMeAdmin()));
 
   const rows = createMemo((): Row[] => {
     switch (section()) {
-      case "settings": return settings();
+      case "settings": return notificationScreen() ? notificationRows() : settings();
       case "live":
         return liveGames(live.state).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
@@ -233,8 +241,11 @@ export default function Dashboard() {
   });
 
   const [sel, setSelRaw] = createSignal(0);
-  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s) listSel[s] = i; };
-  createEffect(() => { const s = section(); setSelRaw(s ? listSel[s] ?? 0 : 0); });
+  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s && !notificationScreen()) listSel[s] = i; };
+  createEffect(() => {
+    const s = section();
+    setSelRaw(notificationScreen() ? 0 : s ? listSel[s] ?? 0 : 0);
+  });
   createEffect(() => { if (screen() === "list" && sel() >= rows().length) setSelRaw(Math.max(0, rows().length - 1)); });
 
   function openRow(i: number) {
@@ -252,8 +263,14 @@ export default function Dashboard() {
       }
       return;
     }
+    if (notificationScreen()) {
+      if (r.key === "friendGames" || r.key === "otherGames") notifications.toggle(r.key);
+      else if (r.key === "permission") void notifications.requestPermission();
+      return;
+    }
     if (s === "settings") go(r.key, "deeper");
     else if (s === "live") go(`${STATS_ROOT}/games/${r.key}`, "deeper");
+    else if (s === "players") go(dashboardPlayerHref(r.label), "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -352,7 +369,7 @@ export default function Dashboard() {
 
   // These screens manage selection and focus inside their own panels.
   let screenAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions" || screen() === "signins";
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "signins";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -381,6 +398,8 @@ export default function Dashboard() {
     else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
+    else if (s === "settings" && params.tag === "notifications") go("/dash/settings", "back");
+    else if (s === "session") go("/dash/live", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
@@ -388,7 +407,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "games": case "social": case "sessions": case "signins": screenAct?.("select"); break;
+      case "games": case "social": case "signins": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -448,7 +467,7 @@ export default function Dashboard() {
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Let a tab-focused link or prompt perform its own activation.
-    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt")) return;
+    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt, .dx-notice-dismiss")) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
     // A field in a column of rows (data-nav) still lets up and down move on.
     const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
@@ -608,6 +627,24 @@ export default function Dashboard() {
             <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
+          <Match when={notificationScreen()}>
+            <div class="dx-screen dx-list dx-pages dx-settings">
+              <ListPanel title="notifications" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
+              <div class="dx-preview"><BigPod wire><Glyph name="gear" /></BigPod></div>
+              <NotificationSettingsPlate />
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={section() === "session"}>
+            <div class="dx-screen dx-list dx-pages">
+              <Show when={identity.me()} keyed fallback={<Plate small="live now" title="game session" main><p>Sign in to see this game session.</p></Plate>}>
+                <NotificationSession id={params.tag} />
+              </Show>
+              <Prompts onB={back} />
+            </div>
+          </Match>
+
           <Match when={section() === "settings"}>
             <div class="dx-screen dx-list dx-pages dx-settings">
               <ListPanel title="settings" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
@@ -708,10 +745,6 @@ export default function Dashboard() {
 
           <Match when={screen() === "signins"}>
             <SignInsScreen go={go} back={() => go("/dash/account", "back")} bind={(f) => { screenAct = f; }} />
-          </Match>
-
-          <Match when={screen() === "sessions"}>
-            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "connect"}>
