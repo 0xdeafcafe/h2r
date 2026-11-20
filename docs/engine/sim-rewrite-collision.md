@@ -776,7 +776,7 @@ differential oracles.
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
 `crates/rewrites/engine/tests/sim_collision_differential.rs`,
 `docs/engine/collision-queries.md`; edits to `crates/rewrites/sim-core` (S0),
-`crates/hooking/hooks/src/sim_native.rs`, `crates/rewrites/engine/src/points.rs`, the agent
+`crates/hooking/hooks/src/sim_native.rs`, `crates/hooking/guest-layout/src/points.rs`, the agent
 crates for 8.3, and the workspace manifests. Nothing owned by Live, bots,
 theater or film.
 
