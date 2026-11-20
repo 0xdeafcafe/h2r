@@ -1,4 +1,3 @@
-use std::{fs::File, io::BufReader};
 
 use h1convert::shad::COUNTDOWN_DIGITS;
 
@@ -33,13 +32,7 @@ impl Countdown {
         if name != "d40" {
             return;
         }
-        let Some(file) = crate::native_world_glue::locate(name) else {
-            return;
-        };
-        let Ok(reader) = File::open(file.path) else {
-            return;
-        };
-        let Ok(cache) = map::Map::from_region(BufReader::new(reader), file.offset, file.len) else {
+        let Ok((cache, _)) = crate::native_map::open(name) else {
             return;
         };
         for (index, entry) in cache.strings().iter().enumerate() {

@@ -2,7 +2,6 @@ use super::Frame;
 use native_render::gpu::Image;
 use std::{
     collections::HashMap,
-    io::BufReader,
     sync::{Arc, Mutex},
 };
 use wgpu::util::DeviceExt;
@@ -48,16 +47,8 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderP
 }
 
 fn video_images(name: &str) -> Option<[Image; 2]> {
-    use crate::native_world_glue::{decode_image, locate, region};
-    let file = locate(name)?;
-    let mut map = map::Map::from_region(
-        BufReader::new(std::fs::File::open(&file.path).ok()?),
-        file.offset,
-        file.len,
-    )
-    .ok()?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(map::ResourceFile::Local, region(&file)).ok()?;
+    use crate::native_world_glue::decode_image;
+    let (mut map, mut files) = crate::native_map::open(name).ok()?;
     let [mask, noise] = h1scripts::cinematics::VIDEO_BITMAPS.map(|tag| {
         let id = map
             .tags()
