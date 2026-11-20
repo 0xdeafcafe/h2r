@@ -2617,6 +2617,31 @@ Only the validated action crosses back to the host. A repeated gather in one tic
 their normal retail controller polling. A phantom samples once per game
 tick and advances the button clock by elapsed simulation milliseconds.
 
+The first 12 sims with a phantom seat stopped between ticks 91 and 1945. In the
+Lockout log, `0x2d6307` is the return from kernel ordinal 234 inside
+XAPI's `WaitForSingleObjectEx`. Thread 3’s `0x120c4f` is the return from
+waiting on the async I/O work semaphore at `[0x4e0360]`. The two stacks
+identify the same wait wrapper. The log does not identify the object the
+private builder waited on.
+
+The builder’s inventory check (`0xcdeb0`) can look up a weapon animation
+at `0x1cc3f0` and predict its resources at `0x1236f0`. A cold read
+allocates a job under the pool mutex (`0x1208b0`) and queues it
+(`0x1209c0`). A pose lookup can also demand animation bytes through
+`0x1dd82b` → `0x1237e0` and wait for an outstanding read at `0x1237a0`.
+Which branch triggered the original refusal is **inferred, needs a run**.
+
+The private builder skips animation prefetch. For a demanded resource it
+uses the retail getter if the bytes are resident. On a cache miss or
+pending I/O it checks the animation and resource against their live graph,
+calls the retail getter on the scheduled game thread, then retries the
+same pad once against fresh RAM. The live worker can complete that job.
+A further miss or refused call discards the private build. The hook logs
+the first failure of each kind and revalidates the same unit’s previous
+action for one tick. With no eligible action it returns zero, which leaves
+the player out of the gather mask. Repeated gathers reuse that tick’s
+decision. A later successful build resumes normal input.
+
 The image-backed test `retail_pad_sequence_matches_local_angles_target_and_fire`
 uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
 in `H2_PAD_CHECKPOINT`. Capture the checkpoint with the agent API's

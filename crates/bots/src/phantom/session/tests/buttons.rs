@@ -72,8 +72,18 @@ fn pad(button: HostButton) -> HostPadState {
 
 fn call(
     ph: &Phantoms,
+    g: FakeGuest,
+    slot: u32,
+    callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs,
+) -> entry::testing::Run {
+    call_with_builder(ph, g, slot, |s| Some(fixture_record(s.pad.gamepad)), callee)
+}
+
+fn call_with_builder(
+    ph: &Phantoms,
     mut g: FakeGuest,
     slot: u32,
+    build: fn(crate::phantom::SeatInput) -> Option<[u8; ACTION_SIZE]>,
     callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs,
 ) -> entry::testing::Run {
     g.map(OUT, ACTION_SIZE as u32)
@@ -84,7 +94,7 @@ fn call(
         &move |cx| {
             let ph = ph.clone();
             Box::pin(async move {
-                ph.slot_action(cx, slot, |s| Ok(fixture_record(s.pad.gamepad)))
+                ph.slot_action(cx, slot, |s| std::future::ready(build(s)))
                     .await
             })
         },
@@ -139,6 +149,109 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
         guest::game_tick(&g).unwrap()
     );
     g
+}
+
+#[test]
+fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
+    let (ph, g, slot) = game(|f| HostPadState {
+        right_trigger: if f.tick == Some(100) { 1. } else { 0. },
+        ..Default::default()
+    });
+    let mut g = gather(&ph, g, slot);
+    let mut previous = [0; ACTION_SIZE];
+    g.read(OUT, &mut previous).unwrap();
+    at_tick(&mut g, 101);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| None,
+        |q, m| {
+            let mut replay = [0; ACTION_SIZE];
+            m.read(OUT, &mut replay).unwrap();
+            assert_eq!(replay, previous);
+            m.set_f32(OUT + 0x50, 0.25).unwrap();
+            guest_query(q, m)
+        },
+    );
+    assert_eq!(run.result, Ok(Ret::new(1, 8)));
+    assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    let repeat = call_with_builder(
+        &ph,
+        run.guest,
+        slot,
+        |_| panic!("rebuilt"),
+        |_, _| panic!("revalidated"),
+    );
+    assert_eq!(repeat.result, Ok(Ret::new(1, 8)));
+    assert_eq!(repeat.guest.f32(OUT + 0x50).unwrap(), 0.25);
+    let mut g = repeat.guest;
+    at_tick(&mut g, 102);
+    let missed = call_with_builder(&ph, g, slot, |_| None, |_, _| panic!("replayed twice"));
+    assert_eq!(missed.result, Ok(Ret::new(0, 8)));
+    assert_eq!(missed.guest.u32(slot + SLOT_STAMP).unwrap(), 101);
+    let repeat = call_with_builder(
+        &ph,
+        missed.guest,
+        slot,
+        |_| panic!("retried in tick"),
+        |_, _| panic!("validated missing input"),
+    );
+    assert_eq!(repeat.result, Ok(Ret::new(0, 8)));
+    let mut g = repeat.guest;
+    at_tick(&mut g, 103);
+    let g = gather(&ph, g, slot);
+    assert_eq!(g.u32(OUT).unwrap() & 0x40, 0);
+}
+
+#[test]
+fn rejection_of_a_replayed_action_leaves_the_slot_stamp_untouched() {
+    let (ph, g, slot) = game(|_| HostPadState::default());
+    let mut g = gather(&ph, g, slot);
+    at_tick(&mut g, 101);
+    let run = call_with_builder(
+        &ph,
+        g,
+        slot,
+        |_| None,
+        |q, m| {
+            let _ = guest_query(q, m);
+            m.set_u32(OUT, 0x1234).unwrap();
+            Regs::default()
+        },
+    );
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), 100);
+    assert_eq!(run.guest.u32(slot + SLOT_ACTION).unwrap(), 0);
+}
+
+#[test]
+fn missed_build_ignores_absent_stale_and_respawned_records() {
+    for case in ["first", "lost stamp", "respawn", "tick gap"] {
+        let (ph, mut g, slot) = game(|_| HostPadState::default());
+        if case != "first" {
+            g = gather(&ph, g, slot);
+        }
+        at_tick(&mut g, if case == "tick gap" { 103 } else { 101 });
+        if case == "respawn" {
+            let unit = DatumHandle::new(0xb101, 1);
+            g.put_u32(PLAYERS_DATA + 0x21c + 0x2c, unit.raw());
+            g.put_u16(OBJECTS_DATA + 0xc, unit.salt());
+        }
+        if case == "lost stamp" {
+            g.put_u32(slot + SLOT_STAMP, 97);
+        }
+        let stamp = g.u32(slot + SLOT_STAMP).unwrap();
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |_| None,
+            |_, _| panic!("validated stale action"),
+        );
+        assert_eq!(run.result, Ok(Ret::new(0, 8)), "{case}");
+        assert_eq!(run.guest.u32(slot + SLOT_STAMP).unwrap(), stamp);
+    }
 }
 
 #[test]
