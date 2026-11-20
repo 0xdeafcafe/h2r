@@ -91,7 +91,8 @@ deleted, and git keeps it.
    to open the code from the sentence.
 4. **One home per fact.** Link to it; do not restate it. Switches and
    environment variables are listed once, in
-   `docs/runtime/switches.md`; other pages name the switch and link there.
+   `docs/runtime/switches.md` (it arrives with the `flag-cleanup` branch);
+   other pages name the switch and link there.
 5. **One status line**, directly under the title (see the template).
 6. **Evidence labels** on anything that is not plain from the code (below).
 7. **Numbers come from notes.** A measured number on a design page links
@@ -174,10 +175,11 @@ that is not built uses the same template with `Status: Design` and says in
 
 ## Keeping docs current
 
-The rule every agent follows is in `AGENTS.md` ("Keep the docs current").
-In short: a change that alters behaviour, an interface, a switch or a path
-that a doc names updates that doc in the same branch, so that the page
-reads as if it had always been so.
+A change that alters behaviour, an interface, a switch or a path that a doc
+names updates that doc in the same branch, so that the page reads as if it
+had always been so. The wording for agents is the section "Keep the docs
+current", proposed for `AGENTS.md`; until it is added there, its text is in
+[docs-tidy-plan.md](docs-tidy-plan.md).
 
 ## Checking
 

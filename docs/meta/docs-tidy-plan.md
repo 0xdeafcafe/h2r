@@ -117,11 +117,11 @@ branch of that name.
 | Page | Lines | Commits | Last touched | Verdict | Lane | Evidence |
 |---|---:|---:|---|---|---|---|
 | [README.md (root)](../../README.md) | 323 | 58 | cd5e3ccd6 2026-11-20 | **fix** | LZ | Says bots join 'on free controller ports' (line 73); `docs/game/bots.md` line 4 says ports are reserved for people and bots are phantom peers. Lists the Xbox UWP app as Design (line 63); `runtime/xbox.md` says it runs on a Series X. Lists 60 and 120 fps as Design; `game/high-framerate.md` has built slices. Links `native-renderer.md#the-all-native-push-2026-11-1920`, a dated heading. |
-| [README.md](../README.md) | 228 | 51 | 1b38334f7 2026-11-19 | **rewrite** | LZ | The index. 24 pages were missing from it and two lines were wrong (agent API 'design only; none of it is on master', theater 'not built'); both fixed in this branch. LZ rebuilds it on the layout in docs-style.md. |
+| [README.md](../README.md) | 228 | 52 | 64fedb648 2026-11-20 | **rewrite** | LZ | The index. 24 pages were missing from it and two lines were wrong (agent API 'design only; none of it is on master', theater 'not built'); both fixed in this branch. LZ rebuilds it on the layout in docs-style.md. |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | 210 | 27 | 42a1c068e 2026-11-18 | **rewrite** | LZ | Crate table lacks 25 of 86 crates (`agent`, `agent-proto`, `bots`, `clif`, `film`, `native-render`, `sim`, `snapshot`, `voice`, seven `h1*` and others). Says the lifter emits 'LLVM IR or C' (it emits C11), gives `fn(&mut Cpu, &mut Guest)` as the handler signature, and describes a record-and-replay harness that does not exist (review 2.7). `coop` row says 'phase 0' while `live/live-coop.md` says co-op is built and confirmed. Milestone 7 points at the 2026-11-15 menu budget. |
 | [architecture-review-2026-11.md](../architecture-review-2026-11.md) | 807 | 1 | 8d35753e4 2026-11-20 | **move** | LZ | A dated review (2026-11-20). Move to `docs/reviews/2026-11-20-architecture.md`. In-flight design branches cite it, so it moves last. |
-| [meta/docs-style.md](docs-style.md) | 206 | 0 |  | **keep** | - | The standing rules, added in this branch. |
-| [meta/docs-tidy-plan.md](docs-tidy-plan.md) | 762 | 0 |  | **delete** | LZ | This plan. Deleted when the last lane lands. |
+| [meta/docs-style.md](docs-style.md) | 208 | 1 | 57a0d422d 2026-11-20 | **keep** | - | The standing rules, added in this branch. |
+| [meta/docs-tidy-plan.md](docs-tidy-plan.md) | 762 | 1 | de156623c 2026-11-20 | **delete** | LZ | This plan. Deleted when the last lane lands. |
 
 ### `lifter/`
 
@@ -314,7 +314,7 @@ branch of that name.
 
 | Page | Lines | Commits | Last touched | Verdict | Lane | Evidence |
 |---|---:|---:|---|---|---|---|
-| [halo1/README.md](../halo1/README.md) | 48 | 2 | f952bd718 2026-11-19 | **keep** | L18 | The area page. Two rows added in this branch. |
+| [halo1/README.md](../halo1/README.md) | 48 | 3 | 64fedb648 2026-11-20 | **keep** | L18 | The area page. Two rows added in this branch. |
 | [halo1/campaign.md](../halo1/campaign.md) | 1134 | 88 | 8d773f699 2026-11-20 | **rewrite** | L18 | 1,134 lines, 88 commits. 'Status: design, with parts **Built**'. Sections run 1 to 7, then 9, 10, 8. Section 3 is 'Order of work'. |
 | [halo1/campaign-picker.md](../halo1/campaign-picker.md) | 497 | 11 | 17bceb8d3 2026-11-20 | **fix** | L18 | '**Built (2026-11-20).**' Ends with 'Coordinator verification', a lane handoff note. |
 | [halo1/health.md](../halo1/health.md) | 306 | 9 | c5cd86c6c 2026-11-20 | **fix** | L18 | The status paragraph is a diary: 'Since 2026-11-18 ...', 'Since 2026-11-17 ...'. One code comment cites a 'Layouts' heading it does not have. |
@@ -691,8 +691,9 @@ rg native`.
    list those for the Live owner.
 7. `code-sections`: fix the comment where the lanes' reports give the new
    heading; list the rest.
-8. Delete this page and its index line, and the sentence in
-   `docs-style.md` that links it.
+8. Delete this page and its index line. In `docs-style.md`, remove the
+   two links to it and the two sentences that say something is pending
+   (the `AGENTS.md` section, the arrival of `switches.md`).
 
 Done when `python3 scripts/docs-check.py` exits 0 and its `code-sections`
 count is below the 70 it started at.
