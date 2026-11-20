@@ -435,7 +435,7 @@ impl Brain {
         .is_err()
         {
             self.spare_observations.push(observation);
-            self.reset_input();
+            local::PadSource::reset_input(self);
             self.fidget.reset();
             return HostPadState::default();
         }
