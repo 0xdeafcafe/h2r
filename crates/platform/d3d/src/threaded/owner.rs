@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+mod stage;
+
 #[cfg(test)]
 mod tests;
 
@@ -93,6 +95,7 @@ pub(super) struct Present<B: Backend> {
 }
 
 pub(super) enum RenderOp {
+    Stage(Box<crate::SceneStage<u32>>),
     BeginQuery,
     EndQuery { proxy: u64 },
     Clear { color: u32, depth: Option<u32>, clear: Clear },
@@ -104,6 +107,7 @@ pub(super) enum RenderOp {
 impl RenderOp {
     pub fn issue<B: Backend>(self, w: &mut Worker<B>) -> Result<(), String> {
         match self {
+            Self::Stage(stage) => stage::issue(*stage, w),
             Self::BeginQuery => w.inner.clear_pixel_count(),
             Self::EndQuery { proxy } => w.issue_report(proxy),
             Self::Clear { color, depth, clear } => {
@@ -214,6 +218,9 @@ fn target_map<B: Backend>(
             continue;
         }
         match (op, original.next()?) {
+            (ReplayOp::Stage(kept), Cmd::Render(RenderOp::Stage(queued))) => {
+                stage::bind_targets(&mut targets, kept, queued)?;
+            }
             (ReplayOp::BeginFlareQuery, Cmd::Render(RenderOp::BeginQuery)) => {}
             (ReplayOp::EndFlareQuery(expected), Cmd::Render(RenderOp::EndQuery { proxy })) if expected == proxy => {}
             (ReplayOp::Draw { draw, textures, .. }, Cmd::Draw(slot)) => {

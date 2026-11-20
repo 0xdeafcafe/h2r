@@ -1439,22 +1439,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         crate::scene_stage::queued(kind);
         // A stage changes what a pinned run's attachments hold.
         self.pinned_external_run = None;
-        self.post(move |w| {
-            let crate::SceneStage { surfaces, request, plan, pass } = stage;
-            let ranges = plan.ranges;
-            let Some(surfaces) = surfaces.try_map(|s| w.surfaces.get(s).copied()) else {
-                crate::scene_stage::dropped(kind, ranges, "a target is not live on the render thread");
-                return Ok(());
-            };
-            if !w.inner.runs_scene_stages() {
-                crate::scene_stage::dropped(kind, ranges, "the backend stopped taking scene stages");
-                return Ok(());
-            }
-            if !w.inner.run_scene_stage(crate::SceneStage { surfaces, request, plan, pass })? {
-                crate::scene_stage::dropped(kind, ranges, "the render thread could not record it");
-            }
-            Ok(())
-        });
+        self.push(Cmd::Render(owner::RenderOp::Stage(Box::new(stage))));
         true
     }
 
