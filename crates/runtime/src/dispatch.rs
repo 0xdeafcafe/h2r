@@ -28,6 +28,8 @@ struct Resume {
     handler: Handler,
     selector: u32,
     owner: u32,
+    // None on the normal generated path, which needs no override lookup.
+    native_owner: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -35,6 +37,7 @@ pub struct Override {
     pub name: String,
     handler: Handler,
     pub enabled: bool,
+    resume_body: Option<(&'static [u32], Handler)>,
     /// The handler acts only on the context it runs on (its registers,
     /// stack and the memory that context sees). Any suspended state must
     /// be portable with the guest stack so a second executor can run it
@@ -154,6 +157,7 @@ impl Dispatch {
                 name,
                 handler,
                 enabled: true,
+                resume_body: None,
                 context_only: false,
             },
         )
@@ -241,11 +245,30 @@ impl Dispatch {
                     handler,
                     selector: start_pc,
                     owner,
+                    native_owner: None,
                 });
                 Ok(())
             }
         }
     }
+    /// Let a stack-resident implementation receive returns at the original
+    /// call sites. Entry observers must run only at entry, so these invoke
+    /// the body directly. A disabled or replaced override uses the original
+    /// resume. Never create a selector the generated image did not export.
+    pub fn implement_resumes<F>(&mut self, owner: u32, sites: &'static [u32], body: F)
+    where
+        F: Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send + Sync + 'static,
+    {
+        let Some(entry) = self.overrides.get_mut(&owner) else { return };
+        entry.resume_body = Some((sites, Handler::Rust(Arc::new(body))));
+        for pc in sites {
+            if let Some(r) = self.resumes.get_mut(pc) {
+                r.native_owner = Some(owner);
+            }
+        }
+    }
+
     pub fn set_enabled(&mut self, addr: u32, enabled: bool) -> bool {
         self.overrides
             .get_mut(&addr)
@@ -335,6 +358,7 @@ impl Dispatch {
                         name: o.name.clone(),
                         handler: refuse(addr, &o.name),
                         enabled: true,
+                        resume_body: None,
                         context_only: false,
                     }
                 };
@@ -369,9 +393,20 @@ impl Dispatch {
     pub(crate) fn resolve_original(&self, addr: u32) -> Option<Handler> {
         self.generated.get(&addr).cloned()
     }
-    /// The owner's original handler, its selector and the owner address.
+    /// The canonical generated handler and its image selector.
+    pub(crate) fn original_resume(&self, pc: u32) -> Option<(Handler,u32)> {
+        let r = self.resumes.get(&pc)?;
+        Some((self.resolve_original(r.owner)?, r.selector))
+    }
     pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32, u32)> {
         let entry = self.resumes.get(&pc)?;
+        if let Some(owner) = entry.native_owner
+            && let Some(o) = self.overrides.get(&owner).filter(|o| o.enabled)
+            && let Some((sites, body)) = &o.resume_body
+            && sites.contains(&pc)
+        {
+            return Some((body.clone(), pc, owner));
+        }
         Some((entry.handler.clone(), entry.selector, entry.owner))
     }
 }

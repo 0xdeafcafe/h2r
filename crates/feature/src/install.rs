@@ -48,8 +48,9 @@ impl Installed {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstallError {
-    /// An override the plan did not place is already there. Nothing was
-    /// installed.
+    /// The image has no selector at a required native continuation.
+    MissingResume { point: &'static str, site: u32 },
+    /// An override the plan did not place is already there.
     Occupied {
         addr: u32,
         point: &'static str,
@@ -65,6 +66,9 @@ pub enum InstallError {
 impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            InstallError::MissingResume { point, site } => {
+                write!(f, "{point} requires image resume {site:#010x}")
+            }
             InstallError::Occupied {
                 addr,
                 point,
@@ -204,6 +208,13 @@ impl Plan {
         let mut occupied = None;
         rt.edit_dispatch(|d| {
             for (c, _) in &chains {
+                if let Some(h) = &c.implement
+                    && c.addr == c.point.base
+                    && let Some(&site) = h.resume_sites.iter().chain(h.generated_sites).find(|&&s| !d.has_resume(s))
+                {
+                    occupied = Some(InstallError::MissingResume { point: c.point.name, site });
+                    return;
+                }
                 for a in std::iter::once(c.addr).chain(c.shadow) {
                     if let Some(existing) = d.override_name(a) {
                         occupied = Some(InstallError::Occupied {
@@ -321,6 +332,14 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
             body.invoke(cpu, ctx, addr)
         });
     }
+    let native_resumes = c.implement.as_ref().and_then(|hook| {
+        match &hook.run {
+            Run::Implement(f) if addr == point.base && !hook.resume_sites.is_empty() => {
+                Some((hook.resume_sites, Arc::clone(f)))
+            }
+            _ => None,
+        }
+    });
     let shadow = c.shadow;
     d.register_override(addr, name, move |cpu, ctx, _| {
         for o in &observe_before {
@@ -390,6 +409,9 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
             }
         }
     });
+    if let Some((sites, f)) = native_resumes {
+        d.implement_resumes(addr, sites, move |cpu, ctx, pc| f(cpu, ctx, pc));
+    }
     if context_only {
         d.mark_context_only(addr);
     }
