@@ -1,0 +1,359 @@
+//! Private and displayed draws of a sealed scene, using this rig's
+//! invented triangles, depth/stencil state and texture-sampling program.
+
+use super::{CAPTURE_LOCK, DEPTH, FORMAT, SIZE, triangle};
+use d3d::backend::{ExternalPassRequest, ExternalPlan, ExternalSurfaces, SceneStage};
+use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
+use d3d::{GfxBackend, Lighting};
+use frame_scene::carried::CameraUse;
+use frame_scene::{
+    AuxTarget, FrameScene, FreeList, SceneBuilder, SceneId, Slot, SlotAt, Stamp, TargetRef,
+};
+use gfx::{Clear, GfxContext};
+use native_render::frame_graph::{
+    CapturedFrame, PassObserver, PassRow, ReadColour, draw_display, draw_private,
+    draw_private_with_observer,
+};
+use native_render::world_layers_gpu::{Cache, IndexedPass};
+use std::sync::{Arc, Mutex};
+
+const MAIN: TargetRef = TargetRef::SceneColour;
+const Z: TargetRef = TargetRef::SceneDepth;
+
+fn sealed() -> Arc<FrameScene> {
+    let mut builder = SceneBuilder::new(FreeList::new());
+    builder.begin(SceneId {
+        map_epoch: 2,
+        tick: 17,
+        frame: 12,
+    });
+    builder.seal(Stamp::default()).unwrap()
+}
+
+fn replay() -> ReplayFrame {
+    let colour = AuxTarget {
+        width: SIZE,
+        height: SIZE,
+        format: u32::from(FORMAT as u8),
+        depth: false,
+    };
+    ReplayFrame {
+        colour: Some(colour),
+        depth: Some(AuxTarget {
+            format: u32::from(DEPTH as u8),
+            depth: true,
+            ..colour
+        }),
+        presented: MAIN,
+        ..Default::default()
+    }
+}
+
+fn op(frame: &mut ReplayFrame, slot: Slot, op: ReplayOp) {
+    frame.ops.push((SlotAt { slot, view: 0 }, op));
+}
+
+fn bind() -> ReplayOp {
+    ReplayOp::Bind {
+        colour: MAIN,
+        depth: Z,
+    }
+}
+
+fn clear() -> ReplayOp {
+    ReplayOp::Clear {
+        colour: MAIN,
+        depth: Z,
+        clear: Clear::all([0.0, 0.0, 0.0, 1.0]),
+    }
+}
+
+fn guest_triangle(x: f32, colour: [f32; 4], texture: Option<u32>) -> ReplayOp {
+    let mut draw = triangle(x, colour, 1, texture.is_some());
+    if texture.is_none() {
+        draw.state.render.depth_func = gfx::state::CompareFunc::Always;
+    }
+    ReplayOp::Draw {
+        draw: Box::new(draw),
+        textures: [texture.map(ReplayTexture::Sample), None, None, None],
+        camera: CameraUse::Unknown,
+    }
+}
+
+fn typed_triangle(x: f32, colour: [f32; 4]) -> ReplayOp {
+    let mut draw = triangle(x, colour, 1, false);
+    draw.state.render.depth_func = gfx::state::CompareFunc::Always;
+    let pass = IndexedPass::new(&draw, Arc::new(Cache::default()), 1, None).unwrap();
+    ReplayOp::Stage(SceneStage {
+        surfaces: ExternalSurfaces {
+            color: MAIN,
+            depth: Z,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        },
+        request: ExternalPassRequest {
+            rect: (0, 0, SIZE, SIZE),
+            surface_size: (SIZE, SIZE),
+            z_scale: 16_777_215.0,
+        },
+        plan: ExternalPlan {
+            stage: timeline::native::Stage::World,
+            view: 0,
+            ranges: 1,
+            slots: vec![],
+        },
+        pass: Arc::new(Mutex::new(Box::new(pass))),
+    })
+}
+
+fn rgba(frame: &CapturedFrame, x: u32, y: u32) -> [u8; 4] {
+    let i = (4 * (y * frame.size[0] + x)) as usize;
+    frame.rgba[i..i + 4].try_into().unwrap()
+}
+
+#[derive(Default)]
+struct Observe {
+    rows: Vec<PassRow>,
+    snapshots: Vec<Vec<u8>>,
+    snap_first: bool,
+}
+
+impl PassObserver for Observe {
+    fn pass_end(&mut self, i: usize, row: &PassRow, read: &mut dyn FnMut() -> ReadColour) {
+        assert_eq!(i, self.rows.len());
+        self.rows.push(row.clone());
+        if self.snap_first && i == 0 {
+            let (size, rgba) = read().unwrap();
+            assert_eq!(size, [SIZE; 2]);
+            self.snapshots.push(rgba);
+        }
+    }
+}
+
+#[test]
+fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, clear());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        typed_triangle(2.0, [1.0, 0.0, 0.0, 1.0]),
+    );
+    op(
+        &mut frame,
+        Slot::Opaque,
+        typed_triangle(18.0, [0.0, 0.0, 1.0, 1.0]),
+    );
+    op(&mut frame, Slot::AfterOpaque, bind());
+    op(
+        &mut frame,
+        Slot::AfterOpaque,
+        guest_triangle(2.0, [0.0, 1.0, 0.0, 1.0], None),
+    );
+    let mut observer = Observe::default();
+    let capture = draw_private_with_observer(
+        &mut backend,
+        &sealed(),
+        &frame,
+        1,
+        Lighting::Retail,
+        Some(&mut observer),
+    )
+    .unwrap();
+    assert_eq!(
+        observer.rows,
+        [PassRow {
+            colour: MAIN,
+            depth: Z,
+            ops: 0..5
+        }]
+    );
+    assert_eq!(capture.report.render_passes, 1);
+    assert_eq!(
+        rgba(&capture, 4, 4),
+        [0, 255, 0, 255],
+        "the later guest draw wins"
+    );
+    assert_eq!(
+        rgba(&capture, 20, 4),
+        [0, 0, 255, 255],
+        "the other typed triangle survives"
+    );
+}
+
+#[test]
+fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let mut frame = replay();
+    frame.aux.push(frame.colour.unwrap());
+    let aux = TargetRef::Aux(0);
+    op(&mut frame, Slot::Opaque, clear());
+    op(&mut frame, Slot::Opaque, bind());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        guest_triangle(2.0, [1.0, 0.0, 0.0, 1.0], None),
+    );
+    op(
+        &mut frame,
+        Slot::AfterLights,
+        ReplayOp::Copy {
+            from: MAIN,
+            to: aux,
+        },
+    );
+    op(
+        &mut frame,
+        Slot::Transparents,
+        ReplayOp::Sample {
+            of: aux,
+            id: 0,
+            how: ReplaySample::InPlace,
+        },
+    );
+    // The later shader reads the captured red on the copied black field.
+    // The blue main target would give a different result if sampled live.
+    op(
+        &mut frame,
+        Slot::Transparents,
+        ReplayOp::Clear {
+            colour: MAIN,
+            depth: Z,
+            clear: Clear {
+                color: Some([0.0, 0.0, 1.0, 1.0]),
+                ..Clear::NONE
+            },
+        },
+    );
+    op(
+        &mut frame,
+        Slot::Transparents,
+        guest_triangle(2.0, [1.0; 4], Some(0)),
+    );
+    let mut observer = Observe {
+        snap_first: true,
+        ..Default::default()
+    };
+    let capture = draw_private_with_observer(
+        &mut backend,
+        &sealed(),
+        &frame,
+        1,
+        Lighting::Retail,
+        Some(&mut observer),
+    )
+    .unwrap();
+    assert_eq!(
+        observer.rows,
+        [
+            PassRow {
+                colour: MAIN,
+                depth: Z,
+                ops: 0..3
+            },
+            PassRow {
+                colour: MAIN,
+                depth: Z,
+                ops: 5..7
+            },
+        ]
+    );
+    assert_eq!(&observer.snapshots[0][0..4], [0, 0, 0, 255]);
+    assert_eq!(rgba(&capture, 0, 0), [0, 0, 255, 255]);
+    assert_eq!(rgba(&capture, 4, 4), [255, 0, 0, 255]);
+}
+
+#[test]
+fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let scene = sealed();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, clear());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        typed_triangle(2.0, [1.0, 0.0, 0.0, 1.0]),
+    );
+    let first = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let second = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!((first.id, first.scene_hash), (second.id, second.scene_hash));
+    assert_eq!(second.id.tick, scene.id.tick);
+    assert_eq!(
+        (first.report.lighting, second.report.lighting),
+        (Lighting::Retail, Lighting::E3)
+    );
+    assert_eq!(rgba(&first, 4, 4), [255, 0, 0, 255]);
+    assert_eq!(second.size, first.size);
+    assert_eq!(second.rgba, first.rgba);
+    assert!(backend.last_presented().is_none());
+
+    // Display is the only graph entry that publishes. A second capture
+    // must leave the displayed image, its handle and the present hook alone.
+    draw_display(&mut backend, &scene, &frame, 1, Lighting::E3, 0, None, None).unwrap();
+    let presented = backend.last_presented().unwrap();
+    let shown = backend.read_color(presented).unwrap().0;
+    frame.ops.truncate(1);
+    let black = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    assert_eq!(rgba(&black, 4, 4), [0, 0, 0, 255]);
+    assert_eq!(backend.last_presented(), Some(presented));
+    assert_eq!(backend.read_color(presented).unwrap().0, shown);
+}
+
+#[test]
+fn canonical_targets_preserve_previous_frame_contents_outside_a_partial_draw() {
+    use d3d::Backend;
+    use native_render::frame_graph::draw_display_on;
+    use std::collections::HashMap;
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let colour = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    // White on the real scene target was written before the sealed interval.
+    backend
+        .clear(colour, Some(depth), Clear::all([1.0, 1.0, 1.0, 1.0]))
+        .unwrap();
+    backend.flush().unwrap();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        guest_triangle(2.0, [0.0, 1.0, 0.0, 1.0], None),
+    );
+    let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
+    draw_display_on(
+        &mut backend,
+        &sealed(),
+        &frame,
+        Lighting::Retail,
+        0,
+        None,
+        None,
+        &targets,
+    )
+    .unwrap();
+    assert_eq!(backend.last_presented(), Some(colour));
+    let (pixels, _) = backend.read_color(colour).unwrap();
+    assert_eq!(&pixels[0..4], [255; 4]);
+    let i = (4 * (4 * SIZE + 4)) as usize;
+    // Green and white have the same encoding in BGRA and RGBA.
+    assert_eq!(&pixels[i..i + 4], [0, 255, 0, 255]);
+    assert!(draw_private(&mut backend, &sealed(), &frame, 1, Lighting::Retail).is_err());
+}

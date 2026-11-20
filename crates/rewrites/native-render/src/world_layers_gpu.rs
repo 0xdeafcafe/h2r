@@ -567,6 +567,13 @@ impl IndexedPass {
 }
 
 impl ExternalPass for IndexedPass {
+    fn replays_scene(&self) -> bool {
+        // An untextured standalone range owns its entire draw. prepare()
+        // allocates its vertices and uniforms from each recording's arena.
+        // Section caches and texture-stage bindings are outside this case.
+        self.section.is_none() && self.texaccum.is_none() && self.draw.texture_info.iter().all(Option::is_none)
+    }
+
     fn uses_validated_resources(&self) -> bool { true }
 
     fn encode(&mut self, _target: ExternalTarget<'_>) {}

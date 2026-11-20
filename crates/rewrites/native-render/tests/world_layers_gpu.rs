@@ -578,3 +578,6 @@ fn resident_sections_upload_only_changed_constants_across_swaps() {
     assert_eq!(count(1, "queue_writes"), 0);
     assert_eq!(count(2, "queue_writes"), 1);
 }
+
+#[path = "world_layers_gpu/frame_graph.rs"]
+mod frame_graph;
