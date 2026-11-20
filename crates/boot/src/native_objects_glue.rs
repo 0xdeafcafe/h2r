@@ -843,7 +843,8 @@ struct ObjectsPass {
     /// 0, not at the view's near (03a: 256 depth units), and drew the part
     /// of an object nearer than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
-    /// Groups adjacent recordings within a swap. The GPU resource caches outlive the run.
+    /// Groups adjacent reservations within a swap: they share one pin of
+    /// the attachments (`d3d::ExternalPass::batch_key`).
     run: u64,
 }
 
@@ -878,45 +879,42 @@ impl d3d::ExternalPass for ObjectsPass {
         }
     }
 
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() { return Err("object view constants unavailable"); }
-        if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
-            return Err("object texture accumulation unavailable");
-        }
-        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        if lit.as_ref().is_some_and(|l| self.draws.iter().all(|(model, d)| l.has(*model) && !d.indices.is_empty())) {
-            Ok(())
-        } else {
-            Err("planned object geometry unavailable")
-        }
-    }
-
-    fn record_bundles(&mut self, t: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
-        let constants = self.view?;
-        let view = self.view_inputs(constants, t);
-        let mut lit = self.models.lit.lock().ok()?;
-        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
-        if let Some(accum) = &texaccum
-            && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
-        {
-            return None;
-        }
-        lit.as_mut()?.bundles(t.device, t.queue, t.uploads, t.color_format, t.depth_format,
-            t.size, &view, &self.draws, texaccum, self.run)
+    /// The run's packets join the D3D render pass already open on these
+    /// attachments: no pass, command buffer or bundle of its own.
+    fn record_draws(
+        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        Some(self.packets(t, request))
     }
 }
 
 impl ObjectsPass {
-    /// The view the lit parts' programs draw with: the device's constants,
-    /// the target's sizes, and its W-buffer clip.
-    fn view_inputs(&self, constants: [[f32; 4]; d3d::VIEW_CONSTANTS], t: &d3d::ExternalTarget<'_>) -> ViewInputs {
-        ViewInputs {
-            constants,
-            guest_size: t.guest_size,
-            size: t.size,
-            z_scale: t.z_scale,
-            w_clip: self.w_clip,
+    fn packets(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let constants = self.view.ok_or("object view constants unavailable")?;
+        let texaccum = texaccum_level(&t.sampled, request.surface_size, t.size);
+        if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum.is_none() {
+            return Err("object texture accumulation unavailable");
         }
+        if let Some(accum) = &texaccum
+            && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
+        {
+            return Err("object texture accumulation is an attachment");
+        }
+        let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let lit = lit.as_mut().ok_or("planned object geometry unavailable")?;
+        if !self.draws.iter().all(|(model, d)| lit.has(*model) && !d.indices.is_empty()) {
+            return Err("planned object geometry unavailable");
+        }
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: t.size,
+            z_scale: request.z_scale,
+            w_clip: self.w_clip,
+        };
+        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, &self.draws, texaccum)
     }
 }
 

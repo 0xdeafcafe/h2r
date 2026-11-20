@@ -340,10 +340,11 @@ struct FirstPersonPass {
 impl FirstPersonPass {
     fn upload<'a>(
         &'a self,
-        target: &d3d::ExternalTarget<'_>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> MutexGuard<'a, Option<LitObjects>> {
         let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = guard.get_or_insert_with(|| LitObjects::new(target.device));
+        let lit = guard.get_or_insert_with(|| LitObjects::new(device));
         for cpu in std::mem::take(
             &mut *self
                 .models
@@ -352,25 +353,48 @@ impl FirstPersonPass {
                 .unwrap_or_else(|e| e.into_inner()),
         ) {
             if let Some(normalization) = &cpu.normalization {
-                lit.set_normalization(target.device, target.queue, normalization);
+                lit.set_normalization(device, queue, normalization);
             }
-            lit.add_model(target.device, target.queue, cpu.definition, cpu.lit);
+            lit.add_model(device, queue, cpu.definition, cpu.lit);
         }
         guard
     }
 
-    fn view_inputs(
+    /// The call's packets for the D3D render pass already open on these
+    /// attachments, after any model upload still pending.
+    fn packets(
         &self,
-        constants: [[f32; 4]; d3d::VIEW_CONSTANTS],
-        target: &d3d::ExternalTarget<'_>,
-    ) -> ViewInputs {
-        ViewInputs {
-            constants,
-            guest_size: target.guest_size,
-            size: target.size,
-            z_scale: target.z_scale,
-            w_clip: Some(self.w_clip),
+        target: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let constants = self.view.ok_or("first-person view constants unavailable")?;
+        let mut guard = self.upload(&target.device, &target.queue);
+        let lit = guard.as_mut().ok_or("planned first-person geometry unavailable")?;
+        if !self
+            .draws
+            .iter()
+            .all(|(model, draw)| lit.has(*model) && !draw.indices.is_empty())
+        {
+            return Err("planned first-person geometry unavailable");
         }
+        let view = ViewInputs {
+            constants,
+            guest_size: request.surface_size,
+            size: target.size,
+            z_scale: request.z_scale,
+            w_clip: Some(self.w_clip),
+        };
+        lit.draws(
+            &target.device,
+            &target.queue,
+            &target.uploads,
+            target.color_format,
+            target.depth_format,
+            target.size,
+            &view,
+            &self.draws,
+            None,
+        )
     }
 }
 
@@ -393,54 +417,19 @@ impl d3d::ExternalPass for FirstPersonPass {
         }
     }
 
-    fn prepare_copy(&mut self, target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() {
-            return Err("first-person view constants unavailable");
-        }
-        drop(self.upload(target));
-        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        if lit.as_ref().is_some_and(|lit| {
-            self.draws
-                .iter()
-                .all(|(model, draw)| lit.has(*model) && !draw.indices.is_empty())
-        }) {
-            Ok(())
-        } else {
-            Err("planned first-person geometry unavailable")
-        }
-    }
-
+    /// A call with nothing to draw still uploads models for the next
+    /// (`Device::request_external_pass`).
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        // A view with nothing to draw can still upload models for the next.
-        drop(self.upload(&target));
-        self.record_ranges(target);
+        drop(self.upload(target.device, target.queue));
     }
 
-    fn record_ranges(&mut self, target: d3d::ExternalTarget<'_>) -> usize {
-        let Some(constants) = self.view else {
-            return 0;
-        };
-        let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(lit) = guard.as_mut() else {
-            return 0;
-        };
-        let view = self.view_inputs(constants, &target);
-        if self.draws.is_empty() {
-            return 0;
-        }
-        lit.encode(
-            target.device,
-            target.queue,
-            target.uploads,
-            &mut *target.encoder,
-            target.color,
-            target.color_format,
-            target.depth,
-            target.depth_format,
-            target.size,
-            &view,
-            &self.draws,
-            None,
-        )
+    /// The draws join the D3D render pass already open on the call's
+    /// attachments: no pass or command buffer of their own.
+    fn record_draws(
+        &mut self,
+        target: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        Some(self.packets(target, request))
     }
 }

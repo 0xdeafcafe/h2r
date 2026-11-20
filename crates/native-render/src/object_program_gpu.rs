@@ -3,11 +3,17 @@
 //! its vertex streams expanded once through each declaration a program
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
 //! view changed vertex and pixel constants staged in the submission upload ring,
-//! then one render pass over the game's targets
-//! (docs/graphics/native-renderer.md, "Object programs").
+//! then ordered packets appended to the D3D render pass already open on the
+//! game's targets (docs/graphics/native-renderer.md, "Object programs").
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
+
+use d3d::backend::ExternalDraws;
+use gfx::compile::{Pending, PendingPipeline};
+use gfx::pipeline::{PipelineKey, ShaderId};
+use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 
 use shaders::psh::PixelUniforms;
 use shaders::vsh::VertexUniforms;
@@ -78,7 +84,7 @@ impl LitModelInput {
 
     /// Whether a program samples the texture accumulation target
     /// ([`crate::object_program::TEXACCUM_TEXTURE`]): a pass drawing the
-    /// model then needs the level bound ([`LitObjects::encode`]).
+    /// model then needs the level bound ([`LitObjects::draws`]).
     pub fn samples_texaccum(&self) -> bool {
         self.programs.iter().any(|p| p.pass.texaccum.contains(&true))
     }
@@ -106,21 +112,15 @@ struct LitProgram {
     /// texture accumulation target, whose group is cached by its live view.
     textures: Option<wgpu::BindGroup>,
     accum_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState), Option<wgpu::RenderPipeline>>,
-    bundles: HashMap<BundleKey, (wgpu::RenderBundle, u64)>,
-    uses: u64,
+    /// Per attachment formats, buffer layout and state: the pipeline and
+    /// the key its ordered packets describe themselves by.
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState), (PipelineKey, Arc<PendingPipeline>)>,
     inherited: InheritedState,
 }
 
-#[derive(PartialEq, Eq, Hash)]
-struct BundleKey {
-    pipeline: wgpu::RenderPipeline,
-    uniforms: wgpu::BindGroup,
-    textures: wgpu::BindGroup,
-    offsets: [u32; 2],
-    buffer: usize,
-    indices: Range<u32>,
-}
+/// The shader id the objects' packets carry (diagnostics only: their
+/// pipelines are built here, never looked up by it).
+const OBJECT_PROGRAM: ShaderId = ShaderId(u32::MAX);
 
 /// The bind group of `views` (and `extra`, the texture accumulation
 /// level's stages) with their samplers.
@@ -139,7 +139,7 @@ fn texture_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
 }
 
-/// One lit part's draw as [`LitObjects::encode`] issues it
+/// One lit part's draw as [`LitObjects::draws`] issues it
 /// ([`LitObjects::part_uniforms`]).
 #[derive(Clone, Debug)]
 pub struct PartUniforms {
@@ -383,7 +383,7 @@ impl LitObjects {
         });
         Some(LitProgram {
             pass, module, layout, textures_layout, views, samplers, textures,
-            accum_groups: Vec::new(), pipelines: HashMap::new(), bundles: HashMap::new(), uses: 0, inherited: Default::default(),
+            accum_groups: Vec::new(), pipelines: HashMap::new(), inherited: Default::default(),
         })
     }
 
@@ -397,7 +397,7 @@ impl LitObjects {
     /// over the render state the device held at the layer-3 call
     /// (`entry`): every per-object constant put in and every state field
     /// resolved ([`crate::object_state::resolve`]), only the view's own
-    /// left for the encode ([`Self::encode`]: the view's constants and
+    /// left for the encode ([`Self::draws`]: the view's constants and
     /// clip, and the texture accumulation level's size). An error says why
     /// the item keeps its D3D draw.
     pub fn plan(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
@@ -423,7 +423,7 @@ impl LitObjects {
 
     /// The blocks `d` (of model `index`) is issued with in `view`, and the
     /// texture accumulation level's size when it samples one: what
-    /// [`Self::encode`] uploads. `None` when the model is gone or `d`
+    /// [`Self::draws`] uploads. `None` when the model is gone or `d`
     /// samples the level and there is none.
     fn issued(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Option<(VertexUniforms, PixelUniforms)> {
         let pass = &self.models.get(&index)?.programs.get(d.program)?.pass;
@@ -461,7 +461,7 @@ impl LitObjects {
     }
 
     /// What `d` (of model `index`) is issued with in `view` (as
-    /// [`Self::encode`] puts it in), to compare with the D3D path's draw
+    /// [`Self::draws`] puts it in), to compare with the D3D path's draw
     /// of it (`d3d::uniform_compare`).
     pub fn part_uniforms(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
         let m = self.models.get(&index).ok_or("no lit model")?;
@@ -505,42 +505,20 @@ impl LitObjects {
         s
     }
 
-    /// Issues `draws` (each with its model index, planned at the hook,
-    /// [`Self::plan`]) in their order into `color` and `depth` (both
-    /// loaded and kept), the viewport the whole target as the programs
-    /// expect. A draw sampling the texture accumulation target takes
-    /// `texaccum`, its stages' coordinates in that level's guest texels.
-    /// Returns the number of ranges recorded so the caller can check the
-    /// reservation before replacing any originals.
+    /// Ordered packets for `draws` (each with its model index, planned at
+    /// the hook, [`Self::plan`]) on attachments of `color_format` and
+    /// `depth_format`, `target_size` texels, the viewport the whole target
+    /// as the programs expect. The backend appends them to the render pass
+    /// already open on those attachments, as the D3D draws they replace
+    /// would have been: no render pass, command buffer or bundle of their
+    /// own. Pipelines and texture groups persist across frames; the only
+    /// per-frame work is the constants' changed rows in the submission's
+    /// resident uniform run. A draw sampling the texture accumulation
+    /// target takes `texaccum`, its stages' coordinates in that level's
+    /// guest texels. Refuses the whole run (the caller keeps every
+    /// original) when any draw cannot be issued exactly.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        uploads: &gfx::ring::SubmissionUploads,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
-        depth_format: wgpu::TextureFormat,
-        target_size: (u32, u32),
-        view: &ViewInputs,
-        draws: &[(u32, PlannedDraw)],
-        texaccum: Option<Texaccum<'_>>,
-    ) -> usize {
-        let Some(packet) = self.bundles(device, queue, uploads, color_format, depth_format,
-            target_size, view, draws, texaccum, 0)
-        else {
-            return 0;
-        };
-        let count = packet.ranges;
-        d3d::backend::ExternalBundles::encode_run(encoder, color, depth, depth_format.has_stencil_aspect(), &[packet]);
-        count
-    }
-
-    /// Build a packet for an ordered run on compatible colour and depth targets.
-    #[allow(clippy::too_many_arguments)]
-    pub fn bundles(
+    pub fn draws(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -551,34 +529,34 @@ impl LitObjects {
         view: &ViewInputs,
         draws: &[(u32, PlannedDraw)],
         texaccum: Option<Texaccum<'_>>,
-        run: u64,
-    ) -> Option<d3d::backend::ExternalBundles> {
-        let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::new();
+    ) -> Result<ExternalDraws, &'static str> {
+        if draws.is_empty() {
+            return Err("no object draws");
+        }
+        let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::with_capacity(draws.len());
         for d in draws {
-            if let Some(blocks) = self.issued(d.0, &d.1, view, texaccum) {
-                issued.push((d, blocks));
-            }
+            let blocks = self.issued(d.0, &d.1, view, texaccum).ok_or("object draw inputs unavailable")?;
+            issued.push((d, blocks));
         }
-        if issued.is_empty() {
-            return None;
-        }
-        for (planned, _) in &issued {
+        // Whether each draw found its pipeline and texture group resident.
+        let mut resident = vec![true; issued.len()];
+        for (i, (planned, _)) in issued.iter().enumerate() {
             let (model, d) = (planned.0, &planned.1);
-            let m = self.models.get_mut(&model).expect("checked in issued");
-            let b = &m.buffers[d.buffer];
-            let p = &mut m.programs[d.program];
+            let m = self.models.get_mut(&model).ok_or("object model unavailable")?;
+            let b = m.buffers.get(d.buffer).ok_or("object buffer unavailable")?;
+            let p = m.programs.get_mut(d.program).ok_or("object program unavailable")?;
             let key = (color_format, depth_format, b.layout_id, d.state);
             if p.pipelines.contains_key(&key) {
                 continue;
             }
-            if d.state.stencil.enable && !depth_format.has_stencil_aspect() {
-                return None;
-            }
-            let stencil = gfx::translate::depth_stencil_state(
-                &gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() },
-                Some(depth_format),
-                wgpu::PrimitiveTopology::TriangleList,
-            )?.stencil;
+            resident[i] = false;
+            let depth_stencil = draw_depth_stencil(&d.state, depth_format).ok_or("object stencil unavailable")?;
+            let color_target = wgpu::ColorTargetState {
+                format: color_format,
+                // Refused when it blends (`object_state::resolve`).
+                blend: None,
+                write_mask: d.state.color_writes,
+            };
             let attrs = attributes(&b.registers, &b.formats);
             let pipeline = gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
@@ -594,29 +572,26 @@ impl LitObjects {
                     })],
                 },
                 primitive: d.state.primitive,
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth_format,
-                    depth_write_enabled: Some(d.state.depth_write),
-                    depth_compare: Some(d.state.depth_compare),
-                    stencil,
-                    bias: wgpu::DepthBiasState::default(),
-                }),
+                depth_stencil: Some(depth_stencil.clone()),
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &p.module,
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: color_format,
-                        // Refused when it blends (`object_state::resolve`).
-                        blend: None,
-                        write_mask: d.state.color_writes,
-                    })],
+                    targets: &[Some(color_target.clone())],
                 }),
                 multiview_mask: None,
                 cache: None,
             }));
-            p.pipelines.insert(key, pipeline);
+            let described = PipelineKey {
+                shader: OBJECT_PROGRAM,
+                vertex_buffers: Vec::new(),
+                primitive: d.state.primitive,
+                depth_stencil: Some(depth_stencil),
+                color_target,
+                samples: 1,
+            };
+            p.pipelines.insert(key, (described, Pending::ready(pipeline)));
         }
         let uniforms = uploads.resident_uniform_run(
             device, queue, &self.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE],
@@ -625,24 +600,31 @@ impl LitObjects {
                 vertex.write_bytes(v);
                 pixel.write_bytes(p);
             },
-        )?;
-        let mut groups = Vec::with_capacity(issued.len());
+        ).ok_or("object constants unavailable")?;
+        let scissor = ScissorRect::full(target_size.0, target_size.1);
+        let mut packets = Vec::with_capacity(issued.len());
+        let mut discards = false;
         for (i, (planned, _)) in issued.iter().enumerate() {
             let (model, d) = (planned.0, &planned.1);
-            let m = self.models.get_mut(&model)?;
+            let m = self.models.get_mut(&model).ok_or("object model unavailable")?;
             let b = &m.buffers[d.buffer];
-            if d.indices.is_empty() || u64::from(d.indices.end) > b.indices.size() / 4 {
-                return None;
+            if d.indices.is_empty() || u64::from(d.indices.end) > b.indices.size() / 4 || b.vertices.size() == 0 {
+                return Err("object index range unavailable");
             }
             let p = &mut m.programs[d.program];
-            let pipeline = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state))?.as_ref()?;
+            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state))
+                .cloned().ok_or("object pipeline unavailable")?;
+            if pipeline.get().is_none() {
+                return Err("object pipeline invalid");
+            }
             let textures = match &p.textures {
-                Some(textures) => textures,
+                Some(textures) => textures.clone(),
                 None => {
-                    let accum = texaccum.as_ref()?;
-                    let slot = if let Some(i) = p.accum_groups.iter().position(|(view, _)| view == accum.view) {
-                        i
+                    let accum = texaccum.as_ref().ok_or("object texture accumulation unavailable")?;
+                    let slot = if let Some(at) = p.accum_groups.iter().position(|(view, _)| view == accum.view) {
+                        at
                     } else {
+                        resident[i] = false;
                         let extra: Vec<_> = (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, accum.view)).collect();
                         let group = gfx::program::validated_resource(device, || {
                             texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers)
@@ -652,50 +634,53 @@ impl LitObjects {
                         p.accum_groups.push((accum.view.clone(), group));
                         p.accum_groups.len() - 1
                     };
-                    p.accum_groups[slot].1.as_ref()?
+                    p.accum_groups[slot].1.clone().ok_or("object texture group invalid")?
                 }
             };
-            let offsets = uniforms.offsets(i);
-            let key = BundleKey { pipeline: pipeline.clone(), uniforms: uniforms.group.clone(),
-                textures: textures.clone(), offsets, buffer: d.buffer, indices: d.indices.clone() };
-            let blend = p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant);
-            p.uses += 1;
-            if let Some((bundle, used)) = p.bundles.get_mut(&key) {
-                *used = p.uses;
-                gfx::churn::native_cache(true);
-                groups.push((blend, bundle.clone()));
-                continue;
-            }
-            gfx::churn::native_cache(false);
-            let mut bundle = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
-                label: Some("native object geometry"),
-                color_formats: &[Some(color_format)],
-                depth_stencil: Some(wgpu::RenderBundleDepthStencil {
-                    format: depth_format, depth_read_only: false, stencil_read_only: !depth_format.has_stencil_aspect(),
-                }),
-                sample_count: 1, multiview: None,
-            });
-            bundle.set_pipeline(pipeline);
-            bundle.set_bind_group(0, &uniforms.group, &offsets);
-            bundle.set_bind_group(1, textures, &[]);
-            bundle.set_vertex_buffer(0, b.vertices.slice(..));
-            bundle.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
-            bundle.draw_indexed(d.indices.clone(), 0, 0..1);
-            let bundle = bundle.finish(&Default::default());
-            // Keys hold pooled buffers and views. Retire cold bindings without
-            // throwing away every hot part at once.
-            const MAX_BUNDLES: usize = 256;
-            if p.bundles.len() >= MAX_BUNDLES {
-                let oldest = p.uses.saturating_sub(MAX_BUNDLES as u64 / 2);
-                p.bundles.retain(|_, (_, used)| *used > oldest);
-            }
-            p.bundles.insert(key, (bundle.clone(), p.uses));
-            groups.push((blend, bundle));
+            gfx::churn::native_cache(resident[i]);
+            discards |= d.state.alpha_test.is_some();
+            let groups = vec![
+                BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
+                BoundGroup::new(1, textures),
+            ];
+            // The stencil reference is zero (`object_state::resolve_scene`).
+            let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
+            let count = d.indices.end - d.indices.start;
+            packets.push(RecordedDraw::prepared_indexed(
+                &described,
+                pipeline,
+                vec![(b.vertices.clone(), 0, b.vertices.size())],
+                (b.indices.clone(), u64::from(d.indices.start) * 4, u64::from(count) * 4),
+                count,
+                groups,
+                &state,
+                target_size,
+                scissor,
+            ));
         }
-        Some(d3d::backend::ExternalBundles {
-            run, scissor: [0, 0, target_size.0, target_size.1], ranges: groups.len(), groups,
-        })
+        Ok(ExternalDraws { ranges: packets.len(), packets, discards })
     }
+}
+
+/// The depth and stencil a lit part's pipeline draws with on a
+/// `depth_format` attachment; `None` when it tests the stencil and the
+/// attachment has none.
+fn draw_depth_stencil(state: &DrawState, depth_format: wgpu::TextureFormat) -> Option<wgpu::DepthStencilState> {
+    if state.stencil.enable && !depth_format.has_stencil_aspect() {
+        return None;
+    }
+    let stencil = gfx::translate::depth_stencil_state(
+        &gfx::state::RenderState { stencil: state.stencil, ..Default::default() },
+        Some(depth_format),
+        wgpu::PrimitiveTopology::TriangleList,
+    )?.stencil;
+    Some(wgpu::DepthStencilState {
+        format: depth_format,
+        depth_write_enabled: Some(state.depth_write),
+        depth_compare: Some(state.depth_compare),
+        stencil,
+        bias: wgpu::DepthBiasState::default(),
+    })
 }
 
 /// [`LitObjects::plan`] over a model's `parts` and its programs' passes
@@ -1398,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn object_bundles_survive_a_new_swap_and_pose() {
+    fn object_draws_reuse_their_pipeline_and_bindings_across_swaps_and_poses() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let mut objects = LitObjects::new(&ctx.device);
         let pass = equal_pass(0);
@@ -1416,21 +1401,24 @@ mod tests {
         let pool = gfx::ring::UploadPool::default();
         let view = ViewInputs { constants: Default::default(), guest_size: (16, 16), size: (16, 16),
             z_scale: 1.0, w_clip: None };
-        let mut record = |swap, translate| {
+        let mut record = |translate| {
             let arena = pool.begin();
             let rows = [[translate; 4]; 3];
             let draw = objects.plan(7, &frame(), &key(0, 0, 0), &rows, &entry()).unwrap();
-            let packet = objects.bundles(&ctx.device, &ctx.queue, &arena, wgpu::TextureFormat::Rgba8Unorm,
-                wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, &[(7, draw)], None, swap).unwrap();
+            let packets = objects.draws(&ctx.device, &ctx.queue, &arena, wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, &[(7, draw)], None).unwrap();
             arena.flush(&ctx.queue);
             ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            packet.groups.into_iter().next().unwrap().1
+            assert_eq!((packets.ranges, packets.packets.len()), (1, 1));
+            assert!(packets.packets[0].pipeline_valid());
+            assert!(!packets.packets[0].starts_pass(), "appended to the open pass");
+            objects.models[&7].programs[0].pipelines.len()
         };
-        let first = record(1, 0.5);
+        assert_eq!(record(0.5), 1);
         let before = gfx::churn::snapshot();
-        assert_eq!(first, record(2, 0.5));
+        assert_eq!(record(0.5), 1, "the same pipeline on the next swap");
         assert_eq!((gfx::churn::snapshot() - before).queue_writes, 0);
-        assert_eq!(first, record(3, 1.5));
+        assert_eq!(record(1.5), 1, "and for a new pose");
         let total = gfx::churn::snapshot() - before;
         assert_eq!((total.buffers_created, total.queue_writes), (0, 1));
     }
