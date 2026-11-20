@@ -20,7 +20,8 @@ use map::{FourCC, TagId};
 use tags::registry::{Field, Hint, Kind, Layout};
 
 use crate::app::tag_doc::STRUCTURAL;
-use crate::app::{Action, BlockOp, TagAction, TagDoc, TagWrite};
+use crate::app::tag_api::FieldFocus;
+use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite};
 use crate::theme::icon;
 
 /// How an unnamed span is shown.
@@ -65,6 +66,28 @@ pub struct PanelState {
     pub show_pad: bool,
     /// Why the last typed value was not taken.
     pub problem: Option<String>,
+    focus_target: Option<(TagId, u32)>,
+    focus_blocks: Vec<u32>,
+}
+
+impl PanelState {
+    pub fn focus_field(&mut self, tag: TagId, focus: FieldFocus) {
+        self.clear_field_focus();
+        self.focus_target = Some((tag, focus.address));
+        for (pair, index) in focus.blocks {
+            self.index.insert(pair, index);
+            self.focus_blocks.push(pair);
+        }
+    }
+
+    pub fn clear_field_focus(&mut self) {
+        self.focus_target = None;
+        self.focus_blocks.clear();
+    }
+
+    pub fn has_field_focus(&self, tag: TagId) -> bool {
+        self.focus_target.is_some_and(|(id, _)| id == tag)
+    }
 }
 
 /// Width of the label column, in points.
@@ -85,6 +108,31 @@ pub fn panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
+    panel_impl(ui, doc, tag, path, st, actions, None);
+}
+
+/// The root panel in the inspector, with reference buttons that keep the
+/// placement selection and remember the source field.
+pub fn inspector_panel(
+    ui: &Ui,
+    doc: &TagDoc,
+    tag: TagId,
+    trail: &[TagId],
+    st: &mut PanelState,
+    actions: &mut Vec<Action>,
+) {
+    panel_impl(ui, doc, tag, &[], st, actions, Some(trail));
+}
+
+fn panel_impl(
+    ui: &Ui,
+    doc: &TagDoc,
+    tag: TagId,
+    path: &[(u32, u32)],
+    st: &mut PanelState,
+    actions: &mut Vec<Action>,
+    trail: Option<&[TagId]>,
+) {
     st.hovered = None;
     let Some((at, layout)) = doc.resolve(tag, path) else {
         ui.text_disabled("Nothing to show: the element is not in the map's metadata.");
@@ -98,6 +146,8 @@ pub fn panel(
         editable,
         st,
         actions,
+        trail,
+        prefix: String::new(),
     };
     cx.element(at, &layout);
 }
@@ -109,6 +159,8 @@ struct Cx<'a> {
     editable: bool,
     st: &'a mut PanelState,
     actions: &'a mut Vec<Action>,
+    trail: Option<&'a [TagId]>,
+    prefix: String,
 }
 
 fn key(address: u32) -> u64 {
@@ -124,6 +176,17 @@ pub(crate) fn write_action(tag: TagId, address: u32, bytes: Vec<u8>, label: &str
         label: label.to_owned(),
         merge: Some(key(address)),
     }))
+}
+
+pub(crate) fn reference_action(trail: Option<&[TagId]>, prefix: &str, field: &str, tag: TagId) -> Action {
+    match trail {
+        Some(trail) => Action::Navigate(NavAction::Follow {
+            from: trail.to_vec(),
+            path: format!("{prefix}{field}"),
+            tag,
+        }),
+        None => Action::Tag(TagAction::Select(tag)),
+    }
 }
 
 fn le(b: &[u8], at: usize, n: usize) -> u64 {
@@ -174,7 +237,8 @@ impl Cx<'_> {
         let ui = self.ui;
         let mut section = String::new();
         for f in &layout.fields {
-            if matches!(f.kind, Kind::Pad { .. }) && !self.st.show_pad {
+            let focused = self.st.focus_target == Some((self.tag, at + f.offset));
+            if matches!(f.kind, Kind::Pad { .. }) && !self.st.show_pad && !focused {
                 continue;
             }
             if f.section != section {
@@ -185,6 +249,10 @@ impl Cx<'_> {
             }
             let _id = ui.push_id(f.offset as usize);
             self.field(at, layout, f);
+            if focused {
+                ui.set_scroll_here_y(0.5);
+                self.st.clear_field_focus();
+            }
         }
     }
 
@@ -249,7 +317,8 @@ impl Cx<'_> {
         }
         self.label(at, layout, f);
         let structural = f.kind.is_structural();
-        let _off = ui.begin_disabled_with_cond(!self.editable || structural);
+        let can_follow = self.trail.is_some() && matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
+        let _off = ui.begin_disabled_with_cond((!self.editable && !can_follow) || structural);
         match &f.kind {
             Kind::Int {
                 bytes,
@@ -516,6 +585,7 @@ impl Cx<'_> {
         let mut out = None;
         let width = ui.content_region_avail()[0] - 32.0;
         ui.set_next_item_width(width.max(60.0));
+        let combo = ui.begin_disabled_with_cond(!self.editable && self.trail.is_some());
         if let Some(_c) = ui.begin_combo("##v", doc.tag_label(id)) {
             ui.set_next_item_width(-1.0);
             ui.input_text("##filter", &mut self.st.picker).build();
@@ -550,13 +620,14 @@ impl Cx<'_> {
             let g: Vec<String> = groups.iter().map(|g| group_text(*g)).collect();
             ui.set_item_tooltip(format!("{}: {}", f.name, g.join(", ")));
         }
+        combo.end();
         ui.same_line();
         let target = doc.tag(TagId(id)).map(|t| t.id);
         let _go = ui.begin_disabled_with_cond(target.is_none());
-        if ui.small_button(format!("{}##go", icon::FOCUS)) {
-            if let Some(t) = target {
-                self.actions.push(Action::Tag(TagAction::Select(t)));
-            }
+        if ui.small_button(format!("{}##go", icon::FOCUS))
+            && let Some(tag) = target
+        {
+            self.actions.push(reference_action(self.trail, &self.prefix, &f.name, tag));
         }
         if ui.is_item_hovered() {
             ui.set_item_tooltip("Show this tag");
@@ -584,6 +655,9 @@ impl Cx<'_> {
                 String::new()
             }
         );
+        if self.st.has_field_focus(self.tag) && self.st.focus_blocks.contains(&pair) {
+            ui.set_next_item_open(true);
+        }
         let node = ui
             .tree_node_config(format!("blk{pair:x}"))
             .label(header)
@@ -655,7 +729,13 @@ impl Cx<'_> {
             return;
         }
         let _id = ui.push_id(i as usize);
+        let prefix_len = self.prefix.len();
+        if self.trail.is_some() {
+            use std::fmt::Write as _;
+            let _ = write!(self.prefix, "{}[{i}].", f.name);
+        }
         self.element(a + i * child.size, child);
+        self.prefix.truncate(prefix_len);
     }
 
     fn data(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, b: &[u8]) {

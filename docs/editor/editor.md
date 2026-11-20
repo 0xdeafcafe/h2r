@@ -156,6 +156,11 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   in the Tags tool, read-only. An edit affects every use of the tag. Use
   **Undo tag edit** and **Redo tag edit** for the tag history. The map
   save includes the tag edits alongside the placement edits.
+  A reference field's **Show this tag** button focuses the target in the
+  inspector and keeps the placement selected. Breadcrumbs lead back to
+  any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
+  mouse's back and forward buttons step through tag and placement
+  history. Returning to a field opens its block and scrolls to it.
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
   open, the camera's fly speed, frame rate.

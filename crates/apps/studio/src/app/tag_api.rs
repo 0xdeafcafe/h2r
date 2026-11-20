@@ -184,6 +184,30 @@ fn find<'a>(l: &'a Layout, name: &str) -> Option<&'a Field> {
 /// The field at `path`: the address of its element, the element's layout
 /// and the field.
 pub fn resolve(doc: &TagDoc, tag: TagId, path: &str) -> Result<(u32, Arc<Layout>, Field), String> {
+    resolve_path(doc, tag, path, |_, _| {})
+}
+
+pub struct FieldFocus {
+    pub blocks: Vec<(u32, u32)>,
+    pub address: u32,
+}
+
+pub fn field_focus(doc: &TagDoc, tag: TagId, path: &str) -> Result<FieldFocus, String> {
+    let t = doc.tag(tag).ok_or("no such tag")?;
+    if matches!(t.access, Access::None(_)) || !doc.layout(tag).is_some_and(|l| l.size <= t.size) {
+        return Err("the tag has no fields here".into());
+    }
+    let mut blocks = Vec::new();
+    let (at, _, f) = resolve_path(doc, tag, path, |pair, i| blocks.push((pair, i)))?;
+    Ok(FieldFocus { blocks, address: at + f.offset })
+}
+
+fn resolve_path(
+    doc: &TagDoc,
+    tag: TagId,
+    path: &str,
+    mut block: impl FnMut(u32, u32),
+) -> Result<(u32, Arc<Layout>, Field), String> {
     let t = doc.tag(tag).ok_or("no such tag")?;
     let mut layout = doc.layout(tag).ok_or("no layout for this group")?.clone();
     let mut at = t.address;
@@ -207,6 +231,7 @@ pub fn resolve(doc: &TagDoc, tag: TagId, path: &str) -> Result<(u32, Arc<Layout>
                 if last {
                     return Err(format!("{path} is an element, not a field"));
                 }
+                block(at + f.offset, i);
                 at = a + i * child.size;
                 layout = child;
             }

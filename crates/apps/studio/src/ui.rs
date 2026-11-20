@@ -20,13 +20,13 @@ mod variants;
 use std::path::PathBuf;
 
 use dear_imgui_rs::{
-    Condition, DockLayout, DockLayoutApply, DockSplit, Key, StyleColor, StyleVar, Ui,
+    Condition, DockLayout, DockLayoutApply, DockSplit, Key, MouseButton, StyleColor, StyleVar, Ui,
     WindowFlags, WindowKey,
 };
 use editor_core::Status;
 use scenario_edit::BlockKind;
 
-use crate::app::{Action, Answer, App, ToolKind};
+use crate::app::{Action, Answer, App, NavAction, ToolKind};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
 
@@ -201,6 +201,18 @@ impl Studio {
         }
         if app.tool != ToolKind::Scenario {
             return;
+        }
+        if app.session.is_open() {
+            if (io.key_alt() && ui.is_key_pressed(Key::LeftArrow))
+                || ui.is_mouse_clicked(MouseButton::Extra1)
+            {
+                actions.push(Action::Navigate(NavAction::Back));
+            }
+            if (io.key_alt() && ui.is_key_pressed(Key::RightArrow))
+                || ui.is_mouse_clicked(MouseButton::Extra2)
+            {
+                actions.push(Action::Navigate(NavAction::Forward));
+            }
         }
         if cmd && ui.is_key_pressed(Key::D) {
             actions.push(Action::Duplicate);

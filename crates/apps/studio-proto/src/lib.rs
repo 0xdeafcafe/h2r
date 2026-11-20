@@ -100,6 +100,10 @@ pub mod method {
     pub const SCENARIO_DELETE: &str = "scenario.delete";
     pub const SCENARIO_DUPLICATE: &str = "scenario.duplicate";
     pub const SCENARIO_SELECT: &str = "scenario.select";
+    pub const NAV_STATUS: &str = "nav.status";
+    pub const NAV_BACK: &str = "nav.back";
+    pub const NAV_FORWARD: &str = "nav.forward";
+    pub const NAV_GO: &str = "nav.go";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";

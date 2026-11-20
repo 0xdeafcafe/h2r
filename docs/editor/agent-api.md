@@ -77,6 +77,7 @@ What goes through actions, from both sides:
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
+| Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
@@ -177,6 +178,18 @@ Notes on some:
   `truncated` means a traversal limit beyond the requested depth cuts
   the result short. Live handles and usage counts belong to later slices
   of the [click-to-edit design](click-to-edit.md).
+- **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
+  a tag the inspector's selection and clears the placement selection.
+  `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
+  optionally, one field by its registry path. It keeps the viewport
+  selection. Both resolve tags in the open map. `nav.status`,
+  `nav.back` and `nav.forward` take no params. All `nav.*` methods
+  return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
+  `selected` is a placement `{block,index}`, a tag `{tag}` or null.
+  `tag` and `path` identify the focused tag and field, or are null.
+  Breadcrumbs begin with the placement when selected, followed by tags
+  as `{tag,group,name}`. Back and forward restore the tag and field.
+  At either end of history the call returns the current state.
 - **Other maps and tag bundles.** `tag.browse {"map": "shared"}` shows
   another map of the source in the Tags tool, read-only (`shared`,
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes

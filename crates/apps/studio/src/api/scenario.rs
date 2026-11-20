@@ -282,6 +282,14 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({ "removed": true }))
         }
         m::SCENARIO_SELECT => {
+            if p.has("tag") {
+                if p.has("block") || p.has("index") || p.has("focus") {
+                    return Err(err(code::INVALID_PARAMS, "tag cannot be combined with block, index or focus"));
+                }
+                let tag = super::nav::open_tag(app, p)?;
+                perform(app, Action::Navigate(crate::app::NavAction::SelectTag(tag)))?;
+                return Ok(json!({"selected": super::nav::selection_json(app.selection())}));
+            }
             let sel = if p.has("block") {
                 Some(p.entry(app)?)
             } else {

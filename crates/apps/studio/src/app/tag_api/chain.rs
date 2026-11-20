@@ -34,7 +34,7 @@ pub struct Node {
     pub tag: TagId,
     pub via: String,
     pub shortcut: Option<&'static str>,
-    pub variant: Option<Value>,
+    pub variant: Option<String>,
     pub cycle: bool,
     pub children: Vec<Node>,
 }
@@ -49,6 +49,15 @@ impl Chain {
 }
 
 impl Node {
+    pub(crate) fn path_to(&self, tag: TagId, path: &mut Vec<TagId>) -> bool {
+        path.push(self.tag);
+        if self.tag == tag || self.children.iter().any(|child| child.path_to(tag, path)) {
+            return true;
+        }
+        path.pop();
+        false
+    }
+
     fn json(&self, doc: &TagDoc) -> Value {
         let entry = doc.tag(self.tag);
         json!({
@@ -236,9 +245,9 @@ impl Walk<'_> {
         }
     }
 
-    fn model_variant(&self, tag: TagId, variant: u32) -> Option<Value> {
+    fn model_variant(&self, tag: TagId, variant: u32) -> Option<String> {
         let t = self.doc.tag(tag)?;
-        if t.group != FourCC(*b"hlmt") {
+        if t.group != FourCC(*b"hlmt") || matches!(t.access, Access::None(_)) {
             return None;
         }
         let variant = if variant == 0 {
@@ -250,7 +259,7 @@ impl Walk<'_> {
         (variant != u32::MAX).then(|| {
             self.doc
                 .string(variant)
-                .map_or_else(|| json!(format!("{variant:#010x}")), |s| json!(s))
+                .map_or_else(|| format!("{variant:#010x}"), str::to_owned)
         })
     }
 }

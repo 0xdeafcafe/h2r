@@ -43,7 +43,7 @@ const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
     summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
     params: r#"{"block?":"string","index?":"integer","tag?":"string|integer","depth?":"integer (default 3, max 8)"}"#,
-    result: r#"{"root":"node|null","truncated":"boolean"}"#,
+    result: r#"{"root":"{tag,group,name,via,label,where,cache,variant,cycle,children:[node]}|null","truncated":"boolean"}"#,
     example: r#"{"block":"weapons","index":0}"#,
     planned: None,
 };

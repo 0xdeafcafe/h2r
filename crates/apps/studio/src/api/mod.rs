@@ -27,6 +27,7 @@ use crate::App;
 
 mod docs;
 mod hud;
+mod nav;
 mod pair;
 mod params;
 mod playlists;
@@ -305,9 +306,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCENARIO_SELECT,
-        "Select a placement in the window (and frame it with focus)",
-        r#"{"block?":"string","index?":"integer","focus?":"boolean"}"#,
-        r#"{"selected":"{block,index}|null"}"#,
+        "Select a placement (and frame it with focus), select a tag as the inspector's root, or clear the selection",
+        r#"{"block?":"string","index?":"integer","focus?":"boolean","tag?":"string|integer"}"#,
+        r#"{"selected":"{block,index}|{tag}|null"}"#,
         r#"{"block":"netgame_flags","index":0}"#,
     ),
     def(
