@@ -767,26 +767,15 @@ one.
 ```sh
 cargo test -p emit --release --test perf entry_access_benchmark -- --ignored --nocapture
 cargo test -p emit --release --test perf dirty_store_benchmark -- --ignored --nocapture
-cargo test -p x87 --release --test f64_trans -- --nocapture
 ```
 
-f64 transcendentals against the series (`tests/f64_trans.rs`, 20,000
-synthetic operands each, low 11 significand bits random, difference in
-units of the 64-bit result's last place; 2^11 = 2048 is one f64 ulp):
-
-| function | operands | median | p99 | max |
-|---|---|---:|---:|---:|
-| fsin | \|x\| < 8 | 1,352 | 121,071 | 2^24.8 |
-| fcos | \|x\| < 8 | 1,619 | 153,357 | 2^24.9 |
-| fsin | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^39.5 |
-| fcos | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^41.3 |
-| fyl2x | x in 2^±20 | 683 | 4,084 | 2^20.5 |
-| f2xm1 | \|x\| < 1 | 835 | 3,315 | 4,859 |
-
-No exception flag other than PE and C1 differs. Most results are within one
-f64 ulp, as expected; the tails are the operand's own rounding to 53 bits,
-amplified near zeros of sin and cos (and of log2 at x near 1), and for large
-angles the operand error alone is up to |x| * 2^-53 of angle. Not turned on.
+f64 transcendentals against the series (a sweep of 20,000 synthetic
+operands per function, in units of the 64-bit result's last place, where
+2048 is one f64 ulp): medians of 683-1,619 for FSIN/FCOS with |x| < 8,
+FYL2X and F2XM1, but tails up to 2^24.8 for small angles and 2^41 for
+|x| < 10^6, from the operand's own rounding to 53 bits. Not adopted; the
+f64 path and its sweep (`x87` `trans_f64.rs`, `tests/f64_trans.rs`) were
+removed in the 2026-11-20 flag cleanup.
 
 ## The D3D write barrier runs its entry in place (2026-11-18)
 
