@@ -98,10 +98,10 @@ pub(super) enum RenderOp {
     Stage(Box<crate::SceneStage<u32>>),
     BeginQuery,
     EndQuery { proxy: u64 },
-    Clear { color: u32, depth: Option<u32>, clear: Clear },
-    ClearRects { color: u32, depth: Option<u32>, clear: RectClear },
+    Clear { color: u32, depth: Option<u32>, clear: Box<Clear> },
+    ClearRects { color: u32, depth: Option<u32>, clear: Box<RectClear> },
     Copy { src: u32, dst: u32 },
-    Upload { surface: u32, desc: TextureDesc, bytes: Vec<u8> },
+    Upload { surface: u32, data: Box<(TextureDesc, Vec<u8>)> },
 }
 
 impl RenderOp {
@@ -112,7 +112,7 @@ impl RenderOp {
             Self::EndQuery { proxy } => w.issue_report(proxy),
             Self::Clear { color, depth, clear } => {
                 let (c, d) = (w.surface(color)?, w.depth(depth)?);
-                w.inner.clear(c, d, clear)
+                w.inner.clear(c, d, *clear)
             }
             Self::ClearRects { color, depth, clear } => {
                 let (c, d) = (w.surface(color)?, w.depth(depth)?);
@@ -129,7 +129,8 @@ impl RenderOp {
                 }
                 Ok(())
             }
-            Self::Upload { surface, desc, bytes } => {
+            Self::Upload { surface, data } => {
+                let (desc, bytes) = *data;
                 let surface = w.surface(surface)?;
                 if !w.inner.write_surface(surface, &desc, &bytes)? {
                     w.shared.miss("write_surface returned false".into());
@@ -270,12 +271,12 @@ fn target_map<B: Backend>(
                 bind(&mut targets, d, packet.depth)?;
             }
             (ReplayOp::Clear { colour, depth, clear }, Cmd::Render(RenderOp::Clear { color, depth: d, clear: value }))
-                if clear == value => {
+                if clear == value.as_ref() => {
                     bind(&mut targets, *colour, Some(*color))?;
                     bind(&mut targets, *depth, *d)?;
                 }
             (ReplayOp::ClearRects { colour, depth, clear }, Cmd::Render(RenderOp::ClearRects { color, depth: d, clear: value }))
-                if clear == value => {
+                if clear == value.as_ref() => {
                     bind(&mut targets, *colour, Some(*color))?;
                     bind(&mut targets, *depth, *d)?;
                 }
@@ -283,8 +284,8 @@ fn target_map<B: Backend>(
                 bind(&mut targets, *from, Some(*src))?;
                 bind(&mut targets, *to, Some(*dst))?;
             }
-            (ReplayOp::Upload { to, desc, bytes }, Cmd::Render(RenderOp::Upload { surface, desc: d, bytes: b }))
-                if desc == d && bytes.as_ref() == b.as_slice() => {
+            (ReplayOp::Upload { to, desc, bytes }, Cmd::Render(RenderOp::Upload { surface, data }))
+                if desc == &data.0 && bytes.as_ref() == data.1.as_slice() => {
                     bind(&mut targets, *to, Some(*surface))?;
                 }
             _ => return None,
@@ -343,6 +344,12 @@ impl<B: Backend> Worker<B> {
                 match cmd {
                     Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
                     Cmd::FrameStats(frame) => frame.finish(),
+                    Cmd::Draw(slot) => {
+                        if let Some(draw) = slot.as_ref().as_ref() && matches!(draw.expect, DrawOutcome::Skipped(_)) {
+                            self.residency.unclassified();
+                        }
+                        self.recycle_draw(slot);
+                    }
                     _ => {}
                 }
             }

@@ -119,7 +119,7 @@ enum Cmd<B: Backend> {
     ExternalRun(Vec<ExternalRecording>),
     /// Only emitted on the frame-owner path.
     Render(owner::RenderOp),
-    OwnerPresent(owner::Present<B>),
+    OwnerPresent(Box<owner::Present<B>>),
 }
 
 /// A queued draw's box: `Some` while queued, emptied by the render thread.
@@ -373,7 +373,7 @@ impl<B: Backend> Worker<B> {
             return;
         }
         if let Cmd::OwnerPresent(present) = cmd {
-            self.owner_present(present);
+            self.owner_present(*present);
             return;
         }
         if let Some(pending) = self.transaction.as_mut() {
@@ -402,21 +402,24 @@ impl<B: Backend> Worker<B> {
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
             }
-            Cmd::Draw(mut slot) => {
-                let d = slot.take().expect("a queued draw");
-                self.spent_boxes.push(slot);
-                if let Err(e) = self.draw(&d) {
+            Cmd::Draw(slot) => {
+                if let Err(e) = self.draw(slot.as_ref().as_ref().expect("a queued draw")) {
                     self.shared.latch(e);
                 }
-                let DrawCmd { draw, .. } = d;
-                let mut streams = draw.streams;
-                // Vertex cache snapshots are released here; only copies
-                // go back to be refilled.
-                streams.retain(|s| s.data.cache_id().is_none());
-                self.spent.push(streams);
-                self.spent_constants.push(draw.shader.constants);
+                self.recycle_draw(slot);
             }
         }
+    }
+
+    fn recycle_draw(&mut self, mut slot: DrawBox) {
+        let DrawCmd { draw, .. } = slot.take().expect("a queued draw");
+        self.spent_boxes.push(slot);
+        let mut streams = draw.streams;
+        // Vertex cache snapshots are released here; only copies go back
+        // to be refilled on the next frame.
+        streams.retain(|s| s.data.cache_id().is_none());
+        self.spent.push(streams);
+        self.spent_constants.push(draw.shader.constants);
     }
 
     fn draw(&mut self, d: &DrawCmd) -> Result<(), String> {
@@ -432,6 +435,7 @@ impl<B: Backend> Worker<B> {
             }
         }
         let r = self.inner.draw(c, depth, &d.draw, tex)?;
+        self.residency.guest_draw(&r);
         if r != d.expect {
             self.shared.miss(format!(
                 "{}: answered {:?}, the backend gave {r:?}",
@@ -990,7 +994,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     fn clear(&mut self, color: u32, depth: Option<u32>, clear: Clear) -> Result<(), String> {
         self.check()?;
         if self.frame_owner.is_some() {
-            self.push(Cmd::Render(owner::RenderOp::Clear { color, depth, clear }));
+            self.push(Cmd::Render(owner::RenderOp::Clear { color, depth, clear: Box::new(clear) }));
             return Ok(());
         }
         self.post(move |w| {
@@ -1065,7 +1069,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let candidate = (owner.select)(n);
             let declined = owner.declined;
             let failed = owner.failed;
-            self.push(Cmd::OwnerPresent(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed }));
+            self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed })));
         } else {
             self.post(move |w| {
                 let s = w.surface(surface)?;
@@ -1104,7 +1108,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let clear = clear.clone();
         if self.frame_owner.is_some() {
-            self.push(Cmd::Render(owner::RenderOp::ClearRects { color, depth, clear }));
+            self.push(Cmd::Render(owner::RenderOp::ClearRects { color, depth, clear: Box::new(clear) }));
             return Ok(DrawOutcome::Drawn);
         }
         let shared = Arc::clone(&self.shared);
@@ -1174,7 +1178,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let desc = desc.clone();
         let bytes = bytes.to_vec();
         if self.frame_owner.is_some() {
-            self.push(Cmd::Render(owner::RenderOp::Upload { surface, desc, bytes }));
+            self.push(Cmd::Render(owner::RenderOp::Upload { surface, data: Box::new((desc, bytes)) }));
             return Ok(true);
         }
         let shared = Arc::clone(&self.shared);
@@ -1434,6 +1438,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let result = w.inner.draw(color, depth, &draw, textures);
             (candidate.finished)(Some(&result));
             let outcome = result?;
+            w.residency.guest_draw(&outcome);
             if outcome != DrawOutcome::Drawn {
                 w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
             }
