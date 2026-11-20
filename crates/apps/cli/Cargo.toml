@@ -44,7 +44,7 @@ host-data = { path = "../../live/host-data" }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../../live/bots" }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
-sim = { path = "../../live/sim" }
+sim-bench = { path = "../../live/sim-bench" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../../extensions/agent-proto" }
 # `h2 agent frame compare`: render.compare run locally, with no game.

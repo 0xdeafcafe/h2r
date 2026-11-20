@@ -6,7 +6,7 @@ matches. [Not verified](#not-verified) lists what a run has not settled.
 Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 [switches.md](switches.md).
 
-Code: `crates/live/sim` (the match, batch and tuning files, pacing, the
+Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
 `crates/hooking/hooks/src/sim_frame.rs`, `crates/apps/boot/src/sim_glue.rs` and its
 System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
@@ -1009,7 +1009,7 @@ headers and blocks while those dependencies are being traced.
 
 ## Tests
 
-`cargo test -p sim` (config, metrics, compare, clock, the examples
+`cargo test -p sim-bench` (config, metrics, compare, clock, the examples
 here), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p hooks sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to

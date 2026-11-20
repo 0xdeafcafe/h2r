@@ -638,7 +638,7 @@ logical time through `tick`, input through `InputManager`, frames through a
 `app::embedded` (`embedded.rs`, built on Apple and Windows targets only) is
 the shell for a native host that owns the window and the run loop: the tvOS
 and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md); the host crate is
-`crates/apps/apple-host`), and later the UWP app for Xbox
+`crates/apps/h2host`), and later the UWP app for Xbox
 ([windows.md](windows.md)). The host passes its surface (`host_surface`: a
 `CAMetalLayer` on Apple, a XAML `SwapChainPanel` on Windows) and calls
 `Embedded::redraw` from its display link on the main thread. The guest

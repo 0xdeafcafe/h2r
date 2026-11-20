@@ -7,6 +7,10 @@ license.workspace = true
 [features]
 # Exposes `Tables::synthetic` for other crates' tests (no retail data).
 synthetic = []
+# The game's own decoder under Unicorn, the reference this one is checked
+# against (src/oracle.rs, tests/oracle_disc.rs, examples/wma_oracle.rs).
+# A validation tool on the owner's disc, never the playback backend.
+oracle = ["dep:unicorn-engine", "dep:anyhow"]
 
 [dependencies]
 xbe.workspace = true
@@ -15,6 +19,12 @@ sha2 = "0.10.9"
 asf = { path = "../../formats/asf" }
 # Machine snapshots: a session's whole state (Session::save_state).
 snapshot = { path = "../../runtime/snapshot" }
+anyhow = { workspace = true, optional = true }
+unicorn-engine = { version = "=2.1.5", optional = true, default-features = false, features = ["arch_x86"] }
 
 [dev-dependencies]
 asf = { path = "../../formats/asf", features = ["disc"] }
+
+[[example]]
+name = "wma_oracle"
+required-features = ["oracle"]

@@ -26,7 +26,7 @@ pub(crate) struct Startup {
     #[serde(skip)]
     movies: Values,
     level: Option<StartLevel>,
-    sim: Option<sim::config::MatchConfig>,
+    sim: Option<sim_bench::config::MatchConfig>,
     xapi: bool,
     stopgaps: bool,
     d3d: bool,
@@ -413,7 +413,7 @@ impl Startup {
         self.sim
             .map(|config| {
                 let matched =
-                    sim::config::resolve(config, &|_| Err("film bot tuning must be inline".into()))
+                    sim_bench::config::resolve(config, &|_| Err("film bot tuning must be inline".into()))
                         .map_err(anyhow::Error::msg)?;
                 Ok(sim_glue::Sim::new(PathBuf::from("film"), matched, None))
             })

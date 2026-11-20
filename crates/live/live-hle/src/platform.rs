@@ -1,4 +1,4 @@
-//! Live on the app builds: tvOS and iOS today (crates/apps/apple-host), the
+//! Live on the app builds: tvOS and iOS today (crates/apps/h2host), the
 //! Xbox app when it exists (docs/runtime/windows.md). There Live is on by
 //! default, against [`live_proto::DEFAULT_SERVER`]; `h2 play` on a desktop
 //! is off unless a flag asks (docs/live/live.md "Playing on Live").
