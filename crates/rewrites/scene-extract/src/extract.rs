@@ -111,7 +111,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
                 out.remainder += 1;
                 continue;
             };
-            builder.push_part(instance, slot as u32, part.key, 3, &rows)?;
+            builder.push_part_flagged(instance, slot as u32, part.key, 3, part.flags, &rows)?;
             out.parts += 1;
         }
     }
@@ -121,7 +121,7 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
 
 #[cfg(test)]
 mod tests {
-    use frame_scene::{ItemKey, NODE_MATRIX_SIZE, SceneId, Stamp, ViewKey, ViewKind};
+    use frame_scene::{ItemKey, NODE_MATRIX_SIZE, PartFlags, SceneId, Stamp, ViewKey, ViewKind};
 
     use super::*;
     use crate::layout::object_nodes::{RECORD_MATRIX, RECORD_NODES};
@@ -148,6 +148,7 @@ mod tests {
             triangle_list: true,
             first_index: 0,
             index_count: 3,
+            flags: PartFlags::NONE,
         }
     }
 
@@ -214,6 +215,30 @@ mod tests {
         let (owner, p) = s.part_at(v, 2).unwrap();
         assert_eq!((owner.key, p.key.part), (InstanceKey(c), 2));
         assert!(s.part_at(v, 1).is_none() && s.part_at(v, 4).is_none());
+    }
+
+    #[test]
+    fn a_marked_or_strip_part_is_in_the_scene_with_its_flags() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        object_record(&mut m, 5, Some(lighting(8)), 20.0);
+        let marked = Part { flags: PartFlags::STENCIL_MARK, ..part(4, 0) };
+        let strip = Part { flags: PartFlags::STRIP, triangle_list: false, ..part(5, 1) };
+        let entries = [
+            Entry::Object { handle: a, part: Some(marked) },
+            Entry::Object { handle: a, part: Some(strip) },
+        ];
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        let got = objects(&m, &entries, &mut b).unwrap();
+        assert_eq!(got, Objects { instances: 1, parts: 2, remainder: 0 });
+        let s = b.seal(Stamp::default()).unwrap();
+        let v = &s.views[0];
+        assert_eq!(s.part_at(v, 0).unwrap().1.flags, PartFlags::STENCIL_MARK);
+        assert_eq!(s.part_at(v, 1).unwrap().1.flags, PartFlags::STRIP);
+        assert_eq!(v.remainder, 0, "neither is left to the guest");
     }
 
     #[test]

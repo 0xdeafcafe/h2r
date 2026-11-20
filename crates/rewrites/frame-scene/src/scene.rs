@@ -166,11 +166,51 @@ pub struct Instance {
     pub teleported: bool,
 }
 
-/// How a part draws beyond its material (slice 3: stencil marking,
-/// conditional stream ranges, the auxiliary state toggle). Empty today:
-/// a part with any of them stays the guest's.
+/// How a part draws beyond its material: what its render record's `+0`
+/// flags make the guest's geometry draw (`0x0004d0b0`) do around and in
+/// its draw call (docs/graphics/framescene.md, slice 3). A bitset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct PartFlags(pub u8);
+
+impl PartFlags {
+    pub const NONE: PartFlags = PartFlags(0);
+    /// Record bit 14 in layers 1 and 3: the draw's prologue (`0x0004d640`)
+    /// sets stencil mode 2 (the structure mode with reference `0xff`) and
+    /// its epilogue (`0x0004d720`) leaves mode 1, unless the layer draws
+    /// with the stencil off.
+    pub const STENCIL_MARK: PartFlags = PartFlags(1);
+    /// Record bit 9 on a part that is not a triangle list: the emitter
+    /// (`0x0004daa0`) draws its indices as a strip. Without the bit it
+    /// draws every part as a list.
+    pub const STRIP: PartFlags = PartFlags(1 << 1);
+    const NAMES: [(PartFlags, &'static str); 2] = [(PartFlags::STENCIL_MARK, "stencil_mark"), (PartFlags::STRIP, "strip")];
+
+    pub fn contains(self, other: PartFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The flags set, by name (`render.scene`'s `part_flags`).
+    pub fn names(self) -> Vec<&'static str> {
+        Self::NAMES.iter().filter(|(f, _)| self.contains(*f)).map(|(_, n)| *n).collect()
+    }
+}
+
+impl std::ops::BitOr for PartFlags {
+    type Output = PartFlags;
+    fn bitor(self, rhs: PartFlags) -> PartFlags {
+        PartFlags(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for PartFlags {
+    fn bitor_assign(&mut self, rhs: PartFlags) {
+        self.0 |= rhs.0;
+    }
+}
 
 /// What one instance draws for one layer item.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -274,12 +314,22 @@ impl FrameScene {
             .flat_map(|i| self.parts_of(i))
             .map(|p| p.rows.len() as u32)
             .sum();
+        let mut flagged = Vec::<(&'static str, u32)>::new();
+        for p in instances.iter().flat_map(|i| self.parts_of(i)) {
+            for name in p.flags.names() {
+                match flagged.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, c)) => *c += 1,
+                    None => flagged.push((name, 1)),
+                }
+            }
+        }
         ViewCounts {
             clusters: view.clusters.len() as u32,
             instances: instances.len() as u32,
             parts,
             rows,
             remainder: view.remainder,
+            flagged,
         }
     }
 
@@ -336,11 +386,14 @@ impl FrameScene {
 }
 
 /// One view's sizes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ViewCounts {
     pub clusters: u32,
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,
     pub remainder: u32,
+    /// Parts with each [`PartFlags`] flag, by name; flags no part has are
+    /// left out.
+    pub flagged: Vec<(&'static str, u32)>,
 }

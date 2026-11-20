@@ -587,7 +587,9 @@ impl LitObjects {
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, textures),
             ];
-            // The stencil reference is zero (`object_state::resolve_scene`).
+            // The stencil reference is zero (`object_state::resolve_scene`)
+            // but for a marked part's mode 2 (`object_state::mark`); the
+            // packet sets it.
             let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
             let count = d.indices.end - d.indices.start;
             packets.push(RecordedDraw::prepared_indexed(

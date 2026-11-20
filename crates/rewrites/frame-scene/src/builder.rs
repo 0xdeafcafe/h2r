@@ -224,6 +224,13 @@ impl SceneBuilder {
     /// Adds a part to `instance`, which must be the open view's last;
     /// parts of one instance in increasing `slot`.
     pub fn push_part(&mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, rows: &[Row]) -> Result<u32, BuildError> {
+        self.push_part_flagged(instance, slot, key, layer, PartFlags::NONE, rows)
+    }
+
+    /// [`Self::push_part`] with how the part draws beyond its material.
+    pub fn push_part_flagged(
+        &mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, flags: PartFlags, rows: &[Row],
+    ) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let view = &scene.views[open];
         if instance + 1 != view.instances.end || view.instances.is_empty() {
@@ -242,7 +249,7 @@ impl SceneBuilder {
             layer,
             instance,
             rows: r..scene.rows.len() as u32,
-            flags: PartFlags::default(),
+            flags,
         });
         scene.instances[instance as usize].parts.end = index + 1;
         Ok(index)
@@ -359,6 +366,25 @@ mod tests {
         assert_eq!(s.counts(w).rows, 9);
         assert_eq!(s.nodes_of(&s.instances_of(w)[0]).len(), 3);
         assert!(s.part_at(w, 2).is_none(), "another view's slot");
+    }
+
+    #[test]
+    fn a_part_keeps_its_flags_and_the_view_counts_them_by_name() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(key(0), camera()).unwrap();
+        let a = b.push_instance(object(1, &[NodeMatrix::IDENTITY])).unwrap();
+        b.push_part(a, 1, item(1), 3, &rows(3, 1.0)).unwrap();
+        b.push_part_flagged(a, 2, item(2), 3, PartFlags::STENCIL_MARK, &rows(3, 1.0)).unwrap();
+        b.push_part_flagged(a, 3, item(3), 3, PartFlags::STENCIL_MARK | PartFlags::STRIP, &rows(3, 1.0)).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let v = &s.views[0];
+        let flags: Vec<PartFlags> = s.parts_of(&s.instances_of(v)[0]).iter().map(|p| p.flags).collect();
+        assert_eq!(flags, [PartFlags::NONE, PartFlags::STENCIL_MARK, PartFlags(3)]);
+        assert_eq!(s.counts(v).flagged, [("stencil_mark", 2), ("strip", 1)]);
+        assert_eq!(PartFlags(3).names(), ["stencil_mark", "strip"]);
+        assert!(PartFlags::NONE.names().is_empty());
     }
 
     #[test]

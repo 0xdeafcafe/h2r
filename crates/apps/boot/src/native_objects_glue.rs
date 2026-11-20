@@ -12,7 +12,7 @@ use engine::memory::GuestMemory;
 use hooks::native_map_work;
 use hooks::native_objects::{Host, NativeSet, SetPart};
 use map::TagId;
-use frame_scene::{FrameScene, InstanceKey, View};
+use frame_scene::{FrameScene, InstanceKey, PartFlags, View};
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
@@ -350,14 +350,28 @@ fn plan_walk<B: d3d::backend::Backend>(
     let read = crate::native_world_glue::ReadMemory(mem);
     let flags = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).map_err(|_| ObjectWalk::Inputs)?;
     let stencil_during_draw = flags & 0x00ff_ff00 == 0;
+    let in_mode_1 = || mem.u16(SCENE_STENCIL_MODE) == Ok(1) && device.stencil_state(&read) == Some(scene_stencil());
     if !stencil_during_draw {
         // The handler temporarily applies stencil mode 0 and leaves
         // mode 1. Skipping it is state-neutral only if it already holds 1.
-        if mem.u16(SCENE_STENCIL_MODE) != Ok(1) || device.stencil_state(&read) != Some(scene_stencil()) {
+        if !in_mode_1() {
             return Err(ObjectWalk::State);
         }
         entry.states.0.retain(|(r, _)| *r != R::StencilEnable);
         entry.states.0.push((R::StencilEnable, 0));
+    }
+    // A marked part's handler draws in stencil mode 2 and leaves mode 1
+    // (`frame_scene::PartFlags::STENCIL_MARK`). Skipping it is
+    // state-neutral, and the parts around it draw over the same stencil,
+    // only if the device already holds mode 1. With the stencil off the
+    // mark changes nothing.
+    let marks = stencil_during_draw
+        && run.iter().enumerate().any(|(n, e)| {
+            matches!(e, Entry::Object { .. })
+                && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::STENCIL_MARK))
+        });
+    if marks && !in_mode_1() {
+        return Err(ObjectWalk::State);
     }
     let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
     let table = &*STATE_TABLE;
@@ -407,6 +421,9 @@ fn plan_walk<B: d3d::backend::Backend>(
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;
+        if stencil_during_draw && scene_part.flags.contains(PartFlags::STENCIL_MARK) {
+            native_render::object_state::mark(&mut draw.state);
+        }
         let pass = lit.planned_pass(model, &draw).ok_or(ObjectWalk::Model)?;
         if pass.implementation.vertex_shader != Some(TagId(part.vertex_shader))
             || !stable_render_states(&pass.implementation.render_states, device_state)
@@ -434,11 +451,9 @@ fn plan_walk<B: d3d::backend::Backend>(
     Ok(draws)
 }
 
+/// Stencil mode 1, which layer 3's stencil switches leave.
 fn scene_stencil() -> gfx::state::StencilState {
-    use gfx::state::{CompareFunc, StencilOp, StencilState};
-    StencilState {
-        enable: true, func: CompareFunc::Always, pass: StencilOp::Replace, ..Default::default()
-    }
+    native_render::object_state::structure_stencil(0)
 }
 
 fn stable_cached_restore(

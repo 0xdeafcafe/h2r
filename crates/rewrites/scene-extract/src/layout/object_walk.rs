@@ -1,8 +1,49 @@
 //! Layer-3 object dispatches after the guest has selected render records
 //! and sorted the layer. See docs/graphics/native-renderer.md.
+//!
+//! ## What a render record's flags make the geometry draw do
+//!
+//! The geometry draw `0x0004d0b0` (an item's `+4`) reads four bits of the
+//! render record's `+0` in layer 3 (**Code**, docs/graphics/framescene.md,
+//! slice 3). A part is in the scene with the bits the native pass draws
+//! as [`PartFlags`]; the others refuse it, each by its own cause
+//! ([`Refusal`]).
+//!
+//! - **Bit 14, stencil marking** ([`PartFlags::STENCIL_MARK`]). The
+//!   prologue `0x0004d640`, in layers 1 and 3, sets stencil mode 2 through
+//!   `0x00015370` (`ALWAYS`, reference `0xff`, masks `0xff`, `REPLACE` on
+//!   pass) and the epilogue `0x0004d720` sets mode 1 (the same with
+//!   reference 0). With either flag byte of `skip::STENCIL_OFF_FLAGS` set
+//!   the prologue sets mode 0 for every item instead, and the bit changes
+//!   nothing. Layer 16 skips the item's draw entirely (`0x0004d13e`).
+//! - **Bit 9, strip topology** ([`PartFlags::STRIP`]). The whole-part
+//!   emitter `0x0004daa0` draws `5 + strip` (list or strip), `strip` being
+//!   bit 9 and the part's flag `8` (triangle list) clear (`0x0004d5e2`).
+//!   Without bit 9 it draws a list whatever the part's flag says; the
+//!   native models decode a part without the flag as a strip, so that case
+//!   refuses ([`Refusal::Topology`]).
+//! - **Bit 6, conditional stream ranges.** With the record's `+0x14` (a
+//!   bitmask of visible subparts) and the section geometry's `+8` (its
+//!   subpart count) both nonzero, the emitter draws only the visible
+//!   subparts of the part (part `+0xa` first subpart, `+0xc` count;
+//!   geometry `+0xc` the subparts, 8 bytes each): each as its own strip
+//!   with strip topology, consecutive ones merged into lists otherwise.
+//!   Otherwise it draws the whole part, as without the bit. The native
+//!   models hold whole parts, so the conditional case refuses
+//!   ([`Refusal::Subparts`]).
+//! - **Bit 11, the auxiliary state toggle.** The prologue calls
+//!   `0x00012d50` with BL 1 and the epilogue with BL 0: it rewrites the
+//!   device's depth scale (device `+0x1c10`, from the scale at
+//!   `0x00485adc` times one of two constants, flagged dirty in
+//!   `+0x1c18`) and, when the cached byte `0x0055e6bc` differs, the
+//!   transform it builds from the view at `0x0048568c` with its first rows
+//!   scaled (`0x003f7280`). The native object programs do not take
+//!   either, so it refuses ([`Refusal::AuxState`]).
 
 use std::collections::HashMap;
 use std::ops::Range;
+
+use frame_scene::PartFlags;
 
 use crate::GuestRead;
 use crate::layout::object_nodes::{MODEL_RECORD, MODEL_SECTIONS, Row, SECTION_STRIDE, TAG_INSTANCES};
@@ -38,9 +79,76 @@ const PART_SIZE: u32 = 0x48;
 const PART_FLAGS: u32 = 2;
 const PART_FIRST_INDEX: u32 = 6;
 const PART_INDEX_COUNT: u32 = 8;
-// Handler state changes: stencil marking, conditional stream ranges and
-// the auxiliary render-state toggle in the geometry draw's prologue/epilogue.
-const SPECIAL_RECORD_FLAGS: u32 = (1 << 6) | (1 << 9) | (1 << 11) | (1 << 14);
+/// Record `+0` bits the geometry draw reads in layer 3 (the module notes).
+pub const RECORD_SUBPARTS: u32 = 1 << 6;
+pub const RECORD_STRIP: u32 = 1 << 9;
+pub const RECORD_AUX_STATE: u32 = 1 << 11;
+pub const RECORD_STENCIL_MARK: u32 = 1 << 14;
+/// The record's visible-subpart mask pointer.
+const RECORD_SUBPART_MASK: u32 = 0x14;
+/// The section geometry's subpart count.
+const GEOMETRY_SUBPART_COUNT: u32 = 8;
+/// The part's flag that its indices are a triangle list.
+const PART_TRIANGLE_LIST: u16 = 8;
+
+/// Why a part an object item names is not in the scene, when its record
+/// asks for something the native pass does not draw (the module notes).
+/// Any other refusal is [`Refusal::Other`]: the item's layout, a check
+/// against the guest's choice, or memory that does not read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Bit 11: the depth-scale toggle around the draw.
+    AuxState,
+    /// Bit 6 with a subpart mask and subparts: only visible subparts drawn.
+    Subparts,
+    /// No bit 9 on a part that is not a triangle list.
+    Topology,
+    Other,
+}
+
+/// Parts refused by each named cause in a walk (items, not objects).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Causes {
+    pub aux_state: usize,
+    pub subparts: usize,
+    pub topology: usize,
+}
+
+impl Causes {
+    fn add(&mut self, why: Refusal) {
+        match why {
+            Refusal::AuxState => self.aux_state += 1,
+            Refusal::Subparts => self.subparts += 1,
+            Refusal::Topology => self.topology += 1,
+            Refusal::Other => {}
+        }
+    }
+}
+
+/// The [`PartFlags`] of a part whose record has `flags` at `+0`, or the
+/// cause that refuses it: `triangle_list` the part's flag, `subparts`
+/// whether the record's subpart mask and the section's subpart count are
+/// both nonzero. Bit 11 refuses first, then the subparts, then the
+/// topology.
+pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<PartFlags, Refusal> {
+    if flags & RECORD_AUX_STATE != 0 {
+        return Err(Refusal::AuxState);
+    }
+    if flags & RECORD_SUBPARTS != 0 && subparts {
+        return Err(Refusal::Subparts);
+    }
+    let mut out = PartFlags::NONE;
+    if !triangle_list {
+        if flags & RECORD_STRIP == 0 {
+            return Err(Refusal::Topology);
+        }
+        out |= PartFlags::STRIP;
+    }
+    if flags & RECORD_STENCIL_MARK != 0 {
+        out |= PartFlags::STENCIL_MARK;
+    }
+    Ok(out)
+}
 
 /// The `vrtx` classification `0x0001cb20` picks for a section of geometry
 /// classification `geometry` (the section's u16 at `+0x18`) and node
@@ -71,6 +179,8 @@ pub struct Part {
     pub triangle_list: bool,
     pub first_index: u16,
     pub index_count: u16,
+    /// What its record makes the draw do beyond its material.
+    pub flags: PartFlags,
 }
 
 impl Part {
@@ -94,6 +204,8 @@ pub struct SortedObjects {
     pub current: usize,
     pub counter: u32,
     pub entries: Vec<Entry>,
+    /// The parts refused by a named cause.
+    pub causes: Causes,
 }
 
 fn word(mem: &dyn GuestRead, base: u32, field: u32) -> Option<u32> {
@@ -130,6 +242,7 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
     // array is full.
     let record_count = word(mem, RENDER_RECORD_COUNT, 0)?.min(MAX_RENDER_RECORDS);
     let mut entries = Vec::with_capacity(count as usize);
+    let mut causes = Causes::default();
     for n in 0..count {
         let slot = base.checked_add(n * ITEM_SIZE)?;
         let program = word(mem, slot, ENTRY_PROGRAM)?;
@@ -165,13 +278,13 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
         };
         let render = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
         let part = if build == GEOMETRY_BUILD && draw == GEOMETRY_DRAW {
-            read_part(mem, slot, item, render, program, packed)
+            read_part(mem, slot, item, render, program, packed).inspect_err(|&why| causes.add(why)).ok()
         } else {
             None
         };
         entries.push(Entry::Object { handle, part });
     }
-    Some(SortedObjects { base, current: current as usize, counter, entries })
+    Some(SortedObjects { base, current: current as usize, counter, entries, causes })
 }
 
 fn read_part(
@@ -181,7 +294,23 @@ fn read_part(
     record: u32,
     program: u32,
     packed: u32,
-) -> Option<Part> {
+) -> Result<Part, Refusal> {
+    let (part, flags, subparts) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
+    Ok(Part { flags: record_flags(flags, part.triangle_list, subparts)?, ..part })
+}
+
+/// The part an item draws (without its flags), its record's `+0` flags
+/// and whether the record's subpart mask and its section's subpart count
+/// are both nonzero; `None` when the item's layout or a check against the
+/// guest's choice fails.
+fn read_part_layout(
+    mem: &dyn GuestRead,
+    slot: u32,
+    item: u32,
+    record: u32,
+    program: u32,
+    packed: u32,
+) -> Option<(Part, u32, bool)> {
     let key = objects::item_key(mem, item)?;
     let record_key = word(mem, record, 0xc)?;
     let flags = word(mem, record, 0)?;
@@ -211,7 +340,6 @@ fn read_part(
     let part = parts.checked_add(PART_SIZE * u32::from(key.part))?;
     let index_count = half(mem, part, PART_INDEX_COUNT)?;
     if record_key & 0xe000_0000 != MODEL_RECORD
-        || flags & SPECIAL_RECORD_FLAGS != 0
         || (((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP
             && !matches!(key.implementation, 2 | 3))
         || (half(mem, record, RECORD_DRAW_FLAGS)? as u8) != u8::MAX
@@ -226,17 +354,23 @@ fn read_part(
     {
         return None;
     }
-    Some(Part {
+    // Read only under bit 6, as the guest does (`0x0004d5ff`).
+    let subparts = flags & RECORD_SUBPARTS != 0
+        && word(mem, record, RECORD_SUBPART_MASK)? != 0
+        && word(mem, geometry, GEOMETRY_SUBPART_COUNT)? != 0;
+    let read = Part {
         key,
         mode,
         program,
         vertex_shader,
         geometry_class,
         node_influences,
-        triangle_list: half(mem, part, PART_FLAGS)? & 8 != 0,
+        triangle_list: half(mem, part, PART_FLAGS)? & PART_TRIANGLE_LIST != 0,
         first_index: half(mem, part, PART_FIRST_INDEX)?,
         index_count,
-    })
+        flags: PartFlags::NONE,
+    };
+    Some((read, flags, subparts))
 }
 
 /// A balanced span of sorted dispatches. Every object touched by the
@@ -329,6 +463,7 @@ mod tests {
             triangle_list: true,
             first_index: 60,
             index_count: 18,
+            flags: PartFlags::NONE,
         }
     }
 
@@ -430,6 +565,7 @@ mod tests {
         let at = 0x1000 + HANDLER_COUNTER + 4;
         let sorted = read(&mem, 0x2000, 0x1000, at).unwrap();
         assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(part()) }]);
+        assert_eq!(sorted.causes, Causes::default());
         assert_eq!(part().rows(&mem).unwrap(), [
             [1.0, 4.0, 7.0, 10.0],
             [2.0, 5.0, 8.0, 11.0],
@@ -452,5 +588,77 @@ mod tests {
         ]);
         mem.w(RENDER_RECORD_COUNT, 1);
         assert!(read(&mem, 0x2000, 0x1000, at).is_none());
+    }
+
+    #[test]
+    fn a_records_flags_become_part_flags_or_name_their_refusal() {
+        // Bit 14 marks; bit 9 makes a non-list part a strip.
+        assert_eq!(record_flags(0, true, false), Ok(PartFlags::NONE));
+        assert_eq!(record_flags(RECORD_STENCIL_MARK, true, false), Ok(PartFlags::STENCIL_MARK));
+        assert_eq!(record_flags(RECORD_STRIP, false, false), Ok(PartFlags::STRIP));
+        assert_eq!(record_flags(RECORD_STRIP, true, false), Ok(PartFlags::NONE), "a list part ignores bit 9");
+        assert_eq!(
+            record_flags(RECORD_STRIP | RECORD_STENCIL_MARK, false, false),
+            Ok(PartFlags::STRIP | PartFlags::STENCIL_MARK)
+        );
+        // Without bit 9 the guest draws a strip part's indices as a list.
+        assert_eq!(record_flags(0, false, false), Err(Refusal::Topology));
+        // Bit 6 refuses only when there is a mask and subparts to choose.
+        assert_eq!(record_flags(RECORD_SUBPARTS, true, false), Ok(PartFlags::NONE));
+        assert_eq!(record_flags(RECORD_SUBPARTS, true, true), Err(Refusal::Subparts));
+        assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), Err(Refusal::Subparts));
+        // Bit 11 first.
+        assert_eq!(record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, false, true), Err(Refusal::AuxState));
+    }
+
+    /// The record's `+0` in [`sorted_part`]'s memory, with `bits` added.
+    fn with_record_bits(mem: &mut Mem, bits: u32) {
+        let r = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        mem.w(r, 3 << 29 | bits);
+    }
+
+    #[test]
+    fn each_former_special_record_flag_is_a_part_or_a_named_cause() {
+        let at = 0x1000 + HANDLER_COUNTER + 4;
+        let walk = |mem: &Mem| read(mem, 0x2000, 0x1000, at).unwrap();
+        let (mut mem, handle) = sorted_part();
+
+        // Stencil marking: in the scene, flagged.
+        with_record_bits(&mut mem, RECORD_STENCIL_MARK);
+        let sorted = walk(&mem);
+        let marked = Part { flags: PartFlags::STENCIL_MARK, ..part() };
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(marked) }]);
+        assert_eq!(sorted.causes, Causes::default());
+
+        // Strip topology on a part that is not a list: in the scene, flagged.
+        with_record_bits(&mut mem, RECORD_STRIP);
+        let list = 0x9000 + 2 * PART_SIZE;
+        mem.w(list, 0);
+        let strip = Part { flags: PartFlags::STRIP, triangle_list: false, ..part() };
+        assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(strip) }]);
+        // The same part without bit 9: the guest draws it as a list.
+        with_record_bits(&mut mem, 0);
+        let sorted = walk(&mem);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
+        assert_eq!(sorted.causes, Causes { topology: 1, ..Causes::default() });
+        mem.w(list, 8 << 16);
+
+        // Conditional ranges: the whole part without a mask, refused with one.
+        with_record_bits(&mut mem, RECORD_SUBPARTS);
+        mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE + RECORD_SUBPART_MASK, 0);
+        mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 4);
+        assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }]);
+        mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE + RECORD_SUBPART_MASK, 0xd000);
+        let sorted = walk(&mem);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
+        assert_eq!(sorted.causes, Causes { subparts: 1, ..Causes::default() });
+        mem.w(0x8000 + GEOMETRY_SUBPART_COUNT, 0);
+        assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }], "no subparts to choose");
+
+        // The auxiliary state toggle: refused by name.
+        with_record_bits(&mut mem, RECORD_AUX_STATE);
+        let sorted = walk(&mem);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
+        assert_eq!(sorted.causes, Causes { aux_state: 1, ..Causes::default() });
     }
 }

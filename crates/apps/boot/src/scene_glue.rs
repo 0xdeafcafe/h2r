@@ -55,6 +55,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     lights: 0,
                     shadows: 0,
                     remainder: c.remainder,
+                    part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: BTreeMap::new(),
                     camera_use: BTreeMap::new(),
                 }
@@ -90,7 +91,9 @@ fn write_dump(scene: &FrameScene) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frame_scene::{InstanceInput, InstanceKey, ItemKey, NodeMatrix, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
+    use frame_scene::{
+        InstanceInput, InstanceKey, ItemKey, NodeMatrix, PartFlags, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind,
+    };
 
     #[test]
     fn a_scene_summarises_per_view() {
@@ -121,6 +124,7 @@ mod tests {
             .unwrap();
         let key = ItemKey { record: 1, shader: 2, section: 0, part: 0, implementation: 0 };
         b.push_part(i, 4, key, 3, &[[0.0; 4]; 3]).unwrap();
+        b.push_part_flagged(i, 5, key, 3, PartFlags::STENCIL_MARK, &[[0.0; 4]; 3]).unwrap();
         b.add_remainder(1).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
@@ -129,7 +133,8 @@ mod tests {
         assert_eq!(r.hash.len(), 16);
         let v = &r.views[0];
         assert_eq!(v.key, "game:0:0");
-        assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 1, 3, 1));
+        assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
+        assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }
 }

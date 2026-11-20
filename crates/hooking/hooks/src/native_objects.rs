@@ -170,10 +170,13 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
 fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, esi: u32) {
     let _planning = Timer::start(Stage::Objects, Metric::PrepareNs);
     layer.initialized = true;
-    let Some(SortedObjects { base, current, counter, entries }) = object_walk::read(&Mem(mem), layer.list, esp, esi) else {
+    let Some(SortedObjects { base, current, counter, entries, causes }) = object_walk::read(&Mem(mem), layer.list, esp, esi) else {
         ObjectWalk::Unreadable.count(1);
         return;
     };
+    ObjectWalk::PartAuxState.count(causes.aux_state);
+    ObjectWalk::PartSubparts.count(causes.subparts);
+    ObjectWalk::PartTopology.count(causes.topology);
     crate::scene_step::objects(&*mem, &entries);
     let decision = object_walk::decide(&entries, current);
     ObjectWalk::Unsupported.fallback(decision.unsupported);

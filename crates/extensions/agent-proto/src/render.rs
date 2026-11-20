@@ -364,6 +364,10 @@ pub struct SceneViewRecord {
     pub shadows: u32,
     /// Instances the guest still draws (refused by extraction).
     pub remainder: u32,
+    /// Parts by how they draw beyond their material (`stencil_mark`,
+    /// `strip`); flags no part has are left out.
+    #[serde(default)]
+    pub part_flags: BTreeMap<String, u32>,
     /// Carried ops by slot name, then by CameraUse; empty until slice 6.
     #[serde(default)]
     pub carried: BTreeMap<String, u32>,
