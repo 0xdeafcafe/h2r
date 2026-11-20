@@ -321,25 +321,9 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     } while (0)
 #define H2_ACC_CHARGE_(n) h2abi_v1_charge(ctx, (n))
 #endif
-/* The budget left after this handler's own count, cached for the polls.
- * H2_VIEW_BUDGET=1 reads it from the inline RAM view when that has no
- * count of its own to settle (h2_acc_budget). */
-#ifndef H2_VIEW_BUDGET
-#define H2_VIEW_BUDGET 0
-#endif
+/* The budget left after this handler's own count, cached for the polls. */
 #if H2_VIEW_CHARGE_
 #define H2_BUDGET_() (h2_mem_ ? h2_view_left(h2_mem_) : h2abi_v1_budget(ctx))
-#elif H2_VIEW_BUDGET && H2_FASTMEM
-/* What h2abi_v1_budget answers, without the call: it settles the view's
- * own count (none here), then gives the slice's accesses left, or all ones
- * when nothing would expire. The runtime keeps the view's budget the same
- * (h2abi_v1_fast_acquire sets it, every spend resets it, and a slice is
- * armed only between invocations). No view, or a count: ask. */
-static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) {
-    if (f && f->accesses == 0u) return f->budget;
-    return h2abi_v1_budget(ctx);
-}
-#define H2_BUDGET_() h2_acc_budget(ctx, h2_mem_)
 #else
 #define H2_BUDGET_() h2abi_v1_budget(ctx)
 #endif

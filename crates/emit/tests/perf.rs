@@ -1053,12 +1053,11 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem
     };
     // The switches that change how a direct call settles the gate and the
-    // count: none, the lent gate, the view's budget with the lent count,
-    // and all three.
+    // count: none, the lent gate, the lent count, and both.
     // Then the handler's own entry and exit: the gate taken at entry, the
     // count spent in the view, both, and everything at once.
     const GATE: &str = "#define H2_DIRECT_GATE 1\n";
-    const COUNT: &str = "#define H2_VIEW_BUDGET 1\n#define H2_DIRECT_COUNT 1\n";
+    const COUNT: &str = "#define H2_DIRECT_COUNT 1\n";
     const ENTRY: &str = "#define H2_ENTRY_GATE 1\n";
     const CHARGE: &str = "#define H2_VIEW_CHARGE 1\n";
     let switches = [
@@ -1896,13 +1895,12 @@ fn image_direct_gate_code_size() {
     image_switch_code_size("H2_DIRECT_GATE", emit::Codegen { accounting: true, ..emit::Codegen::default() });
 }
 
-/// As [`image_direct_gate_code_size`], for `H2_VIEW_BUDGET=1` and
-/// `H2_DIRECT_COUNT=1` together.
+/// As [`image_direct_gate_code_size`], for `H2_DIRECT_COUNT=1`.
 /// `cargo test -p emit --release --test perf image_direct_count_code_size -- --ignored --nocapture`
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
 fn image_direct_count_code_size() {
-    image_switch_code_size("H2_VIEW_BUDGET+H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+    image_switch_code_size("H2_DIRECT_COUNT", emit::Codegen { accounting: true, ..emit::Codegen::default() });
 }
 
 /// `switch`: the names to set, joined by `+`.
