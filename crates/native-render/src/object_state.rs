@@ -5,8 +5,7 @@
 //! render-state array at the layer-3 call ([`EntryStates`]). A field the
 //! draw depends on that neither gives (the slot does not read, or holds a
 //! value outside its enum) refuses the draw, as does a state the native
-//! pass does not reproduce: blending, fog, the stencil test (and so its
-//! reference and writes), a depth bias, a fill mode other than solid,
+//! pass does not reproduce: blending, a depth bias, a fill mode other than solid,
 //! Z-buffering set by the implementation (the programs write w; the
 //! device's own mode, `SET_CONTROL0`, the host checks), or an alpha test
 //! other than the one the program was compiled with. Nothing is taken
@@ -17,7 +16,7 @@
 //! cull, `look::WorldPass::inherits_cull`); the uniform compare
 //! (`H2_NATIVE_OBJECTS_COMPARE`) prints the D3D draws' own.
 
-use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R};
+use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R, StencilState};
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use tags::shader::RenderStateValue;
 
@@ -59,7 +58,7 @@ pub const FIELDS: [R; 29] = [
 /// Fields every draw depends on; the rest only when one of these turns
 /// them on (alpha function and reference with the alpha test, the
 /// offsets with the solid offset), or not at all because being on
-/// refuses the draw (blend, stencil, fog).
+/// refuses the draw (blend, stencil). Fog is resolved separately into the shader uniforms.
 const REQUIRED: [R; 14] = [
     R::ZEnable,
     R::ZFunc,
@@ -100,6 +99,7 @@ impl EntryStates {
 pub struct DrawState {
     pub primitive: wgpu::PrimitiveState,
     pub depth_write: bool,
+    pub stencil: StencilState,
     pub depth_compare: wgpu::CompareFunction,
     pub color_writes: wgpu::ColorWrites,
     pub w_clamp: bool,
@@ -110,6 +110,19 @@ pub struct DrawState {
 /// or why it is refused. `compiled`: the alpha test its program was
 /// compiled with.
 pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
+    resolve_states(own, entry, compiled, false)
+}
+
+/// The third-person scene path supplies the fog uniforms and handles a
+/// zero-reference stencil test. First-person callers use `resolve`.
+pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
+    resolve_states(own, entry, compiled, true)
+}
+
+fn resolve_states(
+    own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>,
+    scene: bool,
+) -> Result<DrawState, String> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
     let mut known: Vec<R> = Vec::new();
@@ -143,11 +156,22 @@ pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(
     if rs.blend_enable {
         return Err("it blends (ALPHABLENDENABLE)".into());
     }
-    if rs.fog_enable {
+    if rs.fog_enable && !scene {
         return Err("fog is on (FOGENABLE)".into());
     }
     if rs.stencil.enable {
-        return Err("the stencil test is on (STENCILENABLE): its reference and writes are not drawn".into());
+        if !scene {
+            return Err("the stencil test is on (STENCILENABLE)".into());
+        }
+        for field in [R::StencilFunc, R::StencilRef, R::StencilMask, R::StencilWriteMask,
+            R::StencilFail, R::StencilZFail, R::StencilPass]
+        {
+            need(field)?;
+        }
+        // The external bundle encoder uses the render pass's default ref.
+        if rs.stencil.reference != 0 {
+            return Err("the stencil reference is nonzero".into());
+        }
     }
     if rs.solid_offset_enable {
         need(R::PolygonOffsetZOffset)?;
@@ -184,6 +208,7 @@ pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(
             gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
         ),
         depth_write,
+        stencil: if rs.stencil.enable { rs.stencil } else { StencilState::default() },
         depth_compare,
         color_writes: gfx::translate::color_writes(rs.color_write),
         w_clamp: rs.depth_clamp,
@@ -279,7 +304,8 @@ mod tests {
             e
         };
         assert!(resolve(&[], &with(R::StencilEnable, 1), None).unwrap_err().contains("stencil"));
-        assert!(resolve(&[], &with(R::FogEnable, 1), None).unwrap_err().contains("fog"));
+        assert!(resolve(&[], &with(R::FogEnable, 1), None).is_err());
+        assert!(resolve_scene(&[], &with(R::FogEnable, 1), None).is_ok());
         assert!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap_err().contains("blends"));
         assert!(resolve(&own(&[(R::ZEnable, DepthBufferMode::Z.xbox_value())]), &entry(), None).unwrap_err().contains("Z-buffered"));
         assert!(resolve(&[], &with(R::ZEnable, DepthBufferMode::Z.xbox_value()), None).is_ok(), "inherited: the device's mode, checked by the host");

@@ -25,7 +25,37 @@ const VIEW_METRICS: [&str; 9] = [
     "reference_invariants", "display_invariants", "reference_refused", "display_refused",
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
-pub(crate) const COLUMNS: usize = STAGES.len() * STRIDE;
+const STAGE_COLUMNS: usize = STAGES.len() * STRIDE;
+const OBJECT_WALK_COLUMNS: [&str; 9] = [
+    "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
+    "walk_model", "walk_inputs", "walk_state", "walk_reservation",
+];
+pub(crate) const COLUMNS: usize = STAGE_COLUMNS + OBJECT_WALK_COLUMNS.len();
+
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub enum ObjectWalk {
+    Native,
+    Fallback,
+    Unsupported,
+    Order,
+    Unreadable,
+    Model,
+    Inputs,
+    State,
+    Reservation,
+}
+
+impl ObjectWalk {
+    pub fn count(self, n: usize) {
+        phase::count_index(phase::Counter::ALL.len() + STAGE_COLUMNS + self as usize, n as u64);
+    }
+
+    pub fn fallback(self, n: usize) {
+        Self::Fallback.count(n);
+        self.count(n);
+    }
+}
 pub(crate) fn labels() -> &'static [String] {
     static LABELS: OnceLock<Vec<String>> = OnceLock::new();
     LABELS.get_or_init(|| {
@@ -38,6 +68,7 @@ pub(crate) fn labels() -> &'static [String] {
                 }
             }
         }
+        out.extend(OBJECT_WALK_COLUMNS.map(|name| format!("native_objects_{name}")));
         out
     })
 }
@@ -115,5 +146,8 @@ mod tests {
         assert_eq!(columns[i].1, "native_objects_v2_reference_ranges");
         assert_eq!(columns[i + 1].1, "native_objects_v2_display_ranges");
         assert_eq!(columns[i + 2].1, "native_objects_v2_invariants");
+        let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
+        assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
+        assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");
     }
 }

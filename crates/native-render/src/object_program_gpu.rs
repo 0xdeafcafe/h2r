@@ -22,7 +22,7 @@ use crate::object_program::{
 };
 use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
-use crate::object_state::{DrawState, EntryStates, resolve};
+use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemKey, ObjectFrame};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
@@ -181,6 +181,7 @@ pub struct PlannedDraw {
     pub pixel: PixelUniforms,
     pub state: DrawState,
     pub texaccum: bool,
+    pub default_final: bool,
 }
 
 impl LitBufferInput {
@@ -379,9 +380,24 @@ impl LitObjects {
     /// clip, and the texture accumulation level's size). An error says why
     /// the item keeps its D3D draw.
     pub fn plan(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
+        self.plan_with_scene_state(index, frame, key, rows, entry, false)
+    }
+
+    pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
+        self.plan_with_scene_state(index, frame, key, rows, entry, true)
+    }
+
+    fn plan_with_scene_state(
+        &self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates,
+        scene: bool,
+    ) -> Result<PlannedDraw, String> {
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
         let part = m.part_index.get(&(key.section, key.part)).copied();
-        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
+        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry, scene)
+    }
+
+    pub fn planned_pass(&self, index: u32, draw: &PlannedDraw) -> Option<&ObjectPass> {
+        Some(&self.models.get(&index)?.programs.get(draw.program)?.pass)
     }
 
     /// The blocks `d` (of model `index`) is issued with in `view`, and the
@@ -429,7 +445,7 @@ impl LitObjects {
     pub fn part_uniforms(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
         let m = self.models.get(&index).ok_or("no lit model")?;
         let pass = &m.programs.get(d.program).ok_or("no program")?.pass;
-        let (vertex, pixel) = self.issued(index, d, view, texaccum).ok_or("it samples the texture accumulation level and there is none")?;
+        let (vertex, mut pixel) = self.issued(index, d, view, texaccum).ok_or("it samples the texture accumulation level and there is none")?;
         let textures = std::array::from_fn(|n| {
             if pass.texaccum[n] {
                 Some(format!("the texture accumulation level ({:?} guest texels)", texaccum.map(|t| t.guest_size)))
@@ -442,13 +458,15 @@ impl LitObjects {
                 }
             }
         });
+        let def = pass.program.def.with_default_final_combiner(pixel.fog[0] != 0.0, pixel.fog[3] != 0.0);
+        pixel.fog[3] = 0.0;
         Ok(PartUniforms {
             implementation: d.implementation,
             words: pass.words.clone(),
             vertex,
             pixel,
             options: pass.options,
-            def: pass.program.def.clone(),
+            def,
             pixel_options: pass.program.pixel_options,
             samplers: std::array::from_fn(|n| pass.program.dims[n].and(pass.program.samplers[n].as_ref()).and_then(crate::program::sampler_key)),
             textures,
@@ -533,6 +551,14 @@ impl LitObjects {
             if p.pipelines.contains_key(&key) {
                 continue;
             }
+            if d.state.stencil.enable && !depth_format.has_stencil_aspect() {
+                return None;
+            }
+            let stencil = gfx::translate::depth_stencil_state(
+                &gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() },
+                Some(depth_format),
+                wgpu::PrimitiveTopology::TriangleList,
+            )?.stencil;
             let attrs = attributes(&registers, &formats);
             let pipeline = gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
@@ -552,7 +578,7 @@ impl LitObjects {
                     format: depth_format,
                     depth_write_enabled: Some(d.state.depth_write),
                     depth_compare: Some(d.state.depth_compare),
-                    stencil: wgpu::StencilState::default(),
+                    stencil,
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
@@ -640,7 +666,7 @@ pub fn plan_part<'a>(
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
-    plan_indexed_part(parts, part, pass_of, frame, key, rows, entry)
+    plan_indexed_part(parts, part, pass_of, frame, key, rows, entry, false)
 }
 
 fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
@@ -657,7 +683,7 @@ fn plan_indexed_part<'a>(
 ) -> Result<PlannedDraw, String> {
     let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
     let p = &parts[part];
-    if p.shader_tag as u16 != key.shader as u16 {
+    if p.shader_tag as u16 != key.shader as u16 || (scene && p.shader_tag != key.shader) {
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
     }
     let (program, buffer) = p
@@ -672,6 +698,7 @@ fn plan_indexed_part<'a>(
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
     let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
+    let resolve = if scene { object_state::resolve_scene } else { object_state::resolve };
     let state = resolve(&pass.implementation.render_states, entry, compiled)?;
     Ok(PlannedDraw {
         part,
@@ -683,6 +710,7 @@ fn plan_indexed_part<'a>(
         pixel,
         state,
         texaccum: pass.texaccum.contains(&true),
+        default_final: pass.default_final,
     })
 }
 
@@ -795,8 +823,8 @@ pub type StageSource<'s> = dyn FnMut(usize, map::TagId, u32) -> Option<Image> + 
 /// uniform); an implementation that fails anywhere is left out. A
 /// material
 /// none of whose implementations compiles is refused, with the reasons;
-/// one in no drawn section is neither taken nor refused. When the taken
-/// materials share no implementation, they are all refused.
+/// one in no drawn section is neither taken nor refused. Each part
+/// independently matches the implementation in its sorted dispatch.
 pub fn lit_model(
     sections: &[LitSection<'_>],
     materials: &HashMap<u16, LitMaterial>,
@@ -966,10 +994,6 @@ pub fn lit_model(
     }
     if out.taken.is_empty() {
         out.implementations = 0;
-    } else if out.implementations == 0 {
-        let taken = std::mem::take(&mut out.taken);
-        out.refused.extend(taken.into_iter().map(|m| (m, "the model's lit materials share no implementation".to_string())));
-        out.input = LitModelInput::default();
     }
     out
 }

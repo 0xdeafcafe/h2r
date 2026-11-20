@@ -921,7 +921,7 @@ const DEFAULT_SCENE_PALETTE: u32 = 0x0048_4dbc;
 
 /// A loading/UI boundary may not have the scene's palette bound yet.
 /// The scene reset binds this palette; each native draw still checks its bindings.
-fn scene_load_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
+pub(crate) fn scene_load_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
     let mut bound = stage_palettes(d, mem);
     supply_scene_palette(&mut bound, || d.palette_entries(&ReadMemory(mem), mem.u32(DEFAULT_SCENE_PALETTE).ok()?));
     bound

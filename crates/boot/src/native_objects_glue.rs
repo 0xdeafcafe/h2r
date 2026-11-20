@@ -1,38 +1,14 @@
-//! The native objects' host (docs/graphics/native-renderer.md, stage 2):
-//! render models loaded per map on a worker, as the objects that use them
-//! first reach layer 3, and one external pass per view drawing the objects
-//! the feature skipped (`feature::native_objects`). Inert unless
-//! `impl.render.native_objects` is on (nothing asks).
+//! Third-person object programs for the scene's layer 3.
 //!
-//! - **Load once per map.** On a new map a worker opens the loaded map
-//!   through the VFS (`native_map`)
-//!   with its shared maps and the object tag context. Each definition the
-//!   feature meets is sent once; the worker resolves its model
-//!   (`native_render::model_load`) and compiles its opaque materials'
-//!   programs (below), dropping the materials that refuse (their items
-//!   keep their D3D draws). The model is queued for upload and its
-//!   definition and shaders are published in the native set. A refused
-//!   model (a run-time permutation, a node mismatch, nothing opaque) is
-//!   logged once and its objects stay on the D3D path.
-//! - **Per view.** The device gets an `ObjectsPass` with the camera and the
-//!   objects' node matrices; on the render thread it uploads the queued
-//!   models, packs and culls the objects, and draws them skinned.
-//! - **Opaque materials** (docs/graphics/native-renderer.md, "Object
-//!   programs"). Every opaque material, whether or not its layer-3 pass
-//!   reads the object's lighting ("lit" parts in the names here), is drawn
-//!   through the game's own vertex program and pixel shader, per
-//!   implementation of its layer-3 pass that compiles (a record picks one
-//!   by its `+0` bits 29..31; an object whose records pick one some lit
-//!   part lacks stays on D3D), its section's streams laid out as the game's
-//!   declaration (the format table read from guest memory when the map is
-//!   first seen) and its per-object constants (vertex and combiner) put in
-//!   per draw. A material none of whose implementations compiles for every
-//!   section and stage stays on D3D whole, with the reasons; never drawn
-//!   with a base-map stand-in.
+//! The activation worker reads the mounted tag index and uploads each
+//! supported mode once. The sorted scene walk resolves every part of a
+//! run before reserving it for every live target copy. With the walk off,
+//! the indexed-draw admission still pairs native parts with resolved D3D
+//! draws at the original submission site.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::memory::GuestMemory;
 use feature::native_map_work;
@@ -42,112 +18,121 @@ use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
-use native_render::model::Model;
-use native_render::model_gpu::GpuModels;
-use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
+use native_render::object_walk::{Entry, Part as WalkPart};
+use tags::model::RenderModelGeometry;
+use timeline::native::ObjectWalk;
 use native_render::objects::{ItemDraw, ItemKey, ObjectFrame};
 use native_render::world_layers::{Geometry, Owner, Site};
 use native_render::program::ViewInputs;
 
 use crate::native_map::{self, NativeMap};
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, stage_palettes};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes};
 
-/// A model loaded on the worker, waiting for the render thread.
+/// One distinct render-model tag, shared by its object definitions.
 struct CpuModel {
-    definition: u32,
-    model: Model,
-    base_maps: HashMap<u16, Image>,
-    /// The parts drawn through the game's programs.
+    mode: TagId,
     lit: LitModelInput,
-    /// The normalization cube the lit parts' programs may sample.
     normalization: Option<Arc<StaticLightTexture>>,
 }
 
-/// One map's models: queued, uploaded, and which definition is which.
+#[derive(Clone, Copy)]
+struct PartRange {
+    geometry_class: u16,
+    node_influences: u8,
+    first: u16,
+    count: u16,
+    triangle_list: bool,
+}
+
+impl PartRange {
+    fn matches(self, part: WalkPart) -> bool {
+        self.geometry_class == part.geometry_class
+            && self.node_influences == part.node_influences
+            && self.first == part.first_index
+            && self.count == part.index_count
+            && self.triangle_list == part.triangle_list
+    }
+}
+
+struct ModelCoverage {
+    nodes: usize,
+    parts: Vec<((u16, u8), SetPart)>,
+    ranges: HashMap<(u16, u8), PartRange>,
+}
+
 #[derive(Default)]
-pub(crate) struct Models {
+struct Models {
     pending: Mutex<Vec<CpuModel>>,
-    gpu: Mutex<Option<GpuModels>>,
-    /// The lit parts on the GPU, by uploaded model (locked after `gpu`).
+    upload_queued: AtomicBool,
     lit: Mutex<Option<LitObjects>>,
-    /// Definition tag index -> uploaded model.
-    pub(crate) index: Mutex<HashMap<u16, u32>>,
-    /// The device palettes the loads expanded palettized base maps
-    /// through, at their stages ([`StageDecoder::used`]): the models draw
-    /// only while those stay bound.
+    /// Definition index to render-model datum, shared across definitions.
+    index: Mutex<HashMap<u16, u32>>,
+    coverage: Mutex<HashMap<TagId, Arc<ModelCoverage>>>,
     palettes: Mutex<StagePalettes>,
 }
 
-/// Uploads the queued models on the render thread and returns their
-/// locked GPU side.
-pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>) -> MutexGuard<'a, Option<GpuModels>> {
-    let mut guard = models.gpu.lock().unwrap_or_else(|e| e.into_inner());
-    let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
-    let pending = std::mem::take(&mut *models.pending.lock().unwrap_or_else(|e| e.into_inner()));
-    let mut index = models.index.lock().unwrap_or_else(|e| e.into_inner());
-    let mut lit_gpu = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-    for cpu in pending {
-        let CpuModel {
-            definition,
-            model,
-            mut base_maps,
-            lit,
-            normalization,
-        } = cpu;
-        let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
-        if !lit.is_empty() {
-            let l = lit_gpu.get_or_insert_with(|| LitObjects::new(t.device));
-            if let Some(n) = &normalization {
-                l.set_normalization(t.device, t.queue, n);
-            }
-            l.add_model(t.device, t.queue, i, lit);
-        }
-        index.insert(definition as u16, i);
-    }
-    drop(lit_gpu);
-    drop(index);
-    guard
+struct UploadModels {
+    models: Arc<Models>,
+    map_generation: u64,
 }
 
-/// Uploads model resources even if this layer offers no drawable object items.
-struct UploadModels(Arc<Models>);
+impl Drop for UploadModels {
+    fn drop(&mut self) {
+        self.models.upload_queued.store(false, Ordering::Release);
+    }
+}
 
 impl d3d::ExternalPass for UploadModels {
-    fn colour_only(&self) -> bool {
-        true
-    }
+    fn colour_only(&self) -> bool { true }
 
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites::default()
     }
 
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        drop(upload_pending(&self.0, &target));
+        if self.map_generation != native_map_work::generation() {
+            return;
+        }
+        let pending = std::mem::take(&mut *self.models.pending.lock().unwrap_or_else(|e| e.into_inner()));
+        if pending.is_empty() {
+            return;
+        }
+        let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let lit = lit.get_or_insert_with(|| LitObjects::new(target.device));
+        for cpu in pending {
+            if let Some(texture) = &cpu.normalization {
+                lit.set_normalization(target.device, target.queue, texture);
+            }
+            lit.add_model(target.device, target.queue, cpu.mode.0, cpu.lit);
+        }
     }
 }
 
-/// What one load of models belongs to: the map's name, the active BSP's
-/// address and its index (as the world's key them). A view under another
-/// key starts a new load (new [`Models`], a new worker); nothing queued
-/// or published for one reaches another.
-type MapKey = (String, u32, u16);
+fn queue_upload<B: d3d::backend::Backend>(
+    device: &d3d::abi::SharedDevice<B>, models: &Arc<Models>, map_generation: u64,
+) {
+    if models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+        || models.upload_queued.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let pass = UploadModels { models: Arc::clone(models), map_generation };
+    if let Ok(mut device) = device.lock() {
+        device.request_external_pass(Box::new(pass));
+    }
+}
 
 struct MapState {
-    key: MapKey,
     map_generation: u64,
-    /// This load's number, from [`GENERATIONS`]: the set carries it, and
-    /// `Host::draw` refuses a view planned against another.
     generation: u64,
     models: Arc<Models>,
     set: Arc<NativeSet>,
-    tried: HashSet<u16>,
-    worker: Option<mpsc::Sender<u32>>,
 }
 
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -161,14 +146,13 @@ struct LayerEntry {
 }
 
 impl LayerEntry {
-    /// For an ordered replacement, inherited fog is checked on the resolved
-    /// draw. Fog the implementation explicitly sets still goes through resolve.
-    fn for_admission(&self) -> EntryStates {
-        use gfx::state::RenderStateType::FogEnable;
-        let mut states = self.states.clone();
-        states.0.retain(|(state, _)| *state != FogEnable);
-        states.0.push((FogEnable, 0));
-        states
+    fn read<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Self {
+        let table = gfx::xdk::RenderStateTable::default();
+        let read = crate::native_world_glue::ReadMemory(mem);
+        Self {
+            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
+            w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
+        }
     }
 }
 
@@ -179,96 +163,130 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     admission: Arc<ObjectAdmission>,
 }
 
-/// The key of the load guest memory `mem` holds now, `None` without a map
-/// name or an active BSP.
-fn map_key(mem: &dyn GuestMemory) -> Option<MapKey> {
-    let name = crate::health::loaded_map_name(mem).ok()?;
-    if name.is_empty() {
-        return None;
-    }
-    let bsp = mem.u32(feature::native_world::ACTIVE_BSP).ok()?;
-    let index = crate::native_world_glue::active_bsp_index(mem)?;
-    Some((name, bsp, index))
-}
-
-/// Whether a worker loading for `models` may publish to `current`: only
-/// to the load it was started for, whatever its map's name.
+/// The worker can publish only into the load it was started for.
 fn publishes_to(current: &MapState, models: &Arc<Models>) -> bool {
     Arc::ptr_eq(&current.models, models)
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
-        self.admission.0.lock().ok()?.take();
-        if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn load(&self, mem: &dyn GuestMemory) -> Option<(Arc<NativeSet>, Arc<Models>, u64)> {
+        let map_generation = native_map_work::generation();
+        let name = crate::health::loaded_map_name(mem).ok()?;
+        if name.is_empty() {
             return None;
         }
-        let map_generation = native_map_work::generation();
-        let key = map_key(mem)?;
-        let current = |st: &Option<MapState>| {
-            st.as_ref().is_some_and(|s| s.key == key && s.map_generation == map_generation)
-        };
-        let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
-        if !loaded {
-            // The palettes bound now, for palettized base maps (P8, P8
-            // bump), which the D3D path samples through the device palette
-            // at their stage. Read with no other lock held, as the world's.
-            let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
-            // The stream formats the game's declarations are built from,
-            // read where the game keeps them (`None`: lit materials stay
-            // on D3D).
-            let formats = StreamFormats::read(&Ro(mem));
-            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if !current(&*st) {
-                let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let models = Arc::new(Models::default());
-                let worker = spawn_worker(key.0.clone(), map_generation, Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
-                let set = NativeSet { map: key.0.clone(), generation, ..NativeSet::default() };
-                *st = Some(MapState {
-                    key: key.clone(),
-                    map_generation,
-                    generation,
-                    models,
-                    set: Arc::new(set),
-                    tried: HashSet::new(),
-                    worker,
-                });
+        let ready = |s: &MapState| s.map_generation == map_generation && s.set.map == name;
+        {
+            let state = self.state.lock().ok()?;
+            if let Some(s) = state.as_ref().filter(|s| ready(s)) {
+                return Some((Arc::clone(&s.set), Arc::clone(&s.models), map_generation));
             }
         }
-        let (set, models) = {
-            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let s = st.as_ref()?;
-            (Arc::clone(&s.set), Arc::clone(&s.models))
-        };
-        // A published CPU set can have no acceptable items in this view.
-        // Schedule the upload at the layer boundary independently of its draws.
-        if !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
-            self.device.lock().ok()?.request_external_pass(Box::new(UploadModels(Arc::clone(&models))));
+        let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
+        let formats = StreamFormats::read(&Ro(mem));
+        let mut state = self.state.lock().ok()?;
+        if map_generation != native_map_work::generation() {
+            return None;
         }
-        // A base map expanded through a palette that is no longer bound
-        // would sample other colours than the D3D path: then it draws
-        // every object.
-        let used = models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if used.iter().any(Option::is_some) {
-            let now = self.device.lock().ok().map(|d| stage_palettes(&d, mem))?;
-            if !palettes_hold(&used, &|s| now[s].clone()) {
-                if !PALETTE_CHANGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    eprintln!("native-objects: a stage palette changed since a base map was expanded through it; the D3D path draws the objects");
+        if let Some(s) = state.as_ref().filter(|s| ready(s)) {
+            return Some((Arc::clone(&s.set), Arc::clone(&s.models), map_generation));
+        }
+        let generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
+        let models = Arc::new(Models::default());
+        let set = Arc::new(NativeSet { map: name.clone(), generation, ..NativeSet::default() });
+        *state = Some(MapState {
+            map_generation, generation, models: Arc::clone(&models), set: Arc::clone(&set),
+        });
+        drop(state);
+
+        let device = Arc::downgrade(&self.device);
+        spawn_worker(name, map_generation, Arc::clone(&models), Arc::clone(&self.state), palettes, formats,
+            move |models| {
+                if let Some(device) = device.upgrade() {
+                    queue_upload(&device, models, map_generation);
                 }
-                return None;
-            }
+            });
+        Some((set, models, map_generation))
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn preload(&self, mem: &dyn GuestMemory) {
+        if let Some((_, models, generation)) = self.load(mem) {
+            queue_upload(&self.device, &models, generation);
+        }
+    }
+
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        self.admission.0.lock().ok()?.take();
+        let (set, models, generation) = self.load(mem)?;
+        queue_upload(&self.device, &models, generation);
+        let mut device = self.device.lock().ok()?;
+        if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
+            return None;
+        }
+        if !model_palettes_hold(&models, &device, mem) {
+            return None;
         }
         Some(set)
     }
 
-    fn want(&self, definition: u32) {
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = st.as_mut() else { return };
-        if s.tried.insert(definition as u16)
-            && let Some(w) = &s.worker
-        {
-            let _ = w.send(definition);
+    fn want(&self, _definition: u32) {
+        // The activation worker already visits the entire tag index.
+    }
+
+    fn draw_walk(
+        &self, mem: &mut dyn GuestMemory, run: &[Entry],
+        consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
+    ) -> Result<(), ObjectWalk> {
+        use timeline::native::{Metric, Stage, Timer};
+        let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+        if mem.u8(engine::render_loop::layer::DRAW_FLAG) != Ok(0) {
+            // The guest's first shader begin initializes the whole layer's
+            // state and clears the cached texture-stage bindings.
+            return Err(ObjectWalk::State);
         }
+        let (_, models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
+        let mut device = self.device.lock().map_err(|_| ObjectWalk::Reservation)?;
+        if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
+            .map_err(|_| ObjectWalk::Reservation)?
+        {
+            return Err(ObjectWalk::Reservation);
+        }
+        if !model_palettes_hold(&models, &device, mem) {
+            return Err(ObjectWalk::Inputs);
+        }
+        let camera = RenderCamera::read(&Ro(mem), native_render::camera::RENDER_CAMERA)
+            .ok_or(ObjectWalk::Inputs)?;
+        let read = crate::native_world_glue::ReadMemory(mem);
+        let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
+        let (width, height) = request.surface_size;
+        let (clip, rects) = device.clip_area(&read).ok().flatten().ok_or(ObjectWalk::State)?;
+        if !rects.is_empty() || !clip.is_whole(width, height) || request.rect != (0, 0, width, height) {
+            return Err(ObjectWalk::State);
+        }
+        let draws = plan_walk(&models, &device, mem, run)?;
+        let ranges = draws.len();
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
+        let pass = Box::new(ObjectsPass {
+            models: Arc::clone(&models), camera, objects: Vec::new(), draws,
+            owners: Vec::new(), refused: Vec::new(), compare: None, view: None,
+            w_clip: None, fallback: None, walk: true, run: device.swap_count().wrapping_add(1),
+        });
+        drop(planning);
+        let ready = device.prepare_external_bound(
+            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
+        ).ok().flatten().ok_or(ObjectWalk::Reservation)?;
+        let state = self.state.lock().map_err(|_| ObjectWalk::Reservation)?;
+        if !state.as_ref().is_some_and(|s| s.map_generation == generation && publishes_to(s, &models))
+            || generation != native_map_work::generation()
+            || !consume(mem)
+        {
+            return Err(ObjectWalk::Reservation);
+        }
+        ready.commit();
+        Ok(())
     }
 
     fn draw(
@@ -286,12 +304,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let mut device = self.device.lock().ok()?;
         // native() drained before the feature walked the guest list. Resolve the
         // implementation's inherited fields on the device that will reserve it.
-        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-        let read = crate::native_world_glue::ReadMemory(mem);
-        let entry = LayerEntry {
-            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
-            w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
-        };
+        let entry = LayerEntry::read(&device, mem);
         let plan = plan_view(&models, &objects, &items, &entry, device.samples_levels_in_place());
         let ranges = plan.draws.len();
         let refused = (items.len() - ranges) as u64;
@@ -306,7 +319,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 draws: if probing { plan.draws.clone() } else { Vec::new() },
                 owners: if probing { plan.owners.clone() } else { Vec::new() },
                 refused: plan.refused, compare: plan.compare,
-                view: None, w_clip: None, fallback: None, run: 0,
+                view: None, w_clip: None, fallback: None, walk: false, run: 0,
             }));
         }
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -377,20 +390,23 @@ impl d3d::DrawAdmission for ObjectAdmission {
         if !object_state_matches(draw, planned)
             || !crate::native_world_layers_glue::matches_triangle_range(draw, planned.indices.len())
         {
-            if draw.state.render.fog_enable {
-                count_refusal("fog is on (FOGENABLE)");
-            }
             return None;
         }
         let accum = native_render::object_program::TEXACCUM_HEADER;
         if planned.texaccum != (0..4).any(|i| snapshot.sampled_stages[i] && draw.textures[i] == Some(accum)) {
             return None;
         }
-        let planned = layer.draws.remove(&key)?;
+        let mut planned = layer.draws.remove(&key)?;
+        set_resolved_fog(&mut planned.1, draw)?;
+        if planned.1.state.stencil.enable {
+            // The legacy resolved replacement's binding only promises
+            // the original draw's depth writes. Reserve stencil in walk mode.
+            return None;
+        }
         let pass = ObjectsPass {
             models: Arc::clone(&layer.models), camera: layer.camera, objects: Vec::new(),
             draws: vec![planned], owners: Vec::new(), refused: Vec::new(), compare: None,
-            view: None, w_clip: None, fallback: Some(Arc::new(draw.clone())), run: layer.frame,
+            view: None, w_clip: None, fallback: Some(Arc::new(draw.clone())), walk: false, run: layer.frame,
         };
         Some((d3d::ExternalPlan {
             stage: timeline::native::Stage::Objects, view: context.layer.view, ranges: 1, slots: Vec::new(),
@@ -412,9 +428,180 @@ fn object_state_matches(draw: &d3d::ResolvedDraw, planned: &PlannedDraw) -> bool
         && draw.target.depth_format.is_some()
         && primitive == p.primitive && compare == p.depth_compare && (depth && r.depth_write) == p.depth_write
         && gfx::translate::color_writes(r.color_write) == p.color_writes && alpha == p.alpha_test
-        && r.depth_clamp == p.w_clamp && !r.stencil.enable && !r.blend_enable && !r.fog_enable
+        && r.depth_clamp == p.w_clamp && !r.blend_enable
+        && r.stencil.enable == p.stencil.enable && (!r.stencil.enable || r.stencil == p.stencil)
         && r.fill_mode == FillMode::Solid && r.back_fill_mode == FillMode::Solid
         && (!r.solid_offset_enable || (r.depth_bias == 0.0 && r.depth_bias_slope_scale == 0.0))
+}
+
+/// D3D's specular bit selects the colour term in its implicit final combiner.
+const SPECULAR_ENABLE: u32 = 103;
+const STIPPLE_ENABLE: u32 = 83;
+const TWO_SIDED_LIGHTING: u32 = 141;
+const SCENE_STENCIL_MODE: u32 = 0x0046_7010;
+
+/// Pointers and lists read by the shader begin and its pass-switch code.
+const CACHED_PASS_DESCRIPTOR: u32 = engine::render_loop::layer::SETUP_CONTEXT + 0x20;
+const CACHED_IMPLEMENTATION: u32 = engine::render_loop::layer::SETUP_CONTEXT + 0x24;
+const IMPLEMENTATION_RESTORE: u32 = 0x11c;
+const DESCRIPTOR_STATES: u32 = 0x14;
+const STATE_SIZE: u32 = 5;
+
+fn object_fog(
+    words: [u32; 7], default_final: bool, specular: Option<u32>,
+) -> Option<([f32; 4], [f32; 4])> {
+    let (fog, color) = crate::native_fog_glue::fog_of(&words);
+    let mut uniform = fog.uniform();
+    if default_final {
+        uniform[3] = f32::from(u8::from(specular? != 0));
+    }
+    Some((uniform, color))
+}
+
+fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Option<()> {
+    let (fog, color) = object_fog(words, draw.default_final, specular)?;
+    draw.pixel.fog = fog;
+    draw.pixel.fog_color = color;
+    Some(())
+}
+
+fn set_resolved_fog(draw: &mut PlannedDraw, original: &d3d::ResolvedDraw) -> Option<()> {
+    let table = gfx::xdk::RenderStateTable::default();
+    let raw = |state| {
+        let slot = table.canonical_to_guest(state)?;
+        original.raw.render.get(slot as usize).copied()
+    };
+    let words = native_render::fog_gpu::FogWords::default()
+        .resolve(&native_render::fog_gpu::FOG_WORD_SLOTS.map(raw))?;
+    set_fog(draw, words, raw(SPECULAR_ENABLE))
+}
+
+/// Commit only state-preserving runs. A later guest handler inherits the
+/// same render states it would inherit if the skipped programs had run.
+/// The guest's own shader/binding cache tracks the last real guest call.
+fn plan_walk<B: d3d::backend::Backend>(
+    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory, run: &[Entry],
+) -> Result<Vec<(u32, PlannedDraw)>, ObjectWalk> {
+    use gfx::state::RenderStateType as R;
+    let mut entry = LayerEntry::read(device, mem);
+    if !entry.w_buffered {
+        return Err(ObjectWalk::State);
+    }
+    let read = crate::native_world_glue::ReadMemory(mem);
+    let flags = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).map_err(|_| ObjectWalk::Inputs)?;
+    let stencil_during_draw = flags & 0x00ff_ff00 == 0;
+    if !stencil_during_draw {
+        // The handler temporarily applies stencil mode 0 and leaves
+        // mode 1. Skipping it is state-neutral only if it already holds 1.
+        if mem.u16(SCENE_STENCIL_MODE) != Ok(1) || device.stencil_state(&read) != Some(scene_stencil()) {
+            return Err(ObjectWalk::State);
+        }
+        entry.states.0.retain(|(r, _)| *r != R::StencilEnable);
+        entry.states.0.push((R::StencilEnable, 0));
+    }
+    let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
+    let table = gfx::xdk::RenderStateTable::default();
+    let device_state = |slot| device.render_state(&read, slot);
+    let raw = |state| table.canonical_to_guest(state).and_then(device_state);
+    let specular = raw(SPECULAR_ENABLE);
+    if device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) != Some(0)
+        || raw(TWO_SIDED_LIGHTING) != Some(0)
+        || raw(R::ShadeMode.index()) != Some(gfx::state::ShadeMode::Gouraud.xbox_value())
+    {
+        return Err(ObjectWalk::State);
+    }
+    let cached = mem.u32(CACHED_IMPLEMENTATION).map_err(|_| ObjectWalk::State)?;
+    let mut checked_transition = false;
+    let index = models.index.try_lock().map_err(|_| ObjectWalk::Model)?;
+    let coverage = models.coverage.try_lock().map_err(|_| ObjectWalk::Model)?;
+    let lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
+    let lit = lit.as_ref().ok_or(ObjectWalk::Model)?;
+    let guest = Ro(mem);
+    let mut objects = HashMap::new();
+    let mut draws = Vec::with_capacity(run.len());
+    for &item in run {
+        let (handle, part) = match item {
+            Entry::Excluded => continue,
+            Entry::Object { handle, part: Some(part) } => (handle, part),
+            _ => return Err(ObjectWalk::Unsupported),
+        };
+        let frame = objects.entry(handle)
+            .or_insert_with(|| native_render::objects::read_object(&guest, handle))
+            .as_ref().ok_or(ObjectWalk::Inputs)?;
+        if compare().is_some_and(|c| c.definition == frame.definition as u16) {
+            return Err(ObjectWalk::Unsupported);
+        }
+        let model = *index.get(&(frame.definition as u16)).ok_or(ObjectWalk::Model)?;
+        let cover = coverage.get(&TagId(model)).ok_or(ObjectWalk::Model)?;
+        if model != part.mode || frame.nodes.len() != cover.nodes || !lit.has(model) {
+            return Err(ObjectWalk::Model);
+        }
+        if !cover.ranges.get(&(part.key.section, part.key.part)).is_some_and(|range| range.matches(part)) {
+            return Err(ObjectWalk::Unsupported);
+        }
+        let rows = part.rows(&guest).ok_or(ObjectWalk::Inputs)?;
+        let mut draw = lit.plan_scene(model, frame, &part.key, &rows, &entry.states).map_err(|why| {
+            count_refusal(&why);
+            ObjectWalk::Inputs
+        })?;
+        let pass = lit.planned_pass(model, &draw).ok_or(ObjectWalk::Model)?;
+        if pass.implementation.vertex_shader != Some(TagId(part.vertex_shader))
+            || !stable_render_states(&pass.implementation.render_states, device_state)
+        {
+            return Err(ObjectWalk::State);
+        }
+        if part.program != cached {
+            if !stable_render_states(&pass.implementation.restore_states, device_state)
+                || (!checked_transition && stable_cached_restore(mem, cached, device_state) != Some(true))
+            {
+                return Err(ObjectWalk::State);
+            }
+            checked_transition = true;
+        }
+        let fog = native_render::fog_gpu::FogWords::from_states(&pass.implementation.render_states)
+            .resolve(&fog_words).ok_or(ObjectWalk::Inputs)?;
+        set_fog(&mut draw, fog, specular).ok_or(ObjectWalk::Inputs)?;
+        if draw.texaccum && (!device.samples_levels_in_place()
+            || !native_render::object_nodes::texaccum_bound(&guest))
+        {
+            return Err(ObjectWalk::Inputs);
+        }
+        draws.push((model, draw));
+    }
+    Ok(draws)
+}
+
+fn scene_stencil() -> gfx::state::StencilState {
+    use gfx::state::{CompareFunc, StencilOp, StencilState};
+    StencilState {
+        enable: true, func: CompareFunc::Always, pass: StencilOp::Replace, ..Default::default()
+    }
+}
+
+fn stable_cached_restore(
+    mem: &dyn GuestMemory, implementation: u32, read: impl Fn(u32) -> Option<u32>,
+) -> Option<bool> {
+    let descriptor = mem.u32(CACHED_PASS_DESCRIPTOR).ok()?;
+    if implementation == 0 || descriptor == 0 {
+        return Some(true);
+    }
+    let range = u32::from(mem.u16(implementation.checked_add(IMPLEMENTATION_RESTORE)?).ok()?);
+    let table = mem.u32(descriptor.checked_add(DESCRIPTOR_STATES)?).ok()?;
+    let start = range & 0x1ff;
+    for index in start..start + (range >> 9) {
+        let at = table.checked_add(STATE_SIZE * index)?;
+        let state = u32::from(mem.u8(at).ok()?);
+        if read(state) != Some(mem.u32(at.checked_add(1)?).ok()?) {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+fn stable_render_states(
+    states: &[tags::shader::RenderStateValue], read: impl Fn(u32) -> Option<u32>,
+) -> bool {
+    states.iter().all(|s| read(u32::from(s.state)) == Some(s.value))
 }
 
 /// One view's plan ([`plan_view`]).
@@ -440,11 +627,10 @@ struct ViewPlan {
 /// place (`levels`). A shadow item is planned for the comparison only.
 fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry: &LayerEntry, levels: bool) -> ViewPlan {
     let mut plan = ViewPlan::default();
-    // Locked in `upload_pending`'s order: the index, then the lit parts.
+    // Access the definition lookup before the lit GPU cache.
     let Ok(index) = models.index.try_lock() else { return plan };
     let Ok(lit) = models.lit.try_lock() else { return plan };
     let compared = compare();
-    let admission_states = entry.for_admission();
     for (k, item) in items.iter().enumerate() {
         let o = &objects[item.object];
         let planned = (|| -> Result<(u32, PlannedDraw), String> {
@@ -453,8 +639,7 @@ fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry
             }
             let model = *index.get(&(o.definition as u16)).ok_or("its model is not uploaded")?;
             let lit = lit.as_ref().ok_or("no model is uploaded")?;
-            let states = if item.shadow { &entry.states } else { &admission_states };
-            let d = lit.plan(model, o, &item.key, &item.rows, states)?;
+            let d = lit.plan_scene(model, o, &item.key, &item.rows, &entry.states)?;
             if d.texaccum && !levels {
                 return Err("it samples the texture accumulation target and the device does not sample levels in place".into());
             }
@@ -498,7 +683,18 @@ fn count_refusal(why: &str) {
     }
 }
 
-static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PALETTE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+fn model_palettes_hold<B: d3d::backend::Backend>(
+    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> bool {
+    let used = models.palettes.lock().unwrap_or_else(|e| e.into_inner());
+    let hold = palettes_hold(&used, &|s| device.stage_palette(&crate::native_world_glue::ReadMemory(mem), s));
+    if !hold && !PALETTE_CHANGED.swap(true, Ordering::Relaxed) {
+        eprintln!("native-objects: the stage palette changed since a base map was expanded");
+    }
+    hold
+}
 
 /// Guest memory, read only.
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -516,7 +712,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         return;
     }
     let admission = Arc::new(ObjectAdmission::default());
-    if let Ok(mut device) = device.lock() {
+    if !feature::native_objects::walk_on(&switches) && let Ok(mut device) = device.lock() {
         device.add_draw_admission(admission.clone());
     }
     feature::native_objects::set_host(Arc::new(Glue {
@@ -526,8 +722,8 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     }));
 }
 
-/// The map's worker: opens the map once, then loads each definition sent.
-/// `None` when the thread cannot start (every object stays on D3D).
+/// Visit every object definition in the mounted tag index, including
+/// definitions whose first instance will spawn after activation.
 fn spawn_worker(
     name: String,
     map_generation: u64,
@@ -535,83 +731,82 @@ fn spawn_worker(
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
-) -> Option<mpsc::Sender<u32>> {
-    let (tx, rx) = mpsc::channel::<u32>();
-    std::thread::Builder::new()
-        .name("native-objects load".into())
-        .spawn(move || {
-            let mut opened = match open(&name, palettes, formats) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("native-objects: {name}: map not opened ({e}); the D3D path draws every object");
-                    return;
-                }
-            };
-            // The mounted map's index contains the definitions that the
-            // worker can load, including ones spawned later. The published
-            // set starts empty even on maps with definitions.
-            if !opened.map.tags().iter().any(|tag| tags::object::is_object_group(tag.group)) {
-                native_map_work::map_stage_empty(map_generation, &name, native_map_work::Stage::Objects);
+    upload: impl Fn(&Arc<Models>) + Send + 'static,
+) {
+    let launched = std::thread::Builder::new().name("native-objects load".into()).spawn(move || {
+        let mut opened = match open(&name, palettes, formats) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("native-objects: {name}: map not opened ({e})");
                 return;
             }
-            let (mut loaded, mut refused) = (0u32, 0u32);
-            while let Ok(def) = rx.recv() {
-                if excepted(def) {
+        };
+        let definitions: Vec<TagId> = opened.map.tags().iter()
+            .filter(|tag| tags::object::is_object_group(tag.group))
+            .map(|tag| tag.id)
+            .collect();
+        if definitions.is_empty() {
+            native_map_work::map_stage_empty(map_generation, &name, native_map_work::Stage::Objects);
+            return;
+        }
+        let mut loaded = 0;
+        let mut refused = 0;
+        let mut coverage = HashMap::<TagId, Result<Arc<ModelCoverage>, String>>::new();
+        for definition in definitions {
+            if native_map_work::generation() != map_generation {
+                return;
+            }
+            let result = (|| -> Result<_, String> {
+                if excepted(definition.0) {
+                    return Err("H2_NATIVE_OBJECTS_EXCEPT".into());
+                }
+                let model = opened.ctx.resolve_object(definition).map_err(|e| e.to_string())?
+                    .model.ok_or("the object has no model")?;
+                let mode = model.render_model.as_ref().ok_or("the model has no render model")?.id;
+                let native = coverage.entry(mode).or_insert_with(|| {
+                    let (cpu, cover) = load_model(&mut opened, mode).map_err(|e| e.to_string())?;
+                    let cover = Arc::new(cover);
+                    models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
+                    models.coverage.lock().unwrap_or_else(|e| e.into_inner()).insert(mode, Arc::clone(&cover));
+                    models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
+                    upload(&models);
+                    Ok(cover)
+                }).as_ref().map_err(Clone::clone)?;
+                if model.node_count as usize != native.nodes {
+                    return Err("model and render model disagree on the node count".into());
+                }
+                Ok((mode, Arc::clone(native)))
+            })();
+            match result {
+                Ok((mode, native)) => {
+                    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let Some(s) = state.as_mut().filter(|s| {
+                        publishes_to(s, &models) && s.map_generation == native_map_work::generation()
+                    }) else { return };
+                    let index = definition.0 as u16;
+                    models.index.lock().unwrap_or_else(|e| e.into_inner()).insert(index, mode.0);
+                    let set = Arc::make_mut(&mut s.set);
+                    set.definitions.insert(index, native.nodes);
+                    set.parts.extend(native.parts.iter().map(|&((section, part), p)| ((index, section, part), p)));
+                    if compare().is_some_and(|c| c.definition == index) {
+                        set.shadowed.insert(index);
+                    }
+                    loaded += 1;
+                }
+                Err(why) => {
                     refused += 1;
                     if refused == 1 || feature::native_verbose() {
-                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
-                    }
-                    continue;
-                }
-                let t0 = std::time::Instant::now();
-                let result = load_model(&mut opened, def);
-                // Before the model is queued: a pass that draws it checks
-                // the palettes its base maps went through.
-                models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
-                match result {
-                    Ok(cpu) => {
-                        let nodes = cpu.model.inverse_binds.len();
-                        let draws = cpu.model.draws.len();
-                        let lit = cpu.lit.parts.len();
-                        let parts = set_parts(&cpu.lit);
-                        models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                        // Published after the model is queued, and only to
-                        // the load this worker serves (its `Models`): a
-                        // worker of an earlier load of the same map (A, B,
-                        // A again) publishes nothing.
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| {
-                            publishes_to(s, &models) && s.map_generation == native_map_work::generation()
-                        }) else { return };
-                        let mut set = (*s.set).clone();
-                        set.definitions.insert(def as u16, nodes);
-                        set.parts.extend(parts.into_iter().map(|((section, part), p)| ((def as u16, section, part), p)));
-                        if compare().is_some_and(|c| c.definition == def as u16) {
-                            set.shadowed.insert(def as u16);
-                        }
-                        s.set = Arc::new(set);
-                        // No lock held across the print.
-                        drop(st);
-                        loaded += 1;
-                        if feature::native_verbose() {
-                            eprintln!(
-                                "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
-                                t0.elapsed().as_secs_f32() * 1000.0
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        refused += 1;
-                        if refused == 1 || feature::native_verbose() {
-                            eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
-                        }
+                        eprintln!("native-objects: {name}: definition {:#010x} left to D3D ({why})", definition.0);
                     }
                 }
             }
-            eprintln!("native-objects: {name}: {loaded} models native, {refused} left to the D3D path");
-        })
-        .ok()?;
-    Some(tx)
+        }
+        eprintln!("native-objects: {name}: {loaded} definitions ready, {refused} left to D3D");
+        upload(&models);
+    });
+    if let Err(e) = launched {
+        eprintln!("native-objects: could not start map loader ({e})");
+    }
 }
 
 /// The map open for model loads.
@@ -652,16 +847,6 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
     })
 }
 
-/// The map's tag whose index is the datum's low word (the guest's datum
-/// and the map's agree on the index; the salt is not relied on).
-fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
-    if let Ok(t) = map.tag(TagId(datum)) {
-        return Some(t.id);
-    }
-    map.tags().iter().find(|t| t.id.0 & 0xffff == datum & 0xffff).map(|t| t.id)
-}
-
-/// `shader` resolved, through the map's shader library (read once).
 fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
     if o.lib.is_none() {
         let lib = tags::material::ShaderLibrary::read(&mut o.map);
@@ -684,54 +869,38 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     native_render::object_program::program_refusal(&m)
 }
 
-/// Prepares a definition's supported layer-3 programs and geometry.
-fn load_model(o: &mut Opened, def: u32) -> Result<CpuModel, load::Error> {
-    let id = tag_of(&o.map, def).ok_or("no such tag")?;
-    let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
-    // Every opaque material through its own programs, or left to D3D: the
-    // base-map stand-in is not used for opaque parts (it is neither the
-    // game's shading nor, for an animated object, the pose its records'
-    // rows give: the scarab of 03a's intro).
-    let base_maps = HashMap::new();
-    let mut unlit = Vec::new();
-    let mut lit_materials = HashMap::new();
-    for m in loaded.model.materials() {
-        let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
-        if let Some(why) = program_refusal(o, shader) {
-            unlit.push(format!("{:#010x} {why}", shader.0));
-            continue;
-        }
-        match lit_material(o, shader) {
-            Ok(lit) => {
-                lit_materials.insert(m, lit);
-            }
-            Err(why) => unlit.push(format!("{:#010x} {why}", shader.0)),
+/// Compile all sections, including runtime-selected damage variants,
+/// permutations and LODs. The live render record selects the section.
+fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), load::Error> {
+    let geo = RenderModelGeometry::read_in(&mut o.map, mode, &mut o.raw, Some(&o.ctx.meta))?;
+    let mut materials = HashMap::new();
+    for (index, m) in geo.materials.iter().enumerate() {
+        if program_refusal(o, m.shader.id).is_none()
+            && let Ok(lit) = lit_material(o, m.shader.id)
+        {
+            materials.insert(index as u16, lit);
         }
     }
-    let lit = if lit_materials.is_empty() {
-        LitModelInput::default()
-    } else {
-        let LitBuild { input, refused, .. } = lit_parts(o, &loaded, &lit_materials);
-        for (m, why) in refused {
-            unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
-        }
-        input
-    };
-    let model = keep_materials(loaded.model, &base_maps);
-    if model.draws.is_empty() && lit.is_empty() {
-        if !unlit.is_empty() {
-            return Err(format!("its lit materials stay on D3D: {}", unlit.join(", ")).into());
-        }
-        return Err("no material with a base map".into());
+    let LitBuild { input: lit, refused, .. } = lit_parts(o, &geo, &materials);
+    if lit.is_empty() {
+        let why = refused.into_iter().map(|(_, reason)| reason).collect::<Vec<_>>().join(", ");
+        return Err(format!("no supported layer-3 parts ({why})").into());
     }
-
-    Ok(CpuModel {
-        definition: def,
-        model,
-        base_maps,
-        normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
-        lit,
-    })
+    let parts = set_parts(&lit);
+    let ranges = parts.iter().filter_map(|&((section, part), _)| {
+        let section_data = geo.sections.get(section as usize)?;
+        let p = section_data.geometry.parts.get(part as usize)?;
+        Some(((section, part), PartRange {
+            geometry_class: section_data.wire.geometry_classification.0,
+            node_influences: section_data.wire.unknown_014,
+            first: p.first_index,
+            count: p.index_count,
+            triangle_list: p.is_triangle_list(),
+        }))
+    }).collect();
+    let cover = ModelCoverage { nodes: geo.nodes.len(), parts, ranges };
+    let cpu = CpuModel { mode, lit, normalization: o.normalization.clone().flatten() };
+    Ok((cpu, cover))
 }
 
 /// What an opaque material's programs draw with: the material and its
@@ -761,12 +930,10 @@ const SHADER_VALUES: u32 = 0x44;
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
-fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
-    let geo = &loaded.geometry;
+fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
     let mut sections = Vec::new();
     // Every detail level: a distant object's records draw a lower one.
-    for &si in &loaded.lod_sections {
-        let Some(s) = geo.sections.get(si) else { continue };
+    for (si, s) in geo.sections.iter().enumerate() {
         let flags = s.wire.compression_flags.0;
         let bounds = geo.compression.as_ref();
         let compression = Compression {
@@ -790,7 +957,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .map(|(k, p)| (k as u8, p.material, g.part_triangles(p)))
                 .collect(),
         });
@@ -916,14 +1083,6 @@ fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
         .collect()
 }
 
-/// Keeps the model's opaque draws for supported base maps. Sorted
-/// transparent draws are handled at the indexed-draw boundary.
-fn keep_materials(mut model: Model, native: &HashMap<u16, Image>) -> Model {
-    model.draws.retain(|d| native.contains_key(&d.material));
-    model.transparents.clear();
-    model
-}
-
 /// One view's objects: the draws planned at the hook, in the list's order.
 struct ObjectsPass {
     models: Arc<Models>,
@@ -946,10 +1105,13 @@ struct ObjectsPass {
     /// of an object nearer than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
     fallback: Option<Arc<d3d::ResolvedDraw>>,
+    walk: bool,
     run: u64,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn batch_key(&self) -> Option<u64> { self.walk.then_some(self.run) }
+
     fn uses_validated_resources(&self) -> bool { self.fallback.is_some() }
 
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
@@ -973,12 +1135,17 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
-        if self.fallback.is_none() {
+        if self.fallback.is_none() && !self.walk {
             return d3d::ExternalWrites::default();
         }
         d3d::ExternalWrites {
             color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
-            depth_stencil: self.draws.iter().any(|(_, d)| d.state.depth_write),
+            depth_stencil: self.draws.iter().any(|(_, d)| {
+                use gfx::state::StencilOp;
+                let stencil = d.state.stencil;
+                d.state.depth_write || (stencil.enable && stencil.write_mask != 0
+                    && [stencil.fail, stencil.depth_fail, stencil.pass].iter().any(|&op| op != StencilOp::Keep))
+            }),
         }
     }
 
@@ -1258,7 +1425,6 @@ fn guest_texels(texels: (u32, u32), guest: (u32, u32), size: (u32, u32)) -> (u32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use native_render::model::{ModelDraw, NodeMatrix};
 
     /// The lit parts are W-buffered programs as the world's: they clip w
     /// to the range the device draws the layer with, not from 0, or an
@@ -1299,6 +1465,7 @@ mod tests {
             view: None,
             w_clip: None,
             fallback: None,
+            walk: false,
             run: 0,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
@@ -1351,35 +1518,12 @@ mod tests {
         assert_eq!(guest_texels((320, 240), (640, 480), (1280, 960)), (160, 120), "a smaller level, scaled");
     }
 
-    #[test]
-    fn materials_left_to_the_d3d_path_leave_the_model() {
-        let draw = |material, first_index| ModelDraw {
-            material,
-            first_index,
-            index_count: 3,
-        };
-        let model = Model {
-            draws: vec![draw(0, 0), draw(1, 3), draw(1, 6), draw(2, 9)],
-            transparents: vec![draw(3, 12), draw(4, 15)],
-            inverse_binds: vec![NodeMatrix::IDENTITY],
-            ..Model::default()
-        };
-        let native: HashMap<u16, Image> = [(1, Image::solid([1; 4])), (2, Image::solid([1; 4]))].into_iter().collect();
-        let m = keep_materials(model, &native);
-        assert_eq!(m.draws.iter().map(|d| (d.material, d.first_index)).collect::<Vec<_>>(), vec![(1, 3), (1, 6), (2, 9)]);
-        assert_eq!(m.materials(), vec![1, 2]);
-        assert!(m.transparents.is_empty());
-    }
-
     fn map_state(name: &str, generation: u64, models: &Arc<Models>) -> MapState {
         MapState {
-            key: (name.to_owned(), 0x800e_6010, 0),
             map_generation: 0,
             generation,
             models: Arc::clone(models),
             set: Arc::new(NativeSet { map: name.to_owned(), generation, ..NativeSet::default() }),
-            tried: HashSet::new(),
-            worker: None,
         }
     }
 
@@ -1417,30 +1561,33 @@ mod tests {
     }
 
     #[test]
-    fn ordered_object_planning_defers_only_inherited_fog() {
-        use gfx::state::{CompareFunc, CullMode, DepthBufferMode, FillMode, FrontFace, RenderStateType as R};
-        use native_render::object_state::resolve;
+    fn sorted_walk_only_skips_render_states_that_are_already_live() {
+        use tags::shader::RenderStateValue;
+        let states = [
+            RenderStateValue { state: 11, value: 13 },
+            RenderStateValue { state: 19, value: 20 },
+        ];
+        assert!(stable_render_states(&states, |slot| match slot {
+            11 => Some(13), 19 => Some(20), _ => None,
+        }));
+        assert!(!stable_render_states(&states, |slot| (slot == 11).then_some(13)));
+        assert!(!stable_render_states(&states, |slot| (slot == 19).then_some(20)));
+        assert!(!stable_render_states(&states, |_| Some(12)));
+    }
 
-        let entry = LayerEntry {
-            states: EntryStates::read(|state| Some(match state {
-                R::ZEnable => DepthBufferMode::W.xbox_value(),
-                R::ZFunc => CompareFunc::LessEqual.xbox_value(),
-                R::ColorWriteEnable => 0x0101_0101,
-                R::CullMode => CullMode::Cw.xbox_value(),
-                R::FrontFace => FrontFace::Cw.xbox_value(),
-                R::FillMode | R::BackFillMode => FillMode::Solid.xbox_value(),
-                R::FogEnable => 1,
-                _ => 0,
-            })),
-            w_buffered: true,
-        };
-        assert_eq!(resolve(&[], &entry.states, None), Err("fog is on (FOGENABLE)".into()));
-        let admission = entry.for_admission();
-        assert!(resolve(&[], &admission, None).is_ok());
-        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-        let slot = table.canonical_to_guest(R::FogEnable.index()).unwrap() as u8;
-        let own = tags::shader::RenderStateValue { state: slot, value: 1 };
-        assert_eq!(resolve(&[own], &admission, None), Err("fog is on (FOGENABLE)".into()));
+    #[test]
+    fn object_walk_supplies_fog_and_specular_for_the_implicit_combiner() {
+        let mut words = [1, 3, 10.0f32.to_bits(), 30.0f32.to_bits(), 0, 0, 0xff12_3456];
+        let (fog, color) = object_fog(words, true, Some(1)).unwrap();
+        assert_eq!(shaders::psh::fog::factor_from_uniform(fog, 25.0), 0.25);
+        assert_eq!(fog[3], 1.0);
+        assert_eq!(color, shaders::psh::argb(words[6]));
+        words[0] = 0;
+        let (fog, _) = object_fog(words, true, Some(0)).unwrap();
+        assert_eq!(shaders::psh::fog::factor_from_uniform(fog, 25.0), 1.0);
+        assert_eq!(fog[3], 0.0);
+        assert!(object_fog(words, true, None).is_none());
+        assert!(object_fog(words, false, None).is_some());
     }
 
     /// Every item the plan cannot resolve is refused, with why, before the

@@ -71,6 +71,7 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
+pub mod object_walk;
 pub mod objects;
 pub mod particles;
 #[cfg(feature = "gpu")]

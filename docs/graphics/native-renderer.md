@@ -1079,6 +1079,97 @@ resident per render-model tag, loaded once per map; each frame the CPU
 hands over only the drawn objects' node matrices, read from the game's own
 computed transforms in guest memory. Skinning runs in the vertex shader.
 
+### Native scene object walk
+
+`impl.render.native_object_walk` defaults to on with the native renderer
+and the objects stage. Turning it off selects the resolved layer-3 draw
+path described below. `impl.render.native=off` disables the walk even
+with an explicit walk override.
+
+The walk covers the third-person base-layer call to `LAYER_DRAW`
+(return `0x0002bed5`). It reads the private sorted entries at the first
+`LIGHT_GEOMETRY_DRAW` (`0x0004d0b0`) reached from `LAYER_ENTRIES`
+(return `0x0003bc90`, or the layer port's authenticated continuation).
+The guest has selected visibility, objects, regions, permutations, LODs
+and shader implementations. The draw handler has yet to upload the
+mesh streams and node rows, evaluate shader parameters, set render
+state, or issue any D3D draw for that part.
+
+The stack holds the remaining entry count at handler ESP + `0x28`, with
+the array immediately after it. The entry contains its item index, the
+selected implementation byte at `+4`, vertex classification at `+8` and
+implementation pointer at `+0x10`. The dispatcher's exclusion is the vertex shader datum at
+implementation `+0x100` equal to `-1`. The item supplies the render
+record index and the part. The record supplies the model datum and the
+chosen section, including its permutation and LOD. The live section count
+and block are at model `+0x24` and `+0x28`. The draw reads the section's
+geometry through `+0x34` and uses a `0x48`-byte part element. The walk
+checks the resulting index offset, count and topology against the uploaded
+part. It uses the record's node rows and the owner's live pose and lighting
+cache. The render target provides the view constants and W clip.
+
+A native run contains every live layer-3 dispatch of each object it
+covers. It may include parts interleaved with other eligible objects or
+slots the dispatcher excludes. An intervening guest draw, an earlier
+part, a special handler or an unsupported part can make the whole span
+run on the guest. The host checks the material and vertex program,
+render-state writes and restore lists, view and clip, buffer ranges,
+textures, and current map generation. The layer's first shader begin
+runs on the guest because it initializes the shader and texture caches.
+A pass transition is eligible when its render-state changes are
+already reflected in the live state.
+
+Fog uses the D3D fog mode, start, end, density and colour from the device
+and the implementation. The vertex program supplies `oFog`. An implicit
+final combiner uses the fog factor and D3D's specular-enable bit, with
+normal alpha semantics. The walk handles the scene's zero-reference
+stencil state and its temporary stencil-off bracket when mode 1 is
+already set. Draws outside those conditions use the original handler.
+
+After every required target copy records the whole run, the hook adjusts
+ESI and the saved loop count and returns with the handler's normal stack
+cleanup. The guest loop advances to the next entry in its original order.
+If planning or reservation fails, the cursor stays put and the original
+handler runs. Visibility and `OBJECT_RENDER_SETUP` still produce the
+records and palettes consumed by the walk, lights, shadows and later
+passes. The savings come from skipping `0x0004d0b0` and its per-part
+shader and geometry preparation, including `0x0001bbf0` and
+`0x00016b90`, for committed runs.
+
+The activation hook starts an eager scan of the mounted map's object
+definitions. The worker decodes each distinct render model once,
+including all its sections, and queues its GPU upload during the load.
+A later spawn uses the same resident model. A scene that arrives before
+its models or bindings are ready draws those objects on the guest.
+A map activation or snapshot reload changes the generation, so work for
+a previous load cannot suppress any of the new load's draws.
+
+#### Frame stats and gameplay A/B
+
+The `native_objects_walk_native` and `native_objects_walk_fallback`
+columns count objects per view. Fallback reason columns have the same
+prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
+or `reservation`. `walk_unreadable` counts views whose sorted list or
+ownership could not be established. These views may have an unknown
+object count.
+
+Use the same 03a Old Mombasa firefight with at least six visible enemies,
+the same camera, input and render scale, and a warmed map load for both
+captures. Keep the other render switches fixed.
+
+- A uses `H2_FEATURES=render-timing,impl.render.native_object_walk=off`.
+- B uses `H2_FEATURES=render-timing,impl.render.native_object_walk=on`.
+
+Enable `H2_FRAME_STATS=1` for both. Collect the same window with
+`profile.capture` through the [agent API](../runtime/agent-api.md), or
+stream it with `H2_FRAME_STATS_CSV`. Compare the `render` and `d3d`
+phases, layer-3 and shader-begin time, object walk counters, and the same
+view's images. Check biped animation, held weapons and vehicles through
+fog, and the depth, stencil and draw order against the original path.
+A third capture with `impl.render.native=off` supplies the all-D3D
+reference. For the legacy object part probe and uniform comparison use
+`impl.render.native_object_walk=off`.
+
 ### Research points (Code unless marked; `h2 disasm`)
 
 | Point | What |
@@ -1100,9 +1191,13 @@ computed transforms in guest memory. Skinning runs in the vertex shader.
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
 | `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
 
-### Skip point
+### Resolved-draw path with the walk disabled
 
-The same layer-draw observers as the world (`LAYER_DRAW`, an opaque
+With the walk off, the layer observer plans items before the layer draw
+and pairs them with their eventual indexed D3D submissions. Guest shader
+and geometry preparation runs in this mode.
+
+The original mask design used the same layer-draw observers as the world (`LAYER_DRAW`, an opaque
 point), under the same plan rules: **before** the layer draw, when the
 current layer is 3 and the caller is the base layers' call (`[esp] ==
 0x0002bed5`), walk the current list; an item is an object item when its
