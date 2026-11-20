@@ -1255,8 +1255,11 @@ fn check_authored_automatic_destinations(
             let encounter = &ai.encounters[usize::from(group)];
             let source = &encounter.squads[usize::from(squad)];
             let name: String = format!("{}/{}", encounter.name, source.name).chars().take(31).collect();
+            // A squad's zone is its encounter's. Its parent group is not:
+            // the platoons the scripts name are groups of their own, placed
+            // among the encounters' (`h1ai::convert::Options::platoon_groups`).
             let index = native.squads.iter().enumerate().find(|(index, dest)| {
-                dest.parent == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
+                dest.initial_zone == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
             }).unwrap_or_else(|| panic!("missing native b40 destination {name}")).0;
             named.insert(index);
             expanded += usize::from(index >= 344);
@@ -2827,7 +2830,17 @@ fn campaign_hud_text_and_builtins_round_trip() {
         assert_eq!(word(&root, at), GROUP.as_u32());
         let hud = map.read_tag_bytes(TagId(word(&root, at + 4))).unwrap();
         assert_eq!(word(&hud, MARKER_AT as usize), MARKER);
-        assert_eq!(word(&hud, 0x10) as usize, source.messages.len());
+        // The messages block holds the level's own messages (the scripts'
+        // indices), then its help list and the shared event templates, each
+        // a range named at SCENARIO_HELP and SHARED_MESSAGES
+        // (`h1text::hud::rebuild`).
+        let half = |b: &[u8], at: u32| {
+            usize::from(u16::from_le_bytes([b[at as usize], b[at as usize + 1]]))
+        };
+        let (help, shared) = (h1text::hud::SCENARIO_HELP, h1text::hud::SHARED_MESSAGES);
+        assert_eq!(half(&hud, help), source.messages.len());
+        assert_eq!(half(&hud, shared), half(&hud, help) + half(&hud, help + 2));
+        assert_eq!(word(&hud, 0x10) as usize, half(&hud, shared) + half(&hud, shared + 2));
 
         let locales = Localization::read(&mut map).unwrap();
         for language in Language::ALL {
@@ -2929,6 +2942,14 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
         )
         .unwrap();
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        // Built from scratch, identical blocks are shared between tags
+        // (`tags::repo::build` share keys), so a character's general and
+        // weapon arrays may sit in another tag's bytes: read them through
+        // the whole metadata.
+        let space = m.metadata_space().unwrap();
+        let meta = m
+            .read_file_range(space.file_offset, u64::from(space.size))
+            .unwrap();
         let scenario = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scenario.id).unwrap();
         let read = h1ai::h2::ScenarioAi::read(&tags::geometry::TagView::new(
@@ -2960,15 +2981,19 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 c.location.unwrap().address,
             ))
             .unwrap();
-            assert_eq!(decoded.kind, Some(kind));
+            let mview = tags::geometry::TagView::new(&meta, space.virtual_base);
+            let general = mview.block(&bytes, 0x34, 0xc).unwrap();
+            let actor_type = general
+                .first()
+                .map(|g| u16::from_le_bytes([g[4], g[5]]));
+            assert_eq!(actor_type, Some(kind));
             if !v.major_variant.id.is_none() {
                 assert_eq!(
                     m.tag(decoded.major).unwrap().name.as_deref(),
                     Some(h1.tag(v.major_variant.id).unwrap().name.as_str())
                 );
             }
-            let cview = tags::geometry::TagView::new(&bytes, c.location.unwrap().address);
-            let weapons = cview.block(&bytes, 0xcc, 0xcc).unwrap();
+            let weapons = mview.block(&bytes, 0xcc, 0xcc).unwrap();
             if v.weapon.id.is_none() {
                 assert!(weapons.is_empty());
             } else {

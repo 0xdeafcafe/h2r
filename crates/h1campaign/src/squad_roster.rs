@@ -133,10 +133,17 @@ pub(crate) fn prepare(
     requests: &[h1ai::control::Request],
     options: &mut h1ai::convert::Options,
     followed: Option<&std::collections::BTreeSet<u16>>,
+    scripted: bool,
 ) -> HashSet<usize> {
-    let mut uses = Uses::read(tables);
+    // Without converted scripts nothing names or places a squad, and the
+    // automatic migration orders (installed with the scripts' subjects) are
+    // not written. Keeping those squads would only fill the native pool:
+    // a50 has 485 squads that way, past its 384 slots.
+    let mut uses = if scripted { Uses::read(tables) } else { Uses::default() };
     let mut maneuver = h1ai::control::maneuver_targets(src, requests);
-    maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
+    if scripted {
+        maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
+    }
     let destinations: HashSet<u32> = requests.iter()
         .filter(|r| r.operation == h1ai::control::Operation::Migrate)
         .filter_map(|r| r.target)

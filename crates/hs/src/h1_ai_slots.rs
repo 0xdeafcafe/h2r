@@ -267,7 +267,11 @@ impl Operation {
             Self::FreeUnits => &[OBJECT_LIST],
             Self::MigrateUnits => &[OBJECT_LIST, AI],
             Self::MigrateSpeak => &[AI, AI, STRING],
-            Self::Maneuver | Self::PlatoonTick => &[STRING],
+            Self::Maneuver => &[STRING],
+            // The platoon table's offset in the scenario's script strings.
+            // The table outgrows a script token (`scenario::MAX_TOKEN_BYTES`:
+            // b40's), so it is data the runtime reads, never a string value.
+            Self::PlatoonTick => &[LONG],
             Self::SetManeuver => &[STRING, BOOLEAN],
             Self::VehicleEncounter | Self::VehicleActors => &[UNIT, AI, LONG],
             Self::VehicleDistance => &[UNIT, REAL, LONG],

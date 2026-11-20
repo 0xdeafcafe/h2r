@@ -754,7 +754,11 @@ impl Compiler<'_> {
         {
             return Err(invalid(format!("script name collision: {name}")));
         }
-        let argument = self.control_string(&format!("{:04x}{rules}", rules.len()));
+        // Metadata in the script string section, as the follow geometry:
+        // the VM evaluates its integer offset, never the table as a token,
+        // which b40's would outgrow (`hs::scenario::MAX_TOKEN_BYTES`).
+        let offset = self.intern(format!("{:04x}{rules}", rules.len()).as_bytes());
+        let argument = self.number(h2t::LONG, offset as i32);
         let root =
             self.runtime_control_call(RuntimeOperation::PlatoonTick, &[argument], h2t::VOID)?;
         self.out.scripts.push(definition(
