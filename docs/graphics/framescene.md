@@ -894,7 +894,9 @@ to the guest's draws (**Code**):
   block. The additional casters' layers 10 and 11 are groups of their
   own site (`GroupSite::AdditionalCasters`), and each object shadow's
   layers 10 and 11 groups of its `ObjectShadow` in the view
-  (`GroupSite::ObjectShadow`). What the handler does
+  (`GroupSite::ObjectShadow`). The summary hash
+  (`frame_scene::summary_hash`) covers the groups, their entries and the
+  object shadows. What the handler does
   beyond binding and drawing (the auxiliary state toggle, state around
   one part, visible subparts, a shader flag, a material animation, a
   template callback) leaves the entry to the guest by named cause.
