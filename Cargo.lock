@@ -53,8 +53,8 @@ dependencies = [
  "agent-proto",
  "debug-menu",
  "engine",
- "feature",
  "guest-layout",
+ "hooks",
  "hot-render",
  "hot-tags",
  "input",
@@ -649,7 +649,6 @@ dependencies = [
  "dsound",
  "emit",
  "engine",
- "feature",
  "film",
  "font",
  "frame-scene",
@@ -658,6 +657,7 @@ dependencies = [
  "h1map",
  "h1scripts",
  "h1text",
+ "hooks",
  "hot-render",
  "hot-tags",
  "hs",
@@ -1986,21 +1986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "feature"
-version = "0.1.0"
-dependencies = [
- "engine",
- "frame-scene",
- "lifted",
- "native-render",
- "runtime",
- "runtime-test-probe",
- "scene-extract",
- "tags",
- "timeline",
-]
-
-[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2784,6 +2769,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hooks"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "frame-scene",
+ "lifted",
+ "native-render",
+ "runtime",
+ "runtime-test-probe",
+ "scene-extract",
+ "tags",
+ "timeline",
 ]
 
 [[package]]
@@ -3648,8 +3648,8 @@ name = "live-telemetry"
 version = "0.1.0"
 dependencies = [
  "engine",
- "feature",
  "guest-layout",
+ "hooks",
  "live-proto",
  "live-server",
  "map",
@@ -3716,7 +3716,7 @@ name = "lockstep"
 version = "0.1.0"
 dependencies = [
  "engine",
- "feature",
+ "hooks",
  "input",
  "runtime",
  "xapi",
