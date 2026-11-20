@@ -4,10 +4,10 @@
 
 use std::ops::Range;
 
-use crate::camera::GuestRead;
-use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE,
+use crate::GuestRead;
+use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE,
     RENDER_RECORDS, RENDER_RECORD_SIZE};
-use crate::world::Owner;
+use frame_scene::Owner;
 
 const RECORD_COUNT: u32 = 0x004c_0b78;
 const RECORD_CAPACITY: u32 = 0x352;
@@ -464,7 +464,7 @@ fn emissions(m: &dyn GuestRead, geometry: u32, part: u32, flags: u32, bitmap: u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::Mem;
 
     const ESP: u32 = 0x1000;
     const SLOT: u32 = 0x1800;

@@ -13,7 +13,7 @@
 //! - Body `+0x114` (`u16` size in bytes) and `+0x116` (`i16` offset from
 //!   the body): the node-matrix block `object_new` `0x000b7b40` reserves at
 //!   `0x000b800b` through `0x000bc380`, `0x34` bytes a node
-//!   ([`crate::model::NodeMatrix`]); `0x000bdf90` reads the root node
+//!   ([`frame_scene::NodeMatrix`]); `0x000bdf90` reads the root node
 //!   through `[body+0x116]`.
 //! - A render record (`0x004ba138 + 0x20 · index`, filled by `0x0002cbf0`)
 //!   does not hold the object handle. Its `+4` is the render model (mode)
@@ -41,11 +41,11 @@
 //!   (`0x004c8740`, `[0x0050943c]` records) under its own camera. It stays on
 //!   D3D ([`FIRST_PERSON_LAYER3_RETURN`]).
 
-use crate::camera::{GuestRead, GuestWrite};
-use crate::model::{NODE_MATRIX_SIZE, NodeMatrix};
-use crate::object_lighting::{Defaults, Lighting};
-use crate::object_nodes::{IMPLEMENTATIONS, RECORD_IMPLEMENTATION, RECORD_KEY, Row, node_rows, record_implementation};
-use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
+use crate::{GuestRead, GuestWrite};
+use frame_scene::{NODE_MATRIX_SIZE, NodeMatrix};
+use crate::layout::object_lighting::{Defaults, DefaultsRead, Lighting, LightingRead};
+use crate::layout::object_nodes::{IMPLEMENTATIONS, RECORD_IMPLEMENTATION, RECORD_KEY, Row, node_rows, record_implementation};
+use crate::layout::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 pub const OBJECTS: u32 = 0x004e_0300;
 const ARRAY_HIGH_WATER: u32 = 0x38;
@@ -161,38 +161,11 @@ fn read_u16(mem: &dyn GuestRead, addr: u32) -> Option<u16> {
     Some(if addr & 2 == 0 { w as u16 } else { (w >> 16) as u16 })
 }
 
-/// One object as the native pass draws it this view.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObjectFrame {
-    pub handle: u32,
-    /// The definition tag datum.
-    pub definition: u32,
-    /// World-space node matrices, in model node order.
-    pub nodes: Vec<NodeMatrix>,
-    /// World bounding sphere: centre, radius.
-    pub sphere: ([f32; 3], f32),
-    /// Its lighting, copied from its render-state cache record
-    /// ([`object_lighting`]); `None` without one.
-    pub lighting: Option<Lighting>,
-    /// The inputs' defaults, read with it; `None` when they do not read.
-    pub defaults: Option<Defaults>,
-}
 
-/// What one layer-3 item draws, as the guest picked it: its render record,
-/// the shader the item names (`+8`), the record key's section (bits 9..17)
-/// and part (bits 0..3, the index into the section's parts), and the
-/// layer-3 implementation the record's `+0` picks
-/// ([`crate::object_nodes::record_implementation`]). The native pass draws
-/// exactly this part with exactly this implementation, or the item keeps
-/// its D3D draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ItemKey {
-    pub record: u16,
-    pub shader: u32,
-    pub section: u16,
-    pub part: u8,
-    pub implementation: usize,
-}
+/// The item key and the object frame are the scene's types
+/// ([`frame_scene::ItemKey`], [`frame_scene::ObjectFrame`]); this module
+/// reads them.
+pub use frame_scene::{ItemKey, ObjectFrame};
 
 /// The key of geometry item `item`, `None` when its record, key or
 /// implementation word does not read.
@@ -223,7 +196,7 @@ pub struct ItemDraw {
 }
 
 /// The node rows render record `record`'s draw uploads at `c[50..]`
-/// ([`crate::object_nodes::node_rows`]); an error when they do not read or
+/// ([`crate::layout::object_nodes::node_rows`]); an error when they do not read or
 /// the draw would upload none (then a program would read another draw's).
 pub fn record_rows(mem: &dyn GuestRead, record: u16) -> Result<Vec<Row>, String> {
     let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
@@ -539,9 +512,9 @@ pub fn keep_items(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: 
 
 /// Sets the bits [`clear_objects`] cleared back.
 pub fn restore(mem: &mut dyn GuestWrite, cleared: &ClearedObjects) {
-    crate::skip::restore(
+    crate::layout::skip::restore(
         mem,
-        &crate::skip::Cleared {
+        &crate::layout::skip::Cleared {
             layer: cleared.layer,
             items: cleared.items.clone(),
         },
@@ -549,84 +522,12 @@ pub fn restore(mem: &mut dyn GuestWrite, cleared: &ClearedObjects) {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::{ARRAY, BODIES, CACHE, CACHE_DATA, HEADERS, Mem, lighting, object, record};
 
-    pub const ARRAY: u32 = 0x0070_0000;
-    pub const HEADERS: u32 = 0x0071_0000;
-    pub const BODIES: u32 = 0x0072_0000;
-    pub const CACHE: u32 = 0x0073_0000;
-    pub const CACHE_DATA: u32 = 0x0074_0000;
     const LIST: u32 = 0x004c_1a48;
     const ITEMS: u32 = 0x0060_0000;
-
-    /// The lighting pointer of render-state cache record `index`.
-    pub fn lighting(index: u32) -> u32 {
-        CACHE_DATA + CACHE_RECORD_SIZE * index + CACHE_LIGHTING
-    }
-
-    /// Makes render-state cache record `index` (salt `0x4000 + index`)
-    /// `owner`'s, and points `body`'s cache handle at it.
-    pub fn cache(m: &mut Mem, index: u32, owner: u32, body: u32) {
-        m.w(RENDER_STATE_CACHE, CACHE);
-        m.w(CACHE + 0x38, 64);
-        m.w(CACHE + 0x44, CACHE_DATA);
-        m.w(CACHE_DATA + CACHE_RECORD_SIZE * index + CACHE_OWNER, owner);
-        m.w(body + BODY_RENDER_STATE, (0x4000 + index) << 16 | index);
-    }
-
-    /// Render record `record`: object geometry of model `0xe100_0000 |
-    /// record` lit by `lighting`, or the BSP's for `None`.
-    pub fn record(m: &mut Mem, record: u32, lighting: Option<u32>) {
-        let at = RENDER_RECORDS + 0x20 * record;
-        // A model record of section 0, part 0, implementation 0.
-        m.w(at + RECORD_KEY, 0x2000_0000);
-        m.w(at + RECORD_IMPLEMENTATION, 0);
-        match lighting {
-            Some(l) => {
-                m.w(at + RECORD_MODEL, 0xe100_0000 | record);
-                m.w(at + RECORD_LIGHTING, l);
-            }
-            None => {
-                m.w(at + RECORD_MODEL, u32::MAX);
-                m.w(at + RECORD_LIGHTING, 0);
-            }
-        }
-    }
-
-    /// Puts object `slot` (salt `0x8000 + slot`) with `nodes` node matrices
-    /// (node `n` translated by `n` along x) and definition `def` in `m`, its
-    /// render-state cache record `slot + 7` (so the two indices differ).
-    pub fn object(m: &mut Mem, slot: u32, def: u32, nodes: u32) -> u32 {
-        m.w(OBJECTS, ARRAY);
-        m.w(ARRAY + 0x38, 64);
-        m.w(ARRAY + 0x44, HEADERS);
-        let salt = 0x8000 + slot;
-        let header = HEADERS + 0xc * slot;
-        let body = BODIES + 0x1000 * slot;
-        m.w(header, salt | 0x0100_0000);
-        m.w(header + 8, body);
-        m.w(body, def);
-        for (k, v) in [1.0f32, 2.0, 3.0, 0.5].into_iter().enumerate() {
-            m.f(body + 0x30 + 4 * k as u32, v);
-        }
-        // Size, then offset 0x200.
-        m.w(body + 0x114, (0x34 * nodes) | (0x200 << 16));
-        for n in 0..nodes {
-            let at = body + 0x200 + 0x34 * n;
-            let w = NodeMatrix {
-                position: [n as f32, 0.0, 0.0],
-                ..NodeMatrix::IDENTITY
-            };
-            for (k, f) in bytemuck::cast_ref::<NodeMatrix, [f32; 13]>(&w).iter().enumerate() {
-                m.f(at + 4 * k as u32, *f);
-            }
-        }
-        let handle = salt << 16 | slot;
-        cache(m, slot + 7, handle, body);
-        handle
-    }
 
     /// Item `i` of render record `record`, lit by `lighting` (`None`: the
     /// BSP's).
@@ -782,11 +683,11 @@ pub(crate) mod tests {
         // A's cache record is 8 (slot 1 + 7): its lighting at +0x44.
         let at = lighting(8);
         assert_eq!(object_lighting(&m, a, BODIES + 0x1000), Some(at));
-        for i in 0..crate::object_lighting::LIGHTING_BYTES / 4 {
+        for i in 0..crate::layout::object_lighting::LIGHTING_BYTES / 4 {
             m.w(at + 4 * i, 0x1000 + i);
         }
-        m.w(crate::object_lighting::DEFAULT_VECTOR, 0x0075_0000);
-        m.w(crate::object_lighting::DEFAULT_COLOUR, 0x0075_0100);
+        m.w(crate::layout::object_lighting::DEFAULT_VECTOR, 0x0075_0000);
+        m.w(crate::layout::object_lighting::DEFAULT_COLOUR, 0x0075_0100);
         for i in 0..3 {
             m.w(0x0075_0004 + 4 * i, 0x2000 + i);
             m.w(0x0075_0100 + 4 * i, 0x3000 + i);
@@ -920,8 +821,8 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod node_row_tests {
     use super::*;
-    use crate::camera::tests::Mem;
-    use crate::object_nodes::{RECORD_MATRIX, RECORD_NODES};
+    use crate::testing::Mem;
+    use crate::layout::object_nodes::{RECORD_MATRIX, RECORD_NODES};
 
     const MATRIX: u32 = 0x0068_0000;
 

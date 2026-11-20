@@ -26,12 +26,14 @@ pub(crate) fn execute(
     if !cpu.valid_abi() {
         return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
     }
-    execute_dispatched(invocation, cpu, ctx, selector)
+    execute_dispatched::<true>(invocation, cpu, ctx, selector)
 }
 
 /// The runner already checked the incoming CPU ABI and latched fault before
 /// routing this transfer. Validate the handler's output in both paths.
-pub(crate) fn execute_dispatched(
+/// Without `DIAG` (the lean runner, runner.rs) coverage is not recorded and
+/// the CPU's ABI header is not checked again; the transfer still is.
+pub(crate) fn execute_dispatched<const DIAG: bool>(
     invocation: Invocation,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
@@ -39,7 +41,7 @@ pub(crate) fn execute_dispatched(
 ) -> TransferAbi {
     let result = match invocation {
         Invocation::Handler(Handler::Native(f) | Handler::NativeAdapter(f)) => {
-            if let Some(coverage) = ctx.runtime().coverage.get() {
+            if DIAG && let Some(coverage) = ctx.runtime().coverage.get() {
                 coverage.record(f, selector);
             }
             Ok(crate::ffi::call_native(f, cpu, ctx, selector))
@@ -59,7 +61,7 @@ pub(crate) fn execute_dispatched(
         Ok(t) => t,
         Err(f) => ctx.fault(cpu.eip, f),
     };
-    if !transfer.valid_abi() || !cpu.valid_abi() {
+    if !transfer.valid_abi() || (DIAG && !cpu.valid_abi()) {
         return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
     }
     if transfer.kind == abi::FAULT && transfer.route == abi::ENTRY && transfer.event_id == 0 {

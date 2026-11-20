@@ -1,0 +1,10 @@
+[package]
+name = "frame-scene"
+description = "FrameScene: the owned, typed snapshot of one rendered frame that the native renderer reads; no guest addresses, no GPU (docs/graphics/framescene.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+serde.workspace = true

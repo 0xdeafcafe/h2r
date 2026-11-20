@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
+use frame_scene::{FrameScene, View};
 use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry, Run, SortedObjects};
 use native_render::objects::{ItemKey, SCENE_LAYER3_RETURN};
@@ -107,11 +108,18 @@ pub trait Host: Send + Sync {
     /// Start the tag-index load on map activation or a snapshot's first view.
     fn preload(&self, _mem: &dyn GuestMemory) {}
 
-    /// Reserve and commit all of a sorted run. `consume` updates the guest
-    /// loop only after all resources and both target copies are ready.
+    /// Reserve and commit all of a sorted run (`run`, the walk's entries
+    /// from slot `first`). `view` is the frame step's open view with the
+    /// scene it is in ([`crate::scene_step`]): the camera, and each
+    /// object's frame and each part's rows, as extraction read them at the
+    /// walk's start; `None` when the view has no camera. `consume` updates
+    /// the guest loop only after all resources and both target copies are
+    /// ready.
     fn draw_walk(
         &self,
         _mem: &mut dyn GuestMemory,
+        _view: Option<(&FrameScene, &View)>,
+        _first: usize,
         _run: &[Entry],
         _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
@@ -166,6 +174,7 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
         ObjectWalk::Unreadable.count(1);
         return;
     };
+    crate::scene_step::objects(&*mem, &entries);
     let decision = object_walk::decide(&entries, current);
     ObjectWalk::Unsupported.fallback(decision.unsupported);
     ObjectWalk::Order.fallback(decision.interleaved);
@@ -210,8 +219,11 @@ fn walk_geometry(c: &mut crate::Call) -> Result<crate::Flow, runtime::GuestFault
                     && mem.u32(esp) == Ok(caller)
                     && mem.set_u32(counter, remaining - skipped).is_ok()
             };
+            let first = run.slots.start;
             let result = host().ok_or(ObjectWalk::Reservation).and_then(|host| {
-                host.draw_walk(&mut *mem, &layer.entries[run.slots], &mut consume)
+                crate::scene_step::with_open(|view| {
+                    host.draw_walk(&mut *mem, view, first, &layer.entries[run.slots], &mut consume)
+                })
             });
             match result {
                 Ok(()) => {
@@ -283,6 +295,7 @@ impl Feature for NativeObjects {
                 begin_walk(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
+            .after_feature(crate::scene_step::ID)
             .after_feature(crate::native_world::ID)
             .context_only();
         b.raw()

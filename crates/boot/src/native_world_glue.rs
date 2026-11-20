@@ -251,7 +251,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+        let camera = &scene_view.camera;
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)

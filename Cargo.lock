@@ -58,14 +58,15 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "input",
- "lifted",
  "live-proto",
  "live-telemetry",
  "map",
+ "png",
  "runtime",
  "serde",
  "serde_json",
  "settings",
+ "sim",
  "snapshot",
  "tags",
  "timeline",
@@ -650,6 +651,7 @@ dependencies = [
  "feature",
  "film",
  "font",
+ "frame-scene",
  "gfx",
  "h1convert",
  "h1map",
@@ -665,7 +667,6 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
- "lifted",
  "live-hle",
  "live-proto",
  "live-telemetry",
@@ -964,6 +965,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "agent",
  "agent-proto",
  "analyze",
  "anyhow",
@@ -1889,6 +1891,7 @@ name = "emit"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "hostfault",
  "iced-x86",
  "ir",
  "libc",
@@ -1912,13 +1915,11 @@ dependencies = [
  "guest-layout",
  "ir",
  "lift",
- "lifted",
  "map",
  "mopp",
  "paste",
  "runtime",
  "sim-anim",
- "sim-collision",
  "sim-core",
  "simd",
  "tags",
@@ -1985,10 +1986,11 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
- "lifted",
+ "frame-scene",
  "native-render",
  "runtime",
  "runtime-test-probe",
+ "scene-extract",
  "tags",
  "timeline",
 ]
@@ -2117,6 +2119,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "frame-scene"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -2796,6 +2806,13 @@ dependencies = [
  "ureq",
  "xiso",
  "zstd",
+]
+
+[[package]]
+name = "hostfault"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3490,20 +3507,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lifted"
-version = "0.1.0"
-dependencies = [
- "analyze",
- "iced-x86",
- "ir",
- "lift",
- "runtime",
- "serde",
- "serde_json",
- "xbe",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3937,11 +3940,13 @@ dependencies = [
  "analyze",
  "bytemuck",
  "d3d",
+ "frame-scene",
  "gfx",
  "ir",
  "lift",
  "map",
  "pollster",
+ "scene-extract",
  "shaders",
  "tags",
  "timeline",
@@ -5661,6 +5666,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scene-extract"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "frame-scene",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5951,18 +5964,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sim-collision"
-version = "0.1.0"
-dependencies = [
- "sim-core",
-]
-
-[[package]]
 name = "sim-core"
 version = "0.1.0"
 dependencies = [
  "simd",
- "x87",
 ]
 
 [[package]]

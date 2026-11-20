@@ -238,12 +238,29 @@ pub(crate) fn install_headless_for_profile(
                 let dir = dir.clone();
                 let mut swaps = 0u64;
                 let mut shadows = 0u64;
+                // The display's frames (`frame-N.png`) are what the agent's
+                // `render.capture` writes: swaps count guest presents as
+                // `d3d_diag` numbers them.
+                let display = suffix.is_empty();
+                if display {
+                    agent::render::CAPTURE.set_writer();
+                }
                 move |ctx: &gfx::GfxContext,
                       store: &gfx::surface::SurfaceStore,
                       id,
                       _flags,
                       _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
+                    if display && let Some(path) = agent::render::CAPTURE.wanted(swaps) {
+                        let r = path
+                            .parent()
+                            .map_or(Ok(()), std::fs::create_dir_all)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|()| save_png(ctx, store, id, &path, false))
+                            .map(drop)
+                            .map_err(|e| e.to_string());
+                        agent::render::CAPTURE.written(swaps, r);
+                    }
                     // An in-between frame's neighbours: this frame after
                     // one now; before one later, from a GPU copy.
                     let around = match between.as_ref().map(|b| (b, b.guest_swap(swaps))) {

@@ -42,6 +42,23 @@
 //! with event 0, and [`ExecCtx::take_preempted`] hands the stashed transfer
 //! back for a later `run_from`. A context that is not armed (a DPC, a test's
 //! runner) ignores [`SLICE`] and [`REQUEST`] and carries on.
+//!
+//! The leave word (docs/runtime/contract-thin-transfers-flat-ram.md,
+//! section 4.2). A direct call between generated handlers may go ahead only
+//! where the runner's safe point would do nothing: today that is two loads,
+//! this word and the runtime's queued-interrupt count. [`IRQ_QUEUED`] folds
+//! the second into the first. Once [`Runtime::enable_leave_word`] has been
+//! called, every context's word has [`IRQ_QUEUED`] set exactly while the
+//! interrupt queue holds anything: it is set and cleared under the queue's
+//! lock, and a word registered later starts with it if the queue is not
+//! empty. Taking the bits never clears it. So "the word is zero" means what
+//! "the word is zero and nothing is queued" meant. It is not a wake reason:
+//! [`ExecCtx::take_preempt`] and both `preempt_pending`s leave it out.
+//!
+//! The runtime sets it only once asked, because generated code built before
+//! it polls loop headers with `word != 0`: such a loop would leave on every
+//! trip while an interrupt for another thread waits. A module whose loop
+//! polls and `h2_fast_movs` mask [`IRQ_QUEUED`] out turns it on.
 
 use crate::{ExecCtx, Runtime, TransferAbi};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -53,6 +70,10 @@ pub const SLICE: u32 = 1;
 pub const INTERRUPT: u32 = 2;
 /// The host asked the running guest thread to give up its slice.
 pub const REQUEST: u32 = 4;
+/// Sticky, not a wake reason: the runtime's interrupt queue is not empty.
+/// Kept only after [`Runtime::enable_leave_word`]; see the module doc.
+/// (8 is kept for `PARK`, contract change slice F2.)
+pub const IRQ_QUEUED: u32 = 16;
 
 /// Accesses per Machine slice by default (`kernel::Machine::preempt_slice`).
 /// A ready thread waits at most this many guest memory accesses of another
@@ -68,11 +89,16 @@ impl PreemptWord {
     fn request(&self, reasons: u32) {
         self.0.fetch_or(reasons, Ordering::Release);
     }
+    fn clear(&self, bits: u32) {
+        self.0.fetch_and(!bits, Ordering::Release);
+    }
+    /// Every bit, [`IRQ_QUEUED`] included: what generated code loads.
     fn pending(&self) -> u32 {
         self.0.load(Ordering::Relaxed)
     }
+    /// Clear the wake bits and return them; [`IRQ_QUEUED`] stays as it is.
     fn take(&self) -> u32 {
-        self.0.swap(0, Ordering::Acquire)
+        self.0.fetch_and(IRQ_QUEUED, Ordering::Acquire) & !IRQ_QUEUED
     }
 }
 
@@ -91,6 +117,17 @@ impl Words {
         for w in words.iter().filter_map(Weak::upgrade) {
             f(&w);
         }
+    }
+    /// Set or clear [`IRQ_QUEUED`] on every word. Called only with the
+    /// interrupt queue's lock held, so the bit follows the queue exactly.
+    pub(crate) fn set_queued(&self, queued: bool) {
+        self.each(|w| {
+            if queued {
+                w.request(IRQ_QUEUED);
+            } else {
+                w.clear(IRQ_QUEUED);
+            }
+        });
     }
 }
 
@@ -113,7 +150,14 @@ unsafe impl Sync for WordPtr {}
 /// it that becomes the context's first field.
 pub(crate) fn new_word(runtime: &Runtime) -> (WordPtr, Arc<PreemptWord>) {
     let word = Arc::new(PreemptWord::default());
+    // Under the queue's lock, so no raise or drain falls between the
+    // registration and the initial IRQ_QUEUED (lock order: queue, words).
+    let queue = runtime.interrupts.lock();
     runtime.words.register(&word);
+    if runtime.interrupts.leave_word() && !queue.is_empty() {
+        word.request(IRQ_QUEUED);
+    }
+    drop(queue);
     (WordPtr(&word.0), word)
 }
 
@@ -135,14 +179,15 @@ impl Runtime {
     /// With [`REQUEST`] an armed context gives up its slice at its next loop
     /// header or transfer.
     pub fn request_preempt(&self, reasons: u32) {
+        let reasons = reasons & !IRQ_QUEUED;
         self.words.each(|w| w.request(reasons));
     }
-    /// The bits set on any live context's word (0 when none), for
-    /// diagnostics.
+    /// The wake bits set on any live context's word (0 when none), for
+    /// diagnostics. [`IRQ_QUEUED`] is not one.
     pub fn preempt_pending(&self) -> u32 {
         let all = AtomicU32::new(0);
         self.words.each(|w| {
-            all.fetch_or(w.pending(), Ordering::Relaxed);
+            all.fetch_or(w.pending() & !IRQ_QUEUED, Ordering::Relaxed);
         });
         all.into_inner()
     }
@@ -186,8 +231,15 @@ impl ExecCtx {
     pub fn charge_accesses(&mut self, accesses: u64) {
         self.spend_accesses(accesses);
     }
-    /// The bits set on this context's own word.
+    /// The wake bits set on this context's own word ([`IRQ_QUEUED`] is not
+    /// one).
     pub fn preempt_pending(&self) -> u32 {
+        self.word.pending() & !IRQ_QUEUED
+    }
+    /// The whole word as generated code loads it, [`IRQ_QUEUED`] included.
+    /// Once the leave word is enabled, zero means a direct call may go
+    /// ahead (`h2_direct_quiet`).
+    pub fn leave_word(&self) -> u32 {
         self.word.pending()
     }
     /// After a run ended in `STOP` with event 0 because this context was
@@ -237,10 +289,10 @@ impl ExecCtx {
     }
     /// First step of the runner's safe point: take this context's wake bits
     /// before the interrupt queue is looked at. One relaxed load while
-    /// nothing is set.
+    /// nothing is set; [`IRQ_QUEUED`] alone is nothing to take and stays.
     #[inline]
     pub(crate) fn take_preempt(&self) -> u32 {
-        if self.word.pending() == 0 {
+        if self.word.pending() & !IRQ_QUEUED == 0 {
             return 0;
         }
         self.word.take()
@@ -248,7 +300,7 @@ impl ExecCtx {
     /// A delivered interrupt pre-empted this safe point: keep the reasons
     /// it did not handle for the next one.
     pub(crate) fn defer_preempt(&self, reasons: u32) {
-        let rest = reasons & !INTERRUPT;
+        let rest = reasons & !(INTERRUPT | IRQ_QUEUED);
         if rest != 0 {
             self.word.request(rest);
         }

@@ -13,6 +13,7 @@
 pub use feature::scene_effect_instruction_entries;
 
 pub mod account_screen;
+mod agent_frames;
 pub mod agent_glue;
 pub mod aim_assist;
 mod campaign_cache;
@@ -127,6 +128,8 @@ pub mod native_world_glue;
 mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 mod opaque_streams;
+#[cfg(feature = "gpu")]
+mod scene_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;

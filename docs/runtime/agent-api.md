@@ -35,6 +35,8 @@ connection to hold `session.claim`.
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -626,6 +628,118 @@ additional display-rate replays reuse the guest frame.
 | `correction_rad` | Largest reconciliation error for this draw in radians (Euclidean length of shortest yaw difference and pitch difference); a pending turn's lead is measured by comparing predicted and confirmed |
 | `update`, `last_send`, `matched_send`, `matched_update` | Last applied update, last sent sequence, and the sequence/update pair most recently matched by quantized aim; null before the event |
 | `pending`, `dropped` | Unmatched sends, and the number superseded or expired since this continuous camera began; identical quantized actions have indistinguishable echoes |
+
+### FrameScene checks: compare, capture, scene, parity, hashes
+
+The checks the native renderer's slices gate on
+([framescene.md](../graphics/framescene.md), sections 9 and 12). Host
+methods; types in `crates/agent-proto/src/render.rs` and
+`crates/agent-proto/src/sim/hashes.rs`, logic in
+`crates/agent/src/compare.rs`, `crates/agent/src/render.rs` and
+`crates/agent/src/sim/hashes.rs`, host glue in boot's `agent_glue`,
+`agent_frames`, `d3d_diag`, `d3d_glue` and `scene_glue`. Tested in
+`crates/agent` over synthetic images, the frame recorder's rig and the
+sim report's tally.
+
+```sh
+h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no game
+h2 agent render.capture '{"tick": 9000}'
+h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
+h2 agent render.scene '{"dump": true}'
+h2 agent sim.hashes '{"from_tick": 3000}'
+h2 agent render.parity '{"arm": true}'
+```
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
+| `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, dump?}` |
+| `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
+| `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
+
+- **`render.compare`.** Reads both files (any PNG colour type, decoded to
+  8-bit RGBA) and compares the colour channels; alpha is not compared
+  (frames are written opaque). `differing` counts pixels with any channel
+  off by more than 2; `max_channel` is the largest difference of one
+  channel; `mean` the mean absolute difference over every channel of
+  every pixel; `first` the first differing pixel in row order, `null`
+  when none. `within_bar` is the parity bar: `max_channel <= 8` and
+  `differing` at most 0.01% of the pixels (one in 10,000). With `diff`,
+  the difference image goes there (directories made): differing pixels
+  in red, brighter the further off; pixels off by 1 or 2 in dark blue;
+  the rest the first image at a quarter brightness. Errors are
+  `INVALID_PARAMS` with `data.error` naming the kind: `size_mismatch`
+  (with `data.a` and `data.b`, each `[w, h]`), `read` or `write` (with
+  `data.path`). The decode runs on the game thread; `h2 agent frame
+  compare A B [--diff D]` runs the same function in the CLI with no
+  socket and exits 1 outside the bar.
+- **`render.capture`.** The frame of game tick `tick` (as `at.tick`
+  counts it; default the next one, at most 240 ahead). On the D3D path
+  the frame of a tick is the present that follows it: the first guest
+  present after the tick has ended. `tick` in the answer is the last tick
+  that ended before that present, which is later than the one asked for
+  when the game ran two ticks in one frame; `present` numbers it as
+  `render.frame` and `H2_BOOT_GFX`'s `frame-N.png` do. Without `pass`,
+  the image is the presented frame at the render scale, the same image
+  `H2_BOOT_GFX` writes as `frame-N.png`, written as
+  `frames/capture-<seq>-tick-<tick>.png` under the cache directory. That
+  needs a run that renders on the GPU with `H2_BOOT_GFX` (use
+  `H2_BOOT_GFX_EVERY=never` to write nothing else); without it the answer
+  is `UNAVAILABLE`, and under `H2_BOOT_GFX_LIGHTING_AB` too. With `pass`,
+  the frame recorder (`render.frame`) is armed at the end of the tick
+  before and reads that pass back at 1x as `render.frame`'s `snap` does
+  (the file is the snapshot's); it replaces a `render.frame` arming not
+  yet done, and one made while it waits makes it answer `INTERRUPTED`. `scene_hash` is the sealed scene's
+  summary hash at that present (from `render.scene`'s source); `null`
+  with no source registered. The answer waits for the
+  frame (up to the agent's 300-tick limit for deferred answers); a
+  paused game holds it. A new `render.capture` replaces one still waiting,
+  which answers `INTERRUPTED`. Unasked, the cost is one relaxed load per
+  tick and per present. Capture does not wait for unresident scene
+  content (framescene.md 9.2).
+- **`render.scene`.** The last sealed `FrameScene`, from the source the
+  frame step registers (`agent::render::set_scene_source`, in boot's
+  `scene_glue` over `feature::scene_step`): whether
+  one has been sealed, its map epoch, frame, tick, summary hash and cut
+  reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
+  cut, its clusters, instances, parts, rows, lights, shadow maps, the
+  instances the guest still draws (`remainder`), and carried ops by slot
+  and by `CameraUse` (empty while no stage carries ops); `counters` (`scene_dropped_*`,
+  `scene_unresident`, `scene_readback`, `scene_held_draws`,
+  `scenes_sealed`, ...). With `dump`, the whole scene is written as JSON
+  under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
+  `dump` names the file. With no source
+  registered: `UNAVAILABLE`, "no scene has been built".
+- **`render.parity`.** A temporary diagnostic, deleted with the D3D
+  backend. `{"arm": true}` makes the next frame step draw the tick twice,
+  the guest's whole front end into the D3D backend's targets and the
+  native path into private ones, and compare them as `render.compare`
+  does; the answer comes at the first tick boundary after the frame step
+  took the arming, with `tick`, the last tick that ended before that
+  frame step. Unarmed, the frame step's check is one relaxed load
+  (`agent::render::parity_armed`, `take_parity_arm`). The two-path draw
+  needs a stage that replaces a whole guest entry (framescene.md
+  slice 4); with no source registered
+  (`agent::render::set_parity_source`), the answer is `UNAVAILABLE`
+  saying so, and nothing is armed. `{"arm": false}` is
+  `INVALID_PARAMS`.
+- **`sim.hashes`.** The running game's post-tick digests in the rows sim
+  mode writes to its report as `state_hashes_v1` (sim.md §6): `tick`,
+  `gameplay` (16 hex digits) and, under `impl.sim.arena-hash`, `arena`
+  (the game-state arena's hash). Boot's `agent-frames` tick observer
+  computes them as sim mode does (the same digest function and the same
+  `impl.sim.metrics-projection` switch) on every tick where the players
+  can be read, on any run with an agent socket, rendered or not. It keeps
+  the last 108,000 rows (an hour of ticks, about 2.6 MB), dropping the
+  oldest (`dropped` counts them); a tick before the last, or more than 30
+  after it (a new map, a snapshot load), starts the series again
+  (`resets`). `from_tick` and `max` pick rows; `truncated` says more
+  matched. Compare two launches row by row:
+
+  ```sh
+  diff <(jq -c '.rows[]' off-hashes.json) <(jq -c '.rows[]' on-hashes.json) | head
+  ```
 
 ## Load timeline
 
@@ -1518,6 +1632,8 @@ tests), `crates/agent/src/trace/tests.rs`, `crates/agent/src/havok.rs` and
   `trace`/`flight` recorder against a running game.
 - `shadow.*` and `scripts/shadow-gate.sh` against the disc: the tests run
   over synthetic code and memory.
+- `render.compare`, `render.capture`, `render.scene`, `render.parity` and
+  `sim.hashes` against a running game.
 - Not provided: effect, projectile and particle counts; per-subsystem
   guest time; owner attribution of frame cost; kernel I/O seeks and cache
   hits in the load timeline; fade detection; a widget-level UI stack and

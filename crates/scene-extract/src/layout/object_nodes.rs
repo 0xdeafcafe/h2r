@@ -1,7 +1,7 @@
 //! The node rows and decompression an object's layer-3 draw uploads as
 //! vertex constants, read from the render record at hook time
 //! (docs/graphics/native-objects.md, "Object programs"). Pure; the
-//! feature's hook copies them into the frame ([`crate::objects`]).
+//! feature's hook copies them into the frame ([`crate::layout::objects`]).
 //!
 //! Research points (Code, `h2 disasm`):
 //!
@@ -36,7 +36,7 @@
 //!   coordinate's (`(su, sv, ou, ov)`), each the identity when the
 //!   section's flag for it is clear.
 
-use crate::camera::GuestRead;
+use crate::GuestRead;
 
 /// The node rows (`c[50]`, hardware numbering).
 pub const MODEL_ROWS: usize = 50;
@@ -87,7 +87,7 @@ pub const POSITION_DECOMPRESSION: usize = 170;
 pub const MAX_PALETTE: usize = (POSITION_DECOMPRESSION - MODEL_ROWS) / 3;
 
 /// One vertex constant register.
-pub type Row = [f32; 4];
+pub use frame_scene::Row;
 
 /// Render target 1's descriptor, the texture accumulation target an
 /// object's layer 3 samples as engine texture 3 (Code: descriptors `0x98`
@@ -210,9 +210,9 @@ pub fn decompression_rows(c: &Compression) -> [Row; 3] {
 
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::{Mem, rows_of};
 
     const RECORD: u32 = 0x0060_0000;
     const MATRIX: u32 = 0x0060_1000;
@@ -232,9 +232,6 @@ pub(crate) mod tests {
         b
     }
 
-    pub(crate) fn rows_of(n: u32) -> Vec<Row> {
-        (0..3).map(|r| std::array::from_fn(|c| (100 * n + 4 * r + c as u32) as f32)).collect()
-    }
 
     fn record(m: &mut Mem, matrix: u32, nodes: u32, key: u32, model: u32) {
         m.w(RECORD + RECORD_MATRIX, matrix);

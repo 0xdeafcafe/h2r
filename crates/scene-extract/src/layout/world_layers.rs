@@ -1,9 +1,9 @@
 //! Guest identifiers shared by opaque-layer preparation and comparison.
 
-use crate::camera::GuestRead;
-use crate::object_nodes::{TEXACCUM_HEADER, TEXACCUM_TARGET, texaccum_bound};
-use crate::objects::{RecordOwner, record_owner};
-use crate::skip::{RENDER_RECORD_SIZE, RENDER_RECORDS};
+use crate::GuestRead;
+use crate::layout::object_nodes::{TEXACCUM_HEADER, TEXACCUM_TARGET, texaccum_bound};
+use crate::layout::objects::{RecordOwner, record_owner};
+use crate::layout::skip::{RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 /// The indexed draw entry used by the normal geometry emitter.
 pub const DRAW_INDEXED_VERTICES: u32 = 0x003f_afa0;
@@ -158,7 +158,7 @@ impl Texaccum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::Mem;
 
     const STACK: u32 = 0x0069_0000;
     const ENTRY: u32 = 0x0069_0100;
@@ -172,7 +172,7 @@ mod tests {
         mem.w(STACK + HANDLER_FRAME + 24, u32::from(record) << 8 | 7);
         mem.w(STACK + HANDLER_FRAME + 28, ENTRY);
         mem.w(ENTRY + 4, 3);
-        crate::objects::tests::record(mem, u32::from(record), None);
+        crate::testing::record(mem, u32::from(record), None);
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
         mem.w(base, flags);
         mem.w(base + 0xc, packed);
@@ -199,9 +199,9 @@ mod tests {
             Geometry::read(&mem, STACK, 1).unwrap().owner,
             Owner::Placement(17)
         );
-        let handle = crate::objects::tests::object(&mut mem, 5, 0xe000_0100, 1);
+        let handle = crate::testing::object(&mut mem, 5, 0xe000_0100, 1);
         draw(&mut mem, 4, 0, 29 << 9);
-        crate::objects::tests::record(&mut mem, 4, Some(crate::objects::tests::lighting(5 + 7)));
+        crate::testing::record(&mut mem, 4, Some(crate::testing::lighting(5 + 7)));
         // The object record helper writes its own key word; restore the section.
         mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE * 4 + 0xc, 29 << 9);
         assert_eq!(

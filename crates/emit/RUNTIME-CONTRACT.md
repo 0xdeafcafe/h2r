@@ -599,6 +599,15 @@ Its semantics:
     `JUMP`/`RESUME` it returned continues the loop. A runtime that never
     sets the word sees no change at all; the test host's `Ctx` has the
     pointer first too.
+  - Bit 16 (`IRQ_QUEUED`) is not a wake reason: once
+    `Runtime::enable_leave_word` is called the runtime keeps it set on
+    every word exactly while the interrupt queue is non-empty, so the word
+    alone says whether the runner's safe point would do anything. Code
+    that polls with `word != 0` would leave a loop on every trip while it
+    is set, so only a module whose loop polls (and `h2_fast_movs`) mask it
+    out may turn it on (contract change slice T2,
+    `docs/runtime/contract-thin-transfers-flat-ram.md`). Until then no
+    runtime sets it.
   - No shim event code is used for this: the exit is an ordinary
     resumable transfer, so it records no event.
 - **Direct calls** (**new**, `H2_DIRECT_CALLS`, module feature 2). A

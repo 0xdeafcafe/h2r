@@ -15,7 +15,9 @@
 //!   on the game's thread, at a tick boundary when the game is ticking.
 //! * [`render`] records one frame's passes and draws for `render.frame`
 //!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
-//!   `render.stats` from what the host registers.
+//!   `render.stats` from what the host registers; `render.capture`
+//!   ([`render::CAPTURE`]), `render.scene` and `render.parity` over what
+//!   the host registers, and `render.compare` ([`compare`]).
 //! * [`hostpads`] answers `input.host`: the host controllers as the input
 //!   layer and the debug menu's gate see them.
 //! * [`menu`] connects the debug menu as an in-process client, and adds
@@ -49,6 +51,7 @@
 pub mod ai;
 mod capture;
 pub mod collision;
+pub mod compare;
 mod exec;
 pub mod havok;
 pub mod hostpads;
