@@ -1206,10 +1206,13 @@ fn cold_counts(accounting: bool, kind: &str, defines: &str) -> [u64; 8] {
 /// it. `--nocapture` prints the table.
 #[test]
 fn cold_accesses_by_cause() {
-    // Baseline without the entry gate or view charging.
+    // Isolate entry-gate and direct-gate savings from the flat emitter's
+    // span preflight, which can acquire the gate before the first access.
+    const PAGED: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n";
+    const FLAT: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 1\n";
     const OFF: &str = "#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 0\n#undef H2_VIEW_CHARGE\n#define H2_VIEW_CHARGE 0\n";
     for accounting in [false, true] {
-        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), OFF);
+        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), &format!("{PAGED}{OFF}"));
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
         // main, then the first call (through the dispatcher: the leaf and
@@ -1219,10 +1222,16 @@ fn cold_accesses_by_cause() {
         assert_eq!(c[1], 39, "{table:?}");
         assert_eq!(c[2], 39, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
+        // The leaf opens with a read and write of [esp+4]. Flat code
+        // tries the gate for that span even when this runtime cannot
+        // supply a flat mapping. Its dispatched entry and all 39 direct
+        // entries avoid a cold call. The 39 caller resumes still need it.
+        let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
+        assert_eq!(flat[..3], [2, 0, 39], "{flat:?}");
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
         // hold before (one in 32 trips, calls and loop headers alike).
-        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), &format!("{OFF}#define H2_DIRECT_GATE 1\n"));
+        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), &format!("{PAGED}{OFF}#define H2_DIRECT_GATE 1\n"));
         let gt: Vec<_> = COLD_CAUSES.iter().zip(g).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting} H2_DIRECT_GATE: {}", gt.join(", "));
         assert_eq!(g[0], c[0], "{gt:?}");
@@ -1236,7 +1245,7 @@ fn cold_accesses_by_cause() {
             let e = cold_counts(
                 accounting,
                 &format!("cold-stats-entry-{}-{accounting}", extra.len()),
-                &format!("#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 1\n#undef H2_VIEW_CHARGE\n{extra}"),
+                &format!("{PAGED}#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 1\n#undef H2_VIEW_CHARGE\n{extra}"),
             );
             let et: Vec<_> = COLD_CAUSES.iter().zip(e).map(|(k, n)| format!("{k} {n}")).collect();
             println!("accounting {accounting} {name}: {}", et.join(", "));
