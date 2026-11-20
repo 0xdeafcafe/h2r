@@ -620,6 +620,8 @@ pub fn install(
         served.extend(crate::campaign_menu::strings());
         let variant_page = crate::variant_page::strings();
         served.extend(variant_page.iter().map(|(i, t)| (*i, t.as_str())));
+        let lobby_options = crate::lobby_options::strings();
+        served.extend(lobby_options.iter().map(|(i, t)| (*i, t.as_str())));
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;

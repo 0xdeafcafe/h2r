@@ -69,6 +69,7 @@ pub mod level_boot;
 pub mod list_class;
 pub mod live_glue;
 pub mod live_notice;
+pub mod lobby_options;
 pub mod loaded_map;
 pub mod lockstep_glue;
 pub mod map_bases;

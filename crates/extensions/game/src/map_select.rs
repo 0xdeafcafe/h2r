@@ -1164,6 +1164,14 @@ pub fn selected_path(id: u32) -> Option<String> {
     crate::map_slots::slot_file(&format!("{}.map", map.path))
 }
 
+/// The category of the selected map, using the catalogue kept at boot
+/// and refreshed as content packages change.
+pub(crate) fn selected_category(id: u32) -> Option<Category> {
+    let cat = PREPARED.get()?.catalogue();
+    let map = cat.all().find(|map| map.id == id)?;
+    Some(map.category())
+}
+
 pub fn prepare(catalogue: Catalogue) -> Arc<Selection> {
     let sel = Arc::new(Selection::new(catalogue));
     let _ = PREPARED.set(Arc::clone(&sel));

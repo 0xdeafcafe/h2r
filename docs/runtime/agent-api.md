@@ -949,7 +949,7 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 
 ## `ui`: what the menus show
 
-Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
+These methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each tick (`boot::ui_watch`): `{screen, window, slot,
@@ -980,6 +980,15 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   campaign dialog from `0x230888`; the picker intercepts it before the
   later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
   `lobby mode campaign` also recognizes the installed picker.
+
+- **`ui.lobby_options`** (`h2 agent ui.lobby_options`, no parameters):
+  `{"lines":[...]}` with the active custom game panel's visible Quick
+  Options lines in display order, up to six. This reads the lobby's text
+  widgets at a game boundary (`crates/extensions/game/src/lobby_options.rs`).
+  It returns `UNAVAILABLE` when the custom game pane is unavailable.
+  Open a pregame custom lobby to read its retail lines and any Clankers,
+  Halo 1 Options and Skulls summaries. After changing the settings,
+  close the dialog and read the panel again.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
