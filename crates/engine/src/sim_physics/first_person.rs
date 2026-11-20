@@ -16,14 +16,12 @@ pub(super) const POSE_SITES:&[u32]=&[0x16767f,0x1676ce,0x1676f5,0x1676fd,
     0x167a42,0x167a64,0x167a9f,0x167acc,0x167af9,0x167b33,0x167b5f,0x167b81,
     0x167bbc,0x167be9,0x167c0c,0x167c32,0x167c6b,0x167c7b,0x167cf8,0x167d53,
     0x167d6c,0x167d97,0x167db1,0x167dee,0x167e04];
-pub(super) const POSE_REST:&[u32]=&[];
 pub(super) const FILTER_SITES:&[u32]=&[0x166dbb,0x166edb,0x166f1e,0x166fcf,
     0x16700c,0x16703b,0x167057,0x1670d0,0x1670dc,0x1670f6,0x167156,0x16716d,
     0x167175,0x167197,0x1671ab,0x1671cd,0x1671e5,0x16724a,0x167279,0x1672a6,
     0x1672b9,0x1672ef,0x167304,0x167314,0x167350,0x16738a,0x16739a,0x1673ab,
     0x1673b4,0x1673ff,0x167424,0x16742c,0x167441,0x1674fe,0x167507,0x16759d,
     0x1675ad,0x1675c3,0x1675d2,0x167607];
-pub(super) const FILTER_REST:&[u32]=&[];
 
 fn frame(c:&mut CpuAbi,g:&mut Guest,locals:u32)->Result<()> {
     push(c,g,c.ebp)?;
@@ -112,7 +110,12 @@ pub(super) fn pose(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
 // MOVSD transfers are ordered if the palette aliases its source. With DF
 // clear and disjoint spans the normal 32-byte node fits in one guest read.
 pub(super) fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bool)->Result<()> {
-    if !backwards && dst.abs_diff(src)>=N as u32 && (src & 4095)+(N as u32)<=4096 && (dst & 4095)+(N as u32)<=4096 {
+    if !backwards
+        && let (Some(a), Some(b)) = (physical_span(g,src,N as u32), physical_span(g,dst,N as u32))
+        && !overlap(&a,&b)
+        && g.check(src,N,runtime::guest::Access::Read,1).is_ok()
+        && g.check(dst,N,runtime::guest::Access::Write,1).is_ok()
+    {
         let b=g.read::<N>(src)?;
         return g.write_bytes(dst,&b,1);
     }
@@ -264,4 +267,28 @@ pub(super) fn filters(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
     finish_fpu(c,g,x,[0x166ed3,0x166f16,0x166fc7,0x167004][index],c.esp)?;
     let next=FILTER_SITES[index+1];
     g.call(c,0x11eed0,next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Guest, copy_node};
+    use runtime::guest::Permissions;
+
+    #[test]
+    fn forward_node_copy_observes_physical_aliases() {
+        let mut guest = Guest::new();
+        let src = 0x20000;
+        let alias = 0x30000;
+        guest.map_zeroed(src, 0x1000, Permissions::RW).unwrap();
+        let physical = guest.mappings()[0].physical_start;
+        guest.map(alias, 0x1000, physical, Permissions::RW).unwrap();
+        for i in 0..5 {
+            guest.set_u32(src + i * 4, i + 1).unwrap();
+        }
+
+        copy_node::<16>(&mut guest, src, alias + 4, false).unwrap();
+        for i in 0..5 {
+            assert_eq!(guest.u32(src + i * 4).unwrap(), 1);
+        }
+    }
 }

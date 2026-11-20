@@ -88,10 +88,17 @@ fn support_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     for (i,p) in [shape,shape,matrix,ids,DATA+2048].into_iter().enumerate() {
         word(m,STACK+4+4*i as u32,p);
     }
+    // Two instances of a synthetic tetrahedron use the same virtual ABI.
+    let other = shape+96;
+    word(m,STACK+8,other);
+    word(m,other,table);
     word(m,shape,table);
     word(m,table+52,SUPPORT_CHILD);
     word(m,table+48,SUPPORT_QUERY);
     let (a,b)=[(1,1),(1,2),(2,2),(3,1),(1,3),(2,3)][case as usize];
+    for i in 0..4u16 {
+        assert!(m.load(ids+2*u32::from(i), &(i+case as u16).to_le_bytes()));
+    }
     m.bytes[(ids+8) as usize]=a;m.bytes[(ids+9) as usize]=b;
     m.bytes[(ids+10) as usize]=a+u8::from(case==0);
     m.bytes[(ids+11) as usize]=b+u8::from(case==1);
@@ -103,6 +110,46 @@ fn support_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
         word(m,RECORDS+224+4*i,((7.0-i as f32)/13.0).to_bits());
     }
     c.mxcsr |= (case%4)<<13;
+}
+
+// Return packed vertices for the synthetic support callbacks. The fourth
+// lane carries the vertex ID and participates in the guest packed math.
+fn support_vertices(mem: &mut FlatMemory, native: &mut Guest, cpu: &Cpu, target: u32) {
+    let points = [[0.25f32,0.75,-0.125],[-0.5,0.375,0.5],[0.875,-0.25,0.125],[-0.25,-0.5,-0.75]];
+    let sp = cpu.gpr[4];
+    let other = cpu.gpr[1] == DATA+96;
+    let write = |mem: &mut FlatMemory, native: &mut Guest, dest: u32, id: usize| {
+        let point = points[id];
+        for (i,value) in point.into_iter().enumerate() {
+            let bits = if other {-value} else {value}.to_bits();
+            word(mem,dest+4*i as u32,bits);
+            native.set_u32(dest+4*i as u32,bits).unwrap();
+        }
+        word(mem,dest+12,id as u32);
+        native.set_u32(dest+12,id as u32).unwrap();
+    };
+    let arg = mem.read_u32(sp+4).unwrap();
+    if target == SUPPORT_CHILD {
+        let count = mem.read_u32(sp+8).unwrap();
+        let dest = mem.read_u32(sp+12).unwrap();
+        assert!(count<=4);
+        for i in 0..count {
+            let index = (mem.read_u32(arg+2*i).unwrap() & 3) as usize;
+            write(mem,native,dest+16*i,index);
+        }
+    } else {
+        let direction = [0,4,8].map(|off| f32::from_bits(mem.read_u32(arg+off).unwrap()));
+        let dot = |v: &[f32;3]| {
+            let d = direction[0]*v[0]+direction[1]*v[1]+direction[2]*v[2];
+            if other {-d} else {d}
+        };
+        let mut best=0;
+        for i in 1..points.len() {
+            if dot(&points[i])>dot(&points[best]) {best=i;}
+        }
+        let dest=mem.read_u32(sp+8).unwrap();
+        write(mem,native,dest,best);
+    }
 }
 
 fn solver_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
@@ -461,7 +508,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
     let mut regs = abi_cpu(&cpu);
     for n in 0..1024 {
         let at = cpu.eip;
-        let actual = (port.run)(&mut regs, &mut native, at).unwrap();
+        assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
+        let actual = port.invoke(&mut regs, &mut native, at).unwrap();
         assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
         let expected = segment(insns, &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
@@ -530,6 +578,9 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
                 word(&mut mem, a, v);
                 native.set_u32(a,v).unwrap();
             }
+        }
+        if matches!(target,SUPPORT_CHILD|SUPPORT_QUERY) {
+            support_vertices(&mut mem,&mut native,&cpu,target);
         }
         if target==0x2f9c10 {
             let frame=sp+8;
@@ -622,73 +673,71 @@ fn oracle() -> Option<&'static Oracle> {
         image.bytes.truncate(RAM);
         let functions = PORTS.iter().map(|port| {
             let function = lifter.lift(port.point.base).expect(port.point.name);
-            let insns = function.blocks.into_values().flat_map(|b| b.insns)
+            let mut insns: BTreeMap<_,_> = function.blocks.into_values().flat_map(|b| b.insns)
                 .map(|i| (i.pc,i)).collect();
+            if port.point.base == points::HAVOK_WELD_CONTACTS.base {
+                // Discovery gives the shared contact tail its own entry.
+                // Follow it as the guest would between external calls.
+                const CONTACT_TAIL: u32 = 0x002f_a64e;
+                let tail = lifter.lift(CONTACT_TAIL).expect("contact tail");
+                for i in tail.blocks.into_values().flat_map(|b| b.insns) {
+                    insns.entry(i.pc).or_insert(i);
+                }
+            }
             (port.point.base,insns)
         }).collect();
         Some(Oracle {image,functions})
     }).as_ref()
 }
 
-fn matches_guest(point: &points::Point) {
-    let Some(oracle) = oracle() else {return};
-    let port = PORTS.iter().find(|p| p.point.base==point.base).unwrap();
+type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
+
+fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
+    let Some(oracle) = oracle() else { return };
+    let port = PORTS.iter().find(|p| p.point.base == point.base).unwrap();
     let insns = &oracle.functions[&point.base];
-    let cases = if point.base==points::HAVOK_SOLVER.base {23} else {6};
     for case in 0..cases {
-            let mut m = oracle.image.clone();
-            match port.point.base {
-                address if [points::HAVOK_SOLVER.base,points::HAVOK_SUPPORT_VERTICES.base,
-                    points::HAVOK_WELD_CONTACTS.base,points::OBJECT_SPATIAL_PORTAL.base,
-                    points::OBJECT_SPATIAL_VISIT.base,points::UNIT_AIM_UPDATE.base,
-                    points::OBSERVER_RESULT.base].contains(&address) => word(&mut m,STACK,EXIT),
-                _ => fixture(&mut m,case),
-            }
-            let mut cpu = Cpu {
-                gpr: [0x12345678, 0x98765432, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
-                eip: port.point.base,
-                eflags: 0xa93, ..Default::default()
-            };
-            cpu.xmm[0] = 0x1234 << 100;
-            if [points::OBJECT_PRE_UPDATE.base, points::OBJECT_POST_UPDATE.base].contains(&port.point.base) {
-                object_fixture(&mut m, case);
-            }
-            if [points::FIRST_PERSON_POSE_UPDATE.base,points::FIRST_PERSON_FILTER_UPDATE.base].contains(&port.point.base) {
-                first_person_fixture(&mut m,case);
-            }
-            if port.point.base == points::UNIT_AIM_UPDATE.base { aim_fixture(&mut m,&mut cpu,case); }
-            if port.point.base == points::HAVOK_WELD_CONTACTS.base { weld_fixture(&mut m,&mut cpu,case); }
-            if port.point.base == points::LIGHT_RECORD_UPDATE.base { light_fixture(&mut m,case); }
-            if port.point.base == points::HAVOK_SOLVER.base { solver_fixture(&mut m,&mut cpu,case); }
-            if port.point.base == points::HAVOK_SUPPORT_VERTICES.base { support_fixture(&mut m,&mut cpu,case); }
-            if port.point.base == points::OBSERVER_RESULT.base { observer_fixture(&mut m, &mut cpu, case); }
-            if port.point.base == points::OBJECT_CHANGE_COLORS.base { color_fixture(&mut m, case); }
-            if port.point.base == points::OBJECT_SPATIAL_VISIT.base { visit_fixture(&mut m, case); }
-            if port.point.base == points::OBJECT_SPATIAL_PORTAL.base { portal_fixture(&mut m, &mut cpu, case); }
-            compare(port, insns, m, cpu, case);
+        let mut memory = oracle.image.clone();
+        word(&mut memory, STACK, EXIT);
+        if uses_objects { fixture(&mut memory, case); }
+        let mut cpu = Cpu {
+            gpr: [0x1234_5678, 0x9876_5432, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
+            eip: point.base,
+            eflags: 0xa93,
+            ..Default::default()
+        };
+        // Distinguish MOVSS from memory (clears high lanes) and arithmetic
+        // on a register (retains them). Input scalar lanes start at zero.
+        for (i, reg) in cpu.xmm.iter_mut().enumerate() {
+            *reg = (0x1234_u128 + i as u128) << 100;
+        }
+        cpu.x87.control = [0x007f,0x027f,0x037f][case as usize % 3];
+        cpu.mxcsr |= (case % 4) << 13;
+        prepare(&mut memory, &mut cpu, case);
+        compare(port, insns, memory, cpu, case);
     }
 }
 
 macro_rules! differential {
-    ($name:ident, $point:ident) => {
+    ($name:ident, $point:ident, $objects:literal, $cases:literal, $prepare:expr) => {
         #[test]
-        fn $name() { matches_guest(&points::$point); }
+        fn $name() { matches_guest(&points::$point, $objects, $cases, $prepare); }
     };
 }
 
-differential!(havok_solver, HAVOK_SOLVER);
-differential!(havok_support_vertices, HAVOK_SUPPORT_VERTICES);
-differential!(havok_weld_contacts, HAVOK_WELD_CONTACTS);
-differential!(objects_pre_physics, OBJECTS_PRE_PHYSICS);
-differential!(objects_post_physics, OBJECTS_POST_PHYSICS);
-differential!(object_pre_update, OBJECT_PRE_UPDATE);
-differential!(object_post_update, OBJECT_POST_UPDATE);
-differential!(object_change_colors, OBJECT_CHANGE_COLORS);
-differential!(object_spatial_visit, OBJECT_SPATIAL_VISIT);
-differential!(object_spatial_portal, OBJECT_SPATIAL_PORTAL);
-differential!(unit_aim_update, UNIT_AIM_UPDATE);
-differential!(unit_update, UNIT_UPDATE);
-differential!(light_record_update, LIGHT_RECORD_UPDATE);
-differential!(first_person_pose_update, FIRST_PERSON_POSE_UPDATE);
-differential!(first_person_filter_update, FIRST_PERSON_FILTER_UPDATE);
-differential!(observer_camera, OBSERVER_RESULT);
+differential!(havok_solver, HAVOK_SOLVER, false, 23, solver_fixture);
+differential!(havok_support_vertices, HAVOK_SUPPORT_VERTICES, false, 6, support_fixture);
+differential!(havok_weld_contacts, HAVOK_WELD_CONTACTS, false, 6, weld_fixture);
+differential!(objects_pre_physics, OBJECTS_PRE_PHYSICS, true, 6, |_,_,_| {});
+differential!(objects_post_physics, OBJECTS_POST_PHYSICS, true, 6, |_,_,_| {});
+differential!(object_pre_update, OBJECT_PRE_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
+differential!(object_post_update, OBJECT_POST_UPDATE, true, 6, |m,_,n| object_fixture(m,n));
+differential!(object_change_colors, OBJECT_CHANGE_COLORS, true, 6, |m,_,n| color_fixture(m,n));
+differential!(object_spatial_visit, OBJECT_SPATIAL_VISIT, false, 6, |m,_,n| visit_fixture(m,n));
+differential!(object_spatial_portal, OBJECT_SPATIAL_PORTAL, false, 6, portal_fixture);
+differential!(unit_aim_update, UNIT_AIM_UPDATE, false, 6, aim_fixture);
+differential!(unit_update, UNIT_UPDATE, true, 6, |_,_,_| {});
+differential!(light_record_update, LIGHT_RECORD_UPDATE, true, 6, |m,_,n| light_fixture(m,n));
+differential!(first_person_pose_update, FIRST_PERSON_POSE_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
+differential!(first_person_filter_update, FIRST_PERSON_FILTER_UPDATE, true, 6, |m,_,n| first_person_fixture(m,n));
+differential!(observer_camera, OBSERVER_RESULT, false, 6, observer_fixture);

@@ -5,6 +5,9 @@ use super::first_person::copy_node;
 use super::spatial::{finish_fpu,fp_error,load_fpu,scalar};
 use crate::light_constants::X87;
 
+const MIN_AIM_FRAMES_OPERAND: u32 = 0x0016_79ad;
+const MATRIX_BYTES: usize = 52;
+
 pub(super) fn low(c:&CpuAbi,r:usize)->u32 {u128::from_le_bytes(c.xmm[r]) as u32}
 fn op(c:&mut CpuAbi,r:usize,v:u32,f:fn(&mut u32,u128,u32)->std::result::Result<u128,simd::Xm>)->Result<()> {
     c.xmm[r]=f(&mut c.mxcsr,u128::from_le_bytes(c.xmm[r]),v).map_err(super::havok::simd_fault)?.to_le_bytes();Ok(())
@@ -126,8 +129,9 @@ pub(super) fn run(c:&mut CpuAbi,g:&mut Guest,mut pc:u32)->Result<TransferAbi> {
         0x167999=>{if al(c){c.ecx=c.ebp-68;return g.call(c,0x1c6440,0x1679a9);}0x167c49}
         0x1679a9=>{
             let frames=g.u16(c.eax+20)? as i16;
-            cmp(c,frames as u32,9,16);
-            if frames>=9 {0x1679b4} else {
+            let minimum = i16::from(g.u8(MIN_AIM_FRAMES_OPERAND)? as i8);
+            cmp(c,frames as u32,minimum as u32,16);
+            if frames>=minimum {0x1679b4} else {
                 g.set_u16(c.edi+220,65535)?;g.set_u16(c.edi+222,65535)?;logic(c,65535,1<<15);0x167c49
             }
         }
@@ -280,9 +284,9 @@ fn finish(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
             let flags=g.u32(c.edi)? & !4;logic(c,flags,1<<31);g.set_u32(c.edi,flags)?;
         } else {
             c.edx=g.u32(c.ebp-24)?;
-            c.esi=c.eax.wrapping_mul(52).wrapping_add(c.ebx).wrapping_add(776);
-            push(c,g,13)?;c.eax=g.u32(c.ebp-16)?;c.edi+=8344;c.ecx=pop(c,g)?;
-            copy_node::<52>(g,c.esi,c.edi,c.eflags&0x400!=0)?;
+            c.esi=c.eax.wrapping_mul(MATRIX_BYTES as u32).wrapping_add(c.ebx).wrapping_add(776);
+            push(c,g,(MATRIX_BYTES/4) as u32)?;c.eax=g.u32(c.ebp-16)?;c.edi+=8344;c.ecx=pop(c,g)?;
+            copy_node::<MATRIX_BYTES>(g,c.esi,c.edi,c.eflags&0x400!=0)?;
             for (i,off) in [8384,8388,8392].into_iter().enumerate() {
                 c.ecx=c.eax+off;scalar(c,0,g.u32(c.ecx)?);
                 if i==0 {c.edx+=776;} else {c.edx=g.u32(c.ebp-24)?;}

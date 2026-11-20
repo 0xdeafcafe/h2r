@@ -48,9 +48,9 @@ impl Installed {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstallError {
-    /// An override the plan did not place is already there. Nothing was
-    /// installed.
+    /// The image has no selector at a required native continuation.
     MissingResume { point: &'static str, site: u32 },
+    /// An override the plan did not place is already there.
     Occupied {
         addr: u32,
         point: &'static str,

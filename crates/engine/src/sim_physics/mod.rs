@@ -23,69 +23,67 @@ mod weld;
 mod weapon_slots;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld }
+
 pub struct Port {
     pub point: &'static Point,
     /// Passed to Switches::implementation, which supplies the impl. prefix.
     pub switch: &'static str,
     pub resumes: &'static [u32],
     pub generated_sites: &'static [u32],
-    pub run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
+    run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
+    controls: Controls,
 }
 
-pub const PORTS: &[Port] = &[
-    Port { point: &points::UNIT_AIM_UPDATE, switch: "sim.native_unit_aim",
-           resumes: unit_aim::SITES, generated_sites: &[], run: unit_aim::aim },
-    Port { point: &points::HAVOK_WELD_CONTACTS, switch: "sim.native_havok_weld",
-           resumes: weld::SITES, generated_sites: &[], run: weld::contacts },
-    Port { point: &points::FIRST_PERSON_POSE_UPDATE, switch: "sim.native_first_person_pose",
-           resumes: first_person::POSE_SITES, generated_sites: first_person::POSE_REST, run: first_person::pose },
-    Port { point: &points::FIRST_PERSON_FILTER_UPDATE, switch: "sim.native_first_person_filters",
-           resumes: first_person::FILTER_SITES, generated_sites: first_person::FILTER_REST, run: first_person::filters },
-    Port { point: &points::LIGHT_RECORD_UPDATE, switch: "sim.native_light_record",
-           resumes: light::SITES, generated_sites: &[], run: light::update },
-    Port { point: &points::HAVOK_SOLVER, switch: "sim.native_havok_solver",
-           resumes: havok::SOLVER_SITES, generated_sites: havok::SOLVER_REST, run: havok::solve },
-    Port { point: &points::HAVOK_SUPPORT_VERTICES, switch: "sim.native_havok_support_vertices",
-           resumes: support::SITES, generated_sites: support::REST, run: support::vertices },
-    Port { point: &points::OBSERVER_RESULT, switch: "sim.native_observer_camera",
-           generated_sites: &[], resumes: &[], run: observer::camera },
-    Port { point: &points::OBJECT_CHANGE_COLORS, switch: "sim.native_object_change_colors",
-           generated_sites: &[], resumes: &colors::SITES, run: colors::update },
-    Port { point: &points::OBJECT_SPATIAL_VISIT, switch: "sim.native_spatial_visit",
-           generated_sites: &[], resumes: &visit::SITES, run: visit::objects },
-    Port {
-        point: &points::OBJECT_PRE_UPDATE, switch: "sim.native_object_pre_update",
-        generated_sites: &[], resumes: &object_update::PRE, run: object_update::pre,
-    },
-    Port {
-        point: &points::OBJECT_POST_UPDATE, switch: "sim.native_object_post_update",
-        generated_sites: &[], resumes: &object_update::POST, run: object_update::post,
-    },
-    Port {
-        point: &points::OBJECT_SPATIAL_PORTAL,
-        switch: "sim.native_spatial_portal",
-        generated_sites: &[], resumes: &spatial::SITES,
-        run: spatial::portal,
-    },
-    Port {
-        point: &points::OBJECTS_PRE_PHYSICS,
-        switch: "sim.native_objects_pre_physics",
-        generated_sites: &[], resumes: &objects::PRE_SITES,
-        run: objects::pre,
-    },
-    Port {
-        point: &points::OBJECTS_POST_PHYSICS,
-        switch: "sim.native_objects_post_physics",
-        generated_sites: &[], resumes: &objects::POST_SITES,
-        run: objects::post,
-    },
-    Port {
-        point: &points::UNIT_UPDATE,
-        switch: "sim.native_unit_update",
-        generated_sites: &[], resumes: &objects::UNIT_SITES,
-        run: objects::unit,
-    },
-];
+impl Port {
+    /// Run the entry or a return continuation. Arithmetic faults have no
+    /// guest memory operand, so report the selector that entered the kernel.
+    pub fn invoke(&self, cpu: &mut CpuAbi, guest: &mut Guest, pc: u32) -> Result<TransferAbi> {
+        (self.run)(cpu, guest, pc).map_err(|mut fault| {
+            if fault.len == 0 && fault.reason == runtime::guest::FaultReason::InvalidOperation {
+                fault.addr = pc;
+            }
+            fault
+        })
+    }
+}
+
+const fn port(
+    point: &'static Point,
+    switch: &'static str,
+    controls: Controls,
+    resumes: &'static [u32],
+    run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
+) -> Port {
+    Port { point, switch, controls, resumes, run, generated_sites: &[] }
+}
+
+pub const PORTS: &[Port] = {
+    use Controls::*;
+    use points::*;
+    &[
+        Port {
+            generated_sites: havok::SOLVER_REST,
+            ..port(&HAVOK_SOLVER, "sim.native_havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
+        },
+        port(&HAVOK_SUPPORT_VERTICES, "sim.native_havok_support_vertices", Mixed, support::SITES, support::vertices),
+        port(&HAVOK_WELD_CONTACTS, "sim.native_havok_weld", Weld, weld::SITES, weld::contacts),
+        port(&OBJECTS_PRE_PHYSICS, "sim.native_objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
+        port(&OBJECTS_POST_PHYSICS, "sim.native_objects_post_physics", Integer, &objects::POST_SITES, objects::post),
+        port(&OBJECT_PRE_UPDATE, "sim.native_object_pre_update", Integer, &object_update::PRE, object_update::pre),
+        port(&OBJECT_POST_UPDATE, "sim.native_object_post_update", Integer, &object_update::POST, object_update::post),
+        port(&OBJECT_CHANGE_COLORS, "sim.native_object_change_colors", Sse, &colors::SITES, colors::update),
+        port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
+        port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
+        port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
+        port(&UNIT_UPDATE, "sim.native_unit_update", Integer, &objects::UNIT_SITES, objects::unit),
+        port(&LIGHT_RECORD_UPDATE, "sim.native_light_record", Sse, light::SITES, light::update),
+        port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
+        port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
+        port(&OBSERVER_RESULT, "sim.native_observer_camera", Camera, &[], observer::camera),
+    ]
+};
 
 fn push(c: &mut CpuAbi, g: &mut Guest, word: u32) -> Result<()> {
     let sp = c.esp.wrapping_sub(4);
@@ -133,21 +131,36 @@ fn call_arg(c: &mut CpuAbi, g: &mut Guest, arg: u32, target: u32, site: u32) -> 
     g.call(c, target, site)
 }
 
-/// The FP kernels use the masked arithmetic path. Take the generated path
-/// for a control word that can deliver a synchronous FP exception. The
-/// x87 transcendental oracle supports nearest rounding.
+// A mapping can be an alias of another range of guest virtual addresses.
+// A bulk copy or a deferred store needs disjoint *physical* spans. Fall
+// back to ordered accesses for ranges that cross a mapping boundary.
+fn physical_span(g: &Guest, addr: u32, len: u32) -> Option<std::ops::Range<u32>> {
+    let maps = g.mappings();
+    let end = maps.partition_point(|m| m.virtual_start <= addr);
+    let mapping = maps.get(end.checked_sub(1)?)?;
+    let offset = addr - mapping.virtual_start;
+    if offset.checked_add(len)? > mapping.len { return None; }
+    let start = mapping.physical_start + offset;
+    Some(start..start+len)
+}
+
+fn overlap(a: &std::ops::Range<u32>, b: &std::ops::Range<u32>) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+/// Native FP kernels handle masked exceptions. The original owns synchronous
+/// exception delivery and the non-nearest x87 transcendental paths.
 pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
-    let entry = port.point.base;
-    if entry == points::UNIT_AIM_UPDATE.base && cpu.x87.control & 0xc00 != 0 {return false;}
-    if entry == points::HAVOK_WELD_CONTACTS.base && !weld::supported(guest) {return false;}
-    if entry == points::OBSERVER_RESULT.base {
-        if cpu.x87.control & 0xc00 != 0 || !observer::disjoint(cpu, guest) {
-            return false;
+    use Controls::*;
+    let x87_masked = cpu.x87.control & 0x3f == 0x3f && cpu.x87.status & 0x80 == 0;
+    match port.controls {
+        Integer => true,
+        Sse => cpu.mxcsr & 0x1f80 == 0x1f80,
+        Weld => x87_masked && weld::supported(guest),
+        Mixed | Trig | Camera => {
+            let masked = x87_masked && cpu.mxcsr & 0x1f80 == 0x1f80;
+            masked && (port.controls == Mixed || cpu.x87.control & 0xc00 == 0)
+                && (port.controls != Camera || observer::disjoint(cpu, guest))
         }
     }
-    if [points::FIRST_PERSON_POSE_UPDATE.base, points::HAVOK_SUPPORT_VERTICES.base, points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
-        && cpu.x87.control & 0x3f != 0x3f { return false; }
-    ![points::FIRST_PERSON_POSE_UPDATE.base, points::UNIT_AIM_UPDATE.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
-      points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)
-        || cpu.mxcsr & 0x1f80 == 0x1f80
 }

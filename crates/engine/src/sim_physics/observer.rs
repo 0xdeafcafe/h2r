@@ -199,13 +199,14 @@ pub(super) fn disjoint(c: &CpuAbi, g: &Guest) -> bool {
     let Some(view_end) = c.esi.checked_add(84) else { return false };
     let Ok(axis) = g.u32(ROTATION_AXIS) else { return false };
     let Some(axis_end) = axis.checked_add(12) else { return false };
-    let stack = sp..end;
-    let view = c.esi..view_end;
-    let overlaps = |a: &std::ops::Range<u32>, b: &std::ops::Range<u32>| a.start < b.end && b.start < a.end;
-    if overlaps(&stack,&view) { return false; }
+    let (Some(stack), Some(view)) =
+        (physical_span(g,sp,end-sp), physical_span(g,c.esi,view_end-c.esi))
+    else {return false};
+    if overlap(&stack,&view) {return false;}
     for input in [axis..axis_end, HALF..ONE+4, ATAN_DENOMINATOR..ATAN_DENOMINATOR+8,
                   DOT_FLOOR..DOT_FLOOR+4, VIEW_SCALE..VIEW_SCALE+4, ROTATION_AXIS..ROTATION_AXIS+4] {
-        if overlaps(&input,&view) || overlaps(&input,&stack)
+        let Some(span) = physical_span(g,input.start,input.end-input.start) else {return false};
+        if overlap(&span,&view) || overlap(&span,&stack)
             || g.check(input.start,input.len(),Access::Read,1).is_err() { return false; }
     }
     g.check(sp,84,Access::Write,1).is_ok() && g.check(c.esp,4,Access::Read,1).is_ok()

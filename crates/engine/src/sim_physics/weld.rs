@@ -5,6 +5,9 @@ use super::havok::{put_vector,vector};
 use super::spatial::{finish_fpu,fp_error,load_fpu};
 use crate::light_constants::X87;
 
+// Immediate operand at the allocator call site in the base image.
+const CONTACT_POOL_CLASS_OPERAND: u32 = 0x002f_aa33;
+
 pub(super) const SITES:&[u32]=&[0x2fa380,0x2fa3b6,0x2fa3fa,0x2fa41d,0x2fa435,0x2fa43d,
     0x2fa44f,0x2fa480,0x2fa48c,0x2fa566,0x2fa5f3,0x2fa824,0x2fa8a9,0x2fa8d6,0x2fa96a,
     0x2fa9b1,0x2faa0f,0x2faa43];
@@ -161,7 +164,8 @@ pub(super) fn contacts(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
                 let size=shl7(c,c.eax & 0x7fff_ffff);
                 c.eax=g.u32(sp+272)?;
                 let target=g.u32(c.edx+20)?;
-                return args(c,g,&[18,size,c.eax],target,0x2faa43);
+                let class = u32::from(g.u8(CONTACT_POOL_CLASS_OPERAND)?);
+                return args(c,g,&[class,size,c.eax],target,0x2faa43);
             }
             leave(c,g)
         }

@@ -15,11 +15,11 @@ impl Feature for NativePhysics {
         for port in PORTS {
             if b.switches().implementation(port.switch, false) {
                 b.raw().implement(port.point, port.switch, move |cpu, ctx, pc| {
-                    let resume = port.resumes.contains(&pc);
+                    let resume = pc != port.point.base && port.resumes.contains(&pc);
                     if pc == port.point.base || resume {
                         let mut mem = ctx.memory();
                         if engine::sim_physics::supported(port, cpu, &mem) {
-                            return (port.run)(cpu, &mut mem, pc);
+                            return port.invoke(cpu, &mut mem, pc);
                         }
                     }
                     let original = if resume {

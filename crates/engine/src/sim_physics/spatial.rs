@@ -14,7 +14,7 @@ const SCRATCH_SIZE: u32 = 0x420;
 
 pub(super) fn fp_error(_: Error) -> GuestFault {
     GuestFault {
-        addr: points::OBJECT_SPATIAL_PORTAL.base,
+        addr: 0,
         len: 0, access: runtime::guest::Access::Execute,
         reason: runtime::guest::FaultReason::InvalidOperation,
     }

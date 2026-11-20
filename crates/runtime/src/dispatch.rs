@@ -353,7 +353,7 @@ impl Dispatch {
     pub(crate) fn resolve_original(&self, addr: u32) -> Option<Handler> {
         self.generated.get(&addr).cloned()
     }
-    /// The owner's original handler, its selector and the owner address.
+    /// The canonical generated handler and its image selector.
     pub(crate) fn original_resume(&self, pc: u32) -> Option<(Handler,u32)> {
         let r = self.resumes.get(&pc)?;
         Some((self.resolve_original(r.owner)?, r.selector))
