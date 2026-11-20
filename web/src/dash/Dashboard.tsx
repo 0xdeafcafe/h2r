@@ -58,6 +58,8 @@ import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
+import { NotificationSettingsPlate, notificationRows, NotificationSession } from "./Notifications";
+import { notifications } from "../state/notifications";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
@@ -73,6 +75,7 @@ const LABELS: Record<SectionId, () => string> = {
   teams: () => "teams",
   players: () => "players",
   settings: () => "settings",
+  session: () => "game session",
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
   signin: () => "sign in",
@@ -86,6 +89,7 @@ const menuItems = (): SectionId[] => menuFor(!!identity.me());
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
+  if (s === "session") return "live";
   if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
@@ -207,11 +211,12 @@ export default function Dashboard() {
       : online();
   });
 
+  const notificationScreen = () => section() === "settings" && params.tag === "notifications" && !!identity.me();
   const settings = createMemo(() => settingsRows(!!identity.me(), adminState.isMeAdmin()));
 
   const rows = createMemo((): Row[] => {
     switch (section()) {
-      case "settings": return settings();
+      case "settings": return notificationScreen() ? notificationRows() : settings();
       case "live":
         return liveGames(live.state).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
@@ -236,8 +241,11 @@ export default function Dashboard() {
   });
 
   const [sel, setSelRaw] = createSignal(0);
-  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s) listSel[s] = i; };
-  createEffect(() => { const s = section(); setSelRaw(s ? listSel[s] ?? 0 : 0); });
+  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s && !notificationScreen()) listSel[s] = i; };
+  createEffect(() => {
+    const s = section();
+    setSelRaw(notificationScreen() ? 0 : s ? listSel[s] ?? 0 : 0);
+  });
   createEffect(() => { if (screen() === "list" && sel() >= rows().length) setSelRaw(Math.max(0, rows().length - 1)); });
 
   function openRow(i: number) {
@@ -253,6 +261,11 @@ export default function Dashboard() {
         const a = identity.accounts().find((x) => x.xuid === r.key);
         if (a) { identity.signIn(a); go("/", "back"); }
       }
+      return;
+    }
+    if (notificationScreen()) {
+      if (r.key === "friendGames" || r.key === "otherGames") notifications.toggle(r.key);
+      else if (r.key === "permission") void notifications.requestPermission();
       return;
     }
     if (s === "settings") go(r.key, "deeper");
@@ -385,6 +398,8 @@ export default function Dashboard() {
     else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
+    else if (s === "settings" && params.tag === "notifications") go("/dash/settings", "back");
+    else if (s === "session") go("/dash/live", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
@@ -452,7 +467,7 @@ export default function Dashboard() {
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Let a tab-focused link or prompt perform its own activation.
-    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt")) return;
+    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt, .dx-notice-dismiss")) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
     // A field in a column of rows (data-nav) still lets up and down move on.
     const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
@@ -610,6 +625,24 @@ export default function Dashboard() {
 
           <Match when={screen() === "games"}>
             <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
+          </Match>
+
+          <Match when={notificationScreen()}>
+            <div class="dx-screen dx-list dx-pages dx-settings">
+              <ListPanel title="notifications" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
+              <div class="dx-preview"><BigPod wire><Glyph name="gear" /></BigPod></div>
+              <NotificationSettingsPlate />
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={section() === "session"}>
+            <div class="dx-screen dx-list dx-pages">
+              <Show when={identity.me()} keyed fallback={<Plate small="live now" title="game session" main><p>Sign in to see this game session.</p></Plate>}>
+                <NotificationSession id={params.tag} />
+              </Show>
+              <Prompts onB={back} />
+            </div>
           </Match>
 
           <Match when={section() === "settings"}>
