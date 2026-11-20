@@ -15,7 +15,7 @@ import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
 import { eventBody, signEvent } from "../state/sign";
 import { issueToken, randomId } from "./token";
-import { STATS_ROOT, statsPath } from "../routes";
+import { DASH_PLAYERS, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 export const ADMIN_READ = "admin.read";
 export const INVITES_WRITE = "invites.write";
@@ -280,7 +280,7 @@ export type ServerView = "overview" | "invites" | "accounts" | "import" | "repor
 export const HALO_ADMIN = statsPath("/admin");
 
 /** The Live admin's usage screen (docs/live/web-boundary.md §5), in the dense style. */
-export const LIVE_ADMIN_USAGE = "/dash/admin/usage";
+export const LIVE_ADMIN_USAGE = `${LIVE_ADMIN}/usage`;
 
 /** The pods of each server screen. Admin tools only for an admin
  *  (`isMeAdmin() === true`); everyone else, and anyone while that is still
@@ -293,7 +293,7 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
         return [
           { label: "another server", glyph: "server", to: "/dash/server/connect" },
           { label: "event log", glyph: "history", to: statsPath("/events") },
-          { label: "players", glyph: "career", to: "/dash/players" },
+          { label: "players", glyph: "career", to: DASH_PLAYERS },
           { label: "stats site", glyph: "record", to: STATS_ROOT },
         ];
       case "import":
@@ -319,14 +319,14 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
       return [
         { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
         { label: "bans", glyph: "sign", to: "/dash/server/bans" },
-        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "players", glyph: "record", to: DASH_PLAYERS },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "bans":
       return [
         { label: "accounts", glyph: "career", to: "/dash/server/accounts", back: true },
         { label: "reports", glyph: "history", to: "/dash/server/reports", back: true },
-        { label: "players", glyph: "record", to: "/dash/players" },
+        { label: "players", glyph: "record", to: DASH_PLAYERS },
         { label: "your server", glyph: "globe", to: "/dash/server", back: true },
       ];
     case "accounts":

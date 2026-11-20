@@ -14,7 +14,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
-import { liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
+import { accountByGamertag, liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
 import { OUTCOME_WORDS, campaignOutcome, campaignRecord, playedWith, serviceRecord } from "../state/derive";
 import { campaignLabel, difficultyName, gameTypeLabel, gameTypeLine } from "../state/gametype";
 
@@ -35,6 +35,7 @@ import { ReportsQueue } from "./Reports";
 import { BanControl, BanNotice, BansList } from "./Bans";
 import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
+import { DECK_ENTRY } from "../deck/back";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
 import "../styles/dash-server.css";
@@ -55,21 +56,19 @@ import { useMotd } from "../state/motd";
 import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
-import SessionsScreen from "./Sessions";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
-import { lockedHint, menuFor, type SectionId } from "./menu";
-import { STATS_ROOT, statsPath } from "../routes";
+import { lockedHint, menuFor, settingsRows, type SectionId } from "./menu";
+import { dashboardPlayerHref, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
+type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "signins";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   games: () => "games",
-  sessions: () => "find a game",
   friends: () => "friends",
   teams: () => "teams",
   players: () => "players",
@@ -137,19 +136,27 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
+  const playerTag = () => section() === "players" && params.tag ? safeDecode(params.tag) : null;
   const viewed = createMemo((): AccountState | null => {
-    const s = section();
-    if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
-    if ((s === "players" || s === "friends") && params.tag) { const tag = safeDecode(params.tag); return Object.values(live.state.accounts).find((a) => a.gamertag === tag) ?? null; }
-    return null;
+    if (section() === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
+    const tag = playerTag();
+    return tag ? accountByGamertag(live.state, tag) ?? null : null;
   });
+  // A link can name an account outside the local account snapshot.
+  createEffect(on(() => [playerTag(), viewed()?.xuid, live.loadMode(), live.server()] as const, ([tag, xuid, mode]) => {
+    if (!tag || xuid || mode === "snapshot") return;
+    const abort = new AbortController();
+    onCleanup(() => abort.abort());
+    void live.api().account(tag, abort.signal).then((account) => {
+      if (!abort.signal.aborted && !accountByGamertag(live.state, tag)) live.addAccounts([account]);
+    }, () => {});
+  }));
   const screen = createMemo((): ScreenId => {
     const s = section();
     if (!s) return "menu";
     if (s === "games") return "games";
     if (s === "server") return "server";
     if (s === "friends" || s === "teams") return "social";
-    if (s === "sessions") return "sessions";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
@@ -182,10 +189,11 @@ export default function Dashboard() {
     setDir(d);
     // Off to the stats site: the veil carries it (and plays this screen out).
     if (sideOf(href) === "stats") { crossTo(href, { replace }); return; }
-    if (reducedMotion()) { navigate(href, { replace }); return; }
+    const state = !replace && (href === LIVE_ADMIN || href.startsWith(LIVE_ADMIN + "/")) ? DECK_ENTRY : undefined;
+    if (reducedMotion()) { navigate(href, { replace, state }); return; }
     setLeaving(true);
     clearTimeout(timer);
-    timer = setTimeout(() => { navigate(href, { replace }); setLeaving(false); }, 190);
+    timer = setTimeout(() => { navigate(href, { replace, state }); setLeaving(false); }, 190);
   }
   onCleanup(() => clearTimeout(timer));
   createEffect(() => { lastScreen = screen(); });
@@ -199,12 +207,7 @@ export default function Dashboard() {
       : online();
   });
 
-  const settings = createMemo(() => [
-    { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
-    { key: "/dash/games", label: "games", glyph: "disc" },
-    { key: adminState.isMeAdmin() === true ? "/dash/admin/events" : statsPath("/events"), label: "event log", glyph: "history" },
-    { key: "/dash/server", label: "server", glyph: "server" },
-  ] satisfies (Row & { glyph: GlyphName })[]);
+  const settings = createMemo(() => settingsRows(!!identity.me(), adminState.isMeAdmin()));
 
   const rows = createMemo((): Row[] => {
     switch (section()) {
@@ -254,6 +257,7 @@ export default function Dashboard() {
     }
     if (s === "settings") go(r.key, "deeper");
     else if (s === "live") go(`${STATS_ROOT}/games/${r.key}`, "deeper");
+    else if (s === "players") go(dashboardPlayerHref(r.label), "deeper");
     else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
@@ -352,7 +356,7 @@ export default function Dashboard() {
 
   // These screens manage selection and focus inside their own panels.
   let screenAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions" || screen() === "signins";
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "signins";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -388,7 +392,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "games": case "social": case "sessions": case "signins": screenAct?.("select"); break;
+      case "games": case "social": case "signins": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -708,10 +712,6 @@ export default function Dashboard() {
 
           <Match when={screen() === "signins"}>
             <SignInsScreen go={go} back={() => go("/dash/account", "back")} bind={(f) => { screenAct = f; }} />
-          </Match>
-
-          <Match when={screen() === "sessions"}>
-            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "connect"}>

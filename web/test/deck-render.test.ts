@@ -3,13 +3,17 @@
 // panel is there, tiles carry proportional figures, charts draw their marks
 // with the validated slots, and tables are sortable with tabular figures.
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { plugin } from "bun";
 import { SERIES } from "../src/deck/palette";
 import { sideOf } from "../src/dash/cross";
 
 let html = "";
 let usage = "";
+let hosts = "";
+let events = "";
+let hub = "";
+let signedOutHub = "";
 const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
 
 beforeAll(async () => {
@@ -31,17 +35,54 @@ beforeAll(async () => {
   });
   const { renderToString } = await import("solid-js/web");
   const { Router, Route } = await import(ROUTER);
-  const { default: StylePage } = await import("../src/deck/StylePage");
   const { createComponent } = await import("solid-js");
-  html = renderToString(() => createComponent(Router, {
-    url: "/dash/admin/style",
-    get children() { return createComponent(Route, { path: "/dash/admin/style", component: StylePage }); },
-  }));
+  const { default: StylePage } = await import("../src/deck/StylePage");
   const { default: UsagePage } = await import("../src/deck/UsagePage");
-  usage = renderToString(() => createComponent(Router, {
-    url: "/dash/admin/usage",
-    get children() { return createComponent(Route, { path: "/dash/admin/usage", component: UsagePage }); },
+  const { default: HostsPage } = await import("../src/deck/HostsPage");
+  const { default: EventLog } = await import("../src/dash/EventLog");
+  const { default: AdminPage } = await import("../src/deck/AdminPage");
+  const { adminState } = await import("../src/admin/state");
+  const page = (url: string, component: typeof AdminPage) => renderToString(() => createComponent(Router, {
+    url,
+    get children() { return createComponent(Route, { path: url, component }); },
   }));
+  html = page("/dash/admin/style", StylePage);
+  usage = page("/dash/admin/usage", UsagePage);
+  hosts = page("/dash/admin/hosts", HostsPage);
+  events = page("/dash/admin/events", EventLog);
+  signedOutHub = page("/dash/admin", AdminPage);
+  const admin = spyOn(adminState, "isMeAdmin").mockReturnValue(true);
+  try { hub = page("/dash/admin", AdminPage); } finally { admin.mockRestore(); }
+});
+
+describe("the Live admin hub", () => {
+  test("links to the four tools when admin access is confirmed", () => {
+    expect(hub).toContain("<h1>live admin</h1>");
+    expect(hub).toMatch(/href="\/dash\/settings" class="dk-back[ "]/);
+    expect(hub).toMatch(/href="\/dash\/admin\/usage"[^>]*>usage<\/a>/);
+    expect(hub).toMatch(/href="\/dash\/admin\/hosts"[^>]*>hosts<\/a>/);
+    expect(hub).toMatch(/href="\/dash\/admin\/events"[^>]*>event log<\/a>/);
+    expect(hub).toMatch(/href="\/dash\/admin\/style"[^>]*>style<\/a>/);
+  });
+
+  test("asks for sign-in when signed out", () => {
+    expect(signedOutHub).toContain('href="/dash/signin"');
+    expect(signedOutHub).not.toContain('aria-label="Server tools"');
+  });
+
+  test("each tool links back to the hub in its trail", () => {
+    for (const tool of [html, usage, hosts, events]) {
+      expect(tool).toMatch(/href="\/dash\/admin"[^>]*>live admin<\/a>/);
+    }
+  });
+
+  test("all deck screens use the dashboard's Back prompt", () => {
+    for (const screen of [hub, html, usage, hosts, events]) {
+      expect(screen).toContain("dk-back dx-prompt dx-prompt--b");
+      expect(screen).toMatch(/class="dx-btn dx-btn--b dx-btn--keyboard"[^>]*><b>esc<\/b>/);
+      expect(screen).toContain('<span class="dx-prompt-label">back</span>');
+    }
+  });
 });
 
 describe("the dense dashboard style page", () => {
@@ -53,7 +94,7 @@ describe("the dense dashboard style page", () => {
     expect(html).toContain('class="dk-trail"');
     expect(html).toMatch(/<h1[^>]*>usage<\/h1>/);
     expect(html).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
-    expect(html.match(/class="dk-filters"/g)).toHaveLength(1);
+    expect(html.match(/class="dk-filters dk-toolbar"/g)).toHaveLength(1);
     expect(html).toMatch(/role="radio"[^>]*aria-checked="true"[^>]*>30 days/);
   });
 
@@ -84,6 +125,13 @@ describe("the dense dashboard style page", () => {
     expect(rows).toHaveLength(12);
   });
 
+  test("the top accounts link to dashboard players", () => {
+    const players = [...html.matchAll(/<a\b[^>]*\bhref="\/dash\/players\/([^"]+)"[^>]*>([^<]+)<\/a>/g)];
+    expect(players).toHaveLength(12);
+    for (const [, tag, label] of players) expect(decodeURIComponent(tag!)).toBe(label!);
+    expect(html).not.toContain('href="/games/halo2/players/');
+  });
+
   test("the sample data says it is a sample", () => {
     expect(html).toContain("fixed sample data");
   });
@@ -92,7 +140,6 @@ describe("the dense dashboard style page", () => {
 describe("the Live admin usage page", () => {
   test("is on the dashboard side, under the server in the trail", () => {
     expect(sideOf("/dash/admin/usage")).toBe("dash");
-    expect(usage).toContain(">live admin<");
     expect(usage).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
   });
 

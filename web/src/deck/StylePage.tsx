@@ -3,6 +3,7 @@
 // Nothing is fetched and nothing needs signing in.
 
 import { createMemo, createSignal } from "solid-js";
+import { LIVE_ADMIN } from "../routes";
 import { DeckPage, Presets } from "./Deck";
 import { topN } from "./chart";
 import { mockOverview, usageMock } from "./mock";
@@ -23,7 +24,7 @@ export default function StylePage() {
   const top = createMemo(() => topN(DATA.accounts, 12, (a) => a.uploaded));
   return (
     <DeckPage
-      trail={[["dashboard", "/"], ["server", "/dash/server"], ["admin"], ["style"]]}
+      trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", LIVE_ADMIN], ["style"]]}
       title="usage"
       back="/dash/server"
       filters={<>

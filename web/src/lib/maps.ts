@@ -365,22 +365,6 @@ export function mapGroupLabel(mapId: string | null | undefined, lookup: PackageL
   return lookup?.state === "ok" ? lookup.map.name : `${baseTitle} (modded)`;
 }
 
-export type CustomMapBadge =
-  | { kind: "custom"; name: string; author: string; size: number; download: string }
-  | { kind: "unavailable"; text: string };
-
-/** The custom games browser's badge for a session's map_id: the package
- *  and what joining downloads; "custom map unavailable" once it was taken
- *  down; nothing while loading, on no answer, or for an id the server
- *  doesn't know (a retail map's, shown plain). */
-export function customMapBadge(mapId: string | null | undefined, lookup: PackageLookup | null | undefined): CustomMapBadge | null {
-  if (!mapId || !lookup) return null;
-  if (lookup.state === "gone") return { kind: "unavailable", text: "custom map unavailable" };
-  if (lookup.state !== "ok") return null;
-  const m = lookup.map;
-  return { kind: "custom", name: m.name, author: m.author.gamertag, size: m.size, download: `needs download (${formatBytes(m.size)})` };
-}
-
 /** `/v1/maps/{id}/image`, only when the package says it has one. */
 export function packageImageUrl(api: string, lookup: PackageLookup | null | undefined): string | null {
   return lookup?.state === "ok" && lookup.map.image ? `${api}/maps/${lookup.map.map_id}/image` : null;

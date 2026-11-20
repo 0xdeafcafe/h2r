@@ -1,6 +1,7 @@
 // The dense dashboard's data shaping (src/deck/chart.ts, usageView.ts), its
 // fixed sample data and its palette rules.
 import { describe, expect, test } from "bun:test";
+import { DECK_ENTRY, deckBackTarget } from "../src/deck/back";
 import {
   areaPath, bytes, columnPath, compact, dayRange, delta, fillDays, linePath, nearestIndex, niceTicks, peak, periods,
   scale, shares, shortDay, sortRows, stack, topN,
@@ -9,6 +10,17 @@ import { SERIES, seriesColor } from "../src/deck/palette";
 import { mockOverview, usageMock } from "../src/deck/mock";
 import { messagesOf, tileValue, uploadOf, usageView } from "../src/deck/usageView";
 import { UPLOAD_KINDS } from "../src/admin/usage";
+
+describe("deck Back", () => {
+  test("traverses browser history for an entry pushed from the app", () => {
+    expect(deckBackTarget(DECK_ENTRY, "/dash/settings")).toBe(-1);
+  });
+
+  test("uses the page's fallback for a direct visit", () => {
+    expect(deckBackTarget(null, "/dash/settings")).toBe("/dash/settings");
+    expect(deckBackTarget({}, "/dash/server")).toBe("/dash/server");
+  });
+});
 
 describe("days", () => {
   test("a range ends on its last day, oldest first, across a month end", () => {
