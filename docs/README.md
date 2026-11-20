@@ -183,6 +183,7 @@ are under [Reviews](#reviews).
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
 - [theater.md](game/theater.md): Theater: saved films, free camera and spectating; the in-game selector and host-film player are built, the real-host experiments are pending
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
+- [theater-design.md](game/theater-design.md): design for the full in-game Theater: rewind and jumps from self-made keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
 - Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
 
