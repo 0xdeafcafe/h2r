@@ -39,7 +39,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<bool, D3dError> {
         let mut streams = std::mem::take(&mut parts.streams);
         let mut committed = false;
-        let result = self.submit_inner(mem, parts, &mut streams, Some((admission, &mut committed)));
+        let result = self.submit_inner(mem, parts, &mut streams, Some((admission, &mut committed)), None);
         self.recycle_streams(streams);
         result.map(|()| committed)
     }

@@ -11,8 +11,8 @@ use super::world_walk::LIGHTMAP;
 pub const PAGE: u32 = 0x0048_5a60;
 /// The palette shortcut is shared by every stage.
 pub const LAST_PALETTE: u32 = 0x0046_7000;
-const PALETTE_COUNT: u32 = 0x0050_93ac;
-const STAGE_PALETTES: u32 = 0x0048_4dc0;
+pub const PALETTE_COUNT: u32 = 0x0050_93ac;
+pub const STAGE_PALETTES: u32 = 0x0048_4dc0;
 const PALETTE_HEADERS: u32 = 0x0048_4dd0;
 const STAGE: u32 = 3;
 
@@ -28,6 +28,12 @@ pub struct Binding {
     pub palette: i8,
     /// The extra descriptors supplied to the vertex declaration binder.
     pub streams: [Option<StreamOffset>; 2],
+}
+
+/// The two cache comparisons and the signed range test in 0x15c90.
+pub fn palette_header(requested: i32, last: i32, stage: i32, count: i32) -> Option<u32> {
+    (requested >= 0 && requested < count && requested != last && requested != stage)
+        .then(|| PALETTE_HEADERS + requested as u32 * 12)
 }
 
 fn pointer(mem: &dyn GuestMemory, base: u32, offset: u32) -> Option<u32> {
@@ -116,11 +122,10 @@ impl Bindings {
         }
         self.page = Some(binding.page);
         let requested = i32::from(binding.palette);
-        if requested >= 0 && requested < self.palette_count &&
-            requested != self.last_palette && requested != self.stage_palette {
+        if let Some(header) = palette_header(requested, self.last_palette, self.stage_palette, self.palette_count) {
             self.last_palette = requested;
             self.stage_palette = requested;
-            self.palettes.push(PALETTE_HEADERS + requested as u32 * 12);
+            self.palettes.push(header);
         }
     }
 

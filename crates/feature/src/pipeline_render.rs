@@ -705,6 +705,7 @@ struct Inner {
     /// When the render thread last stopped (a serviced call's wait starts
     /// there).
     stopped: Option<Instant>,
+    render_layer: Option<crate::native_world_layers::Layer>,
     /// The frame in flight's render stopped at a pool call
     /// ([`Stats::io_stalls_render`]).
     io_stalled_render: bool,
@@ -881,6 +882,7 @@ impl PipelineRender {
                     focused: false,
                     deferred: Vec::new(),
                     stopped: None,
+                    render_layer: None,
                     io_stalled_render: false,
                     io_stalled_join: false,
                     pool: PoolUse::Free,
@@ -1463,10 +1465,19 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
             while let Ok(mut job) = rx.recv() {
                 let t = Instant::now();
                 let result = match job.entry {
-                    Some(entry) => job.exec.call(&mut job.cpu, entry, &[]),
+                    Some(entry) => {
+                        // A previous frame may have handed its layer end
+                        // to the game thread during fallback.
+                        crate::native_world_layers::replace(None);
+                        job.exec.call(&mut job.cpu, entry, &[])
+                    }
                     None => job.exec.resume(&mut job.cpu),
                 };
-                me_t.lock().stopped = Some(Instant::now());
+                {
+                    let mut inner = me_t.lock();
+                    inner.stopped = Some(Instant::now());
+                    inner.render_layer = crate::native_world_layers::current();
+                }
                 let _ = job.reply.send(Done {
                     exec: job.exec,
                     result,
@@ -1600,6 +1611,7 @@ fn settle(
         .as_ref()
         .map(|s| s.stack_pages.clone())
         .unwrap_or_default();
+    let mut portable = false;
     let outcome = match result {
         Ok(out) => {
             inner.stats.completed += 1;
@@ -1632,7 +1644,8 @@ fn settle(
                 .iter()
                 .map(|c| c.origin)
                 .collect();
-            let unresumable = !live.is_empty();
+            portable = !live.is_empty() && live.iter().all(|&origin| origin == crate::entry::RENDER_ENTRY);
+            let unresumable = !live.is_empty() && !portable;
             let cause = if unresumable {
                 format!("unresumable:{cause}")
             } else {
@@ -1691,11 +1704,12 @@ fn settle(
         copy_stack(&exec.runtime().memory(), &mut rt.memory(), at.esp, top);
     }
     inner.stats.hand_back += t.elapsed();
+    let render_layer = inner.render_layer;
     inner.exec = Some(exec);
     drop(inner);
     match outcome {
         None => k(cpu, ctx),
-        Some(Ok(at)) => resume(me, cpu, ctx, at, k),
+        Some(Ok(at)) => resume(me, cpu, ctx, at, portable, render_layer, k),
         Some(Err(detail)) => Ok(TransferAbi::fault(ctx.emit(Event::Unsupported {
             pc: cpu.eip,
             mnemonic: "pipeline".into(),
@@ -2130,6 +2144,8 @@ fn resume(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     at: CpuAbi,
+    portable: bool,
+    layer: Option<crate::native_world_layers::Layer>,
     k: Cont,
 ) -> Result<TransferAbi, GuestFault> {
     let saved = *cpu;
@@ -2137,6 +2153,18 @@ fn resume(
     let mut c = *cpu;
     c.esp = me.stack_top.load(Ordering::Relaxed);
     me.resuming.store(true, Ordering::Release);
+    let previous_layer = crate::native_world_layers::replace(layer);
+    // Both executors may have allocated exactly the same token for
+    // different callbacks. Pivot the callback pool with the stack instead
+    // of inserting its closures into the live pool or rewriting addresses.
+    let was_masked = ctx.interrupts_masked();
+    let in_interrupt = portable && ctx.in_interrupt();
+    if portable {
+        exchange_render_callbacks(me, ctx);
+        if in_interrupt {
+            ctx.set_interrupts_masked(true);
+        }
+    }
     let me2 = Arc::clone(me);
     let t = {
         let mut mem = rt.memory();
@@ -2146,6 +2174,13 @@ fn resume(
             at.eip,
             "pipeline: the rest of a render, serially",
             move |cpu, ctx| {
+                if portable {
+                    exchange_render_callbacks(&me2, ctx);
+                    if in_interrupt {
+                        ctx.set_interrupts_masked(was_masked);
+                    }
+                }
+                crate::native_world_layers::replace(previous_layer);
                 me2.resuming.store(false, Ordering::Release);
                 *cpu = saved;
                 k(cpu, ctx)
@@ -2158,11 +2193,26 @@ fn resume(
             Ok(TransferAbi::jump(at.eip))
         }
         other => {
+            if portable {
+                exchange_render_callbacks(me, ctx);
+                if in_interrupt {
+                    ctx.set_interrupts_masked(was_masked);
+                }
+            }
+            crate::native_world_layers::replace(previous_layer);
             me.resuming.store(false, Ordering::Release);
             *cpu = saved;
             other
         }
     }
+}
+
+/// The render executor is idle for the entire serial continuation. Its
+/// suspended stack owns this pool until the outer render return fires.
+fn exchange_render_callbacks(me: &Shared, ctx: &mut ExecCtx) {
+    let mut inner = me.lock();
+    let exec = inner.exec.as_mut().expect("joined render executor");
+    ctx.swap_callback_stack(exec.context());
 }
 
 fn physical(g: &Guest, va: u32) -> Option<u32> {
@@ -2413,6 +2463,8 @@ fn decide(
     let rt = Arc::clone(ctx.runtime());
     let reason = if me.drain.swap(false, Ordering::AcqRel) {
         Some(Serial::Quiesce)
+    } else if me.resuming.load(Ordering::Acquire) {
+        Some(Serial::AfterFallback)
     } else {
         serial_reason(&me.addrs, &rt.memory())
     };

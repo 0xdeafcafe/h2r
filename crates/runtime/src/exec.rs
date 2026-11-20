@@ -407,6 +407,16 @@ impl ExecCtx {
     pub fn live_continuations(&self) -> Vec<crate::continuation::ContinuationInfo> {
         self.continuations.live_list()
     }
+    /// Exchange the return-token pools for two suspended guest stacks.
+    /// The token is an address on the guest stack and can also be saved
+    /// in guest registers. Preserve slot identities and generations across
+    /// the pivot. The caller must ensure the incoming callbacks can run
+    /// against this context, and exchange the pools back before either
+    /// executor resumes its original stack.
+    pub fn swap_callback_stack(&mut self, other: &mut ExecCtx) {
+        std::mem::swap(&mut self.continuations, &mut other.continuations);
+        std::mem::swap(&mut self.interrupt_token, &mut other.interrupt_token);
+    }
     /// The continuation pool as plain data, for a machine snapshot: refuses
     /// while a continuation that is not rebuildable is live.
     pub fn continuation_layout(

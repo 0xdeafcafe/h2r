@@ -96,7 +96,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     if native && let Ok(mut device) = device.lock() {
-        device.add_draw_admission(Arc::new(Admission::new()));
+        device.add_opaque_world_admission(Arc::new(Admission::new()));
     }
     rt.edit_dispatch(|dispatch| {
         let index = DRAW_INDEXED_VERTICES;
@@ -166,6 +166,28 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
             dispatch.mark_context_only(index);
         }
     });
+}
+
+/// Install the sorted handler's identity only while resolving one of its
+/// native index spans. On a render-thread continuation the current layer
+/// TLS may belong to another view, so use the layer retained by prepare.
+pub(crate) fn enter_opaque_range(
+    part: &native_render::world_ranges::SortedPart, layer: Layer, frame: u64,
+    targets: [u32; 8], count: u32,
+) -> impl Drop {
+    let geometry = Geometry {
+        shader: part.shader, variant: part.variant, implementation: part.implementation,
+        sorted_slot: part.sorted_slot, record: part.record, part: part.part,
+        owner: match part.owner {
+            native_render::world::Owner::Cluster(n) => Owner::Cluster(n),
+            native_render::world::Owner::Instance(n) => Owner::Placement(n),
+        },
+    };
+    Restore(DRAW.replace(Some(DrawContext {
+        layer, frame, compare: feature::native_world_layers::compare_frames().contains(&frame),
+        geometry: Some(geometry), target: targets, index_count: Some(count),
+        return_address: native_render::skip::GEOMETRY_DRAW,
+    })))
 }
 
 pub(crate) fn indexed_draw() -> Option<DrawContext> {

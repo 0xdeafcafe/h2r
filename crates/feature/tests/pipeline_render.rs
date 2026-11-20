@@ -59,6 +59,8 @@ const MODE_IO: u32 = 7;
 /// Mode 8: mode 7, the render held before its pool wait while
 /// [`HOLD_RENDER_IO`] is set (so the sim can use the pool first).
 const MODE_IO_HELD: u32 = 8;
+const MODE_RENDER_ENTRY: u32 = 9;
+const RENDER_ENTRY_RESULT: u32 = 0x2_4078;
 /// Only the test that uses mode 8 sets it.
 static HOLD_RENDER_IO: AtomicBool = AtomicBool::new(false);
 /// KeQuerySystemTime(PLARGE_INTEGER): stdcall, one argument.
@@ -354,7 +356,7 @@ fn render(
             render(cpu, ctx, FRAME + 0x20)
         }
         s if s == FRAME + 0x10 => {
-            if m.u32(FALLBACK)? == 2 {
+            if matches!(m.u32(FALLBACK)?, 2 | MODE_RENDER_ENTRY) {
                 return m.call(cpu, D3D_CALLBACK, FRAME + 0x20);
             }
             if m.u32(FALLBACK)? == 6 {
@@ -671,6 +673,17 @@ fn rig_tuned(
     d.register_resume(CALLBACK + 0x10, CALLBACK, CALLBACK + 0x10)
         .unwrap();
     d.register_override(D3D_CALLBACK, "D3D callback", |cpu, ctx, _| {
+        if ctx.memory().u32(FALLBACK)? == MODE_RENDER_ENTRY {
+            return feature::entry::start_render(cpu, ctx, D3D_CALLBACK, |cx| Box::pin(async move {
+                let input = cx.read(|m| m.u32(INPUT))?;
+                cx.call(engine::entry::GuestCall::new(CALLBACK)).await?;
+                // The kernel wrote this word on the game thread while we
+                // were parked. The continuation must read and write there.
+                let calls = cx.read(|m| m.u32(KERNEL_CALLS))?;
+                cx.write(|m| m.set_u32(RENDER_ENTRY_RESULT, input * 100 + calls))?;
+                Ok(engine::entry::Ret::new(0, 0))
+            }));
+        }
         let rt = Arc::clone(ctx.runtime());
         let mut m = rt.memory();
         ctx.call_guest(cpu, &mut m, CALLBACK, |cpu, ctx| ctx.memory().ret(cpu, 0))
@@ -1100,6 +1113,39 @@ fn a_refusal_under_a_rust_continuation_stops_with_its_name_serial_runs_it() {
         Some(&1),
         "{s:?}"
     );
+}
+
+#[test]
+fn portable_render_entry_finishes_in_live_memory_and_restores_the_callers_callbacks() {
+    const JOIN: u32 = 0x1_7c00;
+    for on in [false, true] {
+        let mut rig = rig(on);
+        rig.round(1, false);
+        rig.rt.memory().set_u32(INPUT, 2).unwrap();
+        rig.rt.memory().set_u32(FALLBACK, MODE_RENDER_ENTRY).unwrap();
+        rig.run(FRAME);
+        rig.rt.edit_dispatch(|d| {
+            d.register_override(JOIN, "join from a game callback", |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut m = rt.memory();
+                ctx.call_guest_named(cpu, &mut m, FRAME, "test: outer game callback", |cpu, ctx| {
+                    let mut m = ctx.memory();
+                    assert_eq!(m.u32(RENDER_ENTRY_RESULT)?, 201);
+                    m.ret(cpu, 0)
+                })
+            });
+        });
+        {
+            let mut m = rig.rt.memory();
+            m.set_u32(GLOBALS, 0).unwrap();
+            m.set_u32(FALLBACK, 0).unwrap();
+        }
+        rig.run(JOIN);
+        assert!(rig.ctx.live_continuations().is_empty());
+        if on {
+            assert_eq!(rig.feature.stats().fallbacks.get("kernel:KeQuerySystemTime"), Some(&1));
+        }
+    }
 }
 
 #[test]

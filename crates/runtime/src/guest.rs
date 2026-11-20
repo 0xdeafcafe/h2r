@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod state;
 mod view;
+mod writeback;
+pub use writeback::{Writeback, WritebackView};
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
 pub use view::{FrozenRam, HandBack, LINE_SIZE, WrittenPage};
 

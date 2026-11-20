@@ -48,6 +48,9 @@ use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
+#[path = "native_world_materials.rs"]
+mod opaque_materials;
+
 type LayeredImages = HashMap<(TagId, u32), LayeredImage>;
 
 /// What the worker hands the render thread: the world and its images.
@@ -67,6 +70,7 @@ pub struct CpuWorld {
 /// One loaded world: CPU data until the first pass uploads it.
 #[cfg_attr(test, derive(Default))]
 pub struct Ready {
+    opaque: opaque_materials::Library,
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
     /// The parts the native pass draws, with their shaders: what the skip
@@ -129,6 +133,7 @@ pub(crate) enum Load {
 
 /// The host: the device and the current world.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
+    watch: runtime::WatchId,
     device: d3d::abi::SharedDevice<B>,
     state: State,
     switches: feature::Switches,
@@ -136,6 +141,14 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn try_opaque_simple(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        self.device.lock().is_ok_and(|mut d| {
+            drain_opaque_writes(mem, &mut d, self.watch).is_ok()
+                && d.try_opaque_simple(&crate::native_lights_glue::DeviceMemory(mem), header, value)
+        })
+    }
+
     fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
         let generation = native_map_work::generation();
         let Ok(map) = crate::health::loaded_map_name(mem) else { return false };
@@ -207,7 +220,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                         );
                         }
                         let empty = [
-                            (feature::native_world::on(&switches) && r.parts.is_empty()).then_some(MapStage::World),
+                            (feature::native_world::on(&switches) && r.parts.is_empty() && r.opaque.is_empty()).then_some(MapStage::World),
                             (feature::native_lights::on(&switches) && r.lights.is_none()).then_some(MapStage::Lights),
                             r.fog.as_ref().filter(|fog| fog.part_set.is_empty()).map(|_| MapStage::Fog),
                             r.water.as_ref().filter(|water| water.part_set.is_empty()).map(|_| MapStage::Water),
@@ -232,6 +245,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
         self.ordered_scene_world && !Diagnostics::get().requires_mask_pass()
+    }
+
+    fn opaque_view(
+        &self, mem: &dyn GuestMemory, layer: feature::native_world_layers::Layer,
+    ) -> Result<Box<dyn feature::native_world::OpaqueView>, &'static str> {
+        if !self.ordered_scene_world || !feature::native_world::programs_on(&self.switches)
+            || Diagnostics::get().requires_mask_pass() { return Err("world programs disabled"); }
+        let state = self.state.lock().map_err(|_| "BSP loader unavailable")?;
+        let ready = Arc::clone(current_ready(&state, mem).ok_or("BSP load pending")?);
+        let key = state.0.as_ref().ok_or("BSP load pending")?;
+        Ok(Box::new(OpaqueView {
+            watch: self.watch,
+            device: Arc::clone(&self.device),
+            ready,
+            generation: key.generation,
+            bsp_index: key.index,
+            layer,
+            frame: crate::d3d_diag::presents() + 1,
+        }))
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
@@ -327,11 +359,115 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
+/// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
+/// that wrapper on both resource preparation and submission. A shader call
+/// in between can stream a new bitmap or rewrite a vertex/index buffer.
+fn drain_opaque_writes<B: d3d::Backend>(
+    mem: &mut dyn GuestMemory, device: &mut d3d::Device<B>, watch: runtime::WatchId,
+) -> Result<(), &'static str> {
+    for range in mem.take_write_watch(watch).map_err(|_| "render memory missing D3D write watch")? {
+        device.note_written_pages(range.addr, range.len);
+    }
+    Ok(())
+}
+
+struct OpaqueView<B: d3d::Backend> {
+    watch: runtime::WatchId,
+    device: d3d::abi::SharedDevice<B>,
+    ready: Arc<Ready>,
+    generation: u64,
+    bsp_index: u16,
+    layer: feature::native_world_layers::Layer,
+    frame: u64,
+}
+
+impl<B: d3d::Backend + Send + 'static> feature::native_world::OpaqueView for OpaqueView<B> {
+    fn prepare_opaque(
+        &self, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
+    ) -> Result<Box<dyn feature::native_world::OpaqueDraw>, &'static str> {
+        if native_map_work::generation() != self.generation || active_bsp_index(mem) != Some(self.bsp_index) {
+            return Err("BSP changed during sorted pass");
+        }
+        let material = self.ready.opaque.get(part)?;
+        let layer = self.layer;
+        let shader = engine::tags::tag_entry_checked(mem, engine::handle::DatumHandle(part.shader))
+            .ok().flatten().and_then(|entry| mem.u32(entry.checked_add(8)?).ok())
+            .filter(|&data| data != 0).ok_or("shader tag entry")?;
+        let flags = shader.checked_add(0x16).and_then(|at| mem.u16(at).ok()).ok_or("shader flags")?;
+        let streams = crate::opaque_streams::Plan::read(mem, part.section, part.geometry,
+            part.part_addr, part.program, part.record_addr, part.layer, flags)?;
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        let mut device = self.device.lock().map_err(|_| "device unavailable")?;
+        drain_opaque_writes(mem, &mut device, self.watch)?;
+        let accumulation = if layer.number == 3 && material.samples_texaccum() {
+            let t = layer.texaccum.ok_or("accumulation level unavailable")?;
+            Some((t.surface.ok_or("accumulation surface unavailable")?, t.texture, t.size))
+        } else { None };
+        let targets = device.prepare_opaque_targets(&ReadMemory(mem), accumulation)
+            .ok_or("view attachments unavailable")?;
+        if layer.number == 1 && layer.texaccum.and_then(|t| t.surface) != Some(targets.bound[0]) {
+            return Err("layer 1 accumulation target");
+        }
+        let mut ranges = Vec::with_capacity(part.indices.len());
+        for r in &part.indices {
+            let addr = r.start.checked_mul(2).and_then(|n| part.index_buffer.checked_add(n))
+                .ok_or("world index offset")?;
+            ranges.push(device.prepare_index_range(&ReadMemory(mem), addr, r.end - r.start)
+                .map_err(|_| "world index range")?);
+        }
+        let owner = match part.owner { Owner::Cluster(n) => n, Owner::Instance(n) => n | (1 << 31) };
+        let vertex_key = [part.part_addr, part.program, owner];
+        let vertices = device.prepare_section_vertices(&ReadMemory(mem), vertex_key, &ranges, || streams.vertex_inputs(mem))
+            .map_err(|_| "world vertex windows")?;
+        let textures = material.textures(mem, &mut device, streams.lightmap());
+        Ok(Box::new(OpaquePass { watch: self.watch, device: Arc::clone(&self.device), streams, vertices,
+            ranges, code: material.code.clone(), textures, layer, targets,
+            frame: self.frame }))
+    }
+}
+
+struct OpaquePass<B: d3d::Backend> {
+    watch: runtime::WatchId,
+    device: d3d::abi::SharedDevice<B>,
+    streams: crate::opaque_streams::Plan,
+    vertices: d3d::device::PreparedWorldVertices,
+    ranges: Vec<d3d::device::PreparedIndexRange>,
+    code: Option<d3d::shader::Microcode>,
+    textures: [Option<d3d::device::PreparedStageTexture>; 4],
+    layer: feature::native_world_layers::Layer,
+    targets: d3d::device::PreparedOpaqueTargets,
+    frame: u64,
+}
+
+impl<B: d3d::Backend + 'static> feature::native_world::OpaqueDraw for OpaquePass<B> {
+    fn bind_streams<'a>(&'a self, cx: &'a feature::Cx) -> feature::native_world::OpaqueStreams<'a> {
+        Box::pin(self.streams.handoff(cx))
+    }
+
+    fn submit(self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart)
+        -> Result<(), feature::native_world::OpaqueSubmitError>
+    {
+        use feature::native_world::OpaqueSubmitError::{BeforeDraw, Device};
+        let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame } = *self;
+        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
+        let mut device = device.lock().map_err(|_| Device("opaque device mutex poisoned".into()))?;
+        drain_opaque_writes(mem, &mut device, watch).map_err(BeforeDraw)?;
+        let primitive = if part.strip { gfx::vertex::PrimitiveType::TriangleStrip }
+            else { gfx::vertex::PrimitiveType::TriangleList };
+        let sent = device.emit_world_ranges(&mut crate::native_lights_glue::DeviceMemory(mem),
+            primitive, ranges, vertices, code.as_ref(), &targets, &textures, part.shader,
+            |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, targets.bound, count))
+            .map_err(|e| Device(e.to_string()))?;
+        if sent { Ok(()) } else { Err(BeforeDraw("view changed, callback or capture boundary")) }
+    }
+}
+
 /// Installs the world host and the other native stages on the device.
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) -> Option<Arc<dyn d3d::DrawAdmission>> {
+pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, watch: runtime::WatchId) -> Option<Arc<dyn d3d::DrawAdmission>> {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     let switches = feature::Switches::from_env().unwrap_or_default();
     feature::native_world::set_host(Arc::new(Glue {
+        watch,
         device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
@@ -1184,12 +1320,15 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes, switch
     };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
+    let opaque = if programs_on { opaque_materials::Library::load(&mut map, &shaders) } else {
+        opaque_materials::Library::default()
+    };
     let coverage = (native.len(), world.materials().len());
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok((Ready {
-        part_bounds, programs_on, coverage,
+        opaque, part_bounds, programs_on, coverage,
         rejection_summary: top_rejections(&refused),
         failed_sections,
         declared_materials: shaders.len(),
@@ -1785,6 +1924,41 @@ pub(crate) fn decode_image<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    #[test]
+    fn opaque_resource_boundaries_drain_the_same_runtime_watch_as_d3d() {
+        use d3d::device::{DeviceConfig, GuestRange};
+        use runtime::guest::Permissions;
+        use runtime::watch::CONTIGUOUS_BASE;
+
+        let mut mem = runtime::Guest::new();
+        let va = 0x10000;
+        let pa = 0x40000;
+        let folded = CONTIGUOUS_BASE | pa;
+        mem.map(va, 0x2000, pa, Permissions::RW).unwrap();
+        let watch = mem.subscribe_writes(crate::d3d_glue::WATCH_OWNER);
+        let foreign = mem.subscribe_writes("other observer");
+        for id in [watch, foreign] { mem.watch_writes(id, folded, 0x2000).unwrap(); }
+
+        let range = GuestRange { addr: 0x60000, len: 0x10000 };
+        let mut device = d3d::Device::new(DeviceConfig::halo2(range, range), d3d::RecordingBackend::new());
+        device.tracker.watch(folded, 0x2000);
+        let initial = device.tracker.generation();
+        mem.set_u32(va, 42).unwrap();
+        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
+        assert!(device.tracker.dirty_since(folded, 4, initial));
+        assert!(!mem.has_dirty(watch));
+
+        // A material or resource-destroy callback writes another page after
+        // prepare. Its store must be visible to the later ordered emit.
+        let prepared = device.tracker.generation();
+        mem.set_u32(va + 0x1004, 81).unwrap();
+        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
+        assert!(!device.tracker.dirty_since(folded, 4, prepared));
+        assert!(device.tracker.dirty_since(folded + 0x1004, 4, prepared));
+        assert!(!mem.has_dirty(watch));
+        assert_eq!(mem.take_dirty(foreign).unwrap(), [runtime::DirtyRange { addr: folded, len: 0x2000 }]);
+    }
 
     #[test]
     fn material_rejection_summary_counts_and_ranks_the_top_reasons() {

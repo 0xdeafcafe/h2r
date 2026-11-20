@@ -87,13 +87,16 @@ pub enum VertexProcessing {
 pub struct Microcode {
     words: std::sync::Arc<[u32]>,
     hash: u64,
+    ends_at_first_final: bool,
 }
 
 impl Microcode {
     /// Shares `words`, hashing them once.
     pub fn new(words: std::sync::Arc<[u32]>) -> Self {
         let hash = Self::hash_words(&words);
-        Self { words, hash }
+        let ends_at_first_final = !words.is_empty() && words.len().is_multiple_of(4)
+            && words.chunks_exact(4).position(|i| i[3] & 1 != 0) == Some(words.len() / 4 - 1);
+        Self { words, hash, ends_at_first_final }
     }
 
     /// The hash [`new`](Self::new) gives `words`: FNV-1a over the dwords
@@ -109,6 +112,12 @@ impl Microcode {
     /// The words' hash, as [`hash_words`](Self::hash_words) gives it.
     pub fn words_hash(&self) -> u64 {
         self.hash
+    }
+
+    /// Whether these words have exactly the extent selected by NV2A
+    /// program lookup. Check once when interning a prepared BSP program.
+    pub(crate) fn ends_at_first_final(&self) -> bool {
+        self.ends_at_first_final
     }
 
     /// Whether `self` and `other` share their words (not only equal ones).

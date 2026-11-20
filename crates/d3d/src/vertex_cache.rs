@@ -96,6 +96,7 @@ struct Entry<T> {
 /// Snapshots of guest memory ranges (see the module docs).
 pub struct RangeCache<T> {
     entries: HashMap<(u32, u32), Entry<T>>,
+    epoch: u64,
     bytes: usize,
     budget: usize,
     tick: u64,
@@ -107,6 +108,7 @@ impl<T: Snapshot> RangeCache<T> {
     pub fn new(budget: usize) -> Self {
         Self {
             entries: HashMap::default(),
+            epoch: next_snapshot_id(),
             bytes: 0,
             budget,
             tick: 0,
@@ -120,6 +122,13 @@ impl<T: Snapshot> RangeCache<T> {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map_or(DEFAULT_BUDGET, |mb| mb << 20)
+    }
+
+    /// Section preparation primes new static windows once. A previously
+    /// seen window, including a dynamic ghost, keeps the usual admission
+    /// and invalidation policy on its next draw.
+    pub(crate) fn needs_static_window(&self, va: u32, len: u32) -> bool {
+        len as usize <= self.budget && !self.entries.contains_key(&(va, len))
     }
 
     /// Looks up `[va, va + len)`. Anything but a hit leaves the caller to
@@ -204,8 +213,15 @@ impl<T: Snapshot> RangeCache<T> {
         self.frame += 1;
     }
 
+    /// Identity of this cache since its last reset. A prepared packet can
+    /// span a resource reset even when its old snapshot is still referenced.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Forgets everything.
     pub fn clear(&mut self) {
+        self.epoch = next_snapshot_id();
         self.entries.clear();
         self.bytes = 0;
     }

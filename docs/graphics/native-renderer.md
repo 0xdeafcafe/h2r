@@ -992,16 +992,12 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 
 ### Native opaque layers
 
-`impl.render.native_world_layers=on` allows the standard geometry
-handler's main-scene indexed ranges in layers 1, 5, 7, 8 and the
-combined materials in layer 3 to record natively. The layer
-hook identifies the scene call and the indexed submission identifies the
-individual cluster, placement or object record. The guest still builds
-and sorts the list and runs its shader and stencil setup and tail. At
-the draw, the native pass reuses the resolved live streams, indices,
-programs, render states, constants and texture views. This preserves
-interleaved D3D draws in their guest order, including subpart slices,
-depth equality, inherited cull and per-record stencil reference.
+The main scene draws ordinary BSP clusters and placements in sorted order in
+layers 1, 3, 5, 7 and 8. The default front end takes these entries at the
+standard geometry handler (`0x0004d0b0`). Native objects and entries left
+with the guest can still use the indexed admission in
+`impl.render.native_world_layers`. Both paths preserve the original subpart
+ranges, topology, live colour/depth attachments and per-record stencil state.
 
 Layer 1 replaces a draw only while target 1's attachment header is
 bound. Texture inputs must resolve to views the program can sample.
@@ -1018,10 +1014,14 @@ hold the same GPU texture on each live copy. The guest dimensions
 must agree and the texture must use linear texel addressing. This works
 with either owner of layer 1, because both write the same attachment.
 
-This slice replaces the backend draw. Its CPU cost includes the guest
-setup and D3D resource resolution. Geometry snapshots can reuse native
-GPU buffers, while native shader, pipeline and texture bindings are
-cached per device. Measure before treating this as a performance gain.
+The sorted BSP path prepares the vertex program for each classification
+and the stage binding recipe for each shader, LOD, layer, pass and
+implementation when the BSP loads. Section preparation reads the live
+section's declaration, bitmap residency and palette, index windows and
+target identities. Render-target samples resolve against their current
+contents in submission order. The menu's unlightmapped implementation
+uses its own declaration and program. A part can draw without a lighting
+vector when its selected implementation has its required inputs.
 
 ### Native BSP scene walk
 
@@ -1037,46 +1037,53 @@ compare the two front ends with the same GPU renderer.
 | `LAYER_ENTRIES`, after layer setup | When the world, water or fog renderer has committed its reservation and every active item has its layer bit clear, return the empty dispatch result immediately. | The GPU reservation already covers the claimed ranges. One remaining bit keeps the dispatcher. Layer setup and end still establish the shared device state. No handler, shader, stencil switch or indexed draw would run in the empty dispatcher. |
 | `RENDER_STATES` and `WORLD_PART_EMIT`, inside an opaque BSP draw | Use the render-state port through the first necessary guest call. Elide repeated simple states when the shadow matches and the push header is unique. Use the one-range emitter when visible subparts tile the part's indices. | Changed states and shared push headers still reach the device. The emitter flushes textures and emits the same indices and topology. A masked strip needs exactly one subpart. The placement constants, shader cache, lightmap binding and stencil tail still execute. |
 
-The default ordered opaque renderer accepts individual draws after resolving
-their live programs, textures, streams and attachments. A visible BSP ID,
-or even complete geometric coverage of a section, cannot authorize an early
-GPU reservation for those draws. In particular, a placement can write the
-lightmap stream offsets and bind a palette in the geometry handler. Omitting
-that handler can change a later draw even when the native world covers
-every triangle. Whole-dispatch skipping currently applies to **pre-reserved**
-world, fog and water layers. The general opaque GPU pass still goes through
-the indexed admission path.
+#### Sorted handler and device handoff
 
-The lightmap portion of the state handoff is modeled in
-`engine::render_loop::world_lightmap`. It decodes the sorted handler's
-render record after geometry selection. A lit cluster selects its signed
-page and palette. A placement can also update both byte offsets in each
-active bucket stream descriptor. The fold retains the final words for
-**every descriptor touched** across the run, including a descriptor an
-earlier placement used. Palette changes follow the global and stage-3
-cache checks in `0x00015c90` and retain D3D bind order for reference
-accounting. Layer 3 with lighting selector 3 leaves that state alone.
+The sorted hook matches the standard builder and draw callback, the scene
+layer, the handler arguments and the caller's current sort slot and counter.
+A native run ends at the first object, custom callback, excluded slot or
+refused section. Each accepted entry reads its own implementation,
+classification, record and visible subparts. Triangle lists coalesce
+contiguous visible index ranges. A masked strip restarts at each subpart.
+The native run returns with ESI on the last consumed slot. The caller
+performs its normal final increment and can dispatch the next guest draw.
 
-For a full material parameter rebind,
-`ShaderLibrary::selected_implementation` can start from an incoming
-`ParameterState`. Vector writes retain untouched components, including
-the fourth component of engine vector inputs. A bitmap binding copies
-the slot's earlier size to the stage before refreshing the slot. Variant
-pixel shaders retain the untouched words of the previous definition.
-Changing pass implementation emits the previous restore list before
-the new entry list and retains sampler stages outside the new list.
+The run's `handoff` applies material and device transitions in draw order.
+The portable entry holds the outgoing shader and device cache words in a
+bounded writeback buffer. Native reads through any alias see the most recent
+write. Before a real guest call, a fault or the return to the outer loop,
+the memory guard publishes the final dirty bytes. D3D write watches see
+logical writes at store time. Resource retains, releases and push callbacks
+still execute in device order.
+The shader cache tracks the previous and current shader and implementation,
+dirty parameter banks, live texture headers and sizes, sampler stages and
+the full pixel-shader definition. An implementation switch consumes the
+outgoing restore list before publishing the new states. Component writes
+preserve untouched vector lanes and PS fields. Frame inputs, animation and
+record constants are evaluated against the current view and guest floating
+point control words.
 
-The ordered renderer still enters the geometry handler. It needs a
-device handoff for the shader cache, vertex declarations, streams,
-per-draw overrides, and resource references before it can skip that
-handler. A layer with interleaved objects needs that handoff at each
-native-to-guest boundary.
+A lit placement updates both offsets in each selected lightmap stream
+descriptor. Its palette, shader, declaration, stream and texture changes
+reach the D3D device in their original order, including device references
+and callbacks when a resource loses its last reference. A missing vertex
+input can suppress emission after the binder has already changed state.
+Stencil, fade and transient target operations bracket the actual draw.
+The next native or guest entry therefore starts with the outgoing device
+and RAM caches already installed. Applying only the last part's bindings
+would lose writes to earlier descriptors and intermediate resource releases.
+
+The per-range submission uses the prepared geometry and validated texture
+and program hints. Stale or dynamic resources still use the ordered D3D
+resolver. A preflight refusal keeps the original sorted handler live. A
+late refusal before the first range can issue the indexed draws under the
+state already applied. A device error after emission follows the fault
+path so a submitted prefix cannot be drawn twice.
 
 For the A/B, capture the same Old Mombasa replay and present numbers with
 `H2_FRAME_STATS=1` and `H2_FEATURES=render-timing`, changing only
 `impl.render.native_world_skip_build=off` to `on`. Use ordinary
-render timing. Deep timing brackets the guest build and dispatch, so its
-run keeps those bodies for attribution. Compare warmed per-frame `render`,
+render timing. Deep timing adds guest brackets that change the cost of the control path. Compare warmed per-frame `render`,
 `scene_passes`, `d3d` and `cpu`, and count differing pixels on both target
 copies at matching presents. Include views with placements, partial
 visibility, fog, water and lights. Expected savings are in gathering,
@@ -1097,7 +1104,36 @@ that reach the indexed call after guest handler setup
 ranges later accepted by the native GPU backend. The corresponding
 `_sections` columns count each cluster or placement once per view and
 BSP on each path. A section with parts on both paths counts in both.
-The indexed counters require the world layer hooks.
+The indexed counters require the world layer hooks. Prepared opaque
+submissions and their device preflight are timed in the D3D phase.
+
+At the sorted handler boundary, `native_world_opaque_handlers_taken` counts
+every ordinary BSP geometry handler consumed by the native path. This is the
+skipped guest handler count. `native_world_opaque_handler_draws` counts
+all ranges those handlers submitted. A masked strip can emit several ranges.
+Within these totals, `native_world_opaque_handlers_indexed` and
+`native_world_opaque_handler_indexed_draws` count the handlers and ranges
+that needed the indexed backend for emission. `native_world_opaque_handlers_fallback`
+counts each whole geometry handler left to the guest once. The
+`native_world_opaque_materials` field in `H2_FRAME_STATS_CSV` breaks down
+each frame by full shader datum, including the reason and handler count
+for indexed emission and for whole-handler refusal. The frame-stats exit
+report sums the same breakdown from `H2_FRAME_STATS_FROM`.
+
+`native_world_opaque_taken_sections` and `native_world_opaque_fallback_sections`
+count distinct clusters and placements for consumed and refused handlers
+respectively. A section with mixed materials can appear in both. Each
+frame counts the section once per BSP, view and outcome across all sorted
+layers. The material field also gives `refused_sections` per shader and
+reason when the render record identifies a valid cluster or placement.
+
+`native_world_opaque_gpu_draws` counts prepared packets recorded on the
+required GPU copies. `native_world_opaque_backend_draws` counts prepared
+packets the ordinary backend drew after a recording refusal. Deferred
+packets report the recording outcome on the worker. The material
+breakdown includes the backend refusal reason. Compare these counters
+with skipped handlers to distinguish CPU preparation savings from changes
+in GPU recording.
 
 ### Opaque-layer comparison
 
