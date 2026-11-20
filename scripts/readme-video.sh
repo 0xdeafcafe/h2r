@@ -106,7 +106,7 @@ trap 'exit 143' TERM
 
 agent() {
   # The Unix socket path must fit in sun_path, even when TMPDIR is long.
-  (cd "$scratch" && "$h2" agent --socket "$1" --timeout 610 "${@:2}")
+  (cd "$scratch" && "$h2" agent --socket "$1" --timeout 1810 "${@:2}")
 }
 
 capture() {
@@ -131,10 +131,10 @@ capture() {
   done
   [[ -S "$scratch/$socket" ]] || fail "$name: timed out waiting for the agent socket"
 
-  ready="$(agent "$socket" wait '{"phase":"gameplay","map_ticks":30}' 600000)"
+  ready="$(agent "$socket" wait '{"phase":"gameplay","map_ticks":30}' 1800000)"
   map="$(jq -er '.at.map' <<< "$ready")"
   agent "$socket" wait "$(jq -cn --arg map "$map" --argjson ticks "$settle_ticks" \
-    '{phase:"gameplay", $map, $ticks}')" 600000 >/dev/null
+    '{phase:"gameplay", $map, $ticks}')" 1800000 >/dev/null
   agent "$socket" cheat.set '{"name":"hide_hud","value":true}' >/dev/null
   tick="$(agent "$socket" status | jq -er '.at.tick')"
   start_tick=$((tick + 30))
@@ -153,14 +153,14 @@ capture() {
   # Start after the present reported at the scheduled tick. Wait for one
   # extra file so the final PNG is closed even when rendering trails the game.
   lead="$(agent "$socket" wait "$(jq -cn --arg map "$map" --argjson tick "$start_tick" \
-    '{phase:"gameplay", $map, $tick}')" 600000)"
+    '{phase:"gameplay", $map, $tick}')" 1800000)"
   [[ "$(jq -er '.at.tick' <<< "$lead")" == "$start_tick" ]] \
     || fail "$name: missed the first tick of the camera move"
   present="$(jq -er '.at.present' <<< "$lead")"
   first=$((present + 1))
   end=$((first + clip_frames))
   agent "$socket" wait "$(jq -cn --arg map "$map" --argjson present "$end" \
-    '{phase:"gameplay", $map, $present}')" 600000 >/dev/null
+    '{phase:"gameplay", $map, $present}')" 1800000 >/dev/null
   printf -v following '%s/frame-%05d.png' "$gfx" "$end"
   for ((i = 0; i < 120; i++)); do
     [[ -s "$following" ]] && break
