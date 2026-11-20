@@ -3,7 +3,9 @@
 //!
 //! `b7360`, `baf80`, `bba20` and `bc7b0` call no guest code: their bodies
 //! run `sim_objects::wake` to the end and return with the registers and
-//! flags retail returns with. `109580` calls the stack probe `320560` and
+//! flags retail returns with, leaving the stack below `esp` as retail
+//! leaves it (the pushes and return addresses of the leaves and their
+//! calls to each other). `109580` calls the stack probe `320560` and
 //! the spatial visit `bb050`, which stay guest until phase 2's visit is
 //! callable from Rust, so it is a segment body.
 
@@ -13,7 +15,7 @@ use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use guest_layout::{Fault, Mem, MemMut};
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, Guest, GuestFault};
-use ::sim_objects::wake::{self as kernels, Exit, Flags};
+use ::sim_objects::wake::{self as kernels, Exit, Flags, Stack};
 use std::cell::RefCell;
 
 const NONE: u32 = u32::MAX;
@@ -69,6 +71,11 @@ impl MemMut for Exact<'_> {
     }
 }
 
+/// The leaf's frame: entered with `esp` at its return address.
+fn stack(c: &CpuAbi) -> Stack {
+    Stack { esp: c.esp, ebx: c.ebx, esi: c.esi, edi: c.edi }
+}
+
 /// Run a kernel over the guest and put its exit in the registers.
 fn leaf(
     c: &mut CpuAbi,
@@ -97,8 +104,8 @@ pub(super) fn wake(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     if pc != points::OBJECT_WAKE.base {
         return Err(unowned(pc));
     }
-    let object = cx.cpu.eax;
-    leaf(cx.cpu, cx.g, |m| kernels::wake(m, object))?;
+    let (object, s) = (cx.cpu.eax, stack(cx.cpu));
+    leaf(cx.cpu, cx.g, |m| kernels::wake(m, object, s))?;
     Ok(Next::Ret { pop: 0 })
 }
 
@@ -117,8 +124,8 @@ pub(super) fn wake_for_post(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     if pc != points::OBJECT_WAKE_FOR_POST.base {
         return Err(unowned(pc));
     }
-    let object = cx.cpu.eax;
-    leaf(cx.cpu, cx.g, |m| kernels::wake_for_post(m, object))?;
+    let (object, s) = (cx.cpu.eax, stack(cx.cpu));
+    leaf(cx.cpu, cx.g, |m| kernels::wake_for_post(m, object, s))?;
     Ok(Next::Ret { pop: 0 })
 }
 
@@ -128,7 +135,8 @@ pub(super) fn wake_children(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
         return Err(unowned(pc));
     }
     let object = cx.g.u32(cx.cpu.esp.wrapping_add(4))?;
-    leaf(cx.cpu, cx.g, |m| kernels::wake_children(m, object))?;
+    let s = stack(cx.cpu);
+    leaf(cx.cpu, cx.g, |m| kernels::wake_children(m, object, s))?;
     Ok(Next::Ret { pop: 4 })
 }
 
