@@ -238,6 +238,7 @@ pub fn draw_display(
 ) -> Result<FrameReport, String> {
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::new_display(backend, replay, scale)?;
+    pass.set_lighting(lighting);
     let e3 = record(&mut pass, replay, true, lighting, observer)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
@@ -265,6 +266,7 @@ pub fn draw_display_on(
 ) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
     let before = backend.batch_stats();
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
+    pass.set_lighting(lighting);
     let e3 = record(&mut pass, replay, false, lighting, observer)?;
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((

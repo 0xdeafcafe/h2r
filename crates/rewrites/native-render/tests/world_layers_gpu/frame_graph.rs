@@ -306,7 +306,8 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
 
     // Display is the only graph entry that publishes. A second capture
     // must leave the displayed image, its handle and the present hook alone.
-    let display = draw_display(&mut backend, &scene, &frame, 1, Lighting::E3, 0, None, None).unwrap();
+    let display =
+        draw_display(&mut backend, &scene, &frame, 1, Lighting::E3, 0, None, None).unwrap();
     assert_eq!(display.e3, second.report.e3);
     let presented = backend.last_presented().unwrap();
     let shown = backend.read_color(presented).unwrap().0;
@@ -363,3 +364,60 @@ fn canonical_targets_preserve_previous_frame_contents_outside_a_partial_draw() {
 }
 
 mod scaled;
+
+#[test]
+fn private_receivers_restore_the_renderer_and_the_swap_reports_its_own_mode() {
+    use d3d::shader::PreparedShader;
+    use d3d::{ResolvedDraw, ShaderProvider};
+
+    struct ReceiverLog(Arc<Mutex<Vec<bool>>>);
+    impl ShaderProvider for ReceiverLog {
+        fn set_hard_shadows(&mut self, hard: bool) {
+            self.0.lock().unwrap().push(hard);
+        }
+
+        fn prepare(
+            &mut self,
+            _ctx: &GfxContext,
+            _renderer: &mut gfx::Renderer,
+            _draw: &ResolvedDraw,
+            _textures: [Option<&wgpu::TextureView>; 4],
+        ) -> Result<PreparedShader, String> {
+            Err("the receiver fixture only clears".into())
+        }
+    }
+
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let shown = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::clone(&shown);
+    let mut gpu = GfxBackend::new(ctx).with_shaders(Box::new(ReceiverLog(Arc::clone(&changes))));
+    gpu.observe_guest_present(move |_, _, _, _, mode| received.lock().unwrap().push(mode));
+    gpu.set_hard_shadows(true);
+    let scene = sealed();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, clear());
+    for scale in [1, 2] {
+        if scale == 2 {
+            frame.aux.push(AuxTarget {
+                width: SIZE / 2,
+                height: SIZE / 2,
+                ..frame.colour.unwrap()
+            });
+        }
+        changes.lock().unwrap().clear();
+        draw_private(&mut gpu, &scene, &frame, scale, Lighting::Retail).unwrap();
+        assert_eq!(*changes.lock().unwrap(), [false, true]);
+        assert!(shown.lock().unwrap().is_empty());
+    }
+    frame.aux.clear();
+    for mode in [Lighting::E3, Lighting::Retail] {
+        changes.lock().unwrap().clear();
+        let report = draw_display(&mut gpu, &scene, &frame, 1, mode, 0, None, None).unwrap();
+        assert_eq!(report.lighting, mode);
+        assert_eq!(*changes.lock().unwrap(), [false, true]);
+    }
+    assert_eq!(*shown.lock().unwrap(), [Lighting::E3, Lighting::Retail]);
+}

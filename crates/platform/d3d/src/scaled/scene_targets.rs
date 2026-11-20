@@ -67,7 +67,12 @@ impl Scaled {
                 ReplayOp::Draw { textures, .. } => textures.iter().flatten().all(|t| match t {
                     ReplayTexture::Placeholder(_) => false,
                     ReplayTexture::Frozen(sample) => {
-                        self.frozen_texture(sample, self.scale).is_some()
+                        // One native 1x draw cannot preserve a distinct
+                        // legacy E3 image and reference image.
+                        (self.scale != 1
+                            || self.lighting != Lighting::E3
+                            || sample.images().is_some_and(|images| images.same_copies()))
+                            && self.frozen_texture(sample, self.scale).is_some()
                     }
                     _ => true,
                 }),
@@ -178,7 +183,7 @@ impl<'a> ScaledScenePass<'a> {
             backend.view.move_counter(&mut backend.reference, true);
         }
         backend.view.prune_scene_uploads();
-        backend.view.set_hard_shadows(false);
+        backend.view.set_scene_receiver(false);
         backend.scene_active = true;
         let pass = Self {
             backend,
@@ -231,7 +236,7 @@ impl<'a> ScaledScenePass<'a> {
         }
         self.backend
             .view
-            .set_hard_shadows(self.backend.lighting == Lighting::E3);
+            .set_scene_receiver(self.backend.lighting == Lighting::E3);
         self.active = false;
     }
 
@@ -290,13 +295,23 @@ impl<'a> ScaledScenePass<'a> {
             // boundary, as in a sleeping view's Swap. Both see the same
             // GPU allocation, already recorded once by the display.
             self.backend.view.flush()?;
-            self.backend
-                .reference
-                .submit_present(None, shown.reference, flags, gamma, false)?;
+            self.backend.reference.submit_present(
+                None,
+                shown.reference,
+                flags,
+                gamma,
+                false,
+                self.backend.lighting,
+            )?;
         }
-        self.backend
-            .view
-            .submit_present(None, image, flags, gamma, false)?;
+        self.backend.view.submit_present(
+            None,
+            image,
+            flags,
+            gamma,
+            false,
+            self.backend.lighting,
+        )?;
         if self.backend.scale == 1 && self.backend.lighting == Lighting::E3 {
             self.backend
                 .scene_coherent
@@ -347,11 +362,11 @@ impl SceneDevice for Scaled {
     fn frozen_texture(
         &self,
         sample: &crate::scene_sink::FrozenSample,
-        scale: u32,
+        _scale: u32,
     ) -> Option<Texture> {
         let images = sample.images()?;
         let reference = images.reference.for_device(&self.reference.ctx.device)?;
-        let view = if scale == 1 {
+        let view = if self.scale == 1 {
             &images.reference
         } else {
             images.display.as_ref()?

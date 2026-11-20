@@ -109,6 +109,10 @@ pub struct HostTexture {
 }
 
 impl HostTexture {
+    pub(crate) fn same_sample(&self, other: &Self) -> bool {
+        self.texture == other.texture && self.view == other.view
+    }
+
     /// Another handle to the same texture and view (for a backend on the
     /// same device, `crate::scaled`).
     pub fn shared(&self) -> HostTexture {
@@ -309,8 +313,18 @@ impl GfxBackend {
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
         self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
+        self.set_scene_receiver(on);
+    }
+
+    pub(crate) fn scene_lighting(&self) -> crate::Lighting {
+        self.lighting
+    }
+
+    /// Select the carried draw's shadow lookup without relabelling the
+    /// lighting mode of the Swap that observers will receive.
+    pub(crate) fn set_scene_receiver(&mut self, hard: bool) {
         if let Some(s) = self.shaders.as_mut() {
-            s.set_hard_shadows(on);
+            s.set_hard_shadows(hard);
         }
     }
 
@@ -463,7 +477,8 @@ impl GfxBackend {
     }
 
     /// Replaces the shader translator for textured and programmable draws.
-    pub fn with_shaders(mut self, shaders: Box<dyn ShaderProvider>) -> Self {
+    pub fn with_shaders(mut self, mut shaders: Box<dyn ShaderProvider>) -> Self {
+        shaders.set_hard_shadows(self.lighting == crate::Lighting::E3);
         self.shaders = Some(shaders);
         self
     }
@@ -1089,7 +1104,7 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        let result = self.submit_present(from, surface, flags, gamma, true);
+        let result = self.submit_present(from, surface, flags, gamma, true, self.lighting);
         if result.is_err() && from.is_some() {
             // Showing the reference is the scaled backend's final attempt for
             // this guest swap. Even an unshown frame consumes its ordinal.
@@ -1106,6 +1121,7 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
         honour_finish: bool,
+        lighting: crate::Lighting,
     ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
@@ -1134,7 +1150,7 @@ impl GfxBackend {
             None => (&self.ctx, &self.store),
         };
         if let Some(observer) = &mut self.guest_present_observer {
-            observer(self.frame - 1, ctx, store, surface, self.lighting);
+            observer(self.frame - 1, ctx, store, surface, lighting);
         }
         if let Some(hook) = &mut self.present_hook {
             hook(ctx, store, surface, flags, gamma);

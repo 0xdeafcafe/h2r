@@ -32,6 +32,7 @@ pub struct GuestDrawPass<'a> {
     commands: Commands<GfxBackend>,
     presented: TargetRef,
     display: bool,
+    lighting: crate::Lighting,
     old_count_samples: bool,
     old_gpu_only_aliases: bool,
     owns_targets: bool,
@@ -180,7 +181,10 @@ impl<'a> GuestDrawPass<'a> {
         if existing.is_none() {
             gpu.single_copy_aliases = true;
         }
+        let lighting = gpu.scene_lighting();
+        gpu.set_scene_receiver(false);
         let mut pass = Self {
+            lighting,
             gpu,
             scale,
             targets: HashMap::new(),
@@ -299,6 +303,12 @@ impl<'a> GuestDrawPass<'a> {
         self.read_target(self.presented)
     }
 
+    /// The graph samples its lighting parameter when the render thread
+    /// takes the scene. Its display observer receives that same value.
+    pub fn set_lighting(&mut self, lighting: crate::Lighting) {
+        self.lighting = lighting;
+    }
+
     /// Submits the frame and calls the backend's window hook without a
     /// guest Swap finish wait. Retain the shown target until the next
     /// display swap: callers may read the most recently presented surface.
@@ -322,7 +332,8 @@ impl<'a> GuestDrawPass<'a> {
             return Err("a private scene capture cannot be presented".into());
         }
         let target = self.surface(self.presented)?;
-        self.gpu.submit_present(None, target, flags, gamma, false)?;
+        self.gpu
+            .submit_present(None, target, flags, gamma, false, self.lighting)?;
         let retained = if self.owns_targets {
             self.targets.remove(&self.presented)
         } else {
@@ -357,6 +368,8 @@ impl Drop for GuestDrawPass<'_> {
                 self.gpu.store.remove(target);
             }
         }
+        self.gpu
+            .set_scene_receiver(self.gpu.scene_lighting() == crate::Lighting::E3);
         self.gpu.count_samples = self.old_count_samples;
         self.gpu.single_copy_aliases = self.old_gpu_only_aliases;
     }
