@@ -198,7 +198,13 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
                     remainder: c.remainder,
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: view_carried(summary, v),
-                    camera_use: BTreeMap::new(),
+                    camera_use: if v.key.kind == ViewKind::Game {
+                        crate::frame_owner::camera_counts(scene.id, v.key.view).map_or_else(BTreeMap::new, |counts| {
+                            ["screen", "view", "unknown"].into_iter().map(str::to_owned).zip(counts).collect()
+                        })
+                    } else {
+                        BTreeMap::new()
+                    },
                     decorators: d.draws,
                     decorator_instances: d.instances,
                     decorator_remainder: d.remainder,
