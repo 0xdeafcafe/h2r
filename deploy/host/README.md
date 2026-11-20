@@ -1,7 +1,11 @@
 # Dedicated host image
 
-The Linux/amd64 image runs one match lease with a headless `h2` and the
-module compiled from your own disc. Use a private registry for this image.
+The Linux/amd64 image runs dedicated matches with a headless `h2` and the
+module compiled from your own disc. With `H2_PACK=1` it runs `h2 host pack`,
+which takes several leases' matches over a private control port; Live on
+Cloudflare starts it that way.
+[Packed hosts](../../docs/live/dedicated-host.md#packed-hosts) Without it,
+it runs a single lease, as below. Use a private registry for this image.
 
 ## Build on macOS
 

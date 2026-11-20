@@ -217,7 +217,7 @@ impl Drop for Game {
 }
 
 #[cfg(target_os = "linux")]
-fn stop_on_parent_death(cmd: &mut Command) {
+pub(super) fn stop_on_parent_death(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the child uses only syscalls and constructs errors without allocation.

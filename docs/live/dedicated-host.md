@@ -166,11 +166,82 @@ use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
 `h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
 `default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
 
-The entrypoint passes `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
-`H2_DATA_SHA` and optional `H2_REGION` to `h2 host run`. The host verifies
-the bundle hash and caches the data in `/var/cache/h2`. The image exposes
-UDP ports 31000–31006 for the game and TCP 31100 for the datagram tunnel. Each
-container serves one lease and exits when that lease ends.
+With `H2_PACK=1` the entrypoint runs `h2 host pack`, which starts empty
+and takes matches over a private control port. This is how Cloudflare
+runs it. [Packed hosts](#packed-hosts) Otherwise it passes `H2_LEASE`,
+`H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and optional
+`H2_REGION` to `h2 host run` for a single lease, as in a local Docker
+smoke test. The host verifies the bundle hash and caches the data in
+`/var/cache/h2`. The image exposes UDP 31000–31020 for three slots of game
+ports, TCP 31099 for pack control and TCP 31100–31102 for the slots'
+datagram tunnels.
+
+## Packed hosts
+
+One light match costs about 6–10 ms of CPU per 33 ms tick and about
+340 MB RSS, much of it the shared module and maps. A container that runs
+one match leaves its vCPU 70–80% idle. A pack runs several matches in one
+container, each a separate `h2 host run` child with its own guest RAM,
+writable data and ports. The module and maps are memory-mapped from the
+same files, so the page cache shares them.
+
+**Supervisor.** `h2 host pack` listens on `H2_PACK_CONTROL` (default
+`0.0.0.0:31099`). Live adds a match with `POST /v1/pack/matches`, removes
+one with `DELETE /v1/pack/matches/<lease>`, reads one with
+`GET /v1/pack/matches/<lease>` and reads the whole pack with
+`GET /v1/pack`. Each slot *n* uses UDP `31000 + 7n` to `31006 + 7n`,
+tunnel `31100 + n` and private agent `14720 + n`. The add request carries
+the lease, its token and the signed bundle URL. The supervisor passes them
+to its child and never writes them down. Each child is its own process
+group. A removal sends SIGTERM to the group, so `h2 host run` reports
+`Stopped` to Live, and sends SIGKILL after 15 seconds. The children watch
+a pipe from the supervisor and stop if it dies. A pack that has run
+nothing for `H2_PACK_LINGER_S` (default 60 s) exits.
+
+**Admission.** The supervisor samples each child's process group every
+2 seconds from `/proc`: CPU time per 33 ms of wall time and proportional
+resident memory (`Pss`). After three samples a match's cost is the higher
+of its smoothed and latest value. Until then it counts at 10 ms per tick
+and 340 MiB. A new match is refused when the pack already runs
+`H2_PACK_MAX_MATCHES` (default 3), when the summed cost plus 10 ms for the
+new match would pass 70% of 33.3 ms per vCPU, or when memory plus 340 MiB
+would pass the container limit less 256 MiB. Memory comes from the cgroup's
+`memory.current` less inactive file pages. Without a cgroup, it uses the
+matches' own figures. `H2_PACK_VCPUS` and `H2_PACK_MEMORY_MIB` set the
+size; otherwise the cgroup's `cpu.max` and `memory.max` do. On one vCPU,
+two matches measured at 6 ms leave room for a third (22 ms of a 23.3 ms
+budget). Two at 9 ms do not. Off Linux nothing is measured, so the
+defaults and the match cap decide.
+
+**Routing.** On Cloudflare the hub still calls one room per lease. That
+room asks the class's pool room for its location
+(`pool-<hint>`, or `pool-any` when the region is not a Cloudflare location
+hint) to place the lease. The pool sends the match to the fullest pack
+with room and starts a new pack room (`pool-<hint>/pack-<n>`) only when
+none has room. A refusal marks that pack full until one of its leases
+ends, and the pool tries the next pack, up to three new packs per lease.
+The pack room starts its container with only the pack's size in the
+environment and waits up to 30 seconds for the control port. The lease
+room forwards each tunnel upgrade to its pack room, which connects it to
+the match's tunnel port. When Live stops a lease, the pool removes the
+match from its pack. When that was the pack's last lease, the pack room
+destroys the container instead. Pack names are never reused. Each room
+keeps an alarm at its latest lease deadline as a backstop for a lost stop.
+`LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
+(default 3, at most 8).
+
+Native Live uses the same pool logic and supervisor when
+`LIVE_HOST_PACK_MATCHES` is set. It starts one local `h2 host pack` per
+pack with its control port on loopback from `LIVE_HOST_PACK_CONTROL_PORT`
+(default 32000) plus the pack's window. Each later window shifts its UDP,
+tunnel and agent ports past the previous pack's slots. Its provider
+references are `pack:<pack>/<lease>`. Unset, each lease runs its own
+`h2 host run` as before.
+
+Live's cost estimate still counts a full container for each lease, and
+`LIVE_MAX_HOSTS` still counts leases. Packing three matches per container
+lets the same `max_instances` serve three times the leases. The estimate
+does not yet reflect that saving.
 
 ## Light host
 
@@ -360,8 +431,8 @@ When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
 commands, state and controller claim. The child reports a bind failure
 as a startup error. Cloudflare sets `tcp://127.0.0.1:14720` for
-container-local diagnostics. HostRoom forwards the game tunnel on port
-31100. The Local provider drops any inherited `H2_AGENT` from Live so
+container-local diagnostics. A pack gives each slot its own agent port
+from 14720 and tunnel port from 31100. The Local provider drops any inherited `H2_AGENT` from Live so
 its leases use their own Unix sockets.
 
 For UDP, the child uses the default route's IPv4 or the IP from

@@ -11,10 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
+#[path = "local_pack.rs"]
+mod pack;
+
 pub struct LocalProvider {
     root: PathBuf,
     bin: Option<PathBuf>,
     children: Mutex<HashMap<String, LocalHost>>,
+    /// Several matches per `h2 host pack` process, as on Cloudflare.
+    packs: Option<pack::LocalPacks>,
 }
 
 struct LocalHost {
@@ -36,10 +41,21 @@ fn port_for(first: u16, width: u16, slot: u16) -> Result<u16, HostError> {
 
 impl LocalProvider {
     pub fn new(data_root: impl AsRef<Path>) -> Self {
+        let root = data_root.as_ref().join("hosts");
+        let packs = pack::pack_matches(std::env::var("LIVE_HOST_PACK_MATCHES").ok().as_deref())
+            .map(|n| pack::LocalPacks::new(n, root.clone()));
         Self {
-            root: data_root.as_ref().join("hosts"),
+            root,
             bin: std::env::var_os("LIVE_HOST_BIN").map(PathBuf::from),
             children: Mutex::default(),
+            packs,
+        }
+    }
+
+    fn bin(&self) -> io::Result<PathBuf> {
+        match &self.bin {
+            Some(path) => Ok(path.clone()),
+            None => std::env::current_exe(),
         }
     }
 
@@ -57,10 +73,7 @@ impl LocalProvider {
         {
             return Err(HostError::new("invalid lease directory name"));
         }
-        let bin = match &self.bin {
-            Some(path) => path.clone(),
-            None => std::env::current_exe()?,
-        };
+        let bin = self.bin()?;
         let lease_json = serde_json::to_string(lease)
             .map_err(|_| HostError::new("could not encode local host lease"))?;
         let mut cmd = Command::new(bin);
@@ -178,6 +191,17 @@ impl HostProvider for LocalProvider {
     }
 
     async fn start(&self, lease: &HostLease, boot: &HostBoot) -> Result<String, HostError> {
+        if let Some(packs) = &self.packs {
+            if !lease
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+                || lease.id.is_empty()
+            {
+                return Err(HostError::new("invalid lease directory name"));
+            }
+            return packs.start(self.bin()?, lease, boot).await;
+        }
         let mut children = self.children.lock().unwrap();
         if let Some((pid, host)) = children
             .iter_mut()
@@ -209,6 +233,12 @@ impl HostProvider for LocalProvider {
     }
 
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError> {
+        if pack::parse_ref(provider_ref).is_some() {
+            return match &self.packs {
+                Some(packs) => packs.stop(lease_id, provider_ref).await,
+                None => Ok(()),
+            };
+        }
         let mut children = self.children.lock().unwrap();
         if let Some(host) = children.get_mut(provider_ref)
             && host.lease_id == lease_id
@@ -221,6 +251,9 @@ impl HostProvider for LocalProvider {
 
     #[cfg(feature = "native")]
     fn tunnel_addr(&self, lease_id: &str, provider_ref: &str) -> Option<SocketAddr> {
+        if pack::parse_ref(provider_ref).is_some() {
+            return self.packs.as_ref()?.tunnel_addr(lease_id, provider_ref);
+        }
         let mut children = self.children.lock().unwrap();
         let host = children.get_mut(provider_ref)?;
         if host.lease_id != lease_id || !matches!(host.child.try_wait(), Ok(None)) {
@@ -230,6 +263,12 @@ impl HostProvider for LocalProvider {
     }
 
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError> {
+        if pack::parse_ref(provider_ref).is_some() {
+            return match &self.packs {
+                Some(packs) => packs.alive(provider_ref).await,
+                None => Ok(false),
+            };
+        }
         let mut children = self.children.lock().unwrap();
         let Some(host) = children.get_mut(provider_ref) else {
             return Ok(false);
@@ -244,6 +283,9 @@ impl HostProvider for LocalProvider {
 
 impl Drop for LocalProvider {
     fn drop(&mut self) {
+        if let Some(packs) = &mut self.packs {
+            packs.stop_all();
+        }
         for host in self.children.get_mut().unwrap().values_mut() {
             let _ = stop_child(&mut host.child);
         }

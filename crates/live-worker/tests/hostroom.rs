@@ -2,7 +2,10 @@
 #[path = "../src/hostroom/lease.rs"]
 mod lease;
 
-use lease::{HostEnv, tunnel_lease};
+use lease::{
+    Role, TUNNEL_PORT, add_match, pack_env, pack_matches, pack_room, parse_pack_room, pool_hint,
+    pool_name, role, tunnel_lease,
+};
 use live_server::hosts::HostBoot;
 use serde_json::json;
 
@@ -24,41 +27,90 @@ fn tunnel_matches_one_lease_segment_and_no_control_routes() {
 }
 
 #[test]
-fn boot_env_preserves_the_complete_lease_and_signed_url() {
+fn add_match_preserves_the_complete_lease_and_signed_url() {
     let boot = HostBoot {
         live_url: "https://live.example".into(),
         token: "lease-scoped-token".into(),
         data_url: "https://data.example/bundle?sig=a%2Bb&expires=123".into(),
         data_sha256: "ab".repeat(32),
     };
-    // Include the round trip through the provider's internal start request.
+    // Include the round trip through the rooms' internal requests.
     let mut lease = cloud_lease();
     assert!(
-        serde_json::to_value(HostEnv::new(&lease, &boot).unwrap())
+        serde_json::to_value(add_match(&lease, &boot).unwrap())
             .unwrap()
-            .get("H2_REGION")
+            .get("region")
             .is_none()
     );
     lease.region = Some("enam".into());
     lease.variant = Some(r#"Team "Slayer""#.into());
     lease.bots = vec!["Clanker".into()];
-    let env: HostEnv =
-        serde_json::from_value(serde_json::to_value(HostEnv::new(&lease, &boot).unwrap()).unwrap())
+    let add: live_proto::host_pack::AddMatch =
+        serde_json::from_value(serde_json::to_value(add_match(&lease, &boot).unwrap()).unwrap())
             .unwrap();
     assert_eq!(
-        serde_json::to_value(env).unwrap(),
+        serde_json::to_value(add).unwrap(),
         json!({
-            "H2_LEASE": lease.id,
-            "H2_HOST_LEASE_JSON": serde_json::to_string(&lease).unwrap(),
-            "H2_LIVE": boot.live_url,
-            "H2_TOKEN": boot.token,
-            "H2_DATA_URL": boot.data_url,
-            "H2_DATA_SHA": boot.data_sha256,
-            "H2_REGION": "enam",
-            "H2_AGENT": "tcp://127.0.0.1:14720",
-            "H2_TUNNEL_LISTEN": "0.0.0.0:31100",
+            "lease": lease.id,
+            "lease_json": serde_json::to_string(&lease).unwrap(),
+            "live": boot.live_url,
+            "token": boot.token,
+            "data_url": boot.data_url,
+            "data_sha": boot.data_sha256,
+            "region": "enam",
         })
     );
+}
+
+#[test]
+fn rooms_are_told_apart_by_name() {
+    let id = "hl-aZ0_-1234567890123456Q";
+    assert_eq!(role(id), Some(Role::Lease));
+    assert_eq!(role("pool-any"), Some(Role::Pool));
+    assert_eq!(role("pool-enam"), Some(Role::Pool));
+    assert_eq!(role("pool-enam/pack-3"), Some(Role::Pack));
+    for name in ["", "pool-", "pool-lhr", "pool-enam/", "pool-enam/pack-x", "pool-any/pack-1/x", "hl-short"] {
+        assert_eq!(role(name), None, "{name}");
+    }
+    // Only Cloudflare location hints name a pool; other regions share one.
+    assert_eq!(pool_name(Some("weur")), "pool-weur");
+    assert_eq!(pool_name(Some("lhr")), "pool-any");
+    assert_eq!(pool_name(None), "pool-any");
+    assert_eq!(pool_hint("pool-weur"), Some("weur"));
+    assert_eq!(pool_hint("pool-any"), None);
+    let room = pack_room("pool-weur", "pack-12");
+    assert_eq!(parse_pack_room(&room), Some(("pool-weur", "pack-12")));
+}
+
+#[test]
+fn pack_size_defaults_to_three_and_stays_below_the_control_port() {
+    assert_eq!(pack_matches(None), 3);
+    assert_eq!(pack_matches(Some("2")), 2);
+    assert_eq!(pack_matches(Some("0")), 1);
+    assert_eq!(pack_matches(Some("99")), 8);
+    assert_eq!(pack_matches(Some("x")), 3);
+    use live_proto::host_pack::{AGENT_PORT, BASE_PORT, CONTROL_PORT, SlotPorts, UDP_WIDTH};
+    let last = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 7).unwrap();
+    assert!(last.base_port + UDP_WIDTH - 1 < CONTROL_PORT);
+    assert!(last.tunnel_port > CONTROL_PORT);
+}
+
+#[test]
+fn pack_containers_get_their_class_size_and_no_lease() {
+    use live_proto::hosts::HostClass;
+    let small = pack_env(&HostClass::Small, 3);
+    assert_eq!(small["H2_PACK"], "1");
+    assert_eq!(small["H2_PACK_MAX_MATCHES"], "3");
+    assert_eq!(small["H2_PACK_VCPUS"], "1");
+    assert_eq!(small["H2_PACK_MEMORY_MIB"], "3072");
+    assert_eq!(small["H2_PACK_CONTROL"], "0.0.0.0:31099");
+    let large = pack_env(&HostClass::Large, 3);
+    assert_eq!((large["H2_PACK_VCPUS"].as_str(), large["H2_PACK_MEMORY_MIB"].as_str()), ("2", "6144"));
+    assert!(small.keys().all(|key| !key.contains("TOKEN") && !key.contains("LEASE")));
+    // Each class's sizes match wrangler.toml's instance types.
+    let config = include_str!("../wrangler.toml");
+    assert!(config.contains("instance_type = { vcpu = 1, memory_mib = 3072"));
+    assert!(config.contains("instance_type = { vcpu = 2, memory_mib = 6144"));
 }
 
 fn cloud_lease() -> live_proto::hosts::HostLease {
