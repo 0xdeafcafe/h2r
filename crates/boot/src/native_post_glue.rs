@@ -1163,6 +1163,22 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::a
 mod tests {
     use super::*;
 
+    /// The colour pass's stand-in now that the A/B capture is gone: it
+    /// draws nothing and binds no depth.
+    struct CapturePass(Option<String>);
+
+    impl d3d::ExternalPass for CapturePass {
+        fn colour_only(&self) -> bool {
+            true
+        }
+
+        fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+            let _ = (&self.0, t.device.poll(wgpu::PollType::Poll));
+        }
+    }
+
+    impl d3d::SwallowPass for CapturePass {}
+
     fn draw(dest: Surface) -> Draw {
         Draw {
             dest,

@@ -28,7 +28,7 @@ fn the_ui_hooks_can_run_on_the_render_thread() {
         "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY",
     ];
     for point in points {
-        let chain = plan.chains.values().find(|c| c.point.name == *point)
+        let chain = plan.chains.values().find(|c| c.point.name == point)
             .unwrap_or_else(|| panic!("placed at {point}"));
         assert!(!chain.needs_shadow(), "{point}: nothing after the body");
         assert!(chain.render_thread().is_ok(), "{point}");
