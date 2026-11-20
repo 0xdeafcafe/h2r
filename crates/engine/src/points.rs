@@ -1072,8 +1072,6 @@ points! { ALL;
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
-    /// Recomputes the light datum's intensity, color, radius and active-list membership.
-    LIGHT_RECORD_UPDATE @ 0x000c_0c80: [fn(light: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
     /// The sound frame service, once a frame after the render: among
