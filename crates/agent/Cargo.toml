@@ -30,6 +30,8 @@ settings = { path = "../settings" }
 snapshot = { path = "../snapshot" }
 
 [dev-dependencies]
+# A synthetic lifted original for the shadow.* tests.
+lifted = { path = "../lifted" }
 live-proto.workspace = true
 # Synthetic tags laid out by their definitions (src/hot/tests.rs).
 tags.workspace = true

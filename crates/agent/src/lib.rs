@@ -35,6 +35,8 @@
 //! * `trace` answers `trace.*` and `flight.*`: rows of chosen objects
 //!   taken at every tick, streamed to a file or kept in a ring with the
 //!   tick's controller reads.
+//! * [`shadow`] answers `shadow.*`: shadow checks of the native ports
+//!   against the lifted original (docs/engine/shadow-exec.md).
 //! * `state.*` saves and loads machine snapshots: the tick observer ends
 //!   the slice when one is due, and the boot loop runs it between slices
 //!   through a [`SnapshotMachine`] ([`Agent::run_snapshots`]).
@@ -55,6 +57,7 @@ mod reader;
 pub mod render;
 mod server;
 pub mod hs_state;
+pub mod shadow;
 pub mod sim;
 mod tap;
 mod trace;
