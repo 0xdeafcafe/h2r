@@ -1010,6 +1010,18 @@ fn every_retail_weapon_hud_element_is_placed() {
                             );
                         }
                         if !text {
+                            let reticle = matches!(e.kind, Kind::Crosshair(..) | Kind::Warning(..));
+                            let half_size = reticle && e.split_flags & 2 == 0;
+                            assert_eq!(
+                                row.get("h1_half_size"),
+                                Some(&Val::Int(i64::from(half_size))),
+                                "{desc}"
+                            );
+                            assert_eq!(
+                                row.get("h1_frame_period"),
+                                Some(&Val::Int(e.frame_period.into())),
+                                "{desc}"
+                            );
                             for mode in ["full", "half", "quarter"] {
                                 assert_eq!(
                                     row.get(&format!("sequence_{mode}")),
