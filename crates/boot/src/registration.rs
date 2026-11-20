@@ -497,7 +497,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
     // Native UI producers and the ordered menu, HUD and loading callbacks.
-    // impl.render.native_ui=off returns these draws to the ordinary device path.
+    // impl.render.native=off returns these draws to the ordinary device path.
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_hud::NativeHud)
