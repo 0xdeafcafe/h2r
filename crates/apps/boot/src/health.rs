@@ -6,7 +6,7 @@
 //! model; everywhere else it is retail's.
 //!
 //! - **No regeneration.** Around the object damage update
-//!   ([`OBJECT_DAMAGE_UPDATE`](feature::points::OBJECT_DAMAGE_UPDATE),
+//!   ([`OBJECT_DAMAGE_UPDATE`](hooks::points::OBJECT_DAMAGE_UPDATE),
 //!   `0xd5de0`, once per object per tick): `before` notes a player biped's
 //!   body health and its "body recharging" flag, `after` puts them back if
 //!   the update raised the health. That update's only health write that
@@ -15,7 +15,7 @@
 //!   alone.
 //! - **Health packs** need no hook: Halo 2's powerup pickup (`0x151ea0`)
 //!   already has a health case (equipment powerup type 5), which calls
-//!   [`BODY_RESTORE`](feature::points::BODY_RESTORE) (`0xd6790`, body to
+//!   [`BODY_RESTORE`](hooks::points::BODY_RESTORE) (`0xd6790`, body to
 //!   full; refused when full or dead). An observer logs each use.
 //! - **HUD.** The meter is part of Halo 2's HUD: the map converter gives
 //!   the converted Halo 1 player a copy of its `nhdt` with a widget on HUD
@@ -307,13 +307,13 @@ pub struct H1Health {
     state: Arc<State>,
 }
 
-impl feature::Feature for H1Health {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Halo 1's health model on Halo 1 maps")
+impl hooks::Feature for H1Health {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Halo 1's health model on Halo 1 maps")
             .doc("docs/halo1/health.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
         {
             let s = Arc::clone(&self.state);
             b.raw()
@@ -322,7 +322,7 @@ impl feature::Feature for H1Health {
                         if s.armed.swap(false, Ordering::Relaxed) {
                             *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         }
-                        return Ok(feature::Flow::Continue);
+                        return Ok(hooks::Flow::Continue);
                     }
                     let object = c.arg_u32("object").unwrap_or(u32::MAX);
                     let noted = {
@@ -331,7 +331,7 @@ impl feature::Feature for H1Health {
                     };
                     *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = noted;
                     s.armed.store(noted.is_some(), Ordering::Relaxed);
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 });
         }
         {
@@ -384,7 +384,7 @@ impl feature::Feature for H1Health {
             // Nothing saved: the model follows the loaded map, picked again
             // from guest memory as at a game start (docs/runtime/snapshots.md).
             let s = Arc::clone(&self.state);
-            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 move || s.live(),
                 Vec::new,
                 |_, rt| reload_mode(&*rt.memory()),
@@ -451,7 +451,7 @@ pub fn start_line(model: HealthModel, forced: bool) -> String {
 
 /// Adds the feature to `registry`, after reading the debug override from
 /// `H2_HEALTH_MODEL`. Returns whether it was added.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<bool> {
     let env = std::env::var(ENV).ok();
     match parse_override(env.as_deref()) {
         Ok(Some(m)) => {
@@ -477,15 +477,15 @@ pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
 }
 
 /// The install line, once `plan` is in.
-pub fn report(plan: &feature::Plan, installed: &feature::Installed) -> String {
-    use feature::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
+pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
+    use hooks::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
     if let Some(why) = installed.off_reason(FEATURE) {
         return format!("health: NOT installed: {why}; Halo 2's model on every map");
     }
     if !plan.is_on(FEATURE) {
         return "health: NOT installed: not in the feature plan".into();
     }
-    let at = |p: &feature::points::Point, what: &str| {
+    let at = |p: &hooks::points::Point, what: &str| {
         let chain = plan
             .chains
             .values()

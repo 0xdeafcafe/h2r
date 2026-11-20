@@ -285,7 +285,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   walks.rs                        b6f10, b7060, b7150
   object.rs                       bc470, bc820, dispatchers 108c60/108cd0/109050/1090d0
   ...                             one file per ported segment body
-crates/hooking/feature/src/sim_objects.rs installer, `impl.sim.native.objects`
+crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects`
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 

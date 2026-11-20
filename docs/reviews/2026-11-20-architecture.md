@@ -232,7 +232,7 @@ changes, cheapest first:
    (`crates/runtime/runtime/src/direct.rs:12-17`). The code already avoids hooks
    for that reason: the datum and tag leaves stay off because "each
    override takes them off the direct-call path"
-   (`crates/hooking/feature/src/leaves.rs:30-38`). Give exact Rust overrides a
+   (`crates/hooking/hooks/src/leaves.rs:30-38`). Give exact Rust overrides a
    C-ABI thunk with the handler signature so they can sit in the entry
    table like any generated function.
 3. **Direct HLE entries.** A D3D, DirectSound or kernel call is a
@@ -447,7 +447,7 @@ There are 466 distinct `"H2_*"` string literals in `crates/` (183 in
 `boot`, 108 in `cli`, 57 in `emit`, 35 in `d3d`), 40 distinct `impl.*`
 switch names (35 of them `impl.render.*`), and about 35 `sim.native_*`
 keys built from tables. Switches are a `BTreeMap<String, bool>` parsed
-from `H2_FEATURES` (`crates/hooking/feature/src/switches.rs`) with defaults
+from `H2_FEATURES` (`crates/hooking/hooks/src/switches.rs`) with defaults
 scattered across call sites. The planned parent `impl.sim.native` does
 not exist in code; the keys are `impl.sim.native_x`, whose parent is
 `impl.sim`.
@@ -519,7 +519,7 @@ Points are named addresses in `crates/rewrites/engine/src/points.rs`: 331 of the
 each with a signature kind, a required or optional class and a doc
 reference. A hook chain per address runs observers, `before` hooks (which
 may return early), the body or its replacement, then `after` hooks
-through a shadow address (`crates/hooking/feature/src/install.rs:256-417`).
+through a shadow address (`crates/hooking/hooks/src/install.rs:256-417`).
 Mid-function `Site` hooks need the emitter to have emitted a selector at
 that PC.
 
@@ -535,7 +535,7 @@ Four weaknesses, in order of consequence.
   is typical).
 - **No point is verified against the image.** `ImageAddrs` has `Base` and
   a `Remap` meant for tests and a future title-update map
-  (`crates/hooking/feature/src/plan.rs:35-56`). The only check against a real
+  (`crates/hooking/hooks/src/plan.rs:35-56`). The only check against a real
   image is one ignored test over about 20 render points. A point whose
   address is wrong fails at run time, or silently if the install degrades
   to "body runs alone".

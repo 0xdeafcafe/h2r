@@ -3,7 +3,7 @@
 
 use agent_proto::theater::{Camera, CameraMode};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 use serde::{Deserialize, Serialize};
 
 use super::{Mode, Session};
@@ -266,7 +266,7 @@ fn clip_distances(guest: &dyn GuestMemory) -> [f32; 2] {
 pub(super) fn install(
     b: &mut Builder,
     replay: &std::sync::Arc<Session>,
-) -> Result<(), feature::BuildError> {
+) -> Result<(), hooks::BuildError> {
     if !matches!(&replay.lock().mode, Mode::Replay(_, opts) if opts.render_every != 0) {
         return Ok(());
     }
@@ -326,8 +326,8 @@ pub(super) fn install(
             "enter Theater render RNG",
             move |call| {
                 let mut guest = call.ctx.memory();
-                if feature::sim_frame::frame_kind(&feature::sim_frame::Addrs::HALO2, &*guest)
-                    == feature::sim_frame::FrameKind::World
+                if hooks::sim_frame::frame_kind(&hooks::sim_frame::Addrs::HALO2, &*guest)
+                    == hooks::sim_frame::FrameKind::World
                 {
                     frame_seeds
                         .lock()

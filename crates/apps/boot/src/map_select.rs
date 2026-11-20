@@ -847,17 +847,17 @@ async fn refresh_slots(cx: &Cx, sel: &Selection) -> Result<(), EntryError> {
 /// The feature id.
 pub const FEATURE: &str = "map-select";
 
-impl feature::Feature for MapSelect {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "The multiplayer map select by category")
+impl hooks::Feature for MapSelect {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "The multiplayer map select by category")
             .doc("docs/game/map-select.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::points::{
             GAME_TICK, LOBBY_SET_MAP, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
             MP_LEVEL_ARRAY, MP_LEVEL_NAME, SCREEN_REQUEST,
         };
-        use feature::Flow as F;
+        use hooks::Flow as F;
         let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
 
         // Change Map: arm the next Select Map for the categories, when
@@ -1118,7 +1118,7 @@ impl feature::Feature for MapSelect {
             },
         );
         let flow = Arc::clone(&self.flow);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             flow.snapshot_live()
         }));
         Ok(())
@@ -1132,7 +1132,7 @@ const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
 /// package installed while the game runs makes a second). Returns whether
 /// they were added.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<bool> {
     let Some(sel) = PREPARED.get() else {

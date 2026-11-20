@@ -332,9 +332,9 @@ fn settings_and_registered_agent_method_are_available_in_live_coop() {
         Ok(settings::Value::Bool(false))
     );
     let a = agent::Agent::new();
-    let mut registry = Registry::new(feature::Switches::defaults());
+    let mut registry = Registry::new(hooks::Switches::defaults());
     install(&mut registry, Arm::session(), None, Some(&a)).unwrap();
-    let plan = registry.build(&feature::Base).unwrap().text();
+    let plan = registry.build(&hooks::Base).unwrap().text();
     for point in [
         &points::SIM_ACTIONS_ENCODE,
         &points::SIM_UPDATE_APPLY,

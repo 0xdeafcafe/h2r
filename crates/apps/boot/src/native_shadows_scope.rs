@@ -1,6 +1,6 @@
 //! Binds a resolved draw to its sorted geometry entry and one shadow call.
 use crate::native_shadows_draw::{Output, Range, SharedGpu};
-use feature::native_shadows::{Entry, Layer};
+use hooks::native_shadows::{Entry, Layer};
 use native_render::{
     shadow_gpu::MapKind,
     shadows::{self, Geometry, Site},

@@ -9,7 +9,7 @@ commit message.
 
 `H2_FEATURES` takes a comma-separated list: `id`, `-id` or `id=on|off`.
 An `impl.` name is an implementation switch
-([`feature::switches`](../../crates/hooking/feature/src/switches.rs)).
+([`feature::switches`](../../crates/hooking/hooks/src/switches.rs)).
 
 ## Settings
 

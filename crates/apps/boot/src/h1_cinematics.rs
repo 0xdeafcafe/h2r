@@ -250,7 +250,7 @@ pub fn install_device<B: d3d::backend::Backend + Send + 'static>(
     }));
 }
 
-pub fn hooks(b: &mut feature::Builder) {
+pub fn hooks(b: &mut hooks::Builder) {
     b.raw()
         .before(
             &points::RENDER_SCREEN_EFFECTS,
@@ -263,7 +263,7 @@ pub fn hooks(b: &mut feature::Builder) {
                         draw(&mut *m, frame);
                     }
                 }
-                Ok(feature::Flow::Continue)
+                Ok(hooks::Flow::Continue)
             },
         )
         .context_only();
@@ -274,7 +274,7 @@ pub fn hooks(b: &mut feature::Builder) {
             |c| {
                 let shader = c.cpu.edi;
                 let _ = material(&mut *c.ctx.memory(), shader);
-                Ok(feature::Flow::Continue)
+                Ok(hooks::Flow::Continue)
             },
         )
         .after_feature("h1-hud-text")

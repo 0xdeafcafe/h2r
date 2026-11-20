@@ -141,16 +141,16 @@ pub struct MapSlots {
     pub vfs: Arc<Mutex<vfs::Vfs>>,
 }
 
-impl feature::Feature for MapSlots {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Recopy maps whose package changed mid-session")
+impl hooks::Feature for MapSlots {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Recopy maps whose package changed mid-session")
             .doc("docs/runtime/cache-slots.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let vfs = Arc::clone(&self.vfs);
         let last: Mutex<Option<Instant>> = Mutex::new(None);
         b.raw().observe_after(
-            &feature::points::RENDER_FRAME,
+            &hooks::points::RENDER_FRAME,
             "drop outdated map slots",
             move |o| {
                 {
@@ -189,7 +189,7 @@ impl feature::Feature for MapSlots {
         );
         // Its throttle is wall-clock time, not machine state; which package
         // served each copied map is the VFS's state, saved with the VFS.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

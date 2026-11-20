@@ -2,9 +2,9 @@
 //! switches, with no runtime and no guest.
 
 use engine::points::{self, Point, Sig};
-use feature::{Base, BuildError, Conflict, Flow, Kind, Registry, Remap, Switches, from_fn};
+use hooks::{Base, BuildError, Conflict, Flow, Kind, Registry, Remap, Switches, from_fn};
 
-fn noop_before(b: &mut feature::Builder, p: &'static Point) {
+fn noop_before(b: &mut hooks::Builder, p: &'static Point) {
     b.raw().before(p, "b", |_| Ok(Flow::Continue));
 }
 
@@ -43,7 +43,7 @@ fn a_string_hook_and_the_rust_lookup_share_the_locale_point() {
         Ok(())
     }))
     .unwrap();
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     let plan = r.build(&Base).unwrap();
     let chain = &plan.chains[&points::LOCALE_FIND.base];
     assert_eq!(chain.before[0].feature, "layouts");
@@ -59,7 +59,7 @@ fn a_string_hook_and_the_rust_lookup_share_the_locale_point() {
 
 fn leaves(switches: &str) -> Vec<&'static str> {
     let mut r = Registry::new(Switches::parse(switches).unwrap());
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     let plan = r.build(&Base).unwrap();
     plan.chains
         .values()
@@ -85,7 +85,7 @@ fn only_the_locale_leaves_are_on_by_default() {
     );
 }
 
-fn strings(b: &mut feature::Builder) -> Result<(), BuildError> {
+fn strings(b: &mut hooks::Builder) -> Result<(), BuildError> {
     b.locale().source("ours", |id| (id == 7).then_some(0x1000));
     Ok(())
 }
@@ -97,7 +97,7 @@ fn string_sources_are_served_by_the_rust_lookup_or_one_bridge_hook() {
     for (switches, native) in [("", true), ("impl.engine.locale=off", false)] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         r.add(&from_fn("ui-strings", strings)).unwrap();
-        r.add(&feature::leaves::EngineLeaves).unwrap();
+        r.add(&hooks::leaves::EngineLeaves).unwrap();
         let plan = r.build(&Base).unwrap();
         let chain = &plan.chains[&points::LOCALE_FIND.base];
         if native {
@@ -127,18 +127,18 @@ fn string_sources_are_served_by_the_rust_lookup_or_one_bridge_hook() {
 #[test]
 fn the_bridge_is_decided_after_every_feature_declared() {
     let mut r = Registry::new(Switches::parse("impl.engine=off").unwrap());
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     r.add(&from_fn("ui-strings", strings)).unwrap();
     assert_eq!(r.build(&Base).unwrap().chains.len(), 1);
     let mut r = Registry::new(Switches::parse("impl.engine=off").unwrap());
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     assert!(r.build(&Base).unwrap().chains.is_empty());
 }
 
 #[test]
 fn two_implementations_are_refused_naming_both() {
     let mut r = Registry::new(Switches::defaults().with("impl.engine", true));
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     r.add(&from_fn("my-locale", |b| {
         b.raw()
             .implement(&points::LOCALE_FIND, "mine", |_, _, _| unreachable!());
@@ -385,8 +385,8 @@ fn guest_alloc_hands_out_arena_pages() {
     assert_eq!(
         got,
         [
-            feature::arena::ARENA_START,
-            feature::arena::ARENA_START + 0x1000
+            hooks::arena::ARENA_START,
+            hooks::arena::ARENA_START + 0x1000
         ]
     );
     assert_eq!(plan.allocs.len(), 2);
@@ -396,17 +396,17 @@ fn guest_alloc_hands_out_arena_pages() {
 /// render stage on both sides with no conflict.
 #[test]
 fn render_timing_is_off_by_default_and_observes_every_stage() {
-    use feature::render_timing::RenderTiming;
+    use hooks::render_timing::RenderTiming;
     let mut r = Registry::new(Switches::defaults());
     assert!(!r.add(&RenderTiming::new()).unwrap());
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert_eq!(text, "feature render-timing: off (switched off)\n");
 
     // Without the deep switch: the frame stages and the scene passes'
     // calls only, nothing per draw.
     let mut r = Registry::new(Switches::parse("render-timing").unwrap());
     assert!(r.add(&RenderTiming::new()).unwrap());
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(
         text.contains(
             "0x00044550 LAYER_DRAW: observe_before [render-timing:scene call] -> original\n"
@@ -425,7 +425,7 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
 
     let mut r = Registry::new(Switches::parse("render-timing,render-timing.deep").unwrap());
     assert!(r.add(&RenderTiming::new()).unwrap());
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let text = plan.text();
     for line in [
         "0x0002b5d0 RENDER_VIEWS: observe_before [render-timing:views] -> original -> observe_after [render-timing:views]",
@@ -447,17 +447,17 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         .lines()
         .filter(|l| l.contains("[render-timing:scene call] -> original"))
         .count();
-    assert_eq!(calls, feature::render_timing::SCENE_CALLEES.len() - 1);
+    assert_eq!(calls, hooks::render_timing::SCENE_CALLEES.len() - 1);
     // And every shader-draw callee.
     let calls = text
         .lines()
         .filter(|l| l.contains("[render-timing:shader call] -> original"))
         .count();
-    assert_eq!(calls, feature::render_timing::SHADER_CALLEES.len());
+    assert_eq!(calls, hooks::render_timing::SHADER_CALLEES.len());
     let shadows = plan.chains.values().filter(|c| c.shadow.is_some()).count();
     assert_eq!(
         shadows,
-        feature::render_timing::STAGES,
+        hooks::render_timing::STAGES,
         "only the stages run something after the body"
     );
 }

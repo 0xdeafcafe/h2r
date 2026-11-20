@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use engine::points;
-use feature::render_census::{Options, RenderCensus};
-use feature::{Registry, Remap, Switches, from_fn};
+use hooks::render_census::{Options, RenderCensus};
+use hooks::{Registry, Remap, Switches, from_fn};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime};
@@ -196,7 +196,7 @@ fn the_census_is_off_by_default() {
     assert!(!r.add(&RenderCensus::new()).unwrap());
     let mut r = Registry::new(Switches::parse("render-census").unwrap());
     assert!(r.add(&RenderCensus::new()).unwrap());
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     for want in [
         "RENDER_FRAME: observe_before [render-census:census enter] -> original -> observe_after [render-census:census leave]",
         "GAME_END",

@@ -6,14 +6,14 @@ use engine::{
     entry::{Cx, EntryError, GuestCall, Ret},
     memory::MemFault,
 };
-use feature::{BuildError, Builder, Flow, Manifest, SnapshotPolicy, points};
+use hooks::{BuildError, Builder, Flow, Manifest, SnapshotPolicy, points};
 
 const ALLOCATOR: u32 = 0x0051_0c2c;
 const INITIAL_HANDLES: [u32; 5] = [0x557c74, 0x557c78, 0x557c7c, 0x557c80, 0x557c84];
 
 pub(crate) struct SquadStorage;
 
-impl feature::Feature for SquadStorage {
+impl hooks::Feature for SquadStorage {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             "campaign-squad-pools",

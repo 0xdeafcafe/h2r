@@ -4,7 +4,7 @@
 //! source glow curve at the native billboard submission.
 use engine::light_constants::global::{SPECIAL_FORWARD, SPECIAL_UP};
 use engine::memory::{GuestMemory, MemFault};
-use feature::{BuildError, Builder, Feature, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::effects::h1_glow::{Glow, MAGIC};
 
 pub(crate) struct H1Glow;

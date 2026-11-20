@@ -8,7 +8,7 @@ use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::view::ui::{self, Screen};
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 
 use super::{ID_BASE, LEVEL_SELECT_LOADER, Picker, State};
 use crate::campaigns::{CampaignProgress, RETAIL_CAMPAIGN, SELECTED_CAMPAIGN, SELECTED_MAP};
@@ -142,7 +142,7 @@ pub(super) fn label(action: u16) -> Option<&'static str> {
 }
 
 pub(super) fn checkpoint_selection(
-    c: &mut feature::Call,
+    c: &mut hooks::Call,
     s: &State,
 ) -> Result<(), runtime::GuestFault> {
     let mut m = c.ctx.runtime().memory();

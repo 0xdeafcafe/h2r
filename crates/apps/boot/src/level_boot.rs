@@ -56,10 +56,10 @@ pub const OPTIONS_CHECK: u32 = 0x0013_8180;
 /// Game activation after the scenario's cache is loaded; options in EAX,
 /// returns AL (1 once the map and its first BSP are in). Hooked through the
 /// `game` bridge.
-pub const GAME_ACTIVATE: u32 = feature::points::GAME_ACTIVATE.base;
+pub const GAME_ACTIVATE: u32 = hooks::points::GAME_ACTIVATE.base;
 /// Pointer to the game globals: the active options at `+8`, the "map
 /// active" byte at `+0x1120` (activation sets it).
-pub const GAME_GLOBALS: u32 = feature::points::GAME_GLOBALS.base;
+pub const GAME_GLOBALS: u32 = hooks::points::GAME_GLOBALS.base;
 
 /// Game options (`0x1118` bytes).
 pub const OPTIONS_SIZE: u32 = 0x1118;
@@ -662,7 +662,7 @@ fn short(path: &str) -> &str {
 /// (`H2_PERF_FROM=level`).
 pub fn install(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     req: Option<Request>,
     watch: bool,
 ) -> Result<()> {
@@ -696,11 +696,11 @@ pub fn install(
 /// activation with Live telemetry's match start.
 pub struct LoadedMark(pub Option<Arc<Request>>);
 
-impl feature::Feature for LoadedMark {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("level-boot", "Level boot loaded mark").doc("docs/runtime/level-boot.md")
+impl hooks::Feature for LoadedMark {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("level-boot", "Level boot loaded mark").doc("docs/runtime/level-boot.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> std::result::Result<(), hooks::BuildError> {
         let req = self.0.clone();
         b.game().on_start("loaded mark", move |o| {
             if loaded_at().is_some() {
@@ -721,7 +721,7 @@ impl feature::Feature for LoadedMark {
         });
         // `LOADED_AT` is a host-side mark for perf sessions; the game never
         // reads it.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

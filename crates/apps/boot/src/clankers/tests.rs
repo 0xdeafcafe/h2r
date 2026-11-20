@@ -656,7 +656,7 @@ fn only_a_custom_games_list_gets_the_row_once() {
 
 #[test]
 fn the_row_goes_after_the_halo1_row_on_the_plan() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&h1row::SetupRow {
         data_root: std::env::temp_dir(),
     })
@@ -665,7 +665,7 @@ fn the_row_goes_after_the_halo1_row_on_the_plan() {
     r.add(&KitTexts(Arc::clone(&page))).unwrap();
     r.add(&page.class()).unwrap();
     r.add(&SetupRow { page }).unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     for point in ["SQUAD_SETTINGS_ROW_TEXT", "SQUAD_SETTINGS_ROW_CHOSEN"] {
         let line = text.lines().find(|l| l.contains(point)).unwrap();
         let (h1, ours) = (

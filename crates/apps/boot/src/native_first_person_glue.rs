@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_first_person::{Host, ItemMasks};
-use feature::native_objects::NativeSet;
+use hooks::native_first_person::{Host, ItemMasks};
+use hooks::native_objects::NativeSet;
 use native_render::object_program_gpu::{LitObjects, PlannedDraw};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
@@ -259,7 +259,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
 /// Installs the host beside the other native render stages.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    feature::native_first_person::set_host(Arc::new(Glue {
+    hooks::native_first_person::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
         generation: Mutex::new(0),

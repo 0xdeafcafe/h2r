@@ -6,7 +6,7 @@ use engine::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::UNIT_APPLY_CONTROL;
 use engine::view::objects;
-use feature::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use map::recording;
 
 const PLAYBACK_RETURN: u32 = 0x001f_b635;

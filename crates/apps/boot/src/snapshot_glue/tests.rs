@@ -333,8 +333,8 @@ fn parts_must_have_a_place_in_the_order() {
 
 #[test]
 fn the_build_key_follows_switches_and_host_parts() {
-    let plan = feature::Registry::new(feature::Switches::default())
-        .build(&feature::Base)
+    let plan = hooks::Registry::new(hooks::Switches::default())
+        .build(&hooks::Base)
         .unwrap();
     let key = |switches: &str, host: &[&str]| build_key("s".into(), switches, &plan, host);
     assert_eq!(key("", &["guest"]), key("", &["guest"]));

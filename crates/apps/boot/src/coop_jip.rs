@@ -32,7 +32,7 @@ use std::time::Instant;
 
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::points;
-use feature::Flow;
+use hooks::Flow;
 
 use crate::coop_probe::{Arm, Session, layout, read_session, read_session_at};
 use crate::layout_glue::Gm;
@@ -318,23 +318,23 @@ impl CoopJip {
     }
 }
 
-impl feature::Feature for CoopJip {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CoopJip {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Co-op over Live: a friend joins a running campaign through the retail synchronous join",
         )
         .doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let stages = self.stages;
         // docs/runtime/snapshots.md: armed, a join is a conversation with
         // a peer no snapshot holds; disarmed, the track only shapes log
         // lines and `ENABLED` is the settings' value read at boot. The
         // lifted check's call is a continuation the machine check sees.
         let arm = Arc::clone(&self.arm);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             // The conversation with the peer is on the film network tape.
             // Remaining Track fields affect log messages only. In-flight
             // guest calls are still rejected by the machine quiescence test.
@@ -495,7 +495,7 @@ impl feature::Feature for CoopJip {
 
 /// Adds the feature on the co-op over Live arm; the stages from the
 /// environment.
-pub fn install(registry: &mut feature::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
     let stages = Stages::parse(|k| std::env::var(k).ok());
     registry
         .add(&CoopJip::new(arm, stages))

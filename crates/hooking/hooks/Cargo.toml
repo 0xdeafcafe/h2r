@@ -1,5 +1,5 @@
 [package]
-name = "feature"
+name = "hooks"
 description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md)"
 edition.workspace = true
 version.workspace = true

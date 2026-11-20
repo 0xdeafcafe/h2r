@@ -829,19 +829,19 @@ fn the_co_op_hooks_are_on_the_plan_and_off_until_armed() {
         runtime::Guest::new(),
         runtime::dispatch::Dispatch::default(),
     );
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let arm = coop_probe::install_live(&rt, &mut r, Path::new("/nonexistent"))
         .unwrap()
         .unwrap();
     assert!(!arm.active() && !arm.is_forced());
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(text.contains(coop_probe::LIVE_ID), "{text}");
     for p in coop_probe::HOOKED {
         assert!(text.contains(p.name), "{} missing:\n{text}", p.name);
     }
     assert!(text.contains("host lobby setup"), "{text}");
     // H2_FEATURES=-coop-live turns them off.
-    let mut r = feature::Registry::new(feature::Switches::parse("-coop-live").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("-coop-live").unwrap());
     assert!(
         coop_probe::install_live(&rt, &mut r, Path::new("/x"))
             .unwrap()
@@ -864,7 +864,7 @@ fn the_screens_and_the_hooks_share_the_plan() {
         runtime::Guest::new(),
         runtime::dispatch::Dispatch::default(),
     );
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let arm = coop_probe::install_live(&rt, &mut r, Path::new("/nonexistent"))
         .unwrap()
         .unwrap();
@@ -898,7 +898,7 @@ fn the_screens_and_the_hooks_share_the_plan() {
         crate::skulls_custom::Custom::new(store, None, None, false),
     )))
     .unwrap();
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let text = plan.text();
     assert!(
         text.contains(FEATURE)

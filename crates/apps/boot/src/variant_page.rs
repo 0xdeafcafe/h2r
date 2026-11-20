@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 use variants::ext::{self, Ext};
@@ -372,7 +372,7 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     })
 }
 
-impl feature::Feature for MoreRow {
+impl hooks::Feature for MoreRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             ROW_FEATURE,
@@ -404,7 +404,7 @@ impl feature::Feature for MoreRow {
         // `ROW_ON` is fixed at build, the row's text and press are read
         // from guest memory and answered by continuations the machine
         // check sees. The page's edits are its class's, not this row's.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -1008,12 +1008,12 @@ mod tests {
     /// the game at boot).
     #[test]
     fn the_row_plans_beside_the_skulls_row() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
         let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(store));
         r.add(&crate::skulls_mp_row::VariantRow(mp)).unwrap();
         r.add(&MoreRow).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         for point in ["VARIANT_OPTIONS_ROW_TEXT", "VARIANT_OPTIONS_ROW_CHOSEN"] {
             let line = text.lines().find(|l| l.contains(point)).unwrap();
             let skulls = line.find("skulls-mp-row").unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn the_row_and_the_page_are_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&class(
             Arc::new(Page::new()),
             skulls_menu::DESCRIPTION_TEXT,
@@ -1032,7 +1032,7 @@ mod tests {
         ))
         .unwrap();
         r.add(&MoreRow).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         for line in [
             "VARIANT_OPTIONS_ROW_TEXT: before [variant-more-options-row:the More Options row's text]",
             "VARIANT_OPTIONS_ROW_CHOSEN: before [variant-more-options-row:the More Options row's press]",

@@ -156,7 +156,7 @@ fn close_serializes_with_open_or_start_and_observers_can_still_read() {
 
 #[test]
 fn host_tick_and_agent_guest_calls_can_share_a_feature_plan() {
-    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     let calls = agent::sim::calls::CallsFeature(agent::sim::calls::shared());
     registry.add(&calls).unwrap();
     let settings = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
@@ -171,7 +171,7 @@ fn host_tick_and_agent_guest_calls_can_share_a_feature_plan() {
             machine_start: false,
         })
         .unwrap();
-    let plan = registry.build(&feature::Base).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
     assert!(plan.is_on("host-lobby"));
 }
 

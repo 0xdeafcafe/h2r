@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use engine::memory::{GuestMemory, MemFault};
-use feature::{Builder, Flow, points};
+use hooks::{Builder, Flow, points};
 
 use super::state;
 

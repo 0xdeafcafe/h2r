@@ -10,7 +10,7 @@ use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
 #[test]
 fn the_full_plan_builds_and_reads_as_expected() {
     let path = std::env::temp_dir().join(format!("h2-plan-{}.jsonl", std::process::id()));
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let config = TelemetryConfig {
         enabled: true,
         sink: TelemetrySinkConfig::File(path.clone()),
@@ -32,8 +32,8 @@ fn the_full_plan_builds_and_reads_as_expected() {
         id: "settings-rows",
         title: "Our rows on the Settings list",
         list: boot::ui::List::Settings,
-        text: &feature::points::SETTINGS_ROW_TEXT,
-        chosen: &feature::points::SETTINGS_ROW_CHOSEN,
+        text: &hooks::points::SETTINGS_ROW_TEXT,
+        chosen: &hooks::points::SETTINGS_ROW_CHOSEN,
         label_only: true,
         model: std::sync::Arc::clone(&model),
     })
@@ -42,12 +42,12 @@ fn the_full_plan_builds_and_reads_as_expected() {
     r.add(&boot::level_boot::LoadedMark(None)).unwrap();
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
-    r.add(&feature::leaves::EngineLeaves).unwrap();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
     // The aim assist's map-load hook and its per-player multiplayer hooks
     // (docs/game/aim-assist.md).
     let settings = settings::Store::defaults(boot::setting_defs::ALL);
     r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let _ = std::fs::remove_file(path);
     assert_eq!(
         plan.text(),
@@ -81,7 +81,7 @@ locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "
     );
-    let installed = feature::Installed {
+    let installed = hooks::Installed {
         placed: vec![*plan.chains.keys().next().unwrap(), plan.entries[0].addr],
         notes: vec!["aim-assist: off: PLAYER_CONTROL_UPDATE has no generated original".into()],
         off: vec![(
@@ -107,10 +107,10 @@ warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast
 /// bridge hook on the original lookup.
 #[test]
 fn without_the_rust_lookup_one_bridge_hook_serves_our_strings() {
-    let mut r = feature::Registry::new(feature::Switches::parse("impl.engine.locale=off").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("impl.engine.locale=off").unwrap());
     r.add(&boot::layout_glue::StringsFeature).unwrap();
-    r.add(&feature::leaves::EngineLeaves).unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    r.add(&hooks::leaves::EngineLeaves).unwrap();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(
         text.contains("0x001a02d0 LOCALE_FIND: before [locale:sources] -> original\n"),
         "{text}"
@@ -124,7 +124,7 @@ fn without_the_rust_lookup_one_bridge_hook_serves_our_strings() {
 #[test]
 fn the_agent_observes_the_tick_last_and_the_cutscenes() {
     let path = std::env::temp_dir().join(format!("h2-plan-agent-{}.jsonl", std::process::id()));
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let config = TelemetryConfig {
         enabled: true,
         sink: TelemetrySinkConfig::File(path.clone()),
@@ -134,7 +134,7 @@ fn the_agent_observes_the_tick_last_and_the_cutscenes() {
     assert!(boot::telemetry::install(&mut r, &config).unwrap().is_some());
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     let _ = std::fs::remove_file(path);
     assert!(text.contains("feature agent: on\n"), "{text}");
     assert!(
@@ -154,12 +154,12 @@ fn the_agent_observes_the_tick_last_and_the_cutscenes() {
 /// `H2_FEATURES=-agent` leaves every hook out.
 #[test]
 fn the_agent_can_be_switched_off() {
-    let mut r = feature::Registry::new(feature::Switches::parse("-agent").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("-agent").unwrap());
     assert!(!r.add(&agent::AgentFeature(agent::Agent::new())).unwrap());
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let text = plan.text();
     assert_eq!(
-        plan.startup_text(&feature::Installed::default(), false),
+        plan.startup_text(&hooks::Installed::default(), false),
         "0 features on, 1 off (agent), 0 hooked points, 0 entries; H2_FEATURE_PLAN=1 lists them\n"
     );
     assert!(text.contains("feature agent: off"), "{text}");
@@ -171,12 +171,12 @@ fn the_agent_can_be_switched_off() {
 /// refusing to start the game.
 #[test]
 fn precision_and_aim_assist_share_the_game_activation() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let packages = std::env::temp_dir().join(format!("h2-plan-pkgs-{}", std::process::id()));
     assert!(boot::precision::install(&mut r, &packages).unwrap());
     let settings = settings::Store::defaults(boot::setting_defs::ALL);
     r.add(&boot::aim_assist::AimAssist::new(&settings)).unwrap();
-    let plan = r.build(&feature::Base).expect("the plan builds");
+    let plan = r.build(&hooks::Base).expect("the plan builds");
     let line = plan
         .text()
         .lines()

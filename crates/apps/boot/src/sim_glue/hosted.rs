@@ -5,7 +5,7 @@ use crate::host_lobby::SimStart;
 use crate::{coop_probe, level_boot};
 use anyhow::{Result, bail};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use feature::{Flow, points};
+use hooks::{Flow, points};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::{Arc, Mutex};
 
@@ -118,9 +118,9 @@ impl LobbyState {
 }
 
 pub(super) fn install(
-    b: &mut feature::Builder,
+    b: &mut hooks::Builder,
     sim: Arc<Inner>,
-) -> Result<Arc<Mutex<LobbyState>>, feature::BuildError> {
+) -> Result<Arc<Mutex<LobbyState>>, hooks::BuildError> {
     let buffer = b.guest_alloc(0x1000, runtime::guest::Permissions::RW)?;
     // Every bot is a phantom peer, so the host console plays no local
     // player of its own: its lobby is playerless and no local profile is

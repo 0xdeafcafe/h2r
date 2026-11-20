@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use engine::points;
 use engine::render_loop::occlusion::DepthMapping;
 use engine::render_loop::occlusion::guest::*;
-use feature::{Registry, Remap, Switches};
+use hooks::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime};
@@ -133,7 +133,7 @@ fn setup(rt: &Arc<Runtime>, index: u32) -> CpuAbi {
 fn the_feature_skips_occluded_objects_from_the_second_frame() {
     let rt = runtime();
     let mut r = Registry::new(Switches::parse("impl.render.occlusion=on").unwrap());
-    assert!(r.add(&feature::occlusion::OcclusionCull).unwrap());
+    assert!(r.add(&hooks::occlusion::OcclusionCull).unwrap());
     let plan = r
         .build(&Remap::new(&[
             (&points::OBJECT_RENDER_RECORDS, RECORDS),
@@ -151,7 +151,7 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
     let asked: Arc<Mutex<Vec<(u64, u32, u32)>>> = Arc::default();
     {
         let asked = Arc::clone(&asked);
-        feature::occlusion::set_capture(Box::new(move |tag, w, h| {
+        hooks::occlusion::set_capture(Box::new(move |tag, w, h| {
             asked.lock().unwrap().push((tag, w, h));
         }));
     }
@@ -190,7 +190,7 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         let asks: Vec<_> = asked.lock().unwrap().drain(..).collect();
         assert_eq!(asks.len(), 1, "one capture per main view and frame");
         let (tag, w, h) = asks[0];
-        assert_eq!((w, h), feature::occlusion::GRID);
+        assert_eq!((w, h), hooks::occlusion::GRID);
         // A second transparents call in the frame asks for nothing.
         call(&rt, TRANSPARENTS, CpuAbi::default());
         assert!(asked.lock().unwrap().is_empty());
@@ -200,10 +200,10 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         // identity projection's (`+0x944` 1, `+0x948` D24's full scale).
         let z_scale = 16_777_215.0f32;
         let raw = vec![DepthMapping::w_buffer_store(20.0, 1.0 / FAR, z_scale); (w * h) as usize];
-        feature::occlusion::deliver(tag, w, h, &raw, DepthMapping::w_buffer(1.0, z_scale));
+        hooks::occlusion::deliver(tag, w, h, &raw, DepthMapping::w_buffer(1.0, z_scale));
     }
-    assert_eq!(feature::occlusion::published(), 3);
-    let (grid, map) = feature::occlusion::last_grid().unwrap();
+    assert_eq!(hooks::occlusion::published(), 3);
+    let (grid, map) = hooks::occlusion::last_grid().unwrap();
     assert_eq!((grid.cells, grid.far, grid.dropped), (2048, 0, 0));
     assert!((20.0..20.01).contains(&grid.nearest), "{grid:?}");
     assert_eq!(map, DepthMapping::w_buffer(1.0 / FAR, 16_777_215.0));
@@ -230,8 +230,8 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         .collect();
     assert_eq!(saved, vec![("occlusion".to_string(), vec![])]);
     plan.load_sections(&saved, &rt).unwrap();
-    assert!(feature::occlusion::last_grid().is_none());
-    assert!(feature::occlusion::MAILBOX.latest(0).is_none());
+    assert!(hooks::occlusion::last_grid().is_none());
+    assert!(hooks::occlusion::MAILBOX.latest(0).is_none());
     rt.memory().set_u32(FRAME, 4).unwrap();
     call(
         &rt,
@@ -251,8 +251,8 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
 fn occlusion_is_off_unless_switched_exactly() {
     for switches in ["", "impl.render=on"] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
-        r.add(&feature::occlusion::OcclusionCull).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        r.add(&hooks::occlusion::OcclusionCull).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         assert_eq!(plan.text(), "feature occlusion: on\n", "{switches:?}");
         // Nothing placed, nothing held: no snapshot blocker.
         assert!(plan.snapshot_blockers().is_empty(), "{switches:?}");

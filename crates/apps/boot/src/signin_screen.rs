@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::MemFault;
-use feature::{BuildError, Builder, Manifest};
+use hooks::{BuildError, Builder, Manifest};
 use live_hle::Hle;
 use live_hle::signin::{Phase, Prompt};
 use runtime::guest::Permissions;
@@ -1039,7 +1039,7 @@ pub fn snapshot_live(typing: &Typing) -> Option<String> {
 /// The served strings: a page of ours the locale lookup reads.
 pub struct Strings(pub Arc<SigninRows>);
 
-impl feature::Feature for Strings {
+impl hooks::Feature for Strings {
     fn manifest(&self) -> Manifest {
         Manifest::new("signin-strings", "The sign-in prompt's text").doc("docs/live/live.md")
     }
@@ -1050,7 +1050,7 @@ impl feature::Feature for Strings {
         b.locale()
             .source("signin text", move |id| rows.string(base, id));
         let rows = Arc::clone(&self.0);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             snapshot_live(&rows.typing)
         }));
         Ok(())
@@ -1073,7 +1073,7 @@ pub fn window(env: Option<&str>) -> u32 {
 /// waiting sign-in opens it. Nothing without Live or a server.
 pub fn install(
     rt: &Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     hle: Option<&Arc<Hle>>,
 ) -> anyhow::Result<bool> {
     let Some(hle) = hle.filter(|h| h.config().server_url.is_some()) else {

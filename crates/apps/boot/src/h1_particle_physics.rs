@@ -8,7 +8,7 @@ use engine::datum::{DatumArray, layout};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::tags::tag_entry_checked;
-use feature::{BuildError, Builder, Feature, Flow, Manifest};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::{Access, FaultReason};
 use tags::effects::h1_attachment::{
@@ -39,8 +39,8 @@ impl Feature for H1ParticlePhysics {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use feature::points::{EFFECT_STEP_EMITTERS, PARTICLE_INITIALISE, PARTICLE_MOVEMENT_STAGE};
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        use hooks::points::{EFFECT_STEP_EMITTERS, PARTICLE_INITIALISE, PARTICLE_MOVEMENT_STAGE};
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw().after(
             &PARTICLE_INITIALISE,
             "apply Halo 1 particle birth velocity",
@@ -461,13 +461,13 @@ mod tests {
 
     #[test]
     fn boot_places_the_three_particle_hooks_on_its_feature_plan() {
-        let mut registry = feature::Registry::new(feature::Switches::defaults());
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
         assert!(registry.add(&H1ParticlePhysics).unwrap());
-        let plan = registry.build(&feature::Base).unwrap();
+        let plan = registry.build(&hooks::Base).unwrap();
         for point in [
-            &feature::points::PARTICLE_INITIALISE,
-            &feature::points::PARTICLE_MOVEMENT_STAGE,
-            &feature::points::EFFECT_STEP_EMITTERS,
+            &hooks::points::PARTICLE_INITIALISE,
+            &hooks::points::PARTICLE_MOVEMENT_STAGE,
+            &hooks::points::EFFECT_STEP_EMITTERS,
         ] {
             let chain = plan.chains.get(&point.base).unwrap();
             assert!(chain.shadow.is_some());

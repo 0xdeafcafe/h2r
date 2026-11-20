@@ -29,7 +29,7 @@
 //! background copy keeps its pace. `H2_FEATURES=-map-copy` turns it off.
 
 use engine::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
-use feature::{BuildError, Builder, Flow, Manifest};
+use hooks::{BuildError, Builder, Flow, Manifest};
 
 pub const FEATURE: &str = "map-copy";
 
@@ -95,7 +95,7 @@ pub async fn steps(cx: Cx, steps: u32, yields: u32) -> EntryResult {
 
 pub struct MapCopy;
 
-impl feature::Feature for MapCopy {
+impl hooks::Feature for MapCopy {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
@@ -126,7 +126,7 @@ impl feature::Feature for MapCopy {
             },
         );
         // No state of its own: the copy is the game's, in guest memory.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -402,9 +402,9 @@ mod tests {
 
     #[test]
     fn the_feature_plans_one_before_hook_on_the_copy_machine() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&MapCopy).unwrap();
-        let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
+        let plan = r.build(&hooks::Base).unwrap_or_else(|e| panic!("{e:?}"));
         let text = plan.text();
         assert!(text.contains("CACHE_COPY_STEP"), "{text}");
         assert!(
@@ -412,9 +412,9 @@ mod tests {
             "{text}"
         );
         // Switched off, nothing is hooked.
-        let mut r = feature::Registry::new(feature::Switches::parse("-map-copy").unwrap());
+        let mut r = hooks::Registry::new(hooks::Switches::parse("-map-copy").unwrap());
         r.add(&MapCopy).unwrap();
-        let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
+        let plan = r.build(&hooks::Base).unwrap_or_else(|e| panic!("{e:?}"));
         assert!(!plan.text().contains("CACHE_COPY_STEP"), "{}", plan.text());
     }
 

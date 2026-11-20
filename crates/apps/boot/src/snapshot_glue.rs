@@ -286,7 +286,7 @@ impl agent::Snapshots for Shelf {
 
 /// The build key: the image's build stamp, and the switches, features and
 /// host parts that decide what is hooked and what holds state.
-pub fn build_key(stamp: String, switches: &str, plan: &feature::Plan, host: &[&str]) -> BuildKey {
+pub fn build_key(stamp: String, switches: &str, plan: &hooks::Plan, host: &[&str]) -> BuildKey {
     let features: Vec<&str> = plan.snapshot.iter().map(|f| f.id).collect();
     BuildKey {
         stamp,
@@ -408,7 +408,7 @@ impl Host<'_> {
     pub fn machine<'a>(
         &'a self,
         m: &'a mut kernel::Machine,
-        plan: &'a feature::Plan,
+        plan: &'a hooks::Plan,
         rebuilders: &'a kernel::snapshot::Rebuilders,
         shelf: &'a Shelf,
         presents: u64,
@@ -813,7 +813,7 @@ impl Part for XapiPart<'_> {
 
 /// `features`: every feature's own section, and every feature's policy.
 struct FeaturesPart<'a> {
-    plan: &'a feature::Plan,
+    plan: &'a hooks::Plan,
     rt: &'a runtime::Runtime,
 }
 
@@ -835,7 +835,7 @@ impl Part for FeaturesPart<'_> {
         let saved = snapshot::features::load_features(snapshot).map_err(err)?;
         self.plan.load_sections(&saved, self.rt)?;
         #[cfg(feature = "gpu")]
-        feature::native_map_work::reset();
+        hooks::native_map_work::reset();
         Ok(())
     }
 }

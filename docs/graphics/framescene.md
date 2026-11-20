@@ -610,7 +610,7 @@ commands are for the coordinator.
   becomes a remainder, not a part). `frame-scene`: builder sealing,
   range integrity, recycling. `native-render`: its existing GPU tests,
   fed scenes. `cargo test -p frame-scene -p scene-extract -p
-  native-render -p feature`.
+  native-render -p hooks`.
 - **Gate.** Pixels identical to the commit before (`max_channel == 0`)
   on the gate corpus; hashes identical; fps within noise;
   `rg GuestRead crates/rewrites/native-render/src/{gpu,objects,instances,world}*`

@@ -4,7 +4,7 @@
 use super::{Mode, Session};
 use crate::{Host, RunOpts, level_boot, setting_defs, sim_glue};
 use anyhow::{Context, Result, ensure};
-use feature::pipeline_render::{self, HandbackOptions};
+use hooks::pipeline_render::{self, HandbackOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, Write};
@@ -156,7 +156,7 @@ pub fn configure_replay_child<R: Read + Seek>(
     film: &mut film::Reader<R>,
     child: &mut std::process::Command,
 ) -> Result<()> {
-    let switches = feature::Switches::parse(&film.header.features).map_err(anyhow::Error::msg)?;
+    let switches = hooks::Switches::parse(&film.header.features).map_err(anyhow::Error::msg)?;
     child.env("H2_FEATURES", switches.spec());
     let Some(start) = Startup::read(film)? else {
         return configure_handback(&HandbackOptions::default(), child);

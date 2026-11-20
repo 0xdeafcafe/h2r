@@ -3,8 +3,8 @@
 //! "Render-safe hooks").
 //!
 //! A chain runs on the render thread when every hook in it is marked
-//! [`context_only`](feature::HookRef::context_only) and nothing runs after
-//! the body ([`feature::plan::Chain::render_thread`]). The plan marks the
+//! [`context_only`](hooks::HookRef::context_only) and nothing runs after
+//! the body ([`hooks::plan::Chain::render_thread`]). The plan marks the
 //! chain's override (`Dispatch::mark_context_only`) and the executor's fork
 //! keeps it. Every other hook is listed in [`REFUSED`] with the reason it
 //! stays off. The test builds the plan from every feature boot adds and
@@ -322,7 +322,7 @@ mod tests {
                 state: std::sync::Arc::new(crate::campaign_menu::tests::state()),
                 picker: std::sync::Arc::new(|| 0),
             }).unwrap();
-            let plan = features.build(&feature::Base).unwrap();
+            let plan = features.build(&hooks::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),

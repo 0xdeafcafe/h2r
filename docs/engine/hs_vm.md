@@ -1,7 +1,7 @@
 # HaloScript VM (`hs::vm`)
 
 Status: Partly built. The VM runs scenario scripts against a mock `Engine`;
-nothing in `crates/apps/boot` or `crates/hooking/feature` calls it, and the game still runs
+nothing in `crates/apps/boot` or `crates/hooking/hooks` calls it, and the game still runs
 the recompiled interpreter. Code: `crates/formats/hs/src/vm`. Tests:
 `crates/formats/hs/src/tests.rs`, `crates/formats/hs/tests/vm_disc.rs` (`#[ignore]`).
 Switch: none.

@@ -203,7 +203,7 @@ fn the_lines_say_what_happened() {
 /// fixture module: `0x402000` the update, `0x403000` the restore.
 #[test]
 fn the_hooks_hold_regeneration_on_the_feature_plan() {
-    use feature::points::{BODY_RESTORE, GAME_ACTIVATE, GAME_TICK, OBJECT_DAMAGE_UPDATE};
+    use hooks::points::{BODY_RESTORE, GAME_ACTIVATE, GAME_TICK, OBJECT_DAMAGE_UPDATE};
     use runtime::guest::Permissions;
     use runtime::{Dispatch, Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
     const UPDATE: u32 = 0x40_2000;
@@ -240,10 +240,10 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     // The stand-in update: `+delta` to the object's health (stack 0),
     // the recharging bit set on a rise, AL 1, `ret 4`.
     let delta = Arc::new(Mutex::new(0.0f32));
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     {
         let delta = Arc::clone(&delta);
-        r.add(&feature::from_fn("stand-in", move |b| {
+        r.add(&hooks::from_fn("stand-in", move |b| {
             let delta = Arc::clone(&delta);
             b.raw()
                 .implement(&OBJECT_DAMAGE_UPDATE, "update", move |cpu, ctx, _| {
@@ -274,7 +274,7 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     }
     assert!(install(&mut r).unwrap());
     let plan = r
-        .build(&feature::Remap::new(&[
+        .build(&hooks::Remap::new(&[
             (&OBJECT_DAMAGE_UPDATE, UPDATE),
             (&BODY_RESTORE, RESTORE),
             (&GAME_TICK, 0x40_3005),

@@ -267,7 +267,7 @@ fn resident(m: &dyn GuestMemory, datum: TagId, frame: i32) -> Option<u32> {
 
 fn lightmap(m: &dyn GuestMemory, binding: Option<world_lightmap::Binding>) -> Option<(TagId, i32)> {
     let map = m.u32(world_walk::LIGHTMAP).ok()?;
-    let bsp = m.u32(feature::native_world::ACTIVE_BSP).ok()?;
+    let bsp = m.u32(hooks::native_world::ACTIVE_BSP).ok()?;
     if map == 0 || bsp == 0 || m.i32(map.checked_add(0x80)?).ok()? <= 0 { return None; }
     let group = word(m, map, 0x84)?;
     let datum = TagId(word(m, group, 0x1c)?);

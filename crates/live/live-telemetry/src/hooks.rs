@@ -462,13 +462,13 @@ impl Telemetry {
 /// mark and lockstep's tick hash (docs/engine/feature-engine.md).
 pub struct TelemetryFeature(pub Arc<Telemetry>);
 
-impl feature::Feature for TelemetryFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("live-telemetry", "Live telemetry")
+impl ::hooks::Feature for TelemetryFeature {
+    fn manifest(&self) -> ::hooks::Manifest {
+        ::hooks::Manifest::new("live-telemetry", "Live telemetry")
             .doc("docs/live/live-telemetry.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut ::hooks::Builder) -> Result<(), ::hooks::BuildError> {
         if self.0.hooks.observers == live_proto::film::TelemetryObservers::EventsAndImpactsV1 {
             crate::impacts::install(b, self.0.clone());
         }
@@ -545,7 +545,7 @@ impl feature::Feature for TelemetryFeature {
         // it. The session is an outbound record of the run; a load winds
         // the engine's tick, which the session reads as a campaign revert
         // (a `cut`) or a jump, and the run goes on (docs/runtime/snapshots.md).
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(::hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -553,7 +553,7 @@ impl feature::Feature for TelemetryFeature {
 /// Adds the configured observer to `registry`. `Ok(None)` means disabled.
 /// Nothing is hooked until the plan is installed.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut ::hooks::Registry,
     config: &TelemetryConfig,
 ) -> Result<Option<Arc<Telemetry>>, String> {
     use live_proto::film::TelemetryHooks;
@@ -1061,9 +1061,9 @@ mod tests {
         let (done, wait) = std::sync::mpsc::channel();
         let rt = Arc::clone(&runtime);
         std::thread::spawn(move || {
-            let mut r = feature::Registry::new(feature::Switches::defaults());
+            let mut r = ::hooks::Registry::new(::hooks::Switches::defaults());
             assert!(install(&mut r, &config).unwrap().is_some());
-            let plan = r.build(&feature::Remap::new(&at)).unwrap();
+            let plan = r.build(&::hooks::Remap::new(&at)).unwrap();
             let installed = plan.install(&rt).unwrap();
             let names = rt.edit_dispatch(|d| {
                 at.iter()

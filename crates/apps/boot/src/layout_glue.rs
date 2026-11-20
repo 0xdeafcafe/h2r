@@ -548,7 +548,7 @@ fn announce(seen: &AtomicBool, name: &str) {
 /// original (an image with other entries) skips that hook and says so.
 pub fn install(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     model: Option<Arc<Model>>,
     theater: Option<crate::theater_ui::Theater>,
 ) -> anyhow::Result<()> {
@@ -1424,8 +1424,8 @@ pub fn install(
             id: "settings-rows",
             title: "Our rows on the Settings list",
             list: List::Settings,
-            text: &feature::points::SETTINGS_ROW_TEXT,
-            chosen: &feature::points::SETTINGS_ROW_CHOSEN,
+            text: &hooks::points::SETTINGS_ROW_TEXT,
+            chosen: &hooks::points::SETTINGS_ROW_CHOSEN,
             label_only: true,
             model: Arc::clone(&model),
         };
@@ -1515,8 +1515,8 @@ pub fn install(
             id: "controls-rows",
             title: "Our rows on the Controls list",
             list: List::Controls,
-            text: &feature::points::CONTROLS_ROW_TEXT,
-            chosen: &feature::points::CONTROLS_ROW_CHOSEN,
+            text: &hooks::points::CONTROLS_ROW_TEXT,
+            chosen: &hooks::points::CONTROLS_ROW_CHOSEN,
             label_only: false,
             model: Arc::clone(&model),
         };
@@ -1545,31 +1545,31 @@ pub fn install(
 /// text hook names an added layout). Inside our rows' hook at that point.
 pub struct LayoutValueText;
 
-impl feature::Feature for LayoutValueText {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("layouts-value", "Added layouts' names on the Controls list")
+impl hooks::Feature for LayoutValueText {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("layouts-value", "Added layouts' names on the Controls list")
             .doc("docs/input/controller-layouts.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.raw()
             .before(
-                &feature::points::CONTROLS_ROW_TEXT,
+                &hooks::points::CONTROLS_ROW_TEXT,
                 "layout value pending",
                 |_| {
                     PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 },
             )
             .after_feature("controls-rows");
         b.raw().after(
-            &feature::points::CONTROLS_ROW_TEXT,
+            &hooks::points::CONTROLS_ROW_TEXT,
             "layout value done",
             |_| {
                 PENDING_VALUE.store(0, Ordering::Relaxed);
                 Ok(())
             },
         );
-        b.snapshot(feature::SnapshotPolicy::forbid_while(layout_value_live));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(layout_value_live));
         Ok(())
     }
 }
@@ -1588,11 +1588,11 @@ fn layout_value_reason(pending: u32) -> Option<String> {
 /// memory written at install.
 pub struct StringsFeature;
 
-impl feature::Feature for StringsFeature {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("ui-strings", "Our menu strings").doc("docs/game/settings-menu.md")
+impl hooks::Feature for StringsFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("ui-strings", "Our menu strings").doc("docs/game/settings-menu.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.locale().source("our strings", |id| {
             if !is_ours(id) {
                 return None;
@@ -1604,7 +1604,7 @@ impl feature::Feature for StringsFeature {
                 .map(|(_, a)| *a)
         });
         // The strings are written and their addresses fixed at install.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -2253,9 +2253,9 @@ mod tests {
         std::thread::spawn(move || {
             let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
             let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
-            let mut features = feature::Registry::new(feature::Switches::defaults());
+            let mut features = hooks::Registry::new(hooks::Switches::defaults());
             let ok = install(&r, &mut features, Some(Arc::new(model)), None).is_ok();
-            let installed = features.build(&feature::Base).unwrap().install(&r).unwrap();
+            let installed = features.build(&hooks::Base).unwrap().install(&r).unwrap();
             tx.send((ok, installed.off_reason("locale").map(str::to_owned)))
                 .ok();
         });
@@ -2268,7 +2268,7 @@ mod tests {
         // Nothing generated, so every hook was skipped and ours own no entry.
         rt.edit_dispatch(|d| {
             assert!(d.override_name(ACTION_TABLE_BUILD).is_none());
-            assert!(d.override_name(feature::points::LOCALE_FIND.base).is_none());
+            assert!(d.override_name(hooks::points::LOCALE_FIND.base).is_none());
         });
     }
 }

@@ -4,11 +4,11 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_post::{self, CallSite, Fp, Host, NativePost, PostCall, ScreenEffect};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_post::{self, CallSite, Fp, Host, NativePost, PostCall, ScreenEffect};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 
-fn placed(switches: &str) -> Option<feature::plan::Plan> {
+fn placed(switches: &str) -> Option<hooks::plan::Plan> {
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     r.add(&NativePost).unwrap();
     let plan = r.build(&Base).unwrap();

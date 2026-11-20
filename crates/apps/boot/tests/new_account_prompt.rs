@@ -93,9 +93,9 @@ fn the_new_account_identity_opens_the_prompt_asking_for_a_gamertag() {
         });
     }
     let rt = Runtime::new(guest, dispatch);
-    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     assert!(signin_screen::install(&rt, &mut registry, Some(&hle)).unwrap());
-    let plan = registry.build(&feature::Base).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
     let _installed = plan.install(&rt).unwrap();
     let loader = boot::list_class::loader_of(signin_screen::SCREEN).expect("the class is built");
 
@@ -155,7 +155,7 @@ fn the_new_account_identity_opens_the_prompt_asking_for_a_gamertag() {
 #[test]
 fn a_opens_the_game_keyboard_on_our_buffer() {
     use boot::signin_keyboard::{self as keyboard, Field};
-    use feature::{EntryFuture, Ret};
+    use hooks::{EntryFuture, Ret};
     const STACK: u32 = 0x600e00;
     let hle = Hle::with_address(
         LiveConfig::default(),
@@ -200,7 +200,7 @@ fn a_opens_the_game_keyboard_on_our_buffer() {
     }
     let rt = Runtime::new(guest, dispatch);
     let rows = Arc::new(signin_screen::SigninRows::new(Arc::clone(&hle)));
-    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     registry
         .add(&signin_screen::Strings(Arc::clone(&rows)))
         .unwrap();
@@ -208,7 +208,7 @@ fn a_opens_the_game_keyboard_on_our_buffer() {
     {
         let (rows, placed) = (Arc::clone(&rows), Arc::clone(&placed));
         registry
-            .add(&feature::from_fn("test-open", move |b| {
+            .add(&hooks::from_fn("test-open", move |b| {
                 let rows = Arc::clone(&rows);
                 let at = b.entry("open", move |cx| -> EntryFuture {
                     let rows = Arc::clone(&rows);
@@ -222,7 +222,7 @@ fn a_opens_the_game_keyboard_on_our_buffer() {
             }))
             .unwrap();
     }
-    let plan = registry.build(&feature::Base).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap();
     let _installed = plan.install(&rt).unwrap();
     let buffer = rows.keyboard_buffer().expect("the page is in");
     let base = buffer - 7 * signin_screen::BUFFER;

@@ -309,12 +309,12 @@ pub fn touch_live() -> Option<String> {
 /// The tick hook.
 pub struct TouchGlue;
 
-impl feature::Feature for TouchGlue {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Touch look and layouts").doc("docs/runtime/ios.md")
+impl hooks::Feature for TouchGlue {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Touch look and layouts").doc("docs/runtime/ios.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::GAME_TICK;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::GAME_TICK;
         b.raw()
             .after(&GAME_TICK, "touch look and layout", move |c| {
                 if !input::touch::controls_shown() {
@@ -336,13 +336,13 @@ impl feature::Feature for TouchGlue {
             // sample runs outside, after every tick-end write.
             .after_feature(crate::skulls_custom::FEATURE)
             .after_feature(crate::h1_hud_text::FEATURE);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(touch_live));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(touch_live));
         Ok(())
     }
 }
 
 /// Adds the touch glue to `registry`; touch look goes direct from then on.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<bool> {
     let added = registry
         .add(&TouchGlue)
         .map_err(|e| anyhow::anyhow!("touch glue: {e}"))?;

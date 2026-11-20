@@ -2,8 +2,8 @@
 //! `impl.render.native=off` is the only way to turn them off: one switch
 //! for the whole native renderer, looked up exactly.
 
-use feature::plan::Base;
-use feature::{Feature, Registry, Switches};
+use hooks::plan::Base;
+use hooks::{Feature, Registry, Switches};
 
 /// One stage: its name, whether it is on, a label only its hooks put in
 /// the plan text, and the feature that places it.
@@ -18,93 +18,93 @@ fn stages() -> Vec<Stage> {
     vec![
         Stage {
             name: "world",
-            on: feature::native_world::on,
+            on: hooks::native_world::on,
             label: "native_world_skip",
-            feature: &feature::native_world::NativeWorld,
+            feature: &hooks::native_world::NativeWorld,
         },
         Stage {
             name: "world layers",
-            on: feature::native_world_layers::on,
+            on: hooks::native_world_layers::on,
             label: "native_world_layers_begin",
-            feature: &feature::native_world_layers::NativeWorldLayers,
+            feature: &hooks::native_world_layers::NativeWorldLayers,
         },
         Stage {
             name: "objects",
-            on: feature::native_objects::on,
+            on: hooks::native_objects::on,
             label: "native_objects_skip",
-            feature: &feature::native_objects::NativeObjects,
+            feature: &hooks::native_objects::NativeObjects,
         },
         Stage {
             name: "first person",
-            on: feature::native_first_person::on,
+            on: hooks::native_first_person::on,
             label: "native_first_person_skip",
-            feature: &feature::native_first_person::NativeFirstPerson,
+            feature: &hooks::native_first_person::NativeFirstPerson,
         },
         Stage {
             name: "fog",
-            on: feature::native_fog::on,
+            on: hooks::native_fog::on,
             label: "native_fog_skip",
-            feature: &feature::native_fog::NativeFog,
+            feature: &hooks::native_fog::NativeFog,
         },
         Stage {
             name: "water",
-            on: feature::native_water::on,
+            on: hooks::native_water::on,
             label: "native_water_skip",
-            feature: &feature::native_water::NativeWater,
+            feature: &hooks::native_water::NativeWater,
         },
         Stage {
             name: "transparents",
-            on: feature::native_transparents::on,
+            on: hooks::native_transparents::on,
             label: "native_transparents_entry",
-            feature: &feature::native_transparents::NativeTransparents,
+            feature: &hooks::native_transparents::NativeTransparents,
         },
         Stage {
             name: "decals",
-            on: feature::native_decals::on,
+            on: hooks::native_decals::on,
             label: "native_decals_begin",
-            feature: &feature::native_decals::NativeDecals,
+            feature: &hooks::native_decals::NativeDecals,
         },
         Stage {
             name: "particles",
-            on: feature::native_particles::on,
+            on: hooks::native_particles::on,
             label: "native_particles_walk_emit",
-            feature: &feature::native_particles::NativeParticles,
+            feature: &hooks::native_particles::NativeParticles,
         },
         Stage {
             name: "lights",
-            on: feature::native_lights::on,
+            on: hooks::native_lights::on,
             label: "native_lights_view",
-            feature: &feature::native_lights::NativeLights,
+            feature: &hooks::native_lights::NativeLights,
         },
         Stage {
             name: "light walk",
-            on: feature::native_lights::walk::on,
+            on: hooks::native_lights::walk::on,
             label: "walk gathered light geometry",
-            feature: &feature::native_lights::walk::NativeLightWalk,
+            feature: &hooks::native_lights::walk::NativeLightWalk,
         },
         Stage {
             name: "gels",
-            on: feature::native_gels::on,
+            on: hooks::native_gels::on,
             label: "native_gels_template",
-            feature: &feature::native_gels::NativeGels,
+            feature: &hooks::native_gels::NativeGels,
         },
         Stage {
             name: "shadows",
-            on: feature::native_shadows::on,
+            on: hooks::native_shadows::on,
             label: "shadow layer",
-            feature: &feature::native_shadows::NativeShadows,
+            feature: &hooks::native_shadows::NativeShadows,
         },
         Stage {
             name: "post",
-            on: feature::native_post::on,
+            on: hooks::native_post::on,
             label: "native_post_colour",
-            feature: &feature::native_post::NativePost,
+            feature: &hooks::native_post::NativePost,
         },
         Stage {
             name: "ui",
-            on: feature::native_hud::on,
+            on: hooks::native_hud::on,
             label: "native_ui_screen_fan",
-            feature: &feature::native_hud::NativeHud,
+            feature: &hooks::native_hud::NativeHud,
         },
     ]
 }
@@ -130,10 +130,10 @@ fn every_stage_is_on_by_default_and_off_with_the_master_switch() {
     }
 }
 
-fn plan(switches: Switches) -> feature::Plan {
+fn plan(switches: Switches) -> hooks::Plan {
     let mut registry = Registry::new(switches);
-    assert!(registry.add(&feature::native_map_work::NativeMapWork).unwrap());
-    assert!(registry.add(&feature::native_scene_lists::NativeSceneLists).unwrap());
+    assert!(registry.add(&hooks::native_map_work::NativeMapWork).unwrap());
+    assert!(registry.add(&hooks::native_scene_lists::NativeSceneLists).unwrap());
     for stage in stages() {
         assert!(registry.add(stage.feature).unwrap());
     }

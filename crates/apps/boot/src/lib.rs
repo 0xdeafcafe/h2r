@@ -10,7 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
-pub use feature::scene_effect_instruction_entries;
+pub use hooks::scene_effect_instruction_entries;
 
 pub mod account_screen;
 mod agent_frames;
@@ -1069,7 +1069,7 @@ fn run_configured(
         None if replay.is_some() => (None, None),
         None => (sim_glue::from_env()?, None),
     };
-    let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
+    let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
     #[cfg(not(feature = "desktop-runtime"))]
@@ -1155,7 +1155,7 @@ fn run_configured(
     // Shadow pages: trace 0xa0ff0000, d3d 0xa0ff2000,
     // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
     // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
-    // take theirs from the feature arena (`feature::arena`).
+    // take theirs from the feature arena (`hooks::arena`).
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
     anyhow::ensure!(module.slim == (tier == tier::Tier::Host), "module coverage table and build stamp disagree");
@@ -1250,7 +1250,7 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let mut features = feature::Registry::new(switches);
+    let mut features = hooks::Registry::new(switches);
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -1840,7 +1840,7 @@ fn run_configured(
     }
     if sim_mode.is_some() || host_light {
         features
-            .add(&feature::sim_native::SimNative::new(&loaded.runtime))
+            .add(&hooks::sim_native::SimNative::new(&loaded.runtime))
             .map_err(anyhow::Error::msg)?;
     }
     registration::register_viewer_skips(&mut features, host_light)?;
@@ -1849,7 +1849,7 @@ fn run_configured(
             Some(sim) => sim.frame().clone(),
             // A playerless v2 film presents a separate viewer. Its recorded
             // guest skipped every world render, including the shared RNG draws.
-            None => feature::sim_frame::SimFrame::new(
+            None => hooks::sim_frame::SimFrame::new(
                 if film.as_ref().is_some_and(|s| s.has_engine_track()) { 0 } else { render_every }
             ).on_skip(d3d_diag::note_skipped_present),
         };
@@ -1906,11 +1906,11 @@ fn run_configured(
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
-    let plan = features.build(&feature::Base).map_err(|conflicts| {
+    let plan = features.build(&hooks::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
     })?;
-    let verbose_plan = feature::plan_verbose();
+    let verbose_plan = hooks::plan_verbose();
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
@@ -1936,7 +1936,7 @@ fn run_configured(
     {
         bail!("film event observer unavailable: {why}");
     }
-    if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
+    if host_light && let Some(why) = installed.off_reason(hooks::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {

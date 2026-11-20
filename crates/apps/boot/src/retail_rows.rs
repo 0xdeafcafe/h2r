@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::entry::{EntryFuture, Ret};
 use engine::points::Point;
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 
 use crate::layout_glue::{Gm, chosen_row};
@@ -102,7 +102,7 @@ struct Ext {
     drawn: AtomicBool,
 }
 
-impl feature::Feature for Extension {
+impl hooks::Feature for Extension {
     fn manifest(&self) -> Manifest {
         Manifest::new(self.id, self.title).doc("docs/game/settings-menu.md")
     }
@@ -123,7 +123,7 @@ impl feature::Feature for Extension {
         // at build and whose values are the settings store's, kept outside
         // the snapshot; their async answers are continuations the machine
         // check sees. `drawn` only quiets a log line.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn the_extension_hooks_the_lists_two_points_before_the_original() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&Extension {
             id: "settings-rows",
             title: "Our rows on the Settings list",
@@ -169,7 +169,7 @@ mod tests {
             model: model(),
         })
         .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         assert!(text.contains(
             "0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original\n"
         ));
@@ -183,7 +183,7 @@ mod tests {
     /// original.
     #[test]
     fn the_controls_row_text_is_one_ordered_chain() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&crate::layout_glue::LayoutValueText).unwrap();
         r.add(&Extension {
             id: "controls-rows",
@@ -195,7 +195,7 @@ mod tests {
             model: model(),
         })
         .unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         let text = plan.text();
         assert!(
             text.contains(

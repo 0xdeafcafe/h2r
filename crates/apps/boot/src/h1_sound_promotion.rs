@@ -6,7 +6,7 @@ use engine::GuestMemory;
 use engine::handle::DatumHandle;
 use engine::tags::GroupTag;
 use engine::view::Tags;
-use feature::{BuildError, Builder, Feature, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::sound::h1_promotion::*;
 
 const AUDIO_GLOBALS: u32 = 0x004e_6380;

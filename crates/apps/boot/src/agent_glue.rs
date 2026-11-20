@@ -28,7 +28,7 @@
 //! (`hot_glue::map_tags`, set once the runtime is up).
 //!
 //! `shadow.*` checks the native sim ports against the lifted original
-//! (crates/extensions/agent's `shadow`, over `feature::shadow`; the image comes from
+//! (crates/extensions/agent's `shadow`, over `hooks::shadow`; the image comes from
 //! [`crate::fallback`]).
 //!
 //! `state.*` (machine snapshots) is the boot loop's: it installs the store
@@ -69,7 +69,7 @@ impl AgentGlue {
     /// stands in for the live pad (agent steps go on top of it); otherwise
     /// it is a recording, which sees agent steps too.
     pub fn install<S: xapi::Storage>(
-        registry: &mut feature::Registry,
+        registry: &mut hooks::Registry,
         path: PathBuf,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
@@ -82,7 +82,7 @@ impl AgentGlue {
     /// external controller is attached, so guest scheduling and snapshot feature
     /// identities agree when Theater attaches its transport socket later.
     pub(crate) fn with_endpoint<S: xapi::Storage>(
-        registry: &mut feature::Registry,
+        registry: &mut hooks::Registry,
         endpoint: Option<Endpoint>,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
@@ -198,7 +198,7 @@ impl AgentGlue {
     }
 
     /// The installed plan, for `features.list`.
-    pub fn set_plan(&self, plan: &feature::Plan, installed: &feature::Installed) {
+    pub fn set_plan(&self, plan: &hooks::Plan, installed: &hooks::Installed) {
         let mut lines: Vec<String> = plan.text().lines().map(str::to_owned).collect();
         lines.extend(installed.notes.iter().cloned());
         self.agent.set_plan(lines);

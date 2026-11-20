@@ -586,12 +586,12 @@ impl Recorder {
 /// Both are the same in every run with the same plan.
 pub struct TickObserver(pub Arc<Recorder>);
 
-impl feature::Feature for TickObserver {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("lockstep", "Per-tick guest RAM hashes")
+impl hooks::Feature for TickObserver {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("lockstep", "Per-tick guest RAM hashes")
             .doc("docs/game/high-framerate.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let recorder = Arc::clone(&self.0);
         b.frame().on_tick("hash", move |o| {
             let clock = o.clock();
@@ -599,7 +599,7 @@ impl feature::Feature for TickObserver {
         });
         // The counters carry across a snapshot; the records are the run's.
         let (save, load) = (Arc::clone(&self.0), Arc::clone(&self.0));
-        b.snapshot(feature::SnapshotPolicy::section(
+        b.snapshot(hooks::SnapshotPolicy::section(
             move || save.save_counters(),
             move |bytes, _| load.load_counters(bytes),
         ));
@@ -616,10 +616,10 @@ pub fn install_tick_observer(
     hook: TickHook,
     recorder: Arc<Recorder>,
 ) -> Result<(), String> {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&TickObserver(recorder))
         .map_err(|e| format!("lockstep: {e}"))?;
-    let addrs = feature::Remap::new(&[(&engine::points::GAME_TICK, hook.entry)]);
+    let addrs = hooks::Remap::new(&[(&engine::points::GAME_TICK, hook.entry)]);
     let plan = r.build(&addrs).map_err(|c| {
         let c: Vec<String> = c.iter().map(|c| c.to_string()).collect();
         format!("lockstep: {}", c.join("; "))

@@ -4,7 +4,7 @@ Evidence for [render-loop.md](../render-loop.md) and [layer-draw.md](../layer-dr
 
 ## 2026-11-17: where the scene passes' time goes
 
-Commit: not recorded. Method: the `render-timing` feature (`crates/hooking/feature/src/render_timing.rs`), Old Mombasa census run, headless. Not re-run.
+Commit: not recorded. Method: the `render-timing` feature (`crates/hooking/hooks/src/render_timing.rs`), Old Mombasa census run, headless. Not re-run.
 
 `render-timing` site lines from the 2026-11-17 Old Mombasa census run,
 weighted over the 100 one-second windows with `render` above 15 ms (2,607

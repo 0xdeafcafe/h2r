@@ -140,7 +140,7 @@ async fn apply(cx: Cx, s: Step) -> Result<Ret, EntryError> {
     Ok(Ret::new(stock.eax, 0))
 }
 
-pub(super) fn install(b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+pub(super) fn install(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
     b.raw().before(
         &points::OBJECT_ANIMATION_BLEND,
         "six-tick command animation blend",

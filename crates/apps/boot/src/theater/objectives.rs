@@ -226,7 +226,7 @@ fn powerup(
     }))
 }
 
-pub(super) fn install(b: &mut feature::Builder, session: Arc<Session>) {
+pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw()
         .observe_before(&points::POWERUP_TAKEN, "film applied power-up", move |o| {
             if session.replaying {

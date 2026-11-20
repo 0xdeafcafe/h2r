@@ -9,7 +9,7 @@ use engine::{
     memory::{GuestMemory, MemFault},
     view::objects,
 };
-use feature::points;
+use hooks::points;
 use hs::h1_ai_slots::ManeuverEdge;
 
 use super::{AI_KIND, NONE, SQUAD_COUNT, SQUAD_SIZE, SQUADS, squads};

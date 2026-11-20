@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::GuestMemory;
 use engine::points;
-use feature::Flow;
+use hooks::Flow;
 use runtime::guest::Permissions;
 
 use crate::coop_probe::Arm;
@@ -406,16 +406,16 @@ pub static HOOKED: &[&points::Point] = &[
     &points::SAVE_SAFE,
 ];
 
-impl feature::Feature for CoopPlayers {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for CoopPlayers {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             FEATURE,
             "Co-op over Live: players 3 to 16 start next to player 0 and follow the scripts' teleports",
         )
         .doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let scratch = b.guest_alloc(0x10, Permissions::RW)?;
 
         // The spawn of a third (or later) player: original, then placement.
@@ -584,7 +584,7 @@ impl feature::Feature for CoopPlayers {
         let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
         if arm.film {
             let (save, load) = (st.clone(), st.clone());
-            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 move || {
                     if crate::theater::in_keyframe() {
                         return lock(&st).spawning.map(|p| format!("co-op spawn {p:#x} in progress"));
@@ -603,14 +603,14 @@ impl feature::Feature for CoopPlayers {
                 },
             ));
         } else {
-            b.snapshot(feature::SnapshotPolicy::forbid_while(move || players_live(&arm, &st)));
+            b.snapshot(hooks::SnapshotPolicy::forbid_while(move || players_live(&arm, &st)));
         }
         Ok(())
     }
 }
 
 /// Adds the feature, armed by `arm` (the co-op over Live hooks' arm).
-pub fn install(registry: &mut feature::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry, arm: Arc<Arm>) -> anyhow::Result<bool> {
     registry
         .add(&CoopPlayers::new(arm))
         .map_err(|e| anyhow::anyhow!("coop-players: {e}"))

@@ -6,7 +6,7 @@
 //! panel's draw only reads the published slot.
 
 use engine::memory::GuestMemory;
-use feature::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 /// Publishes the name in the loaded cache header, if it can be read.
 pub fn republish(m: &dyn GuestMemory) {

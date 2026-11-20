@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use engine::points::{self, Point};
-use feature::{Call, Flow};
+use hooks::{Call, Flow};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use crate::layout_glue::Gm;
@@ -895,8 +895,8 @@ fn event(state: &Mutex<State>, g: &runtime::Guest, what: &str) {
     }
 }
 
-impl feature::Feature for Probe {
-    fn manifest(&self) -> feature::Manifest {
+impl hooks::Feature for Probe {
+    fn manifest(&self) -> hooks::Manifest {
         // On when added: it is only added when H2_COOP_PROBE is on, and
         // H2_FEATURES=-coop-probe still turns it off.
         let title = if self.id == ID {
@@ -904,10 +904,10 @@ impl feature::Feature for Probe {
         } else {
             "Co-op over Live: the retail synchronous campaign path, armed for co-op sessions"
         };
-        feature::Manifest::new(self.id, title).doc("docs/live/live-coop.md")
+        hooks::Manifest::new(self.id, title).doc("docs/live/live-coop.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // The peer-count refusal: show one peer from the start's entry to
         // OPTIONS_NEW.
         let st = Arc::clone(&self.state);
@@ -1124,7 +1124,7 @@ impl feature::Feature for Probe {
         if arm.film {
             let (check, save, load) = (st.clone(), st.clone(), st);
             let (control, restored) = (arm.clone(), arm.clone());
-            b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+            b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 move || {
                     if crate::theater::in_keyframe() {
                         return lock(&check).pending.is_some().then(|| "co-op session start has a masked peer count".into());
@@ -1161,7 +1161,7 @@ impl feature::Feature for Probe {
                 },
             ));
         } else {
-            b.snapshot(feature::SnapshotPolicy::forbid_while(move || probe_live(&arm, &st)));
+            b.snapshot(hooks::SnapshotPolicy::forbid_while(move || probe_live(&arm, &st)));
         }
         Ok(())
     }
@@ -1435,7 +1435,7 @@ pub fn occupied(existing: impl Fn(u32) -> Option<String>) -> Vec<String> {
 /// the plan never meets it.
 pub fn install(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     config: Option<Config>,
     disc: &Path,
     data_root: &Path,
@@ -1445,7 +1445,7 @@ pub fn install(
 
 pub(crate) fn install_film(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     config: Option<Config>,
     disc: &Path,
     data_root: &Path,
@@ -1496,7 +1496,7 @@ pub(crate) fn install_film(
 /// `<data>/coop-probe/` as the probe's do.
 pub fn install_live(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     data_root: &Path,
 ) -> anyhow::Result<Option<Arc<Arm>>> {
     install_live_film(rt, registry, data_root, false)
@@ -1504,7 +1504,7 @@ pub fn install_live(
 
 pub(crate) fn install_live_film(
     rt: &runtime::Runtime,
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     data_root: &Path,
     film: bool,
 ) -> anyhow::Result<Option<Arc<Arm>>> {

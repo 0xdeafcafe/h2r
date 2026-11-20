@@ -586,10 +586,10 @@ impl super::Session {
     }
 }
 
-pub(super) fn install(session: &Arc<super::Session>, b: &mut feature::Builder) {
+pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
     let s = Arc::clone(session);
     b.raw()
-        .observe_before(&feature::points::GAME_TICK, "initial film seed", move |o| {
+        .observe_before(&hooks::points::GAME_TICK, "initial film seed", move |o| {
             let mut state = s.lock();
             if let super::Mode::Record(rec) = &mut state.mode
                 && rec.meta.descriptor.seed.is_none()

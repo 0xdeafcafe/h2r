@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::memory::GuestMemory;
-use feature::native_map_work;
-use feature::native_objects::{Host, NativeSet, SetPart};
+use hooks::native_map_work;
+use hooks::native_objects::{Host, NativeSet, SetPart};
 use map::TagId;
 use frame_scene::{FrameScene, InstanceKey, View};
 use native_render::gpu::Image;
@@ -237,7 +237,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return Err(ObjectWalk::Inputs);
         }
         // The view needs a render camera that reads, as the layer's draws
-        // do: the frame step opened it with one (feature::scene_step).
+        // do: the frame step opened it with one (hooks::scene_step).
         let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
         let read = crate::native_world_glue::ReadMemory(mem);
         let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
@@ -470,11 +470,11 @@ impl native_render::camera::GuestRead for Ro<'_> {
 
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let switches = feature::Switches::from_env().unwrap_or_default();
-    if !feature::native_objects::on(&switches) {
+    let switches = hooks::Switches::from_env().unwrap_or_default();
+    if !hooks::native_objects::on(&switches) {
         return;
     }
-    feature::native_objects::set_host(Arc::new(Glue {
+    hooks::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
     }));
@@ -547,7 +547,7 @@ fn spawn_worker(
                 }
                 Err(why) => {
                     refused += 1;
-                    if refused == 1 || feature::native_verbose() {
+                    if refused == 1 || hooks::native_verbose() {
                         eprintln!("native-objects: {name}: definition {:#010x} left to D3D ({why})", definition.0);
                     }
                 }
@@ -748,7 +748,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         let l = object_lightmap(o);
         match &l {
             Ok(i) => {
-                if feature::native_verbose() {
+                if hooks::native_verbose() {
                     eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height);
                 }
             }

@@ -22,19 +22,19 @@ use std::sync::Mutex;
 
 pub struct AgentFrames;
 
-impl feature::Feature for AgentFrames {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(
+impl hooks::Feature for AgentFrames {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(
             "agent-frames",
             "Agent API: render.capture's tick marks and sim.hashes' rows",
         )
         .doc("docs/runtime/agent-api.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // Diagnostics only: a load moves the tick, which starts the hash
         // series again, and a capture waiting then never binds.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         let projected = b.switches().implementation("sim.metrics-projection", true);
         let arena = b
             .switches()

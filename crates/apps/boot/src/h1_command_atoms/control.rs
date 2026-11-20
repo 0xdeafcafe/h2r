@@ -421,7 +421,7 @@ pub(super) fn fault(f: MemFault) -> runtime::GuestFault {
     }
 }
 
-pub(super) fn install(b: &mut feature::Builder) {
+pub(super) fn install(b: &mut hooks::Builder) {
     b.raw()
         .before(&points::HS_GLOBAL_STORED, "command-list control", |c| {
             let index = c.cpu.eax as u16;

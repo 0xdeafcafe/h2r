@@ -8,7 +8,7 @@ use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::tags::GroupTag;
 use engine::view::{Tags, objects};
-use feature::{BuildError, Builder, Feature, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::effects::h1_attachment::PointPhysics;
 
 pub(crate) struct H1Flag;

@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, ensure};
 use engine::points;
-use feature::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -337,7 +337,7 @@ impl Audit {
         });
     }
 
-    pub fn installed(&self, installed: &feature::Installed) {
+    pub fn installed(&self, installed: &hooks::Installed) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.report.missing_hooks.extend(installed.notes.iter()
             .filter(|s| s.contains("host-audit")).cloned());

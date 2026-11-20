@@ -45,7 +45,7 @@ crates = [
 [hooking]
 about = "How our code meets guest code: the hook engine, named points, typed guest layouts, switches"
 uses = ["formats", "runtime"]
-crates = ["feature", "guest-layout", "hooks", "switches"]
+crates = ["guest-layout", "hooks", "switches"]
 
 [rewrites]
 about = "Rust that replaces a guest subsystem: the native simulation, FrameScene, the native renderer, ported engine functions, and the bridge that installs each one"
@@ -101,12 +101,12 @@ live_owned = ["cmd-drive", "cmd-live"]
 # not listed, and on an entry whose dependency is gone.
 
 [[exception]]
-from = "feature"
+from = "hooks"
 to = "engine"
 until = "S2: the points, views and entry glue move to guest-layout and hooks"
 
 [[exception]]
-from = "feature"
+from = "hooks"
 to = "native-render"
 until = "S3: the renderer's guest half leaves for render-bridge"
 

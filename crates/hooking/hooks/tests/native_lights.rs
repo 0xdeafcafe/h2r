@@ -1,7 +1,7 @@
 //! Context-only admission inside the original light layers.
-use feature::native_lights::{self, NativeLights};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_lights::{self, NativeLights};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 
 #[test]
 fn the_master_switch_off_places_nothing() {

@@ -1,7 +1,7 @@
 # Native renderer stage 2: objects and skinning
 
 Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
-Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/hooking/feature/src/native_objects.rs`, `crates/apps/boot/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/hooking/feature/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
+Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/hooking/hooks/src/native_objects.rs`, `crates/apps/boot/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/hooking/hooks/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
@@ -584,7 +584,7 @@ vertex and no matrix work on the CPU.
   an invented two-node model whose square hangs on a turned node, checks
   colour (lit by the skinned normal), W depth, one object culled and one
   with the wrong node count left out.
-- **The feature `native-objects`** (`crates/hooking/feature/src/native_objects.rs`).
+- **The feature `native-objects`** (`crates/hooking/hooks/src/native_objects.rs`).
   One observer before `LAYER_DRAW`, inside `render-timing`'s and the
   world's (`after_feature` on both), context-only. First it sets back the
   bits the last base-layer layer 3 cleared (items still holding the mask
@@ -594,7 +594,7 @@ vertex and no matrix work on the CPU.
   not seen, copies the cleared objects' nodes and spheres, gives back the
   bits of objects it could not read or whose node count disagrees, and
   asks for the pass (all bits back if the device cannot). Tests:
-  `crates/hooking/feature/tests/native_objects.rs` (the plan with `render-timing`,
+  `crates/hooking/hooks/tests/native_objects.rs` (the plan with `render-timing`,
   deep, the layer-draw port and the world; with the world alone the chain
   runs on the render thread; the switch off; the observer on
   `FlatMemory`, with the restore at the next layer draw and a rebuilt

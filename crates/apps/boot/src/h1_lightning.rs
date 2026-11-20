@@ -6,7 +6,7 @@ use engine::light_constants::global::SPECIAL_FORWARD;
 use engine::memory::{GuestMemory, MemFault};
 use engine::tags::GroupTag;
 use engine::view::{Tags, objects};
-use feature::{BuildError, Builder, Feature, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::effects::h1_lightning::{Endpoint, HEADER, MAGIC, STRIDE};
 
 pub(crate) struct H1Lightning;

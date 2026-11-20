@@ -7,7 +7,7 @@ use engine::{
     entry::{Cx, EntryError, GuestCall, Ret},
     memory::{GuestMemory, MemFault},
 };
-use feature::{Builder, Call, Flow, points};
+use hooks::{Builder, Call, Flow, points};
 
 use super::{actors, is_converted_campaign, uncover_limits};
 

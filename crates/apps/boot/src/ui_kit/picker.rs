@@ -402,12 +402,12 @@ impl Describe for Picker {
 /// is a kit screen's.
 pub struct PickerTexts(pub Arc<Picker>);
 
-impl feature::Feature for PickerTexts {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(self.0.texts_id, "The value picker's texts")
+impl hooks::Feature for PickerTexts {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(self.0.texts_id, "The value picker's texts")
             .doc("docs/game/ui-builder.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let s = &self.0;
         let len = s.texts.family.len * SLOT_LEN;
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
@@ -415,7 +415,7 @@ impl feature::Feature for PickerTexts {
         let me = Arc::clone(s);
         b.locale().source(s.name, move |id| me.texts.address(id));
         let load = Arc::clone(s);
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             || None,
             Vec::new,
             move |bytes, _| {
@@ -431,7 +431,7 @@ impl feature::Feature for PickerTexts {
 }
 
 /// Adds both pickers and their texts.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<()> {
+pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
     for ingame in [false, true] {
         let p = Arc::new(Picker::new(ingame));
         registry

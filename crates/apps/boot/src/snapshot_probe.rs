@@ -40,12 +40,12 @@ struct TickCounter {
     preempt: bool,
 }
 
-impl feature::Feature for TickCounter {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("snapshot_probe", "Snapshot quiescence probe")
+impl hooks::Feature for TickCounter {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("snapshot_probe", "Snapshot quiescence probe")
             .doc("docs/runtime/snapshots.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let ticks = Arc::clone(&self.ticks);
         let preempt = self.preempt;
         b.frame().on_tick("count", move |o| {
@@ -54,7 +54,7 @@ impl feature::Feature for TickCounter {
                 o.runtime.request_preempt(runtime::preempt::REQUEST);
             }
         });
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
@@ -67,7 +67,7 @@ pub struct Probe {
 
 impl Probe {
     /// Install the tick counter when `H2_SNAPSHOT_PROBE` asks for it.
-    pub fn from_env(features: &mut feature::Registry) -> anyhow::Result<Option<Self>> {
+    pub fn from_env(features: &mut hooks::Registry) -> anyhow::Result<Option<Self>> {
         let value = std::env::var(ENV).ok();
         let Some(preempt) = mode_from(value.as_deref()).map_err(anyhow::Error::msg)? else {
             return Ok(None);
@@ -104,7 +104,7 @@ impl Probe {
     pub fn after_slice(
         &mut self,
         m: &kernel::Machine,
-        plan: &feature::Plan,
+        plan: &hooks::Plan,
         host: impl FnOnce() -> Vec<(String, String)>,
     ) {
         let tick = self.ticks.load(Ordering::Relaxed);
@@ -149,7 +149,7 @@ mod tests {
     /// audited ones block nothing.
     #[test]
     fn audited_features_block_nothing_while_idle() {
-        let mut r = feature::Registry::new(feature::Switches::default());
+        let mut r = hooks::Registry::new(hooks::Switches::default());
         r.add(&crate::level_boot::LoadedMark(None)).unwrap();
         r.add(&crate::controls_text::ControlsText).unwrap();
         r.add(&crate::layout_glue::StringsFeature).unwrap();
@@ -159,14 +159,14 @@ mod tests {
             vfs: Arc::new(std::sync::Mutex::new(vfs::Vfs::new())),
         })
         .unwrap();
-        r.add(&feature::leaves::EngineLeaves).unwrap();
+        r.add(&hooks::leaves::EngineLeaves).unwrap();
         r.add(&TickCounter {
             ticks: Arc::default(),
             preempt: true,
         })
         .unwrap();
         crate::health::install(&mut r).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         let policies: Vec<_> = plan
             .snapshot
             .iter()
@@ -188,15 +188,15 @@ mod tests {
     #[test]
     fn switched_off_render_features_block_nothing() {
         let off = "impl.render.native=off";
-        let mut r = feature::Registry::new(feature::Switches::parse(off).unwrap());
-        r.add(&feature::occlusion::OcclusionCull).unwrap();
-        r.add(&feature::native_world::NativeWorld).unwrap();
-        r.add(&feature::native_objects::NativeObjects).unwrap();
-        r.add(&feature::native_transparents::NativeTransparents)
+        let mut r = hooks::Registry::new(hooks::Switches::parse(off).unwrap());
+        r.add(&hooks::occlusion::OcclusionCull).unwrap();
+        r.add(&hooks::native_world::NativeWorld).unwrap();
+        r.add(&hooks::native_objects::NativeObjects).unwrap();
+        r.add(&hooks::native_transparents::NativeTransparents)
             .unwrap();
-        r.add(&feature::native_lights::NativeLights).unwrap();
-        r.add(&feature::native_post::NativePost).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        r.add(&hooks::native_lights::NativeLights).unwrap();
+        r.add(&hooks::native_post::NativePost).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         let policies: Vec<_> = plan
             .snapshot
             .iter()

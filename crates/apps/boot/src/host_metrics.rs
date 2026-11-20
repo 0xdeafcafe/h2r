@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use agent::Access;
 use agent_proto::{RpcError, code, method};
-use feature::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use serde::Serialize;
 use serde_json::json;
 use timeline::host::{process_cpu_ns, thread_cpu_ns};
@@ -100,7 +100,7 @@ impl Feature for Metrics {
 }
 
 pub(crate) fn install(
-    features: &mut feature::Registry,
+    features: &mut hooks::Registry,
     agent: &agent::Agent,
     host_light: bool,
 ) -> anyhow::Result<()> {

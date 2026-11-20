@@ -6,7 +6,7 @@ use bots::{decisions::Personality, guest, mind::Skill, phantom};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use live_proto::{Xuid, bots::is_bot_xuid};
 use runtime::GuestFault;
 
@@ -293,7 +293,7 @@ fn show(
     })
 }
 
-impl feature::Feature for Options {
+impl hooks::Feature for Options {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             "clanker-options-route",
@@ -366,7 +366,7 @@ impl feature::Feature for Options {
             },
         );
         let current = self.current.clone();
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             current
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -455,7 +455,7 @@ async fn add_emblem(
 }
 
 pub(crate) fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
     let current: Current = Arc::default();

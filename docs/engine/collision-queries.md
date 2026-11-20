@@ -5,7 +5,7 @@ The contract page for the collision entries taken over under
 [sim-rewrite-collision.md](sim-rewrite-collision.md). Code:
 `crates/rewrites/sim-collision` (kernels, synthetic data only),
 `crates/rewrites/engine/src/sim_collision` (adapters, guest layout),
-`crates/hooking/feature/src/sim_native.rs` (installation). The data comes from the
+`crates/hooking/hooks/src/sim_native.rs` (installation). The data comes from the
 guest image, and no value from it is copied here or into the code.
 
 Bar E: same bits as retail. Each kernel works out its full answer before
@@ -183,7 +183,7 @@ held, their bytes, and precision controls. The agent API serves it as
 ```sh
 cargo test -p sim-core
 cargo test -p sim-collision
-cargo test -p feature sim_native
+cargo test -p hooks sim_native
 cargo test -p agent collision
 H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test sim_collision_differential
 ```

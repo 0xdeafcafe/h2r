@@ -1248,24 +1248,24 @@ static SHARED: OnceLock<Arc<Custom>> = OnceLock::new();
 /// for the effects and the hidden skull.
 pub struct SkullsCustom(pub Arc<Custom>);
 
-impl feature::Feature for SkullsCustom {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Our own skulls, hidden in the campaign")
+impl hooks::Feature for SkullsCustom {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Our own skulls, hidden in the campaign")
             .doc("docs/game/skulls.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::points::GAME_TICK;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::points::GAME_TICK;
         let scratch = b.guest_alloc(0x1000, runtime::guest::Permissions::RW)?;
         let _ = PLACEMENT_SIZE;
         let s = Arc::clone(&self.0);
         b.raw()
             .before(&GAME_TICK, "our skulls' calls", move |c| {
                 if s.reentry.load(Ordering::SeqCst) {
-                    return Ok(feature::Flow::Continue);
+                    return Ok(hooks::Flow::Continue);
                 }
                 let work = std::mem::take(&mut *s.work.lock().unwrap_or_else(|e| e.into_inner()));
                 if work.is_empty() {
-                    return Ok(feature::Flow::Continue);
+                    return Ok(hooks::Flow::Continue);
                 }
                 let s = Arc::clone(&s);
                 c.answer_async(move |cx| -> EntryFuture {
@@ -1289,7 +1289,7 @@ impl feature::Feature for SkullsCustom {
             Arc::clone(&self.0),
             Arc::clone(&self.0),
         );
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || live.snapshot_live(),
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
@@ -1300,7 +1300,7 @@ impl feature::Feature for SkullsCustom {
 
 /// Adds our skulls to `registry`. Says why when left out.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     store: Option<Arc<Store>>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
     maps: Option<MapLocator>,
@@ -1331,7 +1331,7 @@ pub fn install(
 }
 
 /// The install line, once `plan` is in.
-pub fn report(plan: &feature::Plan, installed: &feature::Installed) -> String {
+pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     if let Some(why) = installed.off_reason(FEATURE) {
         return format!(
             "skulls-custom: NOT installed: {why}; our skulls are neither placed nor applied"

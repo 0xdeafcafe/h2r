@@ -10,7 +10,7 @@ use engine::points::{
     HUD_TEXT_BOUNDS, HUD_TEXT_DRAW, HUD_TEXT_MEASURE, HUD_TEXT_SETUP, HUD_TEXT_SUBSTITUTE, SCENARIO,
 };
 use engine::tags::{entry_layout, tag_entry_checked};
-use feature::{BuildError, Builder, Manifest};
+use hooks::{BuildError, Builder, Manifest};
 use h1text::hud::{
     EVENT_LAYOUT_SIZE, EVENT_MARKER, GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT,
     SCENARIO_HMT, SIZE, glyph,
@@ -280,11 +280,11 @@ fn stage(
 /// The feature's id, for the features that order their hooks around it.
 pub(crate) const FEATURE: &str = "h1-hud-text";
 
-pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError> {
-    let feature = feature::FnFeature {
+pub(crate) fn install(registry: &mut hooks::Registry) -> Result<(), BuildError> {
+    let feature = hooks::FnFeature {
         manifest: Manifest::new(FEATURE, "Halo 1 help and objectives"),
         build: |b: &mut Builder| {
-            b.snapshot(feature::SnapshotPolicy::Stateless);
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
             let scratch = b.guest_alloc(
                 4 * TEXT_CAPACITY as u32 * 2,
                 runtime::guest::Permissions::RW,
@@ -303,7 +303,7 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                                 stage(&mut *mem, bp, primary, shadow, scratch).ok().flatten();
                         });
                     }
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 })
                 .context_only();
             b.raw()
@@ -328,7 +328,7 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                                 );
                             }
                         }
-                        Ok(feature::Flow::Continue)
+                        Ok(hooks::Flow::Continue)
                     },
                 )
                 .context_only();
@@ -339,7 +339,7 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                     {
                         c.cpu.ecx = DRAW_TEXT.get();
                     }
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 })
                 .context_only();
             b.raw()
@@ -349,7 +349,7 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                     if mem.u32(sp).ok() == Some(FROM_BOUNDS) && DRAW_TEXT.get() != 0 {
                         let _ = mem.set_u32(sp + 4, DRAW_TEXT.get());
                     }
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 })
                 .context_only();
             b.raw()
@@ -359,7 +359,7 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                     {
                         c.cpu.ecx = DRAW_TEXT.replace(0);
                     }
-                    Ok(feature::Flow::Continue)
+                    Ok(hooks::Flow::Continue)
                 })
                 .context_only();
             controls::register(b);

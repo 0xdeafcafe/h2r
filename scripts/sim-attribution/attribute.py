@@ -270,7 +270,7 @@ def host_class(frames):
         return "DirectSound HLE calls"
     if "xapi::" in j or "d3d::" in j:
         return "other HLE calls"
-    if "feature::" in j:
+    if "hooks::" in j:
         return "other feature hooks"
     if "kernel::Kernel" in j or "kernel::Core" in j or "install_inner" in j:
         return "kernel export calls"

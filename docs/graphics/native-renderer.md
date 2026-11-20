@@ -1,7 +1,7 @@
 # Native GPU renderer
 
 Status: Built. Every stage draws in the default configuration.
-Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/hooking/feature/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/hooking/feature/tests/native_defaults.rs`, `crates/hooking/feature/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
+Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/hooking/hooks/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/hooking/hooks/tests/native_defaults.rs`, `crates/hooking/hooks/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The native renderer draws the frame from GPU-resident data: the static world, objects, transparents, lights, effects, fog, post and the HUD. It does not
@@ -39,7 +39,7 @@ describes what exists.
    final display stay on D3D ([Residual render callers](#residual-render-callers)).
 
 `impl.render.native=off` returns every stage, walk and scene list to the D3D
-path together. `crates/hooking/feature/src/switches.rs` (`NATIVE`, `native_render_on`)
+path together. `crates/hooking/hooks/src/switches.rs` (`NATIVE`, `native_render_on`)
 reads it, looked up exactly: the `impl.render` group does not reach it.
 `the_native_master_switch_gates_every_stage_and_walk` checks that every
 stage gate follows it. There are no per-stage switches.

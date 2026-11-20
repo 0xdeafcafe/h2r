@@ -1,6 +1,6 @@
-use feature::native_particles::{NativeParticles, DYNAMIC_QUAD_READY, EMIT_READY};
-use feature::plan::Base;
-use feature::{Registry, Switches};
+use hooks::native_particles::{NativeParticles, DYNAMIC_QUAD_READY, EMIT_READY};
+use hooks::plan::Base;
+use hooks::{Registry, Switches};
 
 #[test]
 fn the_switch_off_and_no_parent_update_skip() {

@@ -280,13 +280,13 @@ fn the_tick_leaves_facing_alone_when_the_game_holds_look_or_no_unit() {
 /// order them, or every boot refuses its features.
 #[test]
 fn touch_and_our_skulls_plan_together() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&TouchGlue).unwrap();
     let store = std::sync::Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
     r.add(&crate::skulls_custom::SkullsCustom(std::sync::Arc::new(
         crate::skulls_custom::Custom::new(store, None, None, false),
     )))
     .unwrap();
-    let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
+    let plan = r.build(&hooks::Base).unwrap_or_else(|e| panic!("{e:?}"));
     assert!(plan.text().contains(FEATURE), "{}", plan.text());
 }

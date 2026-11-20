@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use engine::points;
-use feature::pipeline_render::{
+use hooks::pipeline_render::{
     Addrs, DrawBoundary, PipelineRender, RANDOM_A, RANDOM_C, SharedCache,
 };
-use feature::{Registry, Remap, Switches};
+use hooks::{Registry, Remap, Switches};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, TransferAbi, kernel};
@@ -242,7 +242,7 @@ struct Rig {
     ctx: ExecCtx,
     log: Log,
     feature: PipelineRender,
-    plan: feature::Plan,
+    plan: hooks::Plan,
 }
 
 fn stdcall_ret(
@@ -677,7 +677,7 @@ fn rig_tuned(
         .unwrap();
     d.register_override(D3D_CALLBACK, "D3D callback", |cpu, ctx, _| {
         if ctx.memory().u32(FALLBACK)? == MODE_RENDER_ENTRY {
-            return feature::entry::start_render(cpu, ctx, D3D_CALLBACK, |cx| Box::pin(async move {
+            return hooks::entry::start_render(cpu, ctx, D3D_CALLBACK, |cx| Box::pin(async move {
                 let input = cx.read(|m| m.u32(INPUT))?;
                 cx.call(engine::entry::GuestCall::new(CALLBACK)).await?;
                 // The kernel wrote this word on the game thread while we

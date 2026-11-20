@@ -221,7 +221,7 @@ impl Theater {
 
     pub(crate) fn install(
         &self,
-        registry: &mut feature::Registry,
+        registry: &mut hooks::Registry,
         dir: &Path,
         stamps: Vec<String>,
         live: &live_hle::LiveConfig,

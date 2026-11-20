@@ -6,7 +6,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points::{
     HUD_MATERIAL_CONSTANTS, HUD_MATERIAL_PIXEL_SHADER, HUD_MATERIAL_READY, SHADER_DRAW_BEGIN,
 };
-use feature::{Builder, Flow};
+use hooks::{Builder, Flow};
 use h1text::hud::{COMPONENT_START, CONTROL_FLAGS};
 
 use super::{controls::widget_control, flash, mission_hud};

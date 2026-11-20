@@ -10,7 +10,7 @@
 //! memory only: `from` becomes `to` in a precision variant, and `to` goes
 //! back to `from` in any other.
 //!
-//! **When.** Before [`GAME_ACTIVATE`](feature::points::GAME_ACTIVATE)
+//! **When.** Before [`GAME_ACTIVATE`](hooks::points::GAME_ACTIVATE)
 //! (`0x18f000`, options in `eax`), after the map's tags are loaded. The
 //! netgame equipment spawner (`0x15aad0`, reading the item at `+0x58`,
 //! `0x15ac83`) has one caller, the per-tick netgame update `0x15ae70`
@@ -131,14 +131,14 @@ struct Precision {
     table: Arc<RwLock<Table>>,
 }
 
-impl feature::Feature for Precision {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Precision variants on converted Halo 1 maps")
+impl hooks::Feature for Precision {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Precision variants on converted Halo 1 maps")
             .doc("docs/halo1/multiplayer.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use feature::Flow;
-        use feature::points::GAME_ACTIVATE;
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use hooks::Flow;
+        use hooks::points::GAME_ACTIVATE;
         let table = Arc::clone(&self.table);
         b.raw()
             .before(&GAME_ACTIVATE, "precision item swap", move |c| {
@@ -178,13 +178,13 @@ impl feature::Feature for Precision {
             .after_feature(crate::variant_ext::FEATURE);
         // The swap table is read at install and never changes; the swap
         // itself is in guest memory.
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }
 
 /// Adds the feature, with the swaps of the packages under `packages`.
-pub fn install(registry: &mut feature::Registry, packages: &Path) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry, packages: &Path) -> anyhow::Result<bool> {
     let table = read_table(packages);
     if !table.is_empty() {
         eprintln!("precision: swaps for {} converted maps", table.len());

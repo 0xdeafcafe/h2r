@@ -466,7 +466,7 @@ from the switches that exist. Debug builds always take `DIAG`.
 
 **Not in this change.** Returning the transfer in a register instead of
 20 bytes through memory is slice T4, taken only if T2's profile still
-shows it. After-hooks that allocate (`crates/hooking/feature/src/install.rs`)
+shows it. After-hooks that allocate (`crates/hooking/hooks/src/install.rs`)
 are the hook engine's, not the contract's.
 
 ## 5. What must not change, and why it does not

@@ -1,7 +1,7 @@
 # Native shadows
 
 Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend; pixel parity and timing are not verified.
-Code: `crates/hooking/feature/src/native_shadows.rs`, `crates/apps/boot/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/hooking/feature/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
+Code: `crates/hooking/hooks/src/native_shadows.rs`, `crates/apps/boot/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `crates/hooking/hooks/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The stage keeps the game's gather, template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).

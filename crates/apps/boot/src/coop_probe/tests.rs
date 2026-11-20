@@ -746,7 +746,7 @@ fn runtime() -> std::sync::Arc<runtime::Runtime> {
 #[test]
 fn off_adds_nothing() {
     let rt = runtime();
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let got = install(
         &rt,
         &mut r,
@@ -756,14 +756,14 @@ fn off_adds_nothing() {
     )
     .unwrap();
     assert_eq!(got, Installed::Off);
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     assert!(!plan.text().contains(ID), "{}", plan.text());
 }
 
 #[test]
 fn on_it_places_every_hook_in_the_plan() {
     let rt = runtime();
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let cfg = Config {
         map: "01a_tutorial".into(),
         difficulty: Difficulty::Normal,
@@ -779,7 +779,7 @@ fn on_it_places_every_hook_in_the_plan() {
     )
     .unwrap();
     assert_eq!(got, Installed::Added { level: None });
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     let text = plan.text();
     for p in HOOKED {
         assert!(text.contains(p.name), "{} missing:\n{text}", p.name);
@@ -789,20 +789,20 @@ fn on_it_places_every_hook_in_the_plan() {
 
 #[test]
 fn with_a_level_the_host_setup_is_on_the_tick() {
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&Probe::new(Some(want()), PathBuf::from("/nonexistent")))
         .unwrap();
-    let text = r.build(&feature::Base).unwrap().text();
+    let text = r.build(&hooks::Base).unwrap().text();
     assert!(text.contains("host lobby setup"), "{text}");
     // It shares the tick with another feature's tick listener.
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&Probe::new(Some(want()), PathBuf::from("/nonexistent")))
         .unwrap();
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
         .unwrap();
-    assert!(r.build(&feature::Base).is_ok());
+    assert!(r.build(&hooks::Base).is_ok());
     // H2_FEATURES=-coop-probe still turns it off.
-    let mut r = feature::Registry::new(feature::Switches::parse("-coop-probe").unwrap());
+    let mut r = hooks::Registry::new(hooks::Switches::parse("-coop-probe").unwrap());
     assert_eq!(
         r.add(&Probe::new(None, PathBuf::from("/nonexistent"))),
         Ok(false)
@@ -819,7 +819,7 @@ fn an_address_overridden_outside_the_plan_refuses_the_probe_cleanly() {
             |_, _, _| unreachable!(),
         );
     });
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let cfg = Config {
         map: DEFAULT_MAP.into(),
         difficulty: Difficulty::Normal,
@@ -841,7 +841,7 @@ fn an_address_overridden_outside_the_plan_refuses_the_probe_cleanly() {
         "{why:?}"
     );
     // Nothing of the probe is in the plan, so the plan installs.
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     assert!(!plan.text().contains(ID));
     assert_eq!(
         occupied(|a| (a == points::GAME_TICK.base).then(|| "x".to_owned())),
@@ -916,11 +916,11 @@ fn the_co_op_features_block_snapshots_only_while_armed() {
         runtime::Guest::new(),
         runtime::dispatch::Dispatch::default(),
     );
-    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
     let arm = install_live(&rt, &mut r, Path::new("/nonexistent"))
         .unwrap()
         .unwrap();
-    let plan = r.build(&feature::Base).unwrap();
+    let plan = r.build(&hooks::Base).unwrap();
     assert_eq!(plan.snapshot_blockers(), Vec::new());
     arm.arm(None);
     let blockers = plan.snapshot_blockers();

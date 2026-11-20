@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 
@@ -209,7 +209,7 @@ fn row_chosen(c: &mut Call, screen: &SkullsScreen, request_at: u32) -> Result<Fl
     })
 }
 
-impl feature::Feature for VariantRow {
+impl hooks::Feature for VariantRow {
     fn manifest(&self) -> Manifest {
         Manifest::new(ROW_FEATURE, "The Skulls row in the game variant editor")
             .doc("docs/game/skulls.md")
@@ -234,7 +234,7 @@ impl feature::Feature for VariantRow {
         ROW_ON.store(true, Ordering::SeqCst);
         // `ROW_ON` is fixed by the build; the screen's profile is the press's.
         let (save, load) = (Arc::clone(&self.0), Arc::clone(&self.0));
-        b.snapshot(feature::SnapshotPolicy::section(
+        b.snapshot(hooks::SnapshotPolicy::section(
             move || save_state(&save),
             move |bytes, _| load_state(&load, bytes),
         ));
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn the_row_and_the_class_are_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let s = screen();
         r.add(&mp_class(
             Arc::clone(&s),
@@ -302,7 +302,7 @@ mod tests {
         ))
         .unwrap();
         r.add(&VariantRow(s)).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         for line in [
             "0x002b7581 VARIANT_OPTIONS_ROW_TEXT: before [skulls-mp-row:the Skulls row's text] -> original\n",
             "0x002b75e8 VARIANT_OPTIONS_ROW_CHOSEN: before [skulls-mp-row:the Skulls row's press] -> original\n",

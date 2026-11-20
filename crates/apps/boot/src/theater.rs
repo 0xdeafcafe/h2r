@@ -170,7 +170,7 @@ impl Session {
             address,
             live_service, telemetry_hooks, render_hooks,
         } = facts;
-        let switches = feature::Switches::from_env()
+        let switches = hooks::Switches::from_env()
             .map_err(anyhow::Error::msg)?
             .spec();
         let mut image = film::image::ImageMatch::Native;
@@ -748,11 +748,11 @@ impl agent::LobbyTape for Session {
 }
 
 pub(crate) struct Observer(pub Arc<Session>, pub Option<agent::Agent>);
-impl feature::Feature for Observer {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
+impl hooks::Feature for Observer {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("theater-film", "Exact host film").doc("docs/game/theater.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // Hook installation changes guest dispatch boundaries. A v1 tape
         // must use the observer set that recorded its scheduler/call stream.
         if self.0.lock().header.version >= 2 {
@@ -764,7 +764,7 @@ impl feature::Feature for Observer {
             actions::install(b, self.0.clone());
         }
         let session = self.0.clone();
-        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             let state = session.lock();
             (!in_keyframe() && !state.complete && state.failure.is_none()).then(|| "film cursor is live".into())
         }));

@@ -68,7 +68,7 @@ use crate::ui_kit::lifecycle;
 use crate::ui_watch;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::MemFault;
-use feature::{BuildError, Builder, Call, Flow, Manifest};
+use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 
@@ -845,7 +845,7 @@ fn row_chosen(c: &mut Call, page: &DifficultyPage, seen: &AtomicBool) -> Result<
     })
 }
 
-impl feature::Feature for DifficultyPage {
+impl hooks::Feature for DifficultyPage {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             "skulls-page",
@@ -874,7 +874,7 @@ impl feature::Feature for DifficultyPage {
             Arc::clone(&self.flow),
         );
         let (shown, reopen) = (Arc::clone(&self.screen), Arc::clone(&self.screen));
-        b.snapshot(feature::SnapshotPolicy::section_forbid_while(
+        b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
             move || live.snapshot_live(),
             move || save_state(&save, &shown),
             move |bytes, _| load_state(&load, &reopen, bytes),
@@ -1451,7 +1451,7 @@ mod tests {
 
     #[test]
     fn the_hook_and_the_class_are_on_the_plan() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let s = screen();
         let flow = Arc::new(unguarded());
         let c = class(
@@ -1468,7 +1468,7 @@ mod tests {
             store: Arc::new(Store::defaults(crate::setting_defs::ALL)),
         })
         .unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
+        let text = r.build(&hooks::Base).unwrap().text();
         assert!(
             text.contains(
                 "0x002c9d38 DIFFICULTY_ROW_CHOSEN: before [skulls-page:the Skulls page before the level] -> original\n"

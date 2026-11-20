@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::points;
-use feature::{BuildError, Builder, Flow, Manifest};
+use hooks::{BuildError, Builder, Flow, Manifest};
 
 pub const ID: &str = "bots";
 
@@ -59,7 +59,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-impl feature::Feature for Bots {
+impl hooks::Feature for Bots {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Bots (Clankers)").doc("docs/game/bots.md")
     }
@@ -287,7 +287,7 @@ impl feature::Feature for Bots {
             session.enable_bot_tape();
             film_state::install(b, &self.frame, session);
         } else {
-            b.snapshot(feature::SnapshotPolicy::Stateless);
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
         }
         Ok(())
     }
@@ -362,14 +362,14 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
 
 /// Adds the bots feature over the process-wide bots to `registry`.
 pub fn install(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     data_root: &std::path::Path,
 ) -> anyhow::Result<bool> {
     install_film(registry, data_root, None)
 }
 
 pub(crate) fn install_film(
-    registry: &mut feature::Registry,
+    registry: &mut hooks::Registry,
     data_root: &std::path::Path,
     film: Option<Arc<crate::theater::Session>>,
 ) -> anyhow::Result<bool> {

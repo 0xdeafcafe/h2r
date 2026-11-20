@@ -1,7 +1,7 @@
 //! A unit callback can inspect its actual return PC. At each RET dispatch
 //! must enter the port at that site without running the entry chain again.
 use engine::{points, sim_physics::PORTS};
-use feature::{Base, Registry, Switches, sim_physics::NativePhysics};
+use hooks::{Base, Registry, Switches, sim_physics::NativePhysics};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, exec::HARNESS_EXIT, guest::Permissions};
 use std::sync::{Arc, Mutex};
 
@@ -109,6 +109,6 @@ fn missing_continuation_leaves_the_plan_uninstalled() {
     let mut registry = Registry::new(Switches::parse("impl.sim.native_unit_update").unwrap());
     registry.add(&NativePhysics).unwrap();
     let result = registry.build(&Base).unwrap().install(&rt);
-    assert!(matches!(result,Err(feature::InstallError::MissingResume { site, .. }) if site==port.resumes[0]));
+    assert!(matches!(result,Err(hooks::InstallError::MissingResume { site, .. }) if site==port.resumes[0]));
     assert!(rt.edit_dispatch(|d| d.override_name(port.point.base).is_none()));
 }

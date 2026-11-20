@@ -8,7 +8,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 
 Code: `crates/live/sim` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
-`crates/hooking/feature/src/sim_frame.rs`, `crates/apps/boot/src/sim_glue.rs` and its
+`crates/hooking/hooks/src/sim_frame.rs`, `crates/apps/boot/src/sim_glue.rs` and its
 System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
@@ -157,7 +157,7 @@ process (boot and load included).
 
 `H2_SIM=<match file>` on the boot path, or `h2 sim run <match file>`.
 What it changes (**Code**, `crates/apps/boot/src/sim_glue.rs`,
-`crates/hooking/feature/src/sim_frame.rs`):
+`crates/hooking/hooks/src/sim_frame.rs`):
 
 1. **The light host can skip the render front-end** in world frames. The `sim-frame`
    feature implements `RENDER_FRAME` (`0x00223240`). At each entry it
@@ -1011,7 +1011,7 @@ headers and blocks while those dependencies are being traced.
 
 `cargo test -p sim` (config, metrics, compare, clock, the examples
 here), `cargo test -p bots tuning` and `cargo test -p bots
-a_tuned_brain` (the overrides), `cargo test -p feature sim_frame` (the skip's decision
+a_tuned_brain` (the overrides), `cargo test -p hooks sim_frame` (the skip's decision
 and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
 samples, limits and phantom tuning), and `cargo test -p cli
 sim_cmd` (child arguments, per-run data, the results directory).

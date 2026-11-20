@@ -100,7 +100,7 @@ fn ended(m: &dyn GuestMemory, object: u32) -> Result<Option<Event>, MemFault> {
 pub(crate) fn observe(
     t: &Telemetry,
     source: &'static str,
-    o: &feature::Obs<'_>,
+    o: &::hooks::Obs<'_>,
     read: impl FnOnce(&runtime::Guest) -> Result<Option<Event>, MemFault>,
 ) {
     if !t.film_observing() {
@@ -126,7 +126,7 @@ pub(crate) fn observe(
     });
 }
 
-pub(crate) fn install(b: &mut feature::Builder, telemetry: Arc<Telemetry>) {
+pub(crate) fn install(b: &mut ::hooks::Builder, telemetry: Arc<Telemetry>) {
     if telemetry.hooks.weapon_fire {
         let t = telemetry.clone();
         b.raw()

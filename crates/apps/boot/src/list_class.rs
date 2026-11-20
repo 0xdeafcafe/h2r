@@ -581,14 +581,14 @@ fn place_scroll_arrow(
 
 pub(crate) struct ScrollArrowLayout;
 
-impl feature::Feature for ScrollArrowLayout {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("list-scroll-arrows", "Position scroll arrows on moved lists")
+impl hooks::Feature for ScrollArrowLayout {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("list-scroll-arrows", "Position scroll arrows on moved lists")
             .doc("docs/formats/ui.md")
     }
 
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        b.snapshot(feature::SnapshotPolicy::Stateless);
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw().before(&points::UI_QUAD_TO_SCREEN, "place scroll arrows", |c| {
             let mut mem = c.ctx.runtime().memory();
             place_scroll_arrow(&mut *mem, c.cpu, |vtable| {
@@ -609,7 +609,7 @@ impl feature::Feature for ScrollArrowLayout {
                 },
                 reason: runtime::guest::FaultReason::Unmapped,
             })?;
-            Ok(feature::Flow::Continue)
+            Ok(hooks::Flow::Continue)
         })
         // It reads the layouts fixed when the lists are set up and edits
         // only the caller's stack frame and the quad it is about to
@@ -2128,12 +2128,12 @@ async fn add_picture(
     Ok(())
 }
 
-impl feature::Feature for ListClass {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(self.id, "A screen of ours as our own list class")
+impl hooks::Feature for ListClass {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(self.id, "A screen of ours as our own list class")
             .doc("docs/engine/feature-engine.md")
     }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         let rows = Arc::clone(&self.rows);
         let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
@@ -2308,7 +2308,7 @@ impl feature::Feature for ListClass {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.screen, loader);
-        b.snapshot(feature::SnapshotPolicy::forbid_while(building_live));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(building_live));
         Ok(())
     }
 }
@@ -2408,7 +2408,7 @@ mod tests {
 
     #[test]
     fn a_built_class_is_found_by_its_screen_id() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let class = ListClass::with_rows("test-found", "test-found-screen", Arc::new(Opens("x")));
         r.add(&class).unwrap();
         assert_eq!(loader_of("test-found-screen"), Some(class.loader()));
@@ -3193,11 +3193,11 @@ mod tests {
 
     #[test]
     fn the_class_places_five_entries_and_one_table_page() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let class = ListClass::new("video-screen", video_screen::SCREEN, model());
         assert_eq!(class.loader(), 0);
         r.add(&class).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         assert_eq!(plan.entries.len(), 5);
         assert_eq!(class.loader(), plan.entries[0].addr);
         let text = plan.text();
@@ -3496,7 +3496,7 @@ mod tests {
 
     #[test]
     fn a_class_with_a_description_places_the_same_entries() {
-        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let class = ListClass::with_rows("described", "described", Arc::new(Described))
             .description(TextBlock {
                 rect: [1, 2, 3, 4],
@@ -3505,7 +3505,7 @@ mod tests {
                 animation: 0,
             });
         r.add(&class).unwrap();
-        let plan = r.build(&feature::Base).unwrap();
+        let plan = r.build(&hooks::Base).unwrap();
         assert_eq!(plan.entries.len(), 5);
         assert_eq!(class.loader(), plan.entries[0].addr);
     }
