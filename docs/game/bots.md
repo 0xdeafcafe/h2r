@@ -71,7 +71,12 @@ that tag alone does not establish a loader for it.
   +16 the ASCII gamertag. Kind 3 has only a name. The hooks leave
   name-only rows and human accounts on the retail path. A remote
   phantom needs a matching, gear-marked session slot.
-- The card opens on the kit's large dialog and offers Back. Skin 6 of
+- Recent Players uses retail's history. `RECENT_PLAYERS_BUILD` copies
+  its records into the list, and `clanker_card` restores the display
+  prefix on a reserved Clanker XUID. Selecting the row opens the
+  read-only card with Gamertag, Difficulty, Style and Back. Its large
+  dialog borrows the Controls screen's localized string list so its
+  labels resolve even after the phantom leaves the session. Skin 6 of
   the current interface contains the Y menu's player table. Its nested
   skin's first shader bitmap uses the medium emblem material in the
   main menu, shared map and Zanzibar. The card copies that definition
@@ -98,6 +103,8 @@ remote client and with a human guest signed in on a second controller.
 Check the same name after restart and in a non-team System Link game
 against its Live card and web emblem. Use a legacy friends
 entry if available, since new friend requests to bots cannot create one.
+The menu parity check visits recent entries, verifies the Clanker card
+class and reports missing widget text. [Crawling the menus](../runtime/agent-api.md#crawling-the-menus)
 
 ## 1. Decision
 

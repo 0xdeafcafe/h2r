@@ -337,7 +337,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         let mut packet = opened.last_state.to_bytes();
         let mut status = result.err().map_or(0, |error| error.win32());
         if let Some(tap) = self.input_tap.as_mut() {
-            tap.read(handle, &mut status, &mut packet);
+            tap.read_with_memory(handle, &mut status, &mut packet, Some(memory));
         }
         memory.write(out, &packet)?;
         match status {

@@ -89,7 +89,7 @@ pub const MAIN_MENU: u32 = 9;
 /// The players' screen (constructor `0x2524cc`, vtable `0x45a490`) and
 /// its mode word.
 pub const JOIN_SCREEN: u32 = 0x1e;
-const JOIN_MODE: u32 = 0x610;
+pub(crate) const JOIN_MODE: u32 = 0x610;
 /// No real list is longer; a cycle in a torn read stops here.
 const MAX_LIST: usize = 32;
 
@@ -136,7 +136,7 @@ impl Top {
 }
 
 /// The channel of `window` for `slot`, if that window has one there.
-fn channel(window: u32, slot: u32) -> Option<u32> {
+pub(crate) fn channel(window: u32, slot: u32) -> Option<u32> {
     match window {
         0 => (slot == SHARED).then_some(WINDOW_0),
         1 => Some(WINDOW_1 + slot * STRIDE_13),

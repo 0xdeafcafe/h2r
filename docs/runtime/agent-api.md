@@ -46,7 +46,8 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
@@ -154,8 +155,8 @@ refused; batches are not supported. Method names are `domain.verb`.
   `cinematic_start` and `cinematic_stop`, observed by the agent feature;
   cleared when the map changes). A level's first tick comes before its
   scripts start the opening cutscene, so ask for
-  `{"phase":"gameplay","map_ticks":30}` to mean "playing". Fades to black
-  are not detected. During a load the mode reads as none.
+  `{"phase":"gameplay","map_ticks":30}` to mean "playing". A fade leaves the phase unchanged.
+  `ui.audit` reports menu transition state. During a load the mode reads as none.
 - **Boundary.** `tick`: read right after a tick returned, one consistent
   simulation state. `slice`: read between scheduler slices with no tick for
   500 ms, where guest memory may be mid-update. While the game ticks,
@@ -981,7 +982,7 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 
 ## `ui`: what the menus show
 
-These methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
+`ui.screen` needs `H2_UI_WATCH=1`. The other UI methods read the current guest widgets directly. All of them are read-only except `ui.press`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each tick (`boot::ui_watch`): `{screen, window, slot,
@@ -1027,8 +1028,82 @@ These methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
 share one list-screen implementation (`crates/extensions/game/src/list_class.rs`).
-Menus are driven with `input.pad` and checked with `ui.screen`; there is no
-widget-level focus or activate method.
+
+### Menu inspection and navigation
+
+`ui.audit {}` inspects the instantiated widgets at one game boundary.
+`screen` is the underlying menu. `dialogs` contains the active dialog
+on each occupied dialog channel, including dialogs belonging to another
+controller. `active` is the surface that accepts player one's input.
+`target` is its opaque token, and `focused_row` is the zero-based focused
+item. A transition or ambiguous input receiver can leave these fields null. Each surface
+has a numeric `id`, `window`, controller `slot`, current `pane` and
+the kit class `name` when available. Kit dialogs can share a retail ID.
+
+Inspect `panes[].labels` and `panes[].lists[].rows` for the text at the
+widget. The audit reads the UTF-16 buffer *after* retail's localized
+string lookup. A row includes its datum index, text and individual labels.
+On the retail profile picker and action menu, `navigation` identifies a
+verified inspection action in the current list mode.
+A missing widget, an empty string and an unreadable text interface have
+distinct statuses. The list's `item_count` includes off-screen items.
+Rows describe the materialized viewport. Moving focus exposes the other
+rows of a scrolling list. The Y menu exposes its materialized tabs and
+marks the selected pane. Source and widget layout are in
+[`ui_audit.rs`](../../crates/extensions/game/src/ui_audit.rs) and
+[User-interface tags](../formats/ui.md).
+
+`issues` identifies affected surfaces, panes and rows. It includes
+missing or empty row text, empty labels, unreadable data, empty panes
+and undersized lists. `transition` includes the startup fade time
+remaining, scene fade mode and weight, and the active, pending and
+outgoing layers of the menu compositor. A modal can request a blurred
+backdrop for as long as it is open. `stuck_blur` means a layer requesting
+that backdrop still carries its input-blocking transition more than
+one second past its authored delay and duration. Other overdue animations
+produce `stuck_transition`. `stuck_fade` means audits sampled the same
+unfinished main-menu startup fade and clock reading at least 150 game ticks
+apart. Unknown backdrop accessors give `requests_backdrop: null`.
+These diagnostics describe compositor inputs. The final image still
+requires a rendering check. [Transition reader](../../crates/extensions/game/src/ui_transition.rs)
+
+`ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
+the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
+`back` (B), `friends` (Y), and `open_live_menu` (A on the Live players
+screen in mode 3). Move focus, audit again, then send `choose` with the
+observed row. A changed owner, row or requested phase invalidates the
+press. The XAPI tap checks the target again when the game reads the pad.
+A successful result contains `{delivered:true, target, action, row,
+player, at}` after the press and release. An unread gesture expires. Read
+`ui.audit` after the menu transition settles to check what the press opened.
+`session.methods` lists `ui.press` when the process has an XAPI input tap.
+
+### Crawling the menus
+
+On a running agent-enabled game, place a signed-in profile with a recent
+Clanker at the main menu. Set `H2_AGENT` to its socket path.
+
+```sh
+h2 agent --socket "$H2_AGENT" ui-crawl --depth 6 --budget-ms 120000 --require-clanker
+```
+
+Omit `--socket` to use the normal agent endpoint. The crawl claims one
+connection, explores known navigation actions, observes each destination
+and backs out before trying its siblings. It visits the Y menu and
+Recent Players, including entries for players who left the session.
+From Settings it can inspect an existing editable profile, open Controls
+and back out of the choice dialogs without selecting a value.
+It skips game starts, quit, unverified actions and changes to settings or
+accounts. `--from-current` starts at the open menu or dialog for a
+focused check. Depth zero audits only the current surface. The defaults
+are six menu transitions and a two-minute wall-clock budget.
+
+For a parity run, use `--require-clanker` so missing seed history or an
+unreached card fails the run. The JSON verdict lists visited paths,
+findings, skipped actions, Clanker cards and navigation errors. Findings
+or a failed traversal produce a nonzero exit. Save the report outside the
+repository because resolved text can contain profile names and disc strings.
+[CLI implementation](../../crates/apps/cli/src/agent_ui_crawl.rs)
 
 ## `audio`: voice routing
 
@@ -1840,6 +1915,8 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
 - Nothing here was checked by running the game unless a section says so:
   the tests above use fake readers, synthetic guest memory, synthetic pads,
   synthetic frames and a fake sampler.
+- `ui.audit`, `ui.press` and the menu crawl against a live game. Their regression
+  cases use synthetic memory, input and agent replies.
 - `state.*` against the real machine: the tests run over fakes.
 - `sim.give`, `sim.spawn` and teleport against a running game: the callees
   are played by the tests.
@@ -1855,8 +1932,7 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   queued load ([test-maps.md](../game/test-maps.md#not-verified)).
 - Not provided: effect, projectile and particle counts; per-subsystem
   guest time; owner attribution of frame cost; kernel I/O seeks and cache
-  hits in the load timeline; fade detection; a widget-level UI stack and
-  HUD; setting a feature switch through the API; loading a named level
+  hits in the load timeline; a widget-level HUD; setting a feature switch through the API; loading a named level
   other than a test map (`maps.test.load`).
 
 ## Related

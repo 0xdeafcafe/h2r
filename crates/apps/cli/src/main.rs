@@ -13,6 +13,8 @@ use xiso::Xiso;
 
 #[cfg(unix)]
 mod agent_cmd;
+#[cfg(unix)]
+mod agent_ui_crawl;
 mod agent_flight;
 mod agent_maps;
 #[cfg(unix)]

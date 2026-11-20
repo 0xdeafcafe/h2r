@@ -190,6 +190,10 @@ pub mod method {
     pub const UI_SCREEN: &str = "ui.screen";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
+    /// Active widget panes, resolved text and audit findings at this boundary.
+    pub const UI_AUDIT: &str = "ui.audit";
+    /// Deliver one menu action guarded by the input owner and focus from `ui.audit`.
+    pub const UI_PRESS: &str = "ui.press";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";

@@ -521,8 +521,13 @@ the sheet.
   flags, its backing bitmaps (up to 16, less `content_bitmaps`), its
   list moved to our skin, anchor and row count, and no other blocks.
   The screen-tag hook serves that copy (`served`) and doesn't ask for the
-  Controls tag. A base not in the interface logs `no dialog screen N in
-  this interface; not drawn as a dialog`, and the screen has no tag.
+  Controls tag for the frame. The large error dialog has a null localized string-list
+  reference because retail fills its text buffers directly. For a base
+  without a string list, the copy takes the Controls screen's reference
+  (Controller Settings in a game). This lets the widget's string lookup
+  reach the kit's locale source for every label. If the interface lacks
+  the base, its list, or both string lists, the loader leaves the host
+  screen's layout in place.
 - Opening: `list_class::open` and `push` open a dialog class with
   `open_over`: the request with window kind 1 (`DIALOG_WINDOW`) handed to
   the loader, as `0x19b527` does. The opener stays drawn under it.

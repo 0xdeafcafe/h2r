@@ -109,6 +109,16 @@ impl FilmPads {
 
 impl InputTap for FilmPads {
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+        self.read_with_memory(handle, status, packet, None);
+    }
+
+    fn read_with_memory(
+        &mut self,
+        handle: u32,
+        status: &mut u32,
+        packet: &mut [u8; PACKET],
+        memory: Option<&dyn xapi::GuestMemory>,
+    ) {
         const OP: &str = "XInputGetState";
         if self.replay.is_some() {
             // Never return live input if the tape is exhausted or malformed.
@@ -128,7 +138,7 @@ impl InputTap for FilmPads {
             }
         } else {
             if let Some(inner) = &mut self.inner {
-                inner.read(handle, status, packet);
+                inner.read_with_memory(handle, status, packet, memory);
             }
             self.session.record(
                 PADR,
