@@ -76,7 +76,7 @@ fn on_sector_finds_a_point_over_a_square() {
 #[test]
 fn hooks_take_retail_encodings() {
     use crate::scenario::{Targets, hook_value};
-    use h1scripts::compile::Hook;
+    use crate::scripts::compile::Hook;
     let hook = |ty: &str, token: &str| Hook {
         slot: 0,
         h2_type: 0,

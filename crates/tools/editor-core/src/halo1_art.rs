@@ -11,7 +11,7 @@
 //! `disc_multiplayer_maps_are_textured_and_lightmapped`.
 use std::collections::HashMap;
 
-use h1bitmaps::BitmapExt;
+use h1_assets::bitmaps::BitmapExt;
 use h1map::bitmap::{Bitmap, ImageKind};
 use h1map::bsp::{Lightmap, unpack_normal};
 use h1map::{Block, Group, H1Map, TagId, TagRef};
@@ -184,7 +184,7 @@ pub fn picture(map: &H1Map, bitmap: &Bitmap, index: usize) -> Option<H1Picture> 
 /// channel rounded to nearest, halves up): Halo 1's light, the albedo's
 /// multiplier, on the scale the renderer draws (albedo × page × 2, as
 /// Halo 2 does), the same as the converter's pages
-/// (`h1bitmaps::atlas::to_halo2_light`). Drawn as stored, Halo 1's full
+/// (`h1_assets::bitmaps::atlas::to_halo2_light`). Drawn as stored, Halo 1's full
 /// light doubled.
 pub fn to_halo2_light(rgba: &mut [u8]) {
     for px in rgba.chunks_exact_mut(4) {
@@ -249,7 +249,7 @@ impl<'m> ArtBuilder<'m> {
     }
 
     /// One BSP: its render surfaces, its lightmaps (with materials) and its
-    /// lightmap bitmap's pages per lightmap (`h1bitmaps::lightmap_pages`).
+    /// lightmap bitmap's pages per lightmap (`h1_assets::bitmaps::lightmap_pages`).
     pub fn bsp(
         &mut self,
         surfaces: &[[u16; 3]],

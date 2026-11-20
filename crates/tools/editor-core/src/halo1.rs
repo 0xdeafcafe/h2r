@@ -258,7 +258,7 @@ pub fn view(name: &str, map: &H1Map) -> H1View {
             for b in bsps {
                 let r = map.structure_bsp(&b).and_then(|s| {
                     // A lightmap bitmap that does not read leaves the BSP unlit.
-                    let pages = h1bitmaps::lightmap_pages(map, &s).ok();
+                    let pages = h1_assets::bitmaps::lightmap_pages(map, &s).ok();
                     Ok((s.render_surfaces()?, s.lightmaps()?, pages))
                 });
                 match r {

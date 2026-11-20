@@ -125,7 +125,7 @@ pub fn records() -> Vec<Record> {
     // Bytes nothing of ours explains stay opaque (preserved by encoders).
     //
     // Bitmap root: D (both block extents, the 0x4c prefix). The scalars are
-    // the fields the Halo 1 converter (h1bitmaps::convert) fills from the
+    // the fields the Halo 1 converter (h1_assets::bitmaps::convert) fills from the
     // Halo 1 bitmap's field of the same role, offset for offset; converted
     // bitmaps load and draw in game (docs/halo1/bitmaps.md). Their names
     // follow that role; what the Halo 2 engine does with each is not

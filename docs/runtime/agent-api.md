@@ -700,14 +700,19 @@ h2 agent render.parity '{"arm": true}'
   content (framescene.md 9.2).
 - **`render.scene`.** The last sealed `FrameScene`, from the source the
   frame step registers (`agent::render::set_scene_source`, in boot's
-  `scene_glue` over `feature::scene_step`): whether
+  `scene_glue` over `hooks::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
   cut, its clusters, instances, parts, rows, lights, shadow maps, the
   instances the guest still draws (`remainder`), and carried ops by slot
-  and by `CameraUse` (empty while no stage carries ops); `counters` (`scene_dropped_*`,
-  `scene_unresident`, `scene_readback`, `scene_held_draws`,
-  `scenes_sealed`, ...). With `dump`, the whole scene is written as JSON
+  and by `CameraUse` (empty while no stage carries ops); `counters`
+  (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
+  `scene_refused_writes`, and from `d3d::scene_stage`
+  `scene_stages_world`, `scene_stages_objects`, the scene stages queued
+  to the render thread, and `scene_dropped_world`,
+  `scene_dropped_objects`, those it could not record after the guest
+  skipped their items; framescene.md, slice 2; later slices add
+  `scene_unresident`, `scene_readback`, `scene_held_draws`). With `dump`, the whole scene is written as JSON
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".

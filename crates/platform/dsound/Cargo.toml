@@ -3,7 +3,7 @@ name = "dsound"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/audio out"
+description = "Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/platform/audio out"
 
 [features]
 default = ["playback"]

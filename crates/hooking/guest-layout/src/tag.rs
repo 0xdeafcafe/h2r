@@ -26,6 +26,6 @@ crate::layout! {
         DATUM datum @ 0x4: Datum,
         /// The tag's data; 0 is the guest's "no entry".
         ADDRESS address @ 0x8: u32,
-        SIZE size @ 0xc: u32,
+        DATA_SIZE size @ 0xc: u32,
     }
 }

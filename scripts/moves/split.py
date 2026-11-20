@@ -19,7 +19,9 @@ The domain of a new package is its entry in scripts/crate-domains.toml.
 --check prints the references that stop the move and exits 1 if there are
 any; the window refuses to run until there are none (--force overrides):
 
-    up    no module that stays may name a module that leaves
+    up    no module that stays may name a module that leaves (`crate::m`,
+          a bare `m::` in the root, `super::m` from a top-level module),
+          and no module that leaves may reach the root with `super::`
     down  no module that leaves may name a module that stays, or an item
           of the crate root
 
@@ -32,8 +34,10 @@ What runs:
   3. `from`: up, its `mod` lines for the modules go and the rest become
      `pub mod` (the new crate reads them); down, each `mod m;` becomes
      `pub use <to>::m;`, so `crate::m` and `<from>::m` still resolve.
-  4. In the moved files, `crate::x` for a module x that stayed becomes
-     `<from>::x` (up). Elsewhere, `<from>::m` for a moved module becomes
+  4. In the moved files (up), `crate::x` for anything that did not move
+     with them (a module, a root item, a macro) becomes `<from>::x`; a
+     `use crate::{...}` naming both kinds is split in two. Down, a module
+     the root re-exports is named by its crate. Elsewhere, `<from>::m` for a moved module becomes
      `<to>::m`, and a crate that now names `<to>` gets the dependency.
   5. Paths, as in every window: Cargo.toml `path` values, relative
      paths, `crates/...` in docs and comments.
@@ -82,6 +86,120 @@ def references(files, names):
     return found
 
 
+def group_names(body):
+    """The first identifier of each top-level item of a `{...}` use group."""
+    items, depth, cur = [], 0, ""
+    for ch in body:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    items.append(cur)
+    return [re.match(r"\s*(\w+)", i).group(1) for i in items if i.strip()]
+
+
+def scope_up(text, leaving, src_ident, mixed, path):
+    """`crate::x` -> `<src>::x` in a moved file for every x that did not
+    move. A `use crate::{...}` group naming both kinds is split in two;
+    any other mixed group is left and listed. Returns (text, edits)."""
+    edits = 0
+    out, i = [], 0
+    group = re.compile(r"(?<![\w$])crate::\{")
+    for m in group.finditer(text):
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        body = text[m.end():j - 1]
+        names = group_names(body)
+        stay = [n for n in names if n not in leaving]
+        if not stay:
+            continue
+        out.append(text[i:m.start()])
+        if len(stay) == len(names):
+            out.append(f"{src_ident}::{{{body}}}")
+            edits += 1
+        else:
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            prefix = text[line_start:m.start()]
+            semi = text[j:j + 1] == ";"
+            if re.fullmatch(r"\s*(pub(\([\w: ]+\))?\s+)?use\s+", prefix) and semi and "{" not in body:
+                items = [x.strip() for x in body.split(",") if x.strip()]
+                moved_items = [x for x in items if re.match(r"\w+", x).group(0) in leaving]
+                kept = [x for x in items if x not in moved_items]
+                out.append("crate::{" + ", ".join(moved_items) + "};\n" + prefix
+                           + f"{src_ident}::{{" + ", ".join(kept) + "}")
+                edits += 1
+            else:
+                out.append(text[m.start():j])
+                mixed.append(f"{path}:{text.count(chr(10), 0, m.start()) + 1}")
+        i = j
+    out.append(text[i:])
+    text = "".join(out)
+    single = re.compile(r"(?<![\w$])crate::(\w+)\b")
+
+    def fix(m):
+        nonlocal edits
+        if m.group(1) in leaving:
+            return m.group(0)
+        edits += 1
+        return f"{src_ident}::{m.group(1)}"
+
+    return single.sub(fix, text), edits
+
+
+def split_use_groups(text, src_ident, dst_ident, leaving):
+    """`use <src>::{a, moved::X, b};` -> `use <src>::{a, b};` and
+    `use <dst>::{moved::X};`; a group of moved modules only is renamed.
+    Returns (text, edits, [line numbers left alone])."""
+    edits, unresolved, out, i = 0, [], [], 0
+    group = re.compile(r"(?<![\w:.$])" + re.escape(src_ident) + r"::\{")
+    for m in group.finditer(text):
+        if m.start() < i:
+            continue
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        body = text[m.end():j - 1]
+        items, d, cur = [], 0, ""
+        for ch in body:
+            d += {"{": 1, "}": -1}.get(ch, 0)
+            if ch == "," and d == 0:
+                items.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        items = [x for x in items + [cur.strip()] if x]
+        moved = [x for x in items if re.match(r"\w+", x).group(0) in leaving]
+        if not moved:
+            continue
+        kept = [x for x in items if x not in moved]
+        out.append(text[i:m.start()])
+        if not kept:
+            out.append(f"{dst_ident}::{{{body}}}")
+        else:
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            prefix = text[line_start:m.start()]
+            if re.fullmatch(r"\s*(pub(\([\w: ]+\))?\s+)?use\s+", prefix) and text[j:j + 1] == ";":
+                out.append(f"{src_ident}::{{" + ", ".join(kept) + "};\n" + prefix
+                           + f"{dst_ident}::{{" + ", ".join(moved) + "}")
+            else:
+                out.append(text[m.start():j])
+                unresolved.append(text.count("\n", 0, m.start()) + 1)
+                i = j
+                continue
+        edits += 1
+        i = j
+    out.append(text[i:])
+    return "".join(out), edits, unresolved
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 1:
@@ -123,7 +241,26 @@ def main():
     # What stops the move.
     if up:
         blockers = references(staying_files, set(leaving))
-        rule = f"a module that stays in `{src_pkg}` names one that leaves"
+        # The root names its modules bare (`native_decals::X`), and a
+        # top-level module reaches the root's others with `super::`.
+        root_files = [f for f in staying_files if f == src_lib]
+        declared = {m.group(3) for m in map(MOD_LINE.match, (read(src_lib) or "").split("\n")) if m}
+        top_level = [f for f in staying_files + moving_files
+                     if os.path.dirname(f) == os.path.dirname(src_lib) and os.path.basename(f)[:-3] in declared]
+        for path in root_files + top_level:
+            for i, line in enumerate((read(path) or "").split("\n"), 1):
+                if re.match(r"\s*(pub(\([\w: ]+\))?\s+)?mod\s+\w+\s*\{", line):
+                    break  # an inline module (the tests): `super::` is the file there
+                if line.lstrip().startswith(("//", "pub mod ", "mod ", "#[")):
+                    continue
+                if path in root_files:
+                    names = set(re.findall(r"(?<![\w:$])(\w+)::", line)) & set(leaving)
+                else:
+                    names = set(re.findall(r"(?<![\w:])super::(\w+)", line))
+                    names = names & set(leaving) if path in staying_files else names - set(leaving)
+                for named in names:
+                    blockers.setdefault(named, []).append(f"{path}:{i}")
+        rule = f"a module that stays in `{src_pkg}` names one that leaves, or a path crosses the cut"
     else:
         named = references(moving_files, None)
         blockers = {n: sites for n, sites in named.items() if n not in leaving and n not in reexported}
@@ -210,12 +347,24 @@ def main():
     # Rust paths.
     moved = [w.map.new(f) for f in moving_files]
     scoped = 0
-    names = sorted(set(staying) | set(reexported)) if up else sorted(reexported)
-    if names:
-        pattern = re.compile(r"\bcrate::(" + "|".join(map(re.escape, names)) + r")\b")
+    if up:
+        # Up, everything `crate::` named in a moved file that did not move
+        # with it (a module, a root item, a macro) is the source crate's.
+        mixed = []
         for path in moved:
             text = read(path)
-            out, n = pattern.subn(lambda m: f"{src_ident if up else reexported[m.group(1)]}::{m.group(1)}", text)
+            out, n = scope_up(text, set(leaving), src_ident, mixed, path)
+            if n:
+                write(path, out)
+                scoped += n
+        for site in mixed:
+            w.report.append(f"left for a person: {site} names moved and staying items in one `crate::{{...}}`")
+    elif reexported:
+        names = sorted(reexported)
+        pattern = re.compile(r"(?<![\w$])crate::(" + "|".join(map(re.escape, names)) + r")\b")
+        for path in moved:
+            text = read(path)
+            out, n = pattern.subn(lambda m: f"{reexported[m.group(1)]}::{m.group(1)}", text)
             if n:
                 write(path, out)
                 scoped += n
@@ -229,7 +378,10 @@ def main():
         text = read(path)
         if text is None or src_ident not in text:
             continue
-        n = code = 0
+        text, n, unresolved = split_use_groups(text, src_ident, dst_ident, set(leaving))
+        code = n
+        for line in unresolved:
+            w.report.append(f"left for a person: {path}:{line} names a moved module inside a `{src_ident}::{{...}}` that is not a `use`")
         lines = text.split("\n")
         for i, line in enumerate(lines):
             lines[i], k = pattern.subn(lambda m: f"{dst_ident}::{m.group(1)}", line)

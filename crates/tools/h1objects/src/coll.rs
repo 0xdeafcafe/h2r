@@ -20,7 +20,7 @@
 //! Damage (vitality, region damage thresholds, effects) is not in Halo 2's
 //! `coll`; it is listed in [`CollisionReport`].
 
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::FourCC;
 use map::build::Block;
 use tags::collision::{
@@ -153,7 +153,7 @@ fn bsp_physics(bsp: &Bsp) -> (Block, usize) {
     e.put_u16(0x06, 0x81)
         .put_u16(0x46, 0x80)
         .put_u16(0x56, 0x81);
-    e.tag_id(0x30, h1models::SELF_ID);
+    e.tag_id(0x30, h1_assets::models::SELF_ID);
     let code = bsp_mopp(bsp);
     let len = code.len();
     if len > 0 {
@@ -311,8 +311,8 @@ pub fn object_bsps(
         Some(m) => {
             let t = h1.tag(m)?;
             h1.tag_data(t)?;
-            let model = h1models::h1::Model::read(h1, t.data_address)?;
-            let world = h1models::mode::world_transforms(
+            let model = h1_assets::models::h1::Model::read(h1, t.data_address)?;
+            let world = h1_assets::models::mode::world_transforms(
                 &model
                     .nodes
                     .iter()

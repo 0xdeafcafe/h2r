@@ -4,7 +4,7 @@
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::HUD_MESSAGE_LOOKUP;
 use hooks::{Builder, Flow};
-use h1text::hud::{CONTROL_PROMPTS, CUSTOM_DEVICE, EVENT_SIZE, EVENTS, SHARED_MESSAGES};
+use h1_contract::hud::{CONTROL_PROMPTS, CUSTOM_DEVICE, EVENT_SIZE, EVENTS, SHARED_MESSAGES};
 
 use super::{list_row, message_text, mission_hud};
 
@@ -198,7 +198,7 @@ mod tests {
         );
         assert_eq!(event_text(&mem, tag, key + 1, None).unwrap(), None);
 
-        mem.set_u16(strings + 10, h1text::hud::SILHOUETTE_BASE).unwrap();
+        mem.set_u16(strings + 10, h1_contract::hud::SILHOUETTE_BASE).unwrap();
         mem.set_u16(strings + 12, 0).unwrap();
         mem.set_u8(elements + 9, 2).unwrap();
         assert_eq!(

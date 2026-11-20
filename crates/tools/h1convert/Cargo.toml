@@ -3,20 +3,20 @@ name = "h1convert"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 # The package manifest of a converted map.
 content.workspace = true
 h1map = { path = "../h1map" }
 # The structure's lightmap pages, converted to a Halo 2 bitmap.
-h1bitmaps = { path = "../h1bitmaps" }
-h1models = { path = "../h1models" }
+h1-assets = { path = "../h1-assets" }
 # The level's own sky.
-h1sky = { path = "../h1sky" }
 # The map list's names and descriptions (ui.map).
-h1text = { path = "../h1text" }
 # The sound gestalt, rebuilt for a fresh map.
-h1sounds = { path = "../h1sounds" }
+# The names the game's Halo 1 hooks read back (docs/dev/crate-structure.md).
+h1-contract.workspace = true
 map.workspace = true
 # The structure's Havok MOPP code.
 mopp = { path = "../../formats/mopp" }
@@ -35,3 +35,7 @@ xiso.workspace = true
 # The player representation reader, checked in the retail XBE (tests/h2_globals.rs).
 xbe.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

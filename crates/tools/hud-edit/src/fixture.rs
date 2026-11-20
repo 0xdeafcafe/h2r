@@ -23,8 +23,8 @@ fn panel() -> (Bitmap, Vec<u8>) {
         e[at..at + 2].copy_from_slice(&v.to_le_bytes());
     }
     let mut img = Image::parse(&e).unwrap();
-    let len = h1bitmaps::decode::layout_len(&img).unwrap();
-    img.pixel_size = len.next_multiple_of(h1bitmaps::convert::LOD_ALIGN) as u32;
+    let len = h1_assets::bitmaps::decode::layout_len(&img).unwrap();
+    img.pixel_size = len.next_multiple_of(h1_assets::bitmaps::convert::LOD_ALIGN) as u32;
     let mut px = vec![0u8; img.pixel_size as usize];
     for y in 0..PANEL.1 as usize {
         for x in 0..PANEL.0 as usize {
@@ -142,7 +142,7 @@ pub fn build() -> (Vec<u8>, TagId, TagId, TagId) {
         set.add_group(FourCC(*g), None, None);
     }
     let (bm, px) = panel();
-    let (out, _) = h1bitmaps::convert::convert_with(&bm, |_| Ok(px.clone())).unwrap();
+    let (out, _) = h1_assets::bitmaps::convert::convert_with(&bm, |_| Ok(px.clone())).unwrap();
     let bitmap = out.install(&mut set, "invented\\hud\\panel").unwrap();
     let shader = |set: &mut TagSet, name: &str| {
         set.add_tag(FourCC(*b"shad"), name, TagPayload::Built(Block::zeroed(0x10)))

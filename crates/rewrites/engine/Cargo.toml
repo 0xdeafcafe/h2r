@@ -4,6 +4,8 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 description = "Hand-written Rust replacements for Halo 2 engine functions, over guest memory"
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 # Guest structure layouts and the globals table (src/points.rs re-exports
@@ -51,3 +53,7 @@ differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", 
 [dev-dependencies]
 # `lanes::with` for the unit tests that compare host lanes and the scalar loop.
 sim-core = { workspace = true, features = ["override"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

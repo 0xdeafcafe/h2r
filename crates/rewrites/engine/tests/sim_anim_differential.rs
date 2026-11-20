@@ -685,7 +685,7 @@ fn animation_stream_matches_the_guest() {
 /// the last frame and a fractional frame (interpolating), full weight, all
 /// nodes, against the lifted path. Prints aggregate counts only.
 ///
-/// H2_XBE=... H2_DISC=... cargo test --release -p engine --features differential --test sim_anim_differential -- --ignored --nocapture
+/// H2_XBE=... H2_DISC=... cargo test --release -p engine --features differential --test it sim_anim_differential:: -- --ignored --nocapture
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC) and the XBE ($H2_XBE)"]
 fn every_disc_animation_matches_the_guest() {

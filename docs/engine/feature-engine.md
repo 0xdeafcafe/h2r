@@ -393,7 +393,10 @@ Rows of ours on a retail list are data on the plan
 (`crates/apps/boot/src/retail_rows.rs`): an `Extension` answers a retail list's
 extension rows from the `ui` model with `before` hooks at the list's row text
 and row chosen, and a retail row goes on to the original. The Settings list
-(the Video row) and the Controls list (the speaker row) use it.
+(the Video row), the Controls list (the speaker row) and the campaign pause
+menu (Video Settings and Voice Settings) use it. A list told apart by index
+can have ours among its rows (`ui::Extension::at`): a retail row shown past
+ours goes to the original with its own row's handle (`retail_rows::moved`).
 
 The retail Controls row text is ported (`crates/apps/boot/src/controls_text.rs`,
 feature `controls-text`, an implementation). Every string id is read at run

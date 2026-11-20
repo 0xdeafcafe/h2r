@@ -53,10 +53,10 @@ Pieces:
   slots. Today `MapEditor` only patches an existing map. The builder is the
   biggest missing piece, and Halo 1 needs it first. New maps made from
   scratch also need it ([maps.md](../game/maps.md)).
-- **`crates/tools/h1models`** (Built) converts Halo 1 `mode` and `antr` tags to
+- **`crates/tools/h1-assets`** (Built) converts Halo 1 `mode` and `antr` tags to
   Halo 2 `mode` and `jmad` block trees for the builder
   ([models.md](models.md)).
-- **`crates/tools/h1bitmaps`** (Built) decodes Halo 1 `bitm` images to RGBA8
+- **`crates/tools/h1-assets`** (Built) decodes Halo 1 `bitm` images to RGBA8
   with Halo 2's texture decoder and converts them to Halo 2 `bitm` block
   trees, pixels copied as they are ([bitmaps.md](bitmaps.md)).
 - **The converter** (`crates/tools/h1convert`) works one tag group at a time, in
@@ -84,7 +84,7 @@ Pieces:
 | `bipd`, `vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl` | the same groups | field-by-field. Halo 1 tuning values carry over where Halo 2 has the field |
 | `actr` + `actv` | `char` | |
 | encounters, squads, firing positions, command lists | squads, zones, firing positions, orders | |
-| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/formats/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/tools/h1scripts`, [scripts.md](scripts.md) |
+| scripts | Halo 2 scripts | decompile Halo 1's syntax nodes, rename the functions that differ, compile to Halo 2 nodes with `crates/formats/hs`. Builtins Halo 2 lacks go in the Rust HS VM ([hs_vm.md](../engine/hs_vm.md)). `crates/tools/h1campaign`, [scripts.md](scripts.md) |
 | `snd!` | `snd!` + `ugh!` | both Xbox ADPCM |
 | `ustr`, `hmt ` | string IDs, `unic` | |
 | recorded animations | recorded animations | versions differ |

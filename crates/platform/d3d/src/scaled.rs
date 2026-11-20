@@ -59,8 +59,8 @@
 //! reference's ([`ScaleStats::reference_frames`]), so a run can start at
 //! 1x and go up without a second backend's work until it does.
 //!
-//! **E3 lighting, phase 1** ([`Lighting`], [`ScaledBackend::follow_lighting`],
-//! docs/graphics/e3-lighting.md): harder retail shadows, in the view only.
+//! **The Lighting row** ([`Lighting`], [`ScaledBackend::follow_lighting`],
+//! docs/graphics/e3-lighting-setting.md): harder retail shadows, in the view only.
 //! Every `D24S8` depth level not of the frame's size (a shadow map) gets a
 //! view copy at [`shadow_scale`] times its size, made at its first use,
 //! with a colour surface of that size to draw it through. Draws that write
@@ -1831,6 +1831,12 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
 
     fn reusable_external_attachments(&self) -> bool {
         self.reference.reusable_external_attachments() && self.view.reusable_external_attachments()
+    }
+
+    /// Both copies record through this backend's own attachments and
+    /// commit (the trait's [`Backend::run_scene_stage`]).
+    fn runs_scene_stages(&self) -> bool {
+        self.reference.runs_scene_stages() && self.view.runs_scene_stages()
     }
 
     fn external_attachments(

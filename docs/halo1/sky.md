@@ -1,6 +1,6 @@
 # Halo 1 skies and their conversion to Halo 2
 
-`crates/tools/h1sky` reads Halo 1 `sky ` tags out of Xbox cache files
+`crates/tools/h1-assets` reads Halo 1 `sky ` tags out of Xbox cache files
 ([map-format.md](map-format.md)), decodes Halo 2 `sky ` tags
 retail-side, and converts one into the other as a `map::build` block tree
 (the `Converted { group, root, raw }` pattern of [models.md](models.md),
@@ -466,7 +466,7 @@ There is no CLI here; the crate is a library step of the campaign import
 cargo test -p h1sky                                   # invented bytes
 H1_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h1
 H2_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h2
-H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test bloodgulch_ring -- --ignored --nocapture
+H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test it bloodgulch_ring:: -- --ignored --nocapture
 ```
 
 `real_h1_disc_a30_bloodgulch_round_trip` converts both skies with their

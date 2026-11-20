@@ -1,6 +1,6 @@
 //! Resolve native character tags and preserve per-variant Halo 1 uncover tuning.
 
-use h1ai::{
+use crate::ai::{
     control::{Control, UncoverRule},
     convert::Plan,
 };
@@ -181,8 +181,8 @@ pub(crate) fn resolve(
             }
             if let Some(variant) = h1.find(h1map::Group::new(b"actv"), name) {
                 let err = |e| invalid(format!("AI character {name}: {e}"));
-                let variant = h1ai::h1::actor_variant(h1, variant).map_err(err)?;
-                let actor = h1ai::h1::actor(h1, h1.tag(variant.actor.id)?).map_err(err)?;
+                let variant = crate::ai::h1::actor_variant(h1, variant).map_err(err)?;
+                let actor = crate::ai::h1::actor(h1, h1.tag(variant.actor.id)?).map_err(err)?;
                 ai_control.uncover.insert(
                     tag.id.0,
                     UncoverRule {
@@ -204,7 +204,7 @@ pub(crate) fn resolve(
                 continue;
             }
             if let Some(source) = h1.find(h1map::Group::new(b"weap"), name) {
-                let loud = h1ai::h1::weapon_loudness(h1, source)
+                let loud = crate::ai::h1::weapon_loudness(h1, source)
                     .map_err(|e| invalid(format!("AI weapon {name}: {e}")))?;
                 ai_control.weapon_reports.entry(name.clone()).or_insert(loud);
             }

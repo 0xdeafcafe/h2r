@@ -1,5 +1,5 @@
 use h1map::Tag;
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::FourCC;
 use tags::defs::{self, Defs, Val};
 
@@ -23,7 +23,7 @@ impl Converter<'_> {
                 .model
                 .ok_or_else(|| Error::Invalid(format!("{}: no model", tag.name)))?;
             let (model, _) =
-                h1models::model_from_map(self.h1, self.h1_tag(source)?, &Default::default())?;
+                h1_assets::models::model_from_map(self.h1, self.h1_tag(source)?, &Default::default())?;
             let (radius, centre) = rebuild::model_sphere(&model)
                 .ok_or_else(|| Error::Invalid(format!("{}: no model bounds", tag.name)))?;
             obj.bounding_radius = radius;

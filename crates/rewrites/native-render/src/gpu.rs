@@ -620,7 +620,7 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
-        target_copy: d3d::TargetCopy,
+        target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
@@ -682,7 +682,7 @@ impl GpuWorld {
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { water, packet_pipelines, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         if set.samples_view {
@@ -696,7 +696,7 @@ impl GpuWorld {
         let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size)?;
         let writes = set.writes(view, fogs, selected)?;
         // Conservative: the programs' alpha tests and kill sources discard.
-        Ok(d3d::backend::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
+        Ok(gfx::external::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
     }
 
     /// [`GpuWorld::prepare_water`] and [`GpuWorld::encode_water`] as
@@ -716,12 +716,12 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
-        target_copy: d3d::TargetCopy,
+        target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+    ) -> Result<gfx::external::ExternalEncoded, &'static str> {
         let Self { water, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
@@ -778,7 +778,7 @@ impl GpuWorld {
                 pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
             }
         };
-        Ok(d3d::backend::ExternalEncoded { ranges, passes: 1, commands: Box::new(commands) })
+        Ok(gfx::external::ExternalEncoded { ranges, passes: 1, commands: Box::new(commands) })
     }
 
     /// The fog uniforms for one view ([`FogSet::prepare`]), through the
@@ -866,7 +866,7 @@ impl GpuWorld {
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { fog, packet_pipelines, program_vertices, indices, .. } = self;
         let set = fog.as_mut().ok_or("fog materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
@@ -899,7 +899,7 @@ impl GpuWorld {
         draws: &[LightDraw<'_>],
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.lights.as_mut().ok_or("light passes unavailable")?.draws(
             target, &self.program_vertices, &self.indices, view, scissor, draws, stage_image, gel_image,
         )
@@ -1166,7 +1166,7 @@ impl GpuWorld {
     pub fn selection_draws(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
         let p = programs.as_ref().ok_or("world programs unavailable")?;
@@ -1271,7 +1271,7 @@ impl GpuWorld {
         }
         // Conservative: the programs' alpha tests and kill sources discard.
         let writes = p.selected_writes(view, selection);
-        Ok(d3d::backend::ExternalDraws { ranges, packets, discards: true, writes })
+        Ok(gfx::external::ExternalDraws { ranges, packets, discards: true, writes })
     }
 
     #[allow(clippy::too_many_arguments)]

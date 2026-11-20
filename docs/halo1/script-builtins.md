@@ -40,8 +40,8 @@ flashlight call to the light handler. Both names share the retail descriptor.
 
 ## Converted-campaign hooks
 
-`h1scripts::unit_builtins::RUNTIME_SLOTS` is the table shared by the
-converter and the boot feature. The converter checks the retail evaluator
+`h1_contract::unit_builtins::RUNTIME_SLOTS` (`crates/formats/h1-contract`)
+is the table shared by the converter and the boot feature. The converter checks the retail evaluator
 and signature before naming a descriptor. The boot feature checks the
 called index and the loaded campaign map.
 

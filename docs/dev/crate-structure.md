@@ -36,7 +36,7 @@ session that owns Live, bots, theater and film.
 ```
 crates/
   formats/     asf content font hs map mopp movies pathfind settings shaders tags variants
-               xbe xiso  +h1-contract
+               xbe xiso h1-contract
   recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle fastmem-proto
                +sim-tier
   runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
@@ -429,19 +429,24 @@ else (726 places). T's manifest takes the union of the dependencies; the
 other manifests' several `h1bitmaps = ...`, `h1models = ...` lines fold
 into one `h1-assets = ...`, in `[features]` too.
 
-- **`h1-contract` goes first** (prep, lane work, not a script). `boot`
-  names about 30 items of the converters in 17 files:
-  `h1text::hud::{SCENARIO_HELP, SILHOUETTE_BASE, HELP_FLASH, ...}`,
-  `h1scripts::cinematics::{ACTIVE_NAME, VIDEO_BITMAPS, Field, MARKER}`,
-  `h1scripts::unit_builtins`, `h1scripts::compile::field::STRINGS`,
-  `h1convert::shad::{COUNTDOWN_DIGITS, MODEL_REFLECTION_SIGNATURE}`,
-  `h1convert::ui::{CAMPAIGN_ORDER, campaign_card}`,
-  `h1convert::apply::precision_swaps`, and the `h1map` reader in the
-  campaign picker. They move to `crates/formats/h1-contract` and `boot`
-  drops the converter crates. Without it the merge still builds, but
-  `boot`'s `h1scripts` becomes all of `h1campaign`, which brings
-  `h1objects`: the host-only build grows from 806,060 to 837,778 source
-  lines.
+- **`h1-contract`** (`crates/formats/h1-contract`) holds what the
+  converters write and `boot` reads, so `boot` depends on no converter
+  crate and the merge leaves its build alone:
+  `hud` (the converted `hmt ` tag's runtime fields and `glyph`, from
+  `h1text::hud`), `hud_builtins` (`CONTROL_BUILTINS`,
+  `SCENARIO_HELP_BUILTIN`, from `h1scripts::hud`), `cinematics` (from
+  `h1scripts`), `unit_builtins` (`RUNTIME_SLOTS`, `RuntimeSlot`,
+  `RuntimeBuiltin`), `script_fields` (`h1scripts::compile::field`),
+  `shader` (`COUNTDOWN_DIGITS`, `MODEL_REFLECTION_SIGNATURE`,
+  `model_reflection_start`, from `h1convert::shad`) and `campaign`
+  (`CAMPAIGN_ORDER`, from `h1convert::ui`). Each converter re-exports
+  its items from the module they were written in, so converter code keeps
+  its paths. The game picker takes its Halo 1 picture only from the
+  import's cards and reads no Halo 1 disc, so neither `h1map` nor
+  `h1convert::ui::campaign_card` is in the game.
+  `h1convert::apply::precision_swaps` stays in the converter: `boot`
+  reads only its result, the package manifest's `[[variant]] precision`
+  (`content`).
 - A branch on `build-1120`'s one-test-binary layout is handled: a crate
   with `autotests = false` carries its declared `[[test]]` and nothing
   else.

@@ -440,7 +440,7 @@ all supported object roots and their rebuilt dependencies on
 `ROLE_AUDIT_OUT` optionally names a Markdown output file.
 
 ```sh
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test it role_audit_disc:: -- --ignored --nocapture
 ```
 
 The shader regressions cover the combiner equations, named conversion errors,
@@ -449,6 +449,6 @@ integrated checkout with `disc/` present.
 
 ```sh
 cargo test --release -p h1bitmaps -p h1convert -p h1objects --lib
-cargo test --release -p h1objects --test weapon_counter
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test model_shaders_disc -- --ignored
+cargo test --release -p h1objects --test it weapon_counter::
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test it model_shaders_disc:: -- --ignored
 ```

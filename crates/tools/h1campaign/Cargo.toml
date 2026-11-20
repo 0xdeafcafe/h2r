@@ -12,14 +12,8 @@ h1map = { path = "../h1map" }
 # Structure BSP, collision, lightmap and shader choice, shared with the
 # multiplayer converter.
 h1convert = { path = "../h1convert" }
-h1bitmaps = { path = "../h1bitmaps" }
-h1models = { path = "../h1models" }
+h1-assets = { path = "../h1-assets" }
 h1objects = { path = "../h1objects" }
-h1ai = { path = "../h1ai" }
-h1scripts = { path = "../h1scripts" }
-h1sky = { path = "../h1sky" }
-h1sounds = { path = "../h1sounds" }
-h1text = { path = "../h1text" }
 map.workspace = true
 tags.workspace = true
 # Generated AI pathfinding for each converted structure BSP.
@@ -31,6 +25,27 @@ xbe.workspace = true
 # The base's shader templates, for the shader choice; without its egui panel.
 scenario-edit = { path = "../scenario-edit", default-features = false }
 thiserror.workspace = true
+h1-contract.workspace = true
+xiso.workspace = true
 
 [dev-dependencies]
-xiso.workspace = true
+
+[[test]]
+name = "ai_convert"
+path = "tests/ai/convert.rs"
+
+[[test]]
+name = "ai_disc"
+path = "tests/ai/disc.rs"
+
+[[test]]
+name = "scripts_conversations_disc"
+path = "tests/scripts/conversations_disc.rs"
+
+[[test]]
+name = "scripts_disc"
+path = "tests/scripts/disc.rs"
+
+[[test]]
+name = "scripts_survey"
+path = "tests/scripts/survey.rs"

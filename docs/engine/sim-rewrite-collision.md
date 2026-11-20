@@ -700,7 +700,7 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
    - batch: `trace_batch` equals serial calls, including the mark lists;
      1, 2 and 8 workers.
 2. **Differential tests**
-   (`cargo test -p engine --features differential --test sim_collision_differential`,
+   (`cargo test -p engine --features differential --test it sim_collision_differential::`,
    owner's XBE, skipped without it). Per entry: synthetic guest memory, the
    lifted entry on the IR interpreter and the adapter from the same state;
    compare the return register, all memory outside the dead-stack window,

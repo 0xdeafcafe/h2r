@@ -82,6 +82,10 @@ pub struct Row {
     label: String,
     kind: Kind,
     description: Option<String>,
+    /// What the value picker says (a value row), else its description.
+    explain: Option<String>,
+    /// Its icon in the page's header picture while it has the focus.
+    icon: Option<u16>,
 }
 
 impl Row {
@@ -133,11 +137,30 @@ impl Row {
         self.description = Some(text.into());
         self
     }
+    /// What the value picker A opens says about a value row: what it does
+    /// and what its values mean. The description when not given.
+    pub fn explain(mut self, text: &str) -> Self {
+        self.explain = Some(text.into());
+        self
+    }
+    /// The row's icon of `mp_games2.bitm` ([`crate::ui_kit::dialog::icon`]),
+    /// shown in the page's header picture while the row has the focus
+    /// ([`KitScreen::header`]).
+    pub fn icon(self, icon: u16) -> Self {
+        self.icon_opt(Some(icon))
+    }
+    /// [`Row::icon`], or none.
+    pub fn icon_opt(mut self, icon: Option<u16>) -> Self {
+        self.icon = icon;
+        self
+    }
     fn of(label: &str, kind: Kind) -> Self {
         Row {
             label: label.into(),
             kind,
             description: None,
+            explain: None,
+            icon: None,
         }
     }
     fn spec(&self) -> RowSpec {
@@ -261,9 +284,9 @@ pub struct KitScreen {
     guard: OpenerGuard,
     /// Shown as a dialog of rows on a retail dialog, over its opener.
     dialog: Option<(DialogBase, Opener)>,
-    /// Quick Options' header: the page's help line and its icon
-    /// ([`KitScreen::header`]).
-    header: Option<(String, u16)>,
+    /// Quick Options' header picture, and the icon it shows for a row with
+    /// none of its own ([`KitScreen::header`]).
+    header: Option<u16>,
     /// [`KitTexts`]' feature id, made once.
     texts_id: OnceLock<&'static str>,
 }
@@ -322,15 +345,15 @@ impl KitScreen {
         self
     }
     /// Quick Options' header on a page of ours (docs/game/ui-builder.md
-    /// "A page's header"), as Quick Options has its own at the top: `help`,
-    /// one line on what the page is for, in the base's help line
-    /// ([`DialogBase::help`]) in place of the focused row's description,
-    /// and icon `icon` of `mp_games2.bitm` ([`crate::ui_kit::dialog::icon`])
-    /// in its game type picture ([`DialogBase::picture`]) beside it. The
-    /// rows keep their descriptions for the value picker A opens. A base
-    /// with no picture shows the line alone.
-    pub fn header(mut self, help: &str, icon: u16) -> Self {
-        self.header = Some((help.into(), icon));
+    /// "A page's header"), as Quick Options has its own at the top: its
+    /// game type picture ([`DialogBase::picture`]) shows the focused row's
+    /// icon of `mp_games2.bitm` ([`Row::icon`], [`crate::ui_kit::dialog::icon`]),
+    /// or `icon` for a row with none, and the help line beside it
+    /// ([`DialogBase::help`]) the focused row's one-line description. The
+    /// value picker A opens says more ([`Row::explain`]). A base with no
+    /// picture shows the help line alone.
+    pub fn header(mut self, icon: u16) -> Self {
+        self.header = Some(icon);
         self
     }
     /// The focused row's description (and the legend) in `block`.
@@ -401,21 +424,24 @@ impl KitScreen {
     fn footer_slot(&self) -> u32 {
         self.description_slot(self.rows.len())
     }
-    fn header_slot(&self) -> u32 {
-        self.footer_slot()
-            + 1
-            + u32::from(self.row_label.is_some())
-            + u32::from(self.row_help.is_some())
-    }
-    /// Where its header's icon goes: its dialog base's picture.
+    /// Where its header's icon goes: its dialog base's picture, and the
+    /// icon for a row with none of its own.
     fn header_picture(&self) -> Option<(crate::list_class::PictureSpec, u16)> {
-        let (_, icon) = self.header.as_ref()?;
-        Some((self.dialog?.0.picture()?, *icon))
+        Some((self.dialog?.0.picture()?, self.header?))
+    }
+    /// The icon the header picture shows while row `row` has the focus.
+    pub fn row_icon(&self, row: usize) -> Option<u16> {
+        let (_, default) = self.header_picture()?;
+        let r = self.rows.get(row)?;
+        Some(r.icon.unwrap_or(default))
     }
     /// The slots the screen needs: fails the build of its class when its
     /// family is too small.
     pub fn slots(&self) -> u32 {
-        self.header_slot() + u32::from(self.header.is_some())
+        self.footer_slot()
+            + 1
+            + u32::from(self.row_label.is_some())
+            + u32::from(self.row_help.is_some())
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -618,7 +644,10 @@ impl Rows for KitScreen {
                     &r.label,
                     values.clone(),
                     get(),
-                    r.description.as_deref().unwrap_or_default(),
+                    r.explain
+                        .as_deref()
+                        .or(r.description.as_deref())
+                        .unwrap_or_default(),
                     Arc::clone(set),
                 )
                 .over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o));
@@ -651,9 +680,6 @@ impl Rows for KitScreen {
     }
     fn description(&self, row: i16) -> Option<u32> {
         let i = usize::try_from(row).ok().filter(|i| *i < self.rows.len())?;
-        if let Some((help, _)) = &self.header {
-            return Some(self.texts.set(self.header_slot(), help));
-        }
         let spec = ScreenSpec {
             focus: i,
             ..self.spec()
@@ -665,8 +691,13 @@ impl Rows for KitScreen {
         self.poll_keyboard(m)?;
         self.texts.write(m)
     }
+    /// The first row's icon: the focus starts there.
     fn picture_image(&self) -> Option<u16> {
-        self.header_picture().map(|(_, icon)| icon)
+        self.row_icon(0)
+            .or_else(|| self.header_picture().map(|(_, icon)| icon))
+    }
+    fn row_image(&self, row: i16) -> Option<u16> {
+        self.row_icon(usize::try_from(row).ok()?)
     }
     /// Asked as the screen opens: the opener guard starts, and the log
     /// gets the screen as [`ScreenSpec::log_line`] writes it.
@@ -681,7 +712,15 @@ impl Describe for KitScreen {
         let mut s = ScreenSpec::new(self.name, &self.title);
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
-        s.rows = self.rows.iter().map(Row::spec).collect();
+        s.rows = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| match self.row_icon(i) {
+                Some(icon) => r.spec().art(crate::ui_kit::dialog::quick_icon(icon)),
+                None => r.spec(),
+            })
+            .collect();
         s.description = self.description_block().map(spec::DescriptionBlock::from);
         s.prompts = self.prompts.clone();
         s.inputs = vec![
@@ -696,10 +735,6 @@ impl Describe for KitScreen {
         ];
         s.scrolls = self.scrolls;
         s.footer = true;
-        s.help = self.header.as_ref().map(|(help, _)| help.clone());
-        if let Some((_, icon)) = self.header_picture() {
-            s.art.push(crate::ui_kit::dialog::quick_icon(icon));
-        }
         if let Some((base, opener)) = self.dialog {
             let list = self
                 .layout

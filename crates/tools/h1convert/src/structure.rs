@@ -780,7 +780,7 @@ pub struct Structure<'a> {
     /// ([`crate::clusters::portals`]); the default has none.
     pub visibility: &'a crate::clusters::Visibility,
     /// Per cluster, the scenario atmosphere element it takes its fog from
-    /// (`+0x6f`, `h1sky::atmosphere`); a cluster past the end has none
+    /// (`+0x6f`, `h1_assets::sky::atmosphere`); a cluster past the end has none
     /// (`0xff`), and takes its sky's.
     pub atmosphere: &'a [u8],
 }

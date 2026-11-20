@@ -120,11 +120,11 @@ cargo test -p emit --test sim_tier
 cargo test -p emit --lib sim::
 
 # The five roots against the interpreter (correctness gate).
-H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test sim_tier_differential
+H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_tier_differential::
 
 # The bench: markdown rows on stdout.
 H2_XBE=/path/to/default.xbe cargo test -p engine --release --features differential \
-  --test sim_tier_differential -- --ignored --nocapture tier_bench
+  --test it sim_tier_differential:: -- --ignored --nocapture tier_bench
 
 # The write census (sim-tier-writes.md).
 H2_XBE=/path/to/default.xbe cargo test -p emit --release --test sim_tier_writes -- --ignored --nocapture

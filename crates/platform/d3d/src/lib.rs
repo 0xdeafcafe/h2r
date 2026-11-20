@@ -25,6 +25,8 @@
 //! * `nv2a`: the `ShaderProvider` over `crates/formats/shaders`;
 //! * `threaded`: a render thread that runs a backend's work off the
 //!   guest's thread (opt-in, docs/graphics/render-thread.md);
+//! * [`scene_stage`]: the typed scene stages it prepares and records
+//!   (docs/graphics/framescene.md, slice 2);
 //! * `interp`: in-between frames replayed with interpolated matrices
 //!   (opt-in, docs/game/high-framerate.md).
 
@@ -52,6 +54,7 @@ pub mod resource;
 pub mod runtime_glue;
 #[cfg(feature = "gpu")]
 pub mod scaled;
+pub mod scene_stage;
 pub mod shader;
 pub mod state;
 mod texdesc;
@@ -63,10 +66,10 @@ pub mod vertex_cache;
 pub use backend::{
     DrawAdmission, DrawSnapshot, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
     Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthClip, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
-    RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
+    RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{
-    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal,
+    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal, SceneReservation,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };
@@ -96,7 +99,7 @@ pub use vblank::{FrameWait, register_frame_wait};
 /// The largest render scale: 6x of 640x480 is 3840x2880.
 pub const MAX_SCALE: u32 = 6;
 
-/// The view's lighting (docs/graphics/e3-lighting.md): the Video screen's
+/// The view's lighting (docs/graphics/e3-lighting-setting.md): the Video screen's
 /// Lighting row, `[graphics] lighting`, `H2_LIGHTING`. Nothing of it
 /// reaches the guest: the reference draws retail whatever this is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -105,7 +108,7 @@ pub enum Lighting {
     /// NV2A does (2x2 percentage-closer filtering when the stage filters).
     #[default]
     Retail,
-    /// Phase 1 of E3 lighting: shadow maps at `shadow_scale` times their
+    /// The Lighting row on E3: shadow maps at `shadow_scale` times their
     /// size in the view, compared with one tap.
     E3,
 }

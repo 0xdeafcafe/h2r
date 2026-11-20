@@ -16,18 +16,18 @@
 //!   portal list (`+0x5c`, i16) its `+0x8c` list ([`portals`]);
 //! - every collision leaf names its Halo 1 cluster ([`sound_zones`]);
 //! - a cluster's lightmap is one page of its own, cut from the Halo 1
-//!   pages its surfaces sample ([`lightmap_pages`], [`h1bitmaps::atlas`]).
+//!   pages its surfaces sample ([`lightmap_pages`], [`h1_assets::bitmaps::atlas`]).
 //!
 //! Layouts and evidence: docs/halo1/multiplayer.md, "Clusters and
 //! portals".
 
 use std::collections::BTreeMap;
 
-use h1bitmaps::atlas::{ClusterPage, Piece};
+use h1_assets::bitmaps::atlas::{ClusterPage, Piece};
 use h1map::H1Map;
 use h1map::bitmap::Bitmap;
 use h1map::bsp::StructureBsp;
-use h1models::Converted;
+use h1_assets::models::Converted;
 
 use crate::structure::{Mesh, SECTION_MAX, Section, Vertex};
 use crate::{Error, Result};
@@ -112,7 +112,7 @@ pub fn surface_clusters(bsp: &StructureBsp, surfaces: usize) -> Result<Vec<Vec<u
 /// Texels apart two pieces of one Halo 1 page may be and still be taken as
 /// one: each piece has its own border, so pieces this close cost no more
 /// as one.
-const MERGE_SLACK: u32 = 2 * h1bitmaps::atlas::BORDER;
+const MERGE_SLACK: u32 = 2 * h1_assets::bitmaps::atlas::BORDER;
 
 fn find(parent: &mut [usize], mut i: usize) -> usize {
     while parent[i] != i {
@@ -249,10 +249,10 @@ pub fn lightmap_pages(
             pieces.len() - 1
         });
         let sizes: Vec<[u32; 2]> = pieces.iter().map(Piece::size).collect();
-        let (size, at) = h1bitmaps::atlas::pack(&sizes).ok_or(Error::TooBig {
+        let (size, at) = h1_assets::bitmaps::atlas::pack(&sizes).ok_or(Error::TooBig {
             what: "cluster lightmap side",
             value: sizes.iter().map(|s| s[0].max(s[1])).max().unwrap_or(0),
-            max: h1bitmaps::atlas::MAX_SIDE,
+            max: h1_assets::bitmaps::atlas::MAX_SIDE,
         })?;
         for (p, a) in pieces.iter_mut().zip(at) {
             p.at = a;
@@ -611,7 +611,7 @@ pub fn lay_out(
     })
 }
 
-/// The converted lightmap bitmap of `pages` ([`h1bitmaps::atlas::compose`]
+/// The converted lightmap bitmap of `pages` ([`h1_assets::bitmaps::atlas::compose`]
 /// over the structure's Halo 1 lightmap bitmap), with that bitmap's tag
 /// name; `None` when the structure has no lightmap bitmap or no cluster is
 /// lit.
@@ -625,6 +625,6 @@ pub fn lightmap_bitmap(
         return Ok(None);
     }
     let tag = h1.tag(bitmap.id)?;
-    let (bm, converted) = h1bitmaps::atlas::compose(h1, tag, pages)?;
+    let (bm, converted) = h1_assets::bitmaps::atlas::compose(h1, tag, pages)?;
     Ok(Some((tag.name.clone(), bm, converted)))
 }

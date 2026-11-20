@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
-//!     --test point_shapes
+//!     --test it point_shapes::
 //! ```
 #![cfg(feature = "differential")]
 

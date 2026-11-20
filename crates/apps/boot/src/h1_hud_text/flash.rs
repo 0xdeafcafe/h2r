@@ -73,7 +73,7 @@ fn record_strength(record: &[u8; 24], elapsed: f32) -> f32 {
 
 pub(super) fn help_colour(mem: &dyn GuestMemory, tag: u32, hud: u32) -> Result<[f32; 4], MemFault> {
     let mut record = [0; 24];
-    mem.read(tag + h1text::hud::HELP_FLASH, &mut record)?;
+    mem.read(tag + h1_contract::hud::HELP_FLASH, &mut record)?;
     let seconds = if mem.u8(hud + ENABLED)? != 0 {
         Some(elapsed(mem, mem.u32(hud + STARTED)?)?)
     } else {

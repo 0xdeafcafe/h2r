@@ -1,7 +1,7 @@
 //! Convert the marker attachments shared by Halo 1's object groups.
 
 use h1map::Tag;
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Val};

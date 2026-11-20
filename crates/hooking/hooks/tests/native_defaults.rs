@@ -174,3 +174,25 @@ fn the_render_group_and_the_native_renderer_are_independent() {
         assert!((stage.on)(&ordinary_render_off), "{}", stage.name);
     }
 }
+
+/// The master switch and each stage's own `on` agree; the stages' half of
+/// what `switches.rs` tests for [`hooks::switches::native_render_on`].
+#[test]
+fn the_native_master_switch_gates_every_stage_and_walk() {
+    let enabled = |spec| {
+        let switches = Switches::parse(spec).unwrap();
+        [
+            hooks::switches::native_render_on(&switches),
+            hooks::native_world::on(&switches),
+            hooks::native_transparents::on(&switches),
+            hooks::native_decals::on(&switches),
+            hooks::native_particles::on(&switches),
+            hooks::native_first_person::on(&switches),
+            hooks::native_hud::on(&switches),
+            hooks::native_post::on(&switches),
+        ]
+    };
+    assert_eq!(enabled(""), [true; 8]);
+    assert_eq!(enabled("impl.render=off"), [true; 8]);
+    assert_eq!(enabled("impl.render.native=off"), [false; 8]);
+}

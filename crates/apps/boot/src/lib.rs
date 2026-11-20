@@ -148,6 +148,7 @@ mod clanker_card;
 pub mod clankermatch;
 pub mod clankers;
 pub mod pause_menu;
+pub mod profile_voice_row;
 pub mod setting_defs;
 pub mod sha;
 pub mod shim;
@@ -1615,7 +1616,7 @@ fn run_configured(
                 eprintln!("d3d: rendering at {scale}x; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
-                // The Lighting row (E3 lighting, docs/graphics/e3-lighting.md)
+                // The Lighting row (docs/graphics/e3-lighting-setting.md)
                 // changes the view's shadows there too.
                 if let Some(store) = &host.settings {
                     let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
