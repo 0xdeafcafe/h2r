@@ -96,6 +96,11 @@ pub const H1_DEATH_FLYING_LINE: usize = 0x140;
 pub const H1_SEARCH_QUERY_LINE: usize = 0x850;
 pub const H1_SEARCH_REPLY_LINE: usize = 0x860;
 
+/// Attacker and victim utterances for the original nonlethal damage stimuli.
+pub const fn h1_injury_line(offset: usize) -> bool {
+    matches!(offset, 0x160 | 0x170 | 0x180 | 0x1e0 | 0x210 | 0x250 | 0x260 | 0x2a0 | 0x2e0)
+}
+
 /// Halo 1 kill stimulus 0's attacker lines for damage categories that
 /// have no distinct Halo 2 vocalization. The second word is a source
 /// udlg byte offset.

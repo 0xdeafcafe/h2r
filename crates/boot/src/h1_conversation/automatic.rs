@@ -2,7 +2,12 @@
 
 use map::H1DialogueClass;
 
-use super::{cast, dialogue, leaders::guest_fault, *};
+use super::{
+    cast,
+    dialogue::{self, Line},
+    leaders::guest_fault,
+    *,
+};
 
 pub(super) const UNIT_SPEAK: u32 = 0x0011_4b60;
 const DAMAGE_EFFECT: GroupTag = GroupTag::from_chars(*b"jpt!");
@@ -24,14 +29,10 @@ const DAMAGE_SPEECH_FRAME: u32 = 0x54;
 const SAVED_VICTIM_REPORT: u32 = 0x18;
 const DEATH_PRIORITY: u16 = 15;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Line {
-    speaker: u32,
-    row: u32,
-    priority: u32,
-}
-
-fn source_damage(m: &dyn GuestMemory, report: u32) -> Result<Option<(u32, u16)>, MemFault> {
+pub(super) fn source_damage(
+    m: &dyn GuestMemory,
+    report: u32,
+) -> Result<Option<(u32, u16)>, MemFault> {
     let damage = DatumHandle(m.u32(report + 8)?);
     let Some(tag) = engine::view::Tags.entry(m, damage)? else {
         return Ok(None);

@@ -465,6 +465,15 @@ second interval to the engine tick rate. A completed query can be
 answered by allied actors in search, investigate or targeted uncover,
 using their own voice and the native per-unit speech queue.
 
+**Built.** Nonlethal damage can make the attacker or victim speak. Halo 1
+resolves a vehicle shot to its gunner and a collision to its driver at
+`0x149889`. It sends immediate friendly damage as stimulus 3 and sends
+hostile injury as stimulus 2 after the 0.3 threshold at `0x149440`.
+The latter has victim lines for needler, plasma, melee and mounted
+damage. The host reads the original damage category from the report
+when Halo 2 calls `0x1c9c80` at `0xca512`. A pending line follows the
+salted speaker until its next native speech update.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

@@ -10,6 +10,13 @@ const SPEECH_OFFSET: u32 = 0x342;
 const UDLG: GroupTag = GroupTag::from_chars(*b"udlg");
 const SND: GroupTag = GroupTag::from_chars(*b"snd!");
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Line {
+    pub(super) speaker: u32,
+    pub(super) row: u32,
+    pub(super) priority: u32,
+}
+
 fn tag_address(m: &dyn GuestMemory, id: u32, group: GroupTag) -> Result<Option<u32>, MemFault> {
     let Some(tag) = Tags.entry(m, DatumHandle(id))? else {
         return Ok(None);

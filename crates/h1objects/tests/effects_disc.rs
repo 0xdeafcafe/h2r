@@ -807,6 +807,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     assert_eq!(u16_at(reply, 0), slot(map::H1_SEARCH_QUERY_LINE));
     assert_eq!(u16_at(reply, 6), slot(map::H1_SEARCH_REPLY_LINE));
     assert_eq!(u32_at(reply, 0x20), 0x0014_28e0);
+    assert_eq!(h1.read_u32(0x001f_0bc0).unwrap(), 0.3f32.to_bits());
     for actor in 0..16u16 {
         let record = h1.read_u32(0x0025_f2c8 + u32::from(actor) * 4).unwrap();
         let actual = u16_at(h1.bytes_at(record + 4, 2).unwrap(), 0);
@@ -831,6 +832,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [
         (0x000c_6b62, 0x0011_4c60),
+        (0x000c_a512, 0x001c_9c80),
         (0x000c_a45d, 0x0011_47e0),
         (0x0011_4a06, 0x0011_4520),
         (0x000c_a4ed, 0x001c_95d0),

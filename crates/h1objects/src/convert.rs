@@ -945,6 +945,7 @@ impl<'a> Converter<'a> {
                         || map::h1_species_kill_line(*slot));
                 !native
                     && !kill_variant
+                    && !map::h1_injury_line(*slot)
                     && !matches!(
                         *slot,
                         map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE

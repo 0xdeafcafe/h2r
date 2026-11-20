@@ -4,7 +4,14 @@ use std::sync::Arc;
 
 use map::{H1_SEARCH_QUERY_LINE, H1_SEARCH_REPLY_LINE};
 
-use super::{automatic::UNIT_SPEAK, cast, dialogue, leaders::guest_fault, visibility, *};
+use super::{
+    automatic::UNIT_SPEAK,
+    cast,
+    dialogue::{self, Line},
+    leaders::guest_fault,
+    reactions::Queue,
+    visibility, *,
+};
 
 const ACTOR_COUNT: u32 = hs::h1_conversation::ACTOR_CAPACITY;
 const RECORD_SIZE: u32 = 0x10;
@@ -26,12 +33,6 @@ const SQUAD_STRIDE: u32 = 0x74;
 const SQUAD_GROUP: u32 = 0x26;
 const RESPONSE_RANGE: f32 = 9.0;
 const PRIORITY: u32 = 3;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Line {
-    speaker: u32,
-    row: u32,
-}
 
 fn behavior(m: &dyn GuestMemory, actor: u32) -> Result<u16, MemFault> {
     let depth = u32::from(m.u16(actor + BEHAVIOR_DEPTH)?);
@@ -92,7 +93,11 @@ fn reply(m: &dyn GuestMemory, unit: u32, actor: u32) -> Result<Option<Line>, Mem
             && let Some(row) = dialogue::source_offset_row(m, speaker, H1_SEARCH_REPLY_LINE)?
         {
             nearest = distance;
-            best = Some(Line { speaker, row });
+            best = Some(Line {
+                speaker,
+                row,
+                priority: PRIORITY,
+            });
         }
     }
     Ok(best)
@@ -175,10 +180,14 @@ fn tick(m: &mut dyn GuestMemory, records: u32, unit: u32) -> Result<Option<Line>
         return Ok(None);
     }
     m.set_u32(record + 8, row + 1)?;
-    Ok(Some(Line { speaker: unit, row }))
+    Ok(Some(Line {
+        speaker: unit,
+        row,
+        priority: PRIORITY,
+    }))
 }
 
-pub(super) fn install(b: &mut Builder) -> Result<(), BuildError> {
+pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildError> {
     let records = b.guest_alloc(BYTES, Permissions::RW)?;
     b.raw().before(
         &points::HS_CONVERSATION_MAP_DISPOSE,
@@ -197,7 +206,13 @@ pub(super) fn install(b: &mut Builder) -> Result<(), BuildError> {
         move |call| {
             let rt = Arc::clone(call.ctx.runtime());
             let saved = *call.cpu;
-            let scheduled = tick(&mut *rt.memory(), records, saved.eax).map_err(guest_fault)?;
+            let scheduled = {
+                let m = &mut *rt.memory();
+                match reactions.take(m, saved.eax).map_err(guest_fault)? {
+                    Some(line) => Some(line),
+                    None => tick(m, records, saved.eax).map_err(guest_fault)?,
+                }
+            };
             let Some(line) = scheduled else {
                 return Ok(Flow::Continue);
             };
@@ -208,7 +223,7 @@ pub(super) fn install(b: &mut Builder) -> Result<(), BuildError> {
             let mut m = rt.memory();
             let stack = saved.esp.wrapping_sub(12);
             m.set_u32(stack, line.speaker).map_err(guest_fault)?;
-            m.set_u32(stack + 4, PRIORITY).map_err(guest_fault)?;
+            m.set_u32(stack + 4, line.priority).map_err(guest_fault)?;
             m.set_u32(stack + 8, 0).map_err(guest_fault)?;
             call.cpu.esp = stack;
             call.cpu.eax = line.row;

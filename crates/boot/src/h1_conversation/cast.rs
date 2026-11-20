@@ -17,6 +17,7 @@ const OBJECT_ORIGIN: u32 = 0x64;
 const HEADER_CLUSTER: u32 = 4;
 const UNIT_AIM: u32 = 0x168;
 const VEHICLE_DRIVER: u32 = 0x248;
+const VEHICLE_GUNNER: u32 = 0x24c;
 const TEAM_RELATIONSHIPS: u32 = 0x004f_55ec;
 const ALLIANCES: u32 = 0xa4;
 const RANDOM_SEED: u32 = 0x004e_7408;
@@ -150,6 +151,45 @@ pub(super) fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>
         return Ok(None);
     };
     Ok((m.u32(actor + ACTOR_UNIT)? == unit).then_some(handle))
+}
+
+/// The gunner owns a normal vehicle shot. A collision belongs to the driver.
+/// Halo 2 resolves the same owner at 0x1c9580.
+pub(super) fn damage_owner(
+    m: &dyn GuestMemory,
+    owner: u32,
+    collision: bool,
+) -> Result<Option<u32>, MemFault> {
+    let Some(body) = object_address(m, owner)? else {
+        return Ok(None);
+    };
+    match m.u8(body + 0xaa)? {
+        0 => Ok(Some(owner)),
+        1 => {
+            if !collision {
+                let gunner = m.u32(body + VEHICLE_GUNNER)?;
+                if gunner != NONE {
+                    return Ok(Some(gunner));
+                }
+            }
+            let driver = m.u32(body + VEHICLE_DRIVER)?;
+            Ok(Some(if driver == NONE { owner } else { driver }))
+        }
+        _ => Ok(None),
+    }
+}
+
+pub(super) fn team(m: &dyn GuestMemory, unit: u32) -> Result<Option<i16>, MemFault> {
+    object_address(m, unit)?
+        .map(|body| read_i16(m, body + UNIT_TEAM))
+        .transpose()
+}
+
+pub(super) fn is_player(m: &dyn GuestMemory, unit: u32) -> Result<bool, MemFault> {
+    let Some(body) = object_address(m, unit)? else {
+        return Ok(false);
+    };
+    Ok(m.u32(body + 0x13c)? != NONE)
 }
 
 pub(super) fn draw_voice(m: &mut dyn GuestMemory, count: usize) -> Result<usize, MemFault> {
