@@ -1,4 +1,4 @@
-//! The `native-hud` feature (docs/graphics/native-renderer.md, stage 5):
+//! The `native-hud` feature (docs/graphics/native-post-hud.md, stage 5):
 //! its plan (context-only hooks the pipelined render runs on its own
 //! thread; none with the master switch off).
 

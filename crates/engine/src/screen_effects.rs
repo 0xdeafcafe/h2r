@@ -1,5 +1,5 @@
 //! The scenario's screen effects `render_screen_effects` (`0x00013870`)
-//! draws after its colour pass (docs/graphics/native-renderer.md, stage 5,
+//! draws after its colour pass (docs/graphics/native-post-hud.md, stage 5,
 //! "The screen effects"): which entries draw this frame and with what
 //! values, as pure functions over guest memory, for the native renderer
 //! to plan them in the game's place.

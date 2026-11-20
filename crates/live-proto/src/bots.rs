@@ -44,7 +44,7 @@ pub fn is_bot_xuid(x: Xuid) -> bool {
 }
 
 /// The mark a bot's name carries in the game: U+2699 GEAR and a space
-/// before its gamertag (docs/game/bots.md §8.2.2). It is not part of the
+/// before its gamertag (docs/game/bots.md, "Clanker appearance and Live player options"). It is not part of the
 /// account's name: a record names the bot without it ([`unmarked_units`]),
 /// and the site draws its own from the bot flag.
 pub const BOT_MARK: char = '\u{2699}';

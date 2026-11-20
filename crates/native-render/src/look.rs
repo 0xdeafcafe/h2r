@@ -2,7 +2,7 @@
 //! implementation, its vertex program and pixel shader definition, stage
 //! textures, sampler states and instance constants, from `tags::material`
 //! (docs/formats/shader-instances.md). The native pass runs these through
-//! `shaders` instead of a program of ours (docs/graphics/native-renderer.md,
+//! `shaders` instead of a program of ours (docs/graphics/native-world.md,
 //! "What a world pass reads"). A material that does not fit the rules here
 //! stays on the D3D path, with the reason.
 

@@ -1022,12 +1022,14 @@ points! { ALL;
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Revert the game state to a saved slot.
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
+    /// Restore the whole game state from a saved image (header checked).
+    GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Switch the structure BSP (prepare, dispose, load, publish).
-    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-preflight.md";
+    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_start`.
-    CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-preflight.md";
+    CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_stop`.
-    CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-preflight.md";
+    CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-boot.md";
     /// The level select's list: one campaign's map ids from the start-level
     /// list, sorted, into the data array (stdcall `(array, campaign id)`).
     /// 1.0 asks for campaign 1 only (`0x19c190`).

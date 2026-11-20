@@ -1,4 +1,4 @@
-//! The native fog's host (docs/graphics/native-renderer.md, "Stage 4b"):
+//! The native fog's host (docs/graphics/native-water-fog.md, "Stage 4b"):
 //! over the native world's loaded BSP (`native_world_glue`, which loads it
 //! at the first layer 3 of a map), it compiles each material's layer-16
 //! passes at the load, reads the fog the device holds at the layer-16

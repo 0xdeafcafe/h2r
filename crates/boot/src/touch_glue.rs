@@ -1,4 +1,4 @@
-//! The iOS touch controls' game side (docs/runtime/ios.md, "Look" and
+//! The iOS touch controls' game side (docs/runtime/ios.md, "Controls" and
 //! "Layouts"): once a tick, while the touch controls show,
 //!
 //! 1. **Direct look.** The turn the touch host queued (`input::touch_look`)

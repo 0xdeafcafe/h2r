@@ -1,4 +1,4 @@
-//! Stage 5: the view's post passes (docs/graphics/native-renderer.md,
+//! Stage 5: the view's post passes (docs/graphics/native-post-hud.md,
 //! "Stage 5: post and HUD"). What one call of `render_screen_effects`
 //! (`0x00013870`) would draw, read from guest memory at its entry, so the
 //! host can say whether it draws it natively.

@@ -416,14 +416,13 @@ features in `crates/feature/src/native_*`; its one switch is
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
-([gameplay-budget.md](../perf/gameplay-budget.md)).
+([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `scene_effect_instruction_entries` lists the retail instruction boundaries the
 emitter must route through entry dispatch for those stages.
 
 ## State
 
-A subsystem's state moves through three stages as it is rewritten
-([ARCHITECTURE.md](../ARCHITECTURE.md), "typed memory in stages"):
+A subsystem's state moves through three stages as it is rewritten:
 
 1. **Guest layout.** The state stays in guest memory in the original layout and
    Rust works through views. Always the first stage, and the only one for

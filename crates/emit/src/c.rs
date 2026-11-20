@@ -476,6 +476,85 @@ fn stop_code(r: StopReason) -> &'static str {
     }
 }
 
+/// C for `dst = e`: the right-hand side, in `dst`'s storage type. Shared
+/// with the sim tier ([`crate::sim`]), which lowers integer IR the same way.
+pub(crate) fn expr(dst: Temp, e: &Expr) -> String {
+    let w = dst.width;
+    match e {
+        Expr::Unary { op, a } => {
+            let aw = a.width();
+            let x = val(a);
+            match op {
+                UnOp::Not => wrap(w, format!("~({})({x})", uty(aw))),
+                UnOp::Neg => wrap(w, format!("({u})0 - ({u})({x})", u = uty(aw))),
+                UnOp::Parity => format!("h2_parity((uint8_t){x})"),
+                UnOp::Ctz => format!("h2_ctz{}({x})", n(aw)),
+                UnOp::Clz => format!("h2_clz{}({x})", n(aw)),
+                UnOp::Bswap => format!("h2_bswap{}({x})", n(aw)),
+            }
+        }
+        Expr::Binary { op, a, b } => {
+            let aw = a.width();
+            let (x, y) = (val(a), val(b));
+            let u = uty(aw);
+            // At a native width the operands already have the
+            // arithmetic type: no casts needed, no promotion possible.
+            let native = u == ty(aw) && w == aw;
+            let infix = |o: &str| {
+                if native { format!("{x} {o} {y}") } else { wrap(w, format!("({u})({x}) {o} ({u})({y})")) }
+            };
+            let call = |f: &str| format!("h2_{f}{}({x}, {y})", n(aw));
+            match op {
+                BinOp::Add => infix("+"),
+                BinOp::Sub => infix("-"),
+                BinOp::Mul => infix("*"),
+                BinOp::And => infix("&"),
+                BinOp::Or => infix("|"),
+                BinOp::Xor => infix("^"),
+                BinOp::Shl => call("shl"),
+                BinOp::Shr => call("shr"),
+                BinOp::Sar => call("sar"),
+                BinOp::Rol => call("rol"),
+                BinOp::Ror => call("ror"),
+                BinOp::Udiv => call("udiv"),
+                BinOp::Urem => call("urem"),
+                BinOp::Sdiv => call("sdiv"),
+                BinOp::Srem => call("srem"),
+            }
+        }
+        Expr::Compare { op, a, b } => {
+            let aw = a.width();
+            let u = uty(aw);
+            let (x, y) = (format!("({u})({})", val(a)), format!("({u})({})", val(b)));
+            let sign = ulit(aw, 1u128 << (aw.bits() - 1));
+            let c = match op {
+                CmpOp::Eq => format!("{x} == {y}"),
+                CmpOp::Ne => format!("{x} != {y}"),
+                CmpOp::Ult => format!("{x} < {y}"),
+                CmpOp::Ule => format!("{x} <= {y}"),
+                // Signed order is unsigned order with the sign bit flipped.
+                CmpOp::Slt => format!("({x} ^ {sign}) < ({y} ^ {sign})"),
+                CmpOp::Sle => format!("({x} ^ {sign}) <= ({y} ^ {sign})"),
+            };
+            format!("(uint8_t)({c})")
+        }
+        Expr::Cast { op, a } => {
+            let x = val(a);
+            let u = uty(w);
+            match op {
+                CastOp::Zext | CastOp::Trunc => wrap(w, format!("({u})({x})")),
+                CastOp::Sext => {
+                    // (x ^ s) - s sign-extends an unsigned pattern whose
+                    // sign bit is s, with no signed conversion.
+                    let s = ulit(w, 1u128 << (a.width().bits() - 1));
+                    wrap(w, format!("((({u})({x})) ^ {s}) - {s}"))
+                }
+            }
+        }
+        Expr::Select { cond, a, b } => format!("({} ? {} : {})", val(cond), val(a), val(b)),
+    }
+}
+
 impl Emitter<'_> {
     fn line(&mut self, depth: usize, s: impl AsRef<str>) {
         for _ in 0..depth {
@@ -740,80 +819,7 @@ impl Emitter<'_> {
     }
 
     fn expr(&self, dst: Temp, e: &Expr) -> String {
-        let w = dst.width;
-        match e {
-            Expr::Unary { op, a } => {
-                let aw = a.width();
-                let x = val(a);
-                match op {
-                    UnOp::Not => wrap(w, format!("~({})({x})", uty(aw))),
-                    UnOp::Neg => wrap(w, format!("({u})0 - ({u})({x})", u = uty(aw))),
-                    UnOp::Parity => format!("h2_parity((uint8_t){x})"),
-                    UnOp::Ctz => format!("h2_ctz{}({x})", n(aw)),
-                    UnOp::Clz => format!("h2_clz{}({x})", n(aw)),
-                    UnOp::Bswap => format!("h2_bswap{}({x})", n(aw)),
-                }
-            }
-            Expr::Binary { op, a, b } => {
-                let aw = a.width();
-                let (x, y) = (val(a), val(b));
-                let u = uty(aw);
-                // At a native width the operands already have the
-                // arithmetic type: no casts needed, no promotion possible.
-                let native = u == ty(aw) && w == aw;
-                let infix = |o: &str| {
-                    if native { format!("{x} {o} {y}") } else { wrap(w, format!("({u})({x}) {o} ({u})({y})")) }
-                };
-                let call = |f: &str| format!("h2_{f}{}({x}, {y})", n(aw));
-                match op {
-                    BinOp::Add => infix("+"),
-                    BinOp::Sub => infix("-"),
-                    BinOp::Mul => infix("*"),
-                    BinOp::And => infix("&"),
-                    BinOp::Or => infix("|"),
-                    BinOp::Xor => infix("^"),
-                    BinOp::Shl => call("shl"),
-                    BinOp::Shr => call("shr"),
-                    BinOp::Sar => call("sar"),
-                    BinOp::Rol => call("rol"),
-                    BinOp::Ror => call("ror"),
-                    BinOp::Udiv => call("udiv"),
-                    BinOp::Urem => call("urem"),
-                    BinOp::Sdiv => call("sdiv"),
-                    BinOp::Srem => call("srem"),
-                }
-            }
-            Expr::Compare { op, a, b } => {
-                let aw = a.width();
-                let u = uty(aw);
-                let (x, y) = (format!("({u})({})", val(a)), format!("({u})({})", val(b)));
-                let sign = ulit(aw, 1u128 << (aw.bits() - 1));
-                let c = match op {
-                    CmpOp::Eq => format!("{x} == {y}"),
-                    CmpOp::Ne => format!("{x} != {y}"),
-                    CmpOp::Ult => format!("{x} < {y}"),
-                    CmpOp::Ule => format!("{x} <= {y}"),
-                    // Signed order is unsigned order with the sign bit flipped.
-                    CmpOp::Slt => format!("({x} ^ {sign}) < ({y} ^ {sign})"),
-                    CmpOp::Sle => format!("({x} ^ {sign}) <= ({y} ^ {sign})"),
-                };
-                format!("(uint8_t)({c})")
-            }
-            Expr::Cast { op, a } => {
-                let x = val(a);
-                let u = uty(w);
-                match op {
-                    CastOp::Zext | CastOp::Trunc => wrap(w, format!("({u})({x})")),
-                    CastOp::Sext => {
-                        // (x ^ s) - s sign-extends an unsigned pattern whose
-                        // sign bit is s, with no signed conversion.
-                        let s = ulit(w, 1u128 << (a.width().bits() - 1));
-                        wrap(w, format!("((({u})({x})) ^ {s}) - {s}"))
-                    }
-                }
-            }
-            Expr::Select { cond, a, b } => format!("({} ? {} : {})", val(cond), val(a), val(b)),
-        }
+        expr(dst, e)
     }
 
     fn stmts(&mut self, list: &[Stmt], insn: &IrInsn, d: usize, mut top: Option<u8>) {

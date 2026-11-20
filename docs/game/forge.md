@@ -184,8 +184,7 @@ entries needs a new block somewhere in guest memory, then a rewritten
 `count, address` descriptor. Where that space can come from (slack after
 the tag data, or a range the runtime reserves) is the first open question
 (S). Checkpoints and saved state are not a concern in multiplayer, but
-check that the tag region is not in any snapshot
-([settings-menu.md](settings-menu.md) §A raises the same question).
+check that the tag region is not in any snapshot.
 
 ### 2.3 Validation (S)
 
@@ -248,10 +247,9 @@ Recommendation: the host camera first.
 
 ### 3.2 UI
 
-Follow [settings-menu.md](settings-menu.md): a host overlay (egui on the
-compositor), not guest UI. It needs no knowledge of the retail screens,
-survives title updates and stays out of the simulation. The palette is
-built from the map's own tag index, the way the `h2 object` resolver
+Follow [settings-menu.md](settings-menu.md) and [ui-screens.md](ui-screens.md):
+native game screens built from the game's own list class, with no host
+overlay. The palette is built from the map's own tag index, the way the `h2 object` resolver
 works: weapons, vehicles, `itmc`/`vehc` collections, scenery and crates
 present in the map's cache (and in `shared.map` for multiplayer). Labels
 are tag base names, which come from the user's disc at run time.

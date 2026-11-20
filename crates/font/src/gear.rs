@@ -1,4 +1,4 @@
-//! The bot mark: a gear at U+2699 (docs/game/bots.md §8.2.2).
+//! The bot mark: a gear at U+2699 (docs/game/bots.md, "Clanker appearance and Live player options").
 //!
 //! Halo 2's fonts have no glyph there, so a bot's name (`⚙ ` and its tag)
 //! would draw a box. [`replacement`] draws one for a font, sized to the

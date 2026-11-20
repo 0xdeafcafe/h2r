@@ -1,5 +1,5 @@
 //! `native-post`: the view's post passes drawn by the native renderer
-//! (docs/graphics/native-renderer.md, "Stage 5: post and HUD"). On with
+//! (docs/graphics/native-post-hud.md, "Stage 5: post and HUD"). On with
 //! the native renderer (`impl.render.native`, on by default).
 //!
 //! The colour pass and each screen effect run their guest code. Entry

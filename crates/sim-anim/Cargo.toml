@@ -1,0 +1,12 @@
+[package]
+name = "sim-anim"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Native animation sampling: decoded clips and the node-record sampler (docs/engine/anim-sampling.md)"
+
+[dependencies]
+sim-core.workspace = true
+
+[dev-dependencies]
+sim-core = { workspace = true, features = ["override"] }

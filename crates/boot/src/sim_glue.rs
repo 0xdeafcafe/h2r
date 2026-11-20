@@ -53,7 +53,7 @@ pub(crate) mod hosted;
 mod state_hash;
 
 /// The engine's shared random seed: a pointer to the struct whose first
-/// word it is (docs/graphics/pipelined-render.md, "random").
+/// word it is (docs/graphics/notes/pipelined-render.md, "The prototype").
 pub const RANDOM_SEED_PTR: u32 = 0x004e_7408;
 
 /// Film checkpoints use the simulation report's post-tick digest. Campaigns
