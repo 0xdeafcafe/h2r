@@ -43,6 +43,8 @@ pub const LEVEL_SELECT_LOADER: u32 = 0x002b_130a;
 /// Campaign Options on window 3 before consulting the profile.
 pub const OPTIONS_LOADER: u32 = 0x0023_0616;
 pub const MAIN_MENU_REQUEST_RET: u32 = 0x0023_08d1;
+/// OPEN_SCREEN returns here after building its loader request.
+const OPEN_SCREEN_REQUEST_RET: u32 = 0x0014_9f3f;
 /// Our strings: the title, then one label a row.
 pub const ID_BASE: u32 = crate::ui_kit::ids::family("campaign picker").base;
 pub const TITLE_ID: u32 = ID_BASE;
@@ -247,6 +249,8 @@ impl Rows for PickerRows {
             return Chosen::Nothing;
         };
         self.state.selection.set(id);
+        *self.state.selection.pick.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(campaigns::Pick { campaign: id, request: None });
         Chosen::Retail {
             line: format!(
                 "campaigns: picked campaign {id} ({})",
@@ -504,6 +508,10 @@ impl hooks::Feature for Campaigns {
                 // partial import may now have more installed missions.
                 if ret == 0x002b_180c && s.selection.campaign() != RETAIL_CAMPAIGN {
                     options::checkpoint_selection(c, &s)?;
+                }
+                if ret == OPEN_SCREEN_REQUEST_RET {
+                    let mem = c.ctx.runtime().memory();
+                    inspect::observe_options_request(&*mem, &s, c.cpu.esp);
                 }
                 if ret != MAIN_MENU_REQUEST_RET || stack(c, 3) != Some(OPTIONS_LOADER) {
                     return Ok(Flow::Continue);

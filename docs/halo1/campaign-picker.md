@@ -265,6 +265,7 @@ on.
 | `PROGRESS_RAISE` `0x19043f` | before | a map id of ours: kept in our progress for that slot's profile, and the original skipped, so the profile keeps Halo 2's progress only |
 | `LAST_LEVEL_SET` `0x19040d` | before | For an imported map, bypass the Halo 2 profile write. Record map, basename and difficulty on launch (return to `0x18f0b7`). Backing out of difficulty retains the previous launch. |
 | `SCREEN_REQUEST` `0x149f49` | before | The main menu requests Campaign Options (return to `0x2308d1`, loader `0x230616`). Open the kit picker on the shared menu stack. |
+| `CAMPAIGN_OPTION_ITEM_COUNT` `0x2b160c` | after | Limit the number of item widgets Campaign Options links to the three its constructor builds. |
 
 ### The picker (`campaign_menu::PickerRows`, screen `campaigns`)
 
@@ -272,18 +273,33 @@ Our own list class ([feature-engine.md](../engine/feature-engine.md) "UI
 step b", as the Skulls screen is), titled "Campaign": the campaigns whose
 `order` is below 20 (`campaign_list::HALO2_ORDER`; Halo 1's is 10), then
 "Halo 2", then the rest, so Halo: Combat Evolved is first and Halo 2
-second. A press sets the game, refreshes its level array through
-`0x19c6d0`, then opens its Campaign Options with the kit's `Chosen::Retail`
-and `open_retail` on window 5, slot 4. B returns to the picker. The
-retail restricted-Campaign dialog at `0x230895` keeps its original path.
+second. A press sets the game. The kit's `open_retail` calls
+`0x19c6d0([0x4ee4e8], campaign_id)` to refresh the level array, then
+`0x149f1e(player_mask, 0x230616)` to open Campaign Options on window 5,
+slot 4. The mask comes from the local player in the press event. The
+loader allocates the screen and constructs its list at `screen+0x614`.
+B returns to the picker. The retail restricted-Campaign dialog at
+`0x230895` keeps its original path.
 
 ### Game-specific Campaign Options
 
-**Built.** Main menu row zero calls `0x230888`. Its normal branch opens
+Main menu activation calls `LOBBY_MODE_SET(-1)` at `0x230b45`, which the
+co-op hook logs as unsigned `4294967295`. Main menu row zero then calls
+`0x230888`. Its normal branch opens
 screen `0xda` before any profile-dependent solo choice. Its list
 constructor at `0x2b14dc` creates four-byte records with the action at
-+2. We retain its item widgets, scroll behavior, localized checkpoint and
-co-op labels, and expand the data array from three records to four.
++2. The expanded datum array holds up to four actions. The constructor
+also builds three 0x80-byte item widgets at `list+0x88`, followed by the
+press record at `list+0x208`. That record holds the list pointer at +0x10
+and its chosen callback (`0x2b166d`) at +0x14.
+
+During pane setup, the list's add-items method (`0x24bb60`) calls slot 19
+to count the widgets it should link. Retail's getter (`0x2b160c`) returns
+the active datum count. The Campaign Options hook caps that result at
+three. A fourth iteration would treat the callback as a widget's first
+child and send it to the recursive player-mask setter (`0x22ee92`).
+Retail scrolling (`0x24c515`) compares the full datum count with the
+linked child count, so the fourth action remains reachable.
 
 | Action | Behavior and XBE evidence |
 |---|---|
@@ -464,9 +480,9 @@ in-memory bitmaps. Supply
 absolute disc paths when the test checkout lacks a local disc directory.
 
 ```sh
-cargo test -p boot --lib campaign
+cargo xtask test -p game -p guest-layout
 cargo test -p agent-proto --lib sim::menu
-H2_DISC="$PWD/disc/halo2.iso" cargo test -p boot --lib picker_collage_from_an_import_card_and_the_disc -- --ignored
+H2_DISC="$PWD/disc/halo2.iso" cargo test -p game --lib picker_collage_from_an_import_card_and_the_disc -- --ignored
 ```
 
 With both games installed, verify a fresh profile and one with an existing

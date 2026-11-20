@@ -974,7 +974,22 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   focus is null. On the picker the rows are installed campaign keys; on
   Campaign Options the action keys are `resume`, `new_game`,
   `select_level` and `co_op`; other pages report an empty row list. For
-  example `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
+  example, a fresh profile on Halo 2 has `"page":"options"`, `"game":"halo2"`
+  and three rows. With a saved Halo 2 checkpoint, Resume is the first of
+  four rows.
+  On the picker and Campaign Options, `pick` identifies the most recent
+  press during this visit. It is null before a game is picked. Its
+  `campaign` is the picked numeric id, and `request` is null until retail
+  receives the options screen request. The request gives the player
+  `mask`, `window`, `slot` and `loader` arguments. The active `page`
+  shows whether the options screen opened.
+  On those two pages `list` reports guest addresses for the `screen`,
+  its list `handler`, the `row_array` and the linked `children` in order.
+  `row_count` reads the number of active datums. On Halo 2 with a checkpoint
+  the four actions scroll through three linked item widgets. The handler's
+  `press_record` holds a `press_target` (the list) and a `press_function`
+  (the row-chosen callback). An unreadable field is null. On other pages
+  `pick` and `list` are null.
   From the main menu's Campaign row, `h2 agent press a` opens the picker for
   fresh and returning profiles. Main menu row zero requests the native
   campaign dialog from `0x230888`; the picker intercepts it before the

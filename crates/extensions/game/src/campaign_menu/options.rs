@@ -206,6 +206,17 @@ pub(super) fn hooks(b: &mut Builder, state: &Arc<State>) {
         },
     );
 
+    // Slot 17 (0x24bb60) uses slot 19's result to walk the embedded
+    // widgets. Only the separate datum array grows for the Resume row.
+    b.raw().after(
+        &points::CAMPAIGN_OPTION_ITEM_COUNT,
+        "limit linked items to the constructed widgets",
+        |c| {
+            c.cpu.eax = (c.cpu.eax as i32).min(ui::CAMPAIGN_OPTIONS_ITEMS as i32) as u32;
+            Ok(())
+        },
+    );
+
     let s = Arc::clone(state);
     let picker = Picker::new(&s.built);
     b.raw().before(
@@ -589,6 +600,81 @@ mod tests {
             .collect();
         assert_eq!(rows, [CHECKPOINT, NEW, SELECT, COOP]);
         assert_eq!(action(&m, 0x1000, 4).unwrap(), None);
+    }
+
+    #[test]
+    fn a_halo2_checkpoint_links_only_widgets_and_keeps_the_fourth_action() {
+        use engine::datum::layout::ACTIVE_COUNT;
+        use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime, guest::Permissions};
+
+        let list = ui::ListHandler::at(0x1000);
+        let array = DatumArray::at(0x2000);
+        let mut m = Guest::new();
+        m.map_zeroed(list.addr, 0x2000, Permissions::RW).unwrap();
+        let callback = 0x9000;
+        m.map_zeroed(callback, 0x1000, Permissions::RX).unwrap();
+        list.set_rows(&mut m, array.addr).unwrap();
+        let press = list.press(0x208);
+        press.set_target(&mut m, list.addr).unwrap();
+        press.set_function(&mut m, callback).unwrap();
+        array
+            .initialize_contiguous(&mut m, 0x1400, 4, 4, 2, 0)
+            .unwrap();
+        array.make_valid(&mut m).unwrap();
+        // The native constructor returns the handler with three saved-game actions.
+        fill(&mut m, list.addr, &[CHECKPOINT, 1, COOP]).unwrap();
+        let rt = Runtime::new(m, Dispatch::default());
+        let mut ctx = ExecCtx::new(Arc::clone(&rt), 2);
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+        registry
+            .add(&super::super::Campaigns {
+                state: Arc::new(super::super::tests::state()),
+                picker: Arc::new(|| 0),
+            })
+            .unwrap();
+        let plan = registry.build(&hooks::Base).unwrap();
+        let mut after = |point: &'static points::Point, eax| {
+            let mut cpu = CpuAbi {
+                ecx: list.addr,
+                eax,
+                ..Default::default()
+            };
+            if let Some(chain) = plan.chains.get(&point.base) {
+                for hook in chain.after.iter().rev() {
+                    if let hooks::Run::After(f) = &hook.run {
+                        f(&mut hooks::Call {
+                            cpu: &mut cpu,
+                            ctx: &mut ctx,
+                            addr: point.base,
+                            point,
+                        })
+                        .unwrap();
+                    }
+                }
+            }
+            cpu.eax
+        };
+        assert_eq!(after(&points::CAMPAIGN_OPTION_ITEM_COUNT, 2), 2);
+        after(&points::CAMPAIGN_OPTIONS_LIST, list.addr);
+        // Slot 19's original body reads the active count. Slot 17 walks that
+        // many items and propagates the player mask to each one's children.
+        let rows = array.header_field(&*rt.memory(), ACTIVE_COUNT).unwrap();
+        assert_eq!(rows, 4);
+        let widgets = after(&points::CAMPAIGN_OPTION_ITEM_COUNT, rows as u32);
+        let mut m = rt.memory();
+        for i in 0..widgets {
+            let item = list.item(i).addr;
+            m.set_u16(item + 8, 1).unwrap();
+            let child = m.u32(item + 0x14).unwrap();
+            if child != 0 {
+                m.set_u16(child + 8, 1)
+                    .expect("press callback reached as a widget");
+            }
+        }
+        assert_eq!(widgets, 3);
+        assert_eq!(press.function(&*m), Ok(callback));
+        assert_eq!(action(&*m, list.addr, 0), Ok(Some(CHECKPOINT)));
+        assert_eq!(action(&*m, list.addr, 3), Ok(Some(COOP)));
     }
 
     #[test]
