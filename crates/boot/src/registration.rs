@@ -327,6 +327,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    features.add(&feature::sim_physics::NativePhysics)
+        .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features

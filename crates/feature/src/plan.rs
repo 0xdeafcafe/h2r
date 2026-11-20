@@ -281,6 +281,7 @@ fn place_locale(
                         // Reads edi, the sources' boot-fixed answers, and
                         // the stack it returns through.
                         context_only: true,
+                        resume_sites: &[],
                     },
                 ));
                 "served by the locale bridge".to_owned()

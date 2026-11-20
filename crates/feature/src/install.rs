@@ -322,6 +322,14 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
             body.invoke(cpu, ctx, addr)
         });
     }
+    let native_resumes = c.implement.as_ref().and_then(|hook| {
+        match &hook.run {
+            Run::Implement(f) if addr == point.base && !hook.resume_sites.is_empty() => {
+                Some((hook.resume_sites, Arc::clone(f)))
+            }
+            _ => None,
+        }
+    });
     let shadow = c.shadow;
     d.register_override(addr, name, move |cpu, ctx, _| {
         for o in &observe_before {
@@ -391,6 +399,9 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
             }
         }
     });
+    if let Some((sites, f)) = native_resumes {
+        d.implement_resumes(addr, sites, move |cpu, ctx, pc| f(cpu, ctx, pc));
+    }
     if context_only {
         d.mark_context_only(addr);
     }

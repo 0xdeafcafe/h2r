@@ -45,6 +45,7 @@ pub mod render_census;
 pub mod render_loop;
 pub mod render_timing;
 pub mod sim_frame;
+pub mod sim_physics;
 pub mod snapshot;
 pub mod switches;
 
@@ -286,6 +287,7 @@ pub struct Hook {
     /// body, may run on the pipelined render thread
     /// ([`HookRef::context_only`], [`Chain::render_thread`](crate::plan::Chain::render_thread)).
     pub context_only: bool,
+    pub(crate) resume_sites: &'static [u32],
 }
 
 impl Hook {
@@ -298,6 +300,12 @@ impl Hook {
 pub struct HookRef<'a>(&'a mut Hook);
 
 impl HookRef<'_> {
+    /// Re-enter this implementation at these base-image return PCs. All
+    /// state across guest calls must be in guest registers and memory.
+    pub fn resumes(self, sites: &'static [u32]) -> Self {
+        self.0.resume_sites = sites;
+        self
+    }
     pub fn first(self) -> Self {
         self.0.order = Order::First;
         self
@@ -555,6 +563,7 @@ impl<'r> Builder<'r> {
             optional: false,
             label,
             context_only: false,
+            resume_sites: &[],
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }

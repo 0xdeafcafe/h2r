@@ -64,6 +64,9 @@ pub mod view;
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;
 
+#[cfg(feature = "runtime-glue")]
+pub mod sim_physics;
+
 pub use handle::DatumHandle;
 pub use memory::{FlatMemory, GuestMemory, MemFault};
 
