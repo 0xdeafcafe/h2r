@@ -952,8 +952,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #define H2GEN_FEATURE_DIRECT 0u
 #endif
 /* The table has room for H2_DIRECT_SLOTS; the runtime uses the first
- * slot_mask + 1 of them (a power of two, H2_DIRECT_SLOTS in its
- * environment, 4096 unless set). */
+ * slot_mask + 1 of them (a power of two, 4096). */
 #define H2_DIRECT_SLOTS 8192u
 #define H2_DIRECT_MAX_DEPTH 64u
 /* What the runner learnt: entry `pc` resolved to `fn` (selector pc) at

@@ -138,7 +138,7 @@ elsewhere: HLE calls (thousands of D3D entries a frame, each a transfer
 in and a return out), returns that do not match an inline continuation,
 and direct calls refused at run time. A direct call is refused unless
 the runner has already resolved that target into one of 256 per-context
-slots (`H2_DIRECT_SLOTS`, direct-mapped on `pc ^ pc >> 8`), so two hot
+slots (direct-mapped on `pc ^ pc >> 8`; 4096 since feddd0402), so two hot
 callees that collide evict each other and both keep going through the
 runner. The image has 18,691 functions.
 

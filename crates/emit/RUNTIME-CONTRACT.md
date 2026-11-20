@@ -612,8 +612,8 @@ Its semantics:
     as without the flag.
   - The runner learns slots from generated registry entries reached through
     an entry route with selector = target, recording the generation it resolved
-    at. Standalone native adapters and overrides go through the runner. `H2_DIRECT_SLOTS` selects the active
-    size of the per-context cache (4096 by default, up to 8192).
+    at. Standalone native adapters and overrides go through the runner. The
+    per-context cache uses 4096 of its 8192 slots (`slot_mask`).
     Any `edit_dispatch` moves the generation, so an override
     registered, enabled, disabled or replaced (from any thread) stops every
     direct call to that entry: the next call goes to the runner, which

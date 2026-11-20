@@ -754,24 +754,17 @@ fn a_native_override_is_never_learned_as_an_indirect_target() {
     assert_eq!(m.direct_transfers(), 0);
 }
 
-/// Two callees in one slot (`H2_DIRECT_SLOTS`, runtime environment): with
-/// 256 slots each call finds the other's entry there and goes through the
-/// runner, which takes the slot back; with 4096 or more both stay. Every
-/// mode ends the same either way.
+/// Two callees that would share a slot in a 256-slot table: the runtime's
+/// 4096 slots keep both, and every mode ends the same.
 #[test]
 fn callees_sharing_a_slot() {
     let n = (CL ^ (CL >> 8), NEST_B ^ (NEST_B >> 8), COLL ^ (COLL >> 8));
     assert_eq!(n.1 & 255, n.2 & 255);
     assert_ne!(n.1 & 4095, n.2 & 4095);
     agree("shared slot", run_twice(CL));
-    let slots = std::env::var("H2_DIRECT_SLOTS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| n.is_power_of_two() && *n <= 8192)
-        .unwrap_or(4096);
-    // 3 trips: NEST_B's call of NEST_C and its return always; with room,
-    // CL's two calls and their returns too.
-    assert_eq!(direct_count(CL, None), if slots >= 4096 { 18 } else { 6 });
+    // 3 trips: NEST_B's call of NEST_C and its return, and CL's two calls
+    // and their returns.
+    assert_eq!(direct_count(CL, None), 18);
 }
 
 #[test]
