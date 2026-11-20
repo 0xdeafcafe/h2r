@@ -247,9 +247,9 @@ of them: the listener update `0x127400` sets it (`0x220790`,
 at `0x21f1fc`) to the origin facing +x, and mix-in positions are relative
 to the sound's own listener. A sound the game takes as a local user's
 own (`0x18d4f0`) starts with no position at all and plays at full level
-in the ears; with local bots that sent every bot's sounds to the human,
-which no DirectSound setting could undo (docs/game/bots.md §4.3, "Whose
-sound"). The shim applies `DS3D_DEFERRED` settings at once; Halo commits
+in the ears. Clanker sounds stay positioned and the game selects a
+listener from the human seats ([bots.md](../game/bots.md#51-what-has-to-be-made-up-traced)).
+The shim applies `DS3D_DEFERRED` settings at once. Halo commits
 every frame, so only the moment inside a frame differs.
 
 So the attenuation lives in mix-bin volumes, and those must survive

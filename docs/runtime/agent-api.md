@@ -989,6 +989,15 @@ widget-level focus or activate method.
 
 ## `audio`: voice routing
 
+`h2 agent audio.listeners` takes no parameters. At a game boundary it reads
+the guest's active world-sound listeners. Each row in `listeners` reports
+the local `user` index, its salted `player_datum` (null for an unmapped
+slot), whether the mapped player is a `phantom` (null without a resolved
+player), and the listener's world-space `position` as `[x, y, z]`.
+With one human and a roster of Clankers, only the human's slot
+appears. Splitscreen reports each active human slot. The method returns
+`UNAVAILABLE` if the game listener state is uninitialized or unreadable.
+
 `h2 agent audio.voices` takes no parameters and is registered with
 DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
 `distance_reverb` (host enhancement enabled), `reverb_active` (audible

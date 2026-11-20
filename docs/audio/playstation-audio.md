@@ -208,12 +208,10 @@ gunfire stay on the main output. Shields are the HUD's warnings, under a
 weapon or material sound and stays on the main output. Routing goes by
 sound name, with one rule on top: a voice the game positions in 3D (a
 `DSBCAPS_CTRL3D` buffer, or a stream whose output buffer is one) is never
-routed, whatever it is called. Routing knows no player or port: on a
-console with local Clankers (docs/game/bots.md §4.3, "Listeners") a
-bot's own sounds reached the controller while its user counted as a
-listener; it is not routed. These are generic words,
-not tag paths from the disc: check them against your maps with `h2 tags
-<map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
+routed, whatever it is called. Clankers' attached sounds stay positioned
+and play on the main output. See [Hiding the views](../game/bots.md#43-hiding-the-views-traced).
+Use `h2 tags <map>` with the `snd!` group to check which tag names a glob
+matches. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
 (device) and the live ones (routes, exclusive). On and off is already in the
 game's own Controls screen (below).

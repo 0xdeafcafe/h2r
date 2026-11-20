@@ -241,6 +241,9 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // Phantom membership and input run on the game thread.
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "GAME_ACTIVATE", AFTER),
+    ("bots", "SOUND_UPDATE", AFTER),
+    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
+    ("bots", "SOUND_OWNER_USER", AFTER),
     (
         "bots",
         "SIMULATION_SLOT_ACTION",

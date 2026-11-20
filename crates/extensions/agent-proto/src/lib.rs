@@ -206,6 +206,8 @@ pub mod method {
     pub const COOP_LOOK: &str = "render.coop_look";
     /// Active mixer voices, bin gains and distance-dependent path parameters.
     pub const AUDIO_VOICES: &str = "audio.voices";
+    /// Active guest listeners and their local-user mappings.
+    pub const AUDIO_LISTENERS: &str = "audio.listeners";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.
