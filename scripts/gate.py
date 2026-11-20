@@ -26,9 +26,13 @@ The exit status is 0 only when no step is FAIL. A step that cannot run
 (no disc, no disk space, a tool missing) is FAIL, never a quiet skip.
 
 With `--pool DIR` the gate leases one of the pool's slots for its whole
-run: a checkout (`DIR/tree-N`) moved to this commit and a target
-directory of its own (`DIR/target-N`). Two gates never share a target
-directory, and a slot's target is only ever built from its own tree.
+run: a checkout (`DIR/gate-N`, a git worktree) moved to this commit, and
+that checkout's own `target`. Two gates never share a target directory,
+and a slot's target is only ever built from its own tree. The target is
+wherever a new worktree's `target` goes on this machine: a post-checkout
+hook may make it a link to another volume, and the gate builds through
+it. `CARGO_TARGET_DIR` is not passed on, since one target shared by
+several trees is what the pool exists to avoid.
 """
 
 import argparse
@@ -227,7 +231,7 @@ class Gate:
         waited = 0
         while self.lease is None:
             for n in range(1, a.slots + 1):
-                f = open(os.path.join(a.pool, "slot-%d.lock" % n), "a+")
+                f = open(os.path.join(a.pool, "gate-%d.lock" % n), "a+")
                 try:
                     fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError:
@@ -245,8 +249,10 @@ class Gate:
         f.truncate()
         f.write("pid %d, %s at %s, since %s\n" % (os.getpid(), self.root, commit[:12], time.strftime("%F %T")))
         f.flush()
-        tree = os.path.join(a.pool, "tree-%d" % n)
+        tree = os.path.join(a.pool, "gate-%d" % n)
         if not os.path.isdir(tree):
+            # A new worktree: the machine's post-checkout hook, if any,
+            # places its `target` now.
             affected.git(self.root, "worktree", "prune")
             affected.git(self.root, "worktree", "add", "--detach", tree, commit)
         else:
@@ -254,11 +260,12 @@ class Gate:
                 raise SystemExit("gate.py: %s has local changes; a pool tree is only ever checked out" % tree)
             affected.git(tree, "checkout", "--detach", "--quiet", commit)
         self.cwd = tree
-        self.env["CARGO_TARGET_DIR"] = os.path.join(a.pool, "target-%d" % n)
-        say("gate: leased slot %d: %s, target %s" % (n, tree, self.env["CARGO_TARGET_DIR"]))
+        if self.env.pop("CARGO_TARGET_DIR", None):
+            say("gate: CARGO_TARGET_DIR is set and is not used with --pool")
+        say("gate: leased slot %d: %s, target %s" % (n, tree, self.target_dir()))
 
     def target_dir(self):
-        return self.env.get("CARGO_TARGET_DIR") or os.path.join(self.cwd, "target")
+        return self.env.get("CARGO_TARGET_DIR") or os.path.realpath(os.path.join(self.cwd, "target"))
 
     def command(self, argv, env, log):
         """Run `argv` to the end or to the time limit. (exit status or None
