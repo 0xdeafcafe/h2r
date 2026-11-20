@@ -1,6 +1,8 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Nothing here is built. It details phase 3 of
+Status: design, 2026-11-20. Slice 0's scaffolding is built: the dispatcher
+with no bodies and the switch, default off; the contracts it read are in
+[object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
 and spatial queries) land first; section 6 says what this phase needs from
@@ -114,9 +116,9 @@ the rest. AI submits unit control before the pre-physics walk reads it.
 | `01` | ACTIVE | C. Required by every walk. |
 | `02` | AWAKE | C. Set up the parent chain by `b7360`. Cleared at the end of `bc470` when the update returned 0 and POST is clear. |
 | `04` | POST | C. Cleared at the start of `bc470`, set by `bba20` on an active object. The post walk visits `flags & 0c == 04`. |
-| `08` | NEW | C. Excludes the object from the pre and post walks. Finalize clears it and runs both updates. Set at creation (L) and by `109580` for woken weapon, equipment, garbage and projectile objects (C). |
+| `08` | NEW | C. Excludes the object from the pre and post walks. Finalize clears it and runs both updates. Set at creation by `b7b40` and by `109580` for woken weapon, equipment, garbage and projectile objects. |
 | `10` | DELETE | C. Finalize pass B deletes it (`b83b0`, `b8460`). |
-| `20` | DEFER | C for the readers: `bc470` returns 1 at once when set; finalize clears it on every live header. Setter: O. |
+| `20` | DEFER | C. `bc470` returns 1 at once when set; finalize clears it on every live header. Set on the child by the attach function `b93b0` ([object-update.md](object-update.md)). |
 | `40` | ATTACH | C. Post-update calls `bef30` when set and the bounds did not change. |
 | `80` | CHILD | C. `bba20` replaces the handle by the root ancestor (`baf80`, parent at body `+14`). |
 
@@ -264,12 +266,12 @@ and return 1.
 crates/rewrites/sim-core/                  (phase 1a creates it; this phase adds)
   src/spec.rs                     Spec<K>: validated speculation (section 7)
   src/jobs.rs                     Jobs: fixed chunking (plan section 6)
-crates/sim-objects/               new; no `runtime` dependency
+crates/rewrites/sim-objects/      no `runtime` dependency
   src/lib.rs
-  src/layout.rs                   every offset in section 2, as named consts
-  src/view.rs                     ObjRef, HeaderRef, DefRef: typed views over GuestMemory
+  src/view.rs                     Objects, ObjRef: the pool, live-slot scan, handles, child links
   src/defs.rs                     DefTable (static, per map)
-  src/walk.rs                     live-slot scan, early-mover list, child links
+  src/synth.rs                    synthetic pools and tags for tests (feature `synth`)
+  src/walk.rs                     early-mover list
   src/wake.rs                     b7360, baf80, bba20, bc7b0 (leaf kernels)
   src/bounds.rs                   bdef0 arithmetic
   src/functions.rs                bab40, ba8c0, 108d90 evaluator
@@ -278,30 +280,33 @@ crates/sim-objects/               new; no `runtime` dependency
   src/pose.rs                     bd090 orchestration over sim-anim
   src/unit/, biped/, ...          one module per type tree
   src/phase.rs                    PoseSet, BoundsSet (transient SoA)
-crates/rewrites/sim-state/                 new; read-only API (section 8)
+crates/rewrites/sim-state/                 read-only API (section 8)
+crates/hooking/guest-layout/src/object.rs  every offset in section 2: header and
+                                  physics flag bits, body fields, ObjectDefinition
 crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   mod.rs                          BODIES table, local dispatcher, supported()
   frame.rs                        retail frame helpers (push, pop, slots)
   walks.rs                        b6f10, b7060, b7150
   object.rs                       bc470, bc820, dispatchers 108c60/108cd0/109050/1090d0
   ...                             one file per ported segment body
-crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects`
+crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 
 `sim-objects` depends on `sim-core`, `sim-anim` and the phase 2 crate
-through a trait (section 6), and on `engine`'s `GuestMemory` trait only via a
-re-export that `sim-core` should carry so the pure crates do not depend on
-`engine`. `engine` depends on `sim-objects`.
+through a trait (section 6), and reads guest memory through
+`guest_layout::Mem`, the trait `engine` already implements for its guest
+memories; offsets come from `guest_layout`'s layouts, so `sim-objects`
+adds names, not a second copy of an offset. `engine` depends on
+`sim-objects`.
 
 ## 4. Data
 
 ### Typed views (the access path)
 
 ```rust
-pub struct Objects { header: u32, data: u32, bitmap: u32, stride: u32 } // re-read per segment
-pub struct HeaderRef(u32);  // salt@0 u16, flags@2 u8, kind@3 u8, body@8 u32
-pub struct ObjRef { pub handle: u32, pub header: u32, pub body: u32 }
+pub struct Objects { pub array: DatumArray, pub data: u32, pub bitmap: u32, pub stride: u32 } // re-read per segment
+pub struct ObjRef { pub handle: Datum, pub header: ObjectHeader, pub body: Object }      // guest_layout views
 ```
 
 - An `ObjRef` is never held across a guest call or a tick: the pool moves
@@ -321,6 +326,11 @@ definition is touched, from the tag bytes resident in guest memory (the same
 rule as `ClipStore`: decode what the guest would read, so it cannot
 disagree).
 
+What `sim_objects::defs::Def` holds today is the bounds (`tag`, `flags`,
+`bounding_radius`, `bounding_offset`, `dynamic_scale`, `dynamic_offset`,
+read through `guest_layout::ObjectDefinition`). The rest of this shape
+arrives with the slices whose kernels read it:
+
 ```rust
 pub struct Def {                    // ~96 bytes plus slices
     pub kind: u8,
@@ -336,15 +346,19 @@ pub struct Def {                    // ~96 bytes plus slices
     pub attachments: Box<[Attachment]>, // +94, stride 18
     pub nodes: u16, pub node_parents: Box<[i16]>, // from the model
 }
-pub struct DefTable { by_tag_index: Vec<u32 /* 0 = absent, else index + 1 */>, defs: Vec<Def>, epoch: Epoch }
+pub struct DefTable { by_tag_index: Vec<u32 /* 0 = absent, else index + 1 */>, defs: Vec<Def>, epoch: Option<u64> }
 ```
 
-Keyed by tag datum index, valid for one map load. Tag data is immutable
-after load, with one exception to check in slice 0: the map-patching features
-(`crates/apps/boot/src/map_override.rs`, mods) write tags at load, before any
-object exists; the table must be built after they run, which lazy building
-gives for free. The descriptor slots in the type table are image constants
-and are read from guest memory once per process.
+Keyed by tag datum index (an entry also keeps the full datum, so a reused
+index with a new salt decodes again), valid for one epoch. Map overrides
+and mods (`crates/apps/boot/src/map_override.rs`) replace map files through
+the VFS, so their tags are in memory before any object exists, and lazy
+building sees them. The one writer of tag data after load is a hot tag
+edit (`edit.set`, `edit.revert`, `crates/extensions/hot-tags`), which
+retail sees at its next read; the slice that gives `DefTable` its first
+runtime reader also bumps the epoch on every such edit. The descriptor
+slots in the type table are image constants and are read from guest
+memory once per process.
 
 ### Transient SoA sets (`phase.rs`)
 
@@ -396,7 +410,7 @@ pub struct Body {
     pub run: fn(&mut Cx<'_>, pc: u32) -> Result<Next>,
 }
 pub enum Next { Call { target: u32, site: u32 }, Ret { pop: u16 }, Tail { target: u32 } }
-pub struct Cx<'a> { pub cpu: &'a mut CpuAbi, pub g: &'a mut Guest, pub st: &'a mut Stores }
+pub struct Cx<'a> { pub cpu: &'a mut CpuAbi, pub g: &'a mut Guest }
 ```
 
 Rules for a segment body (the **callout contract**):
@@ -436,17 +450,17 @@ of a tree) can be finished by ours.
 
 ### Local dispatcher
 
-`engine::sim_objects::drive(cx, pc) -> Result<TransferAbi>`:
+`engine::sim_objects::drive(cpu, g, table, pc) -> Result<TransferAbi>`:
 
 ```
 loop:
   body = BODIES.find(pc)            // entry or site; sorted table, binary search
   match body.run(cx, pc):
     Call{target, site}: push site
-        if BODIES has target and it is enabled: pc = target; continue
+        if a body starts at target and supported(cpu): pc = target; continue
         else: return TransferAbi::call(target, site)       // true callout
     Ret{pop}: target = pop return address; esp += pop
-        if BODIES has a site == target: pc = target; continue
+        if target is a body's site and supported(cpu): pc = target; continue
         else: return TransferAbi::ret(target)
     Tail{target}: same test as Call, without the push
 ```
@@ -474,8 +488,8 @@ slice 0 confirms the rest and adds the points.
 | `b7150` `OBJECTS_FINALIZE` | no args, tail `bf380` | segment | 1 |
 | `bc470` `OBJECT_PRE_UPDATE` | `(object: stack 0) -> al`, `ret 4` | segment (port exists) | 1 |
 | `bc820` `OBJECT_POST_UPDATE` | `(object: stack 0)`, `ret 4` | segment (port exists) | 1 |
-| `108c60`, `108cd0`, `109050`, `1090d0`, `108d90` | O except `108d90` | segment (indirect callout) | 1, 3 |
-| `b7360`, `baf80`, `bba20`, `bc7b0` | `eax`/`ecx` handle (C) | leaf | 1 |
+| `108c60`, `108cd0`, `109050`, `1090d0`, `108d90` | C, in [object-update.md](object-update.md) | segment (indirect callout) | 1, 3 |
+| `b7360`, `baf80`, `bba20`, `bc7b0` | `eax` (`b7360`, `bba20`), `ecx` (`baf80`), stack 0 with `ret 4` (`bc7b0`) (C) | leaf | 1 |
 | `109580` | `(mover: stack 0)`, `ret 4` | segment until phase 2's `bb050` is callable from Rust, then leaf | 1 |
 | `bab40` `OBJECT_FUNCTION_VALUE`, `ba8c0`, `bcc20` `BASE_OBJECT_IMPORT` | recorded | segment, then leaf | 3 |
 | `be8e0` `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`, `ret 4` | segment (port exists), then leaf | 3 |
@@ -750,7 +764,7 @@ set:
 
 | State | Dropped when | Why it is safe |
 |---|---|---|
-| `DefTable` | epoch bump: map load, revert `123f60`, full restore `124380`, snapshot load, tick regression | rebuilt from tag bytes; a revert does not change tags, so the bump is conservative |
+| `DefTable` | epoch bump: map load, revert `123f60`, full restore `124380`, snapshot load, tick regression, hot tag edit | rebuilt from tag bytes; a revert does not change tags, so the bump is conservative |
 | `Spec` results | walk exit; any epoch bump; key mismatch | `take` validates inputs anyway |
 | `ObjRef`, `Objects` | end of the segment | never stored |
 | Event buffer | first walk of a new tick; epoch bump | not persistent state |
@@ -844,7 +858,7 @@ Slices 1 and 2 can start today. Slice 3 needs only slice 1. Slices 6 to 11
 are independent of each other once their dependencies are in, and are
 ordered here by Waterworks samples; the campaign census may reorder 8 to 11.
 
-Files each lane owns: its own modules under `crates/sim-objects/src` and
+Files each lane owns: its own modules under `crates/rewrites/sim-objects/src` and
 `crates/rewrites/engine/src/sim_objects`, one row block in `BODIES`, its section of
 the contract page, and its test file section. Shared edits (`BODIES`,
 `points.rs`, the installer) are append-only.
@@ -889,25 +903,16 @@ the contract page, and its test file section. Shared edits (`BODIES`,
   therefore hard to see. The perturbation test must enumerate inputs from
   the kernel's read set, not from the gather code.
 
-**Not resolved (slice 0 reads these before slice 1 merges).**
+**Read from the lifted code.** The DEFER and NEW setters, the early-mover
+list at `[5107f0]+1d00`, the record `109660` writes and when riders read it,
+the network-mode byte that `bc470` step 3 tests, `fd910`/`baeb0`, `bf380`,
+`be1d0` → `109140`, the slot `1090d0` dispatches, the register conventions
+in section 5, the RNG question (no draw is reachable from function values
+or imports by direct calls) and the unit offsets are contracts in
+[object-update.md](object-update.md).
 
-- The setter of header flag `20` (DEFER), and the creation-time setter of
-  NEW.
-- The identity of the list at `[5107f0]+1d00` (early movers is likely: 32
-  entries, body `+c0` bit 3 keeps members out of the slot pass, `109580`
-  wakes what stands in their sphere, `109660` records their transforms).
-- What `109660` writes, and whether riders read it in the same tick.
-- The condition in `bc470` step 3: the meaning of game-globals byte `+c`
-  values 4 and 5, and of `a9570`.
-- `fd910`/`baeb0`, `bf380` (finalize tail; it makes two indirect calls) and
-  `be1d0` → `109140`.
-- The register conventions marked O in section 5.
-- The descriptor slot `1090d0` dispatches.
-- Whether `ba8c0` or any import handler draws from the RNG (`13bb90` is
-  called from `ba8c0`). If one does, function values are not a pure kernel
-  and stay serial-only (they are never speculated in this design, so only
-  the wording in section 7 changes).
-- Unit offsets for `UnitView::actor`, team and weapons.
+**Not resolved (they need a run, not a read).**
+
 - Nodes posed per tick (the estimate in section 7).
 - How the logical clock should be charged for a long Rust segment
   (`charge_accesses` in `runtime/src/preempt.rs`): today a port is charged

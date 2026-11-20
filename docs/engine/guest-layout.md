@@ -37,19 +37,22 @@ crate's tests check for overlaps and bounds.
   field read is a bounds check and a load; through `dyn` it is one
   virtual call, as before. `FlatRam` is a flat region for tests and for
   copied-out state.
-- **Layouts today.** `object` (header, shared body, `ObjectType`), `unit`
+- **Layouts today.** `object` (header and its flag bits, shared body and
+  its physics flag bits, the definition's bounds, `ObjectType`), `unit`
   (unit, biped, weapon, device), `player`, `game` (game globals, options,
-  variant, game time, player globals, engine statistics).
+  variant, game time, player globals, engine statistics), `datum_array`
+  (a datum array's header), `tag` (the tag index and its entries).
 - **Globals.** `global` is the one table of global addresses, moved from
   `engine::points`, which re-exports it unchanged. New globals go here.
 - **Readers.** `engine::view`'s player and object records take their
   offsets from the layouts; `live_telemetry::layout` keeps its names but
   every object, unit, biped, game and global value comes from here;
   `agent::sim::state` reads and writes through `Unit` and `Weapon`.
-- **What sits on top.** `sim-state` (sim-review.md lane 6) builds
-  `ObjectView`, `UnitView` and `SimRead`
-  ([sim-rewrite-objects.md](sim-rewrite-objects.md) section 8) over these
-  views; it adds the typed ids and kinds, not new offsets.
+- **What sits on top.** `sim-objects` walks the objects pool over these
+  views (live-slot scan, handles, child links, the definition table), and
+  `sim-state` builds `ObjectView` and `UnitView` on it
+  ([sim-rewrite-objects.md](sim-rewrite-objects.md) section 8); both add
+  typed ids and kinds, not new offsets.
 - **Raw offsets.** `tests/raw_offsets.rs` counts `+ 0x..` and
   `wrapping_add(0x..)` in each reader crate's sources against a budget
   that may only fall.

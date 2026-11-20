@@ -4386,8 +4386,12 @@ game checks.
      Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
      Options' panel, header ("CLANKERS"), list (its `setting_lists` skin,
      the name left and the value alone in the value column), the focused
-     row's description in its one-line help line, and the legend in its
-     footer. Its texts are the `clankers` id family. In the preview it is
+     row's description in its one-line help line and its icon in Quick
+     Options' game type picture (`ChoiceRow::icon`), and the legend in
+     its footer. A on a row opens the value picker, which explains the
+     option and its choices (`ChoiceRow::explain`). The rows' icons, lines
+     and picker copy are in docs/game/ui-builder.md "A page's header". Its
+     texts are the `clankers` id family. In the preview it is
      `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
      Map) gets a "Clanker Options..." row with action 11, under Quick Options and

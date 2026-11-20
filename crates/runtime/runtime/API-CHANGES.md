@@ -466,7 +466,7 @@ Modules without the bit, and every helper, charge as before.
 
 ## The block clock and the fault census
 
-`generated::FEATURE_BLOCK_CLOCK` (32, with `FEATURE_ACCOUNTING`) marks a
+`generated::FEATURE_BLOCK_CLOCK` (64, with `FEATURE_ACCOUNTING`) marks a
 module built with `H2_ACCESS_COUNT=block`; registration refuses it without
 accounting (`RegistrationError::BlockClockWithoutAccounting`) and refuses
 mixing clocks in one dispatch (`RegistrationError::MixedClock`).
@@ -475,7 +475,7 @@ it the runner charges `preempt::HLE_COST` per Rust handler.
 `Runtime::fault_census` counts every memory fault and whether execution went
 on from it; `ExecCtx::discard_fault` and `ExecCtx::open_fault_pc` go with it
 (docs/runtime/block-clock-imprecise-faults.md).
-`generated::FEATURE_IMPRECISE_FAULTS` (64) marks a module whose memory
+`generated::FEATURE_IMPRECISE_FAULTS` (128) marks a module whose memory
 faults leave EFLAGS inexact; `Runtime::module_features` reports the
 registered modules' bits, and the census counts going on from such a fault
 as `continued_imprecise`.

@@ -496,8 +496,7 @@ tag's text block 0 by the disc test), which `KitScreen::dialog` and the
 Halo 1 class use unless told otherwise. A description is one line there,
 52 units at most (retail's is 51). The variant-name line stays out; the
 game type picture is retail's content and stays out of the base, and a
-page shows its own icon there ("A page's header"), with its own line in
-the help line in place of the focused row's description. The pages'
+page shows the focused row's icon there ("A page's header"). The pages'
 titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
@@ -590,7 +589,10 @@ held to the disc by the disc test). Two classes show it: `kit.picker`
 on `low_level_settings` and `kit.picker.game` on the large dialog with
 the same list, skin and description block; `list_class::open` takes the
 second in a game. A row sets the process-wide `Pick` (title, values,
-held value, description, its setter) and opens `kit.picker`:
+held value, description, its setter) and opens `kit.picker`. The
+description is the row's explanation (`Row::explain`,
+`ChoiceRow::explain`, `OptionRow::explain`; "A page's header"), else
+its description:
 
 - `KitScreen` value rows (`Row::value`, so every `ChoiceRow`): the
   Clankers page, the kit's examples;
@@ -643,21 +645,20 @@ From a custom game lobby, Game Setup, Clanker Options:
    beneath` and `kit.picker: a dialog on screen 223's tag`. On screen:
    the large dialog's glow over the Clankers page, "DIFFICULTY" as its
    title, Easy, Normal, Heroic, Legendary, Mixed down the left, "How well
-   they play..." on the right, `(A) SELECT (B) CANCEL` in the footer.
+   the Clankers aim..." on the right, `(A) SELECT (B) CANCEL` in the footer.
 2. Note which value has the focus (first, or the held one).
 3. Down to Heroic, A: stderr `kit.picker: clankers.difficulty -> Heroic`
    then `kit.picker: chosen; closing`; the Clankers page shows Heroic.
 4. A on Count (more than six values): the list scrolls, its arrows show.
    B: it closes, Count unchanged.
 5. Halo 1 Options (on a Halo 1 map): A on HUD shows Halo 1 and Halo 2
-   with both meanings on the right.
+   with "Which HUD you play with..." on the right.
 
 ## A page's header
 
 The Clanker Options and Halo 1 Options pages
-have Quick Options' header at their top, its picture and its one line
-of help, rather than (only) a picture and description on their Game
-Setup rows.
+have Quick Options' header at their top: its picture and its one line
+of help, both for the row that has the focus.
 
 **Quick Options'** (see the table in "Quick Options inside"): bitmap
 block 1, `mp_games2.bitm` at (-267, 166), depth 3, animation 31, the
@@ -667,46 +668,71 @@ variant's name in white `[163 -224 143 0]`; text block 0, the help line
 constructor (`0x2b01eb`) zeroes its image index (`+0x88`) whatever its
 block holds; code sets it after (`0x2b0a14`).
 
-`KitScreen::header(help, icon)` (the Clankers page) and the
-Halo 1 Options class do the same:
+`KitScreen::header(icon)` (the Clankers page) and the Halo 1 Options
+class do the same:
 
 - the help line (`QUICK_HELP_TEXT`, already the pages' description
-  block) shows the page's own line whatever the focus
-  (`Rows::description` names one slot); the rows' own descriptions show
-  in the value picker A opens;
+  block) shows the focused row's one line (`Rows::description`, a slot
+  per row); the value picker A opens says more (below);
 - the picture is Quick Options' block 1, copied and placed as Quick
   Options has it (`dialog::QUICK_PICTURE`, through `ListClass::picture`),
-  its image set to the page's icon once the widget is made
-  (`Rows::picture_image`, `list_class::set_image`). Quick Options' own
-  copy of the block stays out of the base (`content_bitmaps`), so only
-  ours shows there.
+  so every row's icon sits where Quick Options' own does. Its image is
+  the first row's icon once the widget is made (`Rows::picture_image`)
+  and the focused row's each time the focus moves (`Rows::row_image`,
+  both through `list_class::set_image`). `KitScreen::header`'s `icon` is
+  for a row without one (`Row::icon`). Quick Options' own copy of the
+  block stays out of the base (`content_bitmaps`), so only ours shows
+  there.
 
-| Page | Icon (`mp_games2`) | Line |
-|---|---|---|
-| Clankers | 0, a Spartan standing (`dialog::icon::SPARTAN`) | `clankers::HEADER_HELP`, "Add bots: how many, how well they play and which team they join." |
-| Halo 1 Options | 9, a banner of three stars (`dialog::icon::BANNER`) | `h1_options::HEADER_HELP`, "Halo 1's weapons, vehicles and HUD on this map, or Halo 2's." |
+`dialog::icon` names all eleven `mp_games2` icons by what they show:
+Spartan, crown on a hill, lightning bolt, skull, helmet in a sunburst,
+sack, flag, bomb, four squares, banner of three stars, question mark.
 
-The lines are the Game Setup rows' descriptions said in one line: the
-help line is 494 units, and in the disc's font 1 `clankers::ROW_HELP`
-is 492 (and wraps on the kit's own measure, 7.5 a character) and
-`h1_options::ROW_HELP` is 562; these are 409 and 371. The white
+| Page | Row | Icon | Line in the help line |
+|---|---|---|---|
+| Clankers | Clankers | `SPARTAN` | Bots join this game and show in the lobby. |
+| Clankers | Count | `SQUARES` | How many bots join, up to 15. |
+| Clankers | Difficulty | `SKULL` | How well they play. Mixed varies it around Normal. |
+| Clankers | Teams | `FLAG` | Which team they join in a team game. |
+| Clankers | Aggression | `BOMB` | How eagerly they push into a fight. |
+| Clankers | Aim style | `HELMET` | Steady tracks smoothly; Twitchy flicks. |
+| Clankers | Taunts | `CROWN` | Whether they taunt after a kill. |
+| Clankers | Glitches | `LIGHTNING` | Whether they BXR, sword fly and super bounce. |
+| Halo 1 Options | Sandbox | `BOMB` | Weapons, vehicles and health, from the next game. |
+| Halo 1 Options | HUD | `HELMET` | Shields, health, motion tracker and ammo counter. |
+
+(Halo 1's Assets row, on the campaign's Game Options page, has
+`SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
+help line on the kit's measure and in the disc's font 1. The white
 variant-name line stays empty: the title bar already names the page.
 
-The spec carries the line as `ScreenSpec::help` (the description block
-shows it in place of the focused row's) and the icon as an `art` entry
-(`dialog::quick_icon`), which `dialog_view` draws. The disc test
-holds `QUICK_PICTURE` to the tag's block, checks `mp_games2`'s eleven
-icons are 40 high and 40 or 41 wide, and measures both lines in the
-help line's font; `our_settings_dialogs_are_quick_options_inside`
-checks each page's line, icon and where the icon is drawn.
+**The picker's copy.** A on a row opens the value picker, whose
+description says what the option does and what each choice means in a
+few short sentences: `ChoiceRow::explain` (a kit value row's
+`Row::explain`) and `h1_options::OptionRow::explain`, 200 characters at
+most, so it fits the picker's description block (235 by 154 units, ten
+lines of font 1).
+
+The spec carries each row's icon as `RowSpec::art`
+(`dialog::quick_icon`), and `ScreenSpec::shown_art` adds the focused
+row's to the screen's own art, which `dialog_view` draws; the help line
+is the focused row's description (`ScreenSpec::help` is unset). The disc
+test holds `QUICK_PICTURE` to the tag's block, checks `mp_games2`'s
+eleven icons are 40 high and 40 or 41 wide, and measures every row's
+line in the help line's font; `our_settings_dialogs_are_quick_options_inside`
+checks, for each row focused, its line, its icon and where the icon is
+drawn.
 
 ### Its game run
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
 Setup: open Clanker Options. At its top left, left of the help line,
-the Spartan icon where Quick Options shows its game type; the help line
-reads "Add bots: ..." and stays as the focus moves. Halo 1 Options: the
-banner icon and its line. Open Quick Options to compare the places.
+the Spartan icon where Quick Options shows its game type, and "Bots
+join this game..." in the help line. Move down: the icon and the line
+change with each row (Count's four squares, Difficulty's skull, and so
+on), the icon never moving from its place. A on a row: the value
+picker's right side explains the option. Halo 1 Options: Sandbox's bomb
+and HUD's helmet. Open Quick Options to compare the places.
 
 ## Game Setup's picture and description
 

@@ -158,6 +158,7 @@ otherwise), **Ignore** (diagnostics). Sources are **Code** unless marked.
 | Per-context: continuations | `ExecCtx::continuations` | Quiesce | Rust closures. Rebuildable ones are saved: the whole pool's slot generations and reuse order too, since the tokens are on the guest stack. |
 | Per-context: slice | `ExecCtx::slice` | Save  | Budget counters. Likely re-armed per slice, so empty at a boundary; check. |
 | Per-context: direct-call block, resolve cache, fast memory view | `direct.rs`, `ExecCtx::resolved`, `fast_memory` | Rebuild | Caches keyed by dispatch generation. A load makes fresh contexts. |
+| Entry table (`live`) | `Runtime::live` | Rebuild | Follows overrides and `Guest::code_id`, which `adopt` moves, so a restore re-reads every entry's execute bit. |
 | Per-context: shadow call stack, events | `frames.rs`, `events.rs` | Ignore | Diagnostics; "never affects control flow". |
 
 ### kernel

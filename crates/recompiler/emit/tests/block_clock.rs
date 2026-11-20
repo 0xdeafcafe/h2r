@@ -281,3 +281,57 @@ fn a_block_clock_stop_resumes_at_the_header() {
     let t = block.run(&mut cpu, &mut ctx, TransferAbi::new(JUMP, ENTRY, A), 1).0;
     assert_eq!((t.kind, t.route, t.target_pc), (JUMP, RESUME, header));
 }
+
+/// A handler cut into parts (`emit::c::Split`, "Handler parts" in h2gen.h)
+/// charges what the whole handler charges, at the same points: the router
+/// enters a part mid-function with `block | H2_PART_CUT`, which charges no
+/// entry cost, and a cut-in at a loop header passes its poll and charges
+/// the trip as a back-edge inside one handler does.
+#[test]
+fn a_split_handler_charges_as_the_whole_one() {
+    use emit::c::Split;
+    let Some(abi) = common::abi_header() else {
+        common::skip("block-clock-split", "needs h2abi.h (H2ABI_HEADER)");
+        return;
+    };
+    for (name, f) in [("block-clock-split-loop", memory_loop()), ("block-clock-split-entry", entry_loop())] {
+        let owners = emit::plan(vec![f]);
+        let o = &owners[0];
+        let whole = common::build_split(&owners, &abi, &format!("{name}-whole"), emit::Codegen::BLOCK_CLOCK, Split::NEVER);
+        let split = common::build_split(&owners, &abi, &format!("{name}-parts"), emit::Codegen::BLOCK_CLOCK, Split::EVERY_BLOCK);
+        for slice in [None, Some(1), Some(2), Some(3), Some(5), Some(7), Some(64)] {
+            let (w, s) = (drive(&whole, slice), drive(&split, slice));
+            assert_eq!((&s.stops, s.charged, s.end), (&w.stops, w.charged, w.end), "{name}, slice {slice:?}");
+            assert_eq!((&s.cpu, &s.mem), (&w.cpu, &w.mem), "{name}, slice {slice:?}");
+            if let Some(slice) = slice {
+                let (stops, total) = reference(&o.func, &o.loops.headers, Some(slice));
+                assert_eq!((&s.stops, s.charged), (&stops, total), "{name}, slice {slice}");
+            }
+        }
+    }
+}
+
+/// In the parts' C the entry cost is charged once, at the function entry's
+/// selector, and never at a cut-in.
+#[test]
+fn only_the_function_entry_selector_charges_the_entry_in_parts() {
+    use emit::c::Split;
+    let owners = emit::plan(vec![memory_loop()]);
+    let o = &owners[0];
+    let shape = emit::c::OwnerShape {
+        selectors: &o.selectors,
+        loops: &o.loops,
+        accounting: true,
+        block_clock: true,
+        functions: None,
+    };
+    let text = emit::c::function_with(&o.func, &shape, Split::EVERY_BLOCK);
+    assert!(text.contains("H2_PART_GOTO("), "cut: {text}");
+    let entry = format!("case {A:#010x}u: H2_CLOCK(1u); goto");
+    assert_eq!(text.matches(&entry).count(), 1, "{text}");
+    for line in text.lines().filter(|l| l.contains("case 0x8")) {
+        assert!(!line.contains("H2_CLOCK"), "a cut-in charges nothing: {line}");
+    }
+    let header = o.loops.headers.iter().next().unwrap();
+    assert_eq!(text.matches(&format!("P_{header:08x}:;\n    H2_CLOCK(5u);")).count(), 1, "{text}");
+}

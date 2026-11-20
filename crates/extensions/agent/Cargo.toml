@@ -18,6 +18,8 @@ hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 # Typed guest views (src/sim/state.rs).
 guest-layout = { path = "../../hooking/guest-layout" }
+# The simulation's typed object views (src/sim/objects.rs, `sim.objects`).
+sim-state.workspace = true
 live-telemetry = { path = "../../live/live-telemetry" }
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }

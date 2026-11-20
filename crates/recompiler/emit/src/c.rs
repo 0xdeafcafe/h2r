@@ -50,6 +50,11 @@
 //! `LazyFlags` statements capture their formula's inputs and are settled
 //! into `fl`/`fd` only where something reads them and in the epilogue; see
 //! [`crate::lazy`].
+//!
+//! A handler longer than [`Split`] allows is emitted as static parts behind
+//! a router that has the handler's name; a local edge between parts leaves
+//! one through its epilogue and the router enters the other at the block
+//! (`H2_PART_GOTO`, "Handler parts" in `h2gen.h`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,11 +81,13 @@ pub struct OwnerShape<'a> {
     /// Count the plan's block costs instead ([`crate::clock`]; needs
     /// `accounting`): `H2_CLOCK` at the function entry and each loop trip.
     pub block_clock: bool,
-    /// The module's function entries (each has a handler `h2fn_<entry>`):
+    /// The module's function entries (each has a handler `h2fn_<entry>`)
+    /// and their entry indices (RUNTIME-CONTRACT.md §2, the entry table):
     /// a call or tail jump to one may invoke it directly (`H2_DCALL`,
-    /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"). `None` emits
-    /// every transfer for the runner.
-    pub functions: Option<&'a BTreeSet<u32>>,
+    /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"), if the
+    /// runtime's entry table holds it at that index. `None` emits every
+    /// transfer for the runner.
+    pub functions: Option<&'a BTreeMap<u32, u32>>,
 }
 
 /// [`homes`] bit for EFLAGS and its defined mask (bits 0-7 are the GPRs in
@@ -227,9 +234,9 @@ pub fn dirty_at_exits(f: &IrFunction, home: u32) -> BTreeMap<u32, u32> {
     masks
 }
 
-/// Whether `f` has a guest load or store on the inline RAM path (an
+/// Whether `insns` have a guest load or store on the inline RAM path (an
 /// atomic's go through its runtime helper instead).
-fn accesses_memory(f: &IrFunction) -> bool {
+fn accesses_memory<'i>(mut insns: impl Iterator<Item = &'i IrInsn>) -> bool {
     fn any(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
             Stmt::Load { .. } | Stmt::Store { .. } => true,
@@ -238,7 +245,7 @@ fn accesses_memory(f: &IrFunction) -> bool {
             _ => false,
         })
     }
-    f.insns().any(|i| i.atomic.is_none() && any(&i.stmts))
+    insns.any(|i| i.atomic.is_none() && any(&i.stmts))
 }
 
 /// The C symbol of an owner's handler.
@@ -246,41 +253,122 @@ pub fn symbol(entry: u32) -> String {
     format!("h2fn_{entry:08x}")
 }
 
-/// Emit one owner as a C function definition.
+/// Emit one owner as a C function definition, cut into parts when it is
+/// longer than [`Split::DEFAULT`] allows.
 pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
-    let lazy = Lazy::of(f);
-    let entry_of_settle = format!("{:08x}", f.entry);
-    let x87 = crate::x87::uses_x87(f);
-    // With accounting a REP loop polls too, so it needs the poll's locals.
-    let polled = !shape.loops.headers.is_empty()
-        || (shape.accounting && f.insns().any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. }))));
-    let home = homes(f);
-    let dirty = dirty_at_exits(f, home);
-    let mut e = Emitter {
-        out: String::new(),
-        shape,
-        home,
-        dirty,
-        in_repeat: false,
-        x87,
-        polled,
-        fp_ready: false,
-        span: None,
-        top: if x87 { crate::x87::top::hints(f) } else { BTreeMap::new() },
-        lazy,
-        pend: Pend::default(),
-        entry_of_settle,
-        direct: BTreeSet::new(),
-    };
-    e.function(f);
-    // Prototypes of the handlers this one may invoke directly.
-    let mut out: String = e
-        .direct
-        .iter()
-        .map(|t| format!("TransferAbi {}(CpuAbi *, ExecCtxOpaque *, uint32_t);\n", symbol(*t)))
-        .collect();
-    out.push_str(&e.out);
-    out
+    function_with(f, shape, Split::DEFAULT)
+}
+
+/// When a handler is cut into parts ("Handler parts" in `h2gen.h`).
+///
+/// Clang's time on a function grows about as its lines^1.4
+/// (docs/lifter/notes/build-perf.md), and the few largest handlers are
+/// about half of a cold build. A handler whose C is longer than `above`
+/// lines is emitted as static parts of about `part` lines each, cut at
+/// block starts in address order, behind a router with the handler's name.
+/// A local edge between parts leaves the first through its shared
+/// epilogue, exactly as an exit to the runner would, and the router enters
+/// the other at the block, as a resume would. Every part is analysed as the
+/// whole handler (register homes, dirty masks, lazy flags, loop headers):
+/// at a part's entry those see canonical state, which is what a selector
+/// already is, so the lowering inside a part is unchanged. Cuts avoid the
+/// inside of a loop until a part reaches three times `part`, since every
+/// trip across a cut costs a handler exit and entry. Nothing else changes:
+/// the module registers the same entries and resumes against the router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Split {
+    /// Cut a handler whose C is longer than this many lines.
+    pub above: usize,
+    /// Aim for parts of about this many lines.
+    pub part: usize,
+}
+
+impl Split {
+    /// What `h2 build` uses: handlers over 3000 lines, in parts of about
+    /// 1500. The 663 retail handlers of 2000 lines or more are about half
+    /// of clang's time (notes/build-perf.md).
+    pub const DEFAULT: Split = Split { above: 3000, part: 1500 };
+    /// Never cut.
+    pub const NEVER: Split = Split { above: usize::MAX, part: usize::MAX };
+    /// Cut at nearly every block start, loops included: the tests' worst
+    /// case.
+    pub const EVERY_BLOCK: Split = Split { above: 0, part: 1 };
+}
+
+/// The bit a part's entry for a block reached from another part carries
+/// in `start` (`H2_PART_CUT`): guest code is below 2 GiB, so no selector
+/// has it.
+pub const PART_CUT: u32 = 0x8000_0000;
+
+/// [`function`] with an explicit [`Split`].
+pub fn function_with(f: &IrFunction, shape: &OwnerShape<'_>, split: Split) -> String {
+    let mut e = Emitter::new(f, shape);
+    if e.lazy.is_some() {
+        e.settle_fn(f.entry);
+    }
+    let body = e.out.len();
+    e.handler(f, &symbol(f.entry), "", None);
+    if let Some(parts) = Parts::of(f, shape, split, &e.out, body, &e.blocks_at) {
+        e.out.truncate(body);
+        e.split(f, &parts);
+    }
+    e.finish()
+}
+
+/// A handler's parts ([`Split`]).
+struct Parts {
+    /// Each block start's part.
+    of: BTreeMap<u32, usize>,
+    /// For each part, its blocks that a block of another part branches,
+    /// jumps, switches or falls through to.
+    cut_ins: Vec<BTreeSet<u32>>,
+}
+
+impl Parts {
+    /// Cut `f`, whose unsplit C is `text[body..]` with each block's label
+    /// at `blocks_at`, or `None` to keep it whole.
+    fn of(f: &IrFunction, shape: &OwnerShape<'_>, split: Split, text: &str, body: usize, blocks_at: &[(u32, usize)]) -> Option<Parts> {
+        let lines = |s: &str| s.bytes().filter(|&c| c == b'\n').count();
+        let total = lines(&text[body..]);
+        if total <= split.above || blocks_at.len() < 2 {
+            return None;
+        }
+        if f.blocks.keys().chain(shape.selectors).any(|&pc| pc & PART_CUT != 0) {
+            return None;
+        }
+        // A cut at `c` is inside a loop when a back-edge spans it.
+        let spans: Vec<(u32, u32)> =
+            shape.loops.back_edges.iter().map(|&(from, header)| (from.min(header), from.max(header))).collect();
+        let inside = |c: u32| spans.iter().any(|&(lo, hi)| lo < c && c <= hi);
+        let mut of = BTreeMap::new();
+        let (mut k, mut run, mut done) = (0usize, 0usize, 0usize);
+        for (i, &(start, at)) in blocks_at.iter().enumerate() {
+            let end = blocks_at.get(i + 1).map_or(text.len(), |n| n.1);
+            let cost = lines(&text[at..end]);
+            if run >= split.part
+                && total - done >= split.part / 2
+                && (!inside(start) || run >= split.part.saturating_mul(3))
+            {
+                k += 1;
+                run = 0;
+            }
+            of.insert(start, k);
+            run += cost;
+            done += cost;
+        }
+        if k == 0 {
+            return None;
+        }
+        let mut cut_ins = vec![BTreeSet::new(); k + 1];
+        for b in f.blocks.values() {
+            for t in crate::backedge::successors(b, &f.blocks) {
+                if of[&t] != of[&b.start] {
+                    cut_ins[of[&t]].insert(t);
+                }
+            }
+        }
+        Some(Parts { of, cut_ins })
+    }
 }
 
 /// Recognize the complete flat MOVS iteration, including its address updates.
@@ -338,6 +426,112 @@ struct Emitter<'a> {
     entry_of_settle: String,
     /// Handlers invoked directly, which need prototypes.
     direct: BTreeSet<u32>,
+    /// Each block start's part ([`Parts`]); empty for a whole handler.
+    part_of: BTreeMap<u32, usize>,
+    /// The part being emitted.
+    current: usize,
+    /// Where each block's label starts in `out` (block start, offset).
+    blocks_at: Vec<(u32, usize)>,
+}
+
+/// Whether `insns` hold a `Repeat` at the top level.
+fn repeats<'i>(mut insns: impl Iterator<Item = &'i IrInsn>) -> bool {
+    insns.any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. })))
+}
+
+impl<'a> Emitter<'a> {
+    fn new(f: &IrFunction, shape: &'a OwnerShape<'a>) -> Emitter<'a> {
+        let x87 = crate::x87::uses_x87(f);
+        let home = homes(f);
+        Emitter {
+            out: String::new(),
+            shape,
+            home,
+            dirty: dirty_at_exits(f, home),
+            in_repeat: false,
+            x87,
+            polled: false,
+            fp_ready: false,
+            span: None,
+            top: if x87 { crate::x87::top::hints(f) } else { BTreeMap::new() },
+            lazy: Lazy::of(f),
+            pend: Pend::default(),
+            entry_of_settle: format!("{:08x}", f.entry),
+            direct: BTreeSet::new(),
+            part_of: BTreeMap::new(),
+            current: 0,
+            blocks_at: Vec::new(),
+        }
+    }
+
+    /// The C: prototypes of the handlers this one may invoke directly,
+    /// then what was emitted.
+    fn finish(self) -> String {
+        let mut out: String = self
+            .direct
+            .iter()
+            .map(|t| format!("TransferAbi {}(CpuAbi *, ExecCtxOpaque *, uint32_t);\n", symbol(*t)))
+            .collect();
+        out.push_str(&self.out);
+        out
+    }
+
+    /// Whether the block holding `pc` is in the part being emitted (always,
+    /// for a whole handler).
+    fn in_part(&self, pc: u32) -> bool {
+        self.part_of.is_empty() || self.part_of.range(..=pc).next_back().is_none_or(|(_, &k)| k == self.current)
+    }
+
+    /// The parts of `f`, each a static `h2fn_<entry>_p<k>`, and the router
+    /// `h2fn_<entry>` that enters them ("Handler parts" in `h2gen.h`).
+    fn split(&mut self, f: &IrFunction, parts: &Parts) {
+        let name = symbol(f.entry);
+        let count = parts.cut_ins.len();
+        for k in 0..count {
+            self.line(0, format!("static __attribute__((noinline)) TransferAbi {name}_p{k}(CpuAbi *, ExecCtxOpaque *, uint32_t);"));
+        }
+        // Each selector to the part holding its block; the rest (the
+        // first part's, and any other start) to the first part, whose
+        // switch stops on a bad one as a whole handler's does.
+        let mut routes: Vec<Vec<u32>> = vec![Vec::new(); count];
+        for &s in self.shape.selectors {
+            let k = parts.of.range(..=s).next_back().map_or(0, |(_, &k)| k);
+            routes[k].push(s);
+        }
+        self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
+        self.line(1, "H2_PART_LENT();");
+        self.line(1, "uint32_t k_ = 0u;");
+        self.line(1, "switch (start) {");
+        for (k, sels) in routes.iter().enumerate().skip(1) {
+            for s in sels {
+                self.line(1, format!("case {s:#010x}u:"));
+            }
+            if !sels.is_empty() {
+                self.line(2, format!("k_ = {k}u; break;"));
+            }
+        }
+        self.line(1, "default: break;");
+        self.line(1, "}");
+        self.line(1, "for (;;) {");
+        self.line(2, "TransferAbi t_;");
+        self.line(2, "switch (k_) {");
+        for k in 1..count {
+            self.line(2, format!("case {k}u: t_ = {name}_p{k}(cpu, ctx, start); break;"));
+        }
+        self.line(2, format!("default: t_ = {name}_p0(cpu, ctx, start); break;"));
+        self.line(2, "}");
+        self.line(2, "if (t_.kind != H2_PART) return t_;");
+        self.line(2, "H2_PART_RELEND();");
+        self.line(2, "k_ = t_.resume_pc;");
+        self.line(2, "start = t_.target_pc | H2_PART_CUT;");
+        self.line(1, "}");
+        self.line(0, "}");
+        self.part_of = parts.of.clone();
+        for k in 0..count {
+            self.current = k;
+            self.handler(f, &format!("{name}_p{k}"), "static __attribute__((noinline)) ", Some(&parts.cut_ins[k]));
+        }
+    }
 }
 
 /// C for `reg[slice] = v` (a partial-register merge below `Full`); `v` is
@@ -567,12 +761,18 @@ impl Emitter<'_> {
         self.out.push('\n');
     }
 
-    fn function(&mut self, f: &IrFunction) {
-        let name = symbol(f.entry);
-        if self.lazy.is_some() {
-            self.settle_fn(f.entry);
-        }
-        self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
+    /// One handler: the whole of `f` as `name`, or with `cut_ins` the
+    /// blocks of the current part, entered also at each cut-in block with
+    /// `start` = block | [`PART_CUT`].
+    fn handler(&mut self, f: &IrFunction, name: &str, prefix: &str, cut_ins: Option<&BTreeSet<u32>>) {
+        let split = !self.part_of.is_empty();
+        self.span = None;
+        let blocks: Vec<&ir::IrBlock> = f.blocks.values().filter(|b| self.in_part(b.start)).collect();
+        // With accounting a REP loop polls too, so it needs the poll's locals.
+        let headers = &self.shape.loops.headers;
+        self.polled = blocks.iter().any(|b| headers.contains(&b.start))
+            || (self.shape.accounting && repeats(blocks.iter().flat_map(|b| &b.insns)));
+        self.line(0, format!("{prefix}TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
         self.line(1, format!("H2_FLAT_OWNER({:#x}u);", f.entry));
         self.line(1, format!("H2_LOCALS_HOMED({:#x}u);", self.home));
         if let Some(l) = &self.lazy {
@@ -583,18 +783,20 @@ impl Emitter<'_> {
         if x87 {
             self.line(1, "H2X87_LOCALS();");
         }
-        let headers = &self.shape.loops.headers;
         if self.polled {
             self.line(1, "H2_PREEMPT_LOCALS();");
         }
         // After every call the entry makes (acquire, the budget): a handler
         // that loads or stores may take the RAM gate now (H2_ENTRY_GATE).
-        if accesses_memory(f) {
+        if accesses_memory(blocks.iter().flat_map(|b| &b.insns)) {
             self.line(1, "H2_GATE_ENTER();");
         }
         self.line(1, "int h2fp_ __attribute__((unused));");
         self.line(1, "switch (start) {");
         for s in self.shape.selectors {
+            if split && !self.in_part(*s) {
+                continue;
+            }
             // Entered from the runner, which is a safe point: skip the poll.
             let label = if headers.contains(s) { "P" } else { "L" };
             // The block clock charges entering the function (crate::clock).
@@ -605,11 +807,16 @@ impl Emitter<'_> {
             };
             self.line(1, format!("case {s:#010x}u: {clock}goto {label}_{s:08x};"));
         }
+        // From another part: the block's own label, a header's poll first.
+        for c in cut_ins.into_iter().flatten() {
+            self.line(1, format!("case {:#010x}u: goto L_{c:08x};", c | PART_CUT));
+        }
         self.line(1, "default: break;");
         self.line(1, "}");
         self.line(1, "{ H2_GATE_DROP(); uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
-        for b in f.blocks.values() {
+        for b in blocks {
             self.fp_ready = false;
+            self.blocks_at.push((b.start, self.out.len()));
             self.line(0, format!("L_{:08x}:;", b.start));
             if let Some(l) = &self.lazy {
                 self.pend = l.entry[&b.start];
@@ -1121,21 +1328,26 @@ impl Emitter<'_> {
         self.dirty.get(&pc).copied().unwrap_or(self.home)
     }
 
-    /// Whether `t` is a function entry of the module, so its handler may be
-    /// invoked directly; records it for a prototype.
-    fn direct_target(&mut self, t: u32) -> bool {
-        let yes = self.shape.functions.is_some_and(|f| f.contains(&t));
-        if yes {
+    /// `t`'s entry index if it is a function entry of the module, so its
+    /// handler may be invoked directly; records it for a prototype.
+    fn direct_target(&mut self, t: u32) -> Option<u32> {
+        let index = self.shape.functions.and_then(|f| f.get(&t).copied());
+        if index.is_some() {
             self.direct.insert(t);
         }
-        yes
+        index
     }
 
     /// `goto` a local block, or leave through an entry-routed jump so the
-    /// target's dispatch (and any override) applies.
-    fn go(d: Dest) -> String {
+    /// target's dispatch (and any override) applies. A block of another
+    /// part is reached through the router ([`Split`]).
+    fn go(&self, d: Dest) -> String {
         if d.tail {
             format!("H2_XFER(H2_JUMP, H2_ENTRY, {:#x}u, 0);", d.pc)
+        } else if let Some(&k) = self.part_of.get(&d.pc)
+            && k != self.current
+        {
+            format!("H2_PART_GOTO({k}u, {:#x}u);", d.pc)
         } else {
             format!("goto L_{:08x};", d.pc)
         }
@@ -1151,20 +1363,32 @@ impl Emitter<'_> {
     fn control(&mut self, insn: &IrInsn, last: bool) {
         let pc = insn.pc;
         let d = 2;
+        // The entry index of a static call's or tail jump's target, when it
+        // may be invoked directly.
+        let direct = match &insn.control {
+            Control::Jump { target: Target::Direct(t), tail: true, .. } => self.direct_target(*t),
+            Control::Call { target: Target::Direct(t), continuation, .. }
+                if self.shape.selectors.contains(continuation) =>
+            {
+                self.direct_target(*t)
+            }
+            _ => None,
+        };
         match &insn.control {
             Control::Next => {
                 if last {
-                    self.line(d, Self::go(Dest::local(insn.next_pc())));
+                    self.line(d, self.go(Dest::local(insn.next_pc())));
                 }
             }
-            Control::Jump { target: Target::Direct(t), tail: true, .. } if self.direct_target(*t) => {
+            Control::Jump { target: Target::Direct(t), tail: true, .. } if direct.is_some() => {
+                let index = direct.unwrap_or_default();
                 self.settle(lazy::ALL, d);
                 let spill = if self.x87 { "H2X87_SPILL()" } else { "(void)0" };
                 let dirty = self.dirty_at(pc);
-                self.line(d, format!("H2_DJUMP({}, {t:#x}u, {spill}, {dirty:#x}u);", symbol(*t)));
+                self.line(d, format!("H2_DJUMP({}, {index}u, {t:#x}u, {spill}, {dirty:#x}u);", symbol(*t)));
             }
             Control::Jump { target: Target::Direct(t), tail, .. } => {
-                self.line(d, Self::go(Dest { pc: *t, tail: *tail }));
+                self.line(d, self.go(Dest { pc: *t, tail: *tail }));
             }
             Control::Jump { target: Target::Dynamic(v), .. } if self.shape.functions.is_some() => {
                 self.settle(lazy::ALL, d);
@@ -1176,22 +1400,21 @@ impl Emitter<'_> {
                 self.line(d, format!("H2_XFER(H2_JUMP, H2_ENTRY, {}, 0);", Self::target(target)))
             }
             Control::Branch { cond, taken, fallthrough } => {
-                self.line(d, format!("if ({}) {}", val(cond), Self::go(*taken)));
-                self.line(d, Self::go(*fallthrough));
+                self.line(d, format!("if ({}) {}", val(cond), self.go(*taken)));
+                self.line(d, self.go(*fallthrough));
             }
             Control::Switch { target, cases, .. } => {
                 // The real guest load decides; only validated cases match.
                 self.line(d, format!("switch ({}) {{", val(target)));
                 let mut seen = BTreeSet::new();
                 for c in cases.iter().filter(|c| seen.insert(c.pc)) {
-                    self.line(d, format!("case {:#x}u: {}", c.pc, Self::go(*c)));
+                    self.line(d, format!("case {:#x}u: {}", c.pc, self.go(*c)));
                 }
                 self.line(d, format!("default: H2_HALT({pc:#x}u, H2SHIM_UNKNOWN_TARGET, {});", val(target)));
                 self.line(d, "}");
             }
-            Control::Call { target: Target::Direct(t), continuation, .. }
-                if self.direct_target(*t) && self.shape.selectors.contains(continuation) =>
-            {
+            Control::Call { target: Target::Direct(t), continuation, .. } if direct.is_some() && self.in_part(*continuation) => {
+                let index = direct.unwrap_or_default();
                 // The continuation is this handler's own selector, so a
                 // return there resumes this handler with that start: going
                 // on from its label is the same thing.
@@ -1204,17 +1427,23 @@ impl Emitter<'_> {
                 self.line(
                     d,
                     format!(
-                        "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
+                        "H2_DCALL({}, {index}u, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh}, {dirty:#x}u);",
                         symbol(*t)
                     ),
                 );
             }
-            // A call through a pointer, back to this handler: H2_ICALL finds
-            // the target's handler in the direct slots the runner filled
-            // and calls it as H2_DCALL would, or leaves for the runner as
-            // below.
-            Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
-                if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
+            // A call through a pointer or a kernel import slot, back to this
+            // handler: H2_ICALL finds the target's entry index in the
+            // module's pcmap and its handler in the runtime's entry table,
+            // or for a target outside the module's text (a kernel import's
+            // token) the host-call thunk, and calls it as H2_DCALL would,
+            // or leaves for the runner as below.
+            Control::Call {
+                target: Target::Dynamic(v),
+                continuation,
+                kind: CallKind::Indirect | CallKind::Kernel { .. },
+                ..
+            } if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) && self.in_part(*continuation) =>
             {
                 self.settle(lazy::ALL, d);
                 let label = if self.shape.loops.headers.contains(continuation) { "P" } else { "L" };

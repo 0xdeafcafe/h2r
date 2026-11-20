@@ -56,6 +56,7 @@ already atomic.
 | `ready`, `enabled`, `layout` epoch | `Memory` | per Runtime |
 | Dispatch tables | `Runtime::dispatch` (`RwLock<Dispatch>`) | generated handlers and resumes: shared read-only (fn pointers), **copied** into the executor's own `Dispatch` once; overrides: shared mutable HLE, refused unless allowed (below) |
 | Dispatch generation | `Runtime::dispatch_gen` | per Runtime |
+| Entry table (`live`) | `Runtime::live` (`direct::Live`); rows from `Dispatch::entry_table` | per Runtime: the rows are shared read-only (copied with the dispatch); `live` follows that runtime's overrides and guest code identity |
 | Stop recovery hook | `Dispatch::stop_recovery` | copied (an `Arc`'d closure; it must be thread-safe, it is `Send + Sync`) |
 | Interrupt queue | `Runtime::interrupts` | per Runtime: nothing raises on the executor's |
 | Time-stamp counter (`rdtsc`) | `Runtime::tsc` (`Tsc { clock, last }`) | shared mutable in meaning (the Xbox has one counter): **split**; the executor's starts at the main counter's `last` and follows a frozen clock (the guest time at the snapshot) |
@@ -66,7 +67,7 @@ already atomic.
 | State | Where | What it is |
 |---|---|---|
 | Preempt word (first field) | `ExecCtx::preempt`, `word` | per executor |
-| Direct-call slots (second field) | `ExecCtx::direct_ptr`, `direct` (`DirectState`) | per executor; the slot count is a process `OnceLock` read once (read-only) |
+| Direct-call block (second field) | `ExecCtx::direct_ptr`, `direct` (`DirectState`) | per executor: depth, budget, frames, lent view; points at its runtime's entry table |
 | Resolve cache (4096 ways) | `ExecCtx::resolved` | per executor; keyed on its runtime's dispatch generation and layout |
 | Slice: accesses spent, budget, expiry | `ExecCtx::slice` | per executor. This is the logical clock's input: generated code charges it (`h2abi_v1_charge`, `h2abi_v1_exit`, the inline count in `FastAccess`) and reads it (`h2abi_v1_budget`); only the kernel scheduler turns it into guest time (`take_slice_spent`). An executor with no scheduler never touches the main thread's budget |
 | Inline RAM view handle | `ExecCtx::fast_memory` (`FastAccess`: gate pointer, count, budget, preempt pointer) | per executor, pointing at its own runtime's gate |

@@ -147,6 +147,7 @@ are under [Reviews](#reviews).
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
+- [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) for the phase 3 dispatcher behind `impl.sim.native.objects`
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports
 - [sim-tier-writes.md](engine/sim-tier-writes.md): a static census of every store the game tick can make
 - [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/rewrites/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)

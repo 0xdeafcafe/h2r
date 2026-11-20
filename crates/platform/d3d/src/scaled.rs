@@ -1833,6 +1833,12 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.reference.reusable_external_attachments() && self.view.reusable_external_attachments()
     }
 
+    /// Both copies record through this backend's own attachments and
+    /// commit (the trait's [`Backend::run_scene_stage`]).
+    fn runs_scene_stages(&self) -> bool {
+        self.reference.runs_scene_stages() && self.view.runs_scene_stages()
+    }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,

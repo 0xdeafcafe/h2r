@@ -131,6 +131,9 @@ impl Feature for SimNative {
             if collision && COLLISION_ENTRIES.iter().any(|(p, _)| p.base == point.base) {
                 continue;
             }
+            if crate::sim_objects::owns(b.switches(), point.base) {
+                continue;
+            }
             let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
             let completes_descriptor =
                 descriptor_on && point.base == points::BASE_OBJECT_IMPORT.base;
@@ -182,6 +185,9 @@ impl Feature for SimNative {
         }
         if collision {
             install_collision(b);
+        }
+        if crate::sim_objects::on(b.switches()) {
+            crate::sim_objects::install(b);
         }
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to

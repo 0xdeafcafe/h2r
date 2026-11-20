@@ -52,7 +52,7 @@ count reaches the budget. The count depends on how a backend performs
 accesses and calls, so two backends cannot share a lockstep session and a
 native port moves every later slice boundary.
 
-The block clock (`H2_ACCESS_COUNT=block`, module feature 32) counts a cost
+The block clock (`H2_ACCESS_COUNT=block`, module feature 64) counts a cost
 the plan assigns instead (`emit::clock`):
 
 - entering a handler with its function entry as the selector charges the
@@ -67,7 +67,12 @@ the plan assigns instead (`emit::clock`):
 - a Rust handler the runner invokes (an HLE override, a native port)
   charges `preempt::HLE_COST` (16) before it runs (`handler.rs`);
 - helpers generated code calls that charge for themselves (atomics) charge
-  as before: one per instruction on every backend.
+  as before: one per instruction on every backend;
+- a handler cut into parts (`emit::c::Split`, "Handler parts" in h2gen.h)
+  charges as the whole handler: only the function entry's selector charges
+  the entry, a part entered at a cut-in (`block | H2_PART_CUT`) charges
+  nothing until a header's `P_` label, and each part's exit charges its
+  count, so a slice that ends there leaves at the next poll.
 
 The costs depend only on the lifted IR's blocks, which no IR pass changes,
 so any backend that polls the same headers charges the same amounts at
@@ -90,7 +95,7 @@ Calls, returns, loop polls, `FaultIf` (divide errors), stops, intrinsics,
 `Repeat` and atomics still observe every flag, so their exits stay exact.
 
 `opt::Report::imprecise_faults` says a function was planned this way, and
-the emitter then declares `H2GEN_FEATURE_IMPRECISE_FAULTS` (64) for the
+the emitter then declares `H2GEN_FEATURE_IMPRECISE_FAULTS` (128) for the
 module. The runtime accepts the bit; the census counts a continuation from
 a fault while the bit is registered as `continued_imprecise` as well, and
 logs the first one: that is the case the rule forbids.
@@ -105,26 +110,28 @@ without the bit.
 | Module feature | Bit | Selected by | Runtime |
 |---|---|---|---|
 | `H2GEN_FEATURE_ACCOUNTING` | 1 | `H2_ACCESS_COUNT` unset or `1` | the access clock, counted by the handler |
-| `H2GEN_FEATURE_BLOCK_CLOCK` | 32 | `H2_ACCESS_COUNT=block` | needs bit 1; one clock per dispatch; `HLE_COST` per Rust handler |
-| `H2GEN_FEATURE_IMPRECISE_FAULTS` | 64 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
+| `H2GEN_FEATURE_BLOCK_CLOCK` | 64 | `H2_ACCESS_COUNT=block` | needs bit 1; one clock per dispatch; `HLE_COST` per Rust handler |
+| `H2GEN_FEATURE_IMPRECISE_FAULTS` | 128 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
 
-Bits 8 and 16 belong to the contract slices T2 and F3
+Bits 2, 4, 8 and 32 are direct calls, the lent view, the entry table and
+host calls; 16 is kept for flat RAM
 ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
+None of them changes the clock.
 
 - `Runtime::fault_census()`: `snapshot()` gives `FaultCounts`; `reset()`
   starts a new window.
 - `Runtime::module_features()`: the registered modules' features, kept in
   step by `Runtime::new` and `edit_dispatch`; `Runtime::block_clock()`
-  tests bit 32.
+  tests bit 64.
 - `Dispatch::module_features()`: the registered modules' features, OR-ed.
 
 ## Rules and limits
 
-- An image without bit 64 keeps precise faults. A runtime older than bit
-  64 refuses an image with it.
-- An image without bit 32 keeps the access clock. A runtime older than bit
-  32 refuses a block-clock image (`RegistrationError::UnknownFeatures`).
-- Bit 32 without bit 1 is refused
+- An image without bit 128 keeps precise faults. A runtime older than bit
+  128 refuses an image with it.
+- An image without bit 64 keeps the access clock. A runtime older than bit
+  64 refuses a block-clock image (`RegistrationError::UnknownFeatures`).
+- Bit 64 without bit 1 is refused
   (`RegistrationError::BlockClockWithoutAccounting`), and so is a module
   whose clock differs from a module already registered in the same
   dispatch (`RegistrationError::MixedClock`).
@@ -156,7 +163,8 @@ Bits 8 and 16 belong to the contract slices T2 and F3
   `the_block_clock_does_not_move_with_memory_accesses` (block_clock.rs):
   the generated C gives up its slice where a model built from the IR alone
   says, and two loops of the same shape, one with memory operands and one
-  without, interleave identically.
+  without, interleave identically. `a_split_handler_charges_as_the_whole_one`:
+  the same stops and totals with every block in its own part.
 - **Test.** `imprecise_faults_change_only_a_memory_faults_flags`
   (opt/tests/flags.rs): every opt fixture, from random states with random
   preemption, ends the same way with the same memory and registers, and

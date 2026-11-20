@@ -57,11 +57,14 @@ pub(crate) struct Memory {
     enabled: AtomicBool,
     /// The Guest's [`Guest::layout_id`] as the last guard left it.
     layout: AtomicU64,
+    /// The Guest's [`Guest::code_id`] as the last guard left it.
+    code: AtomicU64,
 }
 impl Memory {
     pub(crate) fn new(guest: Guest) -> Self {
         Self {
             layout: AtomicU64::new(guest.layout_id()),
+            code: AtomicU64::new(guest.code_id()),
             guest: Mutex::new(guest),
             contention: Default::default(),
             shared: Box::new(MemoryShared {
@@ -83,6 +86,7 @@ impl Memory {
                 shared: None,
                 ready: &self.ready,
                 layout: &self.layout,
+                code: &self.code,
             };
         }
         // C holds the gate across runs of accesses and retakes it at once,
@@ -116,6 +120,7 @@ impl Memory {
             shared: Some(&self.shared),
             ready: &self.ready,
             layout: &self.layout,
+            code: &self.code,
         };
         // Publish every C store to subscribers before exposing Guest to HLE.
         // SAFETY: result owns the gate and Guest mutex until its Drop.
@@ -172,6 +177,12 @@ impl Memory {
     pub(crate) fn layout(&self) -> u64 {
         self.layout.load(Ordering::Acquire)
     }
+    /// The lifted-code identity every guard so far has left
+    /// ([`Guest::code_id`]), published as [`Memory::layout`] is.
+    #[inline]
+    pub(crate) fn code(&self) -> u64 {
+        self.code.load(Ordering::Acquire)
+    }
     /// Every generated handler's entry asks (`h2abi_v1_fast_acquire`):
     /// the usual answer, a ready view, is one load inline.
     #[inline]
@@ -203,6 +214,7 @@ pub struct MemoryGuard<'a> {
     shared: Option<&'a MemoryShared>,
     ready: &'a AtomicBool,
     layout: &'a AtomicU64,
+    code: &'a AtomicU64,
 }
 impl Deref for MemoryGuard<'_> {
     type Target = Guest;
@@ -219,6 +231,7 @@ impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
         // Still holding the Guest (and the gate, if any): see Memory::layout.
         self.layout.store(self.guard.layout_id(), Ordering::Release);
+        self.code.store(self.guard.code_id(), Ordering::Release);
         let Some(shared) = self.shared else {
             return;
         };
@@ -323,6 +336,27 @@ pub(crate) fn sync_accesses(ctx: &mut ExecCtx) {
             p.fast_memory_accesses += count;
         }
         ctx.spend_accesses(count);
+    }
+}
+
+/// A hold on the C RAM gate that a direct caller lent with `view`
+/// (h2gen.h `H2_DIRECT_GATE`) to a callee that is not generated code (the
+/// host-call thunk, direct.rs), which gives nothing back: release it as
+/// C's `H2_GATE_RELEASE` does, clearing only the holder's bit.
+///
+/// # Safety
+/// `view` is the context's own view, lent by the generated caller that
+/// holds the gate, and the caller does not use the hold again.
+pub(crate) unsafe fn release_lent_gate(view: *mut FastAccess) {
+    if view.is_null() {
+        return;
+    }
+    // SAFETY: the caller's contract; raw reads keep C's provenance.
+    unsafe {
+        let memory = (&raw const (*view).memory).read();
+        if let Some(m) = memory.as_ref() {
+            m.gate.fetch_and(!GATE_HELD, Ordering::Release);
+        }
     }
 }
 

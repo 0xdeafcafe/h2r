@@ -111,7 +111,8 @@ feature's), then by feature id. Two mutating hooks (`before` or `after`) of
 different features in one `Order` class with no `after_feature` between them
 are a conflict, so boot refuses the plan and the game stops at boot
 (`crates/apps/boot/src/registration.rs`). A hook on a `hot` point makes the plan
-warn: an overridden entry leaves the direct-call fast path
+warn: an overridden entry leaves the direct-call fast path; its calls
+run in place through the host-call thunk, one runner step each
 (`crates/runtime/runtime/src/direct.rs`).
 
 **Test:** `crates/hooking/hooks/tests/plan.rs`
@@ -393,7 +394,10 @@ Rows of ours on a retail list are data on the plan
 (`crates/apps/boot/src/retail_rows.rs`): an `Extension` answers a retail list's
 extension rows from the `ui` model with `before` hooks at the list's row text
 and row chosen, and a retail row goes on to the original. The Settings list
-(the Video row) and the Controls list (the speaker row) use it.
+(the Video row), the Controls list (the speaker row) and the campaign pause
+menu (Video Settings and Voice Settings) use it. A list told apart by index
+can have ours among its rows (`ui::Extension::at`): a retail row shown past
+ours goes to the original with its own row's handle (`retail_rows::moved`).
 
 The retail Controls row text is ported (`crates/apps/boot/src/controls_text.rs`,
 feature `controls-text`, an implementation). Every string id is read at run

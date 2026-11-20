@@ -12,12 +12,19 @@
 //! - otherwise a generated handler returned it, by kind and route:
 //!   `call`/`jump` (entry route), `jump-resume` (a loop header's
 //!   preemption poll, a resume), `return`. A call or jump is split by
-//!   what the target's direct slot held when the runner got the transfer:
-//!   `hit` (this target, this handler, the live generation: a direct call
-//!   would have found it, so the site is indirect or not a direct site, or
-//!   it was not quiet, too deep, or the target's page not executable from
-//!   C), `collision` (another entry's), `empty`, or `stale` (this entry at
-//!   another generation or handler).
+//!   what the runtime's entry table ([`crate::direct`]) held for the target
+//!   when the runner got the transfer: `live` (its handler, or the
+//!   host-call thunk for an overridden entry: a direct call could have
+//!   made it, so the site is not a direct site, or it was not quiet, too
+//!   deep or out of transfers), `null` (an entry row whose element is 0:
+//!   an interior entry, or not lifted executable code), or `none` (no
+//!   entry row there; outside the module's text a direct site would have
+//!   called the thunk).
+//!
+//! Counted beside these, not as runner entries: `rust-handler` (a Rust
+//! handler the runner or the host-call thunk ran), `continuation`, and
+//! `thunk` (a generated handler the host-call thunk invoked in place, for
+//! a target outside the entry-table module's text).
 use crate::{TransferAbi, abi};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,63 +44,64 @@ pub(crate) enum Came {
     Interrupt,
     Rust,
     Native,
+    /// The host-call thunk (direct.rs) is routing it in place.
+    Thunk,
 }
 
-/// What a target's direct slot held (`direct_slot_state`).
+/// What the entry table held for a target (`ExecCtx::live_state`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Slot {
-    Hit,
-    Collision,
-    Empty,
-    Stale,
+    Live,
+    Null,
+    NoEntry,
 }
 
-const CAUSES: [&str; 16] = [
+const CAUSES: [&str; 15] = [
     "start",
     "interrupt",
     "after-rust",
-    "call-hit",
-    "call-collision",
-    "call-empty",
-    "call-stale",
-    "jump-hit",
-    "jump-collision",
-    "jump-empty",
-    "jump-stale",
+    "call-live",
+    "call-null",
+    "call-none",
+    "jump-live",
+    "jump-null",
+    "jump-none",
     "jump-resume",
     "return",
     "other",
     "rust-handler",
     "continuation",
+    "thunk",
 ];
 
 /// The cause's index in [`CAUSES`].
 pub(crate) fn cause(came: Came, t: &TransferAbi, slot: Option<Slot>) -> usize {
     let split = |base: usize| {
         base + match slot {
-            Some(Slot::Hit) => 0,
-            Some(Slot::Collision) => 1,
-            Some(Slot::Empty) | None => 2,
-            Some(Slot::Stale) => 3,
+            Some(Slot::Live) => 0,
+            Some(Slot::Null) => 1,
+            Some(Slot::NoEntry) | None => 2,
         }
     };
     match came {
         Came::Start => 0,
         Came::Interrupt => 1,
         Came::Rust => 2,
+        Came::Thunk => THUNK,
         Came::Native => match (t.kind, t.route) {
             (abi::CALL, abi::ENTRY) => split(3),
-            (abi::JUMP, abi::ENTRY) => split(7),
-            (abi::JUMP, abi::RESUME) => 11,
-            (abi::RETURN, _) => 12,
-            _ => 13,
+            (abi::JUMP, abi::ENTRY) => split(6),
+            (abi::JUMP, abi::RESUME) => 9,
+            (abi::RETURN, _) => 10,
+            _ => 11,
         },
     }
 }
-pub(crate) const RUST_HANDLER: usize = 14;
-pub(crate) const CONTINUATION: usize = 15;
+pub(crate) const RUST_HANDLER: usize = 12;
+pub(crate) const CONTINUATION: usize = 13;
+pub(crate) const THUNK: usize = 14;
 
-static COUNTS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static COUNTS: [AtomicU64; 15] = [const { AtomicU64::new(0) }; 15];
 /// Per cause, target and resume PC: the transfers behind the counts.
 static SITES: Mutex<Option<HashMap<(usize, u32, u32), u64>>> = Mutex::new(None);
 

@@ -1074,3 +1074,176 @@ fn a_rust_handler_charges_the_declared_cost_only_under_the_block_clock() {
         assert_eq!(ctx.slice_spent(), want, "features {features:#x}");
     }
 }
+// ---- the entry table (FEATURE_ENTRY_TABLE) -------------------------------
+
+use runtime::generated::{FEATURE_DIRECT_CALLS, FEATURE_ENTRY_TABLE, FEATURE_HOST_CALLS};
+
+/// Register a module with an entry table: `rows` are (address, kind), and
+/// `pcmap` covers `text` (leaked, as a loaded module's table outlives its
+/// registration).
+fn with_table(
+    d: &mut Dispatch,
+    rows: &[(u32, u32)],
+    pcmap: Vec<u16>,
+    text: (u32, u32),
+    features: u32,
+) -> Result<RegisteredModule, RegistrationError> {
+    let mut entries: Vec<H2GenEntry> = rows.iter().map(|&(a, k)| entry(a, k, good_probe)).collect();
+    entries.push(ZERO_ENTRY);
+    let entries = entries.leak();
+    let resumes = vec![ZERO_RESUME].leak();
+    let pcmap = if pcmap.is_empty() { std::ptr::null() } else { pcmap.leak().as_ptr() };
+    let module = Box::leak(Box::new(runtime::H2GenEntryModule {
+        module: H2GenModule {
+            abi_version: runtime::cpu::ABI_VERSION,
+            entry_count: rows.len() as u32,
+            resume_count: 0,
+            features,
+            entries: entries.as_ptr(),
+            resumes: resumes.as_ptr(),
+        },
+        pcmap,
+        text_lo: text.0,
+        text_hi: text.1,
+    }));
+    // SAFETY: each table holds count + 1 rows, pcmap covers the text, the
+    // handler follows ABI v1, and all of it is leaked.
+    unsafe { d.register_generated_module(&module.module, good_probe) }
+}
+
+/// Function entries at 0x1000 and 0x1010, an interior one at 0x1004.
+const TABLE_ROWS: [(u32, u32); 3] = [(0x1000, 0), (0x1004, 1), (0x1010, 0)];
+const TABLE_TEXT: (u32, u32) = (0x1000, 0x1011);
+fn table_pcmap(edit: impl FnOnce(&mut Vec<u16>)) -> Vec<u16> {
+    let mut map = vec![0u16; 0x11];
+    (map[0], map[4], map[0x10]) = (1, 2, 3);
+    edit(&mut map);
+    map
+}
+
+#[test]
+fn an_entry_table_maps_each_row_and_nothing_else() {
+    let mut d = Dispatch::default();
+    assert_eq!(
+        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, FEATURE_ENTRY_TABLE),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: FEATURE_ENTRY_TABLE })
+    );
+    let refused = |map: Vec<u16>, text: (u32, u32)| {
+        let mut d = Dispatch::default();
+        let r = with_table(&mut d, &TABLE_ROWS, map, text, FEATURE_ENTRY_TABLE);
+        assert!(!d.has_generated(0x1000), "nothing registered");
+        r
+    };
+    let entry_table = |r: Result<RegisteredModule, RegistrationError>| {
+        matches!(r, Err(RegistrationError::EntryTable(_)))
+    };
+    // A row's byte holds another row's index.
+    assert!(entry_table(refused(table_pcmap(|m| m[4] = 3), TABLE_TEXT)));
+    // A row's byte holds nothing.
+    assert!(entry_table(refused(table_pcmap(|m| m[0x10] = 0), TABLE_TEXT)));
+    // An index where no row starts: an indirect call there would enter a
+    // handler with a selector it does not have.
+    assert!(entry_table(refused(table_pcmap(|m| m[8] = 1), TABLE_TEXT)));
+    // An index past the rows.
+    assert!(entry_table(refused(table_pcmap(|m| m[8] = 9), TABLE_TEXT)));
+    // A range with no map.
+    assert!(entry_table(refused(Vec::new(), TABLE_TEXT)));
+    // A range that leaves a row out is allowed: calls to it take the runner.
+    let mut d = Dispatch::default();
+    let map = table_pcmap(|m| m.truncate(0x10));
+    assert!(with_table(&mut d, &TABLE_ROWS, map, (0x1000, 0x1010), FEATURE_ENTRY_TABLE).is_ok());
+}
+
+#[test]
+fn direct_calls_need_an_entry_table() {
+    let mut d = Dispatch::default();
+    assert_eq!(
+        with_table(&mut d, &TABLE_ROWS, Vec::new(), (0, 0), FEATURE_DIRECT_CALLS),
+        Err(RegistrationError::DirectCallsWithoutEntryTable)
+    );
+    assert!(!d.has_generated(0x1000));
+    let all = FEATURE_DIRECT_CALLS | FEATURE_ENTRY_TABLE | FEATURE_HOST_CALLS;
+    assert_eq!(
+        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, all),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: all })
+    );
+}
+
+/// A direct-call module from before host calls in place reads the
+/// direct-call block at other offsets: refused, nothing registered. Without
+/// direct calls the bit changes nothing.
+#[test]
+fn direct_calls_need_host_calls() {
+    let mut d = Dispatch::default();
+    assert_eq!(
+        with_table(
+            &mut d,
+            &TABLE_ROWS,
+            table_pcmap(|_| {}),
+            TABLE_TEXT,
+            FEATURE_DIRECT_CALLS | FEATURE_ENTRY_TABLE
+        ),
+        Err(RegistrationError::DirectCallsWithoutHostCalls)
+    );
+    assert!(!d.has_generated(0x1000));
+    let table_only = FEATURE_ENTRY_TABLE | FEATURE_HOST_CALLS;
+    assert_eq!(
+        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, table_only),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: table_only })
+    );
+}
+
+#[test]
+fn one_entry_table_per_dispatch() {
+    let mut d = Dispatch::default();
+    with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, FEATURE_ENTRY_TABLE).unwrap();
+    assert_eq!(
+        with_table(&mut d, &[(0x2000, 0)], vec![1], (0x2000, 0x2001), FEATURE_ENTRY_TABLE),
+        Err(RegistrationError::SecondEntryTable)
+    );
+    assert!(!d.has_generated(0x2000));
+    // A module without one still registers beside it.
+    assert!(with_table(&mut d, &[(0x3000, 0)], Vec::new(), (0, 0), 0).is_ok());
+}
+
+fn elsewhere() -> runtime::GuestInterrupt {
+    runtime::GuestInterrupt {
+        target: 0x1000,
+        args: vec![],
+        convention: runtime::CallConvention::Cdecl,
+        thread: Some(2),
+        coalesce: false,
+        name: "elsewhere",
+    }
+}
+
+/// A runtime whose dispatch has an entry table keeps IRQ_QUEUED on every
+/// context's word while an interrupt is queued (the module's polls mask
+/// it); one without never sets it.
+#[test]
+fn an_entry_table_turns_the_leave_word_on() {
+    use runtime::preempt::IRQ_QUEUED;
+    // Without: the fixture module has no entry table.
+    let (rt, _, ctx) = setup(|_| {});
+    rt.raise_interrupt(elsewhere());
+    assert_eq!(ctx.leave_word() & IRQ_QUEUED, 0);
+
+    // With, from the start.
+    let mut d = Dispatch::default();
+    with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, FEATURE_ENTRY_TABLE).unwrap();
+    let rt = Runtime::new(Guest::new(), d);
+    let ctx = ExecCtx::new(rt.clone(), 1);
+    assert_eq!(ctx.leave_word() & IRQ_QUEUED, 0);
+    rt.raise_interrupt(elsewhere());
+    assert_ne!(ctx.leave_word() & IRQ_QUEUED, 0);
+
+    // With, registered while an interrupt already waits: on at once.
+    let rt = Runtime::new(Guest::new(), Dispatch::default());
+    let ctx = ExecCtx::new(rt.clone(), 1);
+    rt.raise_interrupt(elsewhere());
+    assert_eq!(ctx.leave_word() & IRQ_QUEUED, 0);
+    rt.edit_dispatch(|d| {
+        with_table(d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, FEATURE_ENTRY_TABLE).unwrap()
+    });
+    assert_ne!(ctx.leave_word() & IRQ_QUEUED, 0);
+}

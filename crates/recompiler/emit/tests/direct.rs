@@ -57,6 +57,25 @@ const COLL: u32 = CODE + 0x1213;
 const VEC_CALLER: u32 = CODE + 0x1800;
 const VEC_CALLEE: u32 = CODE + 0x1900;
 const VEC_SCRATCH: u32 = DATA + 0x80;
+/// A loop that calls nothing: only its header's poll can leave it.
+const SPIN: u32 = CODE + 0x1a00;
+const SPIN_COUNT: u32 = DATA + 0x44;
+// Host calls in place: a three-deep chain whose leaf (HC_C) gets a Rust
+// override, the leaf's generated original and the callee it calls (which
+// calls FAR through the kernel import slot), and callers of a Rust handler
+// outside the module's text (FAR), as a kernel import is called.
+const HC_A: u32 = CODE + 0x1b00;
+const HC_B: u32 = CODE + 0x1b80;
+const HC_C: u32 = CODE + 0x1c00;
+const HC_D: u32 = CODE + 0x1c80;
+const HC_K: u32 = CODE + 0x1d00;
+/// Calls through a kernel import slot (`call [KSLOT]`, lifted as a kernel
+/// call), which holds FAR.
+const HC_I: u32 = CODE + 0x1d80;
+const KSLOT: u32 = DATA + 0x48;
+/// Outside the module's text (`[text_lo, text_hi)` ends at its last
+/// entry), mapped executable by [`host_leaves`].
+const FAR: u32 = 0x500000;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -66,7 +85,11 @@ fn function(
     let mut a = CodeAssembler::new(32).unwrap();
     body(&mut a).unwrap();
     let code = a.assemble(base as u64).unwrap();
-    let env = lift::Env::default();
+    // KSLOT is the one kernel import slot.
+    let env = lift::Env {
+        kernel_slots: std::collections::HashMap::from([(KSLOT, 0xff)]),
+        ..Default::default()
+    };
     let insns: Vec<_> = Decoder::with_ip(32, &code, base as u64, DecoderOptions::NONE)
         .into_iter()
         .map(|i| lift::lower(&i, &env, lift::Site::Plain))
@@ -358,6 +381,66 @@ fn funcs() -> Vec<IrFunction> {
             a.movss(xmm7, dword_ptr(VEC_SCRATCH))?;
             a.ret()
         }),
+        function(SPIN, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 50)?;
+            a.set_label(&mut l)?;
+            a.add(dword_ptr(SPIN_COUNT), 1)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
+        function(HC_A, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            log(a, 40)?;
+            a.call(HC_B as u64)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
+        function(HC_B, |a| {
+            log(a, 41)?;
+            a.call(HC_C as u64)?;
+            a.add(ebx, eax)?;
+            log(a, 43)?;
+            a.ret()
+        }),
+        function(HC_C, |a| {
+            log(a, 42)?;
+            a.call(HC_D as u64)?;
+            a.ret()
+        }),
+        function(HC_D, |a| {
+            a.add(eax, 1)?;
+            a.call(dword_ptr(KSLOT))?;
+            log(a, 44)?;
+            a.ret()
+        }),
+        function(HC_I, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            a.call(dword_ptr(KSLOT))?;
+            a.add(ebx, eax)?;
+            log(a, 46)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
+        function(HC_K, |a| {
+            let mut l = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut l)?;
+            a.mov(eax, FAR)?;
+            a.call(eax)?;
+            a.add(ebx, eax)?;
+            log(a, 45)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        }),
         // An interrupt callback.
         function(ISR, |a| {
             log(a, 18)?;
@@ -381,8 +464,12 @@ enum Mode {
     /// v2 bridge table.
     OldOff,
     OldOn,
+    /// [`Mode::On`] with every handler cut into parts at every block
+    /// (`emit::c::Split::EVERY_BLOCK`): a direct callee's parts borrow the
+    /// view lent to it one after another.
+    SplitOn,
 }
-const MODES: [Mode; 5] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn];
+const MODES: [Mode; 6] = [Mode::Off, Mode::Disabled, Mode::On, Mode::OldOff, Mode::OldOn, Mode::SplitOn];
 
 impl Mode {
     fn direct(self) -> bool {
@@ -390,6 +477,9 @@ impl Mode {
     }
     fn old(self) -> bool {
         matches!(self, Mode::OldOff | Mode::OldOn)
+    }
+    fn split(self) -> bool {
+        matches!(self, Mode::SplitOn)
     }
 }
 
@@ -399,11 +489,13 @@ struct Module {
     version: runtime::ffi::GeneratedAbiVersion,
 }
 
-fn build(direct: bool, old: bool) -> Module {
+fn build(direct: bool, old: bool, split: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}-{old}-{split}"));
     let src = dir.join("src");
-    emit::write_module_with(&owners, &src, emit::Codegen::accesses(true)).unwrap();
+    let parts = if split { emit::c::Split::EVERY_BLOCK } else { emit::c::Split::NEVER };
+    let w = emit::write_module_split(&owners, &src, emit::Codegen::accesses(true), parts).unwrap();
+    assert_eq!(w.split > 0, split, "{} handlers cut", w.split);
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();
@@ -456,6 +548,14 @@ fn build(direct: bool, old: bool) -> Module {
             direct,
             "{features:#x}"
         );
+        // Every module has the entry table, direct calls or not.
+        assert_ne!(features & runtime::generated::FEATURE_ENTRY_TABLE, 0, "{features:#x}");
+        // And every direct-call module calls the host in place.
+        assert_eq!(
+            features & runtime::generated::FEATURE_HOST_CALLS != 0,
+            direct,
+            "{features:#x}"
+        );
         Module {
             table: *table,
             version,
@@ -497,18 +597,28 @@ unsafe extern "C" fn exit(c: *mut runtime::ExecCtxOpaque, n: u64) {
 }
 
 /// Every build, once per test binary: direct calls off and on, then the
-/// same two with the old exits.
-fn modules() -> &'static [Module; 4] {
-    struct Shared([Module; 4]);
+/// same two with the old exits, then direct calls on with split handlers.
+fn modules() -> &'static [Module; 5] {
+    struct Shared([Module; 5]);
     // SAFETY: the tables are immutable statics of libraries kept loaded.
     unsafe impl Sync for Shared {}
     unsafe impl Send for Shared {}
     static M: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
-    &M.get_or_init(|| Shared([build(false, false), build(true, false), build(false, true), build(true, true)])).0
+    &M.get_or_init(|| {
+        Shared([
+            build(false, false, false),
+            build(true, false, false),
+            build(false, true, false),
+            build(true, true, false),
+            build(true, false, true),
+        ])
+    })
+    .0
 }
 
 fn dispatch(mode: Mode) -> Dispatch {
-    let m = &modules()[usize::from(mode.direct()) + 2 * usize::from(mode.old())];
+    let i = if mode.split() { 4 } else { usize::from(mode.direct()) + 2 * usize::from(mode.old()) };
+    let m = &modules()[i];
     let mut d = Dispatch::default();
     unsafe { d.register_generated_module(&*m.table, m.version) }.unwrap();
     d
@@ -537,13 +647,21 @@ struct Machine {
 
 impl Machine {
     fn new(mode: Mode) -> Machine {
+        Machine::with_guard(mode, true)
+    }
+    /// `guarded`: the code pages are lifted code (`Guest::guard_code`), as
+    /// the loader makes an XBE's; only then can the entry table hold them.
+    fn with_guard(mode: Mode, guarded: bool) -> Machine {
         let mut mem = Guest::new();
         mem.map_zeroed(CODE, 8192, Permissions::RX).unwrap();
+        if guarded {
+            mem.guard_code(CODE, 8192).unwrap();
+        }
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(DATA, LOG).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch(mode)), 1);
-        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn));
+        ctx.enable_direct_calls(matches!(mode, Mode::On | Mode::OldOn | Mode::SplitOn));
         ctx.enable_profiling(true);
         Machine {
             ctx,
@@ -602,9 +720,14 @@ impl Machine {
 
 /// Run `scenario` in every mode; all must agree.
 fn agree(name: &str, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
+    agree_on(name, true, scenario);
+}
+
+/// [`agree`] on machines whose code is lifted code or not.
+fn agree_on(name: &str, guarded: bool, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
     let mut results = Vec::new();
     for mode in MODES {
-        let mut m = Machine::new(mode);
+        let mut m = Machine::with_guard(mode, guarded);
         results.push((mode, scenario(&mut m)));
     }
     for (mode, r) in &results[1..] {
@@ -617,7 +740,7 @@ fn agree(name: &str, scenario: impl Fn(&mut Machine) -> Vec<Outcome>) {
 
 fn run_twice(entry: u32) -> impl Fn(&mut Machine) -> Vec<Outcome> {
     move |m| {
-        // The first run fills the context's slots; the second calls directly.
+        // Two runs: whatever a run leaves behind must not change the next.
         let a = m.run(&Runner::default(), TransferAbi::jump(entry));
         m.reset();
         let b = m.run(&Runner::default(), TransferAbi::jump(entry));
@@ -656,9 +779,11 @@ fn nested_calls_and_a_stdcall_callee() {
     assert_eq!(direct_count(NEST, None), 12);
 }
 
-/// Calls through a register (`H2_ICALL`): the warm run finds both targets in their slots and calls them directly, and
-/// every mode still ends the same; an override on one target between runs
-/// stops its calls going direct, and disabling it lets them again.
+/// Calls through a register (`H2_ICALL`): the module's pcmap gives both
+/// targets' entry indices and the entry table their handlers, so they are
+/// called directly, and every mode still ends the same; an override on one
+/// target between runs stops its calls going direct, and disabling it lets
+/// them again.
 #[test]
 fn indirect_calls() {
     let calls = Arc::new(AtomicU32::new(0));
@@ -751,20 +876,111 @@ fn a_native_override_is_never_learned_as_an_indirect_target() {
     m.ctx.enable_profiling(true);
     let t = Runner { max_transfers: 8 }.run(&mut m.cpu, &mut m.ctx, IND_JUMP);
     assert!(matches!(m.ctx.event(t.event_id), Some(runtime::Event::TransferLimit)));
-    assert_eq!(m.direct_transfers(), 0);
+    // IND_JUMP's own jump is direct, into the host-call thunk (the entry
+    // table holds it for the overridden O); the override's jumps back to O
+    // are each the runner's, never a direct call to the original.
+    assert_eq!(m.direct_transfers(), 1);
 }
 
-/// Two callees that would share a slot in a 256-slot table: the runtime's
-/// 4096 slots keep both, and every mode ends the same.
+/// Two callees whose addresses once shared a slot of a hashed table: each
+/// has its own element of the entry table, and every mode ends the same.
 #[test]
-fn callees_sharing_a_slot() {
-    let n = (CL ^ (CL >> 8), NEST_B ^ (NEST_B >> 8), COLL ^ (COLL >> 8));
-    assert_eq!(n.1 & 255, n.2 & 255);
-    assert_ne!(n.1 & 4095, n.2 & 4095);
-    agree("shared slot", run_twice(CL));
+fn callees_at_nearby_addresses() {
+    agree("nearby callees", run_twice(CL));
     // 3 trips: NEST_B's call of NEST_C and its return, and CL's two calls
     // and their returns.
     assert_eq!(direct_count(CL, None), 18);
+}
+
+/// The transfers a fresh machine's first run of `entry` made directly.
+fn first_run_direct(entry: u32, guarded: bool) -> u64 {
+    let mut m = Machine::with_guard(Mode::On, guarded);
+    m.run_counting(entry)
+}
+
+/// No warm-up: the very first run of a fresh context calls entries the
+/// runner has never dispatched, through a register, directly; as many
+/// transfers as a later run.
+#[test]
+fn indirect_call_to_cold_entry_is_direct() {
+    assert_eq!(first_run_direct(IND, true), direct_count(IND, None));
+    assert_eq!(first_run_direct(IND, true), 18);
+    assert_eq!(first_run_direct(NEST, true), 12);
+}
+
+/// Code that is not lifted code (`Guest::guard_code`) is never in the entry
+/// table: every call takes the runner, which checks the execute bit, and
+/// every mode still ends as with lifted code.
+#[test]
+fn entry_outside_code_guard_goes_to_runner() {
+    for entry in [NEST, IND, TAIL, OVR] {
+        assert_eq!(first_run_direct(entry, false), 0, "{entry:#x}");
+        agree_on(&format!("unguarded {entry:#x}"), false, run_twice(entry));
+    }
+    // Guarded later, as the loader does after mapping: from the next run.
+    let mut m = Machine::with_guard(Mode::On, false);
+    assert_eq!(m.run_counting(NEST), 0);
+    m.ctx.memory().guard_code(CODE, 8192).unwrap();
+    m.reset();
+    m.ctx.enable_profiling(true);
+    assert_eq!(m.run_counting(NEST), 12);
+}
+
+/// `edit_dispatch` rewrites the entry table before it returns: the first
+/// run after an override is registered calls the override for every call
+/// of its entry (in place, through the host-call thunk) and never the
+/// generated original, and the first run after it is disabled calls the
+/// original directly again, with no runner dispatch in between to relearn
+/// it.
+#[test]
+fn override_stops_direct_calls_at_once() {
+    let mut m = Machine::new(Mode::On);
+    let run = |m: &mut Machine| {
+        m.reset();
+        m.ctx.enable_profiling(true);
+        m.run_counting(OVR)
+    };
+    // Four calls of O and their returns.
+    assert_eq!(run(&mut m), 8);
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = calls.clone();
+    m.ctx.runtime().edit_dispatch(|d| {
+        d.register_override(O, "test override", move |cpu, ctx, _| {
+            seen.fetch_add(1, Ordering::Relaxed);
+            ctx.memory().ret(cpu, 0)
+        })
+    });
+    // The same four calls and returns, each call into the thunk.
+    assert_eq!(run(&mut m), 8);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    m.ctx.runtime().edit_dispatch(|d| d.set_enabled(O, false));
+    assert_eq!(run(&mut m), 8);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    // Enabled again, from another thread: the same at once.
+    let rt = m.ctx.runtime().clone();
+    std::thread::spawn(move || rt.edit_dispatch(|d| d.set_enabled(O, true)))
+        .join()
+        .unwrap();
+    assert_eq!(run(&mut m), 8);
+    assert_eq!(calls.load(Ordering::Relaxed), 8);
+}
+
+/// Lifted code made not executable (a whole-mapping protect, which the
+/// guard does not refuse) leaves the entry table at the next runner
+/// invocation, and the runner's execute check faults as before; made
+/// executable again, it is called directly again.
+#[test]
+fn protecting_lifted_code_empties_the_entry_table() {
+    let mut m = Machine::new(Mode::On);
+    assert_eq!(m.run_counting(NEST), 12);
+    m.ctx.memory().protect(CODE, Permissions::READ).unwrap();
+    m.reset();
+    let t = Runner::default().run(&mut m.cpu, &mut m.ctx, NEST);
+    assert_eq!(t.kind, abi::FAULT, "{:?}", m.ctx.events());
+    m.ctx.memory().protect(CODE, Permissions::RX).unwrap();
+    m.reset();
+    m.ctx.enable_profiling(true);
+    assert_eq!(m.run_counting(NEST), 12);
 }
 
 #[test]
@@ -1018,6 +1234,34 @@ fn a_pending_interrupt_at_a_direct_call() {
     assert_eq!(m.run_counting(NEST), 0);
 }
 
+/// While an interrupt for another thread waits, the leave word (on since
+/// the module's entry table was registered) has IRQ_QUEUED set; a loop's
+/// header polls mask it, so the loop leaves for the runner at most once,
+/// for the wake the raise sent, not on every trip.
+#[test]
+fn a_loop_ignores_a_queued_interrupt_for_another_thread() {
+    agree("spin", |m| {
+        let quiet = m.run(&Runner::default(), TransferAbi::jump(SPIN));
+        assert_eq!(m.ctx.leave_word(), 0);
+        assert_eq!(
+            m.ctx.runtime().raise_interrupt(interrupt(Some(2))),
+            Raise::Queued
+        );
+        assert_ne!(m.ctx.leave_word() & runtime::preempt::IRQ_QUEUED, 0);
+        m.reset();
+        let queued = m.run(&Runner::default(), TransferAbi::jump(SPIN));
+        assert!(
+            queued.transfers <= quiet.transfers + 1,
+            "{} transfers with an interrupt queued elsewhere, {} without",
+            queued.transfers,
+            quiet.transfers
+        );
+        // Still queued, and still on the word.
+        assert_ne!(m.ctx.leave_word() & runtime::preempt::IRQ_QUEUED, 0);
+        vec![quiet, queued]
+    });
+}
+
 /// An interrupt for this thread queued at a direct call is delivered there:
 /// raised from the callee's override, which hands back to the runner, the
 /// next call of the warm loop must not run directly past it.
@@ -1168,4 +1412,247 @@ fn a_direct_callee_borrows_its_callers_view() {
     assert_eq!(abi_calls(Mode::On, NEST, Some(0)), abi_calls(Mode::Disabled, NEST, None));
     let [on, old_on] = [Mode::On, Mode::OldOn].map(|m| abi_calls(m, NEST, Some(1)));
     assert!(1 < on[0] && on[0] < old_on[0], "{on:?} {old_on:?}");
+}
+
+// ---- Host calls in place (contract slice T3) ------------------------------
+
+/// Map FAR, point KSLOT at it, and give HC_C and FAR Rust handlers that
+/// add to EAX and return, as an HLE function or a kernel import does.
+fn host_leaves(m: &mut Machine) {
+    m.ctx.memory().map_zeroed(FAR, 4096, Permissions::RX).unwrap();
+    m.ctx.memory().set_u32(KSLOT, FAR).unwrap();
+    m.ctx.runtime().edit_dispatch(|d| {
+        d.register_override(HC_C, "hle leaf", |cpu, ctx, _| {
+            cpu.eax = cpu.eax.wrapping_add(0x10);
+            ctx.memory().ret(cpu, 0)
+        });
+        d.register_override(FAR, "far leaf", |cpu, ctx, _| {
+            cpu.eax = cpu.eax.wrapping_add(0x100);
+            ctx.memory().ret(cpu, 0)
+        });
+    });
+}
+
+/// Replace HC_C's Rust handler.
+fn host_leaf(
+    m: &mut Machine,
+    f: impl Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, runtime::GuestFault> + Send + Sync + 'static,
+) {
+    m.ctx.runtime().edit_dispatch(|d| {
+        d.register_override(HC_C, "hle leaf", f);
+    });
+}
+
+/// Replace FAR's Rust handler.
+fn far_leaf(
+    m: &mut Machine,
+    f: impl Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, runtime::GuestFault> + Send + Sync + 'static,
+) {
+    m.ctx.runtime().edit_dispatch(|d| {
+        d.register_override(FAR, "far leaf", f);
+    });
+}
+
+/// A Rust handler that just returns no longer costs its callers their host
+/// frames: A calls B calls C (a Rust override) three times, K calls FAR (a
+/// Rust handler outside the module's text) through a register three times,
+/// and I calls it through a kernel import slot three times; once the runner
+/// has started the run nothing passes it again until the return to the
+/// harness. Every mode ends the same.
+#[test]
+fn hle_return_keeps_callers_inline() {
+    agree("host leaves", |m| {
+        host_leaves(m);
+        let mut out = run_twice(HC_A)(m);
+        for entry in [HC_K, HC_I] {
+            m.reset();
+            out.extend(run_twice(entry)(m));
+        }
+        out
+    });
+    // A->B, B->C (the thunk) and both returns, per trip; K->FAR and
+    // I->FAR (the thunk) and the return, per trip.
+    for (entry, direct) in [(HC_A, 12), (HC_K, 6), (HC_I, 6)] {
+        let mut m = Machine::new(Mode::On);
+        host_leaves(&mut m);
+        m.run_counting(entry);
+        let p = m.ctx.profile().unwrap();
+        assert_eq!(p.direct_transfers, direct, "{entry:#x}");
+        // The run's start and its return to the harness: no runner
+        // iteration after the first until the run ends.
+        assert_eq!(p.runner_safe_points, 2, "{entry:#x}");
+    }
+}
+
+/// The thunk takes the transfers the runner would have: a run cut off by
+/// every transfer limit ends at the same transfer in every mode, whether
+/// the limit falls on the call into the host or around it.
+#[test]
+fn thunk_takes_the_runners_transfers() {
+    for entry in [HC_A, HC_K, HC_I] {
+        for limit in 0..20 {
+            agree(&format!("{entry:#x} limit {limit}"), |m| {
+                host_leaves(m);
+                let warm = m.run(&Runner::default(), TransferAbi::jump(entry));
+                m.reset();
+                let r = m.run(&Runner { max_transfers: limit }, TransferAbi::jump(entry));
+                vec![warm, r]
+            });
+        }
+    }
+}
+
+/// A Rust handler that blocks (its second call gives up the thread with
+/// STOP, the call unfinished) reaches the runner as it does without host
+/// calls in place: the same STOP, CPU and backtrace, and the run resumed
+/// from the handler's return ends the same.
+#[test]
+fn blocking_hle_reaches_the_runner() {
+    agree("blocking", |m| {
+        host_leaves(m);
+        let calls = Arc::new(AtomicU32::new(0));
+        host_leaf(m, move |cpu, ctx, _| {
+            if calls.fetch_add(1, Ordering::Relaxed) == 1 {
+                return Ok(TransferAbi::stop(0));
+            }
+            cpu.eax = cpu.eax.wrapping_add(0x10);
+            ctx.memory().ret(cpu, 0)
+        });
+        let stopped = m.run(&Runner::default(), TransferAbi::jump(HC_A));
+        assert_eq!(stopped.transfer.kind, abi::STOP, "{:?}", stopped.events);
+        assert_eq!(stopped.cpu.eip, HC_C);
+        // A, B and the blocked call.
+        assert_eq!(stopped.backtrace.len(), 3, "{:?}", stopped.backtrace);
+        // The wait is over: the handler returns.
+        let resume = {
+            let Machine { ctx, cpu } = m;
+            ctx.memory().ret(cpu, 0).unwrap()
+        };
+        let end = m.run(&Runner::default(), resume);
+        assert_eq!(end.cpu.eip, runtime::exec::HARNESS_EXIT, "{:?}", end.events);
+        vec![stopped, end]
+    });
+}
+
+/// A Rust handler that ends the slice (it charges accesses made elsewhere)
+/// or asks for a preemption: its caller does not continue inline past it,
+/// and the thread gives up its slice at the same transfer, with the same
+/// accesses spent, in every mode; resumed, it ends the same.
+#[test]
+fn hle_raising_slice_yields_at_same_point() {
+    for slice in 1..40u64 {
+        agree(&format!("charging leaf, slice {slice}"), |m| {
+            host_leaves(m);
+            host_leaf(m, |cpu, ctx, _| {
+                ctx.charge_accesses(3);
+                cpu.eax = cpu.eax.wrapping_add(0x10);
+                ctx.memory().ret(cpu, 0)
+            });
+            let warm = m.run(&Runner::default(), TransferAbi::jump(HC_A));
+            m.reset();
+            m.ctx.arm_preemption(slice);
+            let mut out = vec![warm];
+            let mut t = TransferAbi::jump(HC_A);
+            for _ in 0..200 {
+                let r = Runner::default().run_from(&mut m.cpu, &mut m.ctx, t);
+                let o = m.outcome(r);
+                let next = o.preempted;
+                out.push(o);
+                m.ctx.enable_profiling(true);
+                match next {
+                    Some(p) => {
+                        m.ctx.arm_preemption(slice);
+                        t = p;
+                    }
+                    None => break,
+                }
+            }
+            out
+        });
+    }
+    agree("requesting leaf", |m| {
+        host_leaves(m);
+        let calls = Arc::new(AtomicU32::new(0));
+        // The warm run makes three calls; the armed run's second asks.
+        host_leaf(m, move |cpu, ctx, _| {
+            if calls.fetch_add(1, Ordering::Relaxed) == 4 {
+                ctx.runtime().request_preempt(runtime::preempt::REQUEST);
+            }
+            cpu.eax = cpu.eax.wrapping_add(0x10);
+            ctx.memory().ret(cpu, 0)
+        });
+        let warm = m.run(&Runner::default(), TransferAbi::jump(HC_A));
+        m.reset();
+        m.ctx.arm_preemption(0);
+        let r = m.run(&Runner::default(), TransferAbi::jump(HC_A));
+        // Stopped before the leaf's return to B was dispatched.
+        let p = r.preempted.expect("preempted");
+        assert_eq!(p.kind, abi::RETURN);
+        let end = m.run(&Runner::default(), p);
+        vec![warm, r, end]
+    });
+}
+
+/// An override that runs the generated original from inside the thunk:
+/// the original's own direct call nests above its caller's frames, its
+/// callee's kernel import call nests a second thunk, and the original's
+/// return goes back to B inline. When that innermost Rust handler blocks,
+/// the STOP is handed up through both thunks with the shadow stack the
+/// runner would have: every frame of the chain. Every mode ends the same.
+#[test]
+fn override_calling_original_nests() {
+    let wrap = |m: &mut Machine| {
+        host_leaf(m, |cpu, ctx, pc| {
+            cpu.ebx = cpu.ebx.wrapping_add(0x1000);
+            let original = ctx.runtime().resolve_original(pc).expect("generated original");
+            Ok(original.invoke(cpu, ctx, pc))
+        });
+    };
+    agree("override calls original", |m| {
+        host_leaves(m);
+        wrap(m);
+        let out = run_twice(HC_A)(m);
+        for o in &out {
+            // Each trip: A's 40, B's 41, the original's 42, D's 44, B's 43.
+            let log: Vec<u32> = o.memory[0x100..0x100 + 60]
+                .chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(&log[..5], [40, 41, 42, 44, 43], "{log:?}");
+        }
+        out
+    });
+    let mut m = Machine::new(Mode::On);
+    host_leaves(&mut m);
+    wrap(&mut m);
+    m.run_counting(HC_A);
+    let p = m.ctx.profile().unwrap();
+    // Per trip: A->B, B->thunk, the original's C->D, D->thunk (FAR) and
+    // its return, D's return, the thunk's return to B, B's to A.
+    assert_eq!(p.direct_transfers, 24);
+    assert_eq!(p.runner_safe_points, 2);
+
+    agree("nested thunk blocks", |m| {
+        host_leaves(m);
+        wrap(m);
+        let calls = Arc::new(AtomicU32::new(0));
+        far_leaf(m, move |cpu, ctx, _| {
+            if calls.fetch_add(1, Ordering::Relaxed) == 1 {
+                return Ok(TransferAbi::stop(0));
+            }
+            cpu.eax = cpu.eax.wrapping_add(0x100);
+            ctx.memory().ret(cpu, 0)
+        });
+        let stopped = m.run(&Runner::default(), TransferAbi::jump(HC_A));
+        assert_eq!(stopped.transfer.kind, abi::STOP, "{:?}", stopped.events);
+        let functions: Vec<u32> = stopped.backtrace.iter().map(|f| f.function).collect();
+        assert_eq!(functions, [FAR, HC_D, HC_C, HC_B, HC_A], "{:x?}", stopped.backtrace);
+        let resume = {
+            let Machine { ctx, cpu } = m;
+            ctx.memory().ret(cpu, 0).unwrap()
+        };
+        let end = m.run(&Runner::default(), resume);
+        assert_eq!(end.cpu.eip, runtime::exec::HARNESS_EXIT, "{:?}", end.events);
+        vec![stopped, end]
+    });
 }

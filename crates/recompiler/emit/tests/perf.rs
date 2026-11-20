@@ -487,6 +487,7 @@ fn entry_access_benchmark() {
         );
         let mut mem = Guest::new();
         mem.map_zeroed(A, 0x20000, Permissions::RX).unwrap();
+        mem.guard_code(A, 0x20000).unwrap();
         mem.map_zeroed(TABLE, 0x2000, Permissions::RW).unwrap();
         mem.map_zeroed(BENCH_STACK & !0xfff, 0x1000, Permissions::RW).unwrap();
         for i in 0..CALLEES {
@@ -524,6 +525,7 @@ fn generated_counts_match_executed_work() {
         let (_lib, dispatch) = module(kind, 11, true, true);
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+        mem.guard_code(A, 4096).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(mem, dispatch), 1);
@@ -541,16 +543,15 @@ fn generated_counts_match_executed_work() {
             _ => 1,
         };
         assert_eq!(p.transfers, transfers);
-        // With direct calls (on unless H2_DIRECT_CALLS=0) the first trip
-        // goes through the runner, which fills the context's slots; the
-        // other ten call B directly (and B tail-jumps to C directly), and
-        // the return to A continues inline. Transfers count the same; those
-        // made directly pass no runner safe point, and the caller's handler
-        // does not exit in between.
+        // With direct calls (on unless H2_DIRECT_CALLS=0) every trip calls
+        // B directly from the first (the entry table needs no warming), B
+        // tail-jumps to C directly, and the return to A continues inline.
+        // Transfers count the same; those made directly pass no runner
+        // safe point, and the caller's handler does not exit in between.
         let direct = std::env::var("H2_DIRECT_CALLS").as_deref() != Ok("0");
         let (direct_transfers, inline_returns) = match kind {
-            "call" if direct => (20, 10),
-            "tail" if direct => (30, 10),
+            "call" if direct => (22, 11),
+            "tail" if direct => (33, 11),
             _ => (0, 0),
         };
         assert_eq!(p.direct_transfers, direct_transfers);
@@ -1181,6 +1182,10 @@ fn run_held_gate_fixture(accounting: bool, kind: &str, defines: &str) -> libload
     );
     let mut mem = Guest::new();
     mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+    // Lifted code, as the loader guards an XBE's: only then does the entry
+    // table hold the leaf, so main's calls of it are direct (runtime
+    // direct.rs).
+    mem.guard_code(A, 4096).unwrap();
     mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
     mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
     let rt = Runtime::new(mem, dispatch);
@@ -1215,13 +1220,14 @@ fn flat_owner_coverage() {
 }
 
 /// Why accesses take the cold path, by cause, over a run of
-/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly,
-/// a 100-trip loop with no call, a page-crossing loop, a REP and stores. A
-/// handler's first access is cold (it starts without the gate), and so is
-/// the first after a direct call returns (the caller drops the gate to
-/// charge its accesses and call); `miss` counts the cold ones taken with
-/// the gate held (a cross-page read), `no-gate` those that leave without
-/// it. `--nocapture` prints the table.
+/// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly
+/// (all 40: the entry table needs no warming), a 100-trip loop with no
+/// call, a page-crossing loop, a REP and stores. A handler's first access
+/// is cold (it starts without the gate), and so is the first after a direct
+/// call returns (the caller drops the gate to charge its accesses and
+/// call); `miss` counts the cold ones taken with the gate held (a
+/// cross-page read), `no-gate` those that leave without it. `--nocapture`
+/// prints the table.
 #[test]
 fn cold_accesses_by_cause() {
     // Isolate entry-gate and direct-gate savings from the flat emitter's
@@ -1233,12 +1239,11 @@ fn cold_accesses_by_cause() {
         let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), &format!("{PAGED}{OFF}"));
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
-        // main, then the first call (through the dispatcher: the leaf and
-        // main's return point); the other 39 calls are direct, each leaf
-        // from cold, then main's first access after it.
-        assert_eq!(c[0], 3, "{table:?}");
-        assert_eq!(c[1], 39, "{table:?}");
-        assert_eq!(c[2], 39, "{table:?}");
+        // main, from the runner; all 40 calls are direct, each leaf from
+        // cold, then main's first access after it.
+        assert_eq!(c[0], 1, "{table:?}");
+        assert_eq!(c[1], 40, "{table:?}");
+        assert_eq!(c[2], 40, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
         // keeps the gate for that span only when the backend is enabled.
@@ -1246,7 +1251,7 @@ fn cold_accesses_by_cause() {
         let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
         let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
             && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
-        let expected = if flat_runtime { [2, 0, 39] } else { [3, 39, 39] };
+        let expected = if flat_runtime { [1, 0, 40] } else { [1, 40, 40] };
         assert_eq!(flat[..3], expected, "{flat:?}");
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
@@ -1451,12 +1456,13 @@ fn image_gate_holds() {
 }
 
 /// The image's transfer sites by what the emitter makes of them: a call or
-/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), or one it leaves
-/// to the runner, and why: through a kernel import, through a pointer
-/// (indirect), to an address that is not a function entry, or (a call)
-/// with a continuation another handler owns. Every return leaves for the
-/// runner unless its handler was invoked directly. Static counts: which
-/// runner entries could become direct or stay in C.
+/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), one through a
+/// kernel import or a pointer (`H2_ICALL`/`H2_IJUMP`: direct when the entry
+/// table or the host-call thunk takes it), or one it leaves to the runner,
+/// and why: to an address that is not a function entry, or (a call) with a
+/// continuation another handler owns. Every return leaves for the runner
+/// unless its handler was invoked directly. Static counts: which runner
+/// entries could become direct or stay in C.
 /// `cargo test -p emit --release --test perf image_transfer_sites -- --ignored --nocapture`
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
@@ -1487,7 +1493,13 @@ fn image_transfer_sites() {
                         "call: direct (H2_DCALL)"
                     }
                 }
-                Control::Call { kind: CallKind::Kernel { .. }, .. } => "call: kernel import",
+                Control::Call { kind: CallKind::Kernel { .. }, continuation, .. } => {
+                    if o.selectors.contains(continuation) {
+                        "call: kernel import (H2_ICALL)"
+                    } else {
+                        "call: kernel import, continuation owned elsewhere"
+                    }
+                }
                 Control::Call { .. } => "call: indirect",
                 Control::Jump { target: Target::Direct(t), tail: true, .. } => {
                     if functions.contains(t) { "jump: direct tail (H2_DJUMP)" } else { "jump: static tail, not an entry" }

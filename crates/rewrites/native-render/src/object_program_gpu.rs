@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use d3d::backend::ExternalDraws;
+use gfx::external::ExternalDraws;
 use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId};
 use gfx::{BoundGroup, RecordedDraw, ScissorRect};

@@ -61,6 +61,10 @@ pub struct Dispatch {
     /// whether there are any (`register_generated_module`).
     pub(crate) module_features: u32,
     pub(crate) modules: usize,
+    /// The rows of the module registered with an entry table (at most one:
+    /// `generated::FEATURE_ENTRY_TABLE`), from which the runtime keeps its
+    /// [`Live`](crate::direct::Live) table.
+    entry_table: Option<Arc<crate::direct::EntryTable>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -113,6 +117,21 @@ pub enum RegistrationError {
     ZeroAddress,
     #[error("resume owner {0:#010x} is not a function entry (kind 0) of this module")]
     OwnerNotFunction(u32),
+    /// A direct-call module without the entry table its calls look in: an
+    /// image built before it. Rebuild the image.
+    #[error("generated module makes direct calls but has no entry table: rebuild the image")]
+    DirectCallsWithoutEntryTable,
+    /// A direct-call module from before host calls in place
+    /// ([`FEATURE_HOST_CALLS`](crate::generated::FEATURE_HOST_CALLS)): its
+    /// direct-call block has another layout. Rebuild the image.
+    #[error("generated module makes direct calls without host calls in place: rebuild the image")]
+    DirectCallsWithoutHostCalls,
+    /// A second module with an entry table; a runtime keeps one.
+    #[error("a generated module with an entry table is already registered")]
+    SecondEntryTable,
+    /// The module's entry table does not match its entry rows.
+    #[error("generated module entry table: {0}")]
+    EntryTable(String),
 }
 
 /// Which table of an `H2GenModule` a registration error refers to.
@@ -392,6 +411,7 @@ impl Dispatch {
             // The same handlers, so the same clock.
             module_features: self.module_features,
             modules: self.modules,
+            entry_table: self.entry_table.clone(),
         }
     }
     /// Use the title's generated functions in an isolated executor. HLE-only
@@ -403,6 +423,22 @@ impl Dispatch {
                 entry.enabled = false;
             }
         }
+    }
+
+    /// The addresses an enabled override takes, which no direct call may
+    /// skip.
+    pub(crate) fn enabled_overrides(&self) -> impl Iterator<Item = u32> + '_ {
+        self.overrides
+            .iter()
+            .filter(|(_, o)| o.enabled)
+            .map(|(&a, _)| a)
+    }
+    /// The entry-table module's rows, if one is registered.
+    pub(crate) fn entry_table(&self) -> Option<&Arc<crate::direct::EntryTable>> {
+        self.entry_table.as_ref()
+    }
+    pub(crate) fn set_entry_table(&mut self, table: crate::direct::EntryTable) {
+        self.entry_table = Some(Arc::new(table));
     }
 
     pub fn has_generated(&self, addr: u32) -> bool {

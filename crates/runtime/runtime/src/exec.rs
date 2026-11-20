@@ -26,7 +26,7 @@ pub struct ExecCtx {
     /// block, or null while direct calls are disabled.
     pub(crate) direct_ptr: crate::direct::DirectPtr,
     pub(crate) direct: crate::direct::Direct,
-    runtime: Arc<Runtime>,
+    pub(crate) runtime: Arc<Runtime>,
     pub(crate) profile: Option<crate::perf::Profile>,
     pub(crate) fast_memory: Option<crate::ffi::OwnedFastAccess>,
     pub(crate) fast_memory_enabled: bool,
