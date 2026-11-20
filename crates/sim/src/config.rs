@@ -255,6 +255,7 @@ pub struct BotParams {
     pub vehicle_plan_ticks: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle_lookahead_ticks: Option<u32>,
+    /// Accepted for older tuning files. Player sight is sampled every tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player_los_ticks: Option<u32>,
 }

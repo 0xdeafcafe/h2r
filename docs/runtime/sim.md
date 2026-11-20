@@ -275,9 +275,10 @@ reaction = 5
 - phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
   `phantom_jitter_ms` (0–50 ms bounded one-way variation);
 - host work intervals in game ticks (1–30 each): `foot_plan_ticks`
-  (default 6), `vehicle_plan_ticks` (8), `vehicle_lookahead_ticks` (3)
-  and `player_los_ticks` (3). See [Bot navigation performance](#bot-navigation-performance)
-  for what each interval controls;
+  (default 6), `vehicle_plan_ticks` (8) and `vehicle_lookahead_ticks` (3).
+  Older files can still specify `player_los_ticks`. Player sight is
+  sampled each tick. See [Bot navigation performance](#bot-navigation-performance)
+  for the active intervals;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
   (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays)).
 
@@ -297,7 +298,7 @@ A feature, `sim-metrics`, observes the game on the game thread, read-only:
 |---|---|
 | `GAME_ACTIVATE` (game start) | the match starts: the tally resets |
 | `GAME_TICK` (after each tick) | `live_telemetry::memory::snapshot`: every player's score, kills, deaths, assists, suicides, team, unit, vehicle, grenades carried, vitality; team scores |
-| `WEAPON_FIRE` | a shot: the weapon's holder unit, so its player |
+| `WEAPON_FIRE` | a shot credited to the weapon's holder or to the player in the firing seat of a vehicle or turret |
 | `DAMAGE_REPORT` | a hit: the owner player, the victim unit, so its player, and the damage |
 | `PLAYER_KILLED` | the kill log: attacker, victim, tick; a betrayal is a teammate killed in a team game (`bots::emote::kill_from_guest`) |
 | `GAME_END` | the end latch: the match is over |
@@ -336,11 +337,17 @@ ticks; and the final score. The report is one JSON file per match:
 }
 ```
 
-A shot is attributed to the firing weapon's parent unit at `WEAPON_FIRE`,
-with the next tick's held-weapon snapshot as a fallback. Damage is the damage
-report's body plus shield numbers (**S**: read as amounts, as telemetry's
-`hits` are); a hit is a report with another player's unit as the victim
-(a shotgun's pellets each count, so accuracy can pass 1).
+At `WEAPON_FIRE`, a handheld shot is credited to the player who owns
+the parent biped. The next tick's held-weapon snapshot provides a
+fallback. For mounted fire, `bots::vehicle::read::firing_player` looks
+up the player in the firing seat at the time of the shot. For example,
+a Ghost's plasma fire counts towards its driver's shots and a
+Warthog's chaingun fire counts towards its gunner's shots.
+
+A hit is a damage report against another player's unit. Damage sums
+the report's body and shield amounts. Each shotgun pellet can count
+as a hit, and melee and splatter can land hits without firing a shot,
+so accuracy can exceed 1.
 
 Each bot row includes its logical `seat`. Readers can continue to load
 earlier `h2-sim-report/1` reports.
@@ -722,8 +729,8 @@ thread, so a host-side bot change alone cannot halve that workload.
 |---|---|---|
 | Bot pads | Phantom action gather samples once per fresh simulation tick with a bound unit, then builds and publishes the retail action. | Same cadence for pads, kill events and life transitions. |
 | World perception | Per pad sample, read up to 16 players, arms, scoreboard and objective state. A living bot scanned up to 2,048 object slots for weapons, supplies and grenades, then scanned the table again for vehicles and players again for seat occupants. | Per fresh sample, reuse the ground scan's vehicle headers and read occupants when vehicles exist. Perception, vehicle seat markers, recent cues and the delayed observation queue reuse buffers. |
-| Player LOS | Per candidate in the notice cone (or near the bot), cast an eye-to-chest wall ray. The delayed mind sample repeated the opponent rays. | Check the cone every sample. Use one visibility result per observer, player slot and unit. Refresh by observer-plus-target slot at up to `player_los_ticks` age. A clear ray is reused only at identical endpoints. A blocked ray allows up to 0.1 world units of movement at each endpoint. Leaving the cone, switching bodies or collision data, and restarting the clock invalidate the result. |
-| Other visibility and wall probes | Ray-test in-cone pickups, supply sites, objective items and non-owned vehicles and eligible events. Foot steering can probe for clearance, headroom, cover and footing. Hearing, grenade arcs and danger checks add conditional probes. | Same sample or action cadence. The player cache applies to chest visibility. Aim-point, projected lead and immediate movement clearance still use current geometry for the sample. |
+| Player LOS | Per candidate in the notice cone (or near the bot), cast an eye-to-chest wall ray. The delayed mind sample repeated the opponent rays. | Cast against the observer and targets' positions in each fresh sample. Target selection and aim use that sample's visibility and positions. The mask is shared within the sample. The existing human-input timing still applies. |
+| Other visibility and wall probes | Ray-test in-cone pickups, supply sites, objective items and non-owned vehicles and eligible events. Foot steering can probe for clearance, headroom, cover and footing. Hearing, grenade arcs and danger checks add conditional probes. | Same sample or action cadence. Aim-point, projected lead and immediate movement clearance use current geometry for the sample. |
 | Radio and event cues | Each sample advances the radio at most once per guest tick, filters allies' reports, and gathers recent kills and shots. Fresh thinking ticks update supply and combat memory before issuing the pad. | Same cadence with reused inbox and cue buffers. |
 | Target selection and aim | Each fresh mind tick ranks the visible enemies and evaluates tactics, objective and equipment. Some support and engagement checks cast additional rays. Aiming, lead, trigger and pad update while tracking every tick. On-foot combat can cast up to two additional rays for the preferred aim point and lead. | Same cadence and scoring, using the filtered sample. Aim and input timing continue on each mind tick, including ticks without a plan. |
 | Foot routes and roaming | A missing route, changed carrier threat or destination movement over one unit could trigger a replan each tick. A plan can try up to three A* searches (safety, blacklist and unrestricted). Picking a roam goal can test reachability of multiple candidates. Ball shelter already caches for 60 ticks or until the threat moves 1.5 units. | Pick a needed roam goal immediately. Plan immediately when a foot route is missing or the destination has moved over one unit. Refresh a usable route on the bot's `foot_plan_ticks` phase. Steering stays tick-rate and committed traversal keeps control. Boarding uses foot routes until entry. |
@@ -733,14 +740,14 @@ thread, so a host-side bot change alone cannot halve that workload.
 | Map and session glue | The host seats phantom peers and refreshes session state. Nav decoding or generation is tied to map loads and missing meshes, with the auto-nav worker handling background work. | Same hook cadence. Each brain only copies the map name on a change. |
 
 Refreshes of usable routes are phase-aligned to the in-game player
-slot. A lost target, new damage or a change
-in a carrier's threat can bring a refresh forward. Urgent refreshes
-split across even and odd slots, and each planner can refresh at most
-once per tick. A route needed for immediate movement bypasses the slot
-phase. Timing follows the simulation tick and slot order, with the same
-random seeds as the rest of the brain.
+slot. A lost target or new damage can bring a driver's refresh forward.
+On foot, a change in a carrier's threat can bring a route refresh forward.
+Urgent refreshes split across even and odd slots, and each planner can
+refresh at most once per tick. A route needed for immediate movement
+bypasses the slot phase. Timing follows the simulation tick and slot
+order, with the same random seeds as the rest of the brain.
 
-The fixed player LOS cache, array scans, perception buffers, driver
+The per-sample visibility mask, array scans, perception buffers, driver
 portal records and path workspace avoid rebuilding per-tick temporary
 collections in the common path. Initial buffer growth, new objectives
 and some conditional tactical or route outputs can still allocate.
@@ -756,9 +763,11 @@ create two fixtures with four legendary phantoms, identical teams,
 seed 7 and a 9,000-tick limit.
 
 ```sh
-bench_dir="$RUSH_KEEP/bot-speed"
+bench_dir="$RUSH_KEEP/bot-speed-phantom"
 mkdir -p "$bench_dir"
-awk '/^map = / {$0="map = \"waterworks\""} /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"} {print}' \
+awk '/^map = / {$0="map = \"waterworks\""}
+     /^time_limit_s = / {$0="time_limit_s = 0\nscore_limit = 0\nseed = 7"}
+     {print}' \
   docs/runtime/sim-examples/midship-seats.toml > "$bench_dir/waterworks.toml"
 sed 's/^map = "waterworks"/map = "lockout"/' \
   "$bench_dir/waterworks.toml" > "$bench_dir/lockout.toml"

@@ -219,9 +219,13 @@ async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
     )
     .await;
     let token = live.issue_host_token(lease);
-    let game = live.start_game(Some(&token), new_game()).await.unwrap();
+    let mut start = new_game();
+    for (player, xuid) in start.players.iter_mut().zip(&lease.roster) {
+        player.xuid = Some(*xuid);
+    }
+    let game = live.start_game(Some(&token), start.clone()).await.unwrap();
     assert_eq!(
-        live.start_game(Some(&token), new_game()).await.unwrap(),
+        live.start_game(Some(&token), start).await.unwrap(),
         game
     );
     (token, game.game_id)
@@ -236,7 +240,15 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     use tower::ServiceExt;
 
     let live = live().await;
-    let lease = lease();
+    let mut lease = lease();
+    let mut readers = Vec::new();
+    for tag in ["FilmPlayer", "FilmGuest"] {
+        let key = KeyPair::generate();
+        let request = live_proto::sign::AccountRequest::sign(&key, tag, None, &live.identity.id, now());
+        let account = live.create_account(&request).await.unwrap();
+        readers.push((key, account));
+    }
+    lease.roster[0] = readers[0].1.xuid;
     let (token, id) = assigned_game(&live, &lease).await;
     let store = crate::blobs::BlobStore::memory();
     live.set_blobs(crate::blobs::Blobs {
@@ -304,6 +316,28 @@ async fn only_the_games_lease_can_upload_a_bounded_host_film() {
     }
     assert_eq!(store.get(&key).await.unwrap().unwrap().as_ref(), b"film");
     assert_eq!(list().await["items"][0]["has_host_film"], true);
+
+    let download = |token: Option<String>| {
+        let mut req = Request::get(format!("/v1/games/{id}/film"));
+        if let Some(token) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        router.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    assert_eq!(download(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    let read_token = |reader: usize| {
+        let (key, account) = &readers[reader];
+        issue_token(key, &account.id, &live.identity.id, lxm::READ, now())
+    };
+    assert_eq!(
+        download(Some(read_token(1))).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+    let response = download(Some(read_token(0))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "private, no-store");
+    let film = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert_eq!(film, store.get(&key).await.unwrap().unwrap());
 }
 
 #[tokio::test]

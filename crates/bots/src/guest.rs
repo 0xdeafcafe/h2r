@@ -77,6 +77,8 @@ pub const ID_LEN: usize = 12;
 pub const OPTIONS: u32 = 8;
 pub const MODE_MULTIPLAYER: u32 = 2;
 pub const VARIANT_FLAGS: u32 = 0x134 + 0x48;
+/// The game-time record's ticks per second (`[GAME_TIME] + 2`).
+pub(crate) const GAME_TIME_RATE: u32 = 2;
 /// The game-time record's tick count (`[GAME_TIME] + 8`).
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
@@ -155,6 +157,69 @@ pub fn game_mode(m: &dyn GuestMemory) -> Option<u32> {
 
 /// Player `+0x14`: the player's machine id, 6 bytes.
 pub const PLAYER_MACHINE: u32 = 0x14;
+
+/// Player `+0x194`: spawn protection. Retail sets it to the tick rate
+/// at every spawn (`0x14f68e`) and subtracts one per player update
+/// (`0x15bb4f`). It gives us the age of a phantom's own spawn.
+pub(crate) const PLAYER_SPAWN_GRACE: u32 = 0x194;
+
+/// `PLAYER_GLOBALS + 0xc` holds the four human local-user player datums.
+pub(crate) const LOCAL_MAP: u32 = 0xc;
+pub(crate) const LOCAL_USER_COUNT: u32 = 4;
+
+/// `GAME_ENGINE + 0xe4`: four local-user opacities for the black overlay
+/// drawn at `0x1599b0`. Match activation and local spawns set opacity to 1.
+pub(crate) const LOCAL_BLACK_OPACITY: u32 = 0xe4;
+
+/// Match opening on a console with local users follows the actual black
+/// overlay. A dedicated host uses retail's earliest fade schedule.
+pub(crate) fn match_opening_fading(m: &dyn GuestMemory, tick: u32, rate: u16) -> R<bool> {
+    let users = m.u32(points::PLAYER_GLOBALS.base)?;
+    let engine = m.u32(points::GAME_ENGINE.base)?;
+    if users != 0 && engine != 0 {
+        let mut has_local_user = false;
+        for user in 0..LOCAL_USER_COUNT {
+            if m.u32(users + LOCAL_MAP + 4 * user)? != u32::MAX {
+                has_local_user = true;
+                if m.f32(engine + LOCAL_BLACK_OPACITY + 4 * user)? > 0.0 {
+                    return Ok(true);
+                }
+            }
+        }
+        if has_local_user {
+            return Ok(false);
+        }
+    }
+    // Retail starts subtracting when tick > round(1.5 * rate) at
+    // 0x15c4c6. Gather sees those changes on the following tick.
+    let first_update = (f32::from(rate) * 1.5).round_ties_even() as u32 + 1;
+    Ok(black_fade_active(rate, tick.saturating_sub(first_update)))
+}
+
+/// Phantoms have no local opacity slot. Apply the same fade step to a
+/// full black overlay for each tick since this player's spawn.
+pub(crate) fn phantom_spawn_fading(m: &dyn GuestMemory, player: u32, rate: u16) -> R<bool> {
+    let remaining = m.i32(player + PLAYER_SPAWN_GRACE)?;
+    let age = i32::from(rate) - remaining.clamp(0, i32::from(rate));
+    Ok(remaining > 0 && black_fade_active(rate, age as u32))
+}
+
+fn black_fade_active(rate: u16, updates: u32) -> bool {
+    if rate == 0 {
+        return false;
+    }
+    // Match the retail f32 subtraction at 0x15c4ea, including rounding
+    // when the step is not exactly representable.
+    let step = 3.0 / f32::from(rate);
+    let mut opacity = 1.0;
+    for _ in 0..updates {
+        opacity -= step;
+        if opacity <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
 
 /// Player `p`'s machine id.
 pub fn player_machine(m: &dyn GuestMemory, p: u32) -> R<[u8; 6]> {

@@ -104,7 +104,6 @@ pub struct WorkRates {
     pub foot_plan_ticks: u32,
     pub vehicle_plan_ticks: u32,
     pub vehicle_lookahead_ticks: u32,
-    pub player_los_ticks: u32,
 }
 
 impl Default for WorkRates {
@@ -113,7 +112,6 @@ impl Default for WorkRates {
             foot_plan_ticks: 6,
             vehicle_plan_ticks: 8,
             vehicle_lookahead_ticks: 3,
-            player_los_ticks: 3,
         }
     }
 }

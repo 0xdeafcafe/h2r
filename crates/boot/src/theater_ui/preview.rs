@@ -11,6 +11,7 @@ use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, Tab, Theater, pages};
 use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{Focus, ListEffect, Live, Page};
 use crate::ui_kit::spec::{PaneText, ScreenSpec};
+use pages::BROWSE_ROWS;
 
 struct SampleLibrary(Mutex<Vec<FilmMeta>>);
 
@@ -49,10 +50,12 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
     FilmMeta {
         id: id.into(),
         map: map.into(),
-        variant: variant.into(),
+        game_type: super::adapter::game_type(variant),
+        mode: Some("Custom Game".into()),
+        variant_name: variant.into(),
         started_ms: 1_795_089_600_000,
         length_ticks: 15_200,
-        players: [
+        scoreboard: [
             ("Chief", "Red", 21, 17, 8),
             ("Marathon", "Blue", 18, 15, 10),
             ("Echo", "Red", 13, 12, 9),
@@ -78,7 +81,7 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
         saved: id == "game-1",
         result: Some(if playable { "Won" } else { "Lost" }.into()),
         host: Some("Live Europe".into()),
-        web_game_id: Some(id.into()),
+        ..FilmMeta::default()
     }
 }
 
@@ -93,7 +96,7 @@ impl Kind {
     fn states(self) -> &'static [&'static str] {
         match self {
             Self::Films => &["list", "empty", "loading", "unplayable", "saved", "clips"],
-            Self::Detail => &["list", "unplayable", "web", "confirm-delete"],
+            Self::Detail => &["list", "unplayable", "confirm-delete"],
             Self::Playback => &["playing", "paused"],
         }
     }
@@ -203,16 +206,6 @@ impl Live for Preview {
                 }
             }
             ListEffect::Action if !list => {
-                if self.focus.0 == 2
-                    && self
-                        .theater
-                        .state()
-                        .selected
-                        .as_ref()
-                        .is_some_and(|e| e.clip.is_some())
-                {
-                    return "Clip uses the local library".into();
-                }
                 if self.theater.step_detail(self.focus.0 as i16) {
                     self.show = Kind::Films;
                     self.focus = self.parent_focus;
@@ -295,12 +288,9 @@ impl Live for Preview {
         let entry = Entry {
             film: if name == "unplayable" { second } else { first },
             clip: None,
+            archive_clip: None,
         };
         state.select(entry.clone());
-        if name == "web" {
-            state.web = true;
-            self.focus = Focus(3);
-        }
         if name == "confirm-delete" {
             state.confirm_delete = true;
             state.status = "Press A again to delete".into();
@@ -336,62 +326,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recent_live_films_offer_their_archive_link() {
+    fn a_live_summary_without_a_recording_still_shows_match_details() {
         let theater = Theater::default();
         let film = serde_json::from_value::<live_hle::films::RecentFilm>(serde_json::json!({
-            "game_id": "played-game", "map": "h1_bloodgulch", "mode": "multiplayer",
+            "game_id": "played-game", "map": "lockout", "mode": "multiplayer",
+            "kind": "matchmaking", "playlist": "Team Slayer",
             "variant": "Slayer", "started_at": "2026-11-20T02:26:06.627Z",
-            "duration_s": 69, "result": "win", "has_host_film": false
+            "duration_s": 69, "result": "win", "has_host_film": false,
+            "players": [{"index": 0, "name": "Chief", "team": 0}],
+            "scoreboard": [{"index": 0, "score": 25, "kills": 25, "deaths": 8, "assists": 3}]
         }))
         .unwrap();
-        theater.state().load = Load::Ready(vec![FilmMeta::try_from(film).unwrap()]);
+        let film = FilmMeta::try_from(film).unwrap();
+        let mut state = theater.state();
+        state.recent_archives.insert(film.id.clone());
+        state.load = Load::Ready(vec![film]);
+        drop(state);
 
         let recent = pages::spec(&theater, true);
-        assert_eq!(recent.rows.len(), 2);
-        assert_eq!(recent.rows[1].description.as_deref(), Some("Live archive"));
+        assert_eq!(recent.rows.len(), BROWSE_ROWS + 1);
+        let description = recent.rows[BROWSE_ROWS].description.as_deref().unwrap();
+        for text in ["Matchmaking", "1:09", "1 player", "Win", "Live summary"] {
+            assert!(description.contains(text), "{description}");
+        }
 
         let entry = theater.state().entries().pop().unwrap();
         theater.state().select(entry);
         let detail = pages::spec(&theater, false);
-        assert_eq!(detail.rows.len(), 1);
-        assert_eq!(detail.rows[0].label, "Open on the web");
-        assert!(!theater.step_detail(0));
+        assert_eq!(detail.rows[0].label, "Watch unavailable");
         assert_eq!(
-            theater.web_url().as_deref(),
-            Some("https://live.forbes.red/theater/played-game")
+            detail.rows[0].description.as_deref(),
+            Some("No host recording")
         );
-        theater.state().tab = Tab::Saved;
-        assert!(theater.state().entries().is_empty());
+        assert!(!theater.step_detail(0));
+        for text in ["Chief", "Red", "25", "25 / 8"] {
+            assert!(detail.texts.iter().any(|t| t.text == text));
+        }
     }
 
     #[test]
     fn theater_tabs_only_show_matching_entries() {
         let mut view = live(FILMS).unwrap();
         assert!(view.go("saved"));
-        assert_eq!(view.spec().rows.len(), 2);
-        assert!(
-            view.spec().rows[1].label.contains("Lockout")
-                || view.spec().rows[1].label.contains("lockout")
-        );
+        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
+        assert!(view.spec().rows[BROWSE_ROWS].label.contains("Lockout"));
         assert!(view.go("clips"));
-        assert!(view.spec().rows[1].shown_value().unwrap().contains("0:40"));
-        assert!(view.go("unplayable"));
-        assert!(view.spec().rows[2].label.starts_with("* "));
+        assert!(
+            view.spec().rows[BROWSE_ROWS]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("0:40")
+        );
     }
 
     #[test]
     fn theater_tab_walkthrough_restores_the_parent_focus() {
         let mut view = live(FILMS).unwrap();
-        view.press(Input::Up);
+        for _ in 0..BROWSE_ROWS {
+            view.press(Input::Up);
+        }
         view.press(Input::Right);
-        assert_eq!(view.spec().rows.len(), 2);
-        assert!(view.spec().texts[0].text.contains("[ Saved ]"));
-        view.press(Input::Down);
+        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
+        assert!(view.spec().texts[0].text.contains("[Saved]"));
+        for _ in 0..BROWSE_ROWS {
+            view.press(Input::Down);
+        }
         view.press(Input::A);
         assert_eq!(view.spec().name, DETAIL);
         view.press(Input::B);
         assert_eq!(view.spec().name, FILMS);
-        assert_eq!(view.spec().focus, 1);
+        assert_eq!(view.spec().focus, BROWSE_ROWS);
     }
 
     #[test]
@@ -406,22 +411,15 @@ mod tests {
     }
 
     #[test]
-    fn theater_delete_is_confirmed_and_web_link_is_optional() {
+    fn theater_delete_is_confirmed_and_restores_the_library() {
         let mut view = live(DETAIL).unwrap();
         view.press(Input::Down);
         view.press(Input::Down);
         view.press(Input::A);
         assert_eq!(view.spec().rows[2].label, "Confirm delete");
         view.press(Input::A);
-        assert_eq!(view.spec().rows.len(), 2);
+        assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
         assert_eq!(view.spec().name, FILMS);
-        assert!(view.go("web"));
-        assert!(
-            view.spec()
-                .texts
-                .iter()
-                .any(|t| t.text.ends_with("/theater/game-1"))
-        );
     }
 
     #[test]
@@ -443,12 +441,6 @@ mod tests {
                 .texts
                 .iter()
                 .any(|t| t.text.starts_with("Paused"))
-        );
-        assert!(
-            view.spec()
-                .texts
-                .iter()
-                .any(|t| t.text.contains("after keyframes"))
         );
     }
 }

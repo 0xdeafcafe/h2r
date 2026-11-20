@@ -6,111 +6,8 @@ use crate::emote::Kill;
 use crate::mind::{CHEST, EYE, NOTICE_CONE, NOTICE_NEAR};
 use crate::vehicle::{Sight, read::SeatBuffers};
 
-use std::sync::{Arc, Weak};
-
 pub(crate) fn player_bit(id: u32) -> u16 {
     1u16.checked_shl(id).unwrap_or(0)
-}
-
-#[derive(Clone, Copy)]
-struct SightRay {
-    unit: u32,
-    tick: u32,
-    eye: Vec3,
-    chest: Vec3,
-    clear: bool,
-}
-
-#[derive(Default)]
-pub(crate) struct Visibility {
-    map: Option<Weak<MapData>>,
-    own_unit: Option<(u32, u32)>,
-    tick: Option<u32>,
-    players: [Option<SightRay>; 16],
-}
-
-impl Visibility {
-    pub(crate) fn matches_map(&self, map: Option<&Arc<MapData>>) -> bool {
-        match (&self.map, map) {
-            (Some(old), Some(new)) => std::ptr::eq(old.as_ptr(), Arc::as_ptr(new)),
-            (None, None) => true,
-            _ => false,
-        }
-    }
-
-    pub(crate) fn clear_life(&mut self) {
-        self.own_unit = None;
-        self.tick = None;
-        self.players.fill(None);
-    }
-
-    /// Bind to an immutable loaded map so a recycled address cannot hit
-    /// the old geometry. A restarted clock or a new body also drops sight.
-    pub(crate) fn bind(
-        &mut self,
-        map: Option<&Arc<MapData>>,
-        own_unit: Option<(u32, u32)>,
-        tick: u32,
-    ) -> bool {
-        let changed = !self.matches_map(map);
-        if changed {
-            self.map = map.map(Arc::downgrade);
-        }
-        let rewound = self
-            .tick
-            .is_some_and(|old| tick.wrapping_sub(old) > i32::MAX as u32);
-        if changed || rewound || own_unit != self.own_unit || own_unit.is_none() {
-            self.players.fill(None);
-        }
-        self.own_unit = own_unit;
-        self.tick = Some(tick);
-        changed
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn player_clear(
-        &mut self,
-        slot: u32,
-        id: u32,
-        unit: Option<u32>,
-        tick: u32,
-        period: u32,
-        eye: Vec3,
-        chest: Vec3,
-        cast: impl FnOnce() -> bool,
-    ) -> bool {
-        let (Some(entry), Some(unit)) = (self.players.get_mut(id as usize), unit) else {
-            return cast();
-        };
-        if let Some(ray) = entry
-            && ray.unit == unit
-            && tick.wrapping_sub(ray.tick) < period
-            && !crate::work::phase_due(tick, ray.tick, slot + id, period)
-            && if ray.clear {
-                // Never reveal a moving body based on an old clear ray.
-                ray.eye == eye && ray.chest == chest
-            } else {
-                // Keep a recently occluded body hidden during small
-                // movements, with a tight bound on acquisition delay.
-                let near = |a: Vec3, b: Vec3| {
-                    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>() <= 0.1f32.powi(2)
-                };
-                near(ray.eye, eye) && near(ray.chest, chest)
-            }
-        {
-            return ray.clear;
-        }
-
-        let clear = cast();
-        *entry = Some(SightRay {
-            unit,
-            tick,
-            eye,
-            chest,
-            clear,
-        });
-        clear
-    }
 }
 
 fn sight_line(me: Me, at: Vec3, height: f32) -> Option<(Vec3, Vec3)> {
@@ -133,24 +30,16 @@ pub(crate) fn observe(
     kills: &mut [Kill],
     map: Option<&MapData>,
 ) {
-    observe_cached(
-        p,
-        vehicles,
-        kills,
-        map,
-        &mut Visibility::default(),
-        1,
-        &mut SeatBuffers::default(),
-    );
+    observe_for_brain(p, vehicles, kills, map, &mut SeatBuffers::default());
 }
 
-pub(crate) fn observe_cached(
+/// Filter a single observation and return the players with an unobstructed
+/// view in that sample. The mind can reuse the result with those positions.
+pub(crate) fn observe_for_brain(
     p: &mut Perception,
     vehicles: &mut Sight,
     kills: &mut [Kill],
     map: Option<&MapData>,
-    sight: &mut Visibility,
-    period: u32,
     seats: &mut SeatBuffers,
 ) -> u16 {
     let own = p.observations.player.map(|(id, _)| id);
@@ -164,42 +53,11 @@ pub(crate) fn observe_cached(
     }
     // Allies have teammate HUD markers. Their aim and carried weapon
     // still require personal sight.
-    let mut seen = 0;
-    let mut units = [None; 16];
-    for player in &p.observations.supply_players {
-        if let Some(unit) = units.get_mut(player.id as usize) {
-            *unit = Some(player.unit);
-        }
-    }
-    if let (Some(me), Some(map)) = (p.me, map) {
-        for player in &p.others {
-            let Some((eye, chest)) = sight_line(me, player.position, CHEST) else {
-                if let Some(entry) = sight.players.get_mut(player.id as usize) {
-                    *entry = None;
-                }
-                continue;
-            };
-            let unit = units.get(player.id as usize).copied().flatten();
-            let clear = sight.player_clear(
-                own.unwrap_or(0),
-                player.id,
-                unit,
-                p.tick,
-                period,
-                eye,
-                chest,
-                || map.walls.clear(eye, chest),
-            );
-            if clear {
-                seen |= player_bit(player.id);
-            }
-        }
-    }
-    for (entry, unit) in sight.players.iter_mut().zip(units) {
-        if unit.is_none() {
-            *entry = None;
-        }
-    }
+    let seen = p
+        .others
+        .iter()
+        .filter(|o| visible(o.position, CHEST))
+        .fold(0, |mask, o| mask | player_bit(o.id));
     let seen_player = |id| seen & player_bit(id) != 0;
     p.observations
         .supply_players
@@ -481,57 +339,5 @@ pub(crate) mod honesty {
                 }),
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod visibility_tests {
-    use super::*;
-
-    const EYE_AT: Vec3 = [0., 0., 0.6];
-    const CHEST_AT: Vec3 = [4., 0., 0.4];
-
-    #[test]
-    fn a_blocked_ray_survives_small_motion_until_its_refresh_phase() {
-        let mut cache = Visibility::default();
-        // Slot 1 / target 2 has phase zero, so the next refresh is tick 12.
-        assert!(!cache.player_clear(1, 2, Some(30), 10, 3, EYE_AT, CHEST_AT, || false));
-        let moved = [4.05, 0., 0.4];
-        assert!(
-            !cache.player_clear(1, 2, Some(30), 11, 3, EYE_AT, moved, || {
-                panic!("the blocked ray fits the age and movement limits")
-            })
-        );
-        assert!(cache.player_clear(1, 2, Some(30), 12, 3, EYE_AT, moved, || true));
-        assert!(!cache.player_clear(1, 2, Some(30), 13, 3, EYE_AT, CHEST_AT, || false));
-        assert!(cache.player_clear(1, 2, Some(30), 14, 3, EYE_AT, [4.5, 0., 0.4], || true,));
-    }
-
-    #[test]
-    fn clear_rays_are_reused_only_at_identical_endpoints_and_for_the_same_unit() {
-        let mut cache = Visibility::default();
-        assert!(cache.player_clear(1, 2, Some(30), 10, 3, EYE_AT, CHEST_AT, || true));
-        assert!(
-            cache.player_clear(1, 2, Some(30), 11, 3, EYE_AT, CHEST_AT, || {
-                panic!("the same endpoints are already clear")
-            })
-        );
-        assert!(!cache.player_clear(1, 2, Some(31), 11, 3, EYE_AT, CHEST_AT, || false));
-    }
-
-    #[test]
-    fn changing_map_or_observer_life_and_rewinding_drop_player_rays() {
-        let map = Arc::new(MapData::default());
-        let other = Arc::new(MapData::default());
-        let mut cache = Visibility::default();
-        assert!(cache.bind(Some(&map), Some((1, 1)), 10));
-        assert!(!cache.player_clear(1, 2, Some(30), 10, 3, EYE_AT, CHEST_AT, || false));
-        assert!(!cache.bind(Some(&map), Some((1, 2)), 11));
-        assert!(cache.player_clear(1, 2, Some(30), 11, 3, EYE_AT, CHEST_AT, || true));
-        assert!(cache.bind(Some(&other), Some((1, 2)), 11));
-        assert!(!cache.player_clear(1, 2, Some(30), 11, 3, EYE_AT, CHEST_AT, || false));
-        assert!(!cache.bind(Some(&other), Some((1, 2)), 4));
-        assert!(cache.players.iter().all(Option::is_none));
-        assert!(cache.bind(None, None, 4));
     }
 }

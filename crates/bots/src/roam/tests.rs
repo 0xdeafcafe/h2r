@@ -56,7 +56,7 @@ fn a_fresh_sighting_draws_a_good_bot() {
     let mut r = Roam::new(1);
     r.saw(SIGHTING, 0);
     assert_eq!(
-        r.pick(ME, 10, &nav, &[], Skill::Legendary, ANY),
+        r.pick(ME, 10, &nav, &[], &[], Skill::Legendary, ANY),
         Some(SIGHTING)
     );
 }
@@ -66,7 +66,7 @@ fn an_old_sighting_is_forgotten() {
     let nav = grid();
     let mut r = Roam::new(1);
     r.saw(SIGHTING, 0);
-    let c = r.candidates(ME, SIGHT_TICKS + 5, &nav, &[], Skill::Legendary);
+    let c = r.candidates(ME, SIGHT_TICKS + 5, &nav, &[], &[], Skill::Legendary);
     assert!(!c.is_empty());
     assert!(c.iter().all(|(_, p)| *p != SIGHTING), "{c:?}");
 }
@@ -79,7 +79,7 @@ fn easy_wanders_and_legendary_goes_where_the_fight_was() {
             .filter(|&seed| {
                 let mut r = Roam::new(seed);
                 r.saw(SIGHTING, 0);
-                r.pick(ME, 10, &nav, &[], skill, ANY) == Some(SIGHTING)
+                r.pick(ME, 10, &nav, &[], &[], skill, ANY) == Some(SIGHTING)
             })
             .count()
     };
@@ -100,10 +100,10 @@ fn it_does_not_go_back_where_it_has_just_been() {
         let mut r = Roam::new(seed);
         r.visit(a, 0);
         let at = [0.0; 3];
-        assert_eq!(r.pick(at, 10, &nav, &guns, Skill::Legendary, ANY), Some(b));
+        assert_eq!(r.pick(at, 10, &nav, &guns, &[], Skill::Legendary, ANY), Some(b));
         let mut r = Roam::new(seed);
         r.visit(b, 0);
-        assert_eq!(r.pick(at, 10, &nav, &guns, Skill::Legendary, ANY), Some(a));
+        assert_eq!(r.pick(at, 10, &nav, &guns, &[], Skill::Legendary, ANY), Some(a));
     }
 }
 
@@ -126,11 +126,48 @@ fn a_goal_the_caller_refuses_is_passed_over() {
     let nav = grid();
     let mut r = Roam::new(1);
     r.saw(SIGHTING, 0);
-    let g = r.pick(ME, 10, &nav, &[], Skill::Legendary, &|p| p != SIGHTING);
+    let g = r.pick(
+        ME,
+        10,
+        &nav,
+        &[],
+        &[],
+        Skill::Legendary,
+        &|p| p != SIGHTING,
+    );
     assert!(g.is_some_and(|g| g != SIGHTING), "{g:?}");
     assert_eq!(
-        r.pick(ME, 10, &nav, &[], Skill::Legendary, &|_| false),
+        r.pick(ME, 10, &nav, &[], &[], Skill::Legendary, &|_| false),
         None
+    );
+}
+
+#[test]
+fn the_maps_starts_are_candidates_between_a_weapon_and_a_random_polygon() {
+    // A big grid, nobody seen, nothing lying: the spawn points are where a
+    // bot with no information goes looking, above a random polygon and
+    // below a weapon worth taking.
+    let nav = grid();
+    let starts = [[35.0, 5.0, 0.0], [5.0, 35.0, 0.0]];
+    let guns = [gun_at(1, [20.0, 20.0, 0.0])];
+    for seed in 0..10u64 {
+        let mut r = Roam::new(seed);
+        let picked = r
+            .pick(ME, 10, &nav, &guns, &starts, Skill::Legendary, ANY)
+            .unwrap();
+        assert!(picked == guns[0].position || starts.contains(&picked), "{picked:?}");
+        let mut r = Roam::new(seed);
+        let picked = r
+            .pick(ME, 10, &nav, &[], &starts, Skill::Legendary, ANY)
+            .unwrap();
+        assert!(starts.contains(&picked), "a start over a random polygon: {picked:?}");
+    }
+    // Just been to one: the other start, not the same one again.
+    let mut r = Roam::new(1);
+    r.visit(starts[0], 10);
+    assert_eq!(
+        r.pick(ME, 10, &nav, &[], &starts, Skill::Legendary, ANY),
+        Some(starts[1])
     );
 }
 

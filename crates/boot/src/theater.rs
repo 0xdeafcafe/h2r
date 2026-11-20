@@ -1,14 +1,19 @@
 //! Host film lifetime: boot facts before guest entry, observer-only checkpoints,
 //! then seal and optionally upload at the first slice after game over.
+mod camera;
 mod controls;
 use anyhow::{Context, Result, bail, ensure};
+use camera::ReplayCamera;
 pub(crate) use controls::library_methods;
+pub use controls::playback_images;
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
     tape::{Batch, Call, Check, Mark, Playback, Tap},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     fs::File,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
@@ -22,9 +27,18 @@ pub struct Replay {
     pub speed: f64,
     pub seek_tick: u64,
     pub paused_at_target: bool,
+    pub presentation: Presentation,
     /// Receiver for a requested restart, consumed by the CLI parent.
     pub restart: PathBuf,
     pub window_closed: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+
+/// View and timeline state carried across an exact replay restart.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Presentation {
+    camera: ReplayCamera,
+    kills: BTreeSet<u64>,
+    pub clip_marks: [Option<u64>; 2],
 }
 
 struct Recording {
@@ -66,6 +80,7 @@ struct State {
     paused: bool,
     speed: f64,
     seeking: Option<u64>,
+    presentation: Presentation,
     restart: Option<u64>,
     failure: Option<String>,
     complete: bool,
@@ -195,6 +210,13 @@ impl Session {
         } else {
             return Ok(None);
         };
+        let mut presentation = match &mode {
+            Mode::Replay(_, opts) => opts.presentation.clone(),
+            Mode::Record(_) => Presentation::default(),
+        };
+        if !matches!(&mode, Mode::Replay(_, opts) if opts.render_every != 0) {
+            presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+        }
         Ok(Some(Arc::new(Self {
             state: Mutex::new(State {
                 mode,
@@ -202,6 +224,7 @@ impl Session {
                 speed,
                 seeking,
                 paused,
+                presentation,
                 tick: 0,
                 calls: 0,
                 restart: None,
@@ -294,7 +317,7 @@ impl Session {
                 if let Some(target) = s.restart {
                     std::fs::write(
                         &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused))?,
+                        serde_json::to_vec(&(target, s.speed, s.paused, &s.presentation))?,
                     )?;
                     return Ok(false);
                 }
@@ -579,6 +602,19 @@ impl feature::Feature for Observer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
+        camera::install(b, &self.0)?;
+        if self.0.replaying() {
+            let session = self.0.clone();
+            b.raw().observe_before(
+                &engine::points::PLAYER_KILLED,
+                "film kill marker",
+                move |_| {
+                    let mut s = session.lock();
+                    let tick = s.tick;
+                    s.presentation.kills.insert(tick);
+                },
+            );
+        }
         let session = self.0.clone();
         b.game().on_end("film scoreboard", move |o| {
             let mut s = session.lock();

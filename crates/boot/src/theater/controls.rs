@@ -71,15 +71,40 @@ impl Session {
                                     "seek beyond film",
                                 ));
                             }
+                            if let Some(marks) = p.clip_marks {
+                                let [start, end] = marks;
+                                if start.is_some_and(|tick| tick > s.header.meta.length_ticks)
+                                    || end.is_some_and(|tick| {
+                                        tick > s.header.meta.length_ticks
+                                            || start.is_none_or(|start| tick <= start)
+                                    })
+                                {
+                                    return Err(RpcError::new(code::INVALID_PARAMS, "invalid clip marks"));
+                                }
+                                s.presentation.clip_marks = marks;
+                            }
                             s.restart = Some(p.tick);
                         }
                         api::CAMERA => {
-                            if params::<api::Camera>(p)?.mode != "default" {
+                            let p = params::<api::Camera>(p)?;
+                            if p.mode == api::CameraMode::FirstPerson
+                                && s.header.meta.source != Source::Host
+                            {
                                 return Err(RpcError::new(
                                     code::UNAVAILABLE,
-                                    "unavailable until keyframes",
+                                    "first person requires an exact host film",
                                 ));
                             }
+                            if p.mode != api::CameraMode::Default
+                                && matches!(&s.mode, Mode::Replay(_, opts) if opts.render_every == 0)
+                            {
+                                return Err(RpcError::new(
+                                    code::UNAVAILABLE,
+                                    "playback has no rendered view",
+                                ));
+                            }
+                            s.presentation.camera.control(p)
+                                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
                         }
                         _ => unreachable!(),
                     }
@@ -90,7 +115,9 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
-                        camera: "default".into(),
+                        camera: s.presentation.camera.mode,
+                        camera_player: s.presentation.camera.player.clone(),
+                        kills: s.presentation.kills.iter().copied().collect(),
                     }))
                 },
             );
@@ -98,7 +125,26 @@ impl Session {
     }
 }
 
-/// In the original game, Watch selects a film from the local library and
+/// Installed modules accepted by exact film playback, in preference order.
+pub fn playback_images(xbe: &[u8], out: &std::path::Path) -> Vec<(PathBuf, String)> {
+    [crate::tier::clang_dylib(out), crate::tier::fast_dylib(out)]
+        .into_iter()
+        .filter_map(|path| {
+            let stamp = if let Some(slim) = crate::current_slim_stamp(xbe, &path) {
+                slim
+            } else {
+                match crate::tier::module_tier(xbe, &path)? {
+                    crate::tier::Tier::Clang => crate::build_stamp(xbe),
+                    crate::tier::Tier::Fast => crate::tier::fast_stamp(xbe),
+                    crate::tier::Tier::Host => return None,
+                }
+            };
+            Some((path, stamp))
+        })
+        .collect()
+}
+
+/// In the original game, Watch selects a local or downloaded film and
 /// launches its isolated player. Transport requests follow that player.
 pub(crate) fn library_methods(
     a: &agent::Agent,
@@ -106,6 +152,7 @@ pub(crate) fn library_methods(
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
+    image_stamps: Vec<String>,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -113,8 +160,10 @@ pub(crate) fn library_methods(
         id: String,
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
+    let image_stamps = Arc::new(image_stamps);
     for name in api::METHODS {
         let player = player.clone();
+        let image_stamps = image_stamps.clone();
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
@@ -137,15 +186,36 @@ pub(crate) fn library_methods(
                 }
                 if name == api::PLAY {
                     let request = params::<api::Play>(p.clone())?;
-                    if let Some(id) = request.id
-                        && player.is_none()
-                    {
-                        let entry = film::Library::open(&dir)
-                            .and_then(|lib| lib.get(&id))
-                            .map_err(|e| unavailable(e.to_string()))?;
+                    if let Some(id) = request.id {
+                        if player.is_some() {
+                            return Err(unavailable("A film is already playing".into()));
+                        }
+                        let (path, meta) = if let Some(game) = id.strip_prefix("live:") {
+                            let path = crate::theater_ui::adapter::archive_path(&dir, game)
+                                .map_err(unavailable)?;
+                            let header = film::Reader::open(&path)
+                                .map_err(|e| unavailable(e.to_string()))?
+                                .header;
+                            (path, header.meta)
+                        } else {
+                            let entry = film::Library::open(&dir)
+                                .and_then(|lib| lib.get(&id))
+                                .map_err(|e| unavailable(e.to_string()))?;
+                            (entry.path, entry.meta)
+                        };
+                        if meta.source != film::Source::Host {
+                            return Err(unavailable(
+                                "Exact playback needs a host recording".into(),
+                            ));
+                        }
+                        if !image_stamps.iter().any(|stamp| meta.playable_here(stamp)) {
+                            return Err(unavailable(
+                                "Recording needs a different game build".into(),
+                            ));
+                        }
                         if request
                             .range
-                            .is_some_and(|[start, end]| start >= end || end > entry.meta.length_ticks)
+                            .is_some_and(|[start, end]| start >= end || end > meta.length_ticks)
                         {
                             return Err(RpcError::new(code::INVALID_PARAMS, "invalid clip range"));
                         }
@@ -161,13 +231,14 @@ pub(crate) fn library_methods(
                         let mut command = std::process::Command::new(exe);
                         command
                             .env("H2_FILM_DIR", &dir)
+                            .env("H2_THEATER_FILM_ID", &id)
                             .env_remove("H2_THEATER_RANGE");
                         if let Some([start, end]) = request.range {
                             command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
                         }
                         let child = command
                             .args(["theater", "play"])
-                            .arg(entry.path)
+                            .arg(path)
                             .arg("--data")
                             .arg(&data)
                             .arg("--disc")

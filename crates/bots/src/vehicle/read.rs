@@ -266,6 +266,106 @@ pub fn unit_position(m: &dyn GuestMemory, body: objects::Body) -> R<Vec3> {
     }
 }
 
+/// Whose finger fires the weapon `weapon` (its object datum): the biped
+/// that holds it, or — for a weapon mounted on a vehicle or turret — the
+/// player seated at it. The sim's shot accounting reads this
+/// (docs/runtime/sim.md §6): a handheld weapon's holder comes back for
+/// the caller to map to a player; a mounted one is resolved here,
+/// because the engine fires it from the seat, not from a biped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FiredBy {
+    /// A biped holds it: the unit to map to a player.
+    Holder(DatumHandle),
+    /// A vehicle or turret fires it, and this player (its slot in the
+    /// players array) sits at the seat that fires.
+    Seated(u32),
+}
+
+/// A weapon's firer ([`FiredBy`]). `None` when the weapon or its
+/// parent does not read, or a mounted one has nobody seated at it.
+pub fn firing_player(m: &dyn GuestMemory, weapon: DatumHandle) -> R<Option<FiredBy>> {
+    let Some((objects::WEAPON, gun)) = objects::get(m, weapon)? else {
+        return Ok(None);
+    };
+    let Some(parent) = gun.parent(m)? else {
+        return Ok(None);
+    };
+    match objects::get(m, parent)? {
+        Some((objects::BIPED, _)) => Ok(Some(FiredBy::Holder(parent))),
+        Some((objects::VEHICLE, body)) => {
+            Ok(seated_firer(m, parent, body)?.map(FiredBy::Seated))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The rider whose seat fires a weapon attached to the vehicle `vehicle`
+/// (its body `body`): a turret's gunner, a driving vehicle's driver, else
+/// the only rider. Its slot in the players array; `None` when the tag
+/// does not read or nobody rides.
+fn seated_firer(m: &dyn GuestMemory, vehicle: DatumHandle, body: objects::Body) -> R<Option<u32>> {
+    let Some(def) = body.definition(m)? else {
+        return Ok(None);
+    };
+    let Some(tag) = Tags.entry(m, def)? else {
+        return Ok(None);
+    };
+    if tag.group(m)? != VEHI {
+        return Ok(None);
+    }
+    let vehi = tag.address(m)?;
+    if vehi == 0 {
+        return Ok(None);
+    }
+    let class = Class::from_type(m.u16(vehi + VEHI_TYPE)?);
+    let count = m.i32(vehi + VEHI_SEATS)?.clamp(0, MAX_SEATS) as u32;
+    let base = if count > 0 {
+        m.u32(vehi + VEHI_SEATS + 4)?
+    } else {
+        0
+    };
+    let mut flags = [0u32; MAX_SEATS as usize];
+    let flags = &mut flags[..count as usize];
+    for (i, flag) in flags.iter_mut().enumerate() {
+        *flag = m.u32(base + i as u32 * SEAT_STRIDE + SEAT_FLAGS)?;
+    }
+    let seats = roles(flags);
+    let mut firer = None;
+    let mut any = None;
+    if let Some(players) = players::array(m)? {
+        for record in players.live_iter(m, 16)? {
+            let (handle, p) = record?;
+            if !p.listed(m)? {
+                continue;
+            }
+            let Some(unit) = p.unit(m)? else {
+                continue;
+            };
+            let Some((objects::BIPED, rider)) = objects::get(m, unit)? else {
+                continue;
+            };
+            if rider.parent(m)? != Some(vehicle) {
+                continue;
+            }
+            let seat = m.u16(rider.addr + UNIT_SEAT)? as i16;
+            let Some(&role) = usize::try_from(seat).ok().and_then(|i| seats.get(i)) else {
+                continue;
+            };
+            any.get_or_insert(u32::from(handle.index()));
+            let wants = if class == Class::Turret {
+                SeatRole::Gunner
+            } else {
+                SeatRole::Driver
+            };
+            if role == wants {
+                firer = Some(u32::from(handle.index()));
+                break;
+            }
+        }
+    }
+    Ok(firer.or(any))
+}
+
 /// What a phantom sees of vehicles: working vehicles, their occupants
 /// and its own seat. Outside a game, or with no objects, the view is empty.
 pub fn sight(m: &dyn GuestMemory, machine: [u8; 6]) -> R<Sight> {

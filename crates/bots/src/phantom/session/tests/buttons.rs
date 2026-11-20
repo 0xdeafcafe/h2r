@@ -151,6 +151,233 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
     g
 }
 
+fn active_pad() -> HostPadState {
+    let mut pad = pad(HostButton::South);
+    pad.buttons.set(HostButton::Start, true);
+    pad.left_stick = (0.75, -0.5);
+    pad.right_stick = (-0.75, 0.5);
+    pad.left_trigger = 0.75;
+    pad.right_trigger = 1.0;
+    pad
+}
+
+#[test]
+fn match_opening_waits_for_host_opacity_and_uses_the_first_open_sample() {
+    const PLAYER_GLOBALS: u32 = 0x0077_0000;
+    const GAME_ENGINE: u32 = 0x0077_1000;
+    let (ph, mut g, slot) = game_with_latency(
+        |f| {
+            let tick = f.tick;
+            assert_eq!(
+                f.frame,
+                u64::from(tick - 54),
+                "the brain sampled during the fade"
+            );
+            if tick < 57 {
+                pad(HostButton::East)
+            } else {
+                active_pad()
+            }
+        },
+        PhantomLatency {
+            ping_ms: Some(80.0),
+            jitter_ms: 0.0,
+        },
+    );
+    g.put_u32(points::PLAYER_GLOBALS.base, PLAYER_GLOBALS)
+        .put_u32(points::GAME_ENGINE.base, GAME_ENGINE)
+        .put_u32(
+            PLAYER_GLOBALS + guest::LOCAL_MAP,
+            DatumHandle::new(0xe000, 0).raw(),
+        );
+    for user in 1..guest::LOCAL_USER_COUNT {
+        g.put_u32(PLAYER_GLOBALS + guest::LOCAL_MAP + 4 * user, u32::MAX);
+    }
+    for (tick, opacity) in [(54, 0.5), (55, 0.25), (56, 0.125), (57, 0.0)] {
+        at_tick(&mut g, tick);
+        g.put_f32(GAME_ENGINE + guest::LOCAL_BLACK_OPACITY, opacity);
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |sample| {
+                let expected = if sample.tick == 57 {
+                    active_pad().to_gamepad(&Default::default(), false)
+                } else {
+                    input::Gamepad::default()
+                };
+                assert_eq!(sample.pad.gamepad, expected);
+                Some(fixture_record(sample.pad.gamepad))
+            },
+            guest_query,
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        g = run.guest;
+    }
+
+    // Another fade on the host's own seat is independent once play starts.
+    at_tick(&mut g, 58);
+    g.put_f32(GAME_ENGINE + guest::LOCAL_BLACK_OPACITY, 1.0);
+    let g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+}
+
+#[test]
+fn dedicated_match_follows_the_retail_opening_clock() {
+    let (ph, mut g, slot) = game(|_| active_pad());
+    for (tick, trigger) in [(55, 0.0), (56, 1.0)] {
+        at_tick(&mut g, tick);
+        g = gather(&ph, g, slot);
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), trigger);
+    }
+}
+
+#[test]
+fn a_phantom_respawn_gates_only_its_own_pad_until_the_fade_ends() {
+    let (ph, mut g, slot) = game(|_| active_pad());
+    let other = ph
+        .add(
+            Identity {
+                gamertag: "Clanker Two".into(),
+                xuid: 2,
+            },
+            None,
+            Box::new(TimedSource(
+                |_: &Frame<'_>| active_pad(),
+                PhantomLatency {
+                    ping_ms: Some(0.0),
+                    jitter_ms: 0.0,
+                },
+            )),
+        )
+        .unwrap();
+    ph.tick(&mut g, 2).unwrap();
+    game_makes(&mut g, 2, machine_id(other), [1., 0., 0.]);
+    ph.tick(&mut g, 3).unwrap();
+    let other_slot = slot_of(&g, machine_id(other)).unwrap().unwrap();
+    g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+    g = gather(&ph, g, other_slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+
+    let player = PLAYERS_DATA + 0x21c;
+    let unit = DatumHandle::new(0xb101, 1);
+    g.put_u32(player + 0x2c, unit.raw())
+        .put_u16(OBJECTS_DATA + 0xc, unit.salt());
+    for age in 1..=10 {
+        at_tick(&mut g, 100 + age);
+        g.put_u32(player + guest::PLAYER_SPAWN_GRACE, 30 - age);
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |sample| {
+                let expected = if sample.tick == 110 {
+                    active_pad().to_gamepad(&Default::default(), false)
+                } else {
+                    input::Gamepad::default()
+                };
+                assert_eq!(sample.pad.gamepad, expected);
+                Some(fixture_record(sample.pad.gamepad))
+            },
+            guest_query,
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        g = gather(&ph, run.guest, other_slot);
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+    }
+}
+
+#[test]
+fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
+    use crate::{
+        Brain, arms,
+        cache::MapData,
+        los::Walls,
+        mind::{Doing, Skill},
+        tuning::{AimModel, Tuning},
+    };
+    use engine::tags::{entry_layout, index_layout};
+    use engine::view::objects;
+    use std::sync::Arc;
+
+    // A tiny move across the wall's edge used to reuse a blocked ray
+    // until the next visibility phase. Both endpoints are in gun range.
+    let wall = [[2., -3., -1.], [2., 0., -1.], [2., 0., 3.], [2., -3., 3.]];
+    let map = Arc::new(MapData {
+        walls: Walls::from_polygons([wall.as_slice()]),
+        ..Default::default()
+    });
+    let mut brain = Brain::new(Skill::Legendary, 17).with_tuning(Tuning {
+        perception_ticks: Some(0),
+        motor_ticks: Some(0),
+        button_sigma_ms: Some(0.0),
+        aim_model: Some(AimModel::Code),
+        burst: Some(false),
+        ..Default::default()
+    });
+    // This fixture has zero transport and controller delay so the action
+    // carries the current brain report. The skill reaction still applies.
+    let (ph, mut g, slot) = game(move |frame| {
+        assert_ne!(frame.machine, [0; 6]);
+        let tick = frame.tick;
+        let pad = brain.pad_in_map(frame, Some(&map));
+        assert_eq!(
+            brain.mind.doing == Doing::Fight(2),
+            (101..116).contains(&tick),
+            "phantom chose a target on tick {tick}"
+        );
+        pad
+    });
+
+    game_makes(&mut g, 2, MAC_B, [-1., 0., 0.]);
+    let own = BODY + 0x400;
+    let enemy = BODY + 0x800;
+    g.put_f32(enemy + 0x64, 4.)
+        .put_f32(enemy + 0x6c, 0.2)
+        .put_f32(own + 0xec, 1.)
+        .put_f32(own + 0xf0, 1.);
+
+    // A full battery weapon in the phantom's current weapon slot.
+    const INDEX: u32 = 0x0076_0000;
+    const ENTRIES: u32 = INDEX + 0x1000;
+    const WEAPON_TAG: u32 = ENTRIES + 0x1000;
+    let def = DatumHandle::new(0xa003, 0).raw();
+    let weapon = DatumHandle::new(0xb003, 3);
+    let header = OBJECTS_DATA + 3 * 0xc;
+    let body = BODY + 3 * 0x400;
+    g.put_u32(points::TAG_INDEX.base, INDEX)
+        .put_u32(INDEX + index_layout::TAG_COUNT, 1)
+        .put_u32(points::TAG_ENTRIES.base, ENTRIES)
+        .put_u32(ENTRIES + entry_layout::GROUP, u32::from_be_bytes(*b"weap"))
+        .put_u32(ENTRIES + entry_layout::DATUM, def)
+        .put_u32(ENTRIES + entry_layout::ADDRESS, WEAPON_TAG)
+        .map(WEAPON_TAG, 0x400)
+        .put_u16(header, weapon.salt())
+        .put_u8(header + 3, objects::WEAPON)
+        .put_u32(header + 8, body)
+        .put_u32(body, def)
+        .put_u32(body + 0x14, DatumHandle::new(0xb001, 1).raw())
+        .put_u8(own + arms::UNIT_WEAPON_INDEX, 0)
+        .put_u32(own + arms::UNIT_WEAPONS, weapon.raw());
+    assert!(arms::read(&g, own).unwrap().held.unwrap().ready());
+
+    let mut fired = false;
+    for tick in 100..=116 {
+        let exposed = (101..116).contains(&tick);
+        at_tick(&mut g, tick);
+        g.put_f32(enemy + 0x68, if exposed { 0.04 } else { -0.04 });
+        g = gather(&ph, g, slot);
+        let trigger = g.f32(OUT + 0x14).unwrap();
+        if exposed {
+            fired |= trigger > 0.;
+        } else {
+            assert_eq!(trigger, 0., "phantom fired into cover on tick {tick}");
+        }
+    }
+    assert!(fired, "the phantom must fire while the enemy is exposed");
+}
+
 #[test]
 fn missed_build_revalidates_one_previous_action_then_resumes_fresh_input() {
     let (ph, g, slot) = game(|f| HostPadState {
