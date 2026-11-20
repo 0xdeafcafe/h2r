@@ -26,7 +26,7 @@ Labels used in the tables:
 
 Disassembly came from a linear sweep of the analyzer's function starts with
 `iced-x86`, kept in scratch space (`$TMPDIR`). Addresses are guest virtual
-addresses. The walkers are listed in [engine-map.md](../engine/engine-map.md#ui-tag-walkers-2026-11-15).
+addresses. The walkers are listed in [engine-map.md](../engine/engine-map.md#ui-tag-walkers).
 
 ## The tag graph
 

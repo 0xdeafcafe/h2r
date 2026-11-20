@@ -1,8 +1,11 @@
 # Havok at run time: world, bodies and contacts
 
+Status: Reference. Code: `crates/live-telemetry/src/havok.rs`,
+`crates/live-telemetry/src/havok_agents.rs`. Switch: none.
+
 How the retail game keeps its Havok world in guest memory, as far as
 `havok.bodies`, `havok.contacts` and `havok.agents` read it
-([agent-api.md](../runtime/agent-api.md), "havok"). Written 2026-11-18 for
+([agent-api.md](../runtime/agent-api.md), "havok"). It serves
 the superbounce work ([superbounce.md](../game/superbounce.md)): which
 surface pushed the biped's body, and how hard.
 
