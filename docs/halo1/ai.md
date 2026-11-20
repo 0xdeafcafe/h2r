@@ -518,10 +518,20 @@ encode `0x80000000 | local_squad << 16 | encounter`. The converter uses
 these indices to retain named targets, including on a50 and b40. The
 native migration evaluator requires a squad datum (`0x002a54cc`).
 Direct placements of empty squads with a defined actor use authored
-positions from that squad's movement or firing groups. This site-selection
-rule is an inference. Examples include a50's `marines_initial/marines_a`.
+positions from that squad's movement or firing groups. Examples include
+a50's `marines_initial/marines_a`.
 b40's `a2_top_cov/grunt_sniper` names only firing group Y, and its
-encounter has no position in that group, so it gets no sites. b40's
+encounter has no position in that group, so no site of any kind can be
+authored for it: it converts to a squad datum with zero starting
+locations, stays named and addressable, and a placement of it selects
+no start and spawns nothing. Halo 1's actor machinery walks the same
+authored starting-location records (Halo 1 `0x0015d3e9`–`0x0015d414`
+iterate them at stride `0x1c`, actor at `+0x18`, initial state at
+`+0x16`), and grunt_sniper authors none. The engine the converted map
+runs proves the outcome: the native selector (Halo 2 `0x002039d0`)
+reads the squad's starting-location count and, with none selectable,
+both passes fall through to `orl $-1, %eax` at `0x00203bb3`; it has no
+move-position or firing-group fallback of its own. b40's
 `a2_bottom_cov/grunts_tub` has no actor or start to instantiate. Both
 remain addressable for migration.
 

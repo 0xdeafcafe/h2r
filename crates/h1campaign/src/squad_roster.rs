@@ -214,6 +214,42 @@ mod tests {
     }
 
     #[test]
+    fn a_squad_with_no_authored_site_spawns_nothing() {
+        // b40's a2_top_cov/grunt_sniper: group Y holds no firing position of
+        // its encounter and the squad has no move positions, so no site can
+        // be authored and the native selector (Halo 2 0x002039d0, both
+        // passes falling through to `orl $-1` at 0x00203bb3) selects no
+        // start: the squad stays empty and addressable.
+        let mut q = Squad {
+            name: "grunt_sniper".into(),
+            actor: 2,
+            platoon: -1,
+            initial_state: 6,
+            return_state: 3,
+            flags: 0,
+            unique_leader: 0,
+            maneuver_to: -1,
+            delay: 1.,
+            groups: [1 << 24, 0, 0, 0, 0, 0, 0],
+            normal_count: 4,
+            insane_count: 4,
+            major_upgrade: 0,
+            respawn: [0; 3],
+            respawn_delay: [0.; 2],
+            move_positions: vec![],
+            starting_locations: vec![],
+        };
+        let elsewhere = [FiringPosition {
+            position: [0., 1., 2.],
+            group: 1,
+            cluster: 2,
+            surface: 13,
+        }];
+        spawn_locations(&mut q, &elsewhere);
+        assert!(q.starting_locations.is_empty());
+    }
+
+    #[test]
     #[ignore = "reads H1_ISO"]
     fn campaign_scripts_keep_their_squad_targets_and_fit_the_pools() {
         use std::io::{BufReader, Cursor};
@@ -245,7 +281,9 @@ mod tests {
                 // positions or its firing groups. b40's
                 // `a2_top_cov/grunt_sniper` names only group Y, which holds
                 // no firing position in its encounter, so it has none and
-                // stays an empty, addressable squad.
+                // stays an empty, addressable squad: the native selector
+                // (Halo 2 0x002039d0) selects no start for a squad with no
+                // starting locations and places nothing.
                 let mask = q.groups.iter().fold(0, |a, &g| a | g);
                 let authored = !q.move_positions.is_empty()
                     || before[ei]
@@ -258,6 +296,15 @@ mod tests {
                     && authored
                 {
                     assert!(!target.starting_locations.is_empty(), "{level} {}", q.name);
+                }
+                if level == "b40"
+                    && !authored
+                    && q.starting_locations.is_empty()
+                    && q.actor >= 0
+                {
+                    // The squad with no authored site of any kind stays
+                    // named and empty: placement selects no start for it.
+                    assert!(target.starting_locations.is_empty(), "{level} {}", q.name);
                 }
             }
             let count: usize = ai.encounters.iter().map(|e| e.squads.len()).sum();
