@@ -14,6 +14,8 @@ pub mod native_gels;
 #[cfg(feature = "native-render")]
 pub mod native_hud;
 #[cfg(feature = "native-render")]
+pub mod native_layers;
+#[cfg(feature = "native-render")]
 pub mod native_lights;
 #[cfg(feature = "native-render")]
 pub mod native_map_work;
