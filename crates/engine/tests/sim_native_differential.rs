@@ -1,12 +1,14 @@
 //! Private XBE as the oracle, synthetic mutable data. Every store is
 //! compared in order (including spills and writes subsequently overwritten).
+//! The lifted original, the image and the register conversion are
+//! `lifted`'s (docs/engine/shadow-exec.md).
 #![cfg(feature = "differential")]
-
-mod common;
 
 use engine::{points, sim_native as sim};
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
+use lifted::Code;
+use lifted::cpu::to_interp as ir_cpu;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use std::collections::BTreeMap;
 
@@ -74,35 +76,10 @@ impl interp::Memory for Ram<'_> {
     }
 }
 
-fn ir_cpu(c: &CpuAbi) -> Cpu {
-    Cpu {
-        gpr: [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi],
-        eip: c.eip,
-        fs_base: c.fs_base,
-        eflags: c.eflags,
-        flags_valid: c.eflags_defined,
-        xmm: c.xmm.map(u128::from_le_bytes),
-        mxcsr: c.mxcsr,
-        x87: interp::X87 {
-            st: c.x87.st,
-            control: c.x87.control,
-            status: c.x87.status,
-            tag: c.x87.tag,
-            opcode: c.x87.opcode,
-            instruction_pointer: c.x87.instruction_pointer,
-            data_pointer: c.x87.data_pointer,
-            instruction_selector: c.x87.instruction_selector,
-            data_selector: c.x87.data_selector,
-        },
-        ..Cpu::default()
-    }
-}
-
 struct Oracle<'a> {
     point: u32,
     image: &'a [u8],
-    lifter: &'a lift::Lifter<'a>,
-    cache: BTreeMap<u32, ir::IrInsn>,
+    original: lifted::Original,
 }
 
 impl Oracle<'_> {
@@ -185,16 +162,11 @@ impl Oracle<'_> {
                 c.gpr[0] = result;
                 continue;
             }
-            if !self.cache.contains_key(&pc) {
-                let f = self
-                    .lifter
-                    .lift(pc)
-                    .unwrap_or_else(|| panic!("function at {pc:#x}"));
-                for insn in f.blocks.into_values().flat_map(|b| b.insns) {
-                    self.cache.insert(insn.pc, insn);
-                }
-            }
-            pc = interp::step(c, mem, &self.cache[&pc])
+            let insn = self
+                .original
+                .insn(pc)
+                .unwrap_or_else(|| panic!("function at {pc:#x}"));
+            pc = interp::step(c, mem, insn)
                 .unwrap_or_else(|e| panic!("at {pc:#x}: {e:?}"))
                 .target();
         }
@@ -202,35 +174,12 @@ impl Oracle<'_> {
     }
 }
 
-struct Fixture {
-    bytes: Vec<u8>,
-    image: Vec<u8>,
-    analysis: analyze::Analysis,
-}
-
 fn exercise(point: &points::Point, cases: fn(&mut Oracle<'_>)) {
-    static FIXTURE: std::sync::OnceLock<Fixture> = std::sync::OnceLock::new();
-    let fixture = FIXTURE.get_or_init(|| {
-        let path =
-            common::xbe_path().expect("set H2_XBE to the private base image for this oracle");
-        let bytes = std::fs::read(path).unwrap();
-        assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256);
-        let xbe = xbe::Xbe::parse(&bytes).unwrap();
-        let analysis = analyze::analyze(&xbe).unwrap();
-        let image = lift::harness::load_image(&xbe).unwrap().bytes;
-        Fixture {
-            bytes,
-            image,
-            analysis,
-        }
-    });
-    let xbe = xbe::Xbe::parse(&fixture.bytes).unwrap();
-    let lifter = lift::Lifter::new(&fixture.analysis, &xbe).unwrap();
+    let image = lifted::image::Image::require();
     let mut oracle = Oracle {
         point: point.base,
-        image: &fixture.image,
-        lifter: &lifter,
-        cache: BTreeMap::new(),
+        image: &image.ram.bytes,
+        original: image.original(),
     };
     cases(&mut oracle);
 }

@@ -57,6 +57,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "input",
+ "lifted",
  "live-proto",
  "live-telemetry",
  "map",
@@ -663,6 +664,7 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
+ "lifted",
  "live-hle",
  "live-proto",
  "live-telemetry",
@@ -1907,6 +1909,7 @@ dependencies = [
  "analyze",
  "ir",
  "lift",
+ "lifted",
  "mopp",
  "paste",
  "runtime",
@@ -1973,6 +1976,7 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "lifted",
  "native-render",
  "runtime",
  "runtime-test-probe",
