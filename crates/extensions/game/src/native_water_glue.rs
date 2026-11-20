@@ -1,8 +1,11 @@
 //! The native water's host (docs/graphics/native-water-fog.md, "Stage 4b:
 //! water and the rest"): over the native world's loaded BSP, it compiles
 //! the transparent parts' layer-6 passes at the load ([`load`]), and at
-//! the layer-6 call asks the D3D device for one external pass per view
-//! (`render_bridge::native_water`).
+//! the layer-6 call puts the view's water in the frame step's scene
+//! (`frame_scene::WaterState`) and draws the scene's copy as one pass per
+//! view (`render_bridge::native_water`): a scene stage the render thread
+//! prepares and records when it takes them, else reserved here
+//! (`native_fog_glue::commit_late`, docs/graphics/framescene.md, slice 5).
 //!
 //! Sampled render targets use the texture header embedded at `+4` in the
 //! target descriptor (`0x004b4b58`, stride `0x98`). The resolver at
@@ -23,6 +26,7 @@ use native_render::look::{self, Stage};
 use native_render::program::ViewInputs;
 use native_render::water_gpu::{self, Supply, WaterSet, WATER_LAYER};
 use native_render::world::{LightmapKey, Owner, World};
+use frame_scene::LatePart;
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
@@ -243,20 +247,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             };
             headers.push(header);
         }
+        // With a render thread that records scene stages, everything here
+        // is extraction; the water's preparation and recording run on the
+        // render thread (docs/graphics/framescene.md, slice 5).
+        let scene = d.queues_scene_stages(Stage::Water);
+        let planning = timeline::native::Timer::start(Stage::Water, if scene { Metric::ExtractNs } else { Metric::PrepareNs });
         // The fog state, as the fog's (a water pass that reads the fog
         // register gets the device's).
         let device_words = crate::native_fog_glue::device_fog_words(&d, mem);
-        let mut fogs = HashMap::new();
-        for (&material, words) in &water.words {
-            let resolved = match words.resolve(&device_words) {
-                Some(w) => w,
-                None => return None,
-            };
-            fogs.insert(material, crate::native_fog_glue::fog_of(&resolved));
-        }
+        let materials = crate::native_fog_glue::resolve_materials(&water.words, &device_words)?;
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
-        let planning = timeline::native::Timer::start(Stage::Water, Metric::PrepareNs);
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
         let (selected, cleared) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
@@ -268,44 +269,48 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             accepted
         })?;
         let masks = preview.finish()?;
-        let ranges = selected.len();
-        if ranges == 0 {
+        if selected.is_empty() {
             return None;
         }
+        // The view's water into the frame step's scene; the stage draws
+        // the scene's copy. A view the scene cannot take stays on the D3D
+        // path.
+        let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
+        let late = render_bridge::scene_step::late_layer(&*mem, WATER_LATE_LAYER, true, device_words, &materials, &parts)?;
+        let fogs = crate::native_fog_glue::late_fogs(&late.materials);
+        let selected = crate::native_fog_glue::late_selected(&late.parts);
+        let ranges = selected.len();
         let writes_depth = water
             .programs
             .values()
             .any(|passes| passes.iter().any(|p| p.state.depth_write));
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
-        let pass = Box::new(WaterViewPass {
-            ready: Arc::clone(&ready),
-            selected: selected.into_iter().map(|item| (item.owner, item.part)).collect(),
-            fogs,
-            headers,
-            samples_view: water.samples_view,
-            view: None,
-            w_clip: None,
-            writes_depth,
-            run: u64::from(d.swap_count()).wrapping_add(1),
-        });
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = || -> Box<dyn d3d::ExternalPass> {
+            Box::new(WaterViewPass {
+                ready: Arc::clone(&ready),
+                selected: selected.clone(),
+                fogs: fogs.clone(),
+                headers: headers.clone(),
+                samples_view: water.samples_view,
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
         drop(planning);
-        let reservation = d
-            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-            .ok()??;
-        // Keep this load pinned until the masks and the sealed commands commit.
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+        if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
             return None;
         }
-        if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
-            Stage::Water.count(Metric::RefusedMasks, ranges as u64);
-            return None;
-        }
-        reservation.commit();
+        render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
         Some(cleared)
     }
 }
+
+/// The water's layer, as the scene names it.
+const WATER_LATE_LAYER: u8 = WATER_LAYER as u8;
 
 static TARGET_UNREADABLE: AtomicBool = AtomicBool::new(false);
 

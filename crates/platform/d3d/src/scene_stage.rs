@@ -58,11 +58,11 @@ pub fn stood_down(stage: Stage) -> bool {
 }
 
 /// `scene_stages_<stage>` and `scene_dropped_<stage>` of the stages that
-/// queue scene stages, the world and the objects (`render.scene`'s
-/// counters).
+/// queue scene stages: the world and the objects (slice 2), the fog and
+/// the water (slice 5) (`render.scene`'s counters).
 pub fn counters() -> Vec<(String, u64)> {
     let mut out = Vec::new();
-    for stage in [Stage::World, Stage::Objects] {
+    for stage in [Stage::World, Stage::Objects, Stage::Fog, Stage::Water] {
         let i = index(stage);
         out.push((format!("scene_stages_{}", stage.name()), QUEUED[i].load(Ordering::Relaxed)));
         out.push((format!("scene_dropped_{}", stage.name()), DROPPED[i].load(Ordering::Relaxed)));

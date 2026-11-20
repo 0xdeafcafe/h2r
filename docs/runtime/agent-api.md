@@ -30,7 +30,7 @@ connection to hold `session.claim`.
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
-| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
+| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -444,6 +444,7 @@ empty manifold is still a candidate in the query box.
 | `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), the numbers `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
+| `profile.memory` | none | the flat RAM window's counters (below) |
 | `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
 
@@ -452,6 +453,7 @@ h2 agent counters
 h2 agent capture 900                 # 900 game ticks, about 30 s
 h2 agent capture 10000ms sample      # h2 built --features perf
 h2 agent fallbacks 20
+h2 agent flatmem
 h2 agent faults
 ```
 
@@ -504,6 +506,21 @@ h2 agent faults
   modules also report `cold_entries` (interpreter invocations for omitted
   owners) and `cold_sites` (distinct owner/selector pairs); the boot log
   names each pair on first use.
+- **Flat RAM window.** `profile.memory` answers the counters of every
+  runtime's flat RAM window in the process, summed
+  (`runtime::window::process_stats`, answered by boot's agent glue;
+  [contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md),
+  section 4.1). They are always on. `windows` is how many there are and
+  `aliased` how many hold RAM (guest RAM is aliasable once a flat-RAM
+  module is registered, or from the start with `H2_FLAT_RAM=1` at run
+  time). `fixups` counts faulting accesses sent to their slow path; the
+  null window a context uses with fast memory off is not counted. `pages_outside` counts mapped guest pages the window does not
+  hold: non-congruent with their backing, sharing a host page with one,
+  byte-granular or armed by the access trap. Each costs a fault and the
+  helper per access once flat accesses are emitted. `congruence_skipped`
+  is the physical RAM, in bytes, the congruent allocator jumped over to
+  give a fresh allocation the residue of its address. A slow page shows as
+  `fixups` rising or `pages_outside` above zero.
 - **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the
   fault census (`runtime::fault_census`,
   [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)):
@@ -733,31 +750,58 @@ h2 agent render.parity '{"arm": true}'
   framescene.md, slice 3), its model decorator draws (one per
   placement), their instances and the draws the guest still draws
   (`decorators`, `decorator_instances`, `decorator_remainder`;
-  native-decorators.md), and carried ops by slot
+  native-decorators.md), its late passes when they ran (framescene.md,
+  slice 5): `fog` (layer 16) and `water` (layer 6), each `{draws, items,
+  materials, parts, drawn, kept, device_words}` (whether the layer's own
+  gate held, its items in the list, the materials and parts the native
+  stage draws, whether the stage took the layer, the items the guest
+  still draws, the device fog words of 7 that read), and `post`,
+  `{colour, late, view_kind, screen_effects, screen_effects_gated,
+  colour_pass, effects}` (`render_screen_effects`' arguments and gates,
+  whether the colour pass ran, the screen effects drawn under it); each
+  absent when its draw did not run in the view; and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
   did not read), `scene_decorator_draws`, `scene_decorator_instances`,
-  `scene_decorator_remainder`, `scene_light_groups`, `scene_light_groups_whole` (the
+  `scene_decorator_remainder`, and the decorator stage's
+  `scene_decorator_views`, `scene_decorator_views_native`,
+  `scene_decorator_items_skipped`, `scene_decorator_draws_unready` and
+  `scene_decorator_views_declined` (native-decorators.md), `scene_light_groups`, `scene_light_groups_whole` (the
   gathered light and shadow layers in the scene, and those with every
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
-  from the scene with no handler run), `scene_light_entries` and
+  from the scene with no handler run), `scene_light_objects_alone`
+  (their object entries: model parts drawn with no handler),
+  `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
   `callback`, `owner`, `section`, `range`, `state`, `subparts`,
-  `material`, `pose`; framescene.md, slice 4), and from `d3d::scene_stage`
-  `scene_stages_world`, `scene_stages_objects`, the scene stages queued
-  to the render thread, and `scene_dropped_world`,
-  `scene_dropped_objects`, those it could not record after the guest
-  skipped their items; framescene.md, slice 2; later slices add
+  `material`, `pose`; framescene.md, slice 4),
+  `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
+  `scene_fog_parts` and the same four for `scene_water_` (late layers
+  written, of those whose gate held, those the native stage took, and
+  the parts it took), `scene_post_views`, `scene_post_colour`,
+  `scene_post_effects` and `scene_post_unplaced` (post calls whose words
+  did not read, and colour passes or screen effects with no post call of
+  their view; slice 5), and from `d3d::scene_stage`
+  `scene_stages_<stage>`, the scene stages queued to the render thread,
+  and `scene_dropped_<stage>`, those it could not record after the guest
+  skipped their items, for `world` and `objects` (framescene.md, slice
+  2) and `fog` and `water` (slice 5); with `frame-scene.layers`
+  in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
+  `layer_plan_items` and the plan's outcomes by layer,
+  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
+  (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
   `scene_unresident`, `scene_readback`, `scene_held_draws`). With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
   with site `scene`, `alternate`, `first_person`, `light`,
-  `object_shadow` or `other`; `light_passes`, `object_shadow`,
-  `screen_effects`), each `{calls, d3d_draws, seed_steps,
+  `object_shadow` or `other`, the late passes' fog and water calls
+  being `layer.scene.16` and `layer.scene.6`; `light_passes`,
+  `object_shadow`, `screen_effects`, and under it `colour_pass` and
+  `screen_effect`), each `{calls, d3d_draws, seed_steps,
   effects_seed_steps, seed_unmatched, animation_gets,
   particle_updates}`: the guest draws handed to the D3D backend under
   the entry, the steps of the shared random seeds `+0` and `+4`, calls

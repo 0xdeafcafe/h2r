@@ -91,6 +91,7 @@ are under [Reviews](#reviews).
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
 - [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
+- [native-shadow-layers.md](graphics/native-shadow-layers.md): shadow layers 10, 11 and 14 drawn from the scene's gathered groups (design): the compiler from tags, the raster state, the guest targets and the object filter, the slices and their checks
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
 - [native-decals-research.md](graphics/native-decals-research.md): native decals: the dynamic decal path read from the guest code and its draw admission

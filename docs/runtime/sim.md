@@ -30,7 +30,7 @@ choice to check before building on it.
 ## 1. What a headless run does today
 
 `h2 run` and `h2 serve` are headless: `boot::run_hosted` with
-`Host::default()` (crates/apps/boot/src/lib.rs). Per frame of gameplay, this is
+`Host::default()` (crates/extensions/game/src/run_opts.rs). Per frame of gameplay, this is
 what runs on the one host thread that drives every guest thread
 (**Code**, numbers **Doc** from [gameplay-budget.md](../perf/notes/gameplay-budget.md),
 Old Mombasa, "Render front-end versus simulation"):

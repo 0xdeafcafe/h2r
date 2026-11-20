@@ -37,6 +37,8 @@ pub mod decal_gpu;
 pub mod decorators;
 #[cfg(feature = "gpu")]
 pub mod decorators_gpu;
+#[cfg(feature = "gpu")]
+pub mod decorators_load;
 pub mod effect_geometry;
 pub mod effect_immediate;
 pub mod fog;
@@ -61,6 +63,8 @@ pub mod light_list;
 pub mod light_scene;
 #[cfg(feature = "gpu")]
 pub mod light_look;
+#[cfg(feature = "gpu")]
+pub mod light_models;
 pub mod lights;
 #[cfg(feature = "gpu")]
 pub mod load;
@@ -85,7 +89,6 @@ pub mod object_streams;
 pub mod particles;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
-pub mod post;
 #[cfg(feature = "gpu")]
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
@@ -102,4 +105,4 @@ pub mod world;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;
 
-pub use scene_extract::layout::{aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, skip, world_layers, world_ranges};
+pub use scene_extract::layout::{aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip, world_layers, world_ranges};

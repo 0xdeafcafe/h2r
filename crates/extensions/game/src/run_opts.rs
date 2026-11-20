@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Options for [`run`].
+/// Options for `boot::run`.
 #[derive(Debug, Clone)]
 pub struct RunOpts {
     /// The XISO, mounted as the DVD drive.
@@ -15,7 +15,7 @@ pub struct RunOpts {
     /// Register crates/platform/xapi (`xapi::register`) and pump its input.
     pub xapi: bool,
     pub transfers_per_slice: u64,
-    /// Install crates/apps/boot's kernel stopgaps (see stopgaps.rs).
+    /// Install our kernel stopgaps (stopgaps.rs).
     pub stopgaps: bool,
     /// Kernel-call trace output (TSV), see trace.rs.
     pub trace: Option<PathBuf>,
@@ -71,7 +71,7 @@ pub struct Host {
     #[cfg(feature = "gpu")]
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
     /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
-    /// [`d3d_glue::render_thread_requested`].
+    /// [`crate::d3d_glue::render_thread_requested`].
     pub render_thread: bool,
     #[cfg(feature = "local-io")]
     /// Where the logical-time audio output plays (an audio device), instead

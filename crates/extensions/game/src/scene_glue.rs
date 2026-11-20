@@ -1,6 +1,7 @@
 //! `render.scene`'s source (docs/runtime/agent-api.md): the frame step's
 //! last sealed `FrameScene` (`render_bridge::scene_step`, docs/graphics/framescene.md),
-//! summarised per view, and written whole as JSON on `dump`; with the
+//! summarised per view (with its fog, water and post passes, slice 5), and
+//! written whole as JSON on `dump`; with the
 //! scene stages each typed stage queued to the render thread and dropped
 //! there (`d3d::scene_stage`); and with `frame-scene.census`, the entry
 //! census (`render_bridge::entry_census`) over the device's count of draws
@@ -9,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agent_proto::{SceneEntries, SceneEntryRecord, SceneReply, SceneViewRecord};
+use agent_proto::{SceneEntries, SceneEntryRecord, SceneLateRecord, ScenePostRecord, SceneReply, SceneViewRecord};
 use frame_scene::FrameScene;
 
 /// Registers the source with the agent, and the D3D draw counter with the
@@ -47,6 +48,7 @@ fn source(dump: bool) -> Result<SceneReply, String> {
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
+        .chain(render_bridge::native_layers::counters())
         .collect();
     let Some(scene) = render_bridge::scene_step::last() else {
         return Ok(SceneReply { counters, entries: entries(), ..SceneReply::default() });
@@ -96,12 +98,37 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     decorators: d.draws,
                     decorator_instances: d.instances,
                     decorator_remainder: d.remainder,
+                    fog: v.fog.as_ref().map(|l| late(scene, l)),
+                    water: v.water.as_ref().map(|l| late(scene, l)),
+                    post: v.post.as_ref().map(|p| ScenePostRecord {
+                        colour: p.colour,
+                        late: p.late,
+                        view_kind: p.view_kind,
+                        screen_effects: p.screen_effects,
+                        screen_effects_gated: p.screen_effects_gated,
+                        colour_pass: p.colour_pass.is_some(),
+                        effects: p.effects.len() as u32,
+                    }),
                 }
             })
             .collect(),
         counters,
         entries: None,
         dump: None,
+    }
+}
+
+/// A late layer's summary (docs/graphics/framescene.md, slice 5).
+fn late(scene: &FrameScene, layer: &frame_scene::LateLayer) -> SceneLateRecord {
+    let c = scene.late_counts(layer);
+    SceneLateRecord {
+        draws: c.draws,
+        items: c.items,
+        materials: c.materials,
+        parts: c.parts,
+        drawn: c.drawn,
+        kept: c.kept,
+        device_words: c.device_words,
     }
 }
 
@@ -194,6 +221,16 @@ mod tests {
         let instance = frame_scene::DecoratorInstance { index: 0, model: 0, first_index: 0, index_count: 3, registers: [[0.0; 4]; 5] };
         b.push_decorator(decorator, &[instance, instance]).unwrap();
         b.add_decorator_remainder(1).unwrap();
+        let key = ViewKey { kind: ViewKind::Game, player: 0, view: 0 };
+        let parts = [frame_scene::LatePart { owner: frame_scene::Owner::Cluster(3), part: 0 }];
+        let device = [Some(1), Some(3), Some(0), Some(0), Some(0), Some(0), None];
+        b.set_late(key, 16, frame_scene::LateInput { draws: true, device, items: Some(4), materials: &[], parts: &parts }).unwrap();
+        b.late_drawn(key, 16).unwrap();
+        b.set_post(key, frame_scene::PostParams {
+            colour: true, late: false, view_kind: 1, screen_effects: 1, screen_effects_gated: true, colour_pass: None, effects: 0..0,
+        })
+        .unwrap();
+        b.post_colour(key, [0; 7]).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
         assert!(r.sealed);
@@ -207,6 +244,11 @@ mod tests {
         assert_eq!((v.layer_items.clone(), v.layer_remainder), (BTreeMap::from([("5".to_owned(), 2)]), 1));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
         assert_eq!((v.decorators, v.decorator_instances, v.decorator_remainder), (1, 2, 1));
+        let fog = v.fog.expect("the fog ran");
+        assert_eq!((fog.draws, fog.items, fog.parts, fog.drawn, fog.kept, fog.device_words), (true, 4, 1, true, 3, 6));
+        assert!(v.water.is_none(), "the water did not run");
+        let post = v.post.expect("the post passes ran");
+        assert_eq!((post.colour, post.colour_pass, post.effects, post.view_kind), (true, true, 0, 1));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }
 }

@@ -62,4 +62,4 @@ Range admission requires the original sorted entry, matching shader and part, a 
 
 ## Related
 
-[native-lights.md](native-lights.md), [layer-draw.md](layer-draw.md), [e3-lighting.md](e3-lighting.md), [native-ab.md](notes/native-ab.md).
+[native-lights.md](native-lights.md), [native-shadow-layers.md](native-shadow-layers.md) (the design for recording these layers from the scene), [layer-draw.md](layer-draw.md), [e3-lighting.md](e3-lighting.md), [native-ab.md](notes/native-ab.md).
