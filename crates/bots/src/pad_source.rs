@@ -22,9 +22,42 @@ pub struct Frame<'a> {
     pub guest: &'a dyn GuestMemory,
 }
 
+/// What the read phase of a split sample gave ([`PadSource::observe`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sampled {
+    /// The pad, with nothing left to think.
+    Pad(HostPadState),
+    /// A think is staged: call [`PadSource::think`], then
+    /// [`PadSource::conclude`].
+    Think,
+}
+
 /// Where a bot's pad comes from: one pad per frame.
+///
+/// A sample can also be taken in three phases (`crate::think`,
+/// docs/game/bots.md §5.5): [`PadSource::observe`] on the game thread,
+/// in seat order, reads everything from the guest and the host;
+/// [`PadSource::think`] on any thread touches only the source's own state
+/// and read-only shared data; [`PadSource::conclude`] on the game thread,
+/// in seat order, publishes what the think said. `pad` is the three in a
+/// row and gives the same pad.
 pub trait PadSource: Send {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState;
+
+    /// The read phase. A source with nothing worth moving off the game
+    /// thread gives its pad here.
+    fn observe(&mut self, f: &Frame<'_>) -> Sampled {
+        Sampled::Pad(self.pad(f))
+    }
+
+    /// The think staged by [`PadSource::observe`]. No guest memory and no
+    /// host-wide mutable state.
+    fn think(&mut self) -> HostPadState {
+        HostPadState::default()
+    }
+
+    /// Publishes what the last think said to the other bots.
+    fn conclude(&mut self) {}
 
     fn brain_view(&self) -> Option<crate::BrainView> {
         None

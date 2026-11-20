@@ -624,6 +624,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
 | Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
+| Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial; pipelined is a different match (pads a tick later, latency kept) that is equally reproducible ([bots.md §5.5](../game/bots.md)) |
 | The bots' randomness | seeded per bot: SplitMix64 of the match seed and logical seat (`sim::config::bot_seed`) |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
@@ -751,6 +752,17 @@ The per-sample visibility mask, array scans, perception buffers, driver
 portal records and path workspace avoid rebuilding per-tick temporary
 collections in the common path. Initial buffer growth, new objectives
 and some conditional tactical or route outputs can still allocate.
+
+#### Bot thinking across cores
+
+The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
+`H2_BOT_THREADS=auto` batches every phantom's think across workers, and
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. The
+default is serial. To measure, run the same match file (Waterworks and
+Lockout, phantoms, seed 7) serial, batched and pipelined. Compare
+`state_hashes_v1`: batched must match serial at every tick, and pipelined
+must match itself across thread counts. Then compare ms/tick and the
+game-thread share of bot glue.
 
 #### Matched performance and combat comparison
 

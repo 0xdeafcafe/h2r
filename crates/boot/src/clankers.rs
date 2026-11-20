@@ -42,7 +42,7 @@ use runtime::guest::Permissions;
 use settings::{Apply, Choice, Def, Kind, Scope, Store, Tier, Unit, Value};
 
 use bots::mind::Skill;
-use bots::pad_source::{Frame, PadSource};
+use bots::pad_source::{Frame, PadSource, Sampled};
 use bots::phantom::{Identity, PhantomHandle, Phantoms};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
@@ -575,6 +575,29 @@ impl PadSource for Clanker {
     }
 
     fn pad(&mut self, f: &Frame<'_>) -> input::host::HostPadState {
+        self.follow_page();
+        self.brain.pad(f)
+    }
+
+    // The split sample (bots::think): the page is read with the guest, the
+    // brain thinks wherever it is sent.
+    fn observe(&mut self, f: &Frame<'_>) -> Sampled {
+        self.follow_page();
+        self.brain.observe(f)
+    }
+
+    fn think(&mut self) -> input::host::HostPadState {
+        self.brain.think()
+    }
+
+    fn conclude(&mut self) {
+        self.brain.conclude();
+    }
+}
+
+impl Clanker {
+    /// The page's skill, taunts and glitches, as they are now.
+    fn follow_page(&mut self) {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
         self.brain.set_skill(want);
         self.brain.mind.emote.taunt = if self.taunts.load(Ordering::Relaxed) {
@@ -584,7 +607,6 @@ impl PadSource for Clanker {
         };
         self.brain.mind.glitches =
             bots::glitches::Glitches::from_index(self.glitches.load(Ordering::Relaxed));
-        self.brain.pad(f)
     }
 }
 

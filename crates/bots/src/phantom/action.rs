@@ -3,14 +3,15 @@
 use std::collections::VecDeque;
 
 use super::{
-    Phantoms, handle_of,
+    Batch, Books, Phantoms, handle_of,
     session::{self, at::*},
 };
 use crate::{
     guest,
     human_input::TICK_MS,
-    pad_source::Frame,
     mind::feel::{Rng, reached},
+    pad_source::Frame,
+    think::{self, lock_source},
     tuning::PhantomLatency,
 };
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
@@ -32,6 +33,10 @@ pub(super) struct Uplink {
     arrived: HostPadState,
     last_tick: Option<u32>,
     gated: bool,
+    /// Ticks the pad already spent in the brain before it was sent
+    /// (one when pipelined, `crate::think`): taken off the wire delay, so
+    /// the phantom's latency stays what its tuning says.
+    think_ticks: u32,
 }
 
 impl Uplink {
@@ -46,6 +51,7 @@ impl Uplink {
             arrived: HostPadState::default(),
             last_tick: None,
             gated: false,
+            think_ticks: 0,
         }
     }
 
@@ -106,7 +112,7 @@ impl Uplink {
             self.arrived = pad;
         } else {
             let one_way = ping * 0.5 + jitter * self.rng.signed();
-            let delay = (one_way.max(0.0) / TICK_MS).ceil() as u32;
+            let delay = ((one_way.max(0.0) / TICK_MS).ceil() as u32).saturating_sub(self.think_ticks);
             let due = tick.wrapping_add(delay);
             let left = arrived_trigger(
                 &mut self.trigger_changes[0],
@@ -277,77 +283,59 @@ impl Phantoms {
             let Some(tick) = guest::game_tick(m) else {
                 return Ok(None);
             };
-            let index = m.u32(slot)?;
-            if index >= session::MAX {
-                return Ok(None);
-            }
-            let Some(players) = players::array(m)? else {
-                return Ok(None);
-            };
-            let Some(player) = players.get_absolute(m, index as i32)? else {
-                return Ok(None);
-            };
-            let mac = player.machine(m)?;
-            let mut slot_mac = [0; 6];
-            m.read(slot + SLOT_MAC, &mut slot_mac)?;
-            if slot_mac != mac || !player.listed(m)? {
-                return Ok(None);
-            }
-            let Some(unit) = player.unit(m)? else {
-                return Ok(None);
-            };
-            let Some(_) = objects::get(m, unit)? else {
+            let Some(seat) = seat_at(m, slot)? else {
                 return Ok(None);
             };
             let mut books = self.lock();
-            let super::Books {
-                hosted_game,
-                opening_fade,
-                list,
-                ..
-            } = &mut *books;
-            if hosted_game.is_none() {
-                return Ok(None);
-            }
-            // Only a joined phantom with a live slot and unit reaches its pad source.
-            let Some(p) = list.iter_mut().find(|p| p.made && p.info.machine == mac) else {
+            let books = &mut *books;
+            let Some(session) = books.hosted_game else {
                 return Ok(None);
             };
-            let mut state = p.buttons;
+            // Only a joined phantom with a live slot and unit reaches its pad source.
+            let Some(i) = books
+                .list
+                .iter()
+                .position(|p| p.made && p.info.machine == seat.mac)
+            else {
+                return Ok(None);
+            };
+            let unit = seat.unit;
+            let mut state = books.list[i].buttons;
             if state.sample == Some((unit, tick)) {
                 return Ok((m.u32(slot + SLOT_STAMP)? == tick
                     && state.publication != Publication::Missing)
-                    .then_some((p.info.handle, state, None)));
+                    .then_some((books.list[i].info.handle, state, None)));
             }
             if state.sample.is_some() && state.sample != Some((unit, tick.wrapping_sub(1))) {
-                p.reset_input();
-                state = p.buttons;
+                books.list[i].reset_input();
+                state = books.list[i].buttons;
             }
             let time = m.u32(engine::points::GAME_TIME.base)?;
             let dt = m.f32(time + 4)?;
             let rate = m.u16(time + guest::GAME_TIME_RATE)?;
-            let player_addr = player.addr;
-            let player = DatumHandle::new(player.salt(m)?, index);
-            let match_fading = match *opening_fade {
+            let player_addr = seat.player_addr;
+            let player = DatumHandle::new(players::Player::at(player_addr).salt(m)?, seat.index);
+            let match_fading = match books.opening_fade {
                 Some((when, fading)) if tick == when => fading,
                 Some((when, false)) if reached(tick, when) => false,
                 _ => guest::match_opening_fading(m, tick, rate)?,
             };
-            *opening_fade = Some((tick, match_fading));
+            books.opening_fade = Some((tick, match_fading));
             let gated = match_fading || guest::phantom_spawn_fading(m, player_addr, rate)?;
-            let pad = if let Some(report) = p.uplink.report_at(tick) {
+            let mode = books.thinker.mode();
+            let pad = if let Some(report) = books.list[i].uplink.report_at(tick) {
                 report
             } else {
-                let latency = p.source.phantom_latency();
+                let latency = lock_source(&books.list[i].source).phantom_latency();
                 // Keep observing and planning while the pad is gated
                 // (docs/game/bots.md §5.4).
-                let pad = p.source.pad(&Frame {
-                    frame: p.samples,
-                    tick,
-                    machine: mac,
-                    guest: m,
-                });
-                p.samples = p.samples.saturating_add(1);
+                let pad = if mode.batched() {
+                    books.batch_pad(m, session, tick, slot, i)?
+                } else {
+                    books.list[i].serial_pad(m, tick)
+                };
+                let p = &mut books.list[i];
+                p.uplink.think_ticks = u32::from(mode.pipelined());
                 p.uplink.sample_with_gate(tick, pad, latency, gated)
             };
             let sample = SeatInput {
@@ -362,7 +350,7 @@ impl Phantoms {
                     gamepad: pad.to_gamepad(&Default::default(), false),
                 },
             };
-            Ok(Some((p.info.handle, state, Some((sample, gated)))))
+            Ok(Some((books.list[i].info.handle, state, Some((sample, gated)))))
         })?;
         let Some((handle, mut state, sample)) = input else {
             return Ok(Ret::new(0, 8));
@@ -419,6 +407,156 @@ impl Phantoms {
     }
 }
 
+/// What a remote action slot says about its player, when the gather
+/// would sample a pad for it: the slot's player is listed, has the
+/// slot's machine id and a live unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlotSeat {
+    index: u32,
+    player_addr: u32,
+    mac: [u8; 6],
+    unit: DatumHandle,
+}
+
+fn seat_at(m: &dyn GuestMemory, slot: u32) -> Result<Option<SlotSeat>, MemFault> {
+    let index = m.u32(slot)?;
+    if index >= session::MAX {
+        return Ok(None);
+    }
+    let Some(players) = players::array(m)? else {
+        return Ok(None);
+    };
+    let Some(player) = players.get_absolute(m, index as i32)? else {
+        return Ok(None);
+    };
+    let mac = player.machine(m)?;
+    let mut slot_mac = [0; 6];
+    m.read(slot + SLOT_MAC, &mut slot_mac)?;
+    if slot_mac != mac || !player.listed(m)? {
+        return Ok(None);
+    }
+    let Some(unit) = player.unit(m)? else {
+        return Ok(None);
+    };
+    let Some(_) = objects::get(m, unit)? else {
+        return Ok(None);
+    };
+    Ok(Some(SlotSeat {
+        index,
+        player_addr: player.addr,
+        mac,
+        unit,
+    }))
+}
+
+impl super::Phantom {
+    /// The whole sample at this phantom's own gather ([`think::Mode::Serial`]).
+    fn serial_pad(&mut self, m: &dyn GuestMemory, tick: u32) -> input::host::HostPadState {
+        let pad = lock_source(&self.source).pad(&Frame {
+            frame: self.samples,
+            tick,
+            machine: self.info.machine,
+            guest: m,
+        });
+        self.samples = self.samples.saturating_add(1);
+        pad
+    }
+}
+
+impl Books {
+    /// Phantom `caller`'s pad from this tick's batch, sampling the batch
+    /// at the tick's first gather ([`think::Mode::Batched`]).
+    ///
+    /// The batch holds every phantom whose slot the gather would sample
+    /// now: the checks of [`Phantoms::slot_action`] against each phantom's
+    /// own slot, an interrupted stream reset as there. Seats go in slot
+    /// order, the order the gather visits them.
+    fn batch_pad(
+        &mut self,
+        m: &dyn GuestMemory,
+        session: u32,
+        tick: u32,
+        slot: u32,
+        caller: usize,
+    ) -> Result<input::host::HostPadState, MemFault> {
+        let handle = self.list[caller].info.handle;
+        let current = self
+            .batch
+            .as_ref()
+            .is_some_and(|b| b.session == session && b.tick == tick);
+        if !current {
+            let mut order = vec![(slot, caller)];
+            for (j, p) in self.list.iter_mut().enumerate() {
+                if j == caller || !p.made {
+                    continue;
+                }
+                let Some(at) = session::slot_of(m, p.info.machine)? else {
+                    continue;
+                };
+                if m.u32(at + 8)? != 4 {
+                    continue;
+                }
+                let Some(seat) = seat_at(m, at)? else {
+                    continue;
+                };
+                if seat.mac != p.info.machine
+                    || p.buttons.sample == Some((seat.unit, tick))
+                    || p.uplink.report_at(tick).is_some()
+                {
+                    continue;
+                }
+                if p.buttons.sample.is_some()
+                    && p.buttons.sample != Some((seat.unit, tick.wrapping_sub(1)))
+                {
+                    p.reset_input();
+                }
+                order.push((at, j));
+            }
+            order.sort_unstable();
+            let frames: Vec<u64> = order
+                .iter()
+                .map(|&(_, j)| {
+                    let p = &mut self.list[j];
+                    let frame = p.samples;
+                    p.samples = p.samples.saturating_add(1);
+                    frame
+                })
+                .collect();
+            let seats: Vec<think::Seat<'_>> = order
+                .iter()
+                .zip(frames)
+                .map(|(&(_, j), frame)| {
+                    let p = &self.list[j];
+                    think::Seat {
+                        key: p.info.handle.0,
+                        generation: p.generation,
+                        source: &p.source,
+                        frame,
+                        machine: p.info.machine,
+                    }
+                })
+                .collect();
+            let pads = self.thinker.sample(tick, m, &seats);
+            let handles = order.iter().map(|&(_, j)| self.list[j].info.handle);
+            self.batch = Some(Batch {
+                session,
+                tick,
+                pads: handles.zip(pads).collect(),
+            });
+        }
+        let batched = self
+            .batch
+            .as_ref()
+            .and_then(|b| b.pads.iter().find(|(h, _)| *h == handle))
+            .map(|&(_, pad)| pad);
+        Ok(match batched {
+            Some(pad) => pad,
+            // Not seen by the batch's checks: sampled whole, as serial.
+            None => self.list[caller].serial_pad(m, tick),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +604,83 @@ mod tests {
         send(&mut u, 2, 100., 1., 0., 0.);
         u.clear();
         assert_eq!(send(&mut u, 4, 40., 0., 0., 0.).right_trigger, 0.);
+    }
+
+    type Pads = Vec<Vec<HostPadState>>;
+
+    /// Pads through each phantom's uplink as the gather sends them, gated
+    /// until the opening fade clears at [`OPEN`]: what the brains gave,
+    /// what arrived, and how many thinks each bot had.
+    fn through_the_fade(mode: think::Mode) -> (Pads, Pads, Vec<usize>) {
+        use crate::think::{Thinker, tests::fixture};
+        let latency = PhantomLatency {
+            ping_ms: Some(2.0 * TICK_MS),
+            jitter_ms: 0.0,
+        };
+        let w = fixture::world(7);
+        let mut thinker = Thinker::on_radio(mode, w.board);
+        let g = engine::testing::FakeGuest::new();
+        let mut uplinks: Vec<Uplink> = (0..fixture::BOTS)
+            .map(|i| Uplink::new(100 + u64::from(i)))
+            .collect();
+        let (mut thought, mut arrived) = (Vec::new(), Vec::new());
+        for tick in 0..TICKS {
+            let pads = thinker.sample(tick, &g, &fixture::seats(&w, tick));
+            arrived.push(
+                pads.iter()
+                    .zip(&mut uplinks)
+                    .map(|(pad, u)| {
+                        u.think_ticks = u32::from(mode.pipelined());
+                        u.sample_with_gate(tick, *pad, latency, tick < OPEN)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            thought.push(pads);
+        }
+        thinker.settle();
+        let thinks = w
+            .logs
+            .iter()
+            .map(|l| l.lock().unwrap_or_else(|e| e.into_inner()).len())
+            .collect();
+        (thought, arrived, thinks)
+    }
+
+    const OPEN: u32 = 56;
+    const TICKS: u32 = 90;
+
+    #[test]
+    fn pipelined_bots_wait_for_the_black_screen_and_keep_their_latency() {
+        let (serial, serial_arrived, serial_thinks) = through_the_fade(think::Mode::Serial);
+        let (piped, piped_arrived, piped_thinks) = through_the_fade(think::Mode::Batched {
+            threads: 3,
+            pipeline: true,
+        });
+        // The brains observe and plan on every tick of the fade.
+        assert_eq!(serial_thinks, vec![TICKS as usize; serial_thinks.len()]);
+        assert_eq!(piped_thinks, serial_thinks);
+        let idle = vec![HostPadState::default(); serial[0].len()];
+        for tick in 0..OPEN as usize {
+            assert_eq!(serial_arrived[tick], idle, "tick {tick}");
+            assert_eq!(piped_arrived[tick], idle, "tick {tick}");
+        }
+        // The first clear tick sends the newest pad at once; pipelined, that
+        // pad was thought a tick earlier.
+        let open = OPEN as usize;
+        assert_eq!(serial_arrived[open], serial[open]);
+        assert_eq!(piped_arrived[open], piped[open]);
+        assert_eq!(piped[open], serial[open - 1]);
+        // Then the tick in the brain comes off the wire: the host gets the
+        // same input on the same tick either way.
+        for tick in open + 1..TICKS as usize {
+            assert_eq!(piped_arrived[tick], serial_arrived[tick], "tick {tick}");
+        }
+        assert!(
+            serial_arrived[open..]
+                .iter()
+                .flatten()
+                .any(|p| *p != HostPadState::default())
+        );
     }
 
     #[test]
