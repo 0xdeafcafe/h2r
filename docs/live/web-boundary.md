@@ -61,10 +61,9 @@ Three consequences:
   Playlists (hoppers), the message of the day, custom content and mods.
   It stays where it is, in the stats site's style.
 - **Live admin** (`/dash/admin`, dashboard, in the dense style of §3): the
-  Live service and its people. Accounts, messages, player reports (the
-  report queue the voice work is building lands here), usage, and the raw
-  event log. The server screens (`/dash/server`: invites, accounts,
-  import) lead into it.
+  hub for usage, dedicated hosts, the raw event log and the style sample.
+  Confirmed server admins open it from the dashboard's Settings.
+  Account, invite and player report tools sit under `/dash/server`.
 
 The line: if it changes what the game shows or plays, it is Halo Admin;
 if it is about the service, the accounts on it or what they do, it is
@@ -93,8 +92,8 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
   Medals are derived from game kills.
 - **Dashboard: the raw log** (`/dash/admin/events`): every event, every
   stream the API makes available to the signed-in admin. Open **Event Log**
-  from dashboard Settings. The log opens at the latest page, with
-  older and newer pages and expandable event data.
+  from dashboard Settings or the Live admin hub. The log opens at the
+  latest page, with older and newer pages and expandable event data.
 
 The API does not change: `GET /v1/events` keeps its access rules (the
 privacy redaction in `crates/live/live-server/src/sessions.rs` decides what
@@ -113,16 +112,17 @@ Every route and every page-level component, checked against §1.
 |---|---|---|---|
 | Main menu (orb, ring of pods) | `/` | stays | The front door. |
 | Live now | `/dash/live` | stays | Live state; rows link to `/games/halo2/games/:id`. |
-| Find a game | `/dash/sessions`, `/dash/sessions/:id` | stays | Live state. |
 | Friends | `/dash/friends` | stays | Your account, with actions. |
 | Teams | `/dash/teams` | stays | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
-| Players | `/dash/players`, `/dash/players/:tag` | stays | Presence ("who's online"). The player pod links to the service record. |
+| Players | `/dash/players`, `/dash/players/:tag` | stays | Live player directory and account profiles. The player pod links to the Halo service record. |
 | Game history | `/dash/history` | removed | The Games tab (`/dash/games`) shows recent games; the full history is the stats site's (`/games/halo2/games`, a player's `/history`). |
 | Settings, profile, create account | `/dash/settings`, `/dash/signup` | stays | Your account. |
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
 | Server overview | `/dash/server` | stays | Running the service. |
 | Invites, accounts, import, connect | `/dash/server/{invites,accounts,import,connect}` | stays | Running the service. |
-| Live admin: usage (new) | `/dash/admin`, `/dash/admin/usage` | new | Usage accounting (§5), in the dense style. |
+| Live admin hub | `/dash/admin` | stays | Admin-only entry in Settings. Links to usage, hosts, the event log and the style sample. |
+| Live admin: usage | `/dash/admin/usage` | stays | Usage accounting (§5), in the dense style. |
+| Live admin: hosts | `/dash/admin/hosts` | stays | Running and recently ended dedicated hosts. |
 | Live admin: accounts and player reports | `/dash/server/{accounts,reports}` | stays | Service administration. |
 | Live admin: Event Log | `/dash/admin/events` | stays | The raw event log, admin-only in the web UI (§1.3). |
 | Dense style page (new) | `/dash/admin/style` | new | The dense style on fixed data (§3). |
@@ -133,7 +133,7 @@ Every route and every page-level component, checked against §1.
 |---|---|---|---|
 | Home: leaderboards, tallies (24 hours, all time), of the week, maps, weapons, game types, skulls, activity heatmap, clan standings, recent games, Server Report | `/games/halo2` | stays | The record, summed. |
 | Home: "Live Now" live game cards | `/games/halo2` | stays, as a teaser | They link to the live game pages (§1.2). Keep it to the cards. |
-| Home: "Open Games" table (open sessions) | `/games/halo2` | **moves** to the dashboard | Live state, and a copy of "find a game". Replace it with a count that links to `/dash/sessions`. |
+| Home: "Open Games" table (open sessions) | `/games/halo2` | stays | Read-only view of advertised sessions alongside Live Now. |
 | Header Welcome box: "Players Online (n)", "Friends Online (n)", "Games Live (n)" | all | stays, as links | One-line teasers. "Players Online" should open `/dash/players`, not `/games/halo2/players`. |
 | Games | `/games/halo2/games` | stays | The record; its live tab links to live game pages. |
 | A game, carnage report, campaign report | `/games/halo2/games/:id` | stays | The record. |
@@ -156,8 +156,7 @@ too and could move to `components/` when it next changes.
 
 ### Remaining page moves
 
-- Replace the stats home's open sessions table with a link to dashboard
-  sessions. Put live presence on the dashboard's player directory.
+- Put live presence on the dashboard's player directory.
 - Add dashboard message management when there is a web messages screen.
 
 ## 3. The dense dashboard style ("deck")
@@ -167,11 +166,11 @@ with big type and a handful of rows. That is right for a menu and wrong
 for an admin screen with thirty rows and four charts. The deck keeps the
 dashboard's materials and drops the stage:
 
-- **Same materials.** Orbitron for page titles (lower case, with the
-  plate titles' glow), Barlow Condensed for everything else, the greens
-  of the console screens, the select pill's yellow-green, the bevelled
-  rim (light, dark, light) round a flat translucent green face, cut on the
-  corners like the plates. The back control is the console's round "b".
+- **Same materials.** Barlow Condensed headings, the bevelled frames and
+  recessed faces from `web/src/styles/dash-pages.css`, and the console
+  list's row height, focus treatment and yellow-green selection. Back uses
+  the dashboard prompt from `web/src/dash/parts.tsx`: Esc keycap, green B
+  disc or left arrow, depending on the last input device.
 - **Real pixels, not the stage.** The page scrolls; panels sit on a
   12-column grid (6 at medium widths, 1 on a phone). Body 14px, labels
   12px small capitals, tile figures 30px.
@@ -190,7 +189,7 @@ All in `web/src/deck/`; the data shaping is pure and tested
 
 | Component | What it is |
 |---|---|
-| `DeckPage` | Trail, title, back (b, Escape, Backspace), the filter row, the grid. |
+| `DeckPage` | Trail, title, Back (gamepad B, keyboard B, Escape or Backspace), the filter row, the grid. |
 | `Panel` | The bevelled panel; with `table`, a toggle swaps its chart for its table. |
 | `Presets` | The filter row's preset pills (a radio group). |
 | `StatTile` | Label, value, change against the period before (arrow, sign and a word, coloured by whether up is good), sparkline. |
@@ -293,16 +292,16 @@ picture in `docs/images/`.
 
 ## 5. Usage
 
-Who uses the most of the server, and on what: the Live admin's usage
-screen, `/dash/admin/usage` (`/dash/admin` opens it; the accounts screen
-has a pod to it). The counting and the two endpoints it reads are in
+The Live admin's usage screen (`/dash/admin/usage`) shows who uses the
+most of the server and what they use it for. Open **Usage** from the hub
+(`/dash/admin`) or from the pod on Server → Accounts. The counting and
+the two endpoints it reads are in
 [live-api.md](live-api.md) "Usage"; this section is what the screen
 shows and where its numbers stop.
 
-**On the dashboard, not the stats site.** Usage is about running the
-service and the accounts on it (§1), and it is for admins only. The stats
-site keeps what is about Halo: games, records, ranks. A player's row
-links to their service record there, and nothing more crosses.
+Usage is for server admins. The Top Accounts table links each gamertag
+to its Live profile at `/dash/players/:tag`. Halo service records, games
+and ranks are on Uplink.
 
 **The screen** is the deck (§3), with a range (7, 30 or 90 days) and a
 sort for the accounts table:

@@ -12,6 +12,12 @@ export const STATS_ROOT = `${GAMES_ROOT}/halo2`;
 /** Where the stats site lived first; its links redirect to STATS_ROOT. */
 export const OLD_STATS_ROOT = "/stats";
 
+export const LIVE_ADMIN = "/dash/admin";
+export const DASH_PLAYERS = "/dash/players";
+
+/** A Live account's profile on the dashboard. */
+export const dashboardPlayerHref = (tag: string): string => `${DASH_PLAYERS}/${encodeURIComponent(tag)}`;
+
 /** A page of the stats site: `statsPath("/players/x")` is
  *  `/games/halo2/players/x`; no argument is its home. */
 export const statsPath = (page = ""): string => `${STATS_ROOT}${page}`;

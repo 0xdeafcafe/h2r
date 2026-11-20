@@ -1,16 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { lockedHint, menuFor } from "../src/dash/menu";
+import { lockedHint, menuFor, settingsRows } from "../src/dash/menu";
 import { fetchDevices, parseKeys, shortKid } from "../src/state/devices";
 import { INVITE_DAY_CHOICES, INVITE_MAX_DAYS, nextInviteDays } from "../src/admin/server";
 
 describe("the main menu", () => {
   test("signed out: the ways in first, then what works without an account, then the greyed ones", () => {
     const items = menuFor(false);
-    expect(items.slice(0, 3)).toEqual(["signin", "signup", "recover"]);
-    expect(items.slice(3, 5)).toEqual(["live", "games"]);
+    expect(items).toEqual(["signin", "signup", "recover", "live", "games", "players", "settings"]);
     expect(items).not.toContain("history");
     const locked = items.filter((i) => lockedHint(i, false));
-    expect(locked).toEqual(["sessions", "players", "settings"]);
+    expect(locked).toEqual(["players", "settings"]);
     for (const i of locked) expect(lockedHint(i, false)).toStartWith("sign in");
     expect(items).not.toContain("account");
     expect(items).not.toContain("friends");
@@ -18,9 +17,22 @@ describe("the main menu", () => {
 
   test("signed in: the usual items, the account, nothing greyed", () => {
     const items = menuFor(true);
-    expect(items).toEqual(["live", "games", "sessions", "friends", "players", "account", "settings"]);
+    expect(items).toEqual(["live", "games", "friends", "players", "account", "settings"]);
     expect(items.filter((i) => lockedHint(i, true))).toEqual([]);
     expect(items).not.toContain("signin");
+  });
+});
+
+describe("settings", () => {
+  test("only a confirmed admin gets the Live admin row and raw event log", () => {
+    for (const admin of [null, false]) {
+      const rows = settingsRows(true, admin);
+      expect(rows.find((r) => r.label === "live admin")).toBeUndefined();
+      expect(rows.find((r) => r.label === "event log")?.key).toBe("/games/halo2/events");
+    }
+    const rows = settingsRows(true, true);
+    expect(rows.find((r) => r.label === "live admin")?.key).toBe("/dash/admin");
+    expect(rows.find((r) => r.label === "event log")?.key).toBe("/dash/admin/events");
   });
 });
 

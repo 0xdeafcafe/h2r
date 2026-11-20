@@ -48,7 +48,7 @@ export default function HostsBoard(props: { data: AdminHosts; busy: boolean; sto
     <>
       <Budget spent={props.data.month_to_date_usd} limit={props.data.budget_usd} />
       <Panel title="Running hosts" meta={String(props.data.running.length)}>
-        <Show when={props.data.running.length} fallback={<p class="dk-note">No hosts running.</p>}>
+        <Show when={props.data.running.length} fallback={<p class="dx-page-empty dk-empty">No hosts running.</p>}>
           <DenseTable<RunningHost>
             label="Running hosts" rows={props.data.running} rowKey={(host) => host.lease.id} initialSort={{ col: "uptime", dir: "desc" }}
             cols={[
@@ -72,7 +72,7 @@ export default function HostsBoard(props: { data: AdminHosts; busy: boolean; sto
         </Show>
       </Panel>
       <Panel title="Recently ended" meta={String(props.data.recent.length)}>
-        <Show when={props.data.recent.length} fallback={<p class="dk-note">No recently ended hosts.</p>}>
+        <Show when={props.data.recent.length} fallback={<p class="dx-page-empty dk-empty">No recently ended hosts.</p>}>
           <DenseTable<EndedHost>
             label="Recently ended hosts" rows={props.data.recent} rowKey={(host) => host.lease.id}
             cols={[

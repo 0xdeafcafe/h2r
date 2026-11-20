@@ -4,10 +4,10 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  PackageCache, customMapBadge, formatBytes, geometryChoice, isMapId, lookupFromResponse, mapGroupKey, mapGroupLabel,
+  PackageCache, formatBytes, geometryChoice, isMapId, lookupFromResponse, mapGroupKey, mapGroupLabel,
   packImageUrl, packageImageUrl, packageScreenshotUrl, packageTitle, parseMapSummaries, parseMapSummary, pictureChoice, type PackageLookup,
 } from "../src/lib/maps";
-import { parseSession, sessionRow } from "../src/lib/sessions";
+import { parseSession } from "../src/lib/sessions";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
 import { campaignRecord } from "../src/state/derive";
 import { ev, resetPos } from "./helpers";
@@ -134,24 +134,6 @@ describe("sessions with a custom map", () => {
     expect(session({ map_id: ID.toUpperCase() }).map_id).toBe(ID);
     expect(session({}).map_id).toBeNull();
     expect(session({ map_id: "lockout" }).map_id).toBeNull();
-  });
-
-  test("a known package: badge with name, author and the download size", () => {
-    expect(customMapBadge(ID, ok())).toEqual({ kind: "custom", name: "Lockdown Remix", author: "Sneaky Pete", size: 2_516_576, download: "needs download (2.4 MB)" });
-  });
-
-  test("404 is shown plain, 410 as unavailable, loading and errors as plain", () => {
-    expect(customMapBadge(ID, { state: "unknown" })).toBeNull();
-    expect(customMapBadge(ID, { state: "gone" })).toEqual({ kind: "unavailable", text: "custom map unavailable" });
-    expect(customMapBadge(ID, { state: "loading" })).toBeNull();
-    expect(customMapBadge(ID, { state: "error" })).toBeNull();
-    expect(customMapBadge(null, ok())).toBeNull();
-  });
-
-  test("the list row names the package in place of the map", () => {
-    const s = session({ map_id: ID });
-    expect(sessionRow(s).meta).toBe("teacup 2/8");
-    expect(sessionRow(s, undefined, "Lockdown Remix").meta).toBe("Lockdown Remix 2/8");
   });
 });
 

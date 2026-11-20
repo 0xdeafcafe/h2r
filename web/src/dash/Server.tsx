@@ -38,6 +38,7 @@ import {
   type ServerFacts,
 } from "../admin/server";
 import { importAccounts } from "../admin/accountImport";
+import { DASH_PLAYERS } from "../routes";
 import { Plate } from "./parts";
 import { Blades, type Blade, type BladeControls } from "./Blades";
 
@@ -264,7 +265,7 @@ export function AccountsPlate(props: { info: ServerInfo; go: (href: string) => v
   const blades = createMemo((): Blade[] => {
     const s = props.info.status();
     return [
-      { key: "players", label: "every player", value: "players", act: () => props.go("/dash/players") },
+      { key: "players", label: "every player", value: "players", act: () => props.go(DASH_PLAYERS) },
       { key: "reports", label: "player reports", value: "review", act: () => props.go("/dash/server/reports") },
       { key: "bans", label: "bans", value: "lift", act: () => props.go("/dash/server/bans") },
       { key: "import", label: "import account", value: "account file", act: () => props.go("/dash/server/import") },

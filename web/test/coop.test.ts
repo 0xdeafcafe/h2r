@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { campaignLine, coopPlayers, difficultyName, gametype, isCoop, kind, levelName, parseSession, parseSessions, pingText, roomText, sessionRow } from "../src/lib/sessions";
+import { campaignLine, difficultyName, gametype, isCoop, kind, levelName, parseSession, parseSessions, pingText } from "../src/lib/sessions";
 import { coopDifficulty, coopLevel, coopMinutes, coopNames, newestCoop, parseCoopGame, parseCoopGames } from "../src/lib/coop";
 import { normalizeFriends } from "../src/api/social";
 import { applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, needsConfirm } from "../src/state/reducer";
@@ -25,8 +25,6 @@ describe("co-op sessions", () => {
     expect(kind(s)).toBe("co-op campaign");
     expect(gametype(s)).toBe("Co-op campaign");
     expect(campaignLine(s)).toBe("Outskirts, heroic");
-    expect(sessionRow(s).meta).toBe("co-op Outskirts 2/2");
-    expect(roomText(s)).toBe("full");
   });
 
   test("the level falls back to its stem without the ordering prefix", () => {
@@ -50,22 +48,15 @@ describe("co-op sessions", () => {
     expect(difficultyName(9)).toBe("unknown");
   });
 
-  test("the host's ping shows in the row and as text, and nothing when absent", () => {
+  test("the host's ping is formatted when measured", () => {
     const s = parseSession(wire(undefined, { advertisement: { ...wire().advertisement, ping_ms: 42 } }))!;
     expect(s.ping_ms).toBe(42);
     expect(pingText(s)).toBe("42 ms");
-    expect(sessionRow(s).meta).toBe("co-op Outskirts 2/2 42 ms");
     const none = parseSession(wire())!;
     expect(none.ping_ms).toBeNull();
     expect(pingText(none)).toBeNull();
-    expect(sessionRow(none).meta).toBe("co-op Outskirts 2/2");
     // 0 clears it on the server; junk reads as none.
     for (const v of [0, -5, "42", null]) expect(parseSession(wire(undefined, { advertisement: { ...wire().advertisement, ping_ms: v } }))!.ping_ms).toBeNull();
-  });
-
-  test("players are the host, then who joined, by gamertag", () => {
-    const s = parseSession(wire(undefined, { players: { [GUEST]: "public", [HOST]: "public", "0009000000000003": "" } }))!;
-    expect(coopPlayers(s, (x) => (x === GUEST ? "Moss" : undefined))).toEqual(["Sneaky Pete", "Moss", "guest"]);
   });
 });
 
