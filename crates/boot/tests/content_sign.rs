@@ -34,7 +34,7 @@ fn the_guest_accepts_content_the_import_signs() {
     let rt = loaded.runtime;
     boot::fallback::init(&bytes, &[], &[]).unwrap();
     boot::fallback::set_recovery(true);
-    boot::fallback::install_unread_targets(&rt);
+    boot::fallback::start_analysis(&rt);
     // Every instruction is an entry, so calls, kernel returns and rets
     // all land back in the interpreter.
     let mut pcs = Vec::new();
