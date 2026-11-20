@@ -224,9 +224,17 @@ pub(crate) fn register_core_film(
     });
     let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
-    features
-        .add(&crate::h1_particle_physics::H1ParticlePhysics)
-        .map_err(|e| anyhow::anyhow!("installing Halo 1 attachment particle physics: {e}"))?;
+    for effect in [
+        &crate::h1_particle_physics::H1ParticlePhysics as &dyn feature::Feature,
+        &crate::h1_flag::H1Flag,
+        &crate::h1_glow::H1Glow,
+        &crate::h1_lightning::H1Lightning,
+        &crate::h1_sound_promotion::H1SoundPromotion,
+    ] {
+        features
+            .add(effect)
+            .map_err(|e| anyhow::anyhow!("installing {}: {e}", effect.manifest().id))?;
+    }
     features
         .add(&crate::h1_conversation::Conversations)
         .map_err(|e| {
@@ -535,6 +543,9 @@ pub(crate) fn register_late_for_profile(
             .add(&feature::native_shadows::NativeShadows)
             .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     }
+    features
+        .add(&feature::h1_projectiles::Projectiles)
+        .map_err(|e| anyhow::anyhow!("Halo 1 projectile flight: {e}"))?;
     features
         .add(&feature::h1_scope_zoom::ScopeZoom)
         .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;

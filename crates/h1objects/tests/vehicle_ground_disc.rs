@@ -478,7 +478,7 @@ fn halo1_sandbox_spawns_vehicles_above_the_floor() {
     assert_eq!(spawns.len(), mp.vehicles.len());
     let mut ghosts = 0;
     for (sp, p) in spawns.iter().zip(&mp.vehicles) {
-        let depth = h1convert::convert::halo1::vehicle_depth(&h1, &sp.collection);
+        let depth = h1convert::convert::halo1::vehicle_depth(&h1, &sp.collection).unwrap();
         let floor = floor_under(p.position);
         let was = p.position[2] - depth - floor;
         let now = sp.position[2] - depth - floor;

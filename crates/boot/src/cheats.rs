@@ -658,10 +658,13 @@ impl feature::Feature for CheatsFeature {
                 Ok(())
             })
             // touch-glue and skulls-custom also hook after the tick. Cheats run
-            // outside them (last), so a cheat's writes (health, ammo, speed,
+            // outside them (after them), so a cheat's writes (health, ammo, speed,
             // position) are what the next tick starts from, whatever they set.
+            // The Halo 1 weapon HUD's sample runs outside cheats and only reads,
+            // so it shows the state a cheat left (a bottomless-clip refill).
             .after_feature(crate::touch_glue::FEATURE)
-            .after_feature(crate::skulls_custom::FEATURE);
+            .after_feature(crate::skulls_custom::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE);
         let live = Arc::clone(&self.0);
         b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
             snapshot_live(&live)

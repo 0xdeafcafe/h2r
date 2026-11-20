@@ -16,9 +16,11 @@
 //! | `ugh!` | [`h1sounds::gestalt::SoundGestalt`], chunks' local raw copied |
 //! | converted tags (structure, lightmap, collections, objects) | as the conversion built them |
 //!
-//! So the map carries the base's tags (everything Coagulation has, whether
-//! Blood Gulch uses it or not), the converted ones, and no byte of the
-//! base's file beyond what those tags name.
+//! That set, pruned to what the scenario reaches ([`prune`]), gives the
+//! scenario and BSP to the map written: built from scratch
+//! ([`crate::scratch`]), the base's tags read by path, only what is
+//! reached. A map that cannot be built from scratch is an error; the
+//! pruned set is never written.
 
 use std::io::{Cursor, Read, Seek};
 
@@ -75,10 +77,10 @@ pub struct FreshReport {
     /// Tags the schema cannot move, left without data, and why
     /// ([`check_refused`]).
     pub refused: Vec<(TagId, String)>,
-    /// The map from scratch ([`crate::scratch`]), or why not (the pruned
-    /// set is written instead).
+    /// The map from scratch ([`crate::scratch`]): always there after
+    /// [`Prepared::build_fresh`], which fails when the map cannot be built
+    /// so.
     pub scratch: Option<crate::scratch::ScratchReport>,
-    pub scratch_failed: Option<String>,
     /// The base's tags the pinned map it is read from dropped
     /// ([`prune_pinned`]), before [`Self::pruned`].
     pub pinned_pruned: Pruned,
@@ -122,6 +124,9 @@ impl Prepared {
         if let Some(scenery) = &self.scenery {
             put_scenery(&mut fresh, scenery)?;
         }
+        if !self.fixtures.placements.is_empty() {
+            put_fixtures(&mut fresh, &self.fixtures)?;
+        }
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
         // So is each owner's Halo 2 HUD, for `boot::hud_swap` (docs/halo1/hud.md).
@@ -132,41 +137,37 @@ impl Prepared {
         check_refused(&mut fresh, &report)?;
         drop(src);
         // Then from scratch: the base's tags by path, only what is reached,
-        // on a dense index. The pruned set is the fallback.
-        let mut precision = self.applied.precision.clone();
-        let mut hud = huds.clone();
-        match from_scratch(base, &pinned, &bytes, &fresh, &keep) {
-            Ok((set, r)) => {
-                // The swaps' datums, in the new index (the manifest's).
-                let key = |s: &TagSet, d: TagId| {
-                    let slot = s.slots.get(d.index())?;
-                    let t = slot.tag.as_ref().filter(|t| t.id == d)?;
-                    Some((t.group, slot.name.clone()))
-                };
-                let by_key: std::collections::HashMap<_, TagId> = set
-                    .slots
-                    .iter()
-                    .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
-                    .collect();
-                let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
-                precision = self
-                    .applied
-                    .precision
-                    .iter()
-                    .map(|&(a, b)| Some((new(a)?, new(b)?)))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
-                hud = huds
-                    .iter()
-                    .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| Error::Fresh("a HUD pair's tag left out".into()))?;
-                fresh = set;
-                report.scratch = Some(r);
-            }
-            Err(e) => report.scratch_failed = Some(e.to_string()),
-        }
-        let (bytes, _) = fresh.build()?;
+        // on a dense index. The pruned set gives the scenario and BSP; it is
+        // never written, so a map that cannot be built from scratch fails.
+        let (set, r) = from_scratch(base, &pinned, &bytes, &fresh, &keep).map_err(|e| {
+            Error::Fresh(format!("{}: not built from scratch: {e}", self.h1_name))
+        })?;
+        // The swaps' datums, in the new index (the manifest's).
+        let key = |s: &TagSet, d: TagId| {
+            let slot = s.slots.get(d.index())?;
+            let t = slot.tag.as_ref().filter(|t| t.id == d)?;
+            Some((t.group, slot.name.clone()))
+        };
+        let by_key: std::collections::HashMap<_, TagId> = set
+            .slots
+            .iter()
+            .filter_map(|s| s.tag.as_ref().map(|t| ((t.group, s.name.clone()), t.id)))
+            .collect();
+        let new = |d: TagId| key(&fresh, d).and_then(|k| by_key.get(&k).copied());
+        let precision = self
+            .applied
+            .precision
+            .iter()
+            .map(|&(a, b)| Some((new(a)?, new(b)?)))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
+        let hud = huds
+            .iter()
+            .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| Error::Fresh("a HUD pair's tag left out".into()))?;
+        report.scratch = Some(r);
+        let (bytes, _) = set.build()?;
         Ok(Fresh {
             name: map_name(&self.h1_name),
             bytes,
@@ -200,13 +201,70 @@ fn from_scratch<R: Read + Seek>(
     shared_level.unread_ok = true;
     let base_map = Map::from_reader(Cursor::new(&file[..]))?;
     let level_map = Map::from_reader(Cursor::new(bytes))?;
+    let mut level = MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?;
+    let grown = grown(pinned);
+    level.add_regions(grown.arrays);
+    level.add_replaced(grown.replaced);
     let mut src = LevelSource {
         base: MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?,
-        level: MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?,
+        level,
         from_level,
     };
     let from_level = src.from_level.clone();
     build(&mut src, fresh, &MULTIPLAYER, extra, &from_level, low)
+}
+
+/// The pinned tags of a set an edit grew past their own bytes, from
+/// [`map::build::PinnedImage::grown`], as a reader of the map the set
+/// builds needs them.
+#[derive(Debug, Default)]
+pub struct Grown {
+    /// The tags.
+    pub tags: Vec<TagId>,
+    /// The arrays the edit wrote for them (metadata no tag owns), which a
+    /// reader reads as theirs.
+    pub arrays: Vec<(u32, Vec<u8>)>,
+    /// The arrays the edit replaced, as (address, byte length): still in
+    /// the tags' bytes with nothing pointing at them, described by the
+    /// edit rather than by any field.
+    pub replaced: Vec<(u32, u32)>,
+}
+
+/// The pinned tags of `pinned` an edit grew ([`Grown`]).
+pub fn grown(pinned: &TagSet) -> Grown {
+    let Some(p) = &pinned.pinned else {
+        return Grown::default();
+    };
+    Grown {
+        tags: p.grown.iter().map(|g| g.tag).collect(),
+        arrays: p
+            .unowned
+            .iter()
+            .filter(|(at, _)| p.grown.iter().any(|g| g.region == *at))
+            .cloned()
+            .collect(),
+        replaced: p
+            .grown
+            .iter()
+            .flat_map(|g| g.replaced.iter().copied())
+            .collect(),
+    }
+}
+
+/// `src`'s string-ID table as `fresh`'s. The trees [`unpin_all`] reads
+/// from `src` keep its string-ID words, and its table is the set's with
+/// the strings its build interned for text fixups appended (a converted
+/// tag's names, which no pinned tag has): the words of a built tag read
+/// back index those. With the set's table alone they named no string.
+fn take_built_strings<R: Read + Seek>(fresh: &mut TagSet, src: &Map<R>) -> Result<()> {
+    let built = src.strings();
+    if built.get(..fresh.strings.len()) != Some(&fresh.strings[..]) {
+        return Err(Error::Fresh(
+            "the built map's string IDs do not start with the set's".into(),
+        ));
+    }
+    fresh.strings = built.to_vec();
+    Ok(())
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
@@ -217,6 +275,7 @@ pub fn unpinned_copy(pinned: &TagSet) -> TagSet {
     set.groups = pinned.groups.clone();
     set.strings = pinned.strings.clone();
     set.slots = pinned.slots.clone();
+    set.copy_conversion_records(pinned);
     set.scenario = pinned.scenario;
     set.globals = pinned.globals;
     set.index_word_14 = pinned.index_word_14;
@@ -253,8 +312,16 @@ pub fn unpin_all<R: Read + Seek>(
     built_too: bool,
 ) -> Result<FreshReport> {
     let schema = Schema::builtin();
+    take_built_strings(fresh, src)?;
     let mut u = Unpinner::new(schema, src).map_err(tags_error)?;
     u.add_starts(bounds.iter().copied());
+    // Pinned tags an edit grew (the globals' damage table,
+    // `h1objects::player_damage`): their new arrays read, their replaced
+    // ones left out.
+    let grown = grown(pinned);
+    if !grown.tags.is_empty() {
+        u.add_grown(src, grown.tags, grown.arrays);
+    }
     // A campaign intermediate (`built_too`): arrays of base tags live in
     // metadata no tag owns (05a's scenario range and the gaps between
     // tags), the base tags point only into the base's own metadata, and a
@@ -292,8 +359,12 @@ pub fn unpin_all<R: Read + Seek>(
             gestalt = Some((t.id, g));
             continue;
         }
+        let carries_promotion = t.group == FourCC(*b"snd!")
+            && matches!(&t.payload, TagPayload::Built(block)
+                if tags::sound::h1_promotion::present(&block.bytes));
         if built_too
             && matches!(t.payload, TagPayload::Built(_))
+            && !carries_promotion
             && t.id != pinned.scenario
             && ![*b"sbsp", *b"ltmp", *b"ugh!"].contains(&t.group.0)
         {
@@ -331,6 +402,37 @@ pub fn unpin_all<R: Read + Seek>(
             report.aliases += 1;
         }
         ordinary.push(t.id);
+    }
+    // The sound data bounds the resources before it. A resource whose
+    // size isn't stored (a bitmap's level 0) runs to the next known start,
+    // and the gestalt's chunks and extra-info resources are known only
+    // when the schema walks the gestalt: without them the last such
+    // resource before the sound data ran over all of it (a50 from 05a,
+    // 0x4bf5000 bytes, past the 64 MiB read limit). Read from `src`'s
+    // gestalt, where every pointer is a file offset, converted ones
+    // included.
+    if let Some((id, _)) = &gestalt {
+        use h1sounds::gestalt::{STRIDES, blocks};
+        let address = src
+            .tag(*id)?
+            .location
+            .ok_or(Error::Invalid("the gestalt has no data"))?
+            .address;
+        let bytes = src.read_tag_bytes(*id)?;
+        // Each chunk's pointer (+0) and each extra info's (+8).
+        for (block, pointer) in [(blocks::CHUNKS, 0), (blocks::EXTRA_INFOS, 8)] {
+            let field = (block * 8) as u32;
+            let (count, at) = (word(&bytes, field) as usize, word(&bytes, field + 4));
+            if count == 0 {
+                continue;
+            }
+            let (stride, start) = (STRIDES[block], at.wrapping_sub(address) as usize);
+            let elements = count
+                .checked_mul(stride)
+                .and_then(|n| bytes.get(start..start.checked_add(n)?))
+                .ok_or_else(|| Error::Fresh(format!("ugh!: block {block} lies outside the tag")))?;
+            u.add_starts(elements.chunks_exact(stride).map(|e| word(e, pointer)));
+        }
     }
     // A tag the schema cannot move is left without data: the unreachable
     // ones are pruned next, and [`check_refused`] fails the map when one
@@ -567,30 +669,22 @@ fn sound_gestalt<R: Read + Seek>(
     mut g: SoundGestalt,
 ) -> Result<usize> {
     use h1sounds::gestalt::{ChunkPointer, blocks};
-    // Extra infos (lip-sync) hold a raw pointer at +8 with no stored
-    // length: copy up to the next known raw start, chunks included.
     const EXTRA_RAW: usize = 8;
-    let extra = |e: &h1sounds::gestalt::Nested| {
-        u32::from_le_bytes(e.bytes[EXTRA_RAW..EXTRA_RAW + 4].try_into().expect("4"))
-    };
+    let extra = |e: &h1sounds::gestalt::Nested| word(&e.bytes, EXTRA_RAW as u32);
     u.add_starts(g.chunks.iter().filter_map(|c| match c.pointer {
         ChunkPointer::Stored(p) => Some(p),
         ChunkPointer::Local(_) => None,
     }));
     u.add_starts(g.nested[blocks::EXTRA_INFOS].iter().map(extra));
     let mut copied = 0;
-    // Local lip-sync data: copied as a raw resource of its own, its
-    // pointer a raw fixup on the element (added once the tree is built).
-    let mut lip_sync = Vec::new();
     for (k, e) in g.nested[blocks::EXTRA_INFOS].iter_mut().enumerate() {
         let p = extra(e);
-        if p != u32::MAX && p != 0 && p >> 30 == 0 {
-            let len = u.extent(p);
-            let raw = u
-                .copy_raw(src, fresh, p, len)
+        if p != 0 && p >> 30 == 0 {
+            let len = word(&e.bytes, 0xc);
+            let raw = u.copy_raw(src, fresh, p, len)
                 .map_err(|e| Error::Fresh(format!("lip-sync data at {p:#x}: {e}")))?;
             e.bytes[EXTRA_RAW..EXTRA_RAW + 4].fill(0);
-            lip_sync.push((k, raw));
+            g.extra_raws.insert(k, raw);
             copied += 1;
         }
     }
@@ -606,20 +700,7 @@ fn sound_gestalt<R: Read + Seek>(
             copied += 1;
         }
     }
-    let mut block = g.to_block();
-    if !lip_sync.is_empty() {
-        let at = (blocks::EXTRA_INFOS * 8) as u32;
-        let infos = child_mut(&mut block, at)
-            .ok_or(Error::Invalid("the gestalt's extra infos did not build"))?
-            .1;
-        let stride = h1sounds::gestalt::STRIDES[blocks::EXTRA_INFOS];
-        for (k, raw) in lip_sync {
-            infos.raw(
-                (k * stride + EXTRA_RAW) as u32,
-                map::build::RawRef::Local(raw),
-            );
-        }
-    }
+    let block = g.to_block();
     fresh
         .tag_mut(id)
         .ok_or(Error::Invalid("no ugh! slot"))?
@@ -759,6 +840,28 @@ pub fn put_scenery(set: &mut TagSet, scenery: &crate::convert::halo1::Scenery) -
             scenery.placements_block(),
         );
     }
+    Ok(())
+}
+
+fn put_fixtures(set: &mut TagSet, fixtures: &crate::convert::halo1::Fixtures) -> Result<()> {
+    use crate::convert::halo1::{MACHINE_PALETTE, MACHINE_PLACEMENTS};
+
+    let scenario = set.scenario;
+    let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) else {
+        return Err(Error::Invalid("the fresh scenario is not a built tree"));
+    };
+    root.fixups
+        .retain(|f| ![MACHINE_PALETTE, MACHINE_PLACEMENTS].contains(&f.offset));
+    root.block(
+        MACHINE_PALETTE,
+        fixtures.palette.len() as u32,
+        fixtures.palette_block(),
+    );
+    root.block(
+        MACHINE_PLACEMENTS,
+        fixtures.placements.len() as u32,
+        map::build::Block::new(fixtures.placements.concat()),
+    );
     Ok(())
 }
 
@@ -1689,6 +1792,53 @@ mod pinned_prune_tests {
     use map::CacheType;
     use map::build::{PinnedImage, Slot, TagEntry};
 
+    /// A built tag's string interned only when the map was built: the
+    /// unpinned set takes the built map's table, so the word read back
+    /// from that map names it.
+    #[test]
+    fn the_unpinned_set_takes_the_strings_its_build_interned() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        for g in [b"matg", b"scnr", b"mach"] {
+            set.add_group(FourCC(*g), None, None);
+        }
+        set.globals = set
+            .add_tag(
+                FourCC(*b"matg"),
+                "globals",
+                TagPayload::Built(map::build::Block::zeroed(0x284)),
+            )
+            .unwrap();
+        set.scenario = set
+            .add_tag(
+                FourCC(*b"scnr"),
+                "s",
+                TagPayload::Built(map::build::Block::zeroed(0x3e0)),
+            )
+            .unwrap();
+        let before = set.intern("stock").unwrap();
+        let mut root = map::build::Block::zeroed(0x10);
+        root.put_u32(0, before).string_id(4, "made at build");
+        set.add_tag(FourCC(*b"mach"), "door", TagPayload::Built(root))
+            .unwrap();
+        assert!(!set.strings.iter().flatten().any(|s| s == "made at build"));
+        let src = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+
+        let mut fresh = unpinned_copy(&set);
+        take_built_strings(&mut fresh, &src).unwrap();
+        assert_eq!(fresh.strings[..set.strings.len()], set.strings[..]);
+        let index = fresh
+            .strings
+            .iter()
+            .position(|s| s.as_deref() == Some("made at build"))
+            .expect("the build's string");
+        assert!(index >= set.strings.len());
+
+        // A table that is not the build's prefix is refused.
+        let mut other = unpinned_copy(&set);
+        other.strings.insert(0, Some("elsewhere".into()));
+        assert!(take_built_strings(&mut other, &src).is_err());
+    }
+
     const BASE: u32 = 0x8000_0000;
     const N: usize = 10;
 
@@ -1756,6 +1906,7 @@ mod pinned_prune_tests {
             metadata_base: BASE,
             metadata_size: 0x1000,
             unowned: vec![(BASE + 0xa00, live), (BASE + 0xc00, dead)],
+            grown: Vec::new(),
         });
         // `zzzz` points into tag 3's bytes and into the first gap.
         let b = bytes(&mut set, 2);

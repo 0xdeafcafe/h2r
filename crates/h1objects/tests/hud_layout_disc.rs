@@ -395,7 +395,11 @@ fn weapon_ammo_digits_sit_inside_the_ammo_panel() {
         let entries = h1hud::weapon_entries(&m, hud).unwrap();
         for e in &entries {
             let h1hud::WeaponEntryKind::Number(state, n, _) = &e.kind else { continue };
-            let Ok(t) = h1hud::weapon_number(e, w, h, TagId(1)) else { continue };
+            // This comparison uses the full-screen ammo panel and its digit font.
+            if e.screen == h1hud::SPLIT_SCREEN_ONLY || n.fraction_digits != 0 || e.hidden {
+                continue;
+            }
+            let t = h1hud::weapon_number(e, w, h, TagId(1)).unwrap();
             // Halo 1's cells (h1hud::number_point): the last ends at
             // `end`; the digit sprites' rows from Halo 1's y down.
             let cells = i16::from(n.digits) + i16::from(n.flags & 0x04 != 0);
@@ -450,10 +454,10 @@ fn weapon_ammo_digits_sit_inside_the_ammo_panel() {
 /// HUD element blend, mode 7 of the tables `0x0007f4e0` indexes, read from
 /// the disc's XBE, is ONE, ONE_MINUS_SRC_ALPHA, ADD; and each such weapon
 /// static on Blood Gulch, the ballistic weapons' `hud_ammo_alphas`, has no
-/// widget.
+/// visible widget.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
-fn halo1_statics_of_colour_zero_have_no_widget() {
+fn halo1_statics_of_colour_zero_have_no_show_bits() {
     let mut iso = iso();
     let e = iso
         .entries()
@@ -488,14 +492,16 @@ fn halo1_statics_of_colour_zero_have_no_widget() {
         };
         let entries = h1hud::weapon_entries(&m, hud).unwrap();
         for e in entries.iter().filter(|e| matches!(e.kind, h1hud::WeaponEntryKind::Static(_))) {
-            let w = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3));
+            let w = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
             if e.colour == 0 {
-                assert_eq!(w, Err(h1hud::Skip::Invisible), "{}", wt.name);
+                assert_eq!(&w.state[..8], &[0; 8], "{}", wt.name);
                 let b = m.tag(e.bitmap.unwrap()).unwrap();
                 assert!(b.name.ends_with("hud_ammo_alphas"), "{}: {}", wt.name, b.name);
-                zero.push(wt.name.clone());
-            } else {
-                assert_ne!(w, Err(h1hud::Skip::Invisible), "{}", wt.name);
+                if e.screen != h1hud::SPLIT_SCREEN_ONLY {
+                    zero.push(wt.name.clone());
+                }
+            } else if !e.hidden {
+                assert_ne!(&w.state[..8], &[0; 8], "{}", wt.name);
             }
         }
     }
@@ -506,8 +512,7 @@ fn halo1_statics_of_colour_zero_have_no_widget() {
 /// Blood Gulch's ammunition type icons: Halo 1's overlay elements
 /// (`wphi +0x90`) of the shared `ui\hud\master rounds` and `master plasma`
 /// are overlays shown always (mask 0x10), so each weapon that inherits one
-/// gets exactly one widget for it (the full-screen one; the split-screen
-/// one is left out), at Halo 1's place, from `hud_ammo_type_icons`.
+/// gets one icon in either view. The plasma icon is shared between views.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn ammo_type_icons_are_drawn_always() {
@@ -521,15 +526,18 @@ fn ammo_type_icons_are_drawn_always() {
         let drawn: Vec<_> = entries
             .iter()
             .filter(|e| matches!(e.kind, h1hud::WeaponEntryKind::Overlay(..)))
-            .filter(|e| h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)).is_ok())
             .collect();
         let inherits = |n: &str| {
             entries.iter().any(|e| m.tag(e.wphi).unwrap().name.eq_ignore_ascii_case(n))
         };
         let expected =
             usize::from(inherits("ui\\hud\\master rounds") || inherits("ui\\hud\\master plasma"));
-        assert_eq!(drawn.len(), expected, "{}", wt.name);
+        for split in [false, true] {
+            let views = drawn.iter().filter(|e| e.screen == 0 || (e.screen == h1hud::SPLIT_SCREEN_ONLY) == split);
+            assert_eq!(views.count(), expected, "{} split={split}", wt.name);
+        }
         for e in drawn {
+            h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
             let b = m.tag(e.bitmap.unwrap()).unwrap();
             assert!(b.name.ends_with("hud_ammo_type_icons"), "{}: {}", wt.name, b.name);
             let bm = Bitmap::read(&m, b).unwrap();
@@ -541,69 +549,68 @@ fn ammo_type_icons_are_drawn_always() {
     assert!(icons.len() >= 6, "{icons:?}");
 }
 
-/// Blood Gulch's warning crosshairs (docs/halo1/hud.md, "Warnings"):
-/// every weapon inheriting `master rounds` gets Halo 1's "Reload" (shown
-/// on rounds loaded below its own `wphi`'s threshold plus one, with rounds
-/// in reserve) and "No ammo", the two plasma weapons "Battery depleted";
-/// "Low ammo", "Low battery", "No grenades" and the Scorpion's reload
-/// arrows have no Halo 2 state and stay out. Every converted one draws a
-/// sprite of `hud_reticle_warnings`, centred as Halo 1 places it.
+/// Inherited warnings keep the weapon's own thresholds, and each warning
+/// sprite selects its source predicate at draw time.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
-fn warnings_convert_where_halo2_has_a_state() {
-    use h1hud::{Skip, WeaponEntryKind, crosshair_type as ct};
+fn weapon_warnings_keep_their_predicate_and_thresholds() {
+    use h1hud::{WeaponEntryKind, crosshair_type as ct};
     let m = h1("bloodgulch");
     let mut reload = std::collections::BTreeMap::new();
-    let (mut empty, mut skipped) = (Vec::new(), std::collections::BTreeSet::new());
+    let mut kinds = std::collections::BTreeSet::new();
     for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
         let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
             continue;
         };
+        let thresholds = h1hud::wphi::low(m.tag_data(m.tag(hud).unwrap()).unwrap());
         for e in h1hud::weapon_entries(&m, hud).unwrap() {
-            let WeaponEntryKind::Warning(t, _, _) = e.kind else { continue };
-            match h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)) {
-                Ok(w) => {
-                    let b = m.tag(e.bitmap.unwrap()).unwrap();
-                    assert!(b.name.ends_with("hud_reticle_warnings"), "{}: {}", wt.name, b.name);
-                    let bm = Bitmap::read(&m, b).unwrap();
-                    let size = h1hud::sprite_size(&bm, e.sequence).unwrap();
-                    assert_eq!(h1hud::halo2_rect(&w, size), h1hud::halo1_rect(e.anchor, e.offset, size));
-                    assert_eq!(w.anchor, Anchor::Centre);
-                    let short = wt.name.rsplit('\\').next().unwrap().to_owned();
-                    if t == ct::RELOAD {
-                        assert_eq!((e.sequence, w.state[18]), (1, 1), "{}", wt.name);
-                        reload.insert(short, w.state[17]);
-                    } else {
-                        assert_eq!(w.state, h1hud::EMPTY_STATE);
-                        empty.push((short, t, e.sequence));
-                    }
-                }
-                Err(Skip::Warning(t)) => {
-                    skipped.insert(t);
-                }
-                Err(why) => panic!("{} warning {t}: {why:?}", wt.name),
+            let WeaponEntryKind::Warning(t, flags, _) = e.kind else {
+                continue;
+            };
+            let w = h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+            let bitmap = Bitmap::read(&m, m.tag(e.bitmap.unwrap()).unwrap()).unwrap();
+            let size = h1hud::sprite_size(&bitmap, e.sequence).unwrap();
+            assert_eq!(
+                h1hud::halo2_rect(&w, size),
+                h1hud::halo1_rect(e.anchor, e.offset, size)
+            );
+            assert_eq!(
+                w.inputs,
+                [tags::weapon_hud::WARNING, t as u8, flags as u8, 0]
+            );
+            assert_eq!(e.thresholds, thresholds, "{}", wt.name);
+            kinds.insert(t);
+            if t == ct::RELOAD {
+                assert_eq!(e.sequence, 1, "{}", wt.name);
+                reload.insert(
+                    wt.name.rsplit('\\').next().unwrap().to_owned(),
+                    thresholds[1],
+                );
             }
         }
     }
-    eprintln!("reload thresholds {reload:?}; empty {empty:?}; skipped {skipped:?}");
-    let want: std::collections::BTreeMap<_, _> = [
-        ("assault rifle", 11),
-        ("pistol", 5),
-        ("shotgun", 3),
-        ("rocket launcher", 2),
-        ("sniper rifle", 2),
-        ("needler", 9),
+    let expected: std::collections::BTreeMap<_, _> = [
+        ("assault rifle", 10),
+        ("pistol", 4),
+        ("shotgun", 2),
+        ("rocket launcher", 1),
+        ("sniper rifle", 1),
+        ("needler", 8),
     ]
+    .map(|(name, n)| (name.to_owned(), n))
     .into_iter()
-    .map(|(n, t)| (n.to_owned(), t))
     .collect();
-    assert_eq!(reload, want);
-    assert_eq!(empty.iter().filter(|e| e.1 == ct::NO_AMMO && e.2 == 2).count(), 6, "{empty:?}");
-    assert_eq!(empty.iter().filter(|e| e.1 == ct::BATTERY_DEPLETED && e.2 == 10).count(), 2, "{empty:?}");
-    assert_eq!(empty.len(), 8, "{empty:?}");
-    let want: std::collections::BTreeSet<_> =
-        [ct::LOW_BATTERY, ct::RELOADING, ct::NO_GRENADES, ct::LOW_AMMO].into_iter().collect();
-    assert_eq!(skipped, want);
+    assert_eq!(reload, expected);
+    for t in [
+        ct::LOW_BATTERY,
+        ct::RELOADING,
+        ct::NO_GRENADES,
+        ct::LOW_AMMO,
+        ct::NO_AMMO,
+        ct::BATTERY_DEPLETED,
+    ] {
+        assert!(kinds.contains(&t), "missing warning type {t}");
+    }
 }
 
 /// The zoom-level readout (crosshair type 1, zoomed only): a widget per
@@ -623,12 +630,8 @@ fn the_zoom_level_readout_is_a_widget_per_level() {
         };
         for e in h1hud::weapon_entries(&m, hud).unwrap() {
             let WeaponEntryKind::Crosshair(ct::ZOOM_LEVEL, _) = e.kind else { continue };
-            // The sniper rifle carries a second readout for split screen
-            // only; that one stays out like every split-screen entry.
             if e.screen == h1hud::SPLIT_SCREEN_ONLY {
-                assert_eq!(h1hud::zoom_widget(&e, 0, Some(TagId(1)), TagId(3)), Err(Skip::SplitScreen));
                 split += 1;
-                continue;
             }
             assert_eq!(
                 h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)),
@@ -648,7 +651,9 @@ fn the_zoom_level_readout_is_a_widget_per_level() {
                 n += 1;
             }
             let short = wt.name.rsplit('\\').next().unwrap().to_owned();
-            levels.insert(short.clone(), (b.name.clone(), e.sequence, n));
+            if e.screen != h1hud::SPLIT_SCREEN_ONLY {
+                levels.insert(short, (b.name.clone(), e.sequence, n));
+            }
         }
     }
     eprintln!("zoom readouts {levels:?}; split-screen only {split}");
@@ -732,7 +737,7 @@ fn scope_masks_use_the_hud_screen_effect_in_each_view() {
             let image = &source.images[0];
             [image.width, image.height, image.depth]
         });
-        let (hud, _) = conv.weapon_hud(wphi.id).unwrap();
+        let hud = conv.weapon_hud(wphi.id).unwrap();
         scopes.push((local_index(hud).unwrap(), images, mask.filters));
     }
     assert_eq!(
@@ -862,4 +867,226 @@ fn scope_masks_use_the_hud_screen_effect_in_each_view() {
             ]))
         );
     }
+}
+
+/// Count authored draw entries directly from the source reflexives. A child
+/// interface contributes its entries each time it is inherited.
+fn source_weapon_entries(map: &H1Map, mut id: h1map::TagId) -> usize {
+    use h1hud::wphi;
+    use h1objects::h1::{elements, reference};
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0;
+    loop {
+        assert!(seen.insert(id), "cyclic HUD inheritance at {id:?}");
+        let data = map.tag_data(map.tag(id).unwrap()).unwrap();
+        for (at, stride) in [
+            (wphi::STATICS, wphi::STATIC_SIZE),
+            (wphi::METERS, wphi::METER_SIZE),
+            (wphi::NUMBERS, wphi::NUMBER_SIZE),
+        ] {
+            total += elements(map, data, at, stride).unwrap().len();
+        }
+        for (at, stride, nested, size) in [
+            (
+                wphi::CROSSHAIRS,
+                wphi::CROSSHAIR_SIZE,
+                wphi::crosshair::OVERLAYS,
+                wphi::crosshair::OVERLAY_SIZE,
+            ),
+            (
+                wphi::OVERLAYS,
+                wphi::OVERLAY_SIZE,
+                wphi::entry::ELEMENT + wphi::overlay_element::OVERLAYS,
+                wphi::overlay_element::OVERLAY_SIZE,
+            ),
+        ] {
+            for parent in elements(map, data, at, stride).unwrap() {
+                total += elements(map, parent, nested, size).unwrap().len();
+            }
+        }
+        let Some(child) = reference(map, data, wphi::CHILD) else {
+            return total;
+        };
+        id = child;
+    }
+}
+
+#[test]
+#[ignore = "reads all 23 gameplay maps ($H1_ISO) and their Halo 2 bases ($H2_DISC)"]
+fn every_retail_weapon_hud_element_is_placed() {
+    use h1hud::{WeaponEntryKind as Kind, crosshair_type};
+    use h1objects::base::Base;
+    use h1objects::convert::{Converter, local_index};
+    use tags::defs::{self, Defs, Record, Target, Val};
+    use tags::weapon_hud as input;
+
+    fn block<'a>(r: &'a Record, field: &str) -> &'a [Record] {
+        let Some(Val::Block(rows)) = r.get(field) else {
+            panic!("missing {field}")
+        };
+        rows
+    }
+
+    let mut disc = iso();
+    let mut bases = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for file in h1map::disc::Disc::open(&mut disc).unwrap().maps {
+        let name = h1map::disc::map_stem(&file);
+        if name == "ui" {
+            continue;
+        }
+        let base = if h1map::disc::CAMPAIGN_LEVELS.contains(&name) {
+            "05a_deltaapproach"
+        } else {
+            h1convert::convert::known(name)
+                .unwrap_or_else(|| panic!("unknown map {name}"))
+                .1
+        };
+        bases.entry(base).or_default().push(file);
+    }
+    let nhdt = Defs::builtin().group(map::FourCC(*b"nhdt")).unwrap();
+    let (mut campaign, mut multiplayer, mut interfaces, mut authored) = (0, 0, 0, 0);
+    for (base, files) in bases {
+        let mut h2 = map::Map::from_reader(Cursor::new(h2_file(&format!("/{base}.map")))).unwrap();
+        let templates = Base::read(&mut h2).unwrap();
+        for file in files {
+            let m = H1Map::from_reader(Cursor::new(disc.read(&file).unwrap())).unwrap();
+            match m.header().cache_type {
+                h1map::CacheType::Campaign => campaign += 1,
+                h1map::CacheType::Multiplayer => multiplayer += 1,
+                other => panic!("{} has cache type {other}", file.path),
+            }
+            let mut converter = Converter::new(&m, &templates);
+            for tag in m.tags().iter().filter(|t| t.group == Group::new(b"wphi")) {
+                let path = format!("{} {}", file.path, tag.name);
+                let id = converter
+                    .weapon_hud(tag.id)
+                    .unwrap_or_else(|e| panic!("{path}: {e}"));
+                let converted = &converter.tree.tags[local_index(id).unwrap()].1;
+                assert_eq!(converted.group, map::FourCC(*b"nhdt"), "{path}");
+                let r = defs::from_built(nhdt, &converted.root).unwrap();
+                let mut bitmaps = block(&r, "bitmap_widgets").iter();
+                let mut texts = block(&r, "text_widgets").iter();
+                let entries = h1hud::weapon_entries(&m, tag.id).unwrap();
+                assert_eq!(entries.len(), source_weapon_entries(&m, tag.id), "{path}");
+                authored += entries.iter().filter(|e| e.wphi == tag.id).count();
+                for (i, e) in entries.iter().enumerate() {
+                    let desc = format!("{path} entry {i} {:?}", e.kind);
+                    let mut copies = 1;
+                    if let Kind::Crosshair(crosshair_type::ZOOM_LEVEL, flags) = e.kind {
+                        let bm = Bitmap::read(&m, m.tag(e.bitmap.unwrap()).unwrap()).unwrap();
+                        let sprites = bm.sequences[e.sequence as usize].sprites.len();
+                        let levels = if flags & (h1hud::OVERLAY_WHEN_UNZOOMED | 0x20) != 0 {
+                            1
+                        } else {
+                            h1hud::ZOOM_LEVELS
+                                + usize::from(flags & h1hud::OVERLAY_WHEN_ZOOMED == 0)
+                        };
+                        copies = sprites.min(levels);
+                        assert_ne!(copies, 0, "{desc}");
+                    }
+                    for _ in 0..copies {
+                        let text = matches!(e.kind, Kind::Number(..));
+                        let row = if text { texts.next() } else { bitmaps.next() }
+                            .unwrap_or_else(|| panic!("unplaced {desc}"));
+                        assert_eq!(
+                            row.get("h1_screen"),
+                            Some(&Val::Int((input::SCREEN + e.screen).into())),
+                            "{desc}"
+                        );
+                        for field in if text {
+                            &["shader"][..]
+                        } else {
+                            &["bitmap", "shader"][..]
+                        } {
+                            assert!(
+                                matches!(
+                                    row.get(field),
+                                    Some(Val::Ref {
+                                        target: Target::Id(_),
+                                        ..
+                                    })
+                                ),
+                                "{desc} missing {field}"
+                            );
+                        }
+                        if !text {
+                            let reticle = matches!(e.kind, Kind::Crosshair(..) | Kind::Warning(..));
+                            let half_size = reticle && e.split_flags & 2 == 0;
+                            assert_eq!(
+                                row.get("h1_half_size"),
+                                Some(&Val::Int(i64::from(half_size))),
+                                "{desc}"
+                            );
+                            assert_eq!(
+                                row.get("h1_frame_period"),
+                                Some(&Val::Int(e.frame_period.into())),
+                                "{desc}"
+                            );
+                            for mode in ["full", "half", "quarter"] {
+                                assert_eq!(
+                                    row.get(&format!("sequence_{mode}")),
+                                    Some(&Val::Int(e.sequence.into())),
+                                    "{desc}"
+                                );
+                            }
+                        }
+                        let inputs = match e.kind {
+                            Kind::Meter(state, [min, mul, add]) => {
+                                [h1hud::weapon_meter_input(state).unwrap(), min, mul, add]
+                            }
+                            Kind::Number(state, number, magazines) => {
+                                let value = h1hud::weapon_number_input(state).unwrap();
+                                if magazines {
+                                    [input::MAGAZINES, value, number.digits, number.flags]
+                                } else if matches!(value, input::RANGE | input::ELEVATION) {
+                                    [value, number.fraction_digits, number.digits, number.flags]
+                                } else {
+                                    [value, 0, 0, 0]
+                                }
+                            }
+                            Kind::Warning(kind, flags, _) => {
+                                [input::WARNING, kind as u8, flags as u8, 0]
+                            }
+                            _ => [0; 4],
+                        };
+                        for (slot, value) in inputs.into_iter().enumerate() {
+                            assert_eq!(
+                                row.get(&format!("input_{}", slot + 1)),
+                                Some(&Val::Int(value.into())),
+                                "{desc}"
+                            );
+                        }
+                        if let Kind::Crosshair(kind, flags) = e.kind {
+                            let mut expected = vec![kind as u8, flags as u8];
+                            expected.extend(e.flash);
+                            assert_eq!(
+                                row.at("effects[0].block_4c"),
+                                Some(&Val::Data(expected)),
+                                "{desc} lost its aim or zoom sprite profile"
+                            );
+                        }
+                        if matches!(e.kind, Kind::Warning(..)) {
+                            let Some(Val::Data(profile)) = row.at("effects[0].block_38") else {
+                                panic!("{desc} has no warning profile");
+                            };
+                            let mut source =
+                                Vec::from_iter(e.thresholds.into_iter().flat_map(i16::to_le_bytes));
+                            source.extend(e.flash);
+                            assert_eq!(profile, &source, "{desc}");
+                        }
+                    }
+                }
+                assert_eq!(
+                    (bitmaps.len(), texts.len()),
+                    (0, 0),
+                    "{path} has extra widgets"
+                );
+                interfaces += 1;
+            }
+        }
+    }
+    assert_eq!(
+        (campaign, multiplayer, interfaces, authored),
+        (10, 13, 360, 1497)
+    );
 }

@@ -51,6 +51,19 @@ impl Halo1Objects for Objects<'_> {
         Ok((id.0 & 0xffff) as usize)
     }
 
+    fn fixture(
+        &mut self,
+        tag: &h1map::Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<usize, String> {
+        let id = self
+            .conv
+            .fixture(tag, lighting)
+            .map_err(|e| e.to_string())?;
+        crate::convert::local_index(id)
+            .ok_or_else(|| format!("{}: fixture is not rebuilt", tag.name))
+    }
+
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
         let got = self.conv.first_person_arms(id).map_err(|e| e.to_string())?;
         if got.0 & 0xffff_0000 != local(0).0 {
@@ -70,7 +83,7 @@ impl Halo1Objects for Objects<'_> {
             .ok_or_else(|| format!("no {} {name}", String::from_utf8_lossy(&group)))?;
         let bytes = h1.tag_data(tag).map_err(|e| e.to_string())?;
         let obj = crate::h1::Object::read(h1, bytes).map_err(|e| e.to_string())?;
-        crate::coll::object_bsps(h1, &obj).map_err(|e| e.to_string())
+        crate::coll::object_bsps(h1, &obj, &self.conv.base.materials).map_err(|e| e.to_string())
     }
 
     fn take(&mut self) -> ObjectTags {
@@ -90,6 +103,7 @@ impl Halo1Objects for Objects<'_> {
             })
             .collect();
         let (tags, sounds, loops) = (tree.tags, tree.sounds, tree.loops);
+        let player_damage_scales = tree.player_damage_scales;
         let tag = |id: map::TagId| match crate::convert::local_index(id) {
             Some(k) => HudTag::Added(k),
             None => HudTag::Base(id),
@@ -108,6 +122,8 @@ impl Halo1Objects for Objects<'_> {
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
+                    model_shader_error: tree.model_shader_error.clone(),
+                    player_damage_scales: player_damage_scales.clone(),
                     ..Tree::default()
                 }
                 .install_tags(set)
@@ -119,8 +135,8 @@ impl Halo1Objects for Objects<'_> {
                     loops: loops.clone(),
                     ..Tree::default()
                 }
-                .install_audio_for(set, ids);
-                Ok(())
+                .install_audio_for(set, ids)
+                .map_err(|e| e.to_string())
             }),
             notes,
         }

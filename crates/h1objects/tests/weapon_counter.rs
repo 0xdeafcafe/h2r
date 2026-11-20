@@ -13,6 +13,10 @@ use tags::defs::{Defs, Record, Target, Val, from_built};
 use tags::object::Metadata;
 
 fn counter_map() -> H1Map {
+    model_shader_map(b"schi")
+}
+
+fn model_shader_map(shader_group: &'static [u8; 4]) -> H1Map {
     const LOADED: u8 = 24;
     const FUNCTION_SIZE: usize = 0x168;
     const SHADER_REF_SIZE: usize = 0x20;
@@ -31,7 +35,7 @@ fn counter_map() -> H1Map {
             spec(b"weap", "weapon", WEAP_SIZE + FUNCTION_SIZE + MAGAZINE_SIZE),
             spec(b"mode", "world", MODE_HEADER + 2 * SHADER_REF_SIZE),
             spec(b"mode", "first_person", MODE_HEADER + 2 * SHADER_REF_SIZE),
-            spec(b"schi", "counter", CHICAGO_SIZE + SCHI_MAP.0),
+            spec(shader_group, "counter", CHICAGO_SIZE + SCHI_MAP.0),
             spec(
                 b"bitm",
                 "digits",
@@ -62,6 +66,7 @@ fn counter_map() -> H1Map {
         put(b, weapon + 0x34, id(1));
         put(b, weapon + 0x45c, group(b"mode"));
         put(b, weapon + 0x468, id(2));
+        put(b, weapon + 0x48c, h1map::TagId::NONE.0);
         put(b, weapon + 0x330, u32::from(WEAPON_PRIMARY_AMMUNITION));
         put(b, weapon + 0x158, 1);
         put(b, weapon + 0x15c, address(function));
@@ -78,7 +83,7 @@ fn counter_map() -> H1Map {
         put(b, model + 0xe0, address(shaders));
         for permutation in 0..2 {
             let entry = shaders + permutation * SHADER_REF_SIZE;
-            put(b, entry, group(b"schi"));
+            put(b, entry, group(shader_group));
             put(b, entry + 0xc, id(3));
             put(b, entry + 0x10, permutation as u32);
         }
@@ -129,9 +134,7 @@ fn counter_base() -> Base {
             bytes: Vec::new(),
         },
         tags: Vec::new(),
-        model_shader: Some(ModelTemplate {
-            shader: TagId(0xe200_0002),
-            name: "stand-in".into(),
+        model_shader: ModelTemplate {
             library: Library::new(
                 &[
                     (ILLUM_DETAIL.stem, TagId(0xe200_0003)),
@@ -139,8 +142,9 @@ fn counter_base() -> Base {
                 ],
                 &[(Fixed::ColorWhite, fixed), (Fixed::DefaultDetail, fixed)],
             ),
-        }),
+        },
         materials: Vec::new(),
+        dialogue_names: Vec::new(),
     }
 }
 
@@ -214,4 +218,19 @@ fn shared_weapon_models_use_their_own_magazine_limit() {
             assert_eq!(weapon_materials(&conv, id), [want; 2], "{name} in {order:?}");
         }
     }
+}
+
+#[test]
+fn unsupported_material_names_the_shader_and_map_and_prevents_installation() {
+    let h1 = model_shader_map(b"snew");
+    let base = counter_base();
+    let mut conv = Converter::new(&h1, &base);
+    let model = h1.find(h1map::Group::new(b"mode"), "first_person").unwrap();
+    let error = conv.first_person_arms(model.id).unwrap_err().to_string();
+    assert!(error.contains("snew counter"), "{error}");
+    assert!(!h1.header().name.is_empty() && error.contains(&h1.header().name), "{error}");
+    let mut target = map::build::TagSet::new(map::CacheType::Multiplayer, "target", "target");
+    let count = target.slots.len();
+    assert_eq!(conv.tree.install_tags(&mut target).unwrap_err().to_string(), error);
+    assert_eq!(target.slots.len(), count);
 }

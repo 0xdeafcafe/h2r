@@ -1276,11 +1276,14 @@ impl feature::Feature for SkullsCustom {
             .first()
             .after_feature(agent::sim::calls::FEATURE);
         let s = Arc::clone(&self.0);
-        b.raw().after(&GAME_TICK, "our skulls", move |c| {
-            let rt = Arc::clone(c.ctx.runtime());
-            s.after_tick(&rt);
-            Ok(())
-        });
+        b.raw()
+            .after(&GAME_TICK, "our skulls", move |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                s.after_tick(&rt);
+                Ok(())
+            })
+            // The Halo 1 weapon HUD samples after our skulls' writes.
+            .after_feature(crate::h1_hud_text::FEATURE);
         let (live, save, load) = (
             Arc::clone(&self.0),
             Arc::clone(&self.0),

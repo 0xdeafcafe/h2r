@@ -266,6 +266,9 @@ pub fn add_host_methods(agent: &agent::Agent) {
             )),
         },
     );
+    agent.add_game_method(method::UI_CAMPAIGN, Access::Read, |_, ctx| {
+        ctx.read_guest(crate::campaign_menu::inspect)
+    });
     agent.add_method(
         method::UI_SCREEN,
         Access::Read,

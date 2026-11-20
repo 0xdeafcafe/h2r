@@ -83,19 +83,23 @@ pub(super) fn set(cx: &Cx, argument: u32, enabled: bool) -> R<()> {
     })
 }
 
-fn rules(m: &dyn GuestMemory, argument: u32) -> R<Vec<PlatoonRule>> {
-    if matches!(argument, 0 | NONE) {
+/// `offset` is the table's place in the scenario's script strings.
+fn rules(m: &dyn GuestMemory, offset: u32) -> R<Vec<PlatoonRule>> {
+    let Some((at, remaining)) = state::script_strings(m, offset)? else {
+        return Ok(Vec::new());
+    };
+    if remaining < 5 {
         return Ok(Vec::new());
     }
-    let prefix = m.bytes(argument, 4)?;
+    let prefix = m.bytes(at, 4)?;
     let Some(len) = decode_words(&prefix).and_then(|words| words.first().copied()) else {
         return Ok(Vec::new());
     };
     let len = usize::from(len);
-    if len > MAX_PLATOON_TEXT || m.u8(argument + 4 + len as u32)? != 0 {
+    if len > MAX_PLATOON_TEXT || 4 + len as u32 >= remaining || m.u8(at + 4 + len as u32)? != 0 {
         return Ok(Vec::new());
     }
-    let encoded = m.bytes(argument + 4, len)?;
+    let encoded = m.bytes(at + 4, len)?;
     Ok(PlatoonRule::decode_all(&encoded).unwrap_or_default())
 }
 

@@ -602,6 +602,8 @@ pub struct Graph {
     /// class's animation: every class's throw-grenade slot names
     /// `stand rifle throw-grenade` on the cyborg.
     pub units: Vec<UnitSlots>,
+    /// Damage kind, then direction, then body region (four by four by eleven).
+    pub damage_slots: Vec<i16>,
     /// A first-person graph's slot table (the first element of `+0x48`):
     /// per slot of [`FIRST_PERSON_SLOTS`], the animation it plays, -1 for
     /// none. Empty on other graphs.
@@ -725,10 +727,7 @@ pub struct ObjectOverlay {
 /// `light-on` its `light-off`; its `firing` fills no slot).
 ///
 /// Each position's word is the label of the animation it holds on a graph
-/// of the disc where the two agree (V, Blood Gulch's 11 first-person
-/// graphs), except `light-on` (6) and `misfire-2` (19), which no Blood
-/// Gulch graph labels: S, from their neighbours `light-off` (5) and
-/// `misfire-1` (18).
+/// of the disc where the two agree and the Halo 1 XBE's slot label table.
 pub const FIRST_PERSON_SLOTS: &[&str] = &[
     "idle",
     "posing",
@@ -783,6 +782,8 @@ pub struct ClassSlots {
     /// one).
     pub screen: AimScreen,
     pub slots: Vec<i16>,
+    /// Unit marker and weapon marker to bring together.
+    pub ik: Vec<(String, String)>,
     pub types: Vec<(String, Vec<i16>)>,
 }
 
@@ -846,6 +847,13 @@ pub struct Animation {
     pub node_list_checksum: u32,
     pub node_count: u16,
     pub loop_frame: u16,
+    /// Primary and secondary key frames (+0x34/+0x36).
+    pub key_frames: [i16; 2],
+    /// Left and right foot contacts (+0x40/+0x41).
+    pub foot_frames: [u8; 2],
+    pub next_permutation: i16,
+    pub first_permutation: i16,
+    pub cumulative_weight: f32,
     pub flags: u16,
     /// Per-node channel flags: rotation, translation, scale.
     pub animated: [u64; 3],
@@ -871,11 +879,17 @@ impl Graph {
         let h = m.read(address, ANTR_HEADER)?;
         let nodes = block(m, h, ANTR_NODES, ANTR_NODE_LEN)?
             .into_iter()
-            .map(|e| AnimNode {
+            .enumerate()
+            .map(|(i, e)| AnimNode {
                 name: name32(e, 0),
                 next_sibling: i16_at(e, 0x20),
                 first_child: i16_at(e, 0x22),
-                parent: i16_at(e, 0x24),
+                // Xbox antr encodes the first node's root as self. Its mode
+                // and H2 jmad both terminate the parent chain with -1.
+                parent: match (i, i16_at(e, 0x24)) {
+                    (0, 0) => -1,
+                    (_, parent) => parent,
+                },
                 joint_flags: u32_at(e, 0x28),
                 base_vector: f32s(e, 0x2c),
                 vector_range: f32_at(e, 0x38),
@@ -902,6 +916,7 @@ impl Graph {
             weapon_count: u32_at(h, ANTR_WEAPONS),
             vehicle_count: u32_at(h, ANTR_VEHICLES),
             units: read_units(m, h)?,
+            damage_slots: block(m, h, 0x3c, 2)?.iter().map(|e| i16_at(e, 0)).collect(),
             first_person_slots: match block(m, h, ANTR_FIRST_PERSON, FIRST_PERSON_LEN)?.first() {
                 Some(e) => block(m, e, FIRST_PERSON_SLOT_LIST, 2)?
                     .into_iter()
@@ -961,6 +976,8 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
                         label: name32(c, 0),
                         screen: AimScreen::read(c, CLASS_SCREEN),
                         slots: slots(c, CLASS_SLOTS)?,
+                        ik: block(m, c, 0xa4, 0x40)?.iter()
+                            .map(|e| (name32(e, 0), name32(e, 0x20))).collect(),
                         types,
                     })
                 })
@@ -975,18 +992,49 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
         .collect()
 }
 
-/// Every weapon type the units' classes of the vehicle graph at `address`
-/// list, `(type label, class label)`, without the animations; none for a
-/// graph without a vehicles element.
-///
-/// Only a vehicle graph's converted form holds these pairs (its weapon
-/// pairs, `jmad +0x54`, and aim overlays, `jmad::vehicle_plan`); a
-/// biped's is built from its animation names alone, so a type its class
-/// lists without an animation named for it has no path there. Derelict's
-/// flamethrower, `ft`, which no Halo 1 animation name holds, took
-/// (`rifle`, `ft`) from a biped graph's lists from converter version 84
-/// to 90, a path the converted player graph does not find (`sandbox_disc`
-/// `every_halo1_weapon_is_held_by_the_halo1_player_graph`).
+/// The weapon classes used while standing. Some types occur twice. The
+/// needler has an empty rifle entry and its weapon actions under pistol.
+pub(crate) fn player_weapon_pairs(units: &[UnitSlots]) -> Result<Vec<(String, String)>> {
+    let mut candidates = std::collections::BTreeMap::<&str, Vec<(&str, bool)>>::new();
+    for unit in units.iter().filter(|u| u.label == "stand") {
+        for class in &unit.classes {
+            for (kind, slots) in &class.types {
+                if !kind.is_empty() {
+                    candidates
+                        .entry(kind)
+                        .or_default()
+                        .push((&class.label, slots.iter().any(|&i| i >= 0)));
+                }
+            }
+        }
+    }
+    let mut pairs = Vec::new();
+    for (kind, classes) in candidates {
+        let populated = classes.iter().any(|&(_, active)| active);
+        let mut eligible = classes
+            .iter()
+            .filter(|(_, active)| *active == populated)
+            .map(|&(class, _)| class);
+        let class = eligible.next().expect("at least one candidate");
+        if eligible.any(|other| other != class) {
+            return Err(Error::Invalid(format!(
+                "ambiguous standing classes for {kind}: {classes:?}"
+            )));
+        }
+        pairs.push((kind.to_owned(), class.to_owned()));
+    }
+    Ok(pairs)
+}
+
+/// The player graph's standing weapon pairs without decoding the poses.
+pub(crate) fn player_types<M: Memory + ?Sized>(
+    m: &M,
+    address: u32,
+) -> Result<Vec<(String, String)>> {
+    player_weapon_pairs(&read_units(m, m.read(address, ANTR_HEADER)?)?)
+}
+
+/// Vehicle weapon classes and types, including types without a named clip.
 pub fn weapon_types<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<(String, String)>> {
     let h = m.read(address, ANTR_HEADER)?;
     if u32_at(h, ANTR_VEHICLES) == 0 {
@@ -1086,6 +1134,11 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
             node_list_checksum: u32_at(e, 0x28),
             node_count,
             loop_frame: u16_at(e, 0x2e),
+            key_frames: [i16_at(e, 0x34), i16_at(e, 0x36)],
+            foot_frames: [e[0x40], e[0x41]],
+            next_permutation: i16_at(e, 0x38),
+            first_permutation: i16_at(e, 0x42),
+            cumulative_weight: f32_at(e, 0x44),
             flags,
             animated,
             frames,
@@ -1159,6 +1212,11 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         node_list_checksum: u32_at(e, 0x28),
         node_count,
         loop_frame: u16_at(e, 0x2e),
+        key_frames: [i16_at(e, 0x34), i16_at(e, 0x36)],
+        foot_frames: [e[0x40], e[0x41]],
+        next_permutation: i16_at(e, 0x38),
+        first_permutation: i16_at(e, 0x42),
+        cumulative_weight: f32_at(e, 0x44),
         flags,
         animated,
         frames,

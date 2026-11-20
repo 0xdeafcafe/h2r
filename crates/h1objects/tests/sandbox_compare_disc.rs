@@ -109,6 +109,29 @@ fn bloodgulch_sandboxes_side_by_side() {
     for (label, m) in &mut maps {
         units(label, m);
     }
+    let retail = Base::read(&mut maps[0].1).unwrap();
+    let sandbox = Base::read(&mut maps[1].1).unwrap();
+    let chief_targets = |base: &Base| {
+        let chief = base
+            .find(b"bipd", r"objects\characters\masterchief\masterchief_mp")
+            .unwrap();
+        let chief = base.head(chief, 0x314).unwrap();
+        let hlmt = base.head(base.reference(&chief, 0x34).unwrap(), 0xfc).unwrap();
+        (0..2)
+            .map(|i| base.element(&hlmt, 0x68, 0x1c, i).unwrap().unwrap()[4..].to_vec())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(chief_targets(&retail), chief_targets(&sandbox));
+    for path in [
+        r"objects\weapons\pistol\magnum\projectiles\magnum_bullet",
+        r"objects\weapons\rifle\smg\projectiles\smg_bullet",
+        r"objects\weapons\rifle\plasma_rifle\projectiles\plasma_rifle_bolt",
+    ] {
+        let projectile = |base: &Base| base.head(base.find(b"proj", path).unwrap(), 0x1a4).unwrap();
+        let (stock, imported) = (projectile(&retail), projectile(&sandbox));
+        assert_eq!(&stock[0xbc..0xe8], &imported[0xbc..0xe8], "{path}");
+        assert_eq!(&stock[0x164..0x19c], &imported[0x164..0x19c], "{path}");
+    }
     let refs: Vec<(String, BTreeMap<String, Vec<String>>)> = maps
         .iter_mut()
         .map(|(l, m)| (l.to_string(), ambient_refs(m)))

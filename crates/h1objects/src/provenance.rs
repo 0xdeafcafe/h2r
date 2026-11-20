@@ -117,4 +117,18 @@ mod tests {
         assert!(notes.is_empty());
         assert_eq!(&root.unwrap().bytes[..12], &b[..12]);
     }
+
+    #[test]
+    fn damage_keeps_the_source_dialogue_category_and_impulse() {
+        let mut bytes = vec![0; crate::arsenal::H1_JPT_MIN];
+        bytes[0x1c6..0x1c8].copy_from_slice(&5u16.to_le_bytes());
+        bytes[0x1f4..0x1f8].copy_from_slice(&2.5f32.to_le_bytes());
+        let root = crate::arsenal::damage(&bytes, None).unwrap();
+        assert_eq!(&root.bytes[0x12..0x14], &2u16.to_le_bytes());
+        assert_eq!(
+            &root.bytes[0x34..0x38],
+            &(map::H1_DAMAGE_CATEGORY | 5).to_le_bytes(),
+        );
+        assert_eq!(&root.bytes[0x38..0x3c], &2.5f32.to_le_bytes());
+    }
 }

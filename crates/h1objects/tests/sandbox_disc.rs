@@ -135,25 +135,19 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         "{slots} slots, not {first} + {added} + up to {textures} + {sounds}"
     );
     // Halo 1's textures on the converted models: each material names a
-    // copy of the base's model shader whose bitmaps include one this
-    // conversion added (a Halo 1 bitmap).
+    // rebuilt shader whose bitmaps include one this conversion added.
     let modes: Vec<(TagId, String)> = out
         .tags()
         .iter()
         .filter(|t| t.group == FourCC(*b"mode") && (t.id.0 & 0xffff) as usize >= first)
         .map(|t| (t.id, t.name.clone().unwrap_or_default()))
         .collect();
-    let stand_in = templates.model_shader.as_ref().map(|t| t.shader);
-    // The sky model's materials name copies of the base's sky shaders
-    // drawing Halo 1's bitmaps, or the base sky's own (h1convert::sky).
-    let sky_fallback = p.skies.templates.fallback;
     let sky_templates = [
         h1convert::sky_shaders::ALPHA_TEMPLATE,
         h1convert::sky_shaders::CLOUDS_TEMPLATE,
         h1convert::sky_shaders::ADDITIVE_TEMPLATE,
     ];
-    let (mut drawn, mut null, mut stood_in, mut sky, mut reflective, mut emblem) =
-        (0, 0, 0, 0, 0, 0);
+    let (mut drawn, mut null, mut sky, mut reflective, mut emblem) = (0, 0, 0, 0, 0);
     for (id, name) in &modes {
         let b = out.read_tag_bytes(*id).unwrap();
         let at = out.tag(*id).unwrap().location.unwrap().address;
@@ -164,14 +158,6 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             let shader = TagId(w(e + 0xc));
             if shader.0 == u32::MAX {
                 null += 1;
-                continue;
-            }
-            if Some(shader) == stand_in {
-                stood_in += 1;
-                continue;
-            }
-            if Some(shader) == sky_fallback {
-                sky += 1;
                 continue;
             }
             let (template, bitmaps) = scenario_edit::scene::shader_bitmaps(&mut out, shader)
@@ -208,17 +194,14 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         }
     }
     eprintln!(
-        "models: {} converted, {drawn} materials with Halo 1 textures ({reflective} on tex_bump_env), {stood_in} the base's model shader, {sky} sky shaders, {emblem} emblem, {null} null",
+        "models: {} converted, {drawn} materials with Halo 1 textures ({reflective} on tex_bump_env), {sky} sky shaders, {emblem} emblem, {null} null",
         modes.len()
     );
     // No material is null: the shader draw does not skip a NONE shader.
     assert_eq!(null, 0, "{drawn} drawn, {null} null");
     // The cyborg's emblem part carries the player's emblem.
     assert!(emblem > 0, "no player emblem material");
-    assert!(
-        drawn > 0 && drawn >= 4 * stood_in,
-        "{drawn} drawn, {stood_in} stood in"
-    );
+    assert!(drawn > 0);
     let ctx = tags::object::Context::read(&mut out).unwrap();
     let names: std::collections::HashMap<TagId, (FourCC, String)> = out
         .tags()
@@ -521,20 +504,24 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 let input = x[widget::INPUTS];
                 // A meter draws its copy with clear texels black.
                 // A static draws its copy with the colour's alpha.
-                let bitmap = if input != 0 {
-                    bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}")).to_owned()
+                let meter = tags::weapon_hud::METER;
+                let bitmap = if (meter..=meter + 5).contains(&input) {
+                    bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}"))
                 } else {
-                    bitmap.rsplit_once("_alpha_").map_or(bitmap.clone(), |(s, _)| s.to_owned())
+                    assert!([0, tags::weapon_hud::WARNING].contains(&input), "{name}: input {input}");
+                    bitmap.strip_suffix("_direct")
+                        .or_else(|| bitmap.rsplit_once("_alpha_").map(|(source, _)| source))
+                        .unwrap_or(&bitmap)
                 };
                 // A later zoom level draws a copy starting at its sprite.
                 let bitmap = match bitmap.rsplit_once("_seq") {
-                    Some((s, k)) if k.contains("_sprite") => s.to_owned(),
+                    Some((s, k)) if k.contains("_sprite") => s,
                     _ => bitmap,
                 };
-                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
-                // Colour 0 draws nothing in Halo 1 (h1hud::static_alpha).
-                assert!(!bitmap.ends_with("hud_ammo_alphas"), "{name}: a colour-0 static");
-                assert!([0, 0x31, 0x36, 0x38].contains(&input), "{name}: input {input}");
+                assert!(h1_bitmaps.contains(bitmap), "{name}: {bitmap} is Halo 1's");
+                if bitmap.ends_with("hud_ammo_alphas") {
+                    assert_eq!(&x[widget::STATE..widget::STATE + 8], &[0; 8], "{name}: a colour-0 static");
+                }
                 if x[widget::ANCHOR] == h1hud::Anchor::Centre as u8 {
                     centred += 1;
                 }
@@ -550,14 +537,22 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             let mut counts = Vec::new();
             for t in tb.as_chunks::<{ h1hud::text::SIZE }>().0 {
                 assert_eq!(w(t, h1hud::text::STRING), 0x0a00_05cf, "{name}: hud_input1");
-                assert_eq!(u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]), h1hud::TEXT_NUMBER);
+                let flags = u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]);
+                assert_eq!(flags & h1hud::TEXT_NUMBER, h1hud::TEXT_NUMBER);
                 let (sg, shader) = names[&TagId(w(t, h1hud::text::SHADER + 4))].clone();
                 assert_eq!((sg, shader.as_str()), (FourCC(*b"shad"), h1hud::TEXT_SHADER));
                 counts.push(t[h1hud::text::INPUTS]);
             }
-            if !wname.contains("flamethrower") && !wname.starts_with("vehicles") {
-                assert!(counts == [0x33] || counts == [0x32], "{name}: counts {counts:x?}");
-            }
+            let source = h1.find(h1map::Group::new(b"weap"), &wname).unwrap();
+            let hud = h1objects::h1::reference(&h1, h1.tag_data(source).unwrap(), 0x480).unwrap();
+            let expected: Vec<_> = h1hud::weapon_entries(&h1, hud).unwrap().iter()
+                .filter_map(|e| match e.kind {
+                    h1hud::WeaponEntryKind::Number(_, _, true) => Some(tags::weapon_hud::MAGAZINES),
+                    h1hud::WeaponEntryKind::Number(state, _, false) => Some(h1hud::weapon_number_input(state).unwrap()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(counts, expected, "{name}: number sources");
             eprintln!("{wname}: {name}, {n} widgets, {centred} centred, counts {counts:x?}");
             weapons += 1;
         }
@@ -868,11 +863,10 @@ fn every_fresh_map(
             let fresh = p
                 .build_fresh(&mut base, &mopp)
                 .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
-            // Built from scratch, not the pruned fallback.
+            // Built from scratch (`build_fresh` fails otherwise).
             assert!(
                 fresh.report.scratch.is_some(),
-                "{name} {sandbox:?}: not from scratch: {:?}",
-                fresh.report.scratch_failed
+                "{name} {sandbox:?}: not from scratch"
             );
             each(name, sandbox, &p, &fresh);
         }
@@ -922,6 +916,85 @@ fn starting_locations(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<([f32; 3], Vec<u8>)> 
             ([f(0), f(4), f(8)], e[0x10..0x34].to_vec())
         })
         .collect()
+}
+
+/// All retail multiplayer vehicles have named H2 counterparts. Rename only
+/// the source tag in memory to exercise the other branch with a full vehicle.
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn halo2_sandbox_places_a_vehicle_without_a_counterpart() {
+    let original = bloodgulch();
+    let tag = original
+        .find(h1map::Group::new(b"vehi"), r"vehicles\ghost\ghost_mp")
+        .unwrap();
+    let custom = r"vehicles\ghost\other_mp";
+    assert_eq!(custom.len(), tag.name.len());
+    let offset = original.header().index_offset + (tag.name_address - original.metadata_base());
+    let mut bytes = original.bytes().to_vec();
+    bytes[offset as usize..offset as usize + custom.len()].copy_from_slice(custom.as_bytes());
+    let source = H1Map::from_decompressed(bytes).unwrap();
+    let expected = h1convert::placements::plan_map(&source)
+        .unwrap()
+        .source_vehicles;
+    assert!(!expected.is_empty());
+    assert!(expected.iter().all(|s| s.collection == custom));
+
+    let mut base = h2_map("coagulation");
+    let programs = Base::read(&mut base).unwrap();
+    let mut objects = Objects::new(&source, &programs);
+    let p = h1convert::convert::halo1::prepare_halo2(
+        &source,
+        content::Sha256::of(source.bytes()),
+        &mut base,
+        &mut objects,
+    )
+    .unwrap();
+    assert_eq!(
+        p.applied.vehicles,
+        source.multiplayer().unwrap().vehicles.len()
+    );
+    let fresh = p
+        .build_fresh(&mut base, &structure_mopp(&p.collision).unwrap())
+        .unwrap();
+    let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
+    let mem = memory(&mut out);
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let scenario = Scenario::read(&mut out).unwrap();
+    let block = scenario.block(BlockKind::NetgameEquipment);
+    let mut found = Vec::new();
+    for e in (0..block.len()).map(|i| block.entry(i).unwrap()) {
+        if word(e, NETGAME_ITEM) != FourCC(*b"vehc").as_u32() {
+            continue;
+        }
+        let id = TagId(word(e, NETGAME_ITEM + 4));
+        if out.tag(id).unwrap().name.as_deref() != Some(custom) {
+            continue;
+        }
+        let collection = out.read_tag_bytes(id).unwrap();
+        assert_eq!(word(&collection, 0), 1);
+        let choice = mem.slice(word(&collection, 4), 0x10).unwrap();
+        assert_eq!(word(choice, 0), 1.0f32.to_bits());
+        assert_eq!(word(choice, 4), FourCC(*b"vehi").as_u32());
+        let vehicle = TagId(word(choice, 8));
+        assert_eq!(out.tag(vehicle).unwrap().name.as_deref(), Some(custom));
+        let body = out.read_tag_bytes(vehicle).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(body[0x1f0..0x1f2].try_into().unwrap()),
+            4
+        );
+        assert_eq!(e[0x14], 2);
+        found.push((
+            std::array::from_fn(|i| f32::from_bits(word(e, 0x40 + 4 * i))),
+            f32::from_bits(word(e, 0x4c)),
+        ));
+    }
+    assert_eq!(
+        found,
+        expected
+            .iter()
+            .map(|s| (s.position, s.facing))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Every converted starting location is in open space with the converted
@@ -1096,11 +1169,7 @@ fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
     .unwrap();
     let mopp = structure_mopp(&p.collision).unwrap();
     let fresh = p.build_fresh(&mut retail, &mopp).unwrap();
-    assert!(
-        fresh.report.scratch.is_some(),
-        "{:?}",
-        fresh.report.scratch_failed
-    );
+    assert!(fresh.report.scratch.is_some(), "not from scratch");
     let mut converted = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
     let base = Base::read(&mut converted).unwrap();
 
@@ -1138,6 +1207,11 @@ fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
             );
             let mut i = 0;
             while let Some(w) = base.element(&root, block, size, i).unwrap() {
+                if w[8..0x10] == [0; 8] {
+                    // An authored hidden element has no matching show state in any slot.
+                    i += 1;
+                    continue;
+                }
                 let hide = u16::from_le_bytes(w[0x14..0x16].try_into().unwrap());
                 assert_eq!(
                     hide & 7,
@@ -1214,12 +1288,21 @@ fn every_map_places_halo1_s_scenery_in_both_sandboxes() {
         let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
         let ctx = tags::object::Context::read(&mut out).unwrap();
         let s = Scenario::read(&mut out).unwrap();
+        let equipment = s.block(BlockKind::NetgameEquipment);
+        let vehicles = (0..equipment.len())
+            .map(|i| equipment.entry(i).unwrap())
+            .filter(|row| {
+                let group = &row[NETGAME_ITEM..NETGAME_ITEM + 4];
+                group == FourCC(*b"vehc").as_u32().to_le_bytes()
+            })
+            .count();
+        assert_eq!(vehicles, p.source.vehicles, "{name} {sandbox:?}: vehicles");
         let b = s.block(BlockKind::Scenery);
         println!(
-            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} left out)",
+            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} empty in source)",
             b.len(),
             b.palette.len(),
-            sc.dropped
+            sc.empty_placements
         );
         total += b.len();
         for u in p.applied.unresolved.iter().filter(|u| u.starts_with("scenery")) {
@@ -1411,10 +1494,12 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             })
             .collect();
         assert!(!graphs.is_empty(), "{name}: no converted biped");
-        // The weapon types some Halo 1 graph of the map holds (the third
-        // word of `<unit> <class> <type> <action>`): a weapon whose label
-        // none holds (Derelict's flamethrower, `ft`) has no class to name.
+        // The cyborg's source class determines whether it has a standing
+        // idle, even when the type has no named weapon animation.
         let h1 = h1_map(name).unwrap();
+        let cyborg = h1.find(h1map::Group::new(b"antr"), r"characters\cyborg\cyborg").unwrap();
+        let src = h1models::h1::Graph::read(&h1, cyborg.data_address).unwrap();
+        let stand = src.units.iter().find(|u| u.label == "stand").unwrap();
         let mut held = BTreeSet::new();
         for t in h1.tags().iter().filter(|t| t.group.to_string() == "antr") {
             for n in h1models::graph_names(&h1, t).unwrap() {
@@ -1440,7 +1525,19 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             }
             let Some(l) = t.location else { continue };
             let (class, kind) = (s(rw(&mem, l.address + 0x288)), s(rw(&mem, l.address + 0x28c)));
-            if !held.contains(&labels[n]) {
+            let source_class = stand.classes.iter().find(|c| c.label == class
+                && c.types.iter().any(|(ty, _)| ty == &labels[n]));
+            if let Some(c) = source_class {
+                assert_eq!(kind, labels[n], "{name}: {n} weapon type");
+                if c.slots.first().copied().unwrap_or(-1) == -1 {
+                    for (b, tree, j) in &graphs {
+                        assert!(tree.contains(&("combat".into(), class.clone(), kind.clone())), "{name}: {b}: {n}");
+                        assert!(!graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "idle"]), "{name}: {b}: {n}");
+                    }
+                    continue;
+                }
+            }
+            if source_class.is_none() && !held.contains(&labels[n]) {
                 println!("{name}: {n}: label {:?} held by no Halo 1 graph", labels[n]);
                 if !(class.is_empty() && kind.is_empty()) {
                     bad.push(format!("{name}: {n} names ({class:?}, {kind:?}) for a label no graph holds"));
@@ -2037,3 +2134,6 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         assert!(dangling.is_empty(), "{sandbox:?}: {dangling:#?}");
     }
 }
+
+#[path = "sandbox_disc/player_animations.rs"]
+mod player_animations;

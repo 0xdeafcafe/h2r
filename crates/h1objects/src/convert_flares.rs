@@ -11,7 +11,7 @@ use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};
 
-use super::{Converter, ObjectReport};
+use super::Converter;
 use crate::{Error, Result, h1};
 
 /// `obje +0` for garbage: its index in the engine's object type table
@@ -85,10 +85,7 @@ impl Converter<'_> {
         }
         let l = h1convert::lens::H1Lens::read(self.h1, tag)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let bitmap = l.bitmap.and_then(|b| self.bitmap(b));
-        if l.bitmap.is_some() && bitmap.is_none() {
-            rep.no_home.push("bitmap: did not convert".into());
-        }
+        let bitmap = self.source_bitmap(l.bitmap)?;
         let root = h1convert::lens::rebuild(&l, bitmap)?;
         for n in h1convert::lens::left_out(&l) {
             rep.no_home.push(n);
@@ -106,20 +103,6 @@ impl Converter<'_> {
         Ok(id)
     }
 
-    /// The lens flare of a converted light: Halo 1's, converted, or the
-    /// reason in `rep`.
-    pub(super) fn flare_for_light(&mut self, lens: Option<h1map::TagId>, rep: &mut ObjectReport) -> Option<TagId> {
-        let id = lens?;
-        let t = self.h1.tag(id).ok()?;
-        match self.lens_flare(t) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home.push(format!("lens flare {}: not converted ({e})", t.name));
-                None
-            }
-        }
-    }
-
     /// A Halo 1 garbage object (debris an effect throws) from the `garb`
     /// definition, converted once: its model chain as any rebuilt
     /// object's, and its attachments.
@@ -134,7 +117,7 @@ impl Converter<'_> {
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (garbage has no physics model)".into());
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &object, &tag.name, None)?;
         let predicted = self.predicted(hlmt);
         let refs = self.item_effect_refs(b, &mut rep)?;
         let mut item = garbage(&object, b, hlmt, &predicted, &refs)?;
@@ -154,18 +137,7 @@ impl Converter<'_> {
         Ok(id)
     }
 
-    /// An effect part's debris: Halo 1's `garb`, converted, or the reason
-    /// in `rep`.
-    pub(super) fn effect_garbage(&mut self, id: h1map::TagId, rep: &mut ObjectReport) -> Option<TagId> {
-        let t = self.h1.tag(id).ok()?;
-        match self.garbage(t) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home.push(format!("garb {}: not converted ({e})", t.name));
-                None
-            }
-        }
-    }
+
 }
 
 #[cfg(test)]
@@ -179,6 +151,7 @@ mod tests {
 
     fn object() -> h1::Object {
         h1::Object {
+            texture_override: 0,
             object_type: 4,
             acceleration_scale: 0.0,
             flags: 0,

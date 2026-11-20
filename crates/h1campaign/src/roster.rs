@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use h1ai::convert::{Plan, rebuilds_character};
+use h1ai::convert::rebuilds_character;
 use h1ai::h1::{H1Ai, actor, actor_variant};
 use h1map::{Group, H1Map};
 use h1objects::convert::{Converter, local_index};
-use map::build::{Block, FixupKind, TagPayload, TagSet};
+use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Val};
 
@@ -30,16 +30,42 @@ pub(crate) struct Variant {
 }
 
 /// Include major variants even when the scenario never names them directly.
-pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result<Vec<Variant>> {
+/// `retail` is the set of the Halo 2-assets variant (`crate::h2assets`): a
+/// variant's weapon is then its retail counterpart, as every placed weapon
+/// is, and a counterpart missing from the set is an error. Otherwise, or
+/// when the mapping keeps the weapon Halo 1's, it is Halo 1's own,
+/// converted.
+pub(crate) fn prepare(
+    h1: &H1Map,
+    ai: &H1Ai,
+    conv: &mut Converter<'_>,
+    assets: crate::h2assets::Assets,
+    retail: Option<&TagSet>,
+    scripts: Option<&h1scripts::Tables>,
+) -> Result<Vec<Variant>> {
     let mut todo = Vec::new();
     for (i, entry) in ai.actor_palette.iter().enumerate() {
-        if ai.actor_of(i).is_some_and(|a| rebuilds_character(a.kind)) {
+        if entry.is_some()
+            && (assets == crate::h2assets::Assets::Halo1
+                || ai.actor_of(i).is_some_and(|a| rebuilds_character(a.kind)))
+        {
             let v = entry.as_ref().expect("actor of variant");
             let t = h1
                 .find(Group::new(b"actv"), &v.name)
                 .ok_or_else(|| invalid(format!("AI actor variant {}", v.name)))?;
             todo.push(t.id);
         }
+    }
+    if assets == crate::h2assets::Assets::Halo1
+        && let Some(scripts) = scripts
+    {
+        todo.extend(
+            scripts
+                .references
+                .iter()
+                .filter(|r| r.group == Group::new(b"actv") && !r.id.is_none())
+                .map(|r| r.id),
+        );
     }
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -55,12 +81,15 @@ pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result
         let variant_bytes = h1.tag_data(tag)?;
         let actor_bytes = h1.tag_data(act)?;
         let float = |b: &[u8], off: usize| f32::from_le_bytes(b[off..off + 4].try_into().unwrap());
-        let biped = h1.tag(variant.unit.id)?;
+        let biped = h1.tag(variant.unit.id).map_err(|e| {
+            h1convert::Error::no_rebuild(&h1.header().name, &tag.name, format!("actor unit: {e}"))
+        })?;
         let field = h1map::Block::read(variant_bytes, 0x22c).expect("validated actv size");
         let colours: Vec<_> = h1
             .block(field, 0x20)?
             .chunks_exact(0x20)
             .map(|rgb| h1objects::h1::ChangeColour {
+                function: None,
                 permutations: vec![h1objects::h1::ColourPermutation {
                     weight: 1.0,
                     lower: [0, 4, 8].map(|o| float(rgb, o)),
@@ -74,10 +103,20 @@ pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result
         let weapon = if variant.weapon.id.is_none() {
             None
         } else {
-            Some(
-                conv.object(h1.tag(variant.weapon.id)?)
-                    .map_err(|e| invalid(format!("AI weapon {}: {e}", tag.name)))?,
-            )
+            let source = h1.tag(variant.weapon.id)?;
+            let stand_in = match retail {
+                Some(set) => crate::h2assets::stand_in(set, source).map_err(|why| {
+                    invalid(format!("AI weapon {} of {}: {why}", source.name, tag.name))
+                })?,
+                None => None,
+            };
+            match stand_in {
+                Some(id) => Some(id),
+                None => Some(
+                    conv.object(source)
+                        .map_err(|e| invalid(format!("AI weapon {}: {e}", tag.name)))?,
+                ),
+            }
         };
         let major = if variant.major_variant.id.is_none() {
             None
@@ -186,99 +225,36 @@ pub(crate) fn install(set: &mut TagSet, ids: &[TagId], variants: Vec<Variant>) -
     }
     let mut kit = Loadout::default();
     for v in &variants {
-        let parent = if v.kind == 8 {
-            r"objects\characters\marine\ai\marine"
-        } else {
-            r"ai\generic"
-        };
+        let parent = r"ai\generic";
         let parent = set
             .find(FourCC(*b"char"), parent)
             .ok_or_else(|| invalid(format!("char {} needs parent {parent}", v.name)))?;
         let real = |id| ids[local_index(id).expect("converted object")];
-        let weapon = v.weapon.map(real);
+        // A retail weapon is a set tag already, not one of the tree's.
+        let weapon = v.weapon.map(|id| local_index(id).map_or(id, |k| ids[k]));
         let major = v.major.as_ref().map(|n| by_name[n]);
-        let style = (v.kind == 13)
-            .then(|| set.find(FourCC(*b"styl"), SENTINEL_STYLE))
-            .flatten();
+        let style = if v.kind == 13 {
+            Some(set.find(FourCC(*b"styl"), SENTINEL_STYLE).ok_or_else(|| {
+                h1convert::Error::no_rebuild(
+                    &set.name,
+                    &v.name,
+                    "missing native Sentinel behaviour style",
+                )
+            })?)
+        } else {
+            None
+        };
         let root = character(v, parent, real(v.unit), weapon, major, style)?;
         set.tag_mut(by_name[&v.name]).expect("reserved").payload = TagPayload::Built(root);
+        set.record_conversion(FourCC(*b"char"), &v.name, by_name[&v.name]);
         kit.0.insert(v.name.clone(), weapon);
     }
     Ok(kit)
 }
 
 impl Loadout {
-    pub(crate) fn equip(&self, scnr: &mut Block, plan: &mut Plan) -> Result<()> {
-        if self.0.is_empty() {
-            return Ok(());
-        }
-        let (_, pal, _) = tags::object::OBJECT_TYPES[2].placement.expect("weapon");
-        let pal = u32::from(pal);
-        if !scnr.fixups.iter().any(|f| f.offset == pal) {
-            scnr.block(pal, 0, Block::zeroed(0));
-        }
-        let f = scnr.fixups.iter_mut().find(|f| f.offset == pal).unwrap();
-        let FixupKind::Block { count, child } = &mut f.kind else {
-            return Err(invalid("weapon palette block"));
-        };
-        let mut weapon_indices = Vec::new();
-        for c in &plan.characters {
-            let Some(rebuilt) = self.0.get(&c.h2_character) else {
-                weapon_indices.push(None);
-                continue;
-            };
-            let Some(weapon) = *rebuilt else {
-                weapon_indices.push(Some(-1));
-                continue;
-            };
-            let entry = child
-                .fixups
-                .iter()
-                .find_map(|f| match &f.kind {
-                    FixupKind::TagRef(id) if *id == weapon => Some(f.offset / 0x28),
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    let entry = *count;
-                    child.bytes.resize(child.bytes.len() + 0x28, 0);
-                    child.tag_ref(entry * 0x28, weapon);
-                    *count += 1;
-                    entry
-                });
-            weapon_indices.push(Some(
-                i16::try_from(entry).map_err(|_| invalid("AI weapon palette overflow"))?,
-            ));
-        }
-        // Write the effective weapon on each location. An unarmed crewman
-        // override must not inherit an armed squad member's pistol.
-        let rebuilt_weapon = |character: i16| {
-            usize::try_from(character).ok()
-                .and_then(|index| weapon_indices.get(index).copied().flatten())
-        };
-        for q in &mut plan.ai.squads {
-            if let Some(index) = rebuilt_weapon(q.character) {
-                q.initial_weapon = index;
-            }
-            let default = q.initial_weapon;
-            if q.starting_locations.iter().any(|l| rebuilt_weapon(l.character) == Some(-1)) {
-                // A location with -1 inherits the squad weapon. Move that
-                // default onto the other locations in a mixed squad.
-                q.initial_weapon = -1;
-            }
-            for l in &mut q.starting_locations {
-                let character = if l.character < 0 {
-                    q.character
-                } else {
-                    l.character
-                };
-                if let Some(index) = rebuilt_weapon(character) {
-                    l.initial_weapon = index;
-                } else if l.initial_weapon == -1 && q.initial_weapon != default {
-                    l.initial_weapon = default;
-                }
-            }
-        }
-        Ok(())
+    pub(crate) fn weapon(&self, variant: &str) -> Option<Option<TagId>> {
+        self.0.get(variant).copied()
     }
 }
 

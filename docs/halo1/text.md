@@ -204,7 +204,9 @@ against its source atlas rectangle.
 
 **Built.** On the native interaction fallback (E `0x191976`),
 `exit_vehicle` takes the name of the local unit's live parent vehicle
-while it occupies a valid seat. Halo 1's action 3 reads that parent's
+while it occupies a valid seat, local input is enabled, and a script has
+neither claimed Action nor reserved it until release. In a10 the cryo
+lesson supplies its own help row, `tutorial_action_1`. Halo 1's action 3 reads that parent's
 icon-message row (E `0xe2dd4`, `0xe25d0`). `swap_powerup` uses the
 held and nearby powerup names in that order (E `0xe2d77`). The nearby
 candidate comes from Halo 2's pickup scan (E `0x1508e0`, `0x150e30`),

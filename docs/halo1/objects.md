@@ -37,6 +37,52 @@ time and print counts, names and values only.
 - **E:** from [objects.md](../formats/objects.md) (engine code).
 - **Design:** a choice made here.
 
+## Source widgets
+
+**Built in code.** The Xbox discs contain 51 antenna references, 175 light-volume
+widget references, 15 lightning references, 13 cloth references, eight sword-glow
+references and one additional volume attached to
+the beam emitter on a10. The ignored `every_retail_widget_reaches_its_owner`
+test follows each source occurrence through the public object converter and
+checks the destination block, local tag, group and attachment marker.
+
+- **Antenna.** The three vehicle antennas have matching vertex layouts on both
+  discs. The H2 widget table at `0x467498` dispatches an `ant!` from object
+  offset `0x9c`. Creation at `0x115da0` uses the bitmap sequence and cached
+  joint displacements. The builder relocates the marker, bitmap, point physics
+  and every source vertex. Its 20-segment limit leaves room for the terminal joint.
+- **Light volume.** H1 `0x97d10..0x97e6a` applies spacing before sampling axial
+  distance, radius, colour and opacity. H2 `0x41a24..0x41b91` resolves the
+  owner's attachment marker and evaluates the primary scale before queuing
+  `MGS2`. The builder writes the sample coordinates and curves into that
+  definition. A null source image selects the glow bitmap in the source
+  rasterizer globals, as in H1 `0x64495`.
+- **Sword glow.** H1 `0x99420` orders five animated markers by forward
+  alignment. `0x98ac0`, `0x98ce0` and `0x98340` assign sprites their
+  radii, colours, travel directions and positions on the curve. Each sword
+  glow becomes one H2 volume attachment naming its original marker group and
+  sprite bitmap. H2 sorts indices into the marker queue at `0x1e392`.
+  At the volume submission `0x4f792`, the context-only glow hook reads the
+  consecutive marker frames and writes the orbiting sprites into the native
+  sample array. The per-instance random sequence uses the owner and tag datums.
+- **Lightning.** Each `elec` becomes a native `tdtl` widget with one layer per bolt
+  and one attachment per source marker, in order. H2 queues the marker frames at
+  `0x429a0` and submits the ribbon at `0x51648`. The marked displacement curve
+  carries each endpoint's jitter, width, colour, break flag and subdivision depth.
+  The renderer interpolates the endpoint styles over recursively displaced midpoints
+  (H1 `0x96de0..0x97332`) and passes the samples to H2. The material setup applies
+  the source double-multiply or additive blend equation from H1 `0x7f4e0`.
+- **Multiplayer flag.** H2 pins vertex zero to a marker (`0x1171a0..0x1173ae`)
+  and has space for 128 vertices per cloth datum. Two native `clwd` panels each
+  hold 112 vertices, sharing the middle 16 to preserve the source 16 × 13
+  grid, its UVs and both mast pins. H2 solves constraints and calculates normals at
+  `0x1168a0`. The marked panels share their seam positions, velocities and normals.
+  Their integration stage uses H1's point mass, air/liquid buoyancy and drag,
+  plus its three-impact sweep (`0x9a56d`, `0x80970..0x80b5a`) against the H2
+  structure. The marked panel stores friction at +0x24 and restitution at +0x2c.
+  The material lookup at `0x116ac0` selects between the two converted H1 shaders
+  using the objective's team (H1 `0x9a92e`).
+
 ## Reading Halo 1
 
 Halo 1 references are 16 bytes (group, name address, name length, datum);
@@ -181,10 +227,19 @@ Read field by field since converter version 50 (`h1::Effect`,
 
 ### `part` (root `0x164`) as `prt3`
 
+Blend 6 uses the RGB maximum of the destination and the tinted sprite.
+Glass breakable samples its moving secondary texture at the sprite UVs.
+Glass death projects that texture in screen coordinates. Glowingdrip goo
+uses the primary sprite alone. The compiler writes the texture bindings,
+vertex transforms, motion properties and colour combiner for each case.
+Blend 7 ice uses the same moving screen-space mask as glass death. Its
+compiled pass adds the tinted sprite to the scene, attenuating the scene
+by one minus the product of sprite alpha, mask alpha, particle opacity and
+fog visibility.
+
 `h1objects::particles::H1Particle` and `Converter::particle`: the stem
 by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
-7 alpha-multiply-add: V, the particles both games ship pair that way; 6,
-on three particles, is drawn additive, unproven), the bitmap (`+0x4`) as
+6 maximum, 7 alpha-multiply-add), the bitmap (`+0x4`) as
 the stem's `alpha_map_texture` with the compiled shader built from the
 stem ([tag-definitions.md](../formats/tag-definitions.md), "The compiled particle
 shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
@@ -252,6 +307,24 @@ carried: the state sequence, the creation physics and its constants (no
 proven meaning), the system states, the rotation rate. The particles
 start still at the part's location.
 
+### Light fixture placements (Built)
+
+The Halo 1 XBE's fixture descriptor at `0x1fca28` selects scenario
+`+0x2c4` with stride `0x58`. Its constructor at `0x118e00` copies
+placement RGB at `+0x30` and intensity at `+0x3c` into the live fixture.
+The converter retains each fixture as a machine with its original
+marker attachments. An authored tuple selects a rebuilt light variant
+with that RGB at both colour endpoints and that intensity at both
+brightness endpoints. Halo 2's `0xc0dc9` path reads those fields. A zero
+tuple uses the fixture's own attached light.
+
+There are 886 fixture placements across the retail maps. b30 has all 42
+authored RGB and intensity tuples. Carousel, Damnation and Rat Race add
+46 multiplayer placements. Both multiplayer asset variants install their
+fixture machines and palette into the fresh scenario. The ignored
+`both_sandboxes_rebuild_every_retail_map` check follows each placement and
+its authored light values through the output.
+
 ### Object attachments
 
 **Built.** Every converted object kind uses Halo 1's `obje +0x140`
@@ -262,8 +335,16 @@ converted object functions. Light fixtures use the same path on the
 machines they become. The attachment reader also carries the
 change-colour selector, translated to the same slots as the object's
 colours. Halo 2's effect updater skips colour slot 0 (`0x00179610`).
-The converter reports source functions that lack a supported curve or
-engine input.
+A source function that lacks a supported curve or engine input stays
+unconverted, with its reason in the report. Halo 1's additive flag
+(H1 `0x8c06d..0x8c088` adds the previous output and wraps the sum by
+one) is such a case, and so is a function that turns off with one that
+did not convert (H1 `0x8c050..0x8c06b`). **Built:** an attachment whose
+primary or secondary scale names an output with no converted function,
+or with no function at all, fails the conversion with the attachment,
+marker and output (`functions::primary_scale`). Before, it kept an
+empty Halo 2 scale, which runs the attachment at one where Halo 1 scaled
+it by that output.
 
 Halo 2 does not dispatch `pctl` attachments directly. Each emitting
 particle type becomes an attached `effe` with the source marker as its
@@ -320,7 +401,7 @@ part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
 attachment that names one converts it (`Converter::contrail`), on
 vehicles with the other attachments and on rebuilt projectiles, whose
 attachment block is replaced by Halo 1's when any of them converts. A
-point's physics (`pphy`) is not converted: null.
+point with an authored physics reference names its rebuilt `pphy`. The definition carries the source flags, mass, buoyancy, density, drag, friction and restitution.
 
 ### `bipd`, `vehi`, `scen`
 
@@ -367,13 +448,12 @@ for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
 references (HUD, effects, sounds, melee damage) fill the slots Halo 1
 has nothing converted for.
 
-**Vehicles have no template since converter version 49**: every Halo 1
-vehicle is built from the `vehi` definition, with its friction and hover
-points from Halo 1's powered mass points and its gears from its type's
-role ([tag-definitions.md](../formats/tag-definitions.md), "Every vehicle from
-definitions"). The vehicle rows described below (warthog, ghost,
-scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
-the lifepods' quiet stand-in are history, kept for the record.
+**Built. Vehicle drive.** Each vehicle comes from the `vehi` definition.
+H1 powered mass points supply ordered friction or hover contacts. Wheeled
+and tracked vehicles drive those contacts directly. H1 physics and globals
+supply tire drag and material response. The aircraft controller follows the
+source type and physics. The vehicle template rows below describe earlier
+converter versions. [Drive laws and XBE evidence](role-audit.md#native-engine-fields).
 
 **Lifepod engine audio. Built.** The a30 entry pod attaches the Halo 1
 `sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
@@ -417,8 +497,8 @@ body. Halo 1 supplies mass, center of mass and inertia.
 **Built** for the lifepods. The flying pods use Halo 1's type 5, model,
 collision, seats and flight rates. Where Halo 1 supplies `phys` (the
 plain pod and a30 entry pod), the collision-derived rigid body keeps its
-mass, center of mass and inertia tensor. The axis limits and accelerations
-feed the native vehicle functions at `0x000f32f5` and `0x000f3562` (E).
+mass, center of mass and inertia tensor. The flight hook applies H1's positive-radius lifepod controller at
+`0x37760` when the source supplies two powered groups.
 The docked pod keeps its stationary body and source lights. a30's entry pod
 attaches its own `lifeboat` loop, including the source track samples,
 through `h1sounds::looping`, and its reentry fire through the native
@@ -747,7 +827,7 @@ converted model does not share (open question below).
 | `weap` | `2c0` | magazines, `0x5c` | V2 (stride: magazine objects start `0x5c` after) |
 | magazine | `04`, `06`, `08`, `0a`, `10`, `14` | rounds recharged, total initial, total maximum, loaded maximum, reload time, rounds reloaded | S, V2 (the loaded maximum and rounds reloaded agree on every magazine) |
 | magazine | `0c` | the most rounds held in reserve: total maximum less loaded maximum | E (`0x101a10` caps the reserve with it, [skulls.md](../game/skulls.md)), V (all seven retail magazines on Coagulation). Written 0 until converter version 76: no reserve, the HUD count 0. Live (version 77, Blood Gulch): the assault rifle spawns with 180 in reserve, and emptying the magazine and reloading leaves 120 |
-| `weap` | `2c8` | triggers, `0x40`: `04` i16 input, `06` i16 firing behaviour (0 automatic, 1 once per press, 2 charging), `08`/`0a` i16 primary and secondary barrel (-1 none), `0c` i16 (1, 0, 2 with those behaviours, but 0 on the wraith's automatic minigun) | V (every retail weapon with a barrel has one; 27 on Coagulation). Built from Halo 1's triggers (`arsenal::h2_triggers`): one per Halo 1 trigger (at most two, inputs 0 and 1), once per press where Halo 1's trigger flag `0x8` is set (the rocket launcher, sniper rifle, scorpion cannon), automatic otherwise; a charging first trigger (`+0x48` > 0, the plasma pistol) with a second is one charging trigger whose secondary barrel is the second. None were written from the rebuild (`dac88db6`) to converter version 76, so no converted Halo 1 weapon fired. The charging trigger also carries Halo 1's charge after its charging time (`+0x4c..+0x5c`: charged time, overcharged action, charged illumination, spew time) as `+0x20..+0x2c` (`arsenal::H1_TRIGGER_CHARGED`; the plasma pistol's 45, 0, 1.0, 0; retail's holds 0, 0, 1.0, 0; S for the names); before converter version 79 they were 0. The charging effect (`+0x30`) is not carried: no Blood Gulch trigger names one. `+0x10..+0x18` (retail's plasma pistol: 0.0667, 0.5, and the i16 pair 1, 0) have no Halo 1 field and stay 0 |
+| `weap` | `2c8` | triggers of stride `0x40`. Input and behaviour at `04/06`, primary and secondary barrels at `08/0a`, charging action at `18`, charge times, action and illumination at `1c..2c`, charging effect at `30` | V on Coagulation and Blood Gulch. See “Firing a rebuilt weapon” below. |
 | `weap` | `2d0` | barrels, `0xec` | E (objects.md) |
 | barrel | `04`, `0c`, `10` | rounds per second (2), acceleration, deceleration time | S, V2 |
 | barrel | `28`, `2a`, `2c`, `2e` | magazine, rounds per shot, minimum rounds loaded, rounds between tracers | S, V2 |
@@ -760,6 +840,66 @@ converted model does not share (open question below).
 | `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](health.md) |
 
 Halo 1 speeds are multiplied by 30 (per tick to per second).
+
+### Firing a rebuilt weapon
+
+**Built** for the Halo 1 sandbox. The H1 disc has 316 weapon occurrences
+across 24 maps, covering 23 distinct paths. Blood Gulch's shotgun and assault rifle both
+have zero H1 trigger flags. The shotgun's weapon type is 1 at H1 `weap +4e2`,
+also the type the two engines check for shell reloads (H1 `0xbf70f`, H2
+`0x10271d`). The rebuild carries this to H2 `+292` and emits one shot per
+press for its primary barrel. H1 flag 3 selects this mode on the sniper,
+rocket launcher and Scorpion cannon. A charged trigger taps barrel 0 and
+discharges the last barrel, including the single-barrel fuel rods. H2
+checks its charging action at `0xfe955`. The charging effect comes from
+H1 trigger `+5c`.
+
+| Blood Gulch | AR | Shotgun |
+|---|---|---|
+| Input and cadence | Held, 15 rounds/s | One press, one shell/s |
+| Ammunition and projectiles | 1 round, 1 bullet | 1 shell, 15 pellets |
+| Spread | 2°–6.5°, rises in 0.6 s, recovers in 1 s | 10° at both error bounds |
+| Magazine and reload | 60 rounds, 3.4 s | 12 shells, 0.4 s per shell |
+| Projectile | 324 world units/s, 40 world units maximum | 140 to 100 world units/s, air slowdown from 1.5 to 3 world units |
+
+H2 reads minimum and maximum shots per fire at barrel `+1c/1e`, recovery
+at `+20`, and multiplayer prediction at `+34` (`0x10224f`, `0x103ec7`,
+`0x10429b`). Coagulation's native shotgun has one shot per fire and ten
+pellets. Its SMG and shotgun use continuous and discrete prediction,
+respectively. The converted barrels keep H1's magazine cost and projectile
+count independently of these fields.
+
+H2 blends two spread profiles (`0xff474`, `0x104dd1`). Both carry H1's
+bounds and acceleration/decay times and their reciprocal rates. The AR's
+camera shake comes from its own firing damage effect, including the 0.05 s
+duration and 0.5° rotational shake. H1 spin crossover, per-shot battery
+cost and age-dependent cadence, cooling and misfire fields also survive
+conversion. Barrel flags for partial ammunition, muzzle origins, zoom error,
+aiming direction and shared projectile direction move from H1 bits
+2/5/10/11/12 to H2 bits 2/3/5/6/7. The direct barrel damage reference at
+`+94` has a null datum. H2 checks for `-1` after the projectile loop at
+`0x1053f6`.
+
+**Built** for variable-speed H1 projectiles. H1 computes constant acceleration
+from the two speeds and the current medium's distance bounds at `0xc1a60`
+and `0xc1ac0`. At impact it normalizes the measured speed between those
+bounds at `0xc2de1`. H2 instead interpolates speed linearly with distance.
+The converter retains the native air-distance bounds and their reciprocal
+for effect inputs. It marks the zero guidance scalar at `proj +198` with
+the negative-zero bit pattern. H2 compares it numerically at `0xf88df`. The 725 local projectile occurrences inspected on
+the H2 disc contained no such marker. At the velocity-length call returning
+to `0xf966a`, the simulation integrates the H1 curve over the collision
+substep, supplies its mean velocity for the sweep and its end velocity for
+the next step. At the damage initializer returning to `0xfad79`, it scales
+direct impact damage by impact speed and retains material attenuation.
+Both guided angular velocity bounds receive H1's single value.
+
+`weapon_rebuild_disc` compares the firing fields, firing feedback and
+projectile targets against each original weapon on the campaign and
+multiplayer maps. Its Blood Gulch case also checks the retail Coagulation
+trigger and barrel layouts. The older running Blood Gulch served by the
+agent API showed automatic input and direct-damage datum zero on the
+shotgun and AR. A play check of the rebuilt map is pending.
 
 ### Weapon class and type (`weap +0x288`, `+0x28c`, **Built**, converter version 55)
 
@@ -774,19 +914,16 @@ the magnum `pistol`/`hp`, the rocket launcher `missile`/`rl`, vehicle guns
 `fixed`/`gun` (V, Coagulation). The rebuilt weapons left both null, so in
 the Halo 1 sandbox the player could pick nothing up and so never fired.
 
-Halo 1 keeps only the type on the weapon (its label, `+0x30c`); the class
-is where the units' graphs put that type (`stand rifle ar idle`). The
-converter (`Converter::weapon_class`) takes, over every animation of every
-graph on the map, the class most of them name the label under, through
-the same naming the converted `jmad` tree uses (`h1models::names`): the
-assault rifle `rifle`/`ar`, pistol `pistol`/`hp`, shotgun `rifle`/`sg`,
-plasma rifle `rifle`/`pr`, sniper rifle `rifle`/`sr`, rocket launcher
-`missile`/`rl`, needler `pistol`/`ne`, plasma pistol `pistol`/`pp`. A label
-no graph holds (Derelict's flamethrower, `ft`) gets neither, with a
-report line. V: `tests/sandbox_disc.rs`
-(`every_halo1_weapon_is_held_by_the_halo1_player_graph`): on every
-multiplayer map, every Halo 1 hand weapon of the Halo 1 sandbox names a
-class and type the converted player biped's graph holds in mode `combat`.
+**Built. Player weapon classes.** Halo 1 stores the type on the weapon
+(`weap +0x30c`) and lists it under a standing class in the cyborg graph.
+The converted weapon and graph use that same class. Blood Gulch has
+`rifle/ar`, `rifle/sg`, `rifle/sr`, `rifle/pr`, `missile/rl`,
+`pistol/hp`, `pistol/pp` and `pistol/ne`. The needler has weapon clips
+under pistol and an empty secondary listing under rifle. The flamethrower
+is listed under `support/ft`, with no source idle for that class.
+Objective weapons use `rifle/f` and `pistol/b`. Guns outside the cyborg's
+tables use their unit graph. The ignored sandbox disc tests read the
+class/type from each converted weapon and look up its source slots.
 
 **Holding is finding** (converter version 64). The graph lookup
 `0x001db170` finds the mode, class, type and action each by binary
@@ -811,7 +948,7 @@ and type, a list of animation indices), and on the cyborg every class's
 throw slot names `stand rifle throw-grenade` (V: Blood Gulch's cyborg
 `antr`, every unit and class). The converter carries those slots over:
 a slot naming another class's animation becomes an action of the
-borrowing class naming the same animation (`jmad::borrow_slots`), so the
+borrowing class naming the same animation (`jmad::player`), so the
 pistol, plasma pistol, needler and rocket launcher throw with the rifle's
 animation, as in Halo 1. The disc test fails on any weapon of any
 multiplayer map whose path finds no throw.
@@ -904,8 +1041,9 @@ block within a step of `default_vector`'s 128, 128, 255), its alpha 0
 where the base's level is below 128 and 255 elsewhere. A binary alpha
 keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
 half and agrees with retail's leaf bump above. Its tiling and LOD offset
-are the base's. A base that doesn't decode, or has more than one image,
-keeps the default bump, uncut, as before. Proof:
+are the base's. Every image of a multi-image base is cut the same way.
+A base that doesn't decode fails the conversion (converter version 100;
+it kept the default bump, uncut, before). Proof:
 `h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
 `tests/model_shaders_disc.rs`,
 `bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
@@ -975,8 +1113,21 @@ The converter (**Design**):
 - Every object with a Halo 1 change colour, or whose model reads C, gets
   four elements (`rebuild::object_change_colors`): the player writer
   needs slots 0 to 3. Each holds the Halo 1 permutations as initial
-  permutations (weight, lower, upper; variant 0). Halo 1's darken-by and
-  scale-by functions are not carried.
+  permutations (weight, lower, upper; variant 0). Devices also carry the
+  darken-by and scale-by imports or converted object outputs in the second
+  block. On a10 the shield station's two colour ranges follow its two
+  power-derived outputs. See [the model material audit](role-audit.md).
+- **Built.** A device colour bound to an output whose function did not
+  convert fails the conversion. One bound to an output the device has no
+  function for binds Halo 2's `zero`. E (Halo 1): the object allocator
+  zeroes the whole object (`0x8b8d8..0x8b8e6`); only the function loop
+  writes outputs (`0x8c092`), and only for the definition's functions
+  (count at `+0x158`, `0x8c0d5`); the colour update reads that zero and
+  applies it (`0x8c162` scale-by, `0x8c1be` darken-by). E (Halo 2): the
+  colour update looks the name up with `0xbab40`, which clears the value
+  before searching, and keeps zero for a name no function exports
+  (`0xbe9bc..0xbe9c8`). Before, the converter dropped the colour's
+  function and the colour stopped following it.
 
 So the cyborg's armour plates take the player's primary colour, or the
 team's in a team game. Halo 1's cyborg has one mask, so the secondary
@@ -1081,6 +1232,82 @@ reload time, every weapon's error angles and cone ranges, the plasma
 rifle's heat, the needler's magazine and rate of fire, and every bullet's
 speed (Halo 1's are slower than the Halo 2 templates').
 
+### Blood Gulch hit registration (**Built**)
+
+The imported cyborg has one collision region and one permutation,
+`cyborg/__base`, with 16 BSPs on the same numbered nodes as the render
+skeleton. In the default pose the collision runs from about −0.002 to
+0.705 world units vertically on both the Halo 1 disc and converted
+Blood Gulch, against a render-model top of 0.704. The pills use the source standing height 0.7, crouching
+height 0.5 and radius 0.2. Coagulation's Chief has four collision
+regions and standing height 0.725, crouching height 0.5 and radius
+0.175. The Halo 1 cyborg's pathfinding sphere, living character shapes
+and rigid bodies serve other collision queries. A weapon's model ray
+uses the node BSPs (`0x001695fb`).
+
+- **Aim assist.** The weapon cones already reach the engine
+  (`weap +0x208..0x218`, Halo 2 `0x001a5137..0x001a5199`). The
+  converted cyborg had an empty `hlmt +0x68`. The target search
+  (`0x001a5d18`) and shot-aim lookup (`0x001a6ca3`) read this block
+  and resolve each entry's model marker. The converter writes the
+  cyborg's authored `body` and `head` markers with the targeting
+  radii, flags, angular limits and lock distance of Coagulation's
+  player Chief. The marker positions and nodes come from Halo 1.
+- **Headshots.** Halo 1 uses material `+0x20` bit 0
+  (`0x00095089`) with damage flag bit 1 (`0x00095092`). Halo 2
+  reads `hlmt` material `+6` for the damage section and checks its
+  bit 7 and the damage flag (`0x000d8d50..0x000d8d79`). Imported
+  cyborg materials had section −1. They now select rebuilt body or
+  head sections by the source material flag. A pistol or sniper
+  round can take the native headshot path once damage reaches the body.
+- **Projectile travel.** Halo 1 Blood Gulch uses projectile tags for
+  its bullets, pellets, bolts, needles, shells and rockets. The
+  converter takes their collision radii and ranges and converts the
+  speeds from world units per tick to per second. Halo 1 computes
+  drag over its authored air interval (`0x000c1ac0` and `0x000c3f0e`).
+  The converter now also writes that interval into the Halo 2
+  distance-based speed transition (`proj +0x18c..0x194`,
+  `0x000f9527..0x000f95b4`). A plasma rifle bolt starts at 50
+  world units per second and reaches 25 over 20–50 world units of
+  travel. The flight hook uses Halo 1's acceleration law and selects
+  the authored air or water interval for the current medium.
+- **Damage.** The source model gives the cyborg 75 shield and 75 body,
+  and converted `jpt!` tags carry the source damage bounds and reach.
+  Halo 1 indexes the damage's material scales at `jpt! +0x200`
+  (`0x00094a45` and `0x0009505c`, damage descriptor `+0x3c`).
+  The cyborg armour and shield scales now use native damage table
+  rows (`matg +0xd0`, Halo 2 `0x000d5bc0`). For example, a plasma
+  rifle bolt scales shield damage by 2 and body damage by 0.5.
+  The grown rows go after the pinned intermediate's metadata, outside
+  the globals' bytes, so the globals are recorded as grown there
+  (`map::build::PinnedImage::grown`). The fresh build's unpinning and
+  its from-scratch read take those arrays as the globals' own and leave
+  the replaced rows out (`tags::schema::transplant::Unpinner::add_grown`,
+  `h1convert::fresh::grown`). Without that, the globals were refused
+  and dropped, and every Halo 1 sandbox build and Halo 1 assets level
+  failed with "root tag missing or of the wrong class".
+  Built: the edit also records the stock rows and their value arrays
+  as the arrays it replaced (`map::build::GrownTag::replaced`). The
+  from-scratch read counts them as described
+  (`tags::repo::MapSource::add_replaced`), so the globals are taken
+  exactly. Before, every fresh build failed with "globals\globals.matg
+  (3072 nonzero bytes in 1 ranges no array covers)". Test:
+  `a_grown_tag_unpins_with_its_new_array_and_without_its_old_one`.
+  The plasma grenade's free explosion and the needler's super
+  explosion list an impulse-only `jpt!` before the vitality damage.
+  The damaging part goes in the projectile's native damage slot.
+  The companion impulse stays in the effect and runs through
+  Halo 2's `jpt!` effect-part dispatch (`0x0017a97f`).
+  Attached detonation damage uses its dedicated slot.
+
+The Halo 2 sandbox uses its native player models and weapons.
+`tests/hitreg_disc.rs` checks the Halo 1 sandbox after writing and
+reading the map. It compares head, torso and thigh rays to the disc
+collision, checks authored marker positions and character shapes,
+and follows each converted weapon's projectile and impact damage.
+It also checks the plasma grenade and needler's separate damage and
+impulse paths. A live hit and aiming check still needs a game run.
+
 ## What has no Halo 2 home here
 
 - **Damage** (`jpt!` amounts): the projectile keeps the template's damage
@@ -1088,9 +1315,9 @@ speed (Halo 1's are slower than the Halo 2 templates').
 - **Vitality:** Halo 1 `coll` body and shield vitality
   and its damage modifiers; Halo 2 keeps damage in the `hlmt`, whose
   layout is not reviewed. The template's damage info stays.
-- **Unit and vehicle tuning:** speeds, acceleration, seats, cameras,
-  boarding; `bipd`/`vehi` keep the template's. Halo 1 `phys` (mass points)
-  is read but not used: the template's `phmo` is.
+- **Unit and vehicle tuning.** The original template gap is closed for
+  driving. The rebuilt vehicle uses H1 speeds, seat data, mass points and
+  inertia. [Current mappings](role-audit.md#native-engine-fields).
 - **Weapon:** ready time, chamber time, charging (plasma pistol), firing
   effects and sounds. The [HUD conversion](hud.md#weapon-huds) covers
   the weapon panel and crosshairs. Scope masks need the screen effect
@@ -1212,7 +1439,7 @@ attachments name a contrail (236 attachments) names the converted one.
   radius), the packed tint, null `pmov` (no gravity or drag), the base's
   role words on the systems and emitters.
 - Contrails: Halo 1's spans as Halo 2's (the flags and the root's
-  zeroed `+0x3c..+0x60`), and points with no physics (`pphy` null).
+  zeroed `+0x3c..+0x60`), and points with source `pphy` physics.
 
 - That the engine accepts objects whose `hlmt` has no variants
   and regions renamed from Halo 1, and whose template damage info names

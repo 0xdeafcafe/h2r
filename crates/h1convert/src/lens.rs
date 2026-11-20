@@ -76,10 +76,12 @@ impl H1Lens {
         if b.len() < H1_ROOT {
             return Err(Error::Invalid("lens root truncated"));
         }
+        // A bitmap reference that does not resolve is an error, not a
+        // lens without one.
         let bitmap = TagRef::read(b, 0x20)
             .filter(|r| !r.id.is_none())
-            .and_then(|r| map.tag(r.id).ok())
-            .map(|t| t.id);
+            .map(|r| map.tag(r.id).map(|t| t.id))
+            .transpose()?;
         let blk = h1map::Block::read(b, H1_REFLECTIONS).ok_or(Error::Invalid("lens reflections"))?;
         let reflections = map
             .block(blk, H1_REFLECTION)?
@@ -206,11 +208,11 @@ impl Flare {
     /// Adds the bitmap (unless the set has one of its path) and the lens
     /// (unless the set has a lens of its path); returns the lens's datum.
     pub fn install(&self, set: &mut TagSet) -> Result<TagId> {
-        if let Some(id) = set.find(FourCC(*b"lens"), &self.name) {
+        if let Some(id) = set.converted(FourCC(*b"lens"), &self.name) {
             return Ok(id);
         }
         let bitmap = match &self.bitmap {
-            Some((n, c)) => Some(match set.find(c.group, n) {
+            Some((n, c)) => Some(match set.converted(c.group, n) {
                 Some(id) => id,
                 None => c.clone().install(set, n)?,
             }),

@@ -96,6 +96,8 @@ pub struct Permutation {
     pub samples: DataRef,
     /// `+0x54`: lip-sync (mouth) data.
     pub mouth: DataRef,
+    /// One mouth-aperture byte per tick, resident in H1 tag memory.
+    pub mouth_samples: Vec<u8>,
     /// `+0x68`: subtitle data.
     pub subtitles: DataRef,
 }
@@ -152,6 +154,10 @@ pub struct Sound {
     pub promotion: TagRef,
     /// `+0x80`.
     pub promotion_count: u16,
+    /// `+0x84`: milliseconds credited to the promotion counter per request.
+    pub promotion_millis: u32,
+    /// Path resolved from the authored datum by `read`.
+    pub promotion_name: Option<String>,
     /// `+0x98`.
     pub pitch_ranges: Vec<PitchRange>,
 }
@@ -181,7 +187,18 @@ impl Sound {
             )));
         }
         let h = map.read(tag.data_address, HEADER_LEN)?;
-        Self::parse(h, |block, len| Ok(map.block(block, len)?))
+        let mut sound = Self::parse(h, |block, len| Ok(map.block(block, len)?))?;
+        if let Some(id) = sound.promotion_id() {
+            let target = map.tag(id)?;
+            if sound.promotion.group != SND || target.group != SND {
+                return Err(Error::Invalid(format!(
+                    "{}: promotion {id} is not a snd!",
+                    tag.name
+                )));
+            }
+            sound.promotion_name = Some(target.name.clone());
+        }
+        Ok(sound)
     }
 
     /// Parses a header whose blocks `block(b, elem_len)` resolves.
@@ -195,17 +212,33 @@ impl Sound {
             let pb = Block::read(r, PERMUTATIONS).expect("in the pitch range");
             let permutations = block(pb, PERMUTATION_LEN)?
                 .chunks_exact(PERMUTATION_LEN)
-                .map(|p| Permutation {
-                    name: name_at(p, 0),
-                    skip_fraction: f32_at(p, 0x20),
-                    gain: f32_at(p, 0x24),
-                    compression: Compression::from_raw(u16_at(p, 0x28)),
-                    next: u16_at(p, 0x2a),
-                    samples: DataRef::read(p, 0x40),
-                    mouth: DataRef::read(p, 0x54),
-                    subtitles: DataRef::read(p, 0x68),
+                .map(|p| -> Result<Permutation> {
+                    let mouth = DataRef::read(p, 0x54);
+                    let mouth_samples = if mouth.size == 0 {
+                        Vec::new()
+                    } else {
+                        block(
+                            Block {
+                                count: mouth.size,
+                                address: mouth.address,
+                            },
+                            1,
+                        )?
+                        .to_vec()
+                    };
+                    Ok(Permutation {
+                        name: name_at(p, 0),
+                        skip_fraction: f32_at(p, 0x20),
+                        gain: f32_at(p, 0x24),
+                        compression: Compression::from_raw(u16_at(p, 0x28)),
+                        next: u16_at(p, 0x2a),
+                        samples: DataRef::read(p, 0x40),
+                        mouth,
+                        mouth_samples,
+                        subtitles: DataRef::read(p, 0x68),
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             pitch_ranges.push(PitchRange {
                 name: name_at(r, 0),
                 natural_pitch: f32_at(r, 0x20),
@@ -231,6 +264,8 @@ impl Sound {
             compression: Compression::from_raw(u16_at(h, 0x6e)),
             promotion: TagRef::read(h, 0x70).expect("in the header"),
             promotion_count: u16_at(h, 0x80),
+            promotion_millis: u32_at(h, 0x84),
+            promotion_name: None,
             pitch_ranges,
         })
     }

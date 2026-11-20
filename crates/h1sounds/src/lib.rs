@@ -9,7 +9,7 @@
 //!   from a map or a [`map::build::TagSet`], extended with new sounds, and
 //!   written back as a built block tree.
 //! - [`convert`] makes a Halo 2 sound from a Halo 1 one: a 20-byte `snd!`
-//!   (a [`h1models::Converted`]) and its pitch ranges, permutations and
+//!   header (plus an optional Halo 1 promotion rule) and its pitch ranges, permutations and
 //!   chunks in the gestalt. Samples are copied as they are; Xbox ADPCM is
 //!   never re-encoded.
 //! - [`class`] maps Halo 1 sound classes to Halo 2's.
@@ -30,6 +30,7 @@ pub mod gestalt;
 pub mod h1;
 pub mod looping;
 pub mod merge;
+mod mouth;
 
 pub use convert::{ConvertedSound, convert_sound, install_sounds};
 pub use decode::{Pcm, decode_all, decode_chain};

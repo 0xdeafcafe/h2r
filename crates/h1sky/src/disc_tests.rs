@@ -349,7 +349,7 @@ fn real_h1_disc_every_sky_stays_behind_its_level() {
     let (mut checked, mut scaled) = (0, 0);
     for name in stems {
         let map = h1_map(&mut x, &name).expect("map reads");
-        let reach = convert::level_reach(&map);
+        let reach = convert::level_reach(&map).unwrap();
         for t in map
             .tags()
             .iter()

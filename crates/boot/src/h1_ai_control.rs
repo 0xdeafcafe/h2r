@@ -2,6 +2,7 @@
 //! The scripts still run on the retail Halo 2 interpreter. See
 //! docs/halo1/ai-control.md for the builtin and guest ABI evidence.
 
+use engine::DatumHandle;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use feature::{BuildError, Builder, Flow, Manifest, points};
@@ -15,6 +16,7 @@ mod follow_geometry;
 mod platoons;
 mod playfight;
 mod preference;
+mod reports;
 mod speech;
 #[path = "h1_ai_control/squads.rs"]
 mod squad_control;
@@ -115,6 +117,7 @@ impl feature::Feature for AiControl {
         uncover::register_playfight_hook(b);
         uncover_limits::register(b);
         uncover_targetless::register(b);
+        reports::register(b);
         teleport::register_spawn_hook(b);
         b.raw().before(
             &points::AI_SUBMIT_UNIT_CONTROL,
@@ -124,6 +127,28 @@ impl feature::Feature for AiControl {
                     let actor = call.cpu.eax;
                     let mut guest = call.ctx.runtime().memory();
                     let _ = timers::hold_movement(&mut *guest, actor);
+                }
+                Ok(Flow::Continue)
+            },
+        );
+        b.raw().before(
+            &points::AI_UPDATE_BEHAVIORS,
+            "hold Halo 1 behaviour updates during the combat timer",
+            |call| {
+                if is_converted_campaign(call)
+                    && let Some(actor) = call.arg_u32("actor")
+                {
+                    let hold = {
+                        let guest = call.ctx.runtime().memory();
+                        actors::by_handle(&*guest, DatumHandle(actor))
+                            .and_then(|actor| {
+                                actor.map_or(Ok(false), |actor| timers::held(&*guest, actor))
+                            })
+                            .unwrap_or(false)
+                    };
+                    if hold {
+                        return call.ret(4).map(Flow::Return);
+                    }
                 }
                 Ok(Flow::Continue)
             },
@@ -155,6 +180,18 @@ fn is_converted_campaign(call: &feature::Call<'_>) -> bool {
     let mem = call.ctx.runtime().memory();
     crate::health::loaded_map_name(&*mem)
         .is_ok_and(|name| crate::health::HALO1_LEVELS.contains(&name.as_str()))
+}
+
+/// Conversational checks share the original focused-prop awareness thresholds.
+pub(crate) fn dialogue_awareness(
+    m: &dyn GuestMemory,
+    actor: u32,
+    rate: u32,
+) -> Result<u16, MemFault> {
+    match actors::by_handle(m, engine::DatumHandle(actor))? {
+        Some(actor) => Ok(contact::focused(m, actor, rate)?.level),
+        None => Ok(0),
+    }
 }
 
 /// Halo 2 encodes squads as bare indices and encounter groups with the

@@ -613,6 +613,15 @@ impl Gather<'_> {
 /// leaf, or when it fails (an index past what Halo 2's packed fields
 /// hold).
 pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
+    merge_materials(level, piece, |_| material)
+}
+
+/// Preserve the surface indices after the caller resolves the source material palette.
+pub(crate) fn merge_materials(
+    level: &mut Bsp,
+    piece: &Bsp,
+    material: impl Fn(u16) -> u16,
+) -> Result<Merged> {
     if piece.nodes.is_empty() || piece.surfaces.is_empty() || piece.vertices.is_empty() {
         return Ok(Merged::default());
     }
@@ -659,7 +668,7 @@ pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
         s.first_edge = shift(s.first_edge, base.edges);
         s.flags &= !BREAKABLE;
         s.breakable_surface = 0xff;
-        s.material = material;
+        s.material = material(s.material);
         s
     }));
     out.edges.extend(piece.edges.iter().map(|e| {

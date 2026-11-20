@@ -1,7 +1,6 @@
 //! Converted model shaders of a10's cryo tube on the disc: its glass
 //! (`sotr` `levels\a10\shaders\cryo glass`) is rebuilt as an alpha
-//! blended shader drawing its own glass texture and reflection cube, not
-//! the base's stand-in model shader. Reads `$H1_ISO` and `$H2_DISC`;
+//! blended shader drawing its own glass texture and reflection cube. Reads `$H1_ISO` and `$H2_DISC`;
 //! prints names only. Nothing is written.
 //!
 //! ```sh
@@ -62,12 +61,6 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         .stem(&h1convert::shad::ONE_ALPHA_ENV)
         .expect("the base has one_alpha_env");
     let base = Base::read(&mut base_map).unwrap();
-    let stand_in = base
-        .model_shader
-        .as_ref()
-        .expect("the base has a model shader")
-        .name
-        .clone();
     let mut conv = Converter::new(&h1, &base);
     let tube = h1
         .tags()
@@ -94,12 +87,12 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         .tags
         .iter()
         .find(|(n, c)| n == "levels\\a10\\shaders\\cryo glass" && c.group.0 == *b"shad")
-        .expect("the cryo glass is a shader of its own, not the stand-in");
+        .expect("a rebuilt shader for the cryo glass");
     let mut refs = Vec::new();
     tag_refs(&glass.root, &mut refs);
     let names: Vec<&str> = refs.iter().filter_map(|&id| named(id)).collect();
     eprintln!(
-        "cryo glass: {} references; tree's: {names:?}; stand-in {stand_in}",
+        "cryo glass: {} references; tree's: {names:?}",
         refs.len()
     );
     assert!(refs.contains(&blended), "drawn with one_alpha_env");
@@ -486,10 +479,11 @@ fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
     );
 
     let mut base_map = h2_map("coagulation");
-    let base = Base::read(&mut base_map).unwrap();
-    let emblem = base
-        .find(b"shad", h1objects::convert::EMBLEM_SHADER)
-        .expect("the base has the Chief's emblem shader");
+    let mut base = Base::read(&mut base_map).unwrap();
+    let retail_emblem = r"objects\characters\masterchief\shaders\mc_emblem";
+    assert!(base.find(b"shad", retail_emblem).is_some());
+    base.tags
+        .retain(|(_, group, name, _)| *group != map::FourCC(*b"shad") || name != retail_emblem);
     let mut conv = Converter::new(&h1, &base);
     let t = h1
         .tags()
@@ -505,10 +499,26 @@ fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
         .expect("the converted model");
     let mut refs = Vec::new();
     tag_refs(&m.root, &mut refs);
-    assert!(
-        refs.contains(&emblem),
-        "a material is the Chief's emblem shader"
-    );
+    let emblem = conv
+        .tree
+        .tags
+        .iter()
+        .position(|(name, tag)| {
+            name == h1objects::convert::EMBLEM_SHADER && tag.group == map::FourCC(*b"shad")
+        })
+        .expect("rebuilt emblem material");
+    assert!(refs.contains(&local(emblem)));
+    let mut bindings = Vec::new();
+    tag_refs(&conv.tree.tags[emblem].1.root, &mut bindings);
+    for (group, name) in [
+        (b"stem", h1convert::shad::EMBLEM_STEM),
+        (b"bitm", h1convert::shad::EMBLEM_BITMAP),
+    ] {
+        assert!(
+            bindings.contains(&base.find(group, name).unwrap()),
+            "{name}"
+        );
+    }
 }
 
 /// The change-colour map `name` against the Halo 1 multipurpose map
@@ -914,3 +924,157 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
         "{leaf}: a cut-out, not all or nothing"
     );
 }
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs"]
+fn textureless_bsp_draws_use_lightmapped_white_and_destination_tint() {
+    use h1convert::{shad, structure, textures};
+    use map::build::{TagPayload, TagSet};
+    use tags::defs::{self, Defs, Target, Val};
+    let mut base = h2_map("05a_deltaapproach");
+    for (level, name, glass) in [
+        ("d40", r"levels\a10\shaders\burnt flourescent off", false),
+        ("a50", r"levels\a50\shaders\covenant glass floor", true),
+        ("d20", r"levels\a50\shaders\covenant glass floor", true),
+    ] {
+        let source = h1_map(level);
+        let materials = [(0, name.to_owned())];
+        let recipe = textures::plan_bsp(&source, &mut base, &materials, &[]).unwrap();
+        let mut set = TagSet::new(map::CacheType::Campaign, level, level);
+        let (templates, indices) = recipe
+            .install(&mut set, &structure::Templates::default(), &materials)
+            .unwrap();
+        let read = |id| {
+            let tag = set.tag(id).unwrap();
+            let TagPayload::Built(root) = &tag.payload else {
+                panic!("expected rebuilt tag")
+            };
+            defs::from_built(Defs::builtin().group(tag.group).unwrap(), root).unwrap()
+        };
+        let r = read(templates.shader(indices[0]));
+        if glass {
+            assert_eq!(
+                templates.part_kinds[indices[0]],
+                structure::PART_KIND_TRANSPARENT
+            );
+            let Some(Val::Ref {
+                target: Target::Id(stem),
+                ..
+            }) = r.at("template")
+            else {
+                panic!()
+            };
+            let t = read(*stem);
+            let Some(Val::Ref {
+                target: Target::Id(pass),
+                ..
+            }) = t.at("postprocess[0].passes[0].pass")
+            else {
+                panic!()
+            };
+            let pass = read(*pass);
+            let Some(Val::Block(states)) = pass.at("postprocess[0].render_states") else {
+                panic!()
+            };
+            for (state, value) in [(59, 1), (62, 0), (63, 0x300), (74, 0x8006), (64, 0)] {
+                assert!(
+                    states
+                        .iter()
+                        .any(|s| s.at("state") == Some(&Val::Int(state))
+                            && s.at("value") == Some(&Val::Int(value)))
+                );
+            }
+        } else {
+            assert_eq!(templates.part_kinds[indices[0]], structure::PART_KIND);
+            for (slot, default) in [
+                (0, shad::Fixed::DefaultVector),
+                (2, shad::Fixed::ColorWhite),
+                (3, shad::Fixed::DefaultDetail),
+            ] {
+                let Some(Val::Datum(Target::Id(b))) =
+                    r.at(&format!("postprocess[0].bitmaps[{slot}].bitmap"))
+                else {
+                    panic!()
+                };
+                assert_eq!(base.tag(*b).unwrap().name.as_deref(), Some(default.path()));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs"]
+fn b30_fixtures_select_their_own_base_and_reflection_mask() {
+    use h1map::bitmap::Bitmap;
+    let h1 = h1_map("b30");
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    let mut c = Converter::new(&h1, &base);
+    let shader = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == r"levels\b30\devices\light fixtures\shaders\light frame")
+        .unwrap();
+    let maps = h1convert::textures::h1_maps_of(&h1, shader).unwrap();
+    let bitmap = |id| Bitmap::read(&h1, h1.tag(id).unwrap()).unwrap();
+    let base_bitmap = bitmap(maps.base.unwrap());
+    let mask = bitmap(h1convert::shad::soso_multipurpose(&h1, shader).unwrap());
+    let mut selected = Vec::new();
+    for (fixture, k) in [("floor1", 1usize), ("ceiling1", 0), ("floor2", 1)] {
+        let name = format!(
+            r"levels\b30\devices\light fixtures\light fixture {fixture}\light fixture {fixture}"
+        );
+        let fixture = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(b"lifi") && t.name == name)
+            .unwrap();
+        c.object(fixture).unwrap();
+        let index = c
+            .tree
+            .tags
+            .iter()
+            .position(|(n, t)| *n == name && t.group.0 == *b"mode")
+            .unwrap();
+        let id = local(index);
+        let mut shaders = Vec::new();
+        tag_refs(&c.tree.tags[id.index()].1.root, &mut shaders);
+        let name = format!("{}_permutation_{k}", shader.name);
+        let index = c
+            .tree
+            .tags
+            .iter()
+            .position(|(n, t)| n == &name && t.group.0 == *b"shad")
+            .unwrap();
+        assert!(shaders.contains(&local(index)));
+        let mut bindings = Vec::new();
+        tag_refs(&c.tree.tags[index].1.root, &mut bindings);
+        let (i, (_, bm)) = c
+            .tree
+            .tags
+            .iter()
+            .enumerate()
+            .find(|(_, (n, t))| n == &format!("{name}_Base") && t.group.0 == *b"bitm")
+            .unwrap();
+        assert!(bindings.contains(&local(i)));
+        let (_, bytes) = h1bitmaps::mask::red_into_alpha(
+            &base_bitmap.images[k],
+            base_bitmap.pixels(&h1, k).unwrap(),
+            &mask.images[k],
+            mask.pixels(&h1, k).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&bm.raw[0].0[..bytes.len()], bytes.as_slice());
+        selected.push(local(i));
+    }
+    assert_ne!(selected[0], selected[1]);
+    assert_eq!(selected[0], selected[2]);
+}
+
+#[path = "model_shaders_disc/model_defaults.rs"]
+mod model_defaults;
+
+#[path = "model_shaders_disc/model_effects.rs"]
+mod model_effects;
+
+#[path = "model_shaders_disc/shield_charger.rs"]
+mod shield_charger;

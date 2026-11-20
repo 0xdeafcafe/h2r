@@ -400,6 +400,8 @@ pub struct Unpinner<'s> {
     pub raw: (usize, u64),
     /// External raw pointers kept.
     pub external: usize,
+    /// Tags an edit grew ([`Unpinner::add_grown`]).
+    grown: std::collections::HashSet<TagId>,
 }
 
 impl<'s> Unpinner<'s> {
@@ -419,7 +421,25 @@ impl<'s> Unpinner<'s> {
             raws: HashMap::new(),
             raw: (0, 0),
             external: 0,
+            grown: std::collections::HashSet::new(),
         })
+    }
+
+    /// Pinned tags an edit grew past their own bytes
+    /// ([`map::build::PinnedImage::grown`]): the arrays the edit wrote
+    /// (`regions`, metadata of `src` no tag owns) are read, and each tag of
+    /// `ids` is built without the arrays they replaced, which stay in its
+    /// bytes with nothing pointing at them
+    /// ([`Relocator::to_built_emptied`]). Every other check still holds:
+    /// only bytes no array covers are allowed.
+    pub fn add_grown<R: Read + Seek>(
+        &mut self,
+        src: &mut Map<R>,
+        ids: impl IntoIterator<Item = TagId>,
+        regions: impl IntoIterator<Item = (u32, Vec<u8>)>,
+    ) {
+        self.add_regions(src, regions);
+        self.grown.extend(ids);
     }
 
     /// The source map's relocator.
@@ -704,6 +724,10 @@ impl<'s> Unpinner<'s> {
             }
             match self.rel.check(id) {
                 Ok(_) => plan.push((id, Some(t.group), None)),
+                // The arrays an edit replaced ([`Unpinner::add_grown`]).
+                Err(d) if d.refusal == Refusal::Uncovered && self.grown.contains(&id) => {
+                    plan.push((id, Some(t.group), None))
+                }
                 Err(d) => refused.push(Refused {
                     id,
                     group: t.group,
@@ -722,10 +746,13 @@ impl<'s> Unpinner<'s> {
                 continue;
             }
             let group = group.expect("a built tag");
-            let mut block = self
-                .rel
-                .to_built(id)
-                .map_err(|_| Error::Invalid("tag is not relocatable"))?;
+            let mut block = if self.grown.contains(&id) {
+                self.rel.to_built_emptied(id).map_err(|_| Error::Invalid("tag is not relocatable"))?
+            } else {
+                self.rel
+                    .to_built(id)
+                    .map_err(|_| Error::Invalid("tag is not relocatable"))?
+            };
             let root = &self.rel.schema.groups[&group];
             if group == FourCC(*b"matg") {
                 self.localise_matg_locales(root, &mut block, src, dst)?;

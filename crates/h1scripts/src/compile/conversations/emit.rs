@@ -4,7 +4,7 @@
 use hs::Datum;
 use hs::h1_conversation::{BUILTINS, Op};
 
-use super::{CALL, Compiler, GLOBAL, Hook, NONE, New, Result, SCRIPT_CALL, h2t, invalid};
+use super::{AI, CALL, Compiler, GLOBAL, Hook, NONE, New, Result, SCRIPT_CALL, h2t, invalid};
 
 #[derive(Clone)]
 pub(super) struct Global {
@@ -50,6 +50,7 @@ pub(super) enum Expr {
     Real(f32),
     None(u16),
     Hook(u16, String),
+    Ai(u32),
     As(u16, Box<Self>),
     Global(Global),
     Script(Script),
@@ -65,6 +66,7 @@ impl Expr {
             | Self::Hook(ty, _)
             | Self::As(ty, _)
             | Self::Call(_, ty, _) => *ty,
+            Self::Ai(_) => AI,
             Self::Real(_) => h2t::REAL,
             Self::Global(g) => g.ty,
             Self::Script(s) => s.ty,
@@ -85,6 +87,7 @@ impl Expr {
                 value.to_bits(),
                 value.to_string().as_bytes(),
             ),
+            Self::Ai(datum) => c.literal(expected, AI, datum, format!("{datum:#010x}").as_bytes()),
             Self::None(ty) => c.literal(expected, ty, NONE, b"none"),
             Self::Hook(ty, name) => {
                 let node = c.literal(expected, ty, NONE, name.as_bytes());

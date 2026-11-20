@@ -71,8 +71,8 @@ struct obje 0xbc
       0x14 unknown 0x4
       0x18 unknown 0x4
       0x1c unknown 0x4
-      0x20 unknown 0x4
-      0x24 string string_24
+      0x20 string darken_by -- E 0xbea15 multiplies the current RGB by this function
+      0x24 string string_24 -- E 0xbe9a7 interpolates the two RGB bounds by this function
   0xb4 block predicted_resources 0x8 align 4 -- V: element +4 is the full salted datum of an existing tag; name D (resources loaded with the object)
     0x0 unknown 0x4
     0x4 datum tag -- V: an existing tag of any group

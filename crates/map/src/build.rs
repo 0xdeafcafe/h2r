@@ -375,6 +375,26 @@ pub struct PinnedImage {
     pub metadata_size: u32,
     /// Metadata bytes no tag owns (nonzero gaps between tags), by address.
     pub unowned: Vec<(u32, Vec<u8>)>,
+    /// Pinned tags an edit grew past their own bytes ([`GrownTag`]). A
+    /// reader that lays such a tag out anew reads the edit's arrays and
+    /// leaves the replaced ones out (`tags::schema::Unpinner::add_grown`);
+    /// a reader that checks which of the tag's bytes its arrays cover
+    /// counts the replaced arrays as described (`tags::repo::MapSource::
+    /// add_replaced`).
+    pub grown: Vec<GrownTag>,
+}
+
+/// A pinned tag an edit grew past its own bytes ([`PinnedImage::grown`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrownTag {
+    /// The tag.
+    pub tag: TagId,
+    /// The address of the [`PinnedImage::unowned`] region holding the
+    /// arrays the edit wrote for it.
+    pub region: u32,
+    /// The arrays the edit replaced, as (address, byte length). They stay
+    /// in the tag's bytes with nothing pointing at them.
+    pub replaced: Vec<(u32, u32)>,
 }
 
 /// Owned tags plus everything else a v8 cache needs. Build with
@@ -395,6 +415,8 @@ pub struct TagSet {
     pub strings: Vec<Option<String>>,
     /// [`TagSet::intern`]'s index of `strings`.
     strings_index: StringsIndex,
+    /// Source conversions installed during this build, separate from same-name retail assets.
+    converted: HashMap<(FourCC, String), TagId>,
     /// Tag-index slots in order.
     pub slots: Vec<Slot>,
     /// Root scenario datum (`scnr`).
@@ -519,6 +541,7 @@ impl TagSet {
             groups: Vec::new(),
             strings: Vec::new(),
             strings_index: StringsIndex::default(),
+            converted: HashMap::new(),
             slots: Vec::new(),
             scenario: TagId::NULL,
             globals: TagId::NULL,
@@ -589,6 +612,23 @@ impl TagSet {
             (t.group == group && s.name.as_deref() == Some(name)).then_some(t.id)
         })
     }
+    /// Remember a source conversion after its payload and resources have been installed.
+    pub fn record_conversion(&mut self, group: FourCC, name: &str, id: TagId) {
+        self.converted.insert((group, name.to_owned()), id);
+    }
+
+    /// Only reuse a tag installed by the source converter in this build.
+    pub fn converted(&self, group: FourCC, name: &str) -> Option<TagId> {
+        let id = *self.converted.get(&(group, name.to_owned()))?;
+        let slot = self.slots.get(id.index())?;
+        (slot.name.as_deref() == Some(name) && self.tag(id)?.group == group).then_some(id)
+    }
+
+    /// Copy source provenance when duplicating an index without changing its datums.
+    pub fn copy_conversion_records(&mut self, source: &TagSet) {
+        self.converted.clone_from(&source.converted);
+    }
+
     /// The string ID for `value`, adding it to the table if needed.
     pub fn intern(&mut self, value: &str) -> Result<u32> {
         let index = self.strings_index.intern(&mut self.strings, value)?;
@@ -747,6 +787,7 @@ impl TagSet {
             groups,
             strings: map.strings().to_vec(),
             strings_index: StringsIndex::default(),
+            converted: HashMap::new(),
             slots,
             scenario,
             globals,
@@ -777,6 +818,7 @@ impl TagSet {
                 metadata_base: space.virtual_base,
                 metadata_size: map.metadata_size(),
                 unowned,
+                grown: Vec::new(),
             }),
         })
     }

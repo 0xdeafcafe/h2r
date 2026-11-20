@@ -33,7 +33,10 @@ fn encode_follow_geometry(control: &Control) -> Result<String> {
             u16::try_from(len).map_err(|_| invalid("too many AI follow rows in an encounter"))
         };
         let [hi, lo] = offset(blocks.len())?;
-        encode_words(&mut directory, [hi, lo, count(encounter.destinations.len())?]);
+        encode_words(
+            &mut directory,
+            [hi, lo, count(encounter.destinations.len())?],
+        );
         for d in &encounter.destinations {
             wire::Route {
                 squad: d.squad.unwrap_or(u16::MAX),
@@ -41,10 +44,14 @@ fn encode_follow_geometry(control: &Control) -> Result<String> {
                 posture_squad: d.platoon_member.unwrap_or(u16::MAX),
                 defending: d.defending,
                 masks: d.masks,
-            }.append(&mut blocks);
+            }
+            .append(&mut blocks);
         }
         let [hi, lo] = offset(blocks.len())?;
-        encode_words(&mut directory, [hi, lo, count(encounter.firing_positions.len())?]);
+        encode_words(
+            &mut directory,
+            [hi, lo, count(encounter.firing_positions.len())?],
+        );
         for &(group, point) in &encounter.firing_positions {
             wire::point(&mut blocks, group, point);
         }
@@ -128,10 +135,14 @@ impl Compiler<'_> {
                 && let Some(request) = aicontrol::request(name, self.t.node(*reference)?, self.t)
                 && let Some(actions) = control.actions.get(&request)
             {
-                return self.emit_actions(control, actions, args, expected).map(Some);
+                return self
+                    .emit_actions(control, actions, args, expected)
+                    .map(Some);
             }
-            if matches!(op, RuntimeOperation::Teleport | RuntimeOperation::TeleportUnsupported)
-                && self.ai_control.is_some()
+            if matches!(
+                op,
+                RuntimeOperation::Teleport | RuntimeOperation::TeleportUnsupported
+            ) && self.ai_control.is_some()
             {
                 return self.teleport_control(op, args, expected).map(Some);
             }
@@ -249,7 +260,8 @@ impl Compiler<'_> {
                 return Err(invalid(format!("script name collision: {name}")));
             }
             let root = self.emit_actions(control, actions, args, h2t::VOID)?;
-            self.out.scripts
+            self.out
+                .scripts
                 .push(definition(&name, 3, h2t::VOID, root, usize::from(index))?);
             self.ai_scripts.insert(request, (index, name.clone()));
             (index, name)
@@ -352,10 +364,18 @@ impl Compiler<'_> {
                 } => {
                     let squad = self.ai_literal(squad)?;
                     if self.has_runtime_control() {
-                        self.runtime_control_call(RuntimeOperation::ExpireSquadTimers, &[squad], ty)?
+                        self.runtime_control_call(
+                            RuntimeOperation::ExpireSquadTimers,
+                            &[squad],
+                            ty,
+                        )?
                     } else {
                         let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
-                        self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                        self.runtime_control_call(
+                            RuntimeOperation::TimerExpire,
+                            &[squad, reveal],
+                            ty,
+                        )?
                     }
                 }
                 Action::Spawn(squad) => {
@@ -453,8 +473,13 @@ impl Compiler<'_> {
 
     fn registry_words(&self, registry: Registry) -> usize {
         if registry == Registry::TeleportStarts {
-            return 1 + self.ai_control.map_or(0, |control| control.teleport_starts.values()
-                .map(|starts| 1 + 2 * starts.len().div_ceil(32)).sum::<usize>());
+            return 1 + self.ai_control.map_or(0, |control| {
+                control
+                    .teleport_starts
+                    .values()
+                    .map(|starts| 1 + 2 * starts.len().div_ceil(32))
+                    .sum::<usize>()
+            });
         }
         usize::from(registry.words())
     }
@@ -473,16 +498,21 @@ impl Compiler<'_> {
         let mut words = Vec::with_capacity(self.registry_words(registry));
         if registry == Registry::TeleportStarts {
             let empty = Default::default();
-            let pools = self.ai_control.map_or(&empty, |control| &control.teleport_starts);
+            let pools = self
+                .ai_control
+                .map_or(&empty, |control| &control.teleport_starts);
             words.push(pools.len() as u32);
             for (&squad, starts) in pools {
                 let count = u16::try_from(starts.len())
                     .map_err(|_| invalid("too many AI starts in a squad"))?;
                 words.push(u32::from(squad) << 16 | u32::from(count));
                 for block in starts.chunks(32) {
-                    let preferred = block.iter().enumerate().fold(0u32, |mask, (index, required)| {
-                        mask | (u32::from(*required) << index)
-                    });
+                    let preferred = block
+                        .iter()
+                        .enumerate()
+                        .fold(0u32, |mask, (index, required)| {
+                            mask | (u32::from(*required) << index)
+                        });
                     words.extend([preferred, u32::MAX >> (32 - block.len())]);
                 }
             }
@@ -520,7 +550,9 @@ impl Compiler<'_> {
                 hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
             }
             if registry == Registry::TeleportStarts
-                && self.ai_control.is_some_and(|control| !control.teleport_starts.is_empty())
+                && self
+                    .ai_control
+                    .is_some_and(|control| !control.teleport_starts.is_empty())
             {
                 teleport_base = Some(base);
             }
@@ -546,7 +578,11 @@ impl Compiler<'_> {
                 // evaluates its integer offset, never the data as a token.
                 let offset = self.intern(encoded.as_bytes());
                 let payload = self.number(h2t::LONG, offset as i32);
-                self.runtime_control_call(RuntimeOperation::FollowWithSourcePositions, &[base, payload], h2t::VOID)?
+                self.runtime_control_call(
+                    RuntimeOperation::FollowWithSourcePositions,
+                    &[base, payload],
+                    h2t::VOID,
+                )?
             } else {
                 self.runtime_control_call(operation, &[base], h2t::VOID)?
             };
@@ -558,7 +594,10 @@ impl Compiler<'_> {
                 self.out.scripts.len(),
             )?);
         }
-        Ok(((hook_state != u32::MAX).then_some(hook_state), teleport_base))
+        Ok((
+            (hook_state != u32::MAX).then_some(hook_state),
+            teleport_base,
+        ))
     }
 
     pub(super) fn install_perception_state(&mut self) -> Result<()> {
@@ -568,18 +607,37 @@ impl Compiler<'_> {
             return Ok(());
         };
         if !self.has_runtime_control()
-            || (control.uncover.is_empty() && control.combat_timers.is_empty())
+            || (control.uncover.is_empty()
+                && control.combat_timers.is_empty()
+                && control.weapon_reports.is_empty())
         {
             return Ok(());
         }
-        let mut data = format!("{:08x}", control.uncover.len());
+        // Two sections: character uncover rules, then weapon report
+        // loudness rows. The references run weapons first, so the
+        // character rows keep the trailing slot the runtime anchors on.
+        // The second word's high bit marks the two-section table; a
+        // table from before the weapon section has a one-word header,
+        // and the runtime tells them apart by the bit.
+        let weapons = 0x8000_0000u32 | control.weapon_reports.len() as u32;
+        let mut data = format!("{:08x}{:08x}", control.uncover.len(), weapons);
         for rule in control.uncover.values() {
             let [seconds, damage] = rule.requirements;
             write!(data, "{:08x}{:08x}", seconds.to_bits(), damage.to_bits())
                 .expect("write to String");
+        }
+        for (weapon, loudness) in &control.weapon_reports {
+            write!(data, "{:08x}", loudness.to_bits()).expect("write to String");
+            self.out
+                .references
+                .push((h1map::Group::new(b"weap"), weapon.clone()));
+        }
+        for rule in control.uncover.values() {
             // These trailing references are normal scenario tag fixups.
             // The fresh map writer can change the actual character datum.
-            self.out.references.push((h1map::Group::new(b"char"), rule.character.clone()));
+            self.out
+                .references
+                .push((h1map::Group::new(b"char"), rule.character.clone()));
         }
         let offset = self.intern(data.as_bytes());
         self.declare_state_word(hs::h1_ai_slots::PERCEPTION_STATE, offset)
@@ -594,10 +652,16 @@ impl Compiler<'_> {
         if !self.has_runtime_control() || control.combat_timers.is_empty() {
             return Ok(None);
         }
-        let rows = control.combat_timers.iter().map(|(&id, timer)| (id, timer.flags, timer.seconds));
-        let mut words = timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
+        let rows = control
+            .combat_timers
+            .iter()
+            .map(|(&id, timer)| (id, timer.flags, timer.seconds));
+        let mut words =
+            timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
         for block in 0..timers::BLOCKS as u16 {
-            let mask = control.guard_baselines.range(block * 32..(block + 1) * 32)
+            let mask = control
+                .guard_baselines
+                .range(block * 32..(block + 1) * 32)
                 .fold(0u32, |mask, index| mask | 1 << (index % 32));
             words.push(mask);
         }
@@ -609,12 +673,24 @@ impl Compiler<'_> {
             self.declare_state_word(&format!("h1_ai_timer_{offset}"), value)?;
         }
         let name = "h1_ai_timer_tick";
-        if self.t.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+        if self
+            .t
+            .scripts
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(name))
+        {
             return Err(invalid(format!("script name collision: {name}")));
         }
         let argument = self.number(h2t::LONG, base as i32);
-        let root = self.runtime_control_call(RuntimeOperation::TimerTick, &[argument], h2t::VOID)?;
-        self.out.scripts.push(definition(name, 2, h2t::VOID, root, self.out.scripts.len())?);
+        let root =
+            self.runtime_control_call(RuntimeOperation::TimerTick, &[argument], h2t::VOID)?;
+        self.out.scripts.push(definition(
+            name,
+            2,
+            h2t::VOID,
+            root,
+            self.out.scripts.len(),
+        )?);
         Ok(Some(base as u32))
     }
 
@@ -622,11 +698,22 @@ impl Compiler<'_> {
         if self.out.globals.len() >= hs::MAX_DEFINITIONS {
             return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
         }
-        if self.t.globals.iter().any(|g| g.name.eq_ignore_ascii_case(name)) {
+        if self
+            .t
+            .globals
+            .iter()
+            .any(|g| g.name.eq_ignore_ascii_case(name))
+        {
             return Err(invalid(format!("global name collision: {name}")));
         }
         let root = self.global_constant(h2t::LONG, value as i32);
-        self.out.globals.push(definition(name, h2t::LONG, 0, root, self.out.globals.len())?);
+        self.out.globals.push(definition(
+            name,
+            h2t::LONG,
+            0,
+            root,
+            self.out.globals.len(),
+        )?);
         Ok(())
     }
 
@@ -669,7 +756,11 @@ impl Compiler<'_> {
         {
             return Err(invalid(format!("script name collision: {name}")));
         }
-        let argument = self.control_string(&format!("{:04x}{rules}", rules.len()));
+        // Metadata in the script string section, as the follow geometry:
+        // the VM evaluates its integer offset, never the table as a token,
+        // which b40's would outgrow (`hs::scenario::MAX_TOKEN_BYTES`).
+        let offset = self.intern(format!("{:04x}{rules}", rules.len()).as_bytes());
+        let argument = self.number(h2t::LONG, offset as i32);
         let root =
             self.runtime_control_call(RuntimeOperation::PlatoonTick, &[argument], h2t::VOID)?;
         self.out.scripts.push(definition(

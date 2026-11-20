@@ -19,6 +19,9 @@
 //!   every reference is a converted tag or a Halo 2 one of the right group,
 //!   and the Halo 2 ones are listed with why.
 
+#[path = "support/weapon_firing.rs"]
+mod firing;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -376,8 +379,14 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                     continue;
                 }
                 if kind == h1objects::convert::looping(0).0 {
-                    assert!(k < c.tree.loops.len(), "{level} {name} {p}: looping sound {k}");
-                    assert!(*word == 0 || *word == map::FourCC(*b"lsnd").as_u32(), "{level} {name} {p}");
+                    assert!(
+                        k < c.tree.loops.len(),
+                        "{level} {name} {p}: looping sound {k}"
+                    );
+                    assert!(
+                        *word == 0 || *word == map::FourCC(*b"lsnd").as_u32(),
+                        "{level} {name} {p}"
+                    );
                     continue;
                 }
                 match local(&c.tree, *t) {
@@ -419,6 +428,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
             match &g {
                 b"weap" => {
                     let t = src.expect("weapons are converted directly");
+                    firing::compare(&h1, t, &c.tree, &r);
                     let w = h1::Weapon::read(&h1, t).unwrap();
                     assert_eq!(
                         r.at("item.obje.object_type"),
@@ -449,7 +459,10 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                         };
                         assert_eq!(
                             u16_at(c, 0),
-                            arsenal::reserve_maximum(h.rounds_total_maximum, h.rounds_loaded_maximum),
+                            arsenal::reserve_maximum(
+                                h.rounds_total_maximum,
+                                h.rounds_loaded_maximum
+                            ),
                             "{name}: reserve maximum"
                         );
                     }
@@ -781,7 +794,7 @@ fn material_responses_pair_with_retail() {
     for (one, two) in pairs {
         let t = h1.find(h1map::Group::new(b"proj"), one).unwrap();
         let b = h1.tag_data(t).unwrap();
-        let list = arsenal::responses(&h1, b, &base.materials).unwrap();
+        let list = arsenal::responses(&h1, b, &base.materials, |id| Ok(TagId(id.0))).unwrap();
         let (m, _, d) = list[0];
         assert_eq!(m, arsenal::DEFAULT_MATERIAL);
         let Some(e2) = defaults.get(two) else {
@@ -890,8 +903,7 @@ fn grenade_blocks_pair_across_the_discs() {
 /// each type's `+0xc`, none among the actions; the converted graphs put
 /// Halo 1's overlay animations there too, under names retail's overlays
 /// use or the engine asks for (`overcharged_jitter`, `0x0016821f`). The
-/// assault rifle, whose `fire-1` slot is empty, fires its `firing`
-/// animation as `fire_1`.
+/// assault rifle leaves its empty firing slot empty, as in the Halo 1 XBE.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn first_person_graphs_take_retail_modes() {
@@ -973,7 +985,10 @@ fn first_person_graphs_take_retail_modes() {
         // Every slot Halo 1 plays an animation from has its action, under
         // the slot's own name (the assault rifle's reload-empty slot
         // holds its reload-full).
-        let src = h1::Weapon::read(&h1, t).unwrap().first_person_animations.unwrap();
+        let src = h1::Weapon::read(&h1, t)
+            .unwrap()
+            .first_person_animations
+            .unwrap();
         let g = h1models::h1::Graph::read(&h1, h1.tag(src).unwrap().data_address).unwrap();
         assert!(!g.first_person_slots.is_empty(), "{}: slot table", t.name);
         for (k, s) in g.first_person_slots.iter().enumerate() {
@@ -988,7 +1003,11 @@ fn first_person_graphs_take_retail_modes() {
                 h1models::h1::AnimType::Overlay => (&overlays, &actions),
                 _ => (&actions, &overlays),
             };
-            assert!(here.contains(&action), "{}: slot {k} {word} -> {action}", t.name);
+            assert!(
+                here.contains(&action),
+                "{}: slot {k} {word} -> {action}",
+                t.name
+            );
             assert!(!other.contains(&action), "{}: {action} in both", t.name);
         }
         for o in &overlays {
@@ -999,7 +1018,8 @@ fn first_person_graphs_take_retail_modes() {
             );
         }
         if t.name.contains("assault rifle") {
-            assert!(actions.iter().any(|a| a == "fire_1"), "{}: fire_1", t.name);
+            assert_eq!(g.first_person_slots[2], -1);
+            assert!(!actions.iter().any(|a| a == "fire_1"), "{}: empty firing slot", t.name);
         }
         assert_eq!(
             pairs,
@@ -1031,19 +1051,22 @@ fn a50_marine_flashlight_is_a_scaled_rifle_attachment() {
     let mut h2 = h2_map("05a_deltaapproach").unwrap();
     let base = Base::read(&mut h2).unwrap();
     let mut converter = Converter::new(&h1, &base);
-    let weapon = h1.find(
-        h1map::Group::new(b"weap"),
-        "weapons\\assault rifle\\assault rifle",
-    ).unwrap();
+    let weapon = h1
+        .find(
+            h1map::Group::new(b"weap"),
+            "weapons\\assault rifle\\assault rifle",
+        )
+        .unwrap();
     let id = converter.object(weapon).unwrap();
     let tag = local(&converter.tree, id).unwrap();
     let record = defs::from_built(def(b"weap"), &tag.root).unwrap();
     let Val::Block(functions) = record.at("item.obje.functions").unwrap() else {
         panic!("missing rifle functions");
     };
-    let Some(function) = functions.iter().find(|f| {
-        f.at("string_4") == Some(&Val::text("integrated_light_power"))
-    }) else {
+    let Some(function) = functions
+        .iter()
+        .find(|f| f.at("string_4") == Some(&Val::text("integrated_light_power")))
+    else {
         panic!("missing integrated light function");
     };
     let scale = function.at("output").unwrap();
@@ -1056,4 +1079,100 @@ fn a50_marine_flashlight_is_a_scaled_rifle_attachment() {
             && matches!(a.at("type"), Some(Val::Ref { target: Target::Id(id), .. })
                 if local(&converter.tree, *id).is_some_and(|t| t.group == FourCC(*b"ligh")))
     }));
+}
+
+/// The barrel `firing_noise` census (`weap` trigger `+0x2e` in Halo 1,
+/// barrel `+0x36` in Halo 2). The converted bridge's audibility gate
+/// treats 0 as the silent end of the enum ("silent, medium, loud, ...",
+/// the def's evidence line), so the census pins what the discs actually
+/// author: every trigger and every retail barrel carries one of the
+/// first enum values; no Halo 1 trigger is silent (D: classes 1 and 2
+/// only, so every converted Halo 1 weapon reports its shots); and the
+/// only silent retail barrels are the Warthog horn's (D: Halo 2 also
+/// uses class 3, the sniper, beam rifle, rocket launcher and vehicle
+/// cannons, which Halo 1 does not). The pairs test checks the class per
+/// weapon where both games have one.
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn firing_noise_census_pins_the_audibility_classes() {
+    let mut h1_values: BTreeMap<String, Vec<i16>> = BTreeMap::new();
+    for level in h1map::disc::CAMPAIGN_LEVELS
+        .iter()
+        .chain(std::iter::once(&"bloodgulch"))
+    {
+        let Some(h1) = h1_level(level) else {
+            continue;
+        };
+        for t in h1.tags() {
+            if t.group.0.to_be_bytes() != *b"weap" {
+                continue;
+            }
+            let w = h1::Weapon::read(&h1, t).unwrap();
+            let values: Vec<i16> = w.triggers.iter().map(|tr| tr.firing_noise).collect();
+            if !values.is_empty() {
+                h1_values.entry(t.name.clone()).or_default().extend(values);
+            }
+        }
+    }
+    assert!(!h1_values.is_empty(), "no Halo 1 weapons censused");
+    let mut h1_histogram: BTreeMap<i16, usize> = BTreeMap::new();
+    for (name, values) in &h1_values {
+        for &value in values {
+            assert!(
+                (0..=3).contains(&value),
+                "{name}: firing_noise {value} outside the enum's first values"
+            );
+            *h1_histogram.entry(value).or_default() += 1;
+        }
+        println!("h1 {name}: {values:?}");
+    }
+    println!("halo 1 firing_noise histogram: {h1_histogram:?}");
+
+    // The retail Halo 2 side: every weap barrel of Coagulation and the
+    // campaign base (05a_deltaapproach).
+    let mut h2_histogram: BTreeMap<i16, usize> = BTreeMap::new();
+    let mut h2_silent = std::collections::BTreeSet::new();
+    for name in ["coagulation", "05a_deltaapproach"] {
+        let Some(mut m) = h2_map(name) else {
+            continue;
+        };
+        for tag in m.tags().to_vec() {
+            if tag.group != FourCC(*b"weap") {
+                continue;
+            }
+            let bytes = m.read_tag_bytes(tag.id).unwrap();
+            let address = tag.location.unwrap().address;
+            let view = tags::geometry::TagView::new(&bytes, address);
+            let barrels = view.block(&bytes, 0x2d0, 0xec).unwrap();
+            let weapon = tag.name.as_deref().unwrap_or("unnamed");
+            for (i, barrel) in barrels.iter().copied().enumerate() {
+                let value = i16_at(barrel, 0x36);
+                assert!(
+                    (0..=3).contains(&value),
+                    "{} barrel {i}: firing_noise {value} outside the enum's first values",
+                    tag.name.as_deref().unwrap_or("unnamed")
+                );
+                println!("h2 {weapon} barrel {i}: {value}");
+                if value == 0 {
+                    h2_silent.insert(weapon.to_owned());
+                }
+                *h2_histogram.entry(value).or_default() += 1;
+            }
+        }
+    }
+    assert!(!h2_histogram.is_empty(), "no Halo 2 barrels censused");
+    println!("halo 2 firing_noise histogram: {h2_histogram:?}");
+    // The audibility gate reads the same enum on both discs, and no disc
+    // weapon sits outside it (above). Halo 1 authors no silent trigger;
+    // retail Halo 2's silent barrels are the Warthog horn's alone.
+    assert_eq!(
+        h1_histogram.keys().copied().collect::<Vec<_>>(),
+        [1, 2],
+        "halo 1 firing_noise classes"
+    );
+    assert_eq!(
+        h2_silent.into_iter().collect::<Vec<_>>(),
+        [r"objects\vehicles\warthog\weapon\warthog_horn"],
+        "silent retail barrels"
+    );
 }

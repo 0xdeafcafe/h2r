@@ -15,12 +15,8 @@
 //! draws `+0x88` as the base. `swat` (water): base map `+0x4c`. The
 //! detail map is the primary one, else the micro detail.
 //!
-//! **The structure material.** A structure material takes its rebuilt
-//! shader through a new material head: the head of the base material
-//! [`crate::shaders::pick`] chose (its bytes, shader datum `+0x0c`
-//! replaced), with the part kind of the rebuilt shader's stem, so
-//! [`crate::structure::Templates`] carries it and `Structure` needs no
-//! change.
+//! Structure render and collision records use the source palette order.
+//! Each material points at its rebuilt shader and uses its program's part kind.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -116,15 +112,10 @@ pub const SOSO_DETAIL_SCALE: usize = 0xd8;
 pub const SOSO_DETAIL_V_SCALE: usize = 0xec;
 
 /// The tiling of the Halo 1 shader `tag`'s detail and bump maps
-/// ([`scales_from`] on its bytes).
-pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
-    match h1.tag_data(tag) {
-        Ok(d) => scales_from(&tag.group.to_string(), d),
-        Err(_) => H1Scales {
-            detail: [1.0; 2],
-            bump: 1.0,
-        },
-    }
+/// ([`scales_from`] on its bytes). A shader whose bytes do not read is an
+/// error, not a scale of one.
+pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> std::result::Result<H1Scales, h1map::Error> {
+    Ok(scales_from(&tag.group.to_string(), h1.tag_data(tag)?))
 }
 
 /// The tiling of a Halo 1 shader of `group` whose bytes are `d`. `senv`:
@@ -223,7 +214,9 @@ pub struct Retexture {
     /// (Halo 1 bitmap name, its conversion).
     pub bitmaps: Vec<(String, h1models::Converted)>,
     pub copies: Vec<ShaderCopy>,
-    /// Shaders left as the base's, and why.
+    /// Source shader name and translated globals index per collision material.
+    pub collision: Vec<(Option<String>, u16)>,
+    /// Informational conversion notes.
     pub notes: Vec<String>,
     /// The base's stems and default bitmaps.
     pub library: shad::Library,
@@ -244,11 +237,7 @@ pub fn role_name(r: shad::Role) -> &'static str {
     }
 }
 
-/// Plans Halo 1's shaders for the structure materials `materials` (each:
-/// the base material index [`crate::shaders::pick`] chose, whose head the
-/// material keeps, and the Halo 1 shader's name), with `base`, the map
-/// the set is made from: each Halo 1 shader is rebuilt
-/// ([`crate::shad::read_h1`]) and its maps converted once.
+/// Rebuild the shaders at their source material indices, converting each bitmap once.
 pub fn plan<R: Read + Seek>(
     h1: &H1Map,
     base: &mut Map<R>,
@@ -259,30 +248,28 @@ pub fn plan<R: Read + Seek>(
         library: shad::Library::read(base),
         ..Retexture::default()
     };
-    let mut converted: HashMap<h1map::TagId, Option<usize>> = HashMap::new();
-    let mut brightest: HashMap<(h1map::TagId, u32), Option<usize>> = HashMap::new();
+    let mut converted = HashMap::<(h1map::TagId, Option<u32>), usize>::new();
     let mut done: HashMap<(usize, String), ()> = HashMap::new();
     for (i, name) in materials {
         if done.insert((*i, name.clone()), ()).is_some() {
             continue;
         }
-        let Some(s) = h1
+        let fail = |why: &str| crate::Error::no_rebuild(&h1.header().name, name, why);
+        let mut candidates = h1
             .tags()
             .iter()
-            .filter(|t| &t.name == name)
-            .find_map(|t| shad::read_h1(h1, t))
-        else {
-            out.notes
-                .push(format!("{name}: not a shader whose maps this reads"));
-            continue;
-        };
-        let Some(chosen) = s.choose(&out.library) else {
-            out.notes.push(format!(
-                "{name}: the base lacks {} or its default bitmaps",
-                s.layout.stem
-            ));
-            continue;
-        };
+            .filter(|t| &t.name == name && shad::H1_GROUPS.contains(&t.group.to_string().as_str()));
+        let tag = candidates
+            .next()
+            .ok_or_else(|| fail("missing source shader"))?;
+        if candidates.next().is_some() {
+            return Err(fail("ambiguous source shader path"));
+        }
+        let s = shad::read_h1(h1, tag).ok_or_else(|| fail("unsupported shader definition"))?;
+        if !out.library.has(s.layout) {
+            return Err(fail(s.layout.stem));
+        }
+        let chosen = &s;
         if shad::uses_detail_program(chosen.layout, &chosen.extras) {
             out.library.load_detail_program(base)?;
         }
@@ -291,34 +278,34 @@ pub fn plan<R: Read + Seek>(
         for (role, m) in &chosen.maps {
             // A plasma's picture with its brightness as alpha (converter
             // version 90, `shad::plasma_shader`), else the bitmap as it is.
-            let derived = match (*role, chosen.extras.brightest_mask) {
-                (shad::Role::Mask, Some(gain)) => *brightest
-                    .entry((m.bitmap, gain.to_bits()))
-                    .or_insert_with(|| {
-                        let tag = h1.tag(m.bitmap).ok()?;
-                        let c = h1bitmaps::mask::convert_brightest(h1, tag, gain).ok()?;
-                        out.bitmaps
-                            .push((shad::brightness_mask_name(&tag.name, gain), c));
-                        Some(out.bitmaps.len() - 1)
-                    }),
-                _ => None,
+            let gain = (*role == shad::Role::Mask)
+                .then_some(chosen.extras.brightest_mask)
+                .flatten();
+            let key = (m.bitmap, gain.map(f32::to_bits));
+            let k = match converted.get(&key) {
+                Some(&k) => k,
+                None => {
+                    let bitmap = h1.tag(m.bitmap)?;
+                    let fail = |why: String| {
+                        crate::Error::no_rebuild(&h1.header().name, &bitmap.name, why)
+                    };
+                    let (name, image) = if let Some(gain) = gain {
+                        let image = h1bitmaps::mask::convert_brightest(h1, bitmap, gain)
+                            .map_err(|e| fail(e.to_string()))?;
+                        (shad::brightness_mask_name(&bitmap.name, gain), image)
+                    } else {
+                        let (_, image, _) = h1bitmaps::convert_bitmap(h1, bitmap)
+                            .map_err(|e| fail(e.to_string()))?;
+                        (bitmap.name.clone(), image)
+                    };
+                    let k = out.bitmaps.len();
+                    out.bitmaps.push((name, image));
+                    converted.insert(key, k);
+                    k
+                }
             };
-            let k = derived.or_else(|| {
-                *converted.entry(m.bitmap).or_insert_with(|| {
-                    let tag = h1.tag(m.bitmap).ok()?;
-                    let (_, c, _) = h1bitmaps::convert_bitmap(h1, tag).ok()?;
-                    out.bitmaps.push((tag.name.clone(), c));
-                    Some(out.bitmaps.len() - 1)
-                })
-            });
-            let Some(k) = k else { continue };
             maps.push((*role, k, m.scale, shad::h1_lod_offset(h1, m.bitmap)));
             swapped.push((role_name(*role), out.bitmaps[k].0.clone()));
-        }
-        if maps.is_empty() {
-            out.notes
-                .push(format!("{name}: none of its bitmaps converts"));
-            continue;
         }
         out.copies.push(ShaderCopy {
             h1_shader: name.clone(),
@@ -332,14 +319,47 @@ pub fn plan<R: Read + Seek>(
     Ok(out)
 }
 
+/// Plan render and collision shaders together so a collision-only shader also gets a datum.
+pub fn plan_bsp<R: Read + Seek>(
+    h1: &H1Map,
+    base: &mut Map<R>,
+    materials: &[(usize, String)],
+    collision: &[TagRef],
+) -> Result<Retexture> {
+    let meta =
+        tags::object::Metadata::read(base).map_err(|e| crate::Error::Textures(e.to_string()))?;
+    let globals = crate::materials::global_materials(base, &meta).map_err(crate::Error::Textures)?;
+    let mut all = materials.to_vec();
+    let mut palette = Vec::with_capacity(collision.len());
+    for r in collision {
+        let tag = h1.tag(r.id)?;
+        let fail = |why: &str| crate::Error::no_rebuild(&h1.header().name, &tag.name, why);
+        let bytes = h1.tag_data(tag)?;
+        let material = bytes
+            .get(0x22..0x24)
+            .ok_or_else(|| fail("short source shader header"))?;
+        let index = usize::from(u16::from_le_bytes([material[0], material[1]]));
+        let (_, global) = crate::materials::MATERIALS
+            .get(index)
+            .ok_or_else(|| fail("unknown source material type"))?;
+        let index = globals
+            .iter()
+            .position(|n| n.as_str() == *global)
+            .and_then(|i| u16::try_from(i).ok())
+            .ok_or_else(|| fail(global))?;
+        palette.push((Some(tag.name.clone()), index));
+        if !all.iter().any(|(_, name)| name == &tag.name) {
+            all.push((all.len(), tag.name.clone()));
+        }
+    }
+    let mut textures = plan(h1, base, &Templates::default(), &all)?;
+    textures.collision = palette;
+    Ok(textures)
+}
+
 impl Retexture {
-    /// Adds the bitmaps and rebuilt shaders to `set` (after anything whose
-    /// datums were predicted) and returns `templates` with a material head
-    /// per shader (the base head's bytes, shader datum `+0x0c` replaced;
-    /// the part kind the shader's stem draws as,
-    /// [`crate::structure::part_kind`]), and for each of `materials` the
-    /// head it now uses. A bitmap or shader whose name the set already
-    /// holds is reused, so the BSPs of one level share them.
+    /// Install the source images and shaders and build both material palettes.
+    /// Multiple BSPs may share a shader already rebuilt for this output map.
     pub fn install(
         &self,
         set: &mut TagSet,
@@ -348,7 +368,7 @@ impl Retexture {
     ) -> Result<(Templates, Vec<usize>)> {
         let mut ids = Vec::new();
         for (name, c) in &self.bitmaps {
-            let have = set.find(c.group, name);
+            let have = set.converted(c.group, name);
             ids.push(match have {
                 Some(id) => id,
                 None => c.clone().install(set, name)?,
@@ -358,7 +378,7 @@ impl Retexture {
         let mut out = templates.clone();
         let mut heads: HashMap<(usize, &str), usize> = HashMap::new();
         for c in &self.copies {
-            let id = match set.find(SHAD, &c.h1_shader) {
+            let id = match set.converted(SHAD, &c.h1_shader) {
                 Some(id) => id,
                 None => {
                     let maps: HashMap<shad::Role, shad::Bound> = c
@@ -376,10 +396,13 @@ impl Retexture {
                         })
                         .collect();
                     let tree = self.library.build_surface(set, c.layout, &maps, &c.extras)?;
-                    set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(tree))?
+                    let id = set.add_tag(SHAD, &c.h1_shader, TagPayload::Built(tree))?;
+                    set.record_conversion(SHAD, &c.h1_shader, id);
+                    id
                 }
             };
-            let mut head = templates.material_heads[c.material];
+            let mut head = [0u8; 16];
+            head[4..8].copy_from_slice(&TagId::NULL.0.to_le_bytes());
             head[0x8..0xc].copy_from_slice(&SHAD.as_u32().to_le_bytes());
             head[0xc..0x10].copy_from_slice(&id.0.to_le_bytes());
             out.material_heads.push(head);
@@ -390,58 +413,45 @@ impl Retexture {
                 out.material_heads.len() - 1,
             );
         }
+        for (name, global) in &self.collision {
+            let id = match name {
+                Some(name) => set.converted(SHAD, name).ok_or_else(|| {
+                    crate::Error::no_rebuild(&set.name, name, "missing collision shader")
+                })?,
+                None => TagId::NULL, // Object collision materials have a substance and no shader.
+            };
+            let mut row = [0u8; crate::structure::COLLISION_MATERIAL];
+            row[4..8].copy_from_slice(&TagId::NULL.0.to_le_bytes());
+            row[8..10].copy_from_slice(&global.to_le_bytes());
+            row[10..12].copy_from_slice(&(-1i16).to_le_bytes());
+            row[12..16].copy_from_slice(&SHAD.as_u32().to_le_bytes());
+            row[16..20].copy_from_slice(&id.0.to_le_bytes());
+            out.collision_materials.push(row);
+        }
         let used = materials
             .iter()
-            .map(|(i, n)| heads.get(&(*i, n.as_str())).copied().unwrap_or(*i))
-            .collect();
+            .map(|(i, n)| {
+                heads.get(&(*i, n.as_str())).copied().ok_or_else(|| {
+                    crate::Error::no_rebuild(&set.name, n, "missing planned structure material")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok((out, used))
     }
 }
 
-/// Converted object models' shaders: [`shad::TEX_BUMP`] rebuilt from each
-/// Halo 1 model shader's base and detail maps ([`ModelTemplate::copy`]),
-/// and a base shader a model shader with no base map names instead.
+/// The compiled templates and rasterizer resources used to build model materials.
 #[derive(Debug, Clone)]
 pub struct ModelTemplate {
-    /// A base `objects\` shader drawn with [`MODEL_TEMPLATE`]: what a
-    /// material whose Halo 1 shader has no base map names (never NONE).
-    pub shader: TagId,
-    pub name: String,
     pub library: shad::Library,
 }
 
-/// The stem converted model shaders draw with.
 pub const MODEL_TEMPLATE: &str = shad::TEX_BUMP.stem;
 
-/// The base's stems for model shaders, and the first `objects\` shader
-/// (by name) drawn with [`MODEL_TEMPLATE`] as the stand-in. `None` when
-/// the base lacks either.
-pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelTemplate>> {
-    let library = shad::Library::read(base);
-    if !library.has(&shad::TEX_BUMP) {
-        return Ok(None);
-    }
-    let mut candidates: Vec<(String, TagId)> = base
-        .tags()
-        .iter()
-        .filter(|t| t.group == SHAD && t.location.is_some())
-        .filter_map(|t| Some((t.name.clone()?, t.id)))
-        .filter(|(n, _)| n.starts_with("objects\\"))
-        .collect();
-    candidates.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, id) in candidates {
-        let Ok((template, _)) = scenario_edit::scene::shader_bitmaps(base, id) else {
-            continue;
-        };
-        if template == MODEL_TEMPLATE {
-            return Ok(Some(ModelTemplate {
-                shader: id,
-                name,
-                library,
-            }));
-        }
-    }
-    Ok(None)
+pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> ModelTemplate {
+    let mut library = shad::Library::read(base);
+    library.load_model_lighting(base);
+    ModelTemplate { library }
 }
 
 impl ModelTemplate {
@@ -450,13 +460,13 @@ impl ModelTemplate {
     /// times (u, v) over the base, its bump map flat.
     /// The datums are [`map::build::FixupKind::TagId`] fixups, so a datum
     /// not yet installed (an `h1objects` tree's local one) is filled in
-    /// later. Returns the tree and the roles Halo 1 supplied.
-    pub fn copy(
+    /// later.
+    pub fn build_opaque(
         &self,
         base: TagId,
         detail: Option<TagId>,
         detail_scale: [f32; 2],
-    ) -> (Block, Vec<&'static str>) {
+    ) -> Result<Block> {
         let bound = |id, scale| shad::Bound {
             id,
             scale,
@@ -464,16 +474,10 @@ impl ModelTemplate {
         };
         let mut maps = HashMap::new();
         maps.insert(shad::Role::Base, bound(base, [1.0, 1.0]));
-        let mut roles = vec!["base"];
         if let Some(d) = detail {
             maps.insert(shad::Role::Detail, bound(d, detail_scale));
-            roles.push("detail");
         }
-        let tree = self
-            .library
-            .build(&shad::TEX_BUMP, &maps)
-            .expect("model_template checked the stem and defaults");
-        (tree, roles)
+        self.library.build(&shad::TEX_BUMP, &maps)
     }
 }
 
@@ -481,6 +485,44 @@ impl ModelTemplate {
 mod tests {
     use super::*;
     use tags::shader::{ImplementationBindings, IndexRange, ParameterBinding, TemplatePostprocess};
+
+    #[test]
+    fn native_shader_names_cannot_fill_a_missing_source_material() {
+        let mut set = TagSet::new(map::CacheType::Multiplayer, "source_map", "scenario");
+        set.add_group(SHAD, None, None);
+        set.add_tag(SHAD, "stone", TagPayload::Empty).unwrap();
+        let textures = Retexture {
+            collision: vec![(Some("stone".into()), 5)],
+            ..Default::default()
+        };
+        let error = textures
+            .install(&mut set, &Templates::default(), &[])
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::Error::NoRebuild { map, tag, .. } if map == "source_map" && tag == "stone")
+        );
+    }
+
+    #[test]
+    fn collision_materials_keep_their_own_global_indices_and_shader_datums() {
+        let mut set = TagSet::new(map::CacheType::Multiplayer, "source", "scenario");
+        set.add_group(SHAD, None, None);
+        let mut textures = Retexture::default();
+        let mut expected = Vec::new();
+        for (name, material) in [("snow", 8u16), ("ice", 2u16)] {
+            let shader = set.add_tag(SHAD, name, TagPayload::Empty).unwrap();
+            set.record_conversion(SHAD, name, shader);
+            textures.collision.push((Some(name.into()), material));
+            expected.push((material, shader));
+        }
+        let (templates, _) = textures
+            .install(&mut set, &Templates::default(), &[])
+            .unwrap();
+        for (row, (material, shader)) in templates.collision_materials.iter().zip(expected) {
+            assert_eq!(&row[8..10], &material.to_le_bytes());
+            assert_eq!(&row[16..20], &shader.0.to_le_bytes());
+        }
+    }
 
     /// A vector binding: register `reg`, `bank`, component `mode`, from
     /// instance vector `source`.

@@ -291,6 +291,14 @@ geometry. They aren't removed, since scripts, the kill list and BSP
 switches (`scnr+0x130`, `0xe` entries, E `0x0014b6d6`) hold their
 indices; each origin moves to `(0, 0, -1e6)`, where nothing ever is.
 
+**Halo 1 light fixtures (Built).** Both sandbox variants rebuild the
+source fixtures as machines with their marker lights. Carousel,
+Damnation and Rat Race have 46 placements between them. The fresh
+scenario writes their machine blocks directly. The pinned builder appends
+them to the metadata and updates the scenario descriptors. The source
+placement's light values use the same rule as campaign fixtures.
+See [objects.md](objects.md#light-fixture-placements-built).
+
 **Lights (emptied, `convert::BASE_BLOCKS`).** `scnr+0xe8` is the light
 fixture placements, `0x6c` each: `+0x00` an index into the light
 palette at `+0xf0` (`0x28` each, its tag reference at `+0`), `+0x02` a
@@ -431,26 +439,11 @@ The base's old BSP region stays in the file, unused.
   portals at all: its rooms are sealed, and Halo 1 draws them one at a
   time too). The v8 visibility data (`+0x54/+0x58`) carries the source
   BSP's directional cluster bit rows in the original cluster order.
-- **Materials** (`h1convert::shaders`). One structure material per Halo 1
-  shader, each copying the head (shader reference) of the base structure
-  material it is matched to by name: the words of the Halo 1 shader's name
-  against each base shader's (`grass`, `cliff`, `metal panel`, ...), Halo 1
-  water (`swat`) to a base water shader, anything unmatched to the base's
-  first plain opaque shader. Water, glass, sky, decal, transparent,
-  self-illuminated, plasma and `unwrapped` shaders never stand in for an
-  ordinary surface. Until this, every surface used the base's first
-  material's shader, which on Beaver Creek is an `unwrapped` cliff (its
-  textures laid out for one mesh's own UVs) and on Coagulation a water
-  pool: tiled over Halo 1's UVs both look like scattered multicoloured
-  blocks, which is what the editor saw. The bitmaps themselves were never
-  wrong: `disc_maps.rs` decodes every image of every converted map
-  through `assets::decode_image` and compares it with the base's, and all
-  are identical (1618 images on Beaver Creek, 1686 on Coagulation). The
-  CLI prints each choice (`shader <Halo 1> -> <Halo 2>`); the chosen
-  shader is then the template for Halo 1's own textures (next). One
-  collision material per
-  Halo 1 collision material, copies of the base's first (no pointers in
-  it), `+0x0a` = -1.
+- **Materials** (`h1convert::textures`). Each render material names its
+  rebuilt source shader. Collision palette entries keep the source shader
+  and translate its physical material into the globals index. Both
+  palettes preserve source order. Missing shaders stop conversion.
+
 - **Halo 1's own textures** (`h1convert::textures`). The structure's
   shaders are rebuilt as `shad` records from the definition, with the
   appropriate Halo 2 `stem` and Halo 1's converted bitmaps. An `senv`
@@ -886,8 +879,11 @@ the fresh build's, their datums renamed (`scratch::Transfer`). Equal
 blocks are shared across tags, as retail does, except bitmaps and the
 sound gestalt, which the readers that take one tag's bytes
 (`tags::DecodedTag`, `SoundGestalt::decode`) need whole
-(`scratch::SELF_CONTAINED`). If it fails, the pruned set is written
-(`FreshReport::scratch_failed`). Blood Gulch on Coagulation: 4,385 tags
+(`scratch::SELF_CONTAINED`). If it fails, the conversion fails with
+the reason (`Error::Fresh`, "not built from scratch"); the pruned set is
+never written. A reference to a tag no source holds is the same
+error, naming the tag, field and missing tag (it was nulled before
+version 101). Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
 slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the
@@ -1110,6 +1106,20 @@ warthog becomes the gauss warthog (the user's decision). Blood Gulch and
 Sidewinder place all 8 of their vehicles (2 warthogs, 4 ghosts, 2
 scorpions; the Xbox maps have no rocket warthog).
 
+**Built. Multiplayer vehicle placements.** In the Halo 2 sandbox, a vehicle
+with no counterpart uses the Halo 1 object converter. Its netgame entry
+names a newly built `vehc` whose sole weighted entry references the rebuilt
+`vehi`. Repeated placements share that collection and retain their own
+position and yaw. The source render-model depth raises the origin by the same amount
+as in the Halo 1 sandbox. The H2 spawner checks for a collection at
+`0x15ab12..0x15ab23`. Source controller types choose the H2 game-variant
+slot for a rebuilt vehicle: tracked uses heavy, wheeled and hover use the
+two light slots, aircraft use flying, and stationary uses primary turret.
+The retail maps place eight Ghosts, four Warthogs and four Scorpions.
+The disc regression renames the Blood Gulch Ghost in memory to check the
+unmatched path through fresh-map assembly and read the resulting vehicle
+and its placements back.
+
 **Added tags.** A built vehicle collection is added after the base's
 tags (`TagSet::add_tag`, which keeps the pinned index's tail); its datum
 is known when the placements are written (slot `n`, salt `0xe174 + n`,
@@ -1141,25 +1151,11 @@ The ignored test `bloodgulch_native_powerups_spawn_in_both_sandboxes`
 reads both discs and checks all four placements and their rebuilt item
 and collection data in the fresh maps.
 
-All 13 multiplayer maps on the Halo 1 disc convert
-(`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
-build), each map reads back with a valid checksum, and its bitmaps are
-the base's, pixel for pixel, but for the lightmap. The test also checks,
-on every map: each drawn part's material names the shader `shaders::pick`
-chose (or, with Halo 1's textures, its copy: same template, the same
-bitmaps but each swapped role's, which is the Halo 1 bitmap), none of those
-shaders' bitmaps is an `unwrapped` one; every added Halo 1 bitmap decodes
-(Halo 2's decoder, the converted map's own raw data) to the pixels
-`h1bitmaps` decodes from Halo 1, every image (Halo 1 bitmaps / shader
-copies / shaders left on the base's: beavercreek 25/14/4, bloodgulch
-18/10/7, boardingaction 17/10/4, carousel 17/8/10, chillout 24/15/7,
-damnation 21/12/6, hangemhigh 21/9/1, longest 21/9/5, prisoner 23/10/8,
-putput 16/11/2, ratrace 29/13/6, sidewinder 24/12/5, wizard 14/7/3; the
-whole test now takes 14 minutes in a debug build); the texture
-and lightmap coordinates read back as written; the lightmap names the
-converted bitmap, every lit cluster's page is one of its images, and each
-page decodes (Halo 2's decoder, the converted map's own raw data) to the
-pixels cut for its cluster. Lightmap pages (clusters): beavercreek 25
+The retail disc test checks each material against its rebuilt shader and
+reads back the diffuse and lightmap coordinates. It checks the images
+through the Halo 2 decoder against the Halo 1 source. The full matrix
+for the current conversion is documented in `role-audit.md`. Historical
+Lightmap pages (clusters): beavercreek 25
 (29), bloodgulch 30 (30), boardingaction 41 (41), carousel 36 (36),
 chillout 10 (10), damnation 12 (12), hangemhigh 1 (1), longest 1 (1),
 prisoner 1 (1), putput 9 (9), ratrace 14 (16), sidewinder 32 (35),
@@ -1508,7 +1504,13 @@ retail's weapon bases are (V: the battle rifle's and sniper rifle's on
 Coagulation, 0x203), the base's colours re-encoded from its decoded
 blocks (exact where a DXT1 block's endpoints are among its texels) and
 its whole mip chain kept, the mask sampled at each level's size (nearest).
-A base or mask that does not decode keeps the plain base. Proof: h1bitmaps
+Every image of a multi-image base is masked, by the mask's image of the
+same index, or by a single-image mask's only image
+(`h1bitmaps::mask::convert_reflection_mask`; D: b30's `light fixtures`
+and the grunt's maps come in two-image pairs with their `multi` maps). A
+base or mask that does not decode, or images that do not pair, fail the
+conversion (converter version 100; they kept the plain base before).
+Proof: h1bitmaps
 `a_base_takes_its_masks_red_as_alpha` and the block round trips;
 `tests/model_shaders_disc.rs`, `bloodgulch_sniper_metal_reflects_its_cube_map`
 (the sniper's converted base against its multipurpose red). **Detail
@@ -1619,7 +1621,9 @@ framebuffer blend and stage count): additive with 0 stages 18, 1 stage
 24, 2 stages 15, 3 stages 12, 4 stages 4 (chillout's hilltop, b40's holo
 halo ring, a10's shield charge, Cortana); alpha-blended (blend 0) with
 0 to 3 stages 22, 4, 5 and 1; blends 1, 6 and 7 with 0 to 2 stages 1,
-6 and 1. They keep their single-map rebuild. Lost on a plasma: the energy mask
+6 and 1. The a10 shield charger's four-stage rebuild and its device colours
+are described in [the role audit](role-audit.md). The other non-plasma
+programs in this inventory keep their single-map rebuild. Lost on a plasma: the energy mask
 (map 2), Halo 1's stage constants (the teleporter's teal base glow,
 added under the bands), and the first noise's own scroll (retail's
 teleporter animates both pairs; that tree isn't verified here). Proof:
@@ -1677,8 +1681,9 @@ glow an object's A output animates (the jackal's shield) holds at its
 lower bound; a plasma whose last stage is another sum (the jackal's and
 the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
 
-A material with no Halo 1 base map to read names the
-base's model shader itself; Blood Gulch has none. The sky model's
+A model material with a null base uses the matching H1 shader rebuild
+(role-audit.md). An unsupported material fails conversion with the map
+and source shader name. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert
@@ -1736,11 +1741,11 @@ mainmenu's built-in variants, Slayer among them): `0x0019ef40` reads the
 scenario's starting equipment (`scnr +0x128`, `0x9c` each; entries whose
 game type `0x0015a090` accepts) and rolls its five `itmc` references
 (`+0x3c`, 8 apart; `0x0019efef` -> `0x0019f1a0`) for the default (E). The
-base's (Coagulation's one entry: the SMG collection) named Halo 2 weapons
-too. In the Halo 1 sandbox each collection it names is rebuilt from the
-same table, weight for weight, as a new `itmc` after the objects
-(`convert::halo1::plan_starting_equipment`): players start with the
-assault rifle on every map.
+Halo 1 sandbox reads the original scenario's starting equipment at
+`+0x390`, including the flags, four game-type selectors, collection order
+and permutation weights. Blood Gulch has an assault rifle and pistol in
+its CTF row and a plasma pistol in its other row. Both H2 bases have a
+single SMG collection; its slot no longer supplies H1 starting weapons.
 
 A weapon the map lacks falls to the next choice (the needler to the
 plasma pistol, the plasma rifle, then the assault rifle, which every Halo 1

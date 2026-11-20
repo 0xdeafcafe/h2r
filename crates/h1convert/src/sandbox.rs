@@ -124,6 +124,19 @@ pub const TABLE: &[(&str, H2Item)] = &[
     ("banshee", H2Item::Vehicle("banshee")),
 ];
 
+/// The Halo 1 multiplayer vehicle tags with an assigned Halo 2 role.
+pub(crate) fn vehicle_equivalent(path: &str) -> Option<H2Item> {
+    let role = match path.replace('/', "\\").to_ascii_lowercase().as_str() {
+        r"vehicles\warthog\warthog" | r"vehicles\warthog\mp_warthog" => "warthog",
+        r"vehicles\rwarthog\rwarthog" | r"vehicles\rwarthog\rwarthog_mp" => "warthog_gauss",
+        r"vehicles\ghost\ghost" | r"vehicles\ghost\ghost_mp" => "ghost",
+        r"vehicles\scorpion\scorpion" | r"vehicles\scorpion\scorpion_mp" => "scorpion",
+        r"vehicles\banshee\banshee" | r"vehicles\banshee\banshee_mp" => "banshee",
+        _ => return None,
+    };
+    Some(H2Item::Vehicle(role))
+}
+
 /// A Halo 2 multiplayer vehicle: its role (the name of the vehicle
 /// collection, `multiplayer\single_vehicles\<role>`), the vehicle (`vehi`)
 /// it spawns by last name, the model variant it names (`None`: the

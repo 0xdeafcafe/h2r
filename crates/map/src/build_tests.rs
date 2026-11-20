@@ -882,3 +882,20 @@ fn a_block_sorted_by_string_id_is_laid_out_in_id_order() {
         assert_eq!(word(&b, 8 + i * 0xc + 8), t.globals.0);
     }
 }
+
+#[test]
+fn only_a_recorded_source_conversion_can_satisfy_a_source_reference() {
+    let mut set = TagSet::new(CacheType::Multiplayer, "source", "source");
+    let g = cc(b"shad");
+    set.add_group(g, None, None);
+    let native = set.add_tag(g, "shared", TagPayload::Empty).unwrap();
+    assert_eq!(set.converted(g, "shared"), None);
+    let source = set
+        .add_tag(g, "shared", TagPayload::Built(Block::zeroed(16)))
+        .unwrap();
+    set.record_conversion(g, "shared", source);
+    assert_ne!(source, native);
+    assert_eq!(set.converted(g, "shared"), Some(source));
+    set.slots[source.index()].name = Some("replacement".into());
+    assert_eq!(set.converted(g, "shared"), None);
+}

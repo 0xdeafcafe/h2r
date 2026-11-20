@@ -744,6 +744,7 @@ pub fn copy_tag(
 
 /// The screen vtable is also the base of the class's table page.
 struct RegisteredLayout {
+    screen: &'static str,
     screen_vtable: u32,
     list_vtable: u32,
     list: ListLayout,
@@ -752,14 +753,17 @@ struct RegisteredLayout {
 
 static LAYOUTS: Mutex<Vec<RegisteredLayout>> = Mutex::new(Vec::new());
 
+/// The kit screen using this layout vtable, for menu inspection.
+pub(crate) fn layout_screen(vtable: u32) -> Option<&'static str> {
+    LAYOUTS.lock().unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|layout| layout.screen_vtable == vtable)
+        .map(|layout| layout.screen)
+}
+
 /// Whether `vtable` is the screen vtable of a class with a layout.
 pub fn has_layout(vtable: u32) -> bool {
-    crate::ui_kit::dialog_tag::by_vtable(vtable).is_some()
-        || LAYOUTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|layout| layout.screen_vtable == vtable)
+    crate::ui_kit::dialog_tag::by_vtable(vtable).is_some() || layout_screen(vtable).is_some()
 }
 
 /// What the screen-tag function returns for `screen`, given that it found
@@ -2276,6 +2280,7 @@ impl feature::Feature for ListClass {
             let mut layouts = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
             layouts.retain(|layout| layout.screen_vtable != e.screen_vtable);
             layouts.extend(layout.map(|list| RegisteredLayout {
+                screen: self.screen,
                 screen_vtable: e.screen_vtable,
                 list_vtable: e.list_vtable,
                 list,
@@ -3870,6 +3875,7 @@ mod tests {
         g.put_u32(OURS, TABLES)
             .put_u32(THEIRS, CONTROLS_SCREEN_VTABLE.base);
         LAYOUTS.lock().unwrap().push(RegisteredLayout {
+            screen: "test",
             screen_vtable: TABLES,
             list_vtable: entries().list_vtable,
             list: LAYOUT,

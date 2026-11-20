@@ -87,6 +87,39 @@ pub struct Entry<B: Backend> {
     pub call: Adapter<B>,
 }
 
+/// At the end of the volume material setup (0x4fe20), all four stock
+/// blend-factor mirrors have been written. A converted lightning draw
+/// carries its source equation in the unused high bits of its final bool
+/// argument. Apply it to the same device that received the original push,
+/// including the pipelined renderer's device.
+fn h1_ribbon_blend<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut dyn GuestMemory,
+    sp: u32,
+) -> Result<(), D3dError> {
+    // The setup saves three registers, and the sprite submit saves four
+    // and reserves 0x20b8 stack bytes. Check each caller before reading
+    // its frame.
+    if m.read_u32(sp + 16)? != 0x4f82a || m.read_u32(sp + 0x20dc)? != 0x5164d {
+        return Ok(());
+    }
+    // H1 0x7f4e0 loads source/destination from 0x1e9c0c/0x1e9c30.
+    let (src, dst) = match m.read_u32(sp + 0x20fc)? {
+        0x484c0200 => (0x306, 0x300),
+        0x484c0300 => (1, 1),
+        _ => return Ok(()),
+    };
+    for (header, value, game_shadow, d3d_shadow) in [
+        (0x40344, src, 0x4b82f4, 0x407590),
+        (0x40348, dst, 0x4b82f8, 0x407594),
+    ] {
+        d.set_render_state_simple(m, header, value)?;
+        m.write_u32(game_shadow, value)?;
+        m.write_u32(d3d_shadow, value)?;
+    }
+    Ok(())
+}
+
 /// Stack argument `i` (0 = first, just above the return address).
 fn arg(mem: &dyn GuestMemory, r: &Regs, i: u32) -> Result<u32, D3dError> {
     let addr = r.esp as u64 + 4 + 4 * i as u64;
@@ -370,6 +403,9 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             convention: "ECX = NV2A method, EDX = value; ret",
             call: |d, m, r| {
                 d.set_render_state_simple(m, r.ecx, r.edx)?;
+                if r.ecx == 0x40350 && m.read_u32(r.esp).ok() == Some(0x4fedb) {
+                    h1_ribbon_blend(d, m, r.esp)?;
+                }
                 Ok(Outcome::pop(0))
             },
         },

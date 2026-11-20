@@ -130,7 +130,7 @@ fn parent<T>(map: &mut BTreeMap<(u32, u32), T>, thread: u32, esp: u32) -> Option
         .map(|(_, data)| data)
 }
 
-fn guest_fault(fault: MemFault) -> runtime::GuestFault {
+pub(super) fn guest_fault(fault: MemFault) -> runtime::GuestFault {
     runtime::GuestFault {
         addr: fault.addr,
         len: fault.len as usize,
@@ -275,6 +275,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
                             leader: true,
                         },
                     )?;
+                    super::dialogue::rebind(m, unit, voice)?;
                 }
                 Ok(())
             })()

@@ -365,10 +365,9 @@ screen, the fan included. Untested: it needs a build, not an override.
 ### The model's shaders
 
 The converted model's material `k` is Halo 1's model shader `k`.
-`h1convert::sky_shaders` gives each a copy of one of the base's own sky
-shaders, named for the Halo 1 shader, with Halo 1's bitmaps in its bitmap
-parameters and Halo 1's map scale in its vectors. A material whose shader
-doesn't convert names the base sky's first shader, never NONE.
+`h1convert::sky_shaders` rebuilds its `shad` from the tag definition with
+the source bitmaps and UV transforms. Each recipe binds the compiled Halo
+2 program that supplies its passes and inputs.
 
 Halo 1's sky shaders are `schi` (transparent chicago), `sotr` (transparent
 generic) and `swat` (water). Their fields, read on every sky of the disc:
@@ -391,6 +390,18 @@ Which template each becomes, all three drawn by the base's sky
 | additive (galaxy, x10's space, d20's canyons) | `one_add_illum_detail` | the least tiled map on stage 1, `color_white` on stage 2, tint white |
 | `schi`, two maps, a 1×1 mask then a tiled one (the cloud layers) | `two_alpha_clouds` | the mask on stage 1, the tile on stage 2 |
 | anything else | `sky_one_alpha_env` | the least tiled map on stage 3 |
+
+**Built.** When a base lacks `two_alpha_clouds`, the converter
+installs one shared `stem` and `spas` from their definitions. Coagulation
+and Beaver Creek have the same layer-15 pass. Delta Approach has the
+pass's `transparent_generic_reflection` vertex shader. The generated
+program binds the source mask to stage 1 and c[20:22] and the source
+tile to stage 2 and c[22:24]. It multiplies their RGB and alpha, then
+blends by the resulting alpha with depth writes off. The H2 draw reads
+the layer and pass ranges at `0x00016bf4` and the bindings at
+`0x00016f60` and `0x00017000`. The existing cloud transform scrolls
+the tile. The disc test resolves the installed program's inputs and
+constants and evaluates its pixel combiner.
 
 The least tiled map is the sky's picture: every multi-map sky shader on
 the disc has one map at 1×1 (the dusk, night and clear-day domes, the

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 
 pub mod direct_drive;
+pub mod h1_flight;
 pub mod layouts;
 mod resolve;
 pub use resolve::*;
