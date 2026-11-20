@@ -172,7 +172,9 @@ fn the_crouch_step_moves_toward_the_control_and_restores_its_registers() {
         let out = drive(&mut cpu, &mut g, &TABLE, points::BIPED_CROUCH_STEP.base).unwrap();
         assert_eq!(out, TransferAbi::ret(CALLER));
         assert_eq!(sse::lane0(&cpu, 0), f(step), "{control} {fraction}");
-        assert_eq!((cpu.ecx, cpu.esi, cpu.esp), (0x5555, 0x3333, STACK + 4));
+        // `push ecx` made the local the rate is stored over, so `pop ecx`
+        // returns the rate, not the caller's `ecx`; `esi` is restored.
+        assert_eq!((cpu.ecx, cpu.esi, cpu.esp), (f(2.0), 0x3333, STACK + 4));
     }
 }
 
@@ -232,7 +234,8 @@ fn a_settled_biped_ends_after_the_component_test() {
 #[test]
 fn an_unparented_biped_runs_the_physics_input_and_takes_the_output() {
     let (mut cpu, mut g) = settled();
-    // `+c0` bit 6 (unparented: the input runs); bit 8 clear, so the
+    // `+c0` bit 6 (unparented: the input runs); bit 8 (`+c1` bit 0)
+    // clear, so `1ec500` runs (answering no: no damage packet) and the
     // contact words are cleared.
     g.set_u16(BODY + 0xc0, 0x40).unwrap();
     g.set_u32(BODY + 0x354, 9).unwrap();
@@ -244,10 +247,11 @@ fn an_unparented_biped_runs_the_physics_input_and_takes_the_output() {
     g.set_u32(0xdd2e4, 0xdd246).unwrap();
     let mut out = drive(&mut cpu, &mut g, &TABLE, points::BIPED_POST_UPDATE.base).unwrap();
     let record = S + 0x40;
-    let answers = [(X1D1C10, 0, 1u32), (0x000b_a160, 4, 0), (0x001e_68a0, 0x28, 0), (X1E5A60, 0, 0)];
+    let answers = [(X1EC500, 0, 0u32), (X1D1C10, 0, 1), (0x000b_a160, 4, 0), (0x001e_68a0, 0x28, 0), (X1E5A60, 0, 0)];
     for (target, cleanup, al) in answers {
         assert_eq!(out.target_pc, target);
         match target {
+            X1EC500 => assert_eq!(cpu.edi, BIPED),
             0x000b_a160 => assert_eq!(cpu.eax, BIPED),
             0x001e_68a0 => {
                 // `eax` the record, `ecx` the state, and the four
