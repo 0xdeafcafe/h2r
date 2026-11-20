@@ -694,6 +694,7 @@ name = "bots"
 version = "0.1.0"
 dependencies = [
  "background",
+ "content",
  "engine",
  "input",
  "live-proto",
