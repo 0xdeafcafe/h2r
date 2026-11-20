@@ -986,6 +986,13 @@ fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> R
         ticks as f64 / 5.0 + 90.0,
     )
     .context("capturing")?;
+    let parsed: Value = serde_json::from_str(&capture)
+        .with_context(|| format!("the capture answer is not JSON: {}", capture.trim()))?;
+    ensure!(
+        parsed["frames"].as_u64().unwrap_or(0) > 0,
+        "the capture read zero frames: {}",
+        capture.trim()
+    );
     let render = call(c, &["render"], 60.0).context("render.stats")?;
     let counters = call(c, &["counters"], 60.0).context("profile.counters")?;
     Ok(Measured {
