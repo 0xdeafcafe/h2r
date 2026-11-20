@@ -579,6 +579,12 @@ OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.
 A same-named copy must match the original map header and logical length.
 Maps without a replacement come from the disc.
 
+Pass `--sim-stores DIR` to package recorded shared resources. Each store must
+cover the corresponding cache header and match the disc at every recorded
+byte. Playable maps and the menu stay available to native readers before boot.
+Both leased child paths mount stores from the verified bundle.
+[Recording and packaging](dedicated-host-build.md#package-recorded-shared-resources)
+
 The command writes `host-data.tar.zst` and `host-data.json`. The JSON gives
 the archive's `sha256` and the list of payload paths, sizes in bytes and
 SHA-256 digests. Keep the two files together.

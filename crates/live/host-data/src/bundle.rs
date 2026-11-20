@@ -2,6 +2,8 @@
 //! the original XBE and retail menu, including its packed fonts, and uses
 //! the shared caches and multiplayer maps for matches.
 
+mod stores;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
@@ -32,6 +34,8 @@ pub struct BundleSpec {
     /// Directory of stripped server maps: a `<name>.map` here replaces
     /// the disc's `maps/<name>.map`.
     pub stripped: Option<PathBuf>,
+    /// Directory of previously recorded shared resource stores to verify against the disc.
+    pub sim_stores: Option<PathBuf>,
     /// Replace existing bundle files.
     pub force: bool,
     /// zstd compression level, 1..=21.
@@ -53,6 +57,8 @@ pub struct BundleOut {
     pub unknown_skipped: usize,
     /// Maps taken from the stripped directory instead of the disc.
     pub stripped_used: usize,
+    /// Number of shared resource maps carried as stores.
+    pub stores_used: usize,
     /// Payload bytes before compression.
     pub raw_bytes: u64,
     /// Bytes of the written archive.
@@ -171,6 +177,11 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
     let staging = spec.out.join(format!(".host-data-{}", crate::unique_suffix()));
     crate::private_dir(&staging, false)?;
     let result = (|| -> Result<_, Error> {
+        let stores_used = if let Some(stores) = &spec.sim_stores {
+            stores::stage(stores, &spec.disc, &staging, &stripped_index, &mut payload)?
+        } else {
+            0
+        };
         let archive = staging.join(ARCHIVE_NAME);
         let metadata = staging.join(MANIFEST_NAME);
         let manifest = write_archive(&archive, spec.zstd_level, &mut payload)?;
@@ -193,10 +204,10 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
                 return Err(error.into());
             }
         }
-        Ok((manifest, archive_bytes))
+        Ok((manifest, archive_bytes, stores_used))
     })();
     let _ = fs::remove_dir_all(staging);
-    let (manifest, archive_bytes) = result?;
+    let (manifest, archive_bytes, stores_used) = result?;
     let raw_bytes = manifest.files.iter().map(|file| file.size).sum();
 
     Ok(BundleOut {
@@ -206,6 +217,7 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         campaign_skipped,
         unknown_skipped,
         stripped_used,
+        stores_used,
         raw_bytes,
         archive_bytes,
     })
@@ -515,6 +527,7 @@ mod tests {
             disc: disc.to_path_buf(),
             out: out.to_path_buf(),
             stripped: None,
+            sim_stores: None,
             force: false,
             zstd_level: 3,
         }

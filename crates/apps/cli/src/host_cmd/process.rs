@@ -69,7 +69,7 @@ impl Game {
         disc: &Path,
         address: SocketAddrV4,
     ) -> Result<Self> {
-        Self::spawn_with(opts, live, lease, |cmd, data, socket| {
+        Self::spawn_with(opts, live, lease, disc, |cmd, data, socket| {
             cmd.arg("serve")
                 .arg(disc)
                 .args([
@@ -108,7 +108,7 @@ impl Game {
         lease: &HostLease,
         disc: &Path,
     ) -> Result<Self> {
-        Self::spawn_with(opts, live, lease, |cmd, data, socket| {
+        Self::spawn_with(opts, live, lease, disc, |cmd, data, socket| {
             sim_run::configure(cmd, lease, disc, &opts.out, data, socket)?;
             cmd.env("H2_FILM_OUT", film_path(opts.film.as_deref(), socket))
                 .env("H2_FILM_GAME_ID", &lease.assignment_id);
@@ -120,6 +120,7 @@ impl Game {
         opts: &Options,
         live: &Live<'_>,
         lease: &HostLease,
+        disc: &Path,
         configure: impl FnOnce(&mut Command, &Path, &Path) -> Result<()>,
     ) -> Result<Self> {
         let scratch = Scratch::new()?;
@@ -155,6 +156,10 @@ impl Game {
         }
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
+        if let Some(stores) = host_data::bundled_store_dir(disc)? {
+            // The bundle carries only the physical cache header for a store-backed map.
+            cmd.env(vfs::sim_store::STORE_ENV, stores);
+        }
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         {
             // Match the image entrypoint for a native Linux host. glibc

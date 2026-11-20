@@ -163,10 +163,18 @@ shorter than 16 pages, or targets a writable source is copied as before,
 and the report counts mapped and copied bytes. The store builder pads large ranges for congruence on 4 KiB hosts; 16 KiB hosts (Apple
 silicon) qualify less often. The mapping is private and preserves guest writes. A live alias, a write watch that needs the original backing, or an unsupported RAM layout can require copying. Compare the mapped and copied byte counters and hashes in matched runs, and require at least 40 MiB less private dirty memory per match on one map.
 
+**Private stores and slim image.** The bundle accepts verified stores for
+the two shared resource maps. The menu and playable maps remain contiguous
+for native catalog and navigation readers. Both host child paths mount bundled
+stores. The Linux staging script accepts a matching slim coverage export.
+Qualification requires zero store misses and zero coverage fallbacks on
+the light-host corpus and the lobby sequence.
+[Build and size checks](dedicated-host-build.md#package-recorded-shared-resources)
+
 **Guest RAM from a snapshot.** `state.load` with `"cow": true` already
 maps a saved RAM image private copy-on-write
 ([sim.md §6.2](../runtime/sim.md#62-sharing-guest-ram-with-machine-snapshots)).
-The template process below uses it for the menu state. A *loaded-level*
+The proposed template uses it for the menu state. A *loaded-level*
 template (one per map and variant, forked after load) only fits a lease
 that boots straight into its map: a `sim-<run_id>` lease. It needs the
 phantom peers' host state in the snapshot, which is missing today. A pack
@@ -187,7 +195,7 @@ profile and Linux mapping totals, then check the macOS Waterworks
 
 ### Template processes
 
-A pack holds one template: a game process that has loaded the module,
+The proposed fork slice gives a pack one template: a game process that has loaded the module,
 built its dispatch tables and mapped the menu snapshot's RAM image, and
 then stopped before it starts a helper thread, opens a socket or logs on
 to Live. One host thread drives every guest thread
@@ -419,7 +427,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
-| 7 | Stores and the slim module in the staged image | `deploy/host/build.sh`, `crates/live/host-data`, `docs/live/dedicated-host-build.md` | the store's `NotInStore` tests; the coverage export's checks | Zero fallbacks and zero store misses over the light-host corpus; image and bundle bytes recorded |
 | 8 | Admission defaults, lateness and pack sizes | `host_cmd/pack.rs`, `pack_measure.rs`, `crates/live/live-worker/wrangler.toml`, `live-worker/src/settings.rs` | `pack_tests.rs`: a fourth 5 ms match is admitted, a late pack refuses | Four matches on 1 vCPU / 1,536 MiB for 30 minutes, none late |
 | 9 | Demand-driven warm slots | the pool in `hostroom.rs` and `local_pack.rs`, `hosts/lifecycle.rs`, `matchmaking/dedicated.rs` (the demand figure) | `tests/hostroom.rs` and `local_pack_tests.rs` with a fake clock: start on search, linger out on silence, never a pack with zero demand | First match of a session joinable within 2 s of its cohort forming, in both homes |
 | 10 | Region probes without a host | `matchmaking/dedicated.rs`, `selection.rs`, `crates/live/live-hle/src/qos.rs`, the pool room's echo route, `docs/live/live-matchmaking.md` | `matchmaking/tests.rs`: the three sources in order, the warm tie-break, the peer fallback | Probe RTT within 10 ms of the in-match RTT for the same client and region |

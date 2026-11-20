@@ -182,6 +182,7 @@ fn build_fixture_disc(out: &TempDir) -> (PathBuf, crate::BundleOut) {
         disc: disc.clone(),
         out: bundle_out,
         stripped: None,
+        sim_stores: None,
         force: false,
         zstd_level: 3,
     })
@@ -210,6 +211,7 @@ fn provision_round_trips_a_built_bundle() {
         assert_eq!(f.sha256, testkit::sha256_hex(&want));
     }
     assert_eq!(read_embedded_manifest(&dir).unwrap().files, manifest.files);
+    assert_eq!(bundled_store_dir(&dir).unwrap(), None);
     assert!(!dir.join("bink").exists());
     assert!(!dir.join("maps/a30.map").exists());
     // No partials or staging left behind.
@@ -345,6 +347,7 @@ fn the_cache_evicts_least_recently_used_entries() {
             disc,
             out: out.clone(),
             stripped: None,
+            sim_stores: None,
             force: false,
             zstd_level: 3,
         })

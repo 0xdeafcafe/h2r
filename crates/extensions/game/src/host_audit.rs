@@ -169,6 +169,7 @@ impl Audit {
             if !(params.is_null() || params.as_object().is_some_and(|v| v.is_empty())) {
                 return Err(agent_proto::RpcError::new(agent_proto::code::INVALID_PARAMS, "host.audit takes no parameters"));
             }
+            vfs::sim_store::record::flush();
             let r = this.report(&rt);
             r.write(&this.path)
                 .map_err(|e| agent_proto::RpcError::new(agent_proto::code::UNAVAILABLE, e.to_string()))?;
@@ -190,6 +191,7 @@ impl Audit {
     }
 
     pub fn finish(&self, rt: &runtime::Runtime) -> Result<()> {
+        vfs::sim_store::record::flush();
         self.report(rt).write(&self.path)?;
         rt.memory().remove_trap();
         timeline::host::set_subsystem_audit(false);

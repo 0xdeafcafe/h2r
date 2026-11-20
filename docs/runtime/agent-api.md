@@ -948,8 +948,9 @@ Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
 method (`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
 parameters. It writes a snapshot to the configured path and returns the
 path, ticks, observed and registered function counts, tag range count and
-inclusive CPU timing. An orderly exit writes the final snapshot; call the
-method before terminating a dedicated process externally. The collector
+inclusive CPU timing. Each snapshot also flushes any enabled map read
+recording for the private store build. An orderly exit writes the final
+snapshot. Call the method before terminating a dedicated process externally. The collector
 changes dispatch and memory-watch costs, so use `host.metrics` for sizing.
 Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
 
