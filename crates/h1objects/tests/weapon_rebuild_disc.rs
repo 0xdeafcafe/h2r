@@ -1086,8 +1086,12 @@ fn a50_marine_flashlight_is_a_scaled_rifle_attachment() {
 /// treats 0 as the silent end of the enum ("silent, medium, loud, ...",
 /// the def's evidence line), so the census pins what the discs actually
 /// author: every trigger and every retail barrel carries one of the
-/// first enum values, and the same weapon carries the same class in
-/// both games (the pairs test checks that per weapon).
+/// first enum values; no Halo 1 trigger is silent (D: classes 1 and 2
+/// only, so every converted Halo 1 weapon reports its shots); and the
+/// only silent retail barrels are the Warthog horn's (D: Halo 2 also
+/// uses class 3, the sniper, beam rifle, rocket launcher and vehicle
+/// cannons, which Halo 1 does not). The pairs test checks the class per
+/// weapon where both games have one.
 #[test]
 #[ignore = "reads H1_ISO and H2_DISC"]
 fn firing_noise_census_pins_the_audibility_classes() {
@@ -1127,6 +1131,7 @@ fn firing_noise_census_pins_the_audibility_classes() {
     // The retail Halo 2 side: every weap barrel of Coagulation and the
     // campaign base (05a_deltaapproach).
     let mut h2_histogram: BTreeMap<i16, usize> = BTreeMap::new();
+    let mut h2_silent = std::collections::BTreeSet::new();
     for name in ["coagulation", "05a_deltaapproach"] {
         let Some(mut m) = h2_map(name) else {
             continue;
@@ -1139,6 +1144,7 @@ fn firing_noise_census_pins_the_audibility_classes() {
             let address = tag.location.unwrap().address;
             let view = tags::geometry::TagView::new(&bytes, address);
             let barrels = view.block(&bytes, 0x2d0, 0xec).unwrap();
+            let weapon = tag.name.as_deref().unwrap_or("unnamed");
             for (i, barrel) in barrels.iter().copied().enumerate() {
                 let value = i16_at(barrel, 0x36);
                 assert!(
@@ -1146,24 +1152,27 @@ fn firing_noise_census_pins_the_audibility_classes() {
                     "{} barrel {i}: firing_noise {value} outside the enum's first values",
                     tag.name.as_deref().unwrap_or("unnamed")
                 );
-                println!(
-                    "h2 {} barrel {i}: {value}",
-                    tag.name.as_deref().unwrap_or("unnamed")
-                );
+                println!("h2 {weapon} barrel {i}: {value}");
+                if value == 0 {
+                    h2_silent.insert(weapon.to_owned());
+                }
                 *h2_histogram.entry(value).or_default() += 1;
             }
         }
     }
     assert!(!h2_histogram.is_empty(), "no Halo 2 barrels censused");
     println!("halo 2 firing_noise histogram: {h2_histogram:?}");
-    // The audibility gate reads the same enum on both discs: no disc
-    // weapon sits outside it, the classes retail Halo 2 uses are among
-    // Halo 1's, and the class a weapon carries in Halo 1 is the class
-    // its retail counterpart carries (see the pairs test).
-    for value in h2_histogram.keys() {
-        assert!(
-            h1_histogram.contains_key(value),
-            "halo 2 class {value} absent from halo 1"
-        );
-    }
+    // The audibility gate reads the same enum on both discs, and no disc
+    // weapon sits outside it (above). Halo 1 authors no silent trigger;
+    // retail Halo 2's silent barrels are the Warthog horn's alone.
+    assert_eq!(
+        h1_histogram.keys().copied().collect::<Vec<_>>(),
+        [1, 2],
+        "halo 1 firing_noise classes"
+    );
+    assert_eq!(
+        h2_silent.into_iter().collect::<Vec<_>>(),
+        [r"objects\vehicles\warthog\weapon\warthog_horn"],
+        "silent retail barrels"
+    );
 }
