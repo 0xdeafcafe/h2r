@@ -383,9 +383,9 @@ const ADDRESS_BORDER: u8 = 4;
 /// register the program reads (a missing one would read zero where the
 /// D3D path streams the real data or binds another implementation), and
 /// where the program samples the lightmap, each part has a page and
-/// `page` has it decoded. The game's skip is per shader, so one part that
-/// cannot be drawn keeps the whole material on the D3D path.
-pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> bool) -> Result<(), String> {
+/// `page` reports whether it decoded. One part that cannot be drawn keeps
+/// the whole material on the D3D path.
+pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> Result<(), String>) -> Result<(), String> {
     const NAMES: [&str; 7] = [
         "positions",
         "texture coordinates",
@@ -410,9 +410,7 @@ pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: 
             let Some(key) = d.lightmap else {
                 return Err("a part has no lightmap page".into());
             };
-            if !page(key) {
-                return Err("a part's lightmap page does not decode".to_string());
-            }
+            page(key)?;
         }
     }
     Ok(())
@@ -2102,15 +2100,19 @@ mod tests {
         p.inputs = INPUT_MASK;
         p.stages[3] = Stage::Lightmap;
         p.dims[3] = Some(TextureDim::D2);
-        let all = |_: LightmapKey| true;
+        let all = |_: LightmapKey| Ok(());
+        let missing = |key| {
+            assert_eq!(key, page);
+            Err("a part's lightmap page does not decode".to_string())
+        };
         assert_eq!(world_fit(&world, 1, &p, &all), Ok(()));
         assert_eq!(world_fit(&world, 2, &p, &all), Err("a part has no lighting vectors (v5)".to_string()));
         assert_eq!(world_fit(&world, 3, &p, &all), Err("a part has no lightmap coordinates (v6)".to_string()));
-        assert_eq!(world_fit(&world, 1, &p, &|_: LightmapKey| false), Err("a part's lightmap page does not decode".to_string()));
+        assert_eq!(world_fit(&world, 1, &p, &missing), Err("a part's lightmap page does not decode".to_string()));
         // A program that reads neither: the unlit part fits.
         p.inputs = 0b11;
         p.stages[3] = Stage::Empty;
         p.dims[3] = None;
-        assert_eq!(world_fit(&world, 3, &p, &|_: LightmapKey| false), Ok(()));
+        assert_eq!(world_fit(&world, 3, &p, &missing), Ok(()));
     }
 }

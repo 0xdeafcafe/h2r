@@ -159,7 +159,7 @@ pub fn comparing(mode: Mode, list: i16) -> bool {
     compare().is_some_and(|c| c.matches(mode, list))
 }
 
-pub fn hooks_on(switches: &Switches) -> bool {
+pub fn hooks_on(switches: &crate::Switches) -> bool {
     on(switches) || (crate::switches::native_render_default(switches)
         && std::env::var_os("H2_NATIVE_DECALS_COMPARE").is_some())
 }
