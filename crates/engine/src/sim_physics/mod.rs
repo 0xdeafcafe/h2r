@@ -7,6 +7,8 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 mod colors;
 mod havok;
+mod solver_rows;
+mod solver_pairs;
 mod first_person;
 mod pose_layers;
 mod light;

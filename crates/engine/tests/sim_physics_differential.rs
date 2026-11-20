@@ -78,6 +78,7 @@ fn object_fixture(m: &mut FlatMemory, case: u32) {
     word(m, components + 2*0xa0 + 4, if case == 5 { 1 << 15 } else { 0 });
 }
 
+const SOLVER_CHILD: u32 = 0x006e_0020;
 const SUPPORT_CHILD: u32 = 0x006e_0000;
 const SUPPORT_QUERY: u32 = 0x006e_0010;
 
@@ -106,12 +107,13 @@ fn support_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
 
 fn solver_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     let (param,schema,rows,out,acc,imp) = (DATA,DATA+128,DATA+512,DATA+1024,RECORDS,RECORDS+1024);
+    m.bytes[DATA as usize..(DATA+2048) as usize].fill(0);
     for (i,p) in [param,schema,acc,imp].into_iter().enumerate() {
         word(m,STACK+4+4*i as u32,p);
     }
     m.bytes[0x480c60] = u8::from(case != 0);
-    word(m,param+28,u32::from(case>=4));
-    for (off,v) in [(4,0.75f32),(8,0.125),(16,1.25)] { word(m,param+off,v.to_bits()); }
+    word(m,param+28,if case>=6 {2} else {u32::from(case>=4)});
+    for (off,v) in [(4,0.75f32),(8,0.125),(12,0.8),(16,1.25)] { word(m,param+off,v.to_bits()); }
     for (off,v) in [(4,rows),(8,out),(12,acc),(16,acc+128),(20,12)] { word(m,schema+off,v); }
     // Select schema IDs by the destinations in the caller's own image.
     let lookup = |m: &FlatMemory, form: u32| -> u8 {
@@ -137,16 +139,64 @@ fn solver_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
             p += size;
         }
     } else if case >= 4 {
-        let id = (0..=16u32).find(|i| m.read_u32(0x31e6a4+4*i) == Some(0x31cf97)).unwrap() as u8;
-        for _ in 0..2 { m.bytes[p as usize] = id; p += 4; }
+        // Build the synthetic stream from handler identities, independent of
+        // the image's numeric dispatch tables. Fields not consumed stay zero.
+        let instructions: &[u32] = match case {
+            4|5=>&[0x31cf97,0x31cf97],
+            6=>&[0x31da55,0x31db21],
+            7=>&[0x31d982,0x31df3e],
+            8=>&[0x31dc3f,0x31d796],
+            9=>&[0x31d88e,0x31dd80],
+            10..=13=>&[0x31c9c6,0x31c9c6],
+            14..=16=>&[0x31d532],
+            17..=19=>&[0x31d1fb],
+            20=>&[0x31e068,0x31cf97,0x31e08d],
+            21=>&[0x31e0a6],
+            _=>&[0x31c9a0,0x31df3e,0x31df3e],
+        };
+        for &handler in instructions {
+            let (size,correction)=match handler {
+                0x31cf97|0x31db21=>(4,0x31e400),
+                0x31da55=>(4,0x31e472),
+                0x31d982|0x31d88e=>(16,0x31e472),
+                0x31df3e=>(16,0x31e400),
+                0x31dc3f=>(8,0x31e400),0x31d796=>(8,0x31e472),
+                0x31dd80=>(12,0x31e400),0x31c9c6=>(8,0x31e161),
+                0x31d532=>(20,0x31e161),0x31d1fb=>(24,0x31e2e9),
+                0x31c9a0=>(24,0x31e0e1),0x31e068=>(12,0x31e4cf),
+                0x31e08d=>(4,0x31e4cf),_ => (12,0x31e4cf),
+            };
+            let id=(0..=16u32).find(|i| m.read_u32(0x31e6a4+4*i)==Some(handler)).unwrap();
+            let pass=(0..=6u32).find(|i| m.read_u32(0x31e6e8+4*i)==Some(correction)).unwrap();
+            word(m,p,id|(size<<8)|(pass<<16));
+            if size>=8 {word(m,p+4,0.2f32.to_bits());}
+            if size>=12 {word(m,p+8,(-0.3f32).to_bits());}
+            if size>=16 {word(m,p+12,if case%2==0 {0.02f32} else {9.0}.to_bits());}
+            if size>=20 {word(m,p+4,out+128);word(m,p+16,12);}
+            if size==24 {word(m,p+20,1.125f32.to_bits());}
+            if handler==0x31e0a6 {word(m,p+4,SOLVER_CHILD);}
+            if handler==0x31c9a0 {
+                for (off,v) in [(4,rows),(8,out),(12,acc),(16,acc+128),(20,12)] {word(m,p+off,v);}
+            }
+            p+=size;
+        }
     }
-    m.bytes[p as usize] = done;
+    let end=(0..=6u32).find(|i| m.read_u32(0x31e6e8+4*i)==Some(0x31e4da)).unwrap();
+    word(m,p,u32::from(done)|(end<<16));
     for i in 0..64 {
         word(m,rows+4*i,((i as f32+0.5)/9.0).to_bits());
         word(m,acc+4*i,((i as f32-25.0)/17.0).to_bits());
         word(m,imp+4*i,((i as f32+1.0)/7.0).to_bits());
     }
+    m.bytes[acc as usize]=2;
+    m.bytes[(acc+128) as usize]=2;
+    m.bytes[(acc+256) as usize]=3;
     if case==5 { word(m,rows+12,(-200f32).to_bits()); }
+    if (10..=19).contains(&case) {
+        for i in 0..4 {
+            word(m,rows+48*i+12,if (case+i)%3==0 {-2.0f32} else {4.0}.to_bits());
+        }
+    }
     c.x87.control = [0x007f,0x027f,0x037f][case as usize%3];
     c.mxcsr |= (case%4)<<13;
 }
@@ -388,13 +438,12 @@ fn abi_cpu(c: &Cpu) -> CpuAbi {
     }
 }
 
-fn segment(insns: &BTreeMap<u32, ir::IrInsn>, cpu: &mut Cpu, mem: &mut FlatMemory, stop: Option<(u32, u32)>) -> TransferAbi {
+fn segment(insns: &BTreeMap<u32, ir::IrInsn>, cpu: &mut Cpu, mem: &mut FlatMemory) -> TransferAbi {
     for _ in 0..500_000 {
         let pc = cpu.eip;
         let i = insns.get(&pc).unwrap_or_else(|| panic!("missing instruction at {pc:#x}"));
         let flow = interp::step(cpu, mem, i).unwrap_or_else(|e| panic!("{pc:#x}: {e:?}"));
         cpu.eip = flow.target();
-        if Some((cpu.eip, cpu.gpr[6])) == stop { return TransferAbi::resume(cpu.eip); }
         match flow {
             Flow::Return { target } => return TransferAbi::ret(target),
             Flow::Call { target, continuation } => return TransferAbi::call(target, continuation),
@@ -413,9 +462,8 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
     for n in 0..1024 {
         let at = cpu.eip;
         let actual = (port.run)(&mut regs, &mut native, at).unwrap();
-        let stop = (actual.route == abi::RESUME).then_some(actual.target_pc);
-        if let Some(pc) = stop { assert!(port.generated_sites.contains(&pc)); }
-        let expected = segment(insns, &mut cpu, &mut mem, stop.map(|pc| (pc, regs.esi)));
+        assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
+        let expected = segment(insns, &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
         assert_eq!(actual, expected, "{}", why());
         regs.eip = actual.target_pc;
@@ -425,17 +473,17 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             let first = mem.bytes.iter().zip(ram).position(|(a,b)| a != b).unwrap();
             panic!("{} first different byte at {first:#x}", why());
         }
-        if stop.is_some() || (actual.kind == abi::CALL && port.generated_sites.contains(&actual.resume_pc)) { return; }
         if actual.kind == abi::RETURN {
             assert_eq!(actual.target_pc, EXIT);
             return;
         }
+        assert!(port.resumes.contains(&actual.resume_pc), "unregistered return in {}", why());
         let target = expected.target_pc;
         let cleanup = match target {
             0xbc470 | 0xbc820 | 0x109580 | 0xc49b0 | 0xc58f0 | 0xc60c0 => 4,
             0x23a160 | 0x108c60 | 0xd5de0 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
             0x1d3920 | 0xbab40 => 12,
-            0x131c20 | 0x31c7d0 => 0,
+            SOLVER_CHILD | 0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
             0xbff60 | 0x168311 | 0x1cc260 | 0x166c39 | 0x1469f0 => 4,
             0x16674e | 0x1cb5b0 | 0x1cb520 | 0x259d0 | 0x16760c=>8,
@@ -522,7 +570,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         cpu.gpr[0] = match target {
             0x31c520 | 0x31c530 => cpu.gpr[1] + mem.read_u32(sp+4).unwrap()
                 * if target == 0x31c520 {32} else {48},
-            0x155760=>0,0x1cb710=>1,0xc8a10=>case%2,0xd03b0=>0,0x187a40=>65535,
+            0x155760=>0,0x1cb710=>1,0x1cc2b0=>0,0xc8a10=>case%2,0xd03b0=>0,0x187a40=>65535,
             0xb6780=>u32::from(case>=2),0x1c6440=>DATA+0x12000,
             0x1cb490=>u32::from(case>=4),0xb6760=>u32::from(case!=3),
             0x3037a0=>1,0x303540=>u32::MAX,0x303360=>if case==3 {0} else {7},0x308590=>if case==2 {5} else {0},
@@ -535,11 +583,16 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             0xbab40 => n % 2,
             0x14a5b0 => 2,
             0xb8940 | 0xb8a10 => 0x8100_0000,
-            _ => answer,
+            _ => 0x006e_1000 | (answer & 0xff),
         };
-        cpu.gpr[1] = answer.rotate_left(9);
-        // 16898b is a leaf called with the live tag table in EDX.
-        if target != 0x16898b {cpu.gpr[2] = !answer;}
+        // Preserve both volatile pointers for leaf callbacks. The unit and
+        // object walks also get arbitrary caller-saved register clobbers.
+        if [points::UNIT_UPDATE.base,points::OBJECTS_PRE_PHYSICS.base,
+            points::OBJECTS_POST_PHYSICS.base,points::OBJECT_PRE_UPDATE.base,
+            points::OBJECT_POST_UPDATE.base].contains(&port.point.base) {
+            cpu.gpr[1] = answer.rotate_left(9);
+            cpu.gpr[2] = !answer;
+        }
         cpu.gpr[4] = sp + 4 + cleanup;
         cpu.eip = next;
         regs = abi_cpu(&cpu);
@@ -547,27 +600,50 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
     panic!("unbounded callback loop");
 }
 
-#[test]
-fn native_simulation_matches_xbe() {
-    let Some(path) = common::xbe_path() else {
-        assert!(std::env::var_os("H2_XBE").is_none(), "H2_XBE does not name a readable file");
-        eprintln!("SKIPPED native_simulation_matches_xbe: set H2_XBE");
-        return;
-    };
-    let bytes = std::fs::read(path).unwrap();
-    assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256);
-    let xbe = xbe::Xbe::parse(&bytes).unwrap();
-    let analysis = analyze::analyze(&xbe).unwrap();
-    let lifter = lift::Lifter::new(&analysis, &xbe).unwrap();
-    let mut image = lift::harness::load_image(&xbe).unwrap();
-    image.bytes.truncate(RAM);
-    for port in PORTS {
-        let function = lifter.lift(port.point.base).expect(port.point.name);
-        let insns = function.blocks.into_values().flat_map(|b| b.insns)
-            .map(|i| (i.pc, i)).collect();
-        for case in 0..6 {
-            let mut m = image.clone();
-            fixture(&mut m, case);
+struct Oracle {
+    image: FlatMemory,
+    functions: BTreeMap<u32,BTreeMap<u32,ir::IrInsn>>,
+}
+
+fn oracle() -> Option<&'static Oracle> {
+    static ORACLE: std::sync::OnceLock<Option<Oracle>> = std::sync::OnceLock::new();
+    ORACLE.get_or_init(|| {
+        let Some(path) = common::xbe_path() else {
+            assert!(std::env::var_os("H2_XBE").is_none(), "H2_XBE does not name a readable file");
+            eprintln!("SKIPPED native simulation differential tests: set H2_XBE");
+            return None;
+        };
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256);
+        let xbe = xbe::Xbe::parse(&bytes).unwrap();
+        let analysis = analyze::analyze(&xbe).unwrap();
+        let lifter = lift::Lifter::new(&analysis, &xbe).unwrap();
+        let mut image = lift::harness::load_image(&xbe).unwrap();
+        image.bytes.truncate(RAM);
+        let functions = PORTS.iter().map(|port| {
+            let function = lifter.lift(port.point.base).expect(port.point.name);
+            let insns = function.blocks.into_values().flat_map(|b| b.insns)
+                .map(|i| (i.pc,i)).collect();
+            (port.point.base,insns)
+        }).collect();
+        Some(Oracle {image,functions})
+    }).as_ref()
+}
+
+fn matches_guest(point: &points::Point) {
+    let Some(oracle) = oracle() else {return};
+    let port = PORTS.iter().find(|p| p.point.base==point.base).unwrap();
+    let insns = &oracle.functions[&point.base];
+    let cases = if point.base==points::HAVOK_SOLVER.base {23} else {6};
+    for case in 0..cases {
+            let mut m = oracle.image.clone();
+            match port.point.base {
+                address if [points::HAVOK_SOLVER.base,points::HAVOK_SUPPORT_VERTICES.base,
+                    points::HAVOK_WELD_CONTACTS.base,points::OBJECT_SPATIAL_PORTAL.base,
+                    points::OBJECT_SPATIAL_VISIT.base,points::UNIT_AIM_UPDATE.base,
+                    points::OBSERVER_RESULT.base].contains(&address) => word(&mut m,STACK,EXIT),
+                _ => fixture(&mut m,case),
+            }
             let mut cpu = Cpu {
                 gpr: [0x12345678, 0x98765432, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
                 eip: port.point.base,
@@ -589,7 +665,30 @@ fn native_simulation_matches_xbe() {
             if port.point.base == points::OBJECT_CHANGE_COLORS.base { color_fixture(&mut m, case); }
             if port.point.base == points::OBJECT_SPATIAL_VISIT.base { visit_fixture(&mut m, case); }
             if port.point.base == points::OBJECT_SPATIAL_PORTAL.base { portal_fixture(&mut m, &mut cpu, case); }
-            compare(port, &insns, m, cpu, case);
-        }
+            compare(port, insns, m, cpu, case);
     }
 }
+
+macro_rules! differential {
+    ($name:ident, $point:ident) => {
+        #[test]
+        fn $name() { matches_guest(&points::$point); }
+    };
+}
+
+differential!(havok_solver, HAVOK_SOLVER);
+differential!(havok_support_vertices, HAVOK_SUPPORT_VERTICES);
+differential!(havok_weld_contacts, HAVOK_WELD_CONTACTS);
+differential!(objects_pre_physics, OBJECTS_PRE_PHYSICS);
+differential!(objects_post_physics, OBJECTS_POST_PHYSICS);
+differential!(object_pre_update, OBJECT_PRE_UPDATE);
+differential!(object_post_update, OBJECT_POST_UPDATE);
+differential!(object_change_colors, OBJECT_CHANGE_COLORS);
+differential!(object_spatial_visit, OBJECT_SPATIAL_VISIT);
+differential!(object_spatial_portal, OBJECT_SPATIAL_PORTAL);
+differential!(unit_aim_update, UNIT_AIM_UPDATE);
+differential!(unit_update, UNIT_UPDATE);
+differential!(light_record_update, LIGHT_RECORD_UPDATE);
+differential!(first_person_pose_update, FIRST_PERSON_POSE_UPDATE);
+differential!(first_person_filter_update, FIRST_PERSON_FILTER_UPDATE);
+differential!(observer_camera, OBSERVER_RESULT);
