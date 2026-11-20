@@ -459,6 +459,11 @@ debugger or an x87 implementation reading `X87Abi` sees these values.
 | `h2gen_module_abi_version` | `uint32_t (void)` | the registration object's own probe |
 | `h2gen_module` | `const H2GenModule` | the tables below |
 
+A long handler may be emitted as static parts behind its `h2fn_` symbol
+(`emit::c::Split`, "Handler parts" in `h2gen.h`). The parts pass control
+among themselves inside that symbol's call; the runtime sees one handler,
+and the parts' internal transfer kind (`H2_PART`) never reaches it.
+
 On Windows (`H2_EMIT_TARGET=windows`) the DLL exports only symbols marked `H2_EXPORT` (h2abi.h): `h2gen_module`, `h2gen_module_abi_version` and the bridges' install functions. A macOS dylib exports every global, and `H2_EXPORT` is empty there.
 
 ```c

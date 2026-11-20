@@ -1088,6 +1088,34 @@ static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
 #define H2_LENT_() 0
 #define H2_LEND_(d) ((void)0)
 #endif
+
+/* ---- Handler parts (emit::c::Split). A handler whose C is
+ * longer than emit::c::Split allows is emitted as static parts
+ * (h2fn_<entry>_p<k>) behind a router with the handler's own name. A
+ * local edge from one part to a block of another leaves through the
+ * first part's shared epilogue like any exit (state canonical in CpuAbi,
+ * the count settled, the gate dropped or handed back), with kind H2_PART,
+ * the block as target and the part as resume_pc. The router then calls
+ * that part with start = block | H2_PART_CUT, which enters at the block's
+ * L_ label, so a loop header's poll runs. H2_PART never reaches the
+ * runtime. A view a direct caller lent the handler is lent again to every
+ * later part, which borrows it (and the gate and count handed back with
+ * it) as the first part did. */
+#define H2_PART UINT32_C(0xffffff01)
+#define H2_PART_CUT UINT32_C(0x80000000)
+#define H2_PART_GOTO(part, pc) H2_EXIT_(H2_PART, 0u, (pc), (part), 0u, (pc))
+#if H2_LEND_VIEW_
+#define H2_PART_LENT()                                                          \
+    H2Direct *const h2pd_ = h2_direct(ctx);                                     \
+    H2FastAccess *const h2pl_ = h2pd_ ? h2pd_->view : NULL
+#define H2_PART_RELEND()                                                        \
+    do {                                                                        \
+        if (h2pl_) h2pd_->view = h2pl_;                                         \
+    } while (0)
+#else
+#define H2_PART_LENT() (void)ctx
+#define H2_PART_RELEND() ((void)0)
+#endif
 #if !H2_LEND_GATE_
 #define H2_TAKE_BACK_(d) ((void)0)
 #if H2_LEND_COUNT_

@@ -237,7 +237,7 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 /// What a module is built from: the image's hash, the generator sources'
 /// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
 /// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags,
-/// with the optimisation tiers when `H2_OPT_COLD` asks for them.
+/// with the optimisation tiers when they are on (`emit::compile::Tiers`).
 /// [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
@@ -520,9 +520,10 @@ fn build_selected(
         emit::write_module_with_hot(&owners, &src, codegen, hot.as_ref())?
     };
     eprintln!(
-        "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes",
+        "emit: {:.1}s, {} owners ({} cut into parts), {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes",
         t.elapsed().as_secs_f64(),
         w.owners,
+        w.split,
         w.files.len(),
         w.written,
         w.bytes as f64 / 1e6,
