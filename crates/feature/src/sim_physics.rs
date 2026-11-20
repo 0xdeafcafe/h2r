@@ -24,9 +24,9 @@ impl Feature for NativePhysics {
                             })?;
                         return Ok(original.invoke(cpu, ctx, pc));
                     }
-                    if port.point.base == engine::points::OBJECT_SPATIAL_PORTAL.base
-                        && (cpu.x87.control & 0x3f != 0x3f || cpu.mxcsr & 0x1f80 != 0x1f80)
-                    {
+                    let mut mem = ctx.memory();
+                    if !engine::sim_physics::supported(port, cpu, &mem) {
+                        drop(mem);
                         let original = ctx.runtime().resolve_original(port.point.base)
                             .ok_or(runtime::GuestFault {
                                 addr: pc, len: 1, access: runtime::guest::Access::Execute,
@@ -34,8 +34,8 @@ impl Feature for NativePhysics {
                             })?;
                         return Ok(original.invoke(cpu, ctx, pc));
                     }
-                    (port.run)(cpu, &mut ctx.memory(), pc)
-                }).resumes(port.resumes).context_only();
+                    (port.run)(cpu, &mut mem, pc)
+                }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only();
             }
         }
         Ok(())

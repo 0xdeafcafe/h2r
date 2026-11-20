@@ -282,6 +282,7 @@ fn place_locale(
                         // the stack it returns through.
                         context_only: true,
                         resume_sites: &[],
+                        generated_sites: &[],
                     },
                 ));
                 "served by the locale bridge".to_owned()

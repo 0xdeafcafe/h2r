@@ -288,6 +288,7 @@ pub struct Hook {
     /// ([`HookRef::context_only`], [`Chain::render_thread`](crate::plan::Chain::render_thread)).
     pub context_only: bool,
     pub(crate) resume_sites: &'static [u32],
+    pub(crate) generated_sites: &'static [u32],
 }
 
 impl Hook {
@@ -304,6 +305,11 @@ impl HookRef<'_> {
     /// state across guest calls must be in guest registers and memory.
     pub fn resumes(self, sites: &'static [u32]) -> Self {
         self.0.resume_sites = sites;
+        self
+    }
+    /// Interior selectors at which this implementation hands back to the image.
+    pub fn generated_resumes(self, sites: &'static [u32]) -> Self {
+        self.0.generated_sites = sites;
         self
     }
     pub fn first(self) -> Self {
@@ -564,6 +570,7 @@ impl<'r> Builder<'r> {
             label,
             context_only: false,
             resume_sites: &[],
+            generated_sites: &[],
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }

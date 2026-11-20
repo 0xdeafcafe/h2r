@@ -5,9 +5,14 @@
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
+mod colors;
+mod havok;
+mod support;
+mod observer;
 mod objects;
 mod object_update;
 mod spatial;
+mod visit;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 pub struct Port {
@@ -15,40 +20,51 @@ pub struct Port {
     /// Passed to Switches::implementation, which supplies the impl. prefix.
     pub switch: &'static str,
     pub resumes: &'static [u32],
+    pub generated_sites: &'static [u32],
     pub run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
 }
 
 pub const PORTS: &[Port] = &[
+    Port { point: &points::HAVOK_SOLVER, switch: "sim.native_havok_solver",
+           resumes: havok::SOLVER_SITES, generated_sites: havok::SOLVER_REST, run: havok::solve },
+    Port { point: &points::HAVOK_SUPPORT_VERTICES, switch: "sim.native_havok_support_vertices",
+           resumes: support::SITES, generated_sites: support::REST, run: support::vertices },
+    Port { point: &points::OBSERVER_RESULT, switch: "sim.native_observer_camera",
+           generated_sites: &[], resumes: &[], run: observer::camera },
+    Port { point: &points::OBJECT_CHANGE_COLORS, switch: "sim.native_object_change_colors",
+           generated_sites: &[], resumes: &colors::SITES, run: colors::update },
+    Port { point: &points::OBJECT_SPATIAL_VISIT, switch: "sim.native_spatial_visit",
+           generated_sites: &[], resumes: &visit::SITES, run: visit::objects },
     Port {
         point: &points::OBJECT_PRE_UPDATE, switch: "sim.native_object_pre_update",
-        resumes: &object_update::PRE, run: object_update::pre,
+        generated_sites: &[], resumes: &object_update::PRE, run: object_update::pre,
     },
     Port {
         point: &points::OBJECT_POST_UPDATE, switch: "sim.native_object_post_update",
-        resumes: &object_update::POST, run: object_update::post,
+        generated_sites: &[], resumes: &object_update::POST, run: object_update::post,
     },
     Port {
         point: &points::OBJECT_SPATIAL_PORTAL,
         switch: "sim.native_spatial_portal",
-        resumes: &spatial::SITES,
+        generated_sites: &[], resumes: &spatial::SITES,
         run: spatial::portal,
     },
     Port {
         point: &points::OBJECTS_PRE_PHYSICS,
         switch: "sim.native_objects_pre_physics",
-        resumes: &objects::PRE_SITES,
+        generated_sites: &[], resumes: &objects::PRE_SITES,
         run: objects::pre,
     },
     Port {
         point: &points::OBJECTS_POST_PHYSICS,
         switch: "sim.native_objects_post_physics",
-        resumes: &objects::POST_SITES,
+        generated_sites: &[], resumes: &objects::POST_SITES,
         run: objects::post,
     },
     Port {
         point: &points::UNIT_UPDATE,
         switch: "sim.native_unit_update",
-        resumes: &objects::UNIT_SITES,
+        generated_sites: &[], resumes: &objects::UNIT_SITES,
         run: objects::unit,
     },
 ];
@@ -97,4 +113,21 @@ fn arithmetic(c: &mut CpuAbi, a: u32, b: u32, sub: bool) -> u32 {
 fn call_arg(c: &mut CpuAbi, g: &mut Guest, arg: u32, target: u32, site: u32) -> Result<TransferAbi> {
     push(c, g, arg)?;
     g.call(c, target, site)
+}
+
+/// The FP kernels use the masked arithmetic path. Take the generated path
+/// for a control word that can deliver a synchronous FP exception. The
+/// x87 transcendental oracle supports nearest rounding.
+pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
+    let entry = port.point.base;
+    if entry == points::OBSERVER_RESULT.base {
+        if cpu.x87.control & 0xc00 != 0 || !observer::disjoint(cpu, guest) {
+            return false;
+        }
+    }
+    if [points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
+        && cpu.x87.control & 0x3f != 0x3f { return false; }
+    ![points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
+      points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)
+        || cpu.mxcsr & 0x1f80 == 0x1f80
 }

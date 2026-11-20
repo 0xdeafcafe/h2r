@@ -12,7 +12,7 @@ const STRUCTURE_GLOBAL: u32 = 0x004e_033c;
 const PROJECTION_AXES: u32 = 0x0044_0b94;
 const SCRATCH_SIZE: u32 = 0x420;
 
-fn fp_error(_: Error) -> GuestFault {
+pub(super) fn fp_error(_: Error) -> GuestFault {
     GuestFault {
         addr: points::OBJECT_SPATIAL_PORTAL.base,
         len: 0, access: runtime::guest::Access::Execute,
@@ -20,7 +20,7 @@ fn fp_error(_: Error) -> GuestFault {
     }
 }
 
-fn load_fpu(c: &CpuAbi) -> X87 {
+pub(super) fn load_fpu(c: &CpuAbi) -> X87 {
     let x = &c.x87;
     X87(x87::abi::X87Abi {
         st: x.st, control: x.control, status: x.status, tag: x.tag, opcode: x.opcode,
@@ -31,7 +31,7 @@ fn load_fpu(c: &CpuAbi) -> X87 {
 
 // Only the final x87 instruction and the most recent memory operand
 // survive at a transfer. Read FOP from the mapped instruction.
-fn finish_fpu(c: &mut CpuAbi, g: &Guest, x: X87, pc: u32, operand: u32) -> Result<()> {
+pub(super) fn finish_fpu(c: &mut CpuAbi, g: &Guest, x: X87, pc: u32, operand: u32) -> Result<()> {
     let [op, modrm] = g.read::<2>(pc)?;
     c.x87.st = x.0.st;
     c.x87.status = x.0.status;
@@ -44,7 +44,7 @@ fn finish_fpu(c: &mut CpuAbi, g: &Guest, x: X87, pc: u32, operand: u32) -> Resul
     Ok(())
 }
 
-fn scalar(c: &mut CpuAbi, index: usize, value: u32) {
+pub(super) fn scalar(c: &mut CpuAbi, index: usize, value: u32) {
     c.xmm[index] = u128::from(value).to_le_bytes();
 }
 

@@ -50,6 +50,7 @@ impl Installed {
 pub enum InstallError {
     /// An override the plan did not place is already there. Nothing was
     /// installed.
+    MissingResume { point: &'static str, site: u32 },
     Occupied {
         addr: u32,
         point: &'static str,
@@ -65,6 +66,9 @@ pub enum InstallError {
 impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            InstallError::MissingResume { point, site } => {
+                write!(f, "{point} requires image resume {site:#010x}")
+            }
             InstallError::Occupied {
                 addr,
                 point,
@@ -205,6 +209,13 @@ impl Plan {
         let mut occupied = None;
         rt.edit_dispatch(|d| {
             for (c, _) in &chains {
+                if let Some(h) = &c.implement
+                    && c.addr == c.point.base
+                    && let Some(&site) = h.resume_sites.iter().chain(h.generated_sites).find(|&&s| !d.has_resume(s))
+                {
+                    occupied = Some(InstallError::MissingResume { point: c.point.name, site });
+                    return;
+                }
                 for a in std::iter::once(c.addr).chain(c.shadow) {
                     if let Some(existing) = d.override_name(a) {
                         occupied = Some(InstallError::Occupied {
