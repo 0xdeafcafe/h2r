@@ -465,30 +465,56 @@ pub fn tag_of(m: &dyn GuestMemory, handle: u32) -> Result<Option<u32>, MemFault>
     Ok((tag != 0).then_some(tag))
 }
 
-/// Before the constructor of a dialog class's screen: finds its base
-/// dialog through the interface's screen list (`SCREEN_TAG_BY_ID`) and
-/// writes the tag copy ([`write_base_tag`]), once per base tag (a map load
-/// moves it). Says why when the base isn't in this interface: the screen
-/// then has no tag, as before.
-pub async fn prepare(cx: &Cx, d: &Registered, name: &str) -> Result<(), EntryError> {
+/// The screen's localized string-list reference (group and salted datum).
+const SCREEN_STRINGS: u32 = 0x18;
+
+fn strings_of(m: &dyn GuestMemory, tag: u32) -> Result<Option<[u8; 8]>, MemFault> {
+    let mut reference = [0; 8];
+    m.read(tag + SCREEN_STRINGS, &mut reference)?;
+    Ok((reference[4..] != u32::MAX.to_le_bytes()).then_some(reference))
+}
+
+async fn screen_tag(cx: &Cx, id: u32) -> Result<Option<u32>, EntryError> {
     let handle = cx
-        .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([d.base.screen_id() as u32]))
+        .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([id]))
         .await?
         .eax;
+    Ok(cx.read(|m| tag_of(m, handle))?)
+}
+
+/// Prepare the class's tag before construction. A retail error dialog
+/// receives its text in buffers and may have no string list. A kit screen
+/// uses TEXT_SET for its title, footer and rows: the lookup at 0x1a0180
+/// exits on a null string-list datum before it consults our locale source.
+pub async fn prepare(
+    cx: &Cx,
+    d: &Registered,
+    host_screen: u32,
+    name: &str,
+) -> Result<(), EntryError> {
+    let Some(base) = screen_tag(cx, d.base.screen_id() as u32).await? else {
+        eprintln!("{name}: no dialog screen {} in this interface; not drawn as a dialog", d.base.screen_id());
+        cx.write(|m| m.set_u32(d.page + TAG_SOURCE, 0))?;
+        return Ok(());
+    };
+    let strings = match cx.read(|m| strings_of(m, base))? {
+        Some(reference) => Some(reference),
+        None => match screen_tag(cx, host_screen).await? {
+            Some(host) => cx.read(|m| strings_of(m, host))?,
+            None => None,
+        },
+    };
     cx.write(|m| -> Result<(), MemFault> {
-        let Some(base) = tag_of(m, handle)? else {
-            eprintln!(
-                "{name}: no dialog screen {} in this interface; not drawn as a dialog",
-                d.base.screen_id()
-            );
-            m.set_u32(d.page + TAG_SOURCE, 0)?;
-            return Ok(());
+        let Some(strings) = strings else {
+            eprintln!("{name}: neither dialog nor host screen has a localized string list");
+            return m.set_u32(d.page + TAG_SOURCE, 0);
         };
-        if m.u32(d.page + TAG_SOURCE)? == base {
+        if m.u32(d.page + TAG_SOURCE)? == base && strings_of(m, d.page)? == Some(strings) {
             return Ok(());
         }
         match write_base_tag(m, base, d.page, &d.list, d.base.content_bitmaps(), &[])? {
             Some((at, size)) => {
+                m.write(at + SCREEN_STRINGS, &strings)?;
                 m.set_u32(d.page + TAG_SOURCE, base)?;
                 eprintln!(
                     "{name}: a dialog on screen {}'s tag (copy at {at:#x}, {size:#x} bytes)",
@@ -898,6 +924,64 @@ mod tests {
             write_base_tag(&mut g, RETAIL, AT, &LIST, &[], &[]),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn kit_dialog_labels_have_a_locale_even_when_the_error_frame_has_none() {
+        use engine::entry::{EntryFuture, Regs, Ret, testing};
+
+        const ENTRIES: u32 = 0x0030_0000;
+        const HOST: u32 = 0x0040_0000;
+        const DIALOG_TAG: u32 = 0xaaaa_0001;
+        const HOST_TAG: u32 = 0xbbbb_0002;
+        let d = Registered {
+            name: "test card",
+            vtable: 0,
+            page: AT,
+            loader: 0,
+            base: DialogBase::Large,
+            list: base_layout(DialogBase::Large, 4),
+        };
+        for (dialog_strings, host_strings, expected) in [
+            (u32::MAX, 0xaaaa_1234, Some(0xaaaa_1234)),
+            (0xabcd_0003, u32::MAX, Some(0xabcd_0003)),
+            (u32::MAX, u32::MAX, None),
+        ] {
+            let mut g = retail_with_bitmaps(3);
+            g.map(points::TAG_ENTRIES.base, 4)
+                .map(ENTRIES, 0x30)
+                .map(HOST, SCREEN_ROOT_SIZE)
+                .map(0x0050_0000, 0x1000)
+                .put_u32(points::TAG_ENTRIES.base, ENTRIES)
+                .put_u32(ENTRIES + 0x18, RETAIL)
+                .put_u32(ENTRIES + 0x28, HOST)
+                .put_u32(RETAIL + SCREEN_STRINGS + 4, dialog_strings)
+                .put_u32(HOST + SCREEN_STRINGS + 4, host_strings);
+            let f = move |cx| -> EntryFuture {
+                Box::pin(async move {
+                    prepare(&cx, &d, list_class::CONTROLS_SCREEN_ID, d.name).await?;
+                    Ok(Ret::new(0, 0))
+                })
+            };
+            let regs = Regs { esp: 0x0050_0800, ..Default::default() };
+            let run = testing::run(&f, g, regs, |c, _| {
+                assert_eq!(c.target, points::SCREEN_TAG_BY_ID.base);
+                let eax = match c.args[0] {
+                    list_class::CONTROLS_SCREEN_ID => HOST_TAG,
+                    id if id == DialogBase::Large.screen_id() as u32 => DIALOG_TAG,
+                    other => panic!("unexpected screen {other}"),
+                };
+                Regs { eax, ..Default::default() }
+            });
+            assert_eq!(run.result, Ok(Ret::new(0, 0)));
+            if let Some(strings) = expected {
+                assert_eq!(run.guest.u32(AT + SCREEN_STRINGS + 4), Ok(strings));
+                assert_eq!(run.guest.u32(AT + TAG_SOURCE), Ok(RETAIL));
+            } else {
+                assert_eq!(run.guest.u32(AT + TAG_SOURCE), Ok(0));
+            }
+            assert_eq!(run.guest.u32(RETAIL + SCREEN_STRINGS + 4), Ok(dialog_strings));
+        }
     }
 
     /// A dialog class's screens get its copy once [`prepare`] made it, and

@@ -1460,10 +1460,10 @@ pub async fn load(
     let capacity = rows.growing_capacity().unwrap_or(count).max(count);
     let rows = count;
     let request = cx.arg(0)?;
-    // A dialog's tag copy is made before its pane is, from its base found
-    // in this interface.
+    // Unreadable (no game kind byte): the main menu's.
+    let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
-        crate::ui_kit::dialog_tag::prepare(&cx, &d, name).await?;
+        crate::ui_kit::dialog_tag::prepare(&cx, &d, base, name).await?;
     }
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -1480,8 +1480,6 @@ pub async fn load(
             u32::from(m.u16(request + 2)?),
         ))
     })?;
-    // Unreadable (no game kind byte): the main menu's.
-    let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     {
         let _building = Building::start(capacity);
         if base == CONTROLS_SCREEN_ID {
