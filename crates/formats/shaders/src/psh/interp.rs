@@ -363,7 +363,7 @@ pub fn run(
                     i,
                     &options.shadow[i].unwrap(),
                     mode == Project3d,
-                    options.hard_shadow[i],
+                    options.shadow_filter(i),
                     &tc,
                     &u.tex_scale,
                     sampler,

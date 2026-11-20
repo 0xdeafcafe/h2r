@@ -439,3 +439,15 @@ depth-fail volumes, and why it is not followed, is in
 [pstencil.md](../pstencil.md) ("The technique: why shadow maps"). Volumes for
 closed object casters stay the fallback if phase 4's pictures show a case a
 map cannot meet.
+
+## 2026-11-20: L1 sharp shadow edge
+
+Commit: `Add the Sharp shadow comparison` (resolve with
+`git log -1 --format=%H -- crates/formats/shaders/tests/golden/shadow_sharp.wgsl`).
+
+Reproduce with `cargo test -p shaders --test shadow` on a GPU adapter.
+The golden test covers all three forms. The GPU test sweeps subpixel
+positions along a synthetic caster at map-to-screen ratios 1:1, 1:2 and
+1:4. It checks a ramp at most 1.5 display pixels wide and a half-coverage
+centre within one map texel of the outline. The code-only slice records
+acceptance bounds. GPU results are pending coordinator verification.
