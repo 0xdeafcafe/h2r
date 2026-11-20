@@ -153,7 +153,7 @@ None of them changes the clock.
   runner returns it to its caller (`runner.rs`); `kernel::Machine` stops
   with it and `retry_kernel_call` refuses faults (`crates/runtime/kernel/src/threads.rs`);
   the pipelined render turns a second-executor fault into a terminal event
-  (`crates/hooking/hooks/src/pipeline_render.rs`, `settle`);
+  (`crates/rewrites/render-bridge/src/pipeline_render.rs`, `settle`);
   `RtlRaiseException` is a kernel stop (`crates/runtime/kernel/STOPS.md`);
   stop recovery takes STOPs only (`crates/apps/boot/src/fallback.rs`).
 - **Test.** `a_fault_a_run_ends_with_is_counted_once_and_not_as_continued`,
