@@ -250,6 +250,22 @@ pub fn grown(pinned: &TagSet) -> Grown {
     }
 }
 
+/// `src`'s string-ID table as `fresh`'s. The trees [`unpin_all`] reads
+/// from `src` keep its string-ID words, and its table is the set's with
+/// the strings its build interned for text fixups appended (a converted
+/// tag's names, which no pinned tag has): the words of a built tag read
+/// back index those. With the set's table alone they named no string.
+fn take_built_strings<R: Read + Seek>(fresh: &mut TagSet, src: &Map<R>) -> Result<()> {
+    let built = src.strings();
+    if built.get(..fresh.strings.len()) != Some(&fresh.strings[..]) {
+        return Err(Error::Fresh(
+            "the built map's string IDs do not start with the set's".into(),
+        ));
+    }
+    fresh.strings = built.to_vec();
+    Ok(())
+}
+
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
 /// and nothing pinned. Payloads are copied as they are; [`unpin_all`]
 /// replaces the pinned ones.
@@ -294,6 +310,7 @@ pub fn unpin_all<R: Read + Seek>(
     built_too: bool,
 ) -> Result<FreshReport> {
     let schema = Schema::builtin();
+    take_built_strings(fresh, src)?;
     let mut u = Unpinner::new(schema, src).map_err(tags_error)?;
     u.add_starts(bounds.iter().copied());
     // Pinned tags an edit grew (the globals' damage table,
@@ -1746,6 +1763,53 @@ mod pinned_prune_tests {
     use super::*;
     use map::CacheType;
     use map::build::{PinnedImage, Slot, TagEntry};
+
+    /// A built tag's string interned only when the map was built: the
+    /// unpinned set takes the built map's table, so the word read back
+    /// from that map names it.
+    #[test]
+    fn the_unpinned_set_takes_the_strings_its_build_interned() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        for g in [b"matg", b"scnr", b"mach"] {
+            set.add_group(FourCC(*g), None, None);
+        }
+        set.globals = set
+            .add_tag(
+                FourCC(*b"matg"),
+                "globals",
+                TagPayload::Built(map::build::Block::zeroed(0x284)),
+            )
+            .unwrap();
+        set.scenario = set
+            .add_tag(
+                FourCC(*b"scnr"),
+                "s",
+                TagPayload::Built(map::build::Block::zeroed(0x3e0)),
+            )
+            .unwrap();
+        let before = set.intern("stock").unwrap();
+        let mut root = map::build::Block::zeroed(0x10);
+        root.put_u32(0, before).string_id(4, "made at build");
+        set.add_tag(FourCC(*b"mach"), "door", TagPayload::Built(root))
+            .unwrap();
+        assert!(!set.strings.iter().flatten().any(|s| s == "made at build"));
+        let src = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+
+        let mut fresh = unpinned_copy(&set);
+        take_built_strings(&mut fresh, &src).unwrap();
+        assert_eq!(fresh.strings[..set.strings.len()], set.strings[..]);
+        let index = fresh
+            .strings
+            .iter()
+            .position(|s| s.as_deref() == Some("made at build"))
+            .expect("the build's string");
+        assert!(index >= set.strings.len());
+
+        // A table that is not the build's prefix is refused.
+        let mut other = unpinned_copy(&set);
+        other.strings.insert(0, Some("elsewhere".into()));
+        assert!(take_built_strings(&mut other, &src).is_err());
+    }
 
     const BASE: u32 = 0x8000_0000;
     const N: usize = 10;

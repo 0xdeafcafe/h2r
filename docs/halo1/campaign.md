@@ -410,7 +410,13 @@ convert --pinned` skip it):
    built the slice-before way (a `dropped` line says why): every tag of
    the intermediate laid out anew (`h1convert::fresh::unpin_all` with
    `built_too`), the unreachable base tags dropped (`fresh::prune_with`,
-   `KEEP`), on 05a's index.
+   `KEEP`), on 05a's index. Built: the pruned set takes the built
+   intermediate's string-ID table, not the set's. The builder appends
+   the strings of converted tags' text fixups (animation, function and
+   region names), and the tags read back keep words that index them.
+   With the set's table those words named no string, and the read-back
+   refused a10's `door blast` machine and `cryotube` model ("unknown
+   string ID"). Test: `the_unpinned_set_takes_the_strings_its_build_interned`.
 
 **Built, locale raw extents.** The v90 import hit the map reader's 64 MiB
 limit on one raw read in `Unpinner::copy_raw`. The retail base's ninth
