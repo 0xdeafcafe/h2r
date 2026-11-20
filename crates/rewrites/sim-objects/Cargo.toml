@@ -1,0 +1,13 @@
+[package]
+name = "sim-objects"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md)"
+
+[dependencies]
+# The object, header and unit layouts and the `Mem` trait views read
+# through: offsets live there, once (docs/engine/guest-layout.md).
+guest-layout = { path = "../../hooking/guest-layout" }
+# Float rules, lanes and the epoch derived state is keyed by.
+sim-core.workspace = true
