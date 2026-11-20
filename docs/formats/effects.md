@@ -486,7 +486,7 @@ parts at render (`0x00179d23`; the part creation switch skips `lens`,
 `0x0017a8bd`). The submission reads `+0x18`/`+0x1c` (no flare past the
 far distance; equal values switch the test off), `+0x28` bits 2/3 and
 `+0x2a` bit 0, and `+0x16` (nonzero: a second record). Reflection
-fields are named from Halo 1 pairs ([tag-definitions.md](tag-definitions.md),
+fields are named from Halo 1 pairs ([rebuild.md](../halo1/rebuild.md),
 "Lens flares, debris and light fixtures").
 
 ### garb (garbage)

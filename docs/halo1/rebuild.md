@@ -434,7 +434,7 @@ Halo ring were already built this way.
   curves are inline six-float records. The XBE interpolates them at
   `0xf15d0`, blends them at `0xf1540`, reads the speed ratio at
   `0xf152c` and selects the next gear at `0xf18aa`. Converted H1 wheels
-  and tracks drive the contacts directly. [Current mappings and XBE evidence](../halo1/role-audit.md).
+  and tracks drive the contacts directly. [Current mappings and XBE evidence](role-audit.md).
 - **Built. Contact and flight data.** The converter writes friction and hover
   points in H1 mass-point order. H2 reads up to sixteen friction contacts
   (`0x20678d`). Each inline phantom shape holds eight spheres. The loader
@@ -442,7 +442,7 @@ Halo ring were already built this way.
   unused tail stores the H1 wheel or aircraft controller at `+0x180` and
   the powered-seat header at `+0x288`. Its count word at `+0x28c` holds
   the channel count in the low byte and the source-gravity flag in bit 8.
-  Excess or conflicting source data reports a conversion error. [Drive equations and disc evidence](../halo1/role-audit.md#native-engine-fields).
+  Excess or conflicting source data reports a conversion error. [Drive equations and disc evidence](role-audit.md#native-engine-fields).
 - **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
   the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
   `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
@@ -463,7 +463,7 @@ Halo ring were already built this way.
 - **References**: the unit's weapons are Halo 1's converted weapons
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
   in the report). The attachments and creation effect are Halo 1's
-  ([Object attachments](../halo1/objects.md#object-attachments)). HUD (`unhi`) and damage stay null: no converted
+  ([Object attachments](objects.md#object-attachments)). HUD (`unhi`) and damage stay null: no converted
   Halo 1 tag exists.
 - **Camera tracks** (seat `+0x74`, `rebuild::SEAT_CAMERA_TRACKS`): each
   seat's first Halo 1 camera track (seat `+0xd0`, `0x1c` each; the
@@ -603,7 +603,7 @@ every rigid body of every retail biped physics model on the base holds
 (`rebuild::BIPED_BODY`, 80 bodies). Retail's are ragdolls: ten bodies
 of pills and a box joined by node edges (`phmo +0x30`), four limited
 hinges (`+0xe8`) and five ragdoll joints (`+0xb8`)
-([collision.md](collision.md), "Constraints"). A built biped's bodies are
+([collision.md](../formats/collision.md), "Constraints"). A built biped's bodies are
 joined the same way (`h1objects::ragdoll`, `convert::biped_ragdoll`):
 each body to the body of its nearest ancestor node, knees and elbows as
 limited hinges, every other joint (hips, shoulders, head, spine, feet,
@@ -803,7 +803,7 @@ devices name their placement (a fixture's names its machine).
 ## Effects from definitions (`h1objects::rebuild::effect`)
 
 `crates/tags/src/defs/effe.txt` is the Halo 2 `effe` from
-[effects.md](effects.md) (strides V by tiling, the E readers there), with
+[effects.md](../formats/effects.md) (strides V by tiling, the E readers there), with
 `struct property` for the emitters' sixteen-byte properties. All 805
 distinct retail effects on the disc (14,785 instances) round-trip
 byte-identical with no pinned values. Named on the way:
@@ -909,7 +909,7 @@ so nothing moves).
 ### Lights (`ligh`, version 51)
 
 `crates/tags/src/defs/ligh.txt` is the Halo 2 `ligh` of
-[effects.md](effects.md) (E readers in
+[effects.md](../formats/effects.md) (E readers in
 [e3-lighting.md](../graphics/e3-lighting.md), "The light record"). All
 190 distinct retail lights round-trip byte-identical.
 
@@ -999,7 +999,7 @@ slot index in the low half of its marker at `+0x00`.
 A rebuilt unit with one ordinary voice uses `hlmt +0x8c`. Multiple
 voices use separate variant references at `hlmt.variants[].+0x30`,
 with their source selectors. H2 caches the selected dialogue datum
-per unit during speech setup. See [AI dialogue](../halo1/ai.md) for
+per unit during speech setup. See [AI dialogue](ai.md) for
 the runtime lookup and remaining automatic events.
 
 
@@ -1039,7 +1039,7 @@ these 32 (h1convert does not use this table), which then find nothing.
 ### Lens flares, debris and light fixtures (`lens`, `garb`, `lifi`)
 
 **Lens flares.** `crates/tags/src/defs/lens.txt` is the Halo 2 `lens`
-of [effects.md](effects.md); all 160 distinct retail lens flares (and the one `garb`) round-trip
+of [effects.md](../formats/effects.md); all 160 distinct retail lens flares (and the one `garb`) round-trip
 byte-identical. Four engine paths submit a flare through
 `0x0002dba0` (**E**, the calls found by a scan of the XBE): sky lights
 (`0x0003f1e9`, `sky` light `+0x14`), lights (`0x000c34ac`, reading the
@@ -1189,7 +1189,7 @@ starts from the definition default, then:
   `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
   `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
   material effects take Halo 1's converted tags, or none
-  ([../halo1/role-audit.md](../halo1/role-audit.md)).
+  ([role-audit.md](role-audit.md)).
 - **What a shot and a reload play** (converter version 97): each barrel's
   firing effects (`barrels.block_e4`, `0x34`) are its Halo 1 trigger's
   (`+0x108`, `0x84`: `h1::FiringEffect`), one element per Halo 1
@@ -1270,7 +1270,7 @@ first-person graph animates Halo 1's arm nodes.
 `crates/tags/src/defs/prt3.txt`: all 2,021 distinct retail `prt3` (4,988
 instances) round-trip byte-identical. The root's fields are named from
 the engine's reader, the particle draw callback `0x00224550`
-([effects.md](effects.md), "prt3 root"): the five properties are colour,
+([effects.md](../formats/effects.md), "prt3 root"): the five properties are colour,
 alpha, size, rotation and sprite frame; the flags, the sequence range,
 the collision and death effects, the input mask, the quad and the UV
 window. The nested particle systems are `effe`'s record (and use its
