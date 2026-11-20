@@ -193,6 +193,17 @@ impl PixelReport {
         Ok(Some(count))
     }
 
+    /// Delivers an exclusively owned report through a callback after
+    /// submission. Queue submissions drive the callback during play. A
+    /// deterministic waiter may also poll the device for the submission.
+    /// This report must have no other readers.
+    pub fn on_ready(self, complete: impl FnOnce(Result<u64, String>) + Send + 'static) {
+        let buffer = self.buffer.clone();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |mapped| {
+            complete(self.take_mapped(mapped));
+        });
+    }
+
     /// Starts mapping the buffer once; the receiver of its outcome.
     fn start_map(&self) -> Result<&Arc<Mutex<Option<MapOutcome>>>, String> {
         let mut m = self.mapping.lock().map_err(|_| "pixel count poisoned")?;

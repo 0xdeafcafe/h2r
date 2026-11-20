@@ -437,3 +437,51 @@ pub fn bench() {
 fn visibility_wait() {
     bench();
 }
+
+/// The same stream can be drawn privately before and after its canonical
+/// draw. Only the canonical draw answers the report, in guest pixel units.
+#[cfg(feature = "gpu")]
+#[test]
+fn native_flare_feedback_uses_guest_pixels_and_private_draws_leave_it_pending() {
+    use d3d::gfx_backend::GuestDrawPass;
+    use d3d::scene_sink::{FlareReport, ReplayOp, SceneSink};
+    use frame_scene::{Slot, SlotAt};
+    use std::sync::mpsc;
+
+    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let mut gpu = d3d::GfxBackend::new(ctx);
+    for scale in [1, 4] {
+        let (tx, rx) = mpsc::channel();
+        let sink = SceneSink::new(RecordingBackend::new(), || {
+            Some(SlotAt { slot: Slot::Transparents, view: 0 })
+        }).with_replay(move |frame| tx.send(frame).unwrap());
+        let (mut d, mut m) = device(sink, false);
+        d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+        begin_inline(&mut m);
+        inline_quad(&mut m, 0.0, 0.0, 32.0, 16.0, [0, 255, 0, 255]);
+        inline_quad(&mut m, 40.0, 50.0, 47.0, 61.0, [0, 0, 255, 255]);
+        d.end_visibility_test(&mut m, 0).unwrap();
+        d.swap(&mut m, 0).unwrap();
+        let mut frame = rx.try_recv().unwrap();
+
+        let reports: Vec<_> = frame.ops.iter_mut().filter_map(|(_, op)| match op {
+            ReplayOp::EndFlareQuery(report) => Some(report),
+            _ => None,
+        }).collect();
+        assert_eq!(reports.len(), 1);
+        let slot = reports.into_iter().next().unwrap();
+        assert!(slot.is_none(), "an observing sink leaves the guest's ticket on its backend");
+        let (reply, mut guest) = FlareReport::channel();
+        *slot = Some(reply);
+
+        let mut capture = GuestDrawPass::new(&mut gpu, &frame, scale).unwrap();
+        for (_, op) in &frame.ops { capture.apply(op).unwrap(); }
+        capture.submit().unwrap();
+        drop(capture);
+        assert_eq!(guest.try_read(), Ok(None), "a capture cannot consume a guest query");
+        let mut display = GuestDrawPass::new_display(&mut gpu, &frame, scale).unwrap();
+        for (_, op) in &frame.ops { display.apply(op).unwrap(); }
+        display.submit().unwrap();
+        assert_eq!(guest.read(), Ok(32 * 16 + 7 * 11), "{scale}x");
+    }
+}
