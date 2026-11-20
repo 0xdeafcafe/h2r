@@ -1,0 +1,18 @@
+# One spawn on the floor patch of Ascension where superbounces were traced
+# (docs/game/superbounce.md, "Traces" and "The geometry": the crease at
+# y 3.8 next to the coplanar seam at y 4.0, floor z -3.2). The point is
+# from our own trace; the spawn is dropped onto the floor below it.
+# docs/game/test-maps.md
+name = "superbounce"
+title = "Superbounce patch"
+purpose = "One spawn on the traced superbounce patch of Ascension, facing +y: jump in place, or step back and jump forward, to land between the crease and the seam."
+base = "ascension"
+fidelity = "full"
+clear = "all"
+
+[anchor]
+at = [-10.5, 3.9, -3.0]
+facing = 90
+
+[[place]]
+block = "starting_locations"

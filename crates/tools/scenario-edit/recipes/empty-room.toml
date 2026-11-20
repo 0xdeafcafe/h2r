@@ -1,0 +1,12 @@
+# A clean room: every placement of the base removed but one starting
+# location, where the base's first one was. The rig for a repro that needs
+# nothing else in the level. docs/game/test-maps.md
+name = "empty-room"
+title = "Empty room"
+purpose = "Every placement removed but one starting location: a level with nothing in it but the player."
+base = "lockout"
+fidelity = "full"
+clear = "all"
+
+[[place]]
+block = "starting_locations"

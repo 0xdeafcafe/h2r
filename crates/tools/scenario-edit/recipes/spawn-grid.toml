@@ -1,0 +1,17 @@
+# Sixteen starting locations on a 4 by 4 grid ahead of the base's first
+# one, three units apart, two teams in turn, each dropped onto the floor.
+# Nothing else is left in the level. docs/game/test-maps.md
+name = "spawn-grid"
+title = "Spawn grid"
+purpose = "Sixteen starting locations on a grid three units apart, teams 0 and 1 in turn: where and how the game picks a spawn."
+base = "coagulation"
+fidelity = "full"
+clear = "all"
+# Sixteen may be more than the base has.
+allow_growth = true
+
+[[place]]
+block = "starting_locations"
+at = [8, 0, 0]
+grid = { rows = 4, cols = 4, spacing = 3 }
+teams = 2
