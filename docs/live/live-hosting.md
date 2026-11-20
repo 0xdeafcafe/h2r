@@ -639,9 +639,10 @@ The server is on the internet now. What protects it:
 What you should decide:
 
 - **Who may create accounts.** By default anyone with the URL can.
-  `--invite-only` requires an invite code (`h2 live invite create`, run on
-  this machine, or an admin's dashboard: Settings → Server → Invites,
-  [live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs without it.
+  `--invite-only` requires an invite code. The operator, admins and
+  accounts with the **can invite** grant can make codes
+  ([live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs
+  without this setting.
 - **Who may read.** Reads (games, accounts, presence, the log) are public
   by default; `--private` needs a token for every read and on the stream.
 - **Admin names.** `--admin`/`H2_LIVE_ADMINS` name gamertags, and a

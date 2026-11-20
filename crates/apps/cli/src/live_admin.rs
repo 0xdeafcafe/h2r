@@ -20,6 +20,8 @@ use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{self, Args, Client};
 
 const USAGE: &str = "usage: h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
+       h2 live invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
+       h2 live invite ungrant <gamertag> [--server URL] [--data DIR]
        h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
        h2 live hopper defaults --out FILE [--raw] [--force]
        h2 live account export <gamertag> [--file PATH] [--server URL]";
@@ -93,6 +95,48 @@ pub fn admin_revoke(mut args: Args) -> Result<()> {
     let reply: serde_json::Value = serde_json::from_str(&live_cmd::call(req, None)?)?;
     println!(
         "revoked {tag} (position {})",
+        reply["position"].as_u64().unwrap_or(0)
+    );
+    Ok(())
+}
+
+/// The operator enables or ends an account's explicit invite permission.
+pub(crate) fn invite_grant(mut args: Args, enabled: bool) -> Result<()> {
+    let server = args.take("--server")?;
+    let data = args.take("--data")?;
+    let cap = if enabled {
+        args.take("--open-cap")?
+            .map(|cap| cap.parse::<std::num::NonZeroU32>())
+            .transpose()
+            .context("--open-cap must be a positive whole number")?
+    } else {
+        None
+    };
+    let tag = one_tag(args.positional_for(USAGE)?)?;
+    let client = Client::connect(server)?;
+    let me = live_cmd::operator(data, &client)?;
+    let token = issue_token(
+        &me.key,
+        &me.author(),
+        &me.id,
+        lxm::INVITE_GRANTS_WRITE,
+        live_cmd::now(),
+    );
+    let url = client.url(&format!("/accounts/{}/invite-grant", path_segment(&tag)));
+    let (req, body) = if enabled {
+        let body = serde_json::to_vec(&live_proto::InviteGrant { open_cap: cap })?;
+        (
+            client.agent.post(&url).set("Content-Type", "application/json"),
+            Some(body),
+        )
+    } else {
+        (client.agent.delete(&url), None)
+    };
+    let reply: serde_json::Value =
+        serde_json::from_str(&live_cmd::call(client.authorized(req, token)?, body.as_deref())?)?;
+    let action = if enabled { "enabled" } else { "revoked" };
+    println!(
+        "invite permission {action} for {tag} (position {})",
         reply["position"].as_u64().unwrap_or(0)
     );
     Ok(())

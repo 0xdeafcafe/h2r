@@ -331,6 +331,10 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
+    /// Listing only the caller's open invites.
+    pub const INVITES_READ: &str = "invites.read";
+    /// Admins and the operator setting an account's invite permission.
+    pub const INVITE_GRANTS_WRITE: &str = "invite-grants.write";
     /// Reading the account's own recovery secret and current code.
     pub const RECOVERY_READ: &str = "recovery.read";
     /// Setting up or resetting the account's recovery secret.
@@ -459,6 +463,14 @@ pub struct CreatedAccount {
     pub recovery: Option<recovery::RecoveryInfo>,
 }
 
+/// An account's explicit permission to create invites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteGrant {
+    /// The maximum number of open invites, or no cap.
+    pub open_cap: Option<std::num::NonZeroU32>,
+}
+
 /// An entry of `GET /v1/accounts`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountSummary {
@@ -470,6 +482,8 @@ pub struct AccountSummary {
     /// startup or granted. Only this server's admins, not a federation view.
     #[serde(default)]
     pub admin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_grant: Option<InviteGrant>,
     /// A bot account (docs/game/bots.md §9.5): issued by the server for
     /// Clankers, never signed in with a key, never recovered or claimed.
     /// Absent for a human.
