@@ -3020,8 +3020,22 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
             }
             let b = m.read_tag_bytes(decoded.unit).unwrap();
             if kind == 13 {
+                // Halo 1's flying words, Halo 2's 0x2cc on: the rates Halo 1
+                // caches per tick are per second here
+                // (`h1objects::rebuild::BIPED_RATES`), the rest as they were.
+                fn word(b: &[u8], at: usize) -> u32 {
+                    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
+                }
                 let source = h1.tag_data(h1.tag(v.unit.id).unwrap()).unwrap();
-                assert_eq!(&b[0x2cc..0x2f8], &source[0x324..0x350]);
+                for k in (0..0x2c).step_by(4) {
+                    let (h2_at, h1_at) = (0x2cc + k, 0x324 + k);
+                    let want = if h1objects::rebuild::BIPED_RATES.iter().any(|r| r.1 == h1_at) {
+                        (30.0 * f32::from_bits(word(&source, h1_at))).to_bits()
+                    } else {
+                        word(&source, h1_at)
+                    };
+                    assert_eq!(word(&b, h2_at), want, "{level} {}: bipd +{h2_at:#x} from +{h1_at:#x}", v.name);
+                }
             }
             let hlmt = m.read_tag_bytes(reference(&b, MODEL)).unwrap();
             let graph_id = reference(&hlmt, HLMT_ANIMATION);
