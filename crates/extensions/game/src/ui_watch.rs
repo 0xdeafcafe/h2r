@@ -73,8 +73,8 @@ const STRIDE_5: u32 = 0x40;
 /// The shared slot.
 pub const SHARED: u32 = 4;
 /// A channel's fields.
-const ACTIVE: u32 = 8;
-const PENDING: u32 = 0xc;
+pub(crate) const ACTIVE: u32 = 8;
+pub(crate) const PENDING: u32 = 0xc;
 const LIST: u32 = 0x34;
 /// A screen's fields.
 const NEXT: u32 = 0x10;
@@ -135,7 +135,10 @@ impl Top {
 }
 
 /// The channel of `window` for `slot`, if that window has one there.
-fn channel(window: u32, slot: u32) -> Option<u32> {
+pub(crate) fn channel(window: u32, slot: u32) -> Option<u32> {
+    if slot > SHARED {
+        return None;
+    }
     match window {
         0 => (slot == SHARED).then_some(WINDOW_0),
         1 => Some(WINDOW_1 + slot * STRIDE_13),

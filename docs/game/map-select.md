@@ -5,8 +5,10 @@ Code: `crates/extensions/game/src/map_select.rs` (`map_select::MapSelect`, `Cata
 Switch: none.
 
 Game Setup's **Change Map** uses the game's Select Map dialog to show
-categories. Choose a category with **A**, then choose a map. **B** goes
-back. Picking a map returns to Game Setup with that map selected.
+categories. Choose a category with **A**, then choose a map. **B** or
+**Back** in a map list returns to the categories with the opened category
+focused. From the categories, **B** or **Back** closes the picker.
+**A** on a map applies the selection and dismisses the picker.
 
 | Category | Maps | Order |
 |---|---|---|
@@ -110,29 +112,22 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
 - **A category's press** (`MAP_LIST_ROW_CHOSEN`, `0x2c9b17`, in place of
   the retail press). It finds the row's id (handler `+0x70`, element `+4`)
   and its category, then arms a maps list for it. It pushes a second
-  Select Map on the pressing screen's own window and slot: our request
-  (`skulls_mp::open_request`, as the Halo 1 Options row builds its own)
-  handed to loader `0x2bb2db`. B on the maps returns to the categories,
-  and B on the categories returns to Game Setup, both by the retail
-  dialog's own back.
+  Select Map on the pressing screen's own window and slot. Window 3 has
+  one active dialog and disposes of the categories when the maps take
+  over. The maps screen carries the selected category's identity.
+- **B or Back on a category's maps** (`SCREEN_BACK_EVENT`) queues Select
+  Map in categories mode with request bit 0 set. The push hook resolves
+  the opened category's representative map ID to a row handle in the
+  rebuilt list. The window applies the handle after setting up the new
+  screen's widgets and closes the maps with the normal Back message. If
+  the category is unavailable, the list uses its default focus.
+  Back on the category list closes the picker. With the lobby Back
+  feature it returns to Game Setup. See [Back navigation](ui-screens.md#back-navigation).
 - **A map's press** runs retail. `0x2c9b17` calls `0x19a6f2` (map id in
   ESI, campaign `-1`), which stores the lobby's map at `0x51098c` and sets
   `0x510819`. Then it sends message 3 to its own screen
-  (`0x22e957(3)` on `0x22eeee(handler)`), and the screen leaves. Before
-  it does, we note the categories' window and slot for that screen.
-- **Closing the categories** (`MAP_SCREEN_FREE`, the screen's destructor
-  `0x2bb384`, vtable `0x45c650` slot 0). When the maps screen whose map
-  was pressed is freed, the hook calls the destructor (forgotten first,
-  so the hook passes it through) and then closes the categories screen
-  itself: the close message (`0x22e957(2)`) that the window's close
-  (`0x2351d4`) sends its top screen, unless the screen's state byte
-  `+0x42` has bit 1 (already closing) (`ui_kit::lifecycle::close_screen`).
-  It can't close by window and slot (`0x14800c`) as B does. The stack's
-  free (`0x2351ea`, from the UI update's free loop `0x148148`) zeroes the
-  window's top word (`+8`) for the screen it frees before it calls the
-  destructor. Closing by window and slot would read
-  `0 + 0x42` (`0x2351d9`, the window object `0x54d84c` for window 3,
-  slot 4) and fault.
+  (`0x22e957(3)` on `0x22eeee(handler)`), and the screen leaves.
+  Each instance's destructor (`MAP_SCREEN_FREE`) drops its list metadata.
 - **Message 3 stays inside its own screen.** `0x22eeee` walks the
   widget's parents (`+0x10`) to its root, the Select Map screen.
   `0x22e957` builds a kind-3 message (`0x22e65e`) and hands it to that
@@ -147,7 +142,14 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
 
 ## Game verification
 
-Use the agent API for game checks. With an existing data directory,
+Use [`ui.stack`](../runtime/agent-api.md#ui-what-the-menus-show) for
+game checks. Open Change Map with at least two categories. Record the
+focused row, open that category, and check that the active mode is
+`maps` with a `folders` parent. Press B and check that active mode is
+`folders` with the same focused row. Press B again and check that the
+picker is gone. Repeat with Back and with the lobby Back feature disabled.
+
+With an existing data directory,
 confirm retail Lockout and a Map Pack base load from their original
 categories. Pick a mod with an image and check Select Map, Game Setup
 and the lobby. Check a second mod without an image for the base preview.

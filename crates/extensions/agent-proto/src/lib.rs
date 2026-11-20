@@ -186,6 +186,8 @@ pub mod method {
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Live screen channels and the generic Back target, read at a game boundary.
+    pub const UI_STACK: &str = "ui.stack";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";

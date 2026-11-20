@@ -27,7 +27,7 @@ use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
     game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
     map_copy, map_select, map_slots, precision, signin_screen, skulls, skulls_custom, skulls_menu,
-    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_watch, variant_ext, variant_page, xapi_glue,
+    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
 };
 
 /// The light profile requires a headless backend and the clock-only DirectSound shim.
@@ -74,6 +74,7 @@ pub struct CoreInputs<'a> {
 /// What [`register_core`] decided, for the install lines after the plan.
 pub struct Core {
     pub telemetry: Option<Arc<telemetry::Telemetry>>,
+    pub ui_navigation: Arc<ui_back::Navigation>,
     pub skulls_on: bool,
     pub skulls_mp_on: bool,
     pub skulls_custom_on: bool,
@@ -116,7 +117,12 @@ pub(crate) fn register_core_film(
         .add(&crate::list_class::ScrollArrowLayout)
         .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
-    map_select::install(features, i.live.clone()).context("installing the map select")?;
+    let ui_navigation = Arc::new(ui_back::Navigation::default());
+    features
+        .add(&ui_back::RetailBack(Arc::clone(&ui_navigation)))
+        .map_err(|e| anyhow::anyhow!("ui-back: {e}"))?;
+    map_select::install(features, i.live.clone(), Arc::clone(&ui_navigation))
+        .context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1
@@ -265,7 +271,7 @@ pub(crate) fn register_core_film(
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
-    Ok(Core { telemetry, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
+    Ok(Core { telemetry, ui_navigation, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
 }
 
 /// The agent API's way in.
