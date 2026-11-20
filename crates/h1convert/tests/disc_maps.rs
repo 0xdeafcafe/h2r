@@ -208,11 +208,8 @@ impl tags::geometry::RawSource for Mem {
 }
 
 /// What the editor needs to texture the converted structure, checked
-/// without rendering: every drawn part's material names the shader
-/// [`h1convert::shaders::pick`] chose for its Halo 1 shader; the chosen
-/// shaders' bitmaps aren't laid out for one mesh (`unwrapped`); and each
-/// cluster's texture coordinates are the converter's diffuse UVs (stream
-/// `18`), its lightmap ones stream `1f`, both read back exactly.
+/// without rendering: the material points at the rebuilt shader, and both
+/// diffuse and lightmap coordinates survive writing and reading the cache.
 fn check_structure_texturing(
     name: &str,
     m: &mut Map<Cursor<Vec<u8>>>,
@@ -240,19 +237,14 @@ fn check_structure_texturing(
             m.tag(id).unwrap().name.clone().unwrap()
         })
         .collect();
-    // A material whose Halo 1 shader got a copy with Halo 1's textures
-    // names the copy (named after the Halo 1 shader); the rest name the
-    // chosen base shader.
     let copy_of = |k: usize| {
         p.textures
             .copies
             .iter()
             .find(|c| c.h1_shader == p.materials[k] && c.material == p.material_shaders[k].0)
+            .expect("source shader recipe")
     };
-    let chosen: Vec<&String> = (0..p.material_shaders.len())
-        .map(|k| copy_of(k).map_or(&p.material_shaders[k].1, |c| &c.h1_shader))
-        .collect();
-    assert_eq!(shader_of.iter().collect::<Vec<_>>(), chosen, "{name}");
+    assert_eq!(shader_of, p.materials, "{name}");
     // Each part's kind is retail's for its material's template
     // (`structure::part_kind`): transparent shaders' parts are kind 4.
     let kind_of: Vec<u16> = (0..p.material_shaders.len())
@@ -286,31 +278,9 @@ fn check_structure_texturing(
         "    part kinds 2/3/4: {}/{}/{}",
         kinds[2], kinds[3], kinds[4]
     );
-    for (k, n) in shader_of.iter().enumerate() {
-        let id = m
-            .tags()
-            .iter()
-            .find(|t| t.name.as_deref() == Some(n.as_str()))
-            .unwrap()
-            .id;
-        if let Some(c) = copy_of(k) {
-            check_shader_copy(name, m, base, id, c);
-            continue;
-        }
-        // The shader reads as it does in the base (the reader doesn't
-        // follow every shader; one it can't read in the base is skipped).
-        let got = scenario_edit::scene::shader_bitmaps(m, id).map_err(|e| e.to_string());
-        let want = scenario_edit::scene::shader_bitmaps(base, id).map_err(|e| e.to_string());
-        assert_eq!(got.is_ok(), want.is_ok(), "{name}: shader {n}");
-        let Ok((_, bitmaps)) = got else {
-            eprintln!("    (shader {n} unread: {})", want.unwrap_err());
-            continue;
-        };
-        assert_eq!(Ok(bitmaps.clone()), want.map(|w| w.1), "{name}: shader {n}");
-        for b in bitmaps {
-            let bn = m.tag(b).unwrap().name.clone().unwrap_or_default();
-            assert!(!bn.contains("unwrap"), "{name}: {n} uses {bn}");
-        }
+    for k in 0..shader_of.len() {
+        let id = map::TagId(w(mats + 0x20 * k + 0xc));
+        check_shader_copy(name, m, base, id, copy_of(k));
     }
     let mut raw = Mem(bytes.to_vec());
     for (c, s) in render.clusters.iter().zip(&p.sections) {

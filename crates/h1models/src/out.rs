@@ -39,6 +39,7 @@ impl Converted {
         set.add_group(self.group, None, None);
         let got = set.add_tag(self.group, name, TagPayload::Built(self.root))?;
         debug_assert_eq!(got, id);
+        set.record_conversion(self.group, name, got);
         Ok(got)
     }
 }
@@ -66,6 +67,7 @@ impl Converted {
         let tag = set.tag_mut(id).expect("checked");
         tag.group = self.group;
         tag.payload = TagPayload::Built(self.root);
+        set.record_conversion(self.group, name, id);
         Ok(id)
     }
 }

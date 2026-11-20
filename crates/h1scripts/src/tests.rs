@@ -593,6 +593,15 @@ fn hooks_resolve_into_atoms() {
 }
 
 #[test]
+fn an_unresolved_authored_reference_is_an_error_before_installation() {
+    let (_, out) = compiled(Missing::Stub);
+    let mut scnr = map::build::Block::zeroed(field::MIN_LEN);
+    let err = out.install(&mut scnr, |_, _| None).unwrap_err();
+    assert!(err.to_string().contains(r"sound\x"));
+    assert!(scnr.fixups.is_empty());
+}
+
+#[test]
 fn install_writes_the_halo2_scenario_fields() {
     let (_, out) = compiled(Missing::Stub);
     let mut scnr = map::build::Block::zeroed(field::MIN_LEN);

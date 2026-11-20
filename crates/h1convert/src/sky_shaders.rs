@@ -334,20 +334,16 @@ pub fn recipe(s: &H1SkyShader) -> Option<Recipe> {
 }
 
 /// The base's stems and default bitmaps the sky shaders are rebuilt with,
-/// and the shader a material falls back to.
+/// using Halo 1 material inputs.
 #[derive(Debug, Clone, Default)]
 pub struct SkyTemplates {
     pub library: shad::Library,
-    /// For a material with no shader: the base sky's own shader
-    /// ([`crate::sky::base_sky_shader`]), never NONE (`crate::sky`).
-    pub fallback: Option<TagId>,
 }
 
-/// The base's stems, default bitmaps and fallback sky shader.
+/// Shared render programs and their default bitmaps.
 pub fn sky_templates<R: Read + Seek>(base: &mut Map<R>) -> SkyTemplates {
     SkyTemplates {
         library: shad::Library::read(base),
-        fallback: crate::sky::base_sky_shader(base),
     }
 }
 
@@ -355,12 +351,17 @@ impl SkyTemplates {
     /// The layout `recipe` draws with: the sky stem ([`shad::SKY_PICTURE`],
     /// [`shad::SKY_CLOUDS`], [`shad::SKY_ADDITIVE`]) when the base has
     /// it, else the shared transparent one ([`shad::ONE_ALPHA_ENV`],
-    /// [`shad::ONE_ADD_ILLUM`]; a cloud layer then draws its tile alone).
+    /// [`shad::ONE_ADD_ILLUM`]). Clouds require both sampler inputs.
     /// `None` when the base has neither.
     pub fn layout(&self, recipe: Recipe) -> Option<&'static shad::Layout> {
         let (sky, shared) = match recipe {
             Recipe::Picture(_) => (&shad::SKY_PICTURE, &shad::ONE_ALPHA_ENV),
-            Recipe::Clouds { .. } => (&shad::SKY_CLOUDS, &shad::ONE_ALPHA_ENV),
+            Recipe::Clouds { .. } => {
+                return self
+                    .library
+                    .has(&shad::SKY_CLOUDS)
+                    .then_some(&shad::SKY_CLOUDS);
+            }
             Recipe::Additive(_) => (&shad::SKY_ADDITIVE, &shad::ONE_ADD_ILLUM),
         };
         [sky, shared].into_iter().find(|l| self.library.has(l))
@@ -368,18 +369,17 @@ impl SkyTemplates {
 
     /// The maps (indices into [`H1SkyShader::maps`]) the shader `recipe`
     /// rebuilds draws, as [`Self::copy`] binds them: the picture; a cloud
-    /// layer's mask and tile, or its tile alone on the shared layout. The
+    /// layer's mask and tile. The
     /// others (a dome's star mask, twinkle and stars) have no stage, so
     /// their bitmaps aren't added: nothing would name them, and a fresh
     /// map leaves them out anyway. Empty when no layout fits.
     pub fn drawn(&self, recipe: Recipe) -> Vec<usize> {
-        let Some(layout) = self.layout(recipe) else {
+        if self.layout(recipe).is_none() {
             return Vec::new();
-        };
+        }
         match recipe {
             Recipe::Picture(k) | Recipe::Additive(k) => vec![k],
-            Recipe::Clouds { mask, tile } if layout == &shad::SKY_CLOUDS => vec![mask, tile],
-            Recipe::Clouds { tile, .. } => vec![tile],
+            Recipe::Clouds { mask, tile } => vec![mask, tile],
         }
     }
 
@@ -411,12 +411,8 @@ impl SkyTemplates {
                 m.insert(shad::Role::Base, bound(k)?);
             }
             Recipe::Clouds { mask, tile } => {
-                if layout == &shad::SKY_CLOUDS {
-                    m.insert(shad::Role::Mask, bound(mask)?);
-                    m.insert(shad::Role::Tile, bound(tile)?);
-                } else {
-                    m.insert(shad::Role::Base, bound(tile)?);
-                }
+                m.insert(shad::Role::Mask, bound(mask)?);
+                m.insert(shad::Role::Tile, bound(tile)?);
             }
         }
         let extras = shad::Extras {
@@ -477,7 +473,6 @@ mod tests {
                 ],
                 &fixed,
             ),
-            fallback: None,
         };
         // A dusk dome: star mask, twinkle, stars, then the picture.
         let dusk = shader(
@@ -490,12 +485,11 @@ mod tests {
         assert_eq!(sky.drawn(recipe(&clouds).unwrap()), [0, 1]);
         let glow = shader(false, true, &[[6.0, 6.0], [1.0, 1.0]]);
         assert_eq!(sky.drawn(recipe(&glow).unwrap()), [1]);
-        // Without the sky stems a cloud layer draws its tile alone.
+        // A single sampler cannot draw the source mask and scrolling tile.
         let shared = SkyTemplates {
             library: shad::Library::new(&[stem(&shad::ONE_ALPHA_ENV, 3)], &fixed),
-            fallback: None,
         };
-        assert_eq!(shared.drawn(recipe(&clouds).unwrap()), [1]);
+        assert!(shared.layout(recipe(&clouds).unwrap()).is_none());
         // No layout: nothing drawn, nothing added.
         assert!(SkyTemplates::default().drawn(Recipe::Picture(0)).is_empty());
     }
@@ -595,7 +589,6 @@ mod tests {
             .collect();
         SkyTemplates {
             library: shad::Library::new(&stems, &fixed),
-            fallback: Some(TagId(9)),
         }
     }
 

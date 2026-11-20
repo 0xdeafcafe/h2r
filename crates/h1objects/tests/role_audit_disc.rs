@@ -60,8 +60,6 @@ const ALLOWED: &[Rule] = &[
         "(a) half of a reference the definition does not name, holding none (a group word or -1): no value to take from anywhere",
     ),
     ("hlmt", "block_60[].block_bc*", "*", "(a) native damage section response table indexed by object_new"),
-    ("hlmt", "block_60[].tagref_7c", "shad", "(a) native first- or third-person shield shader"),
-    ("hlmt", "block_60[].tagref_84", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_e8", "shad", "(a) native first- or third-person shield shader"),
     ("hlmt", "block_60[].tagref_f0", "shad", "(a) native first- or third-person shield shader"),
     (
@@ -200,6 +198,14 @@ impl Halo1Objects for Audit<'_> {
 
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
         self.inner.first_person_arms(id)
+    }
+
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> Result<Vec<tags::collision::Bsp>, String> {
+        self.inner.collision(group, name)
     }
 
     fn take(&mut self) -> ObjectTags {

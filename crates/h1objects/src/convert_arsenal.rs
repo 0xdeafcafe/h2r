@@ -18,55 +18,42 @@ impl Converter<'_> {
     pub(super) fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
         let Some(t) = h1::reference(self.h1, b, 0x248) else { return Ok(None) };
         let t = self.h1_tag(t)?;
-        Ok(match self.foot(t, rep) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home
-                    .push(format!("material effects {}: not converted ({e})", t.name));
-                None
-            }
-        })
+        Ok(Some(self.foot(t, rep)?))
     }
 
     /// Halo 1's effect `id`, converted ([`Converter::effect`]); `None`
-    /// when there is none or it does not convert (noted as `what`).
+    /// when the source slot is empty.
     fn h1_effect(
         &mut self,
         id: Option<h1map::TagId>,
         what: &str,
-        rep: &mut ObjectReport,
+        _rep: &mut ObjectReport,
     ) -> Result<Option<TagId>> {
         let Some(id) = id else {
             return Ok(None);
         };
         let t = self.h1_tag(id)?;
-        Ok(match self.effect(t) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home
-                    .push(format!("{what} {}: not converted ({e})", t.name));
-                None
-            }
+        self.effect(t).map(Some).map_err(|e| {
+            h1convert::Error::no_rebuild(&self.h1.header().name, &t.name, format!("{what}: {e}"))
+                .into()
         })
     }
 
     /// Halo 1's damage effect `id`, converted ([`Self::damage`]); `None`
-    /// when there is none or it does not convert (noted as `what`).
+    /// when the source slot is empty.
     fn h1_damage(
         &mut self,
         id: Option<h1map::TagId>,
         what: &str,
-        rep: &mut ObjectReport,
+        _rep: &mut ObjectReport,
     ) -> Result<Option<TagId>> {
         let Some(id) = id else {
             return Ok(None);
         };
-        Ok(match self.damage(id) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home.push(format!("{what}: not converted ({e})"));
-                None
-            }
+        let tag = self.h1_tag(id)?;
+        self.damage(id).map(Some).map_err(|e| {
+            h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, format!("{what}: {e}"))
+                .into()
         })
     }
 
@@ -131,6 +118,11 @@ impl Converter<'_> {
         }
         let m = model.map(|m| self.h1_tag(m)).transpose()?;
         let (_, _, mut conv) = h1models::graph_from_map(self.h1, t, m)?;
+        self.graph_sounds(t, &mut conv)?;
+        self.cached(t, conv)
+    }
+
+    pub(super) fn graph_sounds(&mut self, t: &Tag, conv: &mut Converted) -> Result<()> {
         // The sounds its animations play (the reloads, the ready), as Halo
         // 2 sound events (`h1models::sounds`).
         let sounds = h1models::sounds::read(self.h1, t)?;
@@ -139,7 +131,7 @@ impl Converter<'_> {
             let mut targets = Vec::new();
             for r in &sounds.refs {
                 let got = match r.map(|id| self.h1_tag(id)).transpose()? {
-                    Some(s) => self.sound(s, &mut rep),
+                    Some(s) => Some(self.sound(s, &mut rep)?),
                     None => None,
                 };
                 targets.push(got);
@@ -153,11 +145,11 @@ impl Converter<'_> {
             ));
             self.tree.reports.push(rep);
         }
-        self.cached(t, conv)
+        Ok(())
     }
 
     /// A Halo 1 damage effect from the `jpt!` definition, once.
-    pub(super) fn damage(&mut self, id: h1map::TagId) -> Result<TagId> {
+    pub fn damage(&mut self, id: h1map::TagId) -> Result<TagId> {
         let t = self.h1_tag(id)?;
         if let Some(d) = self.done.get(&t.id.0) {
             return Ok(*d);
@@ -168,7 +160,7 @@ impl Converter<'_> {
         }
         let sound = if let Some(id) = h1::reference(self.h1, b, 0x114) {
             let mut rep = Self::report(t, "none: rebuilt from tags::defs");
-            let out = self.sound(self.h1_tag(id)?, &mut rep);
+            let out = Some(self.sound(self.h1_tag(id)?, &mut rep)?);
             self.tree.reports.push(rep);
             out
         } else {
@@ -188,16 +180,6 @@ impl Converter<'_> {
             root,
             raw: Vec::new(),
         })
-    }
-
-    /// The first `jpt!` a Halo 1 effect names (its events' parts), for a
-    /// projectile whose detonation damage Halo 1 keeps in its effect.
-    fn effect_damage(&self, effe: Option<h1map::TagId>) -> Option<h1map::TagId> {
-        let t = self.h1.tag(effe?).ok()?;
-        crate::h1::Effect::read(self.h1, t).ok()?.events.into_iter()
-            .flat_map(|event| event.parts)
-            .filter(|part| part.group == h1map::Group::new(b"jpt!"))
-            .find_map(|part| part.reference)
     }
 
     /// The projectile applies the event's damaging part itself. Keep any
@@ -246,7 +228,7 @@ impl Converter<'_> {
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (rebuilt weapons borrow no phmo)".into());
         let rounds = w.rounds_counter();
-        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true, rounds)?;
+        let hlmt = self.model(&mut rep, &w.object, &tag.name, rounds)?;
         let predicted = self.predicted(hlmt);
         let mut parts = arsenal::WeaponParts {
             hlmt,
@@ -282,8 +264,13 @@ impl Converter<'_> {
                         None
                     };
                 }
+                let [fire, misfire, empty] = f.effects;
                 list.push(arsenal::FiringParts {
-                    effects: f.effects.map(|e| self.weapon_slot(e, &mut rep)),
+                    effects: [
+                        self.weapon_slot(fire, &mut rep)?,
+                        self.weapon_slot(misfire, &mut rep)?,
+                        self.weapon_slot(empty, &mut rep)?,
+                    ],
                     damage,
                     shot_count: f.shot_count,
                 });
@@ -292,8 +279,8 @@ impl Converter<'_> {
         }
         for m in &w.magazines {
             let fx = [
-                self.weapon_slot(m.reloading_effect, &mut rep),
-                self.weapon_slot(m.chambering_effect, &mut rep),
+                self.weapon_slot(m.reloading_effect, &mut rep)?,
+                self.weapon_slot(m.chambering_effect, &mut rep)?,
             ];
             parts.magazine_effects.push(fx);
             let mut objects = Vec::new();
@@ -307,7 +294,7 @@ impl Converter<'_> {
         // The weapon's own effects and sounds: Halo 1's, or none.
         for (path, at) in arsenal::WEAPON_EFFECTS.iter().filter(|(path, _)| !path.starts_with("item.")) {
             let id = h1::reference(self.h1, &bytes, *at);
-            if let Some((g, x)) = self.weapon_slot(id, &mut rep) {
+            if let Some((g, x)) = self.weapon_slot(id, &mut rep)? {
                 parts.halo1.push(((*path).to_owned(), g, x));
             }
         }
@@ -324,17 +311,10 @@ impl Converter<'_> {
             Some(m) => Some(self.render_model(&mut rep, m, rounds)?),
             None => None,
         };
-        let fp_anim = match w.first_person_animations {
-            Some(a) => match self.graph(a, w.first_person_model) {
-                Ok(id) => Some(id),
-                Err(e) => {
-                    rep.no_home
-                        .push(format!("first-person animations do not convert: {e}"));
-                    None
-                }
-            },
-            None => None,
-        };
+        let fp_anim = w
+            .first_person_animations
+            .map(|a| self.graph(a, w.first_person_model))
+            .transpose()?;
         parts.first_person = (fp_model, fp_anim);
         // Halo 1's weapon HUD (docs/halo1/hud.md): `+0x2b0` names it, and the
         // counterpart's becomes the Halo 2 side of the weapon's HUD pair.
@@ -349,9 +329,14 @@ impl Converter<'_> {
                         rep.no_home.push(format!("HUD: {s}"));
                     }
                 }
-                Err(e) => rep
-                    .no_home
-                    .push(format!("HUD: Halo 1's does not convert: {e}")),
+                Err(e) => {
+                    return Err(h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &self.h1_tag(wphi)?.name,
+                        e,
+                    )
+                    .into());
+                }
             }
         }
         // Halo 1's in the slots named by pairs (arsenal::WEAPON_MELEE_DAMAGE),
@@ -395,26 +380,23 @@ impl Converter<'_> {
         &mut self,
         id: Option<h1map::TagId>,
         rep: &mut ObjectReport,
-    ) -> Option<(FourCC, TagId)> {
-        let t = self.h1_tag(id?).ok()?;
-        if t.group == h1map::Group::new(b"snd!") {
-            return Some((FourCC(*b"snd!"), self.sound(t, rep)?));
-        }
-        Some((FourCC(*b"effe"), self.weapon_effect(id, rep)?))
-    }
-
-    /// A weapon's Halo 1 effect converted ([`Converter::effect`]); one that
-    /// does not convert is left out, the reason in `rep`.
-    fn weapon_effect(&mut self, id: Option<h1map::TagId>, rep: &mut ObjectReport) -> Option<TagId> {
-        let t = self.h1_tag(id?).ok()?;
-        match self.effect(t) {
-            Ok(x) => Some(x),
-            Err(e) => {
-                rep.no_home
-                    .push(format!("effe {}: not converted ({e})", t.name));
-                None
+    ) -> Result<Option<(FourCC, TagId)>> {
+        let Some(id) = id else { return Ok(None) };
+        let t = self.h1_tag(id)?;
+        let group = FourCC(t.group.0.to_be_bytes());
+        let converted = match &group.0 {
+            b"snd!" => self.sound(t, rep)?,
+            b"effe" => self.effect(t)?,
+            _ => {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &t.name,
+                    "unsupported weapon effect group",
+                )
+                .into());
             }
-        }
+        };
+        Ok(Some((group, converted)))
     }
 
     pub(super) fn projectile(&mut self, tag: &Tag) -> Result<TagId> {
@@ -423,30 +405,38 @@ impl Converter<'_> {
         let b = h1::tag_bytes(self.h1, tag, b"proj", h1::PROJ_SIZE)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (rebuilt projectiles borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &p.object, &tag.name, None)?;
         let impact_damage = match p.impact_damage {
             Some(j) => Some(self.damage(j)?),
             None => None,
         };
+        // The primary detonation damage moves onto the projectile; the
+        // rest of each event stays in its effect (Self::detonation_effect).
         let (detonation, detonation_damage) = self.detonation_effect(p.effect)?;
         let (sup, super_damage) = self.detonation_effect(p.super_detonation)?;
+        let source = self.h1;
+        let base = self.base;
+        let responses = arsenal::responses(source, b, &base.materials, |id| {
+            let effect = self.h1_tag(id)?;
+            self.effect(effect)
+        })?;
         let mut parts = arsenal::ProjectileParts {
             hlmt,
             impact_damage,
             detonation_damage,
             halo1: Vec::new(),
-            responses: arsenal::responses(self.h1, b, &self.base.materials)?,
+            responses,
         };
         // Halo 1's in the slots named by pairs (arsenal::PROJECTILE_FLYBY_SOUND).
         let started = self.h1_effect(p.detonation_started, "detonation started", &mut rep)?;
         let flyby = match p.flyby_sound {
             Some(s) => {
                 let t = self.h1_tag(s)?;
-                self.sound(t, &mut rep)
+                Some(self.sound(t, &mut rep)?)
             }
             None => None,
         };
-        let attached = p.attached_detonation_damage.map(|id| self.damage(id)).transpose()?;
+        let attached = self.h1_damage(p.attached_detonation_damage, "attached detonation damage", &mut rep)?;
         parts.halo1 = vec![
             arsenal::halo1_ref("ref_108", b"jpt!", attached),
             arsenal::halo1_ref("super_detonation_damage", b"jpt!", super_damage),
@@ -460,7 +450,7 @@ impl Converter<'_> {
         let root = arsenal::projectile(&p, b, &parts)?;
         let root = self.with_object_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
         rep.no_home.push(format!(
-            "{} Halo 1 material responses as {} (their effects null: Halo 1's effects are not converted)",
+            "{} Halo 1 material responses as {}",
             p.material_responses.len(),
             parts.responses.len()
         ));
@@ -479,16 +469,13 @@ impl Converter<'_> {
     pub(super) fn item_effect_refs(&mut self, bytes: &[u8], rep: &mut ObjectReport) -> Result<arsenal::Halo1Refs> {
         let mut refs = Vec::new();
         for &(path, at) in arsenal::WEAPON_EFFECTS.iter().filter(|(path, _)| path.starts_with("item.")) {
-            if let Some((group, id)) = self.weapon_slot(h1::reference(self.h1, bytes, at), rep) {
+            if let Some((group, id)) = self.weapon_slot(h1::reference(self.h1, bytes, at), rep)? {
                 refs.push((path.to_owned(), group, id));
             }
         }
         if let Some(foot) = self.h1_foot(bytes, rep)? {
             refs.push(arsenal::halo1_ref(arsenal::ITEM_FOOT, b"foot", Some(foot)));
         }
-        let effect = h1::reference(self.h1, bytes, 0x2f8);
-        let damage = self.h1_damage(self.effect_damage(effect), "item detonation damage", rep)?;
-        refs.push(arsenal::halo1_ref("item.ref_10c", b"jpt!", damage));
         Ok(refs)
     }
 
@@ -500,7 +487,7 @@ impl Converter<'_> {
         self.halo2_change_colours(&mut e.object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (rebuilt equipment borrows no phmo)".into());
-        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true, None)?;
+        let hlmt = self.model(&mut rep, &e.object, &tag.name, None)?;
         let predicted = self.predicted(hlmt);
         let mut parts = arsenal::EquipmentParts {
             hlmt,
@@ -509,7 +496,7 @@ impl Converter<'_> {
         };
         let eb = h1::tag_bytes(self.h1, tag, b"eqip", h1::EQIP_SIZE)?;
         parts.halo1 = self.item_effect_refs(eb, &mut rep)?;
-        if let Some((group, id)) = self.weapon_slot(h1::reference(self.h1, eb, 0x310), &mut rep) {
+        if let Some((group, id)) = self.weapon_slot(h1::reference(self.h1, eb, 0x310), &mut rep)? {
             parts.halo1.push(("snd_ref_134".to_owned(), group, id));
         }
         let root = arsenal::equipment(&e, eb, &parts)?;

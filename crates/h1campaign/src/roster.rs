@@ -39,17 +39,33 @@ pub(crate) fn prepare(
     h1: &H1Map,
     ai: &H1Ai,
     conv: &mut Converter<'_>,
+    assets: crate::h2assets::Assets,
     retail: Option<&TagSet>,
+    scripts: Option<&h1scripts::Tables>,
 ) -> Result<Vec<Variant>> {
     let mut todo = Vec::new();
     for (i, entry) in ai.actor_palette.iter().enumerate() {
-        if ai.actor_of(i).is_some_and(|a| rebuilds_character(a.kind)) {
+        if entry.is_some()
+            && (assets == crate::h2assets::Assets::Halo1
+                || ai.actor_of(i).is_some_and(|a| rebuilds_character(a.kind)))
+        {
             let v = entry.as_ref().expect("actor of variant");
             let t = h1
                 .find(Group::new(b"actv"), &v.name)
                 .ok_or_else(|| invalid(format!("AI actor variant {}", v.name)))?;
             todo.push(t.id);
         }
+    }
+    if assets == crate::h2assets::Assets::Halo1
+        && let Some(scripts) = scripts
+    {
+        todo.extend(
+            scripts
+                .references
+                .iter()
+                .filter(|r| r.group == Group::new(b"actv") && !r.id.is_none())
+                .map(|r| r.id),
+        );
     }
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -65,7 +81,9 @@ pub(crate) fn prepare(
         let variant_bytes = h1.tag_data(tag)?;
         let actor_bytes = h1.tag_data(act)?;
         let float = |b: &[u8], off: usize| f32::from_le_bytes(b[off..off + 4].try_into().unwrap());
-        let biped = h1.tag(variant.unit.id)?;
+        let biped = h1.tag(variant.unit.id).map_err(|e| {
+            h1convert::Error::no_rebuild(&h1.header().name, &tag.name, format!("actor unit: {e}"))
+        })?;
         let field = h1map::Block::read(variant_bytes, 0x22c).expect("validated actv size");
         let colours: Vec<_> = h1
             .block(field, 0x20)?
@@ -217,11 +235,7 @@ pub(crate) fn install(set: &mut TagSet, ids: &[TagId], variants: Vec<Variant>) -
     }
     let mut kit = Loadout::default();
     for v in &variants {
-        let parent = if v.kind == 8 {
-            r"objects\characters\marine\ai\marine"
-        } else {
-            r"ai\generic"
-        };
+        let parent = r"ai\generic";
         let parent = set
             .find(FourCC(*b"char"), parent)
             .ok_or_else(|| invalid(format!("char {} needs parent {parent}", v.name)))?;
@@ -229,11 +243,20 @@ pub(crate) fn install(set: &mut TagSet, ids: &[TagId], variants: Vec<Variant>) -
         // A retail weapon is a set tag already, not one of the tree's.
         let weapon = v.weapon.map(|id| local_index(id).map_or(id, |k| ids[k]));
         let major = v.major.as_ref().map(|n| by_name[n]);
-        let style = (v.kind == 13)
-            .then(|| set.find(FourCC(*b"styl"), SENTINEL_STYLE))
-            .flatten();
+        let style = if v.kind == 13 {
+            Some(set.find(FourCC(*b"styl"), SENTINEL_STYLE).ok_or_else(|| {
+                h1convert::Error::no_rebuild(
+                    &set.name,
+                    &v.name,
+                    "missing native Sentinel behaviour style",
+                )
+            })?)
+        } else {
+            None
+        };
         let root = character(v, parent, real(v.unit), weapon, major, style)?;
         set.tag_mut(by_name[&v.name]).expect("reserved").payload = TagPayload::Built(root);
+        set.record_conversion(FourCC(*b"char"), &v.name, by_name[&v.name]);
         kit.0.insert(v.name.clone(), weapon);
     }
     Ok(kit)

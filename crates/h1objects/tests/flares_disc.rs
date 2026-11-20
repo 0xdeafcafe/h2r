@@ -734,7 +734,7 @@ fn every_flare_debris_and_fixture_converts() {
                 fixtures += 1;
                 fixture_lights += got;
             }
-            let skies = h1convert::sky::read(&m);
+            let skies = h1convert::sky::read(&m).unwrap();
             for s in &skies.skies {
                 for (l, f) in s.sky.lights.iter().zip(&s.flares) {
                     assert_eq!(f.is_some(), !l.lens_flare.id.is_none(), "{level} {}", s.name);

@@ -1849,6 +1849,17 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             let m = crate::textures::h1_maps_of(h1, tag)?;
             let s = crate::textures::h1_scales_of(h1, tag);
             let d = h1.tag_data(tag).ok()?;
+            if group == "senv" && m.base.is_none() {
+                // Monitor glow has no diffuse texture. Its only sampled
+                // image is the illumination map, following its UV scale.
+                let light = h1map::TagRef::read(d, 0x254)?;
+                if light.group == h1map::Group::new(b"bitm") && !light.id.is_none() {
+                    let mut shader = one(&ILLUM, Some(light.id))?;
+                    let scale = f32::from_le_bytes(d.get(0x250..0x254)?.try_into().ok()?);
+                    shader.maps[0].1.scale = [scale; 2];
+                    return Some(shader);
+                }
+            }
             let flags = d
                 .get(SENV_FLAGS..SENV_FLAGS + 2)
                 .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));

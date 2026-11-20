@@ -174,11 +174,6 @@ pub struct Options<'a> {
     /// level is written fresh: built from scratch ([`scratch`]), or the
     /// base pruned when that fails ([`KEEP`], `h1convert::fresh`).
     pub pinned: bool,
-    /// Build every biped from the `bipd` definition
-    /// (`h1objects::convert::Options::rebuild_bipeds`) instead of on
-    /// Halo 2 templates. On by default (converter version 48); off builds
-    /// them on templates as before.
-    pub rebuild_bipeds: bool,
     /// Which of Halo 1's devices are placed. `convert` places fewer when a
     /// level is still over a bound with everything else left out (pinned
     /// b40 and d40).
@@ -259,7 +254,6 @@ impl Default for Options<'_> {
             cutscene_graphs: true,
             pinned: false,
             devices: Devices::All,
-            rebuild_bipeds: true,
             assets: h2assets::Assets::Halo1,
             shared: None,
             base_file: None,
@@ -508,10 +502,12 @@ fn convert_with<R: Read + Seek>(
         ..Report::default()
     };
     let scnr = scenario::BaseScenario::read(base)?;
-    let ambience = h1convert::ambience::read_campaign(h1);
+    let ambience = h1convert::ambience::read_campaign(h1)?;
     let prepare = |base: &mut Map<R>| -> Result<PreparedBsps> {
         let mut r = Report::default();
-        let bsps = phase::time("bsp", || structure::prepare_all(h1, base, &scnr, &ambience, &mut r))?;
+        let bsps = phase::time("bsp", || {
+            structure::prepare_all(h1, base, &ambience, &mut r)
+        })?;
         Ok(PreparedBsps {
             bsps,
             reports: r.bsps,
@@ -524,7 +520,7 @@ fn convert_with<R: Read + Seek>(
     report.bsps.extend(prepared.reports.iter().cloned());
     let bsps = &prepared.bsps;
     let objects_base = if opts.objects || opts.ai {
-        let b = phase::time("base templates", || h1objects::base::Base::read(base))
+        let b = phase::time("base shader programs", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;
         Some(b)
     } else {
@@ -580,8 +576,20 @@ fn convert_with<R: Read + Seek>(
     }
     let pathfinding: Vec<_> = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
-        let mut wanted = donor::wanted(h1)?;
-        if let Some(scripts) = opts.scripts {
+        let mut wanted = if opts.assets == h2assets::Assets::Halo2 {
+            donor::wanted(h1)?
+        } else {
+            // The native Sentinel behaviour style has no Halo 1 tag equivalent.
+            let ai = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+            let sentinel = ai.actors.iter().any(|(_, actor)| actor.kind.0 == 13);
+            sentinel
+                .then(|| (map::FourCC(*b"styl"), roster::SENTINEL_STYLE.to_owned()))
+                .into_iter()
+                .collect()
+        };
+        if opts.assets == h2assets::Assets::Halo2
+            && let Some(scripts) = opts.scripts
+        {
             wanted.extend(actor_control::wanted(h1, &scripts.catalog)?);
         }
         // The retail weapons, vehicles and player the Halo 2-assets

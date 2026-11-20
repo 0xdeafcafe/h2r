@@ -87,8 +87,35 @@ fn spans(r: &mut Record, from: &[u8], list: &[(&str, usize, usize)]) -> Result<(
     Ok(())
 }
 
+/// Rebuild the point-physics tag named by a contrail point.
+pub fn point_physics(source: &[u8]) -> Result<Block> {
+    let b = source
+        .get(..0x34)
+        .ok_or(Error::Truncated("point physics"))?;
+    let word = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("field"));
+    let d = def(b"pphy")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "flags", Val::Int(word(0).into()))?;
+    for (name, at) in [
+        ("mass", 4),
+        ("liquid_buoyancy", 8),
+        ("air_buoyancy", 12),
+        ("density", 0x20),
+        ("air_drag", 0x24),
+        ("liquid_drag", 0x28),
+        ("friction", 0x2c),
+        ("restitution", 0x30),
+    ] {
+        set(&mut r, name, Val::Float(f32::from_bits(word(at))))?;
+    }
+    defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
+}
+
 /// The `cont` root for `c`, its bitmap `bitmap` (converted, or null).
-pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>) -> Result<Block> {
+pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>, physics: &[Option<TagId>]) -> Result<Block> {
+    if physics.len() != c.points.len() {
+        return Err(Error::Invalid("contrail physics count".into()));
+    }
     let d = def(b"cont")?;
     let mut r = defs::default_record(d);
     set(&mut r, "flags", Val::Int(c.flags.into()))?;
@@ -98,8 +125,12 @@ pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>) -> Result<Block> {
     let points = c
         .points
         .iter()
-        .map(|p| {
+        .zip(physics)
+        .map(|(p, physics)| {
             let mut x = defs::default_record(pd);
+            if let Some(id) = physics {
+                set(&mut x, "physics", Val::tag(FourCC(*b"pphy"), *id))?;
+            }
             spans(&mut x, p, CONT_POINT_SPANS)?;
             Ok(x)
         })
@@ -1024,6 +1055,24 @@ mod attachment_tests {
             Some(Val::Block(b)) => b,
             _ => &[],
         }
+    }
+
+    #[test]
+    fn contrail_point_physics_preserves_authored_coefficients() {
+        let mut source = vec![0xaa; 0x40];
+        source[..4].copy_from_slice(&5u32.to_le_bytes());
+        for (i, at) in [4usize, 8, 12, 0x20, 0x24, 0x28, 0x2c, 0x30]
+            .into_iter()
+            .enumerate()
+        {
+            source[at..at + 4].copy_from_slice(&(i as f32 * 0.25 - 0.5).to_le_bytes());
+        }
+        let root = super::point_physics(&source).unwrap();
+        assert_eq!(root.bytes.len(), 0x40);
+        assert_eq!(root.bytes[..0x10], source[..0x10]);
+        assert_eq!(root.bytes[0x20..0x34], source[0x20..0x34]);
+        assert_eq!(root.bytes[0x10..0x20], [0; 0x10]);
+        assert!(super::point_physics(&source[..0x30]).is_err());
     }
 
     #[test]

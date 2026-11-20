@@ -29,6 +29,8 @@ use crate::{Error, Result};
 /// style palette entry.
 #[derive(Debug, Clone)]
 pub struct Options {
+    /// Use the explicitly selected Halo 2 asset set for the AI sandbox.
+    pub halo2_assets: bool,
     /// First generated HS command script, after the authored scenario scripts.
     /// Absent when the caller is building AI without scripts.
     pub first_command_script: Option<u16>,
@@ -54,6 +56,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            halo2_assets: false,
             first_command_script: None,
             firing_position_flags: 0x42,
             zone_flags: 1,
@@ -209,7 +212,7 @@ pub fn convert_for_map(
             let kind = actor.map_or(ActorType(14), |a| a.kind);
             let uncover = actor.map_or([0.0; 2], |a| a.uncover);
             let (path, grenade) = character_for(kind, &v.name);
-            let path = if rebuilds_character(kind) {
+            let path = if !opts.halo2_assets || rebuilds_character(kind) {
                 v.name.as_str()
             } else {
                 path

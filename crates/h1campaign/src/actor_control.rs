@@ -64,6 +64,7 @@ pub(crate) fn install(
     map: &H1Map,
     set: &mut TagSet,
     aliases: &Aliases,
+    assets: crate::h2assets::Assets,
     hooks: &[Hook],
 ) -> Result<HashMap<String, TagId>> {
     let mut result = HashMap::new();
@@ -76,7 +77,7 @@ pub(crate) fn install(
             continue;
         }
         let (actor, v, kind) = variant(map, name)?;
-        if let Some(id) = set.find(CHAR, &v.name) {
+        if let Some(id) = set.converted(CHAR, &v.name) {
             result.insert(name.clone(), id);
             continue;
         }
@@ -88,10 +89,30 @@ pub(crate) fn install(
         } else {
             let tag = map.tag(v.weapon.id)?;
             let group = FourCC(tag.group.0.to_be_bytes());
-            set.find(group, &tag.name)
-                .or_else(|| aliases.get(group, &tag.name))
+            Some(
+                set.converted(group, &tag.name)
+                    .or_else(|| aliases.get(group, &tag.name))
+                    .ok_or_else(|| {
+                        h1convert::Error::no_rebuild(
+                            &map.header().name,
+                            &tag.name,
+                            "script-attached actor weapon",
+                        )
+                    })?,
+            )
         };
-        let inherited = set.find(CHAR, parent(kind, &v.name));
+        let parent_name = if assets == crate::h2assets::Assets::Halo2 {
+            parent(kind, &v.name)
+        } else {
+            r"ai\generic"
+        };
+        let inherited = Some(set.find(CHAR, parent_name).ok_or_else(|| {
+            h1convert::Error::no_rebuild(
+                &map.header().name,
+                &v.name,
+                format!("missing parent {parent_name}"),
+            )
+        })?);
         let root = character(
             kind,
             inherited,
@@ -100,6 +121,7 @@ pub(crate) fn install(
             map.tag_data(tag)?,
         )?;
         let id = set.add_tag(CHAR, &v.name, TagPayload::Built(root))?;
+        set.record_conversion(CHAR, &v.name, id);
         result.insert(name.clone(), id);
     }
     Ok(result)

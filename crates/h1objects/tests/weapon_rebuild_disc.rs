@@ -794,7 +794,7 @@ fn material_responses_pair_with_retail() {
     for (one, two) in pairs {
         let t = h1.find(h1map::Group::new(b"proj"), one).unwrap();
         let b = h1.tag_data(t).unwrap();
-        let list = arsenal::responses(&h1, b, &base.materials).unwrap();
+        let list = arsenal::responses(&h1, b, &base.materials, |id| Ok(TagId(id.0))).unwrap();
         let (m, _, d) = list[0];
         assert_eq!(m, arsenal::DEFAULT_MATERIAL);
         let Some(e2) = defaults.get(two) else {

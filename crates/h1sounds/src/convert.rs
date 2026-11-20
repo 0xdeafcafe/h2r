@@ -446,11 +446,11 @@ pub fn install_sounds(
     let mut gestalt = SoundGestalt::from_set(set)?;
     let mut ids = Vec::with_capacity(sounds.len());
     for (name, s) in sounds {
-        let c = s.add_to(&mut gestalt, set)?;
-        ids.push(
-            c.install(set, &name)
-                .map_err(|e| Error::Invalid(e.to_string()))?,
-        );
+        let id = match set.converted(FourCC(*b"snd!"), &name) {
+            Some(id) => id,
+            None => install_named(s.add_to(&mut gestalt, set)?, set, &name)?,
+        };
+        ids.push(id);
     }
     gestalt.install(set, crate::gestalt::DEFAULT_NAME)?;
     Ok(ids)
@@ -471,6 +471,10 @@ pub fn install_source_sounds(
     let mut gestalt = SoundGestalt::from_set(set)?;
     for name in names {
         if ids.contains_key(&name) {
+            continue;
+        }
+        if let Some(id) = set.converted(FourCC(*b"snd!"), &name) {
+            ids.insert(name, id);
             continue;
         }
         let tag = h1

@@ -29,7 +29,7 @@ impl Converter<'_> {
             let t = self.h1_tag(id)?;
             let mut group = a.group.0.to_be_bytes();
             let result = match &group {
-                b"lsnd" => Ok(self.looping_sound(t, rep).into_iter().collect()),
+                b"lsnd" => self.looping_sound(t).map(|id| vec![id]),
                 b"ligh" => self.light(t).map(|tag| vec![tag]),
                 b"effe" => self.effect(t).map(|tag| vec![tag]),
                 b"cont" => self.contrail(t).map(|tag| vec![tag]),
@@ -38,30 +38,17 @@ impl Converter<'_> {
                     self.attached_particle_system(t, &a.marker)
                 }
                 _ => {
-                    notes.push(format!(
-                        "attachment {} {}: no converter here",
-                        a.group, t.name
-                    ));
-                    continue;
+                    return Err(h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        format!("unsupported {} attachment", a.group),
+                    )
+                    .into());
                 }
             };
-            let tags = match result {
-                Ok(tags) if !tags.is_empty() => tags,
-                Ok(_) => {
-                    notes.push(format!(
-                        "attachment {} {}: no converted tag",
-                        a.group, t.name
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    notes.push(format!(
-                        "attachment {} {}: not converted ({e})",
-                        a.group, t.name
-                    ));
-                    continue;
-                }
-            };
+            // A pctl with no active emitters genuinely emits nothing.
+            let tags = result
+                .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &t.name, e))?;
             let mut scale = |index, kind| {
                 let scale = functions::primary_scale(index, &functions);
                 if index != 0 && scale.is_empty() {
@@ -94,12 +81,13 @@ impl Converter<'_> {
                 change_colour,
             }));
         }
-        let creation = obj.creation_effect.and_then(|id| {
-            self.h1_tag(id)
-                .and_then(|tag| self.effect(tag))
-                .map_err(|e| notes.push(format!("creation effect {id:?}: not converted ({e})")))
-                .ok()
-        });
+        let creation = obj
+            .creation_effect
+            .map(|id| {
+                let t = self.h1_tag(id)?;
+                self.effect(t)
+            })
+            .transpose()?;
         rep.no_home.extend(notes);
         Ok((out, creation, functions.into_iter().flatten().collect()))
     }
@@ -134,7 +122,7 @@ impl Converter<'_> {
         let mut obj = h1::Object::read(self.h1, bytes)?;
         self.halo2_change_colours(&mut obj);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let model = self.model(&mut rep, &obj, None, &tag.name, true, None)?;
+        let model = self.model(&mut rep, &obj, &tag.name, None)?;
         let predicted = self.predicted(model);
         let (attachments, creation, functions) = self.object_attachments(bytes, &obj, &mut rep)?;
         let d = Defs::builtin().group(FourCC(group)).expect("ssce");

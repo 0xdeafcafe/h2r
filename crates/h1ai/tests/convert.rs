@@ -194,19 +194,18 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert!(src.check_indices().is_empty());
     let plan = convert(&src, &Options::default());
     let ai = &plan.ai;
-    // Two palette entries name one character.
     let chars: Vec<_> = plan
         .characters
         .iter()
         .map(|c| c.h2_character.as_str())
         .collect();
-    assert_eq!(
-        chars,
-        [
-            "objects\\characters\\elite\\ai\\elite_major",
-            "objects\\characters\\grunt\\ai\\grunt"
-        ]
-    );
+    let variants: Vec<_> = src
+        .actor_palette
+        .iter()
+        .flatten()
+        .map(|v| v.name.as_str())
+        .collect();
+    assert_eq!(chars, variants);
     assert_eq!(ai.squad_groups.len(), 1);
     assert_eq!(ai.squad_groups[0].name, "first");
 
@@ -383,7 +382,7 @@ fn variants_with_different_uncover_rules_keep_separate_palette_entries() {
     let other_actor = TagId(3);
     src.actors.push((other_actor, actor));
     src.actor_palette[2].as_mut().unwrap().actor.id = other_actor;
-    let plan = convert(&src, &Options::default());
+    let plan = convert(&src, &Options { halo2_assets: true, ..Default::default() });
     assert_eq!(plan.characters[0].h2_character, plan.characters[2].h2_character);
     assert_eq!(plan.characters[0].uncover, [0.0; 2]);
     assert_eq!(plan.characters[2].uncover, [0.5, 0.1]);

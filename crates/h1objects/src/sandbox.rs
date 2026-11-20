@@ -70,7 +70,7 @@ impl Halo1Objects for Objects<'_> {
             .ok_or_else(|| format!("no {} {name}", String::from_utf8_lossy(&group)))?;
         let bytes = h1.tag_data(tag).map_err(|e| e.to_string())?;
         let obj = crate::h1::Object::read(h1, bytes).map_err(|e| e.to_string())?;
-        crate::coll::object_bsps(h1, &obj).map_err(|e| e.to_string())
+        crate::coll::object_bsps(h1, &obj, &self.conv.base.materials).map_err(|e| e.to_string())
     }
 
     fn take(&mut self) -> ObjectTags {
@@ -122,8 +122,8 @@ impl Halo1Objects for Objects<'_> {
                     loops: loops.clone(),
                     ..Tree::default()
                 }
-                .install_audio_for(set, ids);
-                Ok(())
+                .install_audio_for(set, ids)
+                .map_err(|e| e.to_string())
             }),
             notes,
         }

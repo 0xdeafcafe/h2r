@@ -8,6 +8,8 @@ mod ground_ai;
 mod a10_tutorial;
 #[path = "disc/a30_flow.rs"]
 mod a30_flow;
+#[path = "disc/no_fallback.rs"]
+mod no_fallback;
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -1773,7 +1775,7 @@ fn check_sound(
     let s = m.read_tag_bytes(scnr.id).unwrap();
     let palettes = [block(&s, sat, 0x250, 0x64), block(&s, sat, 0x258, 0x48)];
     let data = block(&s, sat, 0x290, 0x34);
-    let ambience = h1convert::ambience::read(h1);
+    let ambience = h1convert::ambience::read(h1).unwrap();
     let written = h1convert::ambience::written(&ambience);
     if palettes[0].len() != written[0] || palettes[1].len() != written[1] {
         bad.push(format!(
