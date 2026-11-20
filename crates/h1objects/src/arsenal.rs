@@ -684,6 +684,35 @@ pub struct ProjectileParts {
     pub responses: Vec<(&'static str, i16, Response)>,
 }
 
+/// Halo 1 computes air drag from the two velocities over its authored
+/// air interval (0x000c1ac0). Halo 2 blends speed by distance over that
+/// same interval (0x000f9527..0x000f95b4).
+fn velocity_change_distance(b: &[u8]) -> ([f32; 2], f32) {
+    let f = |at| f32::from_bits(u32_at(b, at));
+    let bounds = [f(0x1d0), f(0x1d4)];
+    let length = bounds[1] - bounds[0];
+    if f(0x1e4) == f(0x1e8) {
+        ([0.0, 0.0], 1.0)
+    } else if length.is_finite() && length > 0.0 {
+        (bounds, length.recip())
+    } else {
+        ([0.0, 0.0], 0.0)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn projectile_velocity_transition_uses_air_distance() {
+    let mut bytes = [0; h1::PROJ_SIZE];
+    for (at, value) in [(0x1d0, 20.0f32), (0x1d4, 50.0), (0x1e4, 2.0), (0x1e8, 1.0)] {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let (bounds, inverse) = velocity_change_distance(&bytes);
+    assert_eq!(bounds, [20.0, 50.0]);
+    assert_eq!(inverse, 1.0 / 30.0);
+    assert_eq!((35.0 - bounds[0]) * inverse, 0.5);
+}
+
 /// The `proj` root from Halo 1's projectile (its tag's bytes `b`).
 pub fn projectile(
     p: &h1::Projectile,
@@ -702,6 +731,13 @@ pub fn projectile(
         };
         word(&mut r, path, w)?;
     }
+    let (change_distance, inverse) = velocity_change_distance(b);
+    set(&mut r, "velocity_change_distance", Val::floats(&change_distance))?;
+    set(
+        &mut r,
+        "inverse_velocity_change_distance",
+        Val::Float(inverse),
+    )?;
     // Halo 1's detonation noise (`+0x1f0`, i16) in the low half of `+0xe4`.
     word(
         &mut r,
@@ -971,11 +1007,39 @@ pub fn equipment(e: &h1::Equipment, b: &[u8], parts: &EquipmentParts) -> Result<
     built(d, &r)
 }
 
+/// A pure impulse may have a radius without changing body or shield vitality.
+pub(crate) fn has_vitality_damage(b: &[u8]) -> bool {
+    [H1_DAMAGE_LOWER, H1_DAMAGE_UPPER, H1_DAMAGE_UPPER + 4]
+        .into_iter()
+        .any(|at| f32::from_bits(u32_at(b, at)) > 0.0)
+}
+
+#[cfg(test)]
+#[test]
+fn shock_wave_radius_does_not_count_as_vitality_damage() {
+    let mut bytes = [0; H1_JPT_MIN];
+    bytes[4..8].copy_from_slice(&8.0f32.to_le_bytes());
+    assert!(!has_vitality_damage(&bytes));
+    bytes[H1_DAMAGE_UPPER + 4..H1_DAMAGE_UPPER + 8].copy_from_slice(&1.0f32.to_le_bytes());
+    assert!(has_vitality_damage(&bytes));
+}
+
 /// Halo 1 damage, camera impulse, shake and player feedback.
 pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
+    damage_with_scale(b, sound, None)
+}
+
+pub(crate) fn damage_with_scale(
+    b: &[u8],
+    sound: Option<TagId>,
+    scale: Option<&str>,
+) -> Result<Block> {
     let d = def(b"jpt!")?;
     let mut r = defs::default_record(d);
     set(&mut r, "ref_a8", Val::tag(FourCC(*b"snd!"), sound.unwrap_or(TagId::NULL)))?;
+    if let Some(scale) = scale {
+        set(&mut r, "string_50", Val::text(scale))?;
+    }
     if b.len() < H1_JPT_MIN { return Err(Error::Truncated("jpt! root")); }
     for (path, at) in [
         ("unknown_0", 0), ("unknown_4", 4), ("unknown_8", 8),
@@ -1035,6 +1099,6 @@ pub fn damage(b: &[u8], sound: Option<TagId>) -> Result<Block> {
     built(d, &r)
 }
 
-/// Halo 1's `jpt!` root size: where its first child block starts (V1,
-/// docs/halo1/objects.md); the damage bounds end at `+0x1dc`.
+/// Minimum Halo 1 `jpt!` bytes for the scalar damage and feedback fields.
+/// The source material multipliers follow at `+0x200`.
 pub const H1_JPT_MIN: usize = 0x1e4;

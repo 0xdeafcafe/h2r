@@ -90,6 +90,7 @@ impl Halo1Objects for Objects<'_> {
             })
             .collect();
         let (tags, sounds, loops) = (tree.tags, tree.sounds, tree.loops);
+        let player_damage_scales = tree.player_damage_scales;
         let tag = |id: map::TagId| match crate::convert::local_index(id) {
             Some(k) => HudTag::Added(k),
             None => HudTag::Base(id),
@@ -108,6 +109,7 @@ impl Halo1Objects for Objects<'_> {
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
+                    player_damage_scales: player_damage_scales.clone(),
                     ..Tree::default()
                 }
                 .install_tags(set)

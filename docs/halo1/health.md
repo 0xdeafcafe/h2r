@@ -16,7 +16,7 @@ Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health
 that regenerates. For Halo 1 content we keep Halo 1's model, the one
 agreed exception to "Halo 2's engine wins" ([campaign.md](campaign.md)
-decision 2). Everything else (damage, shields, physics) stays Halo 2's.
+decision 2). The engine still uses Halo 2's damage, shield and physics code.
 
 Labels: **confirmed** means read from the retail XBE's instructions with
 `h2 disasm` and asserted by `crates/boot/tests/health_xbe.rs` (ignored;
@@ -144,7 +144,11 @@ plan:
   each use.
 - **HUD**: the converted player's HUD draws the meter (below, "The
   health meter in the HUD"). Nothing on the host draws one.
-- **Damage**: unchanged.
+- **Damage. Built.** Converted weapons and the cyborg carry Halo 1's
+  damage and vitality data. The cyborg's collision materials select
+  the body or head section, and its armour and shields use each
+  damage effect's source multipliers through Halo 2's damage table.
+  [Blood Gulch hit registration](objects.md#blood-gulch-hit-registration-built)
 
 ### The health meter in the HUD
 
