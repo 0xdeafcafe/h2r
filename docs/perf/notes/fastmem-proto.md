@@ -1,6 +1,6 @@
 # fastmem write-watch prototype (Mach exceptions, macOS arm64)
 
-Evidence for the write-watch question in [../guest-memory.md](../guest-memory.md); the prototype is `crates/recompiler/fastmem-proto`.
+Evidence for the write-watch question in [../guest-memory.md](../guest-memory.md). The prototype was `crates/recompiler/fastmem-proto`, deleted by the crate-structure window S1 ([crate-structure.md](../../dev/crate-structure.md)); its source is at commit `0b3bbc32d` (`git show 0b3bbc32d:crates/recompiler/fastmem-proto/src/lib.rs`), where the commands below still run.
 
 `crates/recompiler/fastmem-proto` is the isolated prototype that the fastmem design
 ("Write watch and fault handling", `docs/fastmem.md` on the `perf` branch)
