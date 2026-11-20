@@ -345,6 +345,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
+    #[cfg(feature = "desktop-runtime")]
     features
         .add(&feature::render_loop::RenderLoop)
         .map_err(|e| anyhow::anyhow!("render loop: {e}"))?;

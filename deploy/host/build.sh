@@ -13,6 +13,7 @@ root="$(cd "$here/../.." && pwd)"
 disc=
 out="$here/image-out"
 jobs=
+coverage=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out)
@@ -26,8 +27,13 @@ while [ "$#" -gt 0 ]; do
       jobs=$2
       shift 2
       ;;
+    --coverage)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || die "--coverage needs an address list"
+      coverage=$2
+      shift 2
+      ;;
     -h|--help)
-      printf '%s\n' 'Usage: deploy/host/build.sh [disc.iso|default.xbe] [--out DIR] [--jobs N]' \
+      printf '%s\n' 'Usage: deploy/host/build.sh [disc.iso|default.xbe] [--out DIR] [--jobs N] [--coverage FILE]' \
         'Set H2_LINUX_SYSROOT to an absolute Debian bookworm amd64 sysroot path.' \
         'Set H2_DISC if omitting the disc and H2_BIN to use a Mac h2 from this revision.'
       exit 0
@@ -46,6 +52,10 @@ disc=${disc:-${H2_DISC:-}}
 case "$disc" in /*) ;; *) disc="$PWD/$disc" ;; esac
 case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
 [ -f "$disc" ] || die "no disc file at $disc"
+if [ -n "$coverage" ]; then
+  case "$coverage" in /*) ;; *) coverage="$PWD/$coverage" ;; esac
+  [ -s "$coverage" ] || die "no host coverage list at $coverage"
+fi
 stage="$here/stage"
 
 triple=x86_64-unknown-linux-gnu
@@ -56,7 +66,7 @@ if command -v rustup >/dev/null 2>&1 &&
   ! rustup target list --installed | grep -Fx "$triple" >/dev/null; then
   die "run: rustup target add $triple"
 fi
-for tool in clang ld.lld llvm-ar; do
+for tool in clang ld.lld llvm-ar llvm-strip; do
   command -v "$tool" >/dev/null 2>&1 ||
     die "$tool is missing from PATH. Install with brew install llvm@22 lld@22 and add their bin directories to PATH."
 done
@@ -105,6 +115,9 @@ module_cmd=("$h2_bin" build "$disc" --arch x86_64-linux --tier clang --out "$out
 if [ -n "$jobs" ]; then
   module_cmd+=(--jobs "$jobs")
 fi
+if [ -n "$coverage" ]; then
+  module_cmd+=(--profile host --coverage "$coverage")
+fi
 if "${module_cmd[@]}" --check; then
   printf 'Reusing the current module in %s\n' "$out"
 else
@@ -123,5 +136,7 @@ mkdir -p "$stage/image"
 rm -f "$stage/image/libh2game.so.stamp"
 install -m 0755 "$linux_h2" "$stage/h2"
 install -m 0644 "$module" "$stage/image/libh2game.so"
+llvm-strip --strip-unneeded "$stage/h2" "$stage/image/libh2game.so"
 install -m 0644 "$module.stamp" "$stage/image/libh2game.so.stamp"
+wc -c "$stage/h2" "$stage/image/libh2game.so"
 printf 'Staged the Linux host and module in %s\n' "$stage"

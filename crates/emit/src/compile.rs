@@ -29,6 +29,16 @@ mod tiers;
 pub use pgo::Pgo;
 pub use tiers::{Tiers, hot_addresses};
 
+/// Cranelift's optimisation level for the fast tier: `H2_CLIF_OPT`
+/// (`none`, `speed`), default `speed`.
+pub fn clif_opt_level() -> Result<&'static str, String> {
+    match std::env::var("H2_CLIF_OPT").ok().as_deref() {
+        None | Some("") | Some("speed") => Ok("speed"),
+        Some("none") => Ok("none"),
+        Some(v) => Err(format!("H2_CLIF_OPT={v}: expected none or speed")),
+    }
+}
+
 /// Flags for every generated object that do not depend on the build
 /// profile (LIFTER.md §1): no fast-math or FP contraction, no
 /// strict-aliasing assumptions. The optimisation level and debug-info

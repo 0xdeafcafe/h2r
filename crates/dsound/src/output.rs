@@ -38,8 +38,9 @@
 //! mix: a routed sound is never lost.
 use crate::register::{Hle, StopRecord};
 use crate::state::{Consumer, Lease, Stop};
-use audio::resample::LinearResampler;
-use audio::sink::{AudioSink, Pump as RingPump, SinkStats};
+#[cfg(feature = "playback")]
+use audio::{resample::LinearResampler, sink::Pump as RingPump};
+use audio::sink::{AudioSink, SinkStats};
 use runtime::Runtime;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -53,6 +54,7 @@ pub enum Pacing {
     /// device's, which is real time. The mixer follows the sink's rate. A
     /// sink nobody drains stops audio time once it is full. Nondeterministic
     /// by nature (see the module docs).
+    #[cfg(feature = "playback")]
     Device { target_latency_ms: u32 },
     /// The runner drives audio time with [`Output::advance_to`] at its
     /// scheduler points (each logical tick, vblank, or before a guest thread
@@ -70,6 +72,7 @@ pub enum Pacing {
     /// `playout` is how the thread plays it: `None` writes everything to the
     /// sink as soon as it is rendered (exact samples, for tests); a
     /// [`Playout`] keeps a jitter buffer, which a real device needs.
+    #[cfg(feature = "playback")]
     Logical {
         origin: u64,
         max_queued: Duration,
@@ -174,9 +177,12 @@ impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             period: Duration::from_millis(5),
+            #[cfg(feature = "playback")]
             pacing: Pacing::Device {
                 target_latency_ms: audio::sink::DEFAULT_TARGET_LATENCY_MS,
             },
+            #[cfg(not(feature = "playback"))]
+            pacing: Pacing::Completions { origin: 0 },
             halt_when: None,
             side: None,
         }
@@ -277,6 +283,7 @@ impl Shared {
     }
 
     /// Queues rendered side mix (clamped), keeping at most `max` frames.
+    #[cfg(feature = "playback")]
     fn push_side(&self, block: &[f32], max: usize) {
         let mut q = self.side_queue.lock().unwrap_or_else(|e| e.into_inner());
         q.extend(block.iter().map(|v| v.clamp(-1.0, 1.0)));
@@ -380,6 +387,7 @@ impl Output {
         if g.done + QUANTUM > due {
             return Ok(0);
         }
+        #[cfg(feature = "playback")]
         let mut samples = (!self.clock_only).then(|| {
             ([0.0f32; 2 * QUANTUM as usize], [0.0f32; 2 * QUANTUM as usize])
         });
@@ -388,6 +396,7 @@ impl Output {
             if !gate.open() {
                 break;
             }
+            #[cfg(feature = "playback")]
             if let Some((block, side)) = &mut samples {
                 let side_live = self.shared.side_live.load(Ordering::Acquire);
                 self.hle.render_leased(
@@ -405,6 +414,8 @@ impl Output {
             } else {
                 self.hle.advance_audio_leased(&self.runtime, QUANTUM, &self.lease)?;
             }
+            #[cfg(not(feature = "playback"))]
+            self.hle.advance_audio_leased(&self.runtime, QUANTUM, &self.lease)?;
             g.done += QUANTUM;
             rendered += QUANTUM;
             self.shared.rendered.fetch_add(QUANTUM, Ordering::AcqRel);
@@ -576,6 +587,7 @@ impl Hle {
             late_wakes: AtomicU64::new(0),
             max_wake_gap_us: AtomicU64::new(0),
         });
+        #[cfg(feature = "playback")]
         let (mode, grid) = match pacing {
             Pacing::Device { target_latency_ms } => (Some(Mode::Device(target_latency_ms)), None),
             Pacing::Completions { origin } => {
@@ -604,6 +616,15 @@ impl Hle {
                 )
             }
         };
+        #[cfg(not(feature = "playback"))]
+        let (join, grid) = {
+            let _ = (period, open);
+            let Pacing::Completions { origin } = pacing;
+            shared.rate.store(mixer_rate, Ordering::Release);
+            let grid = Grid { origin, done: 0, rate: mixer_rate, max_queued: 0 };
+            (None, Some(Mutex::new(grid)))
+        };
+        #[cfg(feature = "playback")]
         let join = mode.map(|mode| {
             let hle = Arc::clone(self);
             let rt = Arc::clone(&runtime);
@@ -638,18 +659,21 @@ impl Hle {
     }
 }
 
+#[cfg(feature = "playback")]
 enum Mode {
     Device(u32),
     /// The grid's (the mixer's) rate.
     Logical(u32, Option<Playout>),
 }
 
+#[cfg(feature = "playback")]
 fn publish_sink<S: AudioSink>(shared: &Shared, sink: &S) {
     shared.rate.store(sink.sample_rate(), Ordering::Release);
     *shared.sink.lock().unwrap_or_else(|e| e.into_inner()) = sink.stats();
 }
 
 /// Device pacing: render what the sink wants, then complete.
+#[cfg(feature = "playback")]
 fn run_device<S: AudioSink>(
     hle: Arc<Hle>,
     runtime: Arc<Runtime>,
@@ -705,6 +729,7 @@ fn run_device<S: AudioSink>(
 }
 
 /// Logical pacing: play what `advance_to` rendered; nothing else.
+#[cfg(feature = "playback")]
 fn run_logical<S: AudioSink>(
     mut sink: S,
     mut side: Option<Side>,
@@ -754,6 +779,7 @@ fn run_logical<S: AudioSink>(
 
 /// Moves queued interleaved stereo at one rate into a sink at its own,
 /// through a jitter buffer when it has a [`Playout`].
+#[cfg(feature = "playback")]
 #[derive(Default)]
 struct Feed {
     resampler: Option<(u32, LinearResampler)>,
@@ -764,6 +790,7 @@ struct Feed {
 }
 
 /// [`Playout`]'s state.
+#[cfg(feature = "playback")]
 #[derive(Default)]
 struct Jitter {
     primed: bool,
@@ -779,6 +806,7 @@ struct Jitter {
     calm_since: u64,
 }
 
+#[cfg(feature = "playback")]
 impl Feed {
     fn new(playout: Option<Playout>) -> Self {
         Self {
@@ -897,6 +925,7 @@ impl Feed {
 }
 
 /// The side sink on the output thread, and whether it is live.
+#[cfg(feature = "playback")]
 struct Side {
     sink: Option<Box<dyn AudioSink>>,
     on_live: Option<Box<dyn FnMut(bool) + Send>>,
@@ -905,6 +934,7 @@ struct Side {
     shared: Arc<Shared>,
 }
 
+#[cfg(feature = "playback")]
 impl Side {
     fn open(config: SideOutput, shared: Arc<Shared>, playout: Option<Playout>) -> Self {
         let mut side = Side {
@@ -966,6 +996,7 @@ impl Side {
     }
 }
 
+#[cfg(feature = "playback")]
 impl Drop for Side {
     fn drop(&mut self) {
         self.set_live(false);
@@ -974,6 +1005,7 @@ impl Drop for Side {
 
 /// Queues rendered interleaved stereo (clamped), keeping at most `max`
 /// frames; returns the oldest frames dropped to make room.
+#[cfg(feature = "playback")]
 fn push_queue(queue: &Mutex<VecDeque<f32>>, block: &[f32], max: usize) -> u64 {
     let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
     q.extend(block.iter().map(|v| v.clamp(-1.0, 1.0)));
@@ -994,7 +1026,7 @@ fn due_frames(ticks: u64, rate: u32) -> u64 {
 /// `h2 play`'s pacer holds it), the output thread's wakes, and a device that
 /// pulls fixed callbacks at its own rate. Deterministic: no threads, no
 /// sleeps.
-#[cfg(test)]
+#[cfg(all(test, feature = "playback"))]
 mod sim {
     use super::*;
     use audio::sink::{Consumer, Producer, ring};

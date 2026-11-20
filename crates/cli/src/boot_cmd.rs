@@ -23,6 +23,7 @@ disables kernel tracing and paces to real time. Requires --system-link.
 #[cfg(feature = "desktop")]
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
+           [--profile host --coverage FILE]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
   h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots] [--film FILE]]] [run's options]
@@ -30,6 +31,8 @@ const USAGE: &str = "usage:
 --out defaults to $TMPDIR/h2boot (generated C, objects, and the game module).
 --arch selects a single build target and overrides H2_EMIT_TARGET. Use
   x86_64-linux to cross-build libh2game.so for a Linux dedicated host.
+--profile host uses the light host audit's address list (--coverage) to
+  select clang's native owners. Use a separate --out directory.
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
   with `fast` the Cranelift fast tier in --out/fast/ in seconds
   (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
@@ -77,6 +80,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
     let mut data = content::store::default_data_root();
+    #[cfg(feature = "desktop")]
     let mut jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
     let serve = cmd == "serve";
     // A server runs until the game exits.
@@ -100,6 +104,10 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     #[cfg(feature = "desktop")]
     let mut build_arch = None;
     #[cfg(feature = "desktop")]
+    let mut slim = false;
+    #[cfg(feature = "desktop")]
+    let mut coverage = None;
+    #[cfg(feature = "desktop")]
     let mut no_mappack = false;
     #[cfg(feature = "desktop")]
     let mut no_halo1 = false;
@@ -113,6 +121,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         match a.as_str() {
             "--out" => out = PathBuf::from(val()?),
             "--data" => data = PathBuf::from(val()?),
+            #[cfg(feature = "desktop")]
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
             #[cfg(feature = "desktop")]
@@ -123,6 +132,13 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
                 let [arch] = arches.as_slice() else { bail!("h2 build --arch requires one target") };
                 build_arch = Some(*arch);
             }
+            #[cfg(feature = "desktop")]
+            "--profile" if cmd == "build" => {
+                anyhow::ensure!(val()? == "host", "expected --profile host");
+                slim = true;
+            }
+            #[cfg(feature = "desktop")]
+            "--coverage" if cmd == "build" => coverage = Some(PathBuf::from(val()?)),
             #[cfg(feature = "desktop")]
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
@@ -191,6 +207,13 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             Some(arch) => arch,
             None => emit::compile::Arch::target()?,
         };
+        anyhow::ensure!(slim == coverage.is_some(), "--profile host and --coverage FILE must be used together");
+        anyhow::ensure!(!slim || (!fast && !background), "--profile host requires the foreground clang tier");
+        anyhow::ensure!(
+            !slim || std::env::var_os(boot::host_audit::MODULE_ENV).is_none_or(|v| v.is_empty()),
+            "--profile host conflicts with H2_HOST_MODULE"
+        );
+        let coverage = coverage.as_deref().map(boot::host_coverage::Coverage::read).transpose()?;
         let lib = if fast {
             boot::tier::check_fast_target(arch)?;
             boot::tier::fast_dylib(&out)
@@ -198,7 +221,13 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             out.join(arch.module_file_name())
         };
         if check {
-            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current_for(&xbe, &lib, arch) };
+            let current = if let Some(coverage) = &coverage {
+                boot::slim_current_for(&xbe, &lib, arch, coverage)
+            } else if fast {
+                boot::tier::fast_current(&xbe, &lib)
+            } else {
+                boot::dylib_current_for(&xbe, &lib, arch)
+            };
             eprintln!(
                 "h2 build --check: {} is {}",
                 lib.display(),
@@ -206,7 +235,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             );
             std::process::exit(if current { 0 } else { 3 });
         }
-        if fast {
+        if let Some(coverage) = &coverage {
+            boot::build_slim(&xbe, &out, jobs, arch, coverage)?;
+        } else if fast {
             boot::tier::build_fast_for(&xbe, &out, jobs, arch)?;
         } else {
             #[cfg(unix)]
@@ -229,8 +260,12 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     // `serve` never builds, and runs clang's module unless told otherwise.
     let choice = if serve && tier.is_none() && std::env::var_os("H2_TIER").is_none() { Choice::Clang } else { choice };
-    if serve {
-        let plan = boot::tier::plan(&xbe, &out, choice);
+    let lib = if serve {
+        let plan = if host_light {
+            boot::tier::plan_light(&xbe, &out, choice)
+        } else {
+            boot::tier::plan(&xbe, &out, choice)
+        };
         if plan.build {
             bail!(
                 "h2 serve: {} isn't built for this image and this h2; build it with `h2 build{}` first (serve never builds)",
@@ -243,9 +278,15 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         unsafe { std::env::set_var(agent_proto::ENV, &path) };
         #[cfg(unix)]
         stop_on_signal(path)?;
-    }
-    // `serve` built nothing above, so this only picks its module.
-    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, !serve)?.dylib;
+        plan.dylib
+    } else {
+        #[cfg(feature = "desktop")]
+        {
+            boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?.dylib
+        }
+        #[cfg(not(feature = "desktop"))]
+        bail!("the host CLI requires h2 serve");
+    };
     if fresh {
         for d in fresh_data_dirs(&data, &[&disc, &out])? {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;

@@ -751,6 +751,12 @@ work where the hook runs. Auditing bypasses generated native direct
 calls to count visible entries. Inlined blocks with no selector cannot
 be counted separately. Use an unaudited batch for throughput.
 
+For a deployable module, export the owner/selector pairs with
+`h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]` and use
+`h2 build --profile host --coverage OUTPUT`. Omitted owners use the
+counted interpreter fallback. See [Slim host](../live/dedicated-host-build.md#slim-host)
+for recording and comparison.
+
 The experimental `H2_HOST_MODULE` build option accepts a complete
 `audit.json` from the matching full clang image. Use a separate output
 directory and keep that same report path set when launching it.

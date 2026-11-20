@@ -140,13 +140,16 @@ the defaults give these estimates in USD.
 ## Container image
 
 Both cloud providers use the same Linux/amd64 image. It runs as a non-root
-user on `debian:bookworm-slim` with `ca-certificates`. Ship the image only
+user in a scratch rootfs with bookworm's ELF runtime libraries and CA
+certificates. Ship the image only
 through a private registry because it contains a module compiled from the
 owner's disc.
 
 On macOS, `deploy/host/build.sh` cross-builds the headless `h2` with
 cargo-zigbuild targeting `x86_64-unknown-linux-gnu.2.36` and builds the
-module with `h2 build --arch x86_64-linux --tier clang`. Clang and lld
+module with `h2 build --arch x86_64-linux --tier clang`. Pass
+`--coverage FILE` to stage the [slim host profile](dedicated-host-build.md#slim-host).
+Clang and lld
 use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
 `h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
 `default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)

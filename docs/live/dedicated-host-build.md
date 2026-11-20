@@ -43,6 +43,133 @@ its hash.
  match ends / last client leaves / idle 120 s ──► HostEnded ──► process exits
 ```
 
+## Slim host
+
+The slim profile keeps the guest functions observed in the light host
+as native code and uses the boot interpreter for omitted owners. It
+preserves the full clang plan's entry and resume routes, including HLE
+overrides and returns into an interpreted caller. A coverage miss logs
+`fallback: slim host h2fn_<owner> at <selector>, hits=N` on the first hit
+and on powers of two. Shutdown logs the exact counts per owner and
+selector. `h2 agent fallbacks` reports the interpreter totals and the
+number of coverage misses while the process is up.
+
+### Record the coverage
+
+Build a full clang module locally from the same XBE and checkout used for
+the candidate. Set `H2_DISC` and `H2_DATA` to the owner's local paths and
+choose separate directories for `H2_FULL_IMAGE` and `H2_SLIM_IMAGE`.
+
+```sh
+env -u H2_HOST_MODULE H2_OPT=2 h2 build "$H2_DISC" --tier clang --out "$H2_FULL_IMAGE"
+```
+
+Install the owned map packs and each deployed mod map, and prepare their
+bot navigation files. The existing [light host corpus](../runtime/sim-examples/light-host-corpus.toml)
+runs the 23 stock and map-pack multiplayer maps, all seven game types
+and three seeds. Add deployed mod maps and targeted matches for
+objective, weapon, equipment, vehicle and player join/leave paths. Run
+against the original map caches to keep training and map pruning
+independent.
+
+```sh
+env -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 \
+  h2 sim batch docs/runtime/sim-examples/light-host-corpus.toml \
+  --disc "$H2_DISC" --out "$H2_FULL_IMAGE" --tier clang \
+  --data "$H2_DATA" --parallel 4 --pace unpaced
+```
+
+Record real light host matches as well, since the sim boots straight
+into the game. Give each process a separate `H2_HOST_AUDIT` output path.
+Use `h2 agent hostaudit` against the host's socket for a live read and
+retain the final report after a clean stop. Include lobby creation,
+peer join, match start, postgame and lobby close. The existing
+[host audit agent method](../runtime/agent-api.md) supplies this data.
+
+Check `audit-missing.json` and the equipment gap report before exporting.
+`audit-coverage` verifies that inputs share a full clang image and registry,
+have completed ticks and have no reported missing runs, hooks or unmapped
+selectors. It writes two eight-digit guest addresses per line, the owner
+and the entry or continuation that ran. It sorts and deduplicates the
+pairs. Keep this small list with the matching XBE revision and corpus
+description. The audit JSON and all disc-derived build artifacts stay
+private.
+
+```sh
+h2 sim audit-coverage "$H2_HOST_COVERAGE" "$H2_SIM_AUDIT" "$H2_LOBBY_AUDIT"
+```
+
+### Build and stage
+
+Build a local candidate for sim or LAN checks. A host build always keeps
+the complete body and validated selectors for each observed owner.
+
+```sh
+H2_OPT=2 h2 build "$H2_DISC" --tier clang --profile host \
+  --coverage "$H2_HOST_COVERAGE" --out "$H2_SLIM_IMAGE"
+```
+
+For Linux, use the same options with `--arch x86_64-linux`, or stage it
+through the script. Set `H2_LINUX_SYSROOT` to the bookworm amd64 sysroot
+and `H2_BIN` to a Mac `h2` from this checkout if it is already installed.
+
+```sh
+H2_OPT=2 deploy/host/build.sh "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
+```
+
+The Linux Rust binary uses the `host` Cargo feature without defaults.
+It leaves out the Cranelift compiler and module build commands, native
+render glue, headless draw recording and captures, local keyboard
+scripts and button icon substitution, and DirectSound's PCM mixing,
+resampling and output threads. The movie skip hook, guest sound clock
+and completion events, descriptor-only D3D, XAPI and bot pads, and lobby
+UI support remain in the host. The stage strips both ELF files, and the
+scratch image copies the ELF loader and runtime libraries, certificate
+bundle and small entrypoint shell from bookworm.
+
+[Build and package the image](../../deploy/host/README.md). Pass the
+matching `H2_OPT` and other codegen settings to both the local run and the
+container. `h2 serve --system-link --host-light` and `h2 sim run` accept
+the staged slim module by its stamp with no separate coverage file.
+Use a distinct output directory for the full module.
+
+### Check size, memory and coverage
+
+- Let `N` be the full Linux build's planned owner count and `K` the
+  number of unique owners in the validated list. The build logs both.
+  It compiles `K` native owners and omits `N - K`, a count reduction of
+  `100 × (N - K) / N` percent. The macOS 18,647-function baseline only
+  applies if the matched build has the same owner count.
+- For a size estimate, let `F` be the measured bytes of all native
+  bodies in a matched full build, and `O` the slim module's other
+  bytes. Estimated slim bytes are `O + F × K / N` if retained owners
+  are average-sized. With per-owner sizes, use `O + sum(bytes of retained
+  owners)` for the estimate. Shard reuse, code layout and linker padding
+  affect the final result. Use `wc -c` on both staged ELFs and
+  `llvm-size -A` on the modules to measure disk and native text.
+- The scratch root filesystem is the sum of the two stripped ELFs,
+  loader and libraries, certificates, shell and small configuration
+  files. A cold registry pull transfers the compressed rootfs layer size
+  plus the manifest and config blobs. Read the layer descriptor sizes
+  from the Linux/amd64 image manifest. Compare like-for-like stored or
+  compressed bytes with the previous image.
+- Use the same map, seed, options and match tick window on the full
+  light and slim modules. Audit the full build first, then run both
+  with auditing off. For a second pass of the corpus set `audit = false`
+  in a copy of its batch TOML and give it a distinct results directory.
+  Compare lobby and match completion, lockstep hashes, ms/tick, and the
+  `profile.fallbacks` counters. Exercise a legal lobby path that missed
+  the recording and check it continues after logging a coverage miss.
+- On Linux, capture `docker stats --no-stream` when each lease is in the
+  lobby and at the same steady portion of each match. On the Linux
+  Docker host, find the game child's PID with `docker top` and compare
+  its `/proc/<pid>/smaps_rollup` RSS and PSS. Sum `Rss` and `Pss` from
+  the executable `libh2game.so` mappings in that child's `smaps` to
+  isolate native text. On macOS, compare `vmmap -summary <pid>` for
+  the sim child at the same points and use detailed `vmmap <pid>` to
+  isolate the game's resident `__TEXT` from the rest of the process. The host's interpreter analyses and caches guest code as
+  needed, so disk bytes and resident bytes should be reported separately.
+
 ## Contracts
 
 ### 1. Lease (live-proto, owned by lane `dh-lease`)
@@ -260,7 +387,7 @@ agent-proto entries, `dh-lobby`):
 - The target triple is `x86_64-unknown-linux-gnu`.
 - The game module is an ELF shared object loaded the way the macOS dylib is.
 - The `h2` binary builds with `--no-default-features --features host` on Linux. It leaves out window, Metal, AVFoundation, input devices and app icons.
-- The container image is `deploy/host/Dockerfile` for `linux/amd64`: a debian-slim base, `h2` and the module, and no game data.
+- The container image is `deploy/host/Dockerfile` for `linux/amd64`: a scratch rootfs with bookworm libraries, `h2` and the module, and no game data.
 
 ## Lanes and who owns which files
 
