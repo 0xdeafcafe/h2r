@@ -184,6 +184,19 @@ fn first_person_fixture(m:&mut FlatMemory,case:u32) {
     word(m,user+4,if case==0 {u32::MAX} else {1});
     let slot=user+12;
     word(m,slot+4,if case==0 {u32::MAX} else {1});
+    m.bytes[(user+8237) as usize]=u8::from(case>=3);
+    word(m,0x4ed284,DATA+0x13000);word(m,0x4687c4,DATA+0x13100);
+    word(m,user+4124+4,u32::MAX);
+    word(m,user+8340,if case%2==0 {0} else {u32::MAX});
+    for (j,v) in [0.3f32,-0.2,0.45,-0.7].into_iter().enumerate(){
+        word(m,user+[8240,8244,8256,8260][j],v.to_bits());
+    }
+    word(m,slot+228,0.25f32.to_bits());
+    word(m,DATA+0x12000+20,11);
+    for off in [218,222,226,764,766] {
+        let value:u16=if case<3 {u16::MAX} else {1};
+        assert!(m.load(slot+off,&value.to_le_bytes()));
+    }
     word(m,user+8,0);word(m,DATA+12+8,object);word(m,object,2);
     word(m,points::TAG_ENTRIES.base,tags);word(m,tags+2*16+8,weapon);
     word(m,weapon+684,variant);word(m,variant+4,3);word(m,tags+3*16+8,model);
@@ -424,6 +437,14 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             0x1d3920 | 0xbab40 => 12,
             0x131c20 | 0x31c7d0 => 0,
             0x31c520 | 0x31c530 => 4,
+            0xbff60 | 0x168311 | 0x1cc260 | 0x166c39 | 0x1469f0 => 4,
+            0x16674e | 0x1cb5b0 | 0x1cb520 | 0x259d0 | 0x16760c=>8,
+            0x1cb710=>20,0x166992=>12,
+            0x155760|0x24590|0xc8a10|0xd03b0|0x1c63f0|0x1c6ea0|0x373b6a|
+            0x187420|0x187a40|0x13cb40|0x16840e|0x1d9320=>0,
+            0xb6780|0x1c6440|0x1d9370|0xb6760|0x1416c0=>0,
+            0x1cd590=>28,0xbd970|0x1c7100=>24,0x1c6f60=>16,0x1cbd80=>12,
+            0x1cb490|0x1cc2b0=>8,0x1d9240|0x1c6560|0x100b40|0x1cbd50=>4,
             SUPPORT_CHILD | 0x303360 => 12, SUPPORT_QUERY => 8,
             0x3037a0=>24,0x308590 | 0x303540=>0,0x303dd0=>16,
             0xc7300=>20, 0xc75d0 | 0xc7750=>4, 0x30bf0 | 0x322bd8=>0,
@@ -488,10 +509,22 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
             word(&mut mem, out, value);
             native.set_u32(out, value).unwrap();
         }
+        if matches!(target,0x24590|0x259d0) {
+            let mut x=x87::abi::X87Abi { st:cpu.x87.st, status:cpu.x87.status, tag:cpu.x87.tag,
+                control:cpu.x87.control,..Default::default() };
+            let rc=x87::abi::ld_f32(&mut x,(case as f32*0.25).to_bits());
+            assert_eq!(rc & x87::abi::status::MASK,x87::abi::status::OK);
+            cpu.x87.st=x.st;cpu.x87.status=x.status;cpu.x87.tag=x.tag;
+        }
+        if target==0x187420 {cpu.xmm[0]=u128::from((case as f32*0.1).to_bits());}
+        if target==0x1d9370 {cpu.xmm[0]=u128::from(0.75f32.to_bits());}
         let answer = target.wrapping_mul(0x9127).rotate_left(n % 32) ^ case;
         cpu.gpr[0] = match target {
             0x31c520 | 0x31c530 => cpu.gpr[1] + mem.read_u32(sp+4).unwrap()
                 * if target == 0x31c520 {32} else {48},
+            0x155760=>0,0x1cb710=>1,0xc8a10=>case%2,0xd03b0=>0,0x187a40=>65535,
+            0xb6780=>u32::from(case>=2),0x1c6440=>DATA+0x12000,
+            0x1cb490=>u32::from(case>=4),0xb6760=>u32::from(case!=3),
             0x3037a0=>1,0x303540=>u32::MAX,0x303360=>if case==3 {0} else {7},0x308590=>if case==2 {5} else {0},
             0xc7750=>u32::from(case<2),
             WELD_SHAPE=>DATA+1024, WELD_ACCEPT=>DATA+2560, 0x301a40=>0,

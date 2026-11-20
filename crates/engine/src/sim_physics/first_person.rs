@@ -10,10 +10,20 @@ const IDENTITY_NODE: u32 = 0x0046_87d8;
 const TIME: u32 = 0x0051_0c54;
 const USER_BYTES:u32 = 8396;
 const SLOT_BYTES:u32 = 4112;
-pub(super) const POSE_SITES:&[u32]=&[0x16767f,0x1676ce,0x1676f5,0x1676fd];
-pub(super) const POSE_REST:&[u32]=&[0x167804];
-pub(super) const FILTER_SITES:&[u32]=&[0x166dbb,0x166edb,0x166f1e,0x166fcf];
-pub(super) const FILTER_REST:&[u32]=&[0x16700c];
+pub(super) const POSE_SITES:&[u32]=&[0x16767f,0x1676ce,0x1676f5,0x1676fd,
+    0x167804,0x16782d,0x167846,0x16784e,0x167888,0x16789f,0x1678c1,0x1678dc,
+    0x1678e9,0x16791b,0x16793d,0x167970,0x167999,0x1679a9,0x1679d2,0x167a15,
+    0x167a42,0x167a64,0x167a9f,0x167acc,0x167af9,0x167b33,0x167b5f,0x167b81,
+    0x167bbc,0x167be9,0x167c0c,0x167c32,0x167c6b,0x167c7b,0x167cf8,0x167d53,
+    0x167d6c,0x167d97,0x167db1,0x167dee,0x167e04];
+pub(super) const POSE_REST:&[u32]=&[];
+pub(super) const FILTER_SITES:&[u32]=&[0x166dbb,0x166edb,0x166f1e,0x166fcf,
+    0x16700c,0x16703b,0x167057,0x1670d0,0x1670dc,0x1670f6,0x167156,0x16716d,
+    0x167175,0x167197,0x1671ab,0x1671cd,0x1671e5,0x16724a,0x167279,0x1672a6,
+    0x1672b9,0x1672ef,0x167304,0x167314,0x167350,0x16738a,0x16739a,0x1673ab,
+    0x1673b4,0x1673ff,0x167424,0x16742c,0x167441,0x1674fe,0x167507,0x16759d,
+    0x1675ad,0x1675c3,0x1675d2,0x167607];
+pub(super) const FILTER_REST:&[u32]=&[];
 
 fn frame(c:&mut CpuAbi,g:&mut Guest,locals:u32)->Result<()> {
     push(c,g,c.ebp)?;
@@ -21,7 +31,7 @@ fn frame(c:&mut CpuAbi,g:&mut Guest,locals:u32)->Result<()> {
     c.esp=c.esp.wrapping_sub(locals);
     push(c,g,c.ebx)
 }
-fn leave(c:&mut CpuAbi,g:&Guest,n:u32)->Result<TransferAbi> {
+pub(super) fn leave(c:&mut CpuAbi,g:&Guest,n:u32)->Result<TransferAbi> {
     c.ebx=pop(c,g)?;
     c.esp=c.ebp;
     c.ebp=pop(c,g)?;
@@ -35,6 +45,7 @@ fn tag(c:&mut CpuAbi,g:&Guest,table:u32,id:u32)->Result<u32> {
 }
 
 pub(super) fn pose(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
+    if pc>=0x167804 {return super::pose_layers::run(c,g,pc);}
     if pc==points::FIRST_PERSON_POSE_UPDATE.base {
         frame(c,g,120)?;
         let slot=g.u32(c.ebp+12)?.wrapping_mul(SLOT_BYTES);
@@ -100,7 +111,7 @@ pub(super) fn pose(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
 
 // MOVSD transfers are ordered if the palette aliases its source. With DF
 // clear and disjoint spans the normal 32-byte node fits in one guest read.
-fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bool)->Result<()> {
+pub(super) fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bool)->Result<()> {
     if !backwards && dst.abs_diff(src)>=N as u32 && (src & 4095)+(N as u32)<=4096 && (dst & 4095)+(N as u32)<=4096 {
         let b=g.read::<N>(src)?;
         return g.write_bytes(dst,&b,1);
@@ -164,10 +175,11 @@ fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
         }
     }
     c.eax=g.u32(c.ebp-8)?;
-    g.call(c,0xb6780,POSE_REST[0])
+    g.call(c,0xb6780,0x167804)
 }
 
 pub(super) fn filters(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
+    if pc>=0x16700c {return super::weapon_slots::run(c,g,pc);}
     if pc==points::FIRST_PERSON_FILTER_UPDATE.base {
         frame(c,g,44)?;
         c.ebx=g.u32(USERS)?.wrapping_add(g.u32(c.ebp+8)?.wrapping_mul(USER_BYTES));
@@ -250,6 +262,6 @@ pub(super) fn filters(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
     }
     if index==0 || index==2 {c.edx &= !255;logic(c,0,128);}
     finish_fpu(c,g,x,[0x166ed3,0x166f16,0x166fc7,0x167004][index],c.esp)?;
-    let next=FILTER_SITES.get(index+1).copied().unwrap_or(FILTER_REST[0]);
+    let next=FILTER_SITES[index+1];
     g.call(c,0x11eed0,next)
 }

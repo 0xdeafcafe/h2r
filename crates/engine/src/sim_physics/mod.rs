@@ -8,6 +8,7 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 mod colors;
 mod havok;
 mod first_person;
+mod pose_layers;
 mod light;
 mod support;
 mod observer;
@@ -17,6 +18,7 @@ mod spatial;
 mod visit;
 mod unit_aim;
 mod weld;
+mod weapon_slots;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 pub struct Port {
@@ -141,9 +143,9 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
             return false;
         }
     }
-    if [points::HAVOK_SUPPORT_VERTICES.base, points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
+    if [points::FIRST_PERSON_POSE_UPDATE.base, points::HAVOK_SUPPORT_VERTICES.base, points::UNIT_AIM_UPDATE.base, points::HAVOK_WELD_CONTACTS.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::HAVOK_SOLVER.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBSERVER_RESULT.base].contains(&entry)
         && cpu.x87.control & 0x3f != 0x3f { return false; }
-    ![points::UNIT_AIM_UPDATE.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
+    ![points::FIRST_PERSON_POSE_UPDATE.base, points::UNIT_AIM_UPDATE.base, points::FIRST_PERSON_FILTER_UPDATE.base, points::LIGHT_RECORD_UPDATE.base, points::HAVOK_SOLVER.base, points::HAVOK_SUPPORT_VERTICES.base, points::OBJECT_SPATIAL_PORTAL.base, points::OBJECT_SPATIAL_VISIT.base,
       points::OBJECT_CHANGE_COLORS.base, points::OBSERVER_RESULT.base].contains(&entry)
         || cpu.mxcsr & 0x1f80 == 0x1f80
 }
