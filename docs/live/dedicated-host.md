@@ -91,9 +91,12 @@ at the first evidence of runtime and settles from the recorded
 | Fly Machines | Performance-1x, 2 GB, about $0.046/h | Performance-2x, 4 GB, about $0.092/h | Compute only in the estimate |
 
 Cloudflare bills active containers in 10 ms increments. Live rounds up
-the cumulative runtime to that increment for CPU, memory and disk. It
-assumes full use of the allocated vCPUs, memory and disk, and adds a flat
-$0.001 estimate per start. The flat amount is a planning allowance.
+the cumulative runtime to that increment. For a settled packed lease,
+it apportions provisioned memory and disk by the number of occupied
+slots over time and uses measured process-group CPU when available.
+A pack start carries one $0.001 planning allowance. Active reservations,
+unmeasured leases and cleanup intervals use full-class estimates. Idle
+warm grants can overlap occupied intervals, so the estimate can run high.
 Fly uses the class's hourly rate divided by 3,600 and multiplies it by
 runtime in seconds. The estimate covers the dedicated hosts in one Live
 deployment. Cloudflare plan fees, Workers, Durable Objects, actual
@@ -239,10 +242,10 @@ class-sized packs. Each child writes under `window-<n>/<lease>` in the
 host data directory. Unset, each lease runs its own `h2 host run`.
 [Warm capacity policy](host-halving.md#warm-capacity-from-demand)
 
-Live's cost estimate still counts a full container for each lease, and
-`LIVE_MAX_HOSTS` still counts leases. Packing three matches per container
-lets the same `max_instances` serve three times the leases. The estimate
-does not yet reflect that saving.
+The lease cap counts matches across both classes. The Worker deploy
+renderer computes a separate container limit for each class from the cap,
+its configured slots and the number of regions. See the
+[capacity steps](host-halving.md#caps) and [cost model](#cost-and-budget).
 
 ## Light host
 
@@ -517,7 +520,7 @@ prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.m
 
 Live requests one host per match. Before asking a provider to start it, Live
 checks the monthly budget and counts hosts that are starting, serving a
-match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4. A refused request leaves matchmaking
+match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4 and accepts 0–4, 16, 64, 256 or 1,024. A refused request leaves matchmaking
 free to use a peer host.
 
 | Event on the `hosts` stream | What Live records |
@@ -526,7 +529,7 @@ free to use a peer host.
 | `HostBooting` | The provider reference used to check or stop this instance. |
 | `HostReady` | The endpoint registered with the lease's own credential and the time from request to registration. Clients can now join. |
 | `HostPlaying` | The current player count. Live keeps the highest count for the match. |
-| `HostEnded` | The reason, elapsed time and peak players. A boot timeout or crash leaves the lease in `Failed`. |
+| `HostEnded` | The reason, elapsed time, peak players and optional packed usage. A boot timeout or crash leaves the lease in `Failed`. |
 
 On startup Live replays these server-signed events before it serves requests.
 The host token and signed game-data URL are passed directly to the provider.

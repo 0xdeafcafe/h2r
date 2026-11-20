@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use live_proto::hosts::{
     self, HostBooting, HostClass, HostEnded, HostLease, HostPlaying, HostReady, HostRequested,
-    HostStopped, ProviderKind,
+    HostStopped, PackUsage, ProviderKind,
 };
 use live_proto::sign::{EventBody, parse_time};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,8 @@ pub struct LeaseUsage {
     /// Final runtime from HostEnded, if recorded.
     pub ran_ms: Option<u64>,
     pub players_peak: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack_usage: Option<PackUsage>,
     #[serde(skip)]
     max_players: u8,
     #[serde(skip)]
@@ -128,6 +130,7 @@ impl LeaseUsage {
             end_ms: None,
             ran_ms: None,
             players_peak: 0,
+            pack_usage: None,
             max_players: lease.max_players,
             deadline_ms: lease.deadline_ms(),
             managed,
@@ -136,9 +139,48 @@ impl LeaseUsage {
         }
     }
 
+    fn cloudflare_resources(&self, start_ms: i64, from: u64, to: u64, reserving: bool) -> Resources {
+        let seconds = tick_seconds(from, to);
+        let vcpus = f64::from(self.class.vcpu());
+        let full = Resources { container_seconds: seconds, cpu_seconds: seconds * vcpus, charge_start: true };
+        // An open reservation covers the full class. A manually launched
+        // host has no provider-managed pack from which to claim a discount.
+        let (Some(usage), Some(reported_at)) = (self.pack_usage, self.end_ms) else {
+            return full;
+        };
+        if !self.managed || reserving || usage.slot_us == 0 || usage.container_share_us > usage.slot_us {
+            return full;
+        }
+
+        // Split each monthly window into the observed slot interval and
+        // the launch/cleanup intervals, which retain full-capacity charges.
+        let observed_end = reported_at.saturating_sub(start_ms).max(0) as u64;
+        let observed_start = observed_end.saturating_sub(usage.slot_us / 1000);
+        let occupied = tick_seconds(from.clamp(observed_start, observed_end), to.clamp(observed_start, observed_end));
+        let outside = seconds - occupied;
+        let share = usage.container_share_us as f64 / usage.slot_us as f64;
+        let cpu_per_second = usage.cpu_us.map_or(vcpus, |cpu| cpu as f64 / usage.slot_us as f64);
+        Resources {
+            container_seconds: outside + occupied * share,
+            cpu_seconds: outside * vcpus + occupied * cpu_per_second,
+            charge_start: usage.charge_start,
+        }
+    }
+
     fn billing_end(&self) -> Option<i64> {
         if self.managed { self.stopped_ms } else { self.end_ms }
     }
+}
+
+struct Resources {
+    container_seconds: f64,
+    cpu_seconds: f64,
+    charge_start: bool,
+}
+
+/// Cumulative tick boundaries charge a 10 ms tick crossing midnight once.
+fn tick_seconds(from_ms: u64, to_ms: u64) -> f64 {
+    (to_ms.div_ceil(10) - from_ms.div_ceil(10)) as f64 / 100.0
 }
 
 /// Estimated usage and USD for a lease through a given time.
@@ -268,6 +310,7 @@ impl HostCosts {
                     }
                     lease.end_ms = Some(at_ms);
                     lease.ran_ms = Some(data.ran_ms);
+                    lease.pack_usage = data.pack_usage;
                     lease.players_peak = lease.players_peak.max(data.players_peak);
                 }
             }
@@ -417,21 +460,18 @@ impl HostCosts {
         let cost_usd = match lease.provider {
             ProviderKind::Local => 0.0,
             ProviderKind::Cloudflare => {
-                // Round cumulative runtime so a tick spanning two months
-                // is counted once, in the month when it started.
-                let ticks = to.div_ceil(10) - from.div_ceil(10);
-                let seconds = ticks as f64 / 100.0;
+                let resources = lease.cloudflare_resources(start, from, to, reserving);
                 let rates = &self.prices.cloudflare;
-                let vcpu_seconds = seconds * f64::from(lease.class.vcpu());
-                let cpu = vcpu_seconds * rates.usd_per_vcpu_second;
-                let memory = vcpu_seconds * CLOUDFLARE_GIB_PER_VCPU * rates.usd_per_gib_second;
-                let disk = seconds * CLOUDFLARE_DISK_GB * rates.usd_per_gb_disk_second;
+                let cpu = resources.cpu_seconds * rates.usd_per_vcpu_second;
+                let memory = resources.container_seconds * f64::from(lease.class.vcpu())
+                    * CLOUDFLARE_GIB_PER_VCPU * rates.usd_per_gib_second;
+                let disk = resources.container_seconds * CLOUDFLARE_DISK_GB * rates.usd_per_gb_disk_second;
                 let egress = if rates.usd_per_egress_gb > 0.0 {
                     estimated_egress_gb * rates.usd_per_egress_gb
                 } else {
                     0.0
                 };
-                let start_fee = if charge_start { rates.usd_per_start } else { 0.0 };
+                let start_fee = if charge_start && resources.charge_start { rates.usd_per_start } else { 0.0 };
                 cpu + memory + disk + egress + start_fee
             }
             ProviderKind::Fly => {
@@ -749,6 +789,49 @@ mod tests {
         HostRequested::deserialize(&managed_request("next", now, max_match_s).data)
             .unwrap()
             .lease
+    }
+
+    #[test]
+    fn four_packed_matches_settle_to_one_container_and_one_start() {
+        let costs = HostCosts::default();
+        let full = HostCosts::default();
+        let at = FEB + MINUTE;
+        full.fold(&managed_request("full", FEB, 120));
+        full.fold(&end("full", MINUTE as u64, 0, at));
+        full.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "full" }), at));
+        for i in 0..4 {
+            let id = format!("slot-{i}");
+            costs.fold(&managed_request(&id, FEB, 120));
+            let mut ended = end(&id, MINUTE as u64, 0, at);
+            ended.data["pack_usage"] = json!({
+                "slot_us": 60_000_000, "container_share_us": 15_000_000,
+                "cpu_us": 15_000_000, "charge_start": i == 0, "peak_pss_bytes": 123_000
+            });
+            costs.fold(&ended);
+            costs.fold(&ended);
+            costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": id }), at));
+        }
+        close(costs.month_to_date(at), full.month_to_date(at));
+        assert_eq!(costs.lease("slot-2").unwrap().pack_usage.unwrap().peak_pss_bytes, Some(123_000));
+    }
+
+    #[test]
+    fn packed_costs_keep_launch_and_cleanup_and_split_at_month_boundary() {
+        let costs = HostCosts::configured(
+            Some(r#"{"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            None,
+        ).unwrap();
+        costs.fold(&managed_request("a", FEB - 3_000, 120));
+        // 1 second of launch, 4 seconds at 25% CPU, then 2 seconds of cleanup.
+        let mut ended = end("a", 4_000, 0, FEB + 2_000);
+        ended.data["pack_usage"] = json!({
+            "slot_us": 4_000_000, "container_share_us": 2_000_000,
+            "cpu_us": 1_000_000, "charge_start": true
+        });
+        costs.fold(&ended);
+        costs.fold(&event(hosts::HOST_STOPPED, json!({ "lease_id": "a" }), FEB + 4_000));
+        close(costs.lease_cost("a", FEB + MINUTE).unwrap().cost_usd, 4.0);
+        close(costs.month_to_date(FEB + MINUTE), 2.5);
     }
 
     #[test]

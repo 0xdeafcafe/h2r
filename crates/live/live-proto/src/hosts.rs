@@ -221,6 +221,22 @@ pub struct HostPlaying {
     pub players: u8,
 }
 
+/// Cumulative occupancy and sampled process-group usage for a packed lease.
+/// Integer units keep events reproducible across a replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackUsage {
+    /// Elapsed time from slot allocation to the sample.
+    pub slot_us: u64,
+    /// Integral of elapsed time divided by concurrent occupied slots.
+    pub container_share_us: u64,
+    /// The first match bears the pack's start allowance when a warm grant has not paid it.
+    pub charge_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_pss_bytes: Option<u64>,
+}
+
 /// Data for [`HOST_ENDED`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostEnded {
@@ -228,6 +244,8 @@ pub struct HostEnded {
     pub reason: EndReason,
     pub ran_ms: u64,
     pub players_peak: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_usage: Option<PackUsage>,
 }
 
 /// Incremental idle capacity granted by the hub before a Cloudflare pool acts.
@@ -485,6 +503,7 @@ mod tests {
                 reason: EndReason::MatchOver,
                 ran_ms: 250_000,
                 players_peak: 5,
+                pack_usage: None,
             },
             json!({
                 "lease_id": LEASE_ID, "reason": "match_over", "ran_ms": 250_000, "players_peak": 5

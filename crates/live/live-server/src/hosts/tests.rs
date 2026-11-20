@@ -233,13 +233,18 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
     drop(live);
     let live = start(store.clone(), &key, fake.clone()).await;
     assert_eq!(live.host_for_assignment(&lease.assignment_id), Some(prior));
+    let usage = live_proto::hosts::PackUsage {
+        slot_us: 64_000, container_share_us: 32_000, charge_start: false,
+        cpu_us: Some(8_000), peak_pss_bytes: Some(1024),
+    };
     let row = live
-        .host_report(
+        .host_report_with_usage(
             Some(&token),
             &lease.id,
             HostState::Ended,
             1,
             Some(EndReason::MatchOver),
+            Some(usage),
         )
         .await
         .unwrap();
@@ -287,6 +292,7 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
             HOST_ENDED
         ]
     );
+    assert_eq!(events.last().unwrap().body.data["pack_usage"], json!(usage));
     for e in events {
         assert_eq!(e.body.author, live.identity.author());
         assert!(!e.body.data.to_string().contains(&token));
@@ -528,6 +534,19 @@ fn max_hosts_defaults_to_four_and_zero_disables_launches() {
         HostConfig::from_env(&|k| (k == "LIVE_MAX_HOSTS").then(|| "0".into())).max_hosts,
         0
     );
+}
+
+#[test]
+fn max_hosts_accepts_operator_selected_steps_and_fails_closed() {
+    let cap = |value: &str| {
+        HostConfig::from_env(&|key| (key == "LIVE_MAX_HOSTS").then(|| value.to_owned())).max_hosts
+    };
+    for n in [0, 1, 2, 3, 4, 16, 64, 256, 1024] {
+        assert_eq!(cap(&n.to_string()), n);
+    }
+    for invalid in ["5", "65", "1025", "-1", "", "auto"] {
+        assert_eq!(cap(invalid), 0, "{invalid}");
+    }
 }
 
 #[tokio::test]

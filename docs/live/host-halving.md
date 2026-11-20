@@ -9,9 +9,8 @@ resident memory in the original three-match, 1 vCPU / 3 GiB sizing model
 ([Packed hosts](dedicated-host.md#packed-hosts)). The targets are to halve both
 figures per match, start a match in under 2 s from a template process, and
 let the fleet follow lease demand from one match to a thousand. One rule
-holds throughout: a host is ad hoc. Nothing runs, warm or otherwise, unless
-somebody is searching or playing, and every mechanism here works on the
-local home and on Cloudflare.
+holds throughout: a host is ad hoc. Searchers and active leases create demand. An empty pack
+expires after 60 seconds without demand on both local Live and Cloudflare.
 
 Targets, per match in a full pack:
 
@@ -76,9 +75,9 @@ quiet laptop runs every benchmark; a local run is a smoke check.
 | Candidate | Saving per tick (**S**) | Risk | Parity bar |
 |---|---:|---|---|
 | Native subsystems on in the light profile: `impl.sim.native.anim`, `impl.sim.native.collision`, `impl.sim.native.objects` | 1.5–2.5 ms | Low once each switch's ladder is clean; the work is turning on what exists | hashes equal to `-impl.sim.native` |
-| Sound sim in Rust on the silent clock (phase 4, `impl.sim.native.sound`) | 0.5–0.8 ms | Medium: voice starts and completion events are gameplay-visible | hashes, plus voice start and completion order per tick |
-| Effects, particles and decals in Rust (phase 6, `impl.sim.native.effects`) | 0.2–0.35 ms | High if pruned, medium if rewritten: effect dispatch can deal damage and spawn objects, and particles share the random stream | hashes |
-| Havok world and glue (phase 5, `impl.sim.native.physics`) | 0.4–0.7 ms | High: its own acceptance bar in the rewrite plan | behaviour suites, cross-architecture hashes |
+| Sound sim in Rust on the silent clock (planned phase 4) | 0.5–0.8 ms | Medium: voice starts and completion events are gameplay-visible | hashes, plus voice start and completion order per tick |
+| Effects, particles and decals in Rust (planned phase 6) | 0.2–0.35 ms | High if pruned, medium if rewritten: effect dispatch can deal damage and spawn objects, and particles share the random stream | hashes |
+| Havok world and glue (planned phase 5) | 0.4–0.7 ms | High: its own acceptance bar in the rewrite plan | behaviour suites, cross-architecture hashes |
 | One wake per tick, tick phases staggered across a pack | 0.1–0.3 ms | Low | hashes; inbound packet delay unchanged |
 | Bot thinks off the game thread, on a pool the pack sizes | 0.4–0.9 ms of game-thread time on a match with phantoms; process CPU unchanged | Low: `H2_BOT_THREADS` batching is hash-identical to serial by design | batched equal to serial at every tick |
 | Film archive only (`H2_HOST_ARCHIVE=film`) in place of `dual` | 0.1–0.3 ms | Low: stats arrive at match end, not live | none; a Live behaviour change |
@@ -117,11 +116,10 @@ pending paced hash parity, lower process CPU, unchanged packet latency and
 a four-match wall p99 under 36 ms on one vCPU.
 
 **Bots.** `H2_BOT_THREADS=auto` sizes a pool per process, which
-oversubscribes a 1 vCPU pack. The supervisor passes each match its thread
-allowance (the pack's vCPUs, shared) and leaves `H2_BOT_PIPELINE` off until
-its own parity gate passes. This moves cost off the thread that has the
-deadline. It does not lower the CPU a pack is admitted and billed on, which
-is why admission reads process CPU. A brain service shared between
+oversubscribes a 1 vCPU pack. Bot thinking defaults to serial. Explicit worker settings
+apply per process. A pack-wide allowance still needs a measured brain
+cost and the pipeline's parity gate. Admission reads process CPU because
+moving work onto another thread still consumes container CPU. A brain service shared between
 processes (one pool, perception passed over shared memory) is not designed
 further: it is worth building only if the brain measures above 20% of a
 host tick after the rows above.
@@ -299,24 +297,23 @@ containers per class. They are different numbers once matches are packed:
 
     max_instances = ⌈LIVE_MAX_HOSTS ÷ matches per pack × 1.1⌉ + regions in use
 
-The table below uses four matches per pack.
+The deploy renderer uses the configured slots for each class, up to five
+small or ten large, and counts an unconfigured region table as one pool.
+Live defaults to four leases. Zero disables admission. Caps one through
+four support smaller deployments. Larger steps require an explicit setting.
+The monthly Worker budget defaults to $25. A capacity increase still
+requires an independent budget decision. Unfilled packs incur provisioned
+memory and disk charges, including paid idle intervals.
 
-Three guards bound the fleet, and the budget is the one that protects the
-owner: `LIVE_HOST_BUDGET_USD` (default $25 a month on the Worker, about
-1,600 match-hours at the projected rate), `LIVE_MAX_HOSTS`, and the
-provider's own limits. The worst hourly spend is `LIVE_MAX_HOSTS` × the
-match-hour cost, so each raise is a decision about dollars per hour.
+| Lease cap | Regions in this example | Maximum small / large containers | Qualification before raising the fleet cap |
+|---:|---:|---:|---|
+| 4 | 1 | 2 / 2 | Default |
+| 16 | 1 | 5 / 3 | Slices 1–5 measured and 16 phantom matches for 30 minutes with no pack marked late |
+| 64 | 1 | 16 / 9 | Monthly estimate within 20% of the invoice and warm starts under 2 s at p95 |
+| 256 | 2 | 59 / 31 | Two regions in use and a pack killed mid-match releases its leases and slots within 30 s |
+| 1,024 | 2 | 228 / 115 | A 1,000-lease phantom soak with flat pool and hub latency |
 
-| Step | `LIVE_MAX_HOSTS` | `max_instances` small / large | Worst spend per hour (**S**) | Gate to take the step |
-|---|---:|---|---:|---|
-| Today | 4 | 4 / 4 | $0.41 as estimated per lease | |
-| 1 | 16 | 6 / 2 | $0.25 | Slices 1–5 measured; 16 phantom matches for 30 minutes with no pack marked late |
-| 2 | 64 | 20 / 4 | $1.00 | The month's estimate within 20% of the invoice; warm starts under 2 s at p95 |
-| 3 | 256 | 74 / 8 | $4.00 | Two regions in use; a pack killed mid-match frees its leases and slots within 30 s |
-| 4 | 1,024 | 286 / 16 | $16 | A 1,000-lease phantom soak; pool and hub latency flat across it |
-
-1,024 is as high as this design is safe. Above it the single hub registry
-and one pool room per region and class become the limit and need sharding.
+The largest accepted cap is 1,024. Qualification at scale is pending.
 A managed fleet at any step still needs the rights determination in
 [dedicated-host.md](dedicated-host.md#where-the-game-could-run).
 
@@ -325,13 +322,13 @@ A managed fleet at any step still needs the rights determination in
 | Interface | Change |
 |---|---|
 | `GET /v1/pack` (`pack.rs`) | reports each match’s private and shared bytes, sampled peak Pss, CPU seconds and gameplay tick p99; the template field is reserved for the template work |
-| `POST /v1/pack/matches` | unchanged on the wire; served by a fork when a template exists |
+| `POST /v1/pack/matches` | starts a supervised game child for the lease |
 | `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api.md#hostmetrics)) | reports the Linux resident split, CPU seconds, and a rolling 30-second gameplay tick p99 and count above 36 ms |
 | Sim report `wall` block (`crates/live/sim-bench/src/metrics.rs`) | adds `mapped_read_bytes` and `copied_read_bytes` |
 | Pool `place` (`hostroom.rs`, `local_pack.rs`) | reconciles demand independently of placement; the Worker records whether a placement reused a running supervisor |
-| `HostEnded` (`live-proto`) | carries the match's CPU seconds and peak Pss, so the cost row is the match's share and not a whole container |
-| `host_costs.rs` | charges memory and disk as container time ÷ occupied slots, and CPU as measured; the budget check still reserves a whole new container when no slot is free |
-| `FlyProvider` (`crates/live/live-server/src/hosts/fly.rs`) | runs `h2 host pack` in each Machine and claims one 7-port window per slot |
+| `HostEnded` (`live-proto`) | optionally carries measured group CPU time, peak Pss, the slot lifetime, its share of occupied container time and the start-charge flag |
+| `host_costs.rs` | charges settled, measured occupancy and CPU. Missing measurements, active reservations and cleanup use full-class estimates |
+| `FlyProvider` (`crates/live/live-server/src/hosts/fly.rs`) | runs one Machine per lease. Multi-slot Machines need a private supervisor control path on both homes |
 
 The agent API is the measuring instrument for every gate. `host.metrics`
 is extended because the memory split and tick lateness are read again by
@@ -341,8 +338,7 @@ every later slice and by admission.
 
 - **Ad hoc.** A new pack requires a searcher or lease in its region. A paid idle
   hold expires after the one-minute linger. A stopped Fly Machine is not running.
-- **Two homes.** The supervisor, template, admission and pool are the same
-  code locally and on Cloudflare. A provider-specific piece (the pool
+- **Two homes.** The supervisor and admission logic are shared by local Live and Cloudflare. A provider-specific piece (the pool
   room's echo, custom instance sizes, Fly's stopped Machines) has a local
   counterpart or is only an optimisation.
 - **No shared randomness.** Every fork of one template starts from the
@@ -376,9 +372,8 @@ every later slice and by admission.
 [Fly pricing](https://docs.fly.io/about/pricing)
 
 On Fly a pack per Machine is the whole saving, because an idle core is
-billed. Its warm capacity is a few stopped Machines per region with the
-bundle already cached, created on the first search and destroyed after ten
-minutes without demand.
+billed. Packed Fly Machines and a stopped-Machine pool are proposed. Fly runs
+one Machine per lease on native Live and has no Worker provider.
 
 ### Cost per player-hour
 
@@ -412,7 +407,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 |---|---|---|---|---|
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
 | 10 | Historical region RTT fallback | Match-end telemetry and matchmaking | Synthetic peer-to-account and network attribution, expiry and median fallback | Probe RTT within 10 ms of in-match RTT for the same remote client and region |
-| 11 | Cost by share and the caps | `host_costs.rs`, `live-proto/src/hosts.rs`, `hosts/lifecycle.rs`, `wrangler.toml` | `host_costs.rs` tests: four matches in one pack sum to one container | The month's estimate within 20% of the invoice |
 | 12 | Packs on Fly | `hosts/fly.rs` | the fake-API tests: windows per slot, a stopped pool, destroy on silence | One packed Machine, four matches, UDP |
 | – | Sound, effects, Havok | the rewrite plan's phases 4, 6 and 5 | their ladders | Their exit criteria; the CPU table above is re-read after each |
 

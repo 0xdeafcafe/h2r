@@ -130,7 +130,15 @@ impl HostConfig {
             data_url: env("LIVE_HOST_DATA_URL").unwrap_or_default(),
             data_sha256: env("LIVE_HOST_DATA_SHA256").unwrap_or_default(),
             archive: env("LIVE_HOST_ARCHIVE").unwrap_or_else(|| "dual".into()),
-            max_hosts: env("LIVE_MAX_HOSTS").map_or(4, |s| s.parse().unwrap_or(0)),
+            max_hosts: env("LIVE_MAX_HOSTS").map_or(4, |s| {
+                match s.trim().parse::<usize>() {
+                    Ok(cap @ (0..=4 | 16 | 64 | 256 | 1024)) => cap,
+                    _ => {
+                        eprintln!("live: invalid LIVE_MAX_HOSTS; expected 0–4, 16, 64, 256 or 1024. Dedicated host admission disabled");
+                        0
+                    }
+                }
+            }),
         }
     }
 }
@@ -495,14 +503,6 @@ impl Live {
             .map(|p| p.kind())
     }
 
-    /// Trusted lookup for matchmaking, arbitration and the host service identity.
-    pub fn host_view(&self, lease_id: &str) -> Option<HostView> {
-        self.hosts
-            .registry
-            .read()
-            .unwrap()
-            .leases
-            .get(lease_id)
     pub(crate) fn regional_udp_probes(&self) -> BTreeMap<String, (String, std::net::SocketAddrV4)> {
         let registry = self.hosts.registry.read().unwrap();
         let mut probes = BTreeMap::new();
@@ -523,6 +523,14 @@ impl Live {
         probes
     }
 
+    /// Trusted lookup for matchmaking, arbitration and the host service identity.
+    pub fn host_view(&self, lease_id: &str) -> Option<HostView> {
+        self.hosts
+            .registry
+            .read()
+            .unwrap()
+            .leases
+            .get(lease_id)
             .cloned()
     }
 

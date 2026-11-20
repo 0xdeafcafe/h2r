@@ -21,7 +21,7 @@
 #   --skip-build       deploy what build/ and web/dist already hold
 #   --dry-run          build and bundle, deploy nothing (no sign-in needed)
 #   --no-hosts         deploy without the dedicated host containers: a copy of
-#                      wrangler.toml with no [[containers]] and LIVE_MAX_HOSTS
+#                      config with no container applications and LIVE_MAX_HOSTS
 #                      "0" (Live refuses host launches). Needed until the host
 #                      image is staged (deploy/host/build.sh fills deploy/host/stage)
 #
@@ -85,20 +85,19 @@ server_id=$(toml_value "[env.$env_name.vars]" H2_LIVE_ID)
 [ -n "$bucket" ] && [ -n "$server_id" ] || die "wrangler.toml has no bucket or id for env.$env_name"
 echo "deploy.sh: $env_name: server id $server_id, bucket $bucket"
 
-# The host containers build deploy/host/Dockerfile from the staged image.
-# Without it (or with --no-hosts) deploy from a copy without them; it sits
-# next to wrangler.toml so its relative paths still resolve.
-config="$here/wrangler.toml"
+# Generate a per-deployment sibling of wrangler.toml so image and asset paths
+# resolve as usual. Both homes use LIVE_MAX_HOSTS for lease admission.
 if [ "$no_hosts" = 1 ]; then
-    config="$here/wrangler.nohosts.toml"
-    awk '
-        /^\[/ { skip = ($0 ~ /^\[\[(env\.[a-z]+\.)?containers\]\]$/) }
-        skip { next }
-        /^LIVE_MAX_HOSTS = / { print "LIVE_MAX_HOSTS = \"0\""; next }
-        { print }
-    ' "$here/wrangler.toml" > "$config"
+    config=$(python3 "$here/host_capacity.py" --deploy-file --no-hosts)
     echo "deploy.sh: --no-hosts: no host containers, LIVE_MAX_HOSTS 0"
-elif [ "$dry_run" = 0 ] && ! [ -d "$repo/deploy/host/stage" ]; then
+else
+    config=$(python3 "$here/host_capacity.py" --deploy-file)
+fi
+trap 'rm -f "$config"; stty echo 2>/dev/null || true' EXIT
+trap 'exit 1' HUP INT TERM
+if [ "$no_hosts" = 0 ] && [ "$dry_run" = 0 ] &&
+    [ "$(toml_value "[env.$env_name.vars]" LIVE_MAX_HOSTS)" != 0 ] &&
+    ! [ -d "$repo/deploy/host/stage" ]; then
     die "the host containers need the staged image (deploy/host/build.sh); run again with --no-hosts to deploy without them"
 fi
 
@@ -106,8 +105,6 @@ wrangler() {
     # shellcheck disable=SC2086
     ${WRANGLER:-bunx wrangler@4} "$@" --config "$config"
 }
-# The terminal echoes again however this ends (the key is read unechoed).
-trap 'stty echo 2>/dev/null || true' EXIT INT TERM
 
 # ---- build ----
 home=${H2_WORKER_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/h2-live-worker}

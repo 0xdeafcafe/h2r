@@ -1259,7 +1259,7 @@ The server signs these lifecycle events on stream `hosts`.
 | `HostBooting` | `{lease_id, provider_ref}` (the provider's container, machine or process ID) |
 | `HostReady` | `{lease_id, endpoint, boot_ms}` (a `HostEndpoint` and milliseconds to readiness) |
 | `HostPlaying` | `{lease_id, players}` (player count) |
-| `HostEnded` | `{lease_id, reason, ran_ms, players_peak}` |
+| `HostEnded` | `{lease_id, reason, ran_ms, players_peak, pack_usage?}`. Packed supervisors report the elapsed `slot_us`, integrated `container_share_us`, `charge_start`, and sampled `cpu_us` and `peak_pss_bytes` when available. |
 
 End reasons are `match_over`, `empty`, `idle`, `max_duration`, `stopped`,
 `boot_timeout`, `crashed` and `budget`. `ran_ms` is elapsed milliseconds.
@@ -1624,7 +1624,7 @@ port + 4.
 | Route | Auth | Result |
 |---|---|---|
 | `POST /v1/hosts/{lease}/register` | Lease's host bearer, `hosts.register` | Takes a [`HostEndpoint`](dedicated-host-build.md#1-lease-live-proto-owned-by-lane-dh-lease) JSON body up to 8 KiB. Records `HostReady` and returns `200` with the `HostLease`. |
-| `POST /v1/hosts/{lease}/report` | Lease's host bearer, `hosts.report` | Takes `{state, players, reason?}` JSON up to 1 KiB. `state` is `"playing"` or `"ended"`, `players` is the player count and `reason` is an optional `EndReason`. Records `HostPlaying` or `HostEnded` and returns `204`. |
+| `POST /v1/hosts/{lease}/report` | Lease's host bearer, `hosts.report` | Takes `{state, players, reason?, pack_usage?}` JSON up to 1 KiB. A packed supervisor includes its usage in the ended report. `state` is `"playing"` or `"ended"`, `players` is the player count and `reason` is an optional `EndReason`. Records `HostPlaying` or `HostEnded` and returns `204`. |
 | `GET /v1/hosts/{lease}` | Roster member or admin with a `read` bearer | Returns `200` with `{lease, state, endpoint}`. The endpoint is available after registration. |
 | `GET /v1/admin/hosts` | Admin with an `admin.read` bearer | Returns `200` with running and recent hosts and their costs. |
 | `POST /v1/admin/hosts` | Admin with an `admin.write` bearer | Takes `{map, variant?, max_players? (1–16, default 8), class? ("small"\|"large", default "small"), region?, transport? ("udp"\|"tunnel", default per provider), launch? (default `true`)}` JSON up to 1 KiB, with `map` 1–64 ASCII characters. Reserves a `custom-<id>` lease with an empty roster through the same budget, `LIVE_MAX_HOSTS` cap and cost rows as a match. With `launch` the configured provider starts it and the reply is `201` with `{lease}`; with `launch: false` no provider is started, the lease stays `Requested` until the operator's container registers, and the reply is `201` with `{lease, token}` — the **only** route that returns the host token. With no provider configured the reply is `503`. |

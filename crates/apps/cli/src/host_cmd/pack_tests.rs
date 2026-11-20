@@ -410,6 +410,32 @@ fn explicit_public_ports_shift_with_the_slot() {
 }
 
 #[test]
+fn warm_reservation_and_first_match_share_one_start() {
+    let (mut pack, _) = pack(roomy());
+    let warm = req("POST", host_pack::WARM_PATH, b"");
+    assert_eq!(handle(&mut pack, &warm, Instant::now()).0, 204);
+    pack.add(&add("hl-first")).unwrap();
+    assert!(!pack.usage("hl-first", Instant::now()).unwrap().charge_start);
+    pack.shutdown();
+}
+
+#[test]
+fn occupancy_divides_only_time_with_matches() {
+    let start = Instant::now();
+    let mut clock = Occupancy { changed: start, per_slot: Duration::ZERO };
+    let at = |s| start + Duration::from_secs(s);
+    clock.advance(at(10), 0); // Empty warm pack.
+    clock.advance(at(12), 1);
+    let second_start = clock.per_slot;
+    clock.advance(at(18), 2);
+    let first = clock.per_slot;
+    let second = clock.at(at(22), 1) - second_start;
+    assert_eq!(first, Duration::from_secs(5));
+    assert_eq!(second, Duration::from_secs(7));
+    assert_eq!(first + second, at(22) - at(10));
+}
+
+#[test]
 fn warm_pulse_renews_an_empty_pack_without_starting_a_match() {
     let (mut pack, launches) = pack(roomy());
     let start = pack.idle_since.unwrap();

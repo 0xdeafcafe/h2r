@@ -159,7 +159,28 @@ impl Options {
 /// Starts one match's `h2 host run`.
 type Launch = Box<dyn Fn(&AddMatch, u16, SlotPorts) -> io::Result<Child> + Send>;
 
+/// Each occupied slot accumulates the same fraction of each time interval.
+struct Occupancy {
+    changed: Instant,
+    per_slot: Duration,
+}
+
+impl Occupancy {
+    fn at(&self, now: Instant, slots: usize) -> Duration {
+        let elapsed = now.saturating_duration_since(self.changed);
+        self.per_slot + elapsed.checked_div(slots as u32).unwrap_or_default()
+    }
+
+    fn advance(&mut self, now: Instant, slots: usize) {
+        self.per_slot = self.at(now, slots);
+        self.changed = self.changed.max(now);
+    }
+}
+
 struct Slot {
+    started: Instant,
+    share_at_start: Duration,
+    charge_start: bool,
     lease: String,
     ports: SlotPorts,
     map: Option<String>,
@@ -230,6 +251,8 @@ pub(super) struct Pack {
     linger: Duration,
     draining: bool,
     launch: Launch,
+    occupancy: Occupancy,
+    start_claimed: bool,
 }
 
 impl Pack {
@@ -250,6 +273,8 @@ impl Pack {
             linger,
             draining: false,
             launch,
+            occupancy: Occupancy { changed: now, per_slot: Duration::ZERO },
+            start_claimed: false,
         }
     }
 
@@ -318,7 +343,12 @@ impl Pack {
             "h2 host pack: slot {slot} runs {} (UDP {}, tunnel {})",
             add.lease, ports.base_port, ports.tunnel_port
         );
+        let started = Instant::now();
+        self.occupancy.advance(started, self.slots.iter().flatten().count());
         self.slots[slot] = Some(Slot {
+            started,
+            share_at_start: self.occupancy.per_slot,
+            charge_start: !self.start_claimed,
             lease: add.lease.clone(),
             map: map.map(str::to_owned),
             ports,
@@ -326,6 +356,7 @@ impl Pack {
             stopping_since: None,
             meter: Meter::default(),
         });
+        self.start_claimed = true;
         self.idle_since = None;
         Ok(Added {
             slot: slot as u16,
@@ -354,6 +385,7 @@ impl Pack {
         sample: &dyn Fn(u32) -> Option<measure::Usage>,
         container_mib: Option<u64>,
     ) {
+        self.occupancy.advance(now, self.slots.iter().flatten().count());
         for entry in &mut self.slots {
             let Some(slot) = entry else { continue };
             if let Ok(Some(status)) = slot.child.try_wait() {
@@ -391,6 +423,25 @@ impl Pack {
 
     fn should_exit(&self, now: Instant) -> bool {
         self.draining || self.idle_for(now).is_some_and(|idle| idle >= self.linger)
+    }
+
+    fn usage(&self, lease: &str, now: Instant) -> Option<live_proto::hosts::PackUsage> {
+        let (_, slot) = self.find(lease)?;
+        let shared = self.occupancy.at(now, self.slots.iter().flatten().count());
+        // Linux includes already reaped children in the supervisor's CPU
+        // counters. Take the last reading after any film upload completes.
+        let mut meter = slot.meter.clone();
+        if let Some(usage) = measure::group_usage(slot.child.id()) {
+            meter.observe(now, usage);
+        }
+        let load = meter.load();
+        Some(live_proto::hosts::PackUsage {
+            slot_us: now.saturating_duration_since(slot.started).as_micros() as u64,
+            container_share_us: shared.saturating_sub(slot.share_at_start).as_micros() as u64,
+            charge_start: slot.charge_start,
+            cpu_us: load.cpu_seconds.map(|s| (s * 1_000_000.0).round() as u64),
+            peak_pss_bytes: load.peak_pss_bytes,
+        })
     }
 
     fn status(&self) -> PackStatus {
@@ -464,6 +515,17 @@ fn ok_json(value: &impl serde::Serialize) -> (u16, Vec<u8>) {
 
 /// One control request.
 fn handle(pack: &mut Pack, req: &http::Request, now: Instant) -> (u16, Vec<u8>) {
+    if req.method == "GET"
+        && let Some(lease) = req.path.strip_prefix(host_pack::MATCHES_PATH)
+            .and_then(|path| path.strip_prefix('/'))
+            .and_then(|path| path.strip_suffix("/usage"))
+            .filter(|id| valid_lease(id))
+    {
+        return match pack.usage(lease, now) {
+            Some(usage) => ok_json(&usage),
+            None => error(404, "no such match"),
+        };
+    }
     let lease = req
         .path
         .strip_prefix(host_pack::MATCHES_PATH)
@@ -472,6 +534,7 @@ fn handle(pack: &mut Pack, req: &http::Request, now: Instant) -> (u16, Vec<u8>) 
     match (req.method.as_str(), req.path.as_str(), lease) {
         ("GET", host_pack::STATUS_PATH, _) => ok_json(&pack.status()),
         ("POST", host_pack::WARM_PATH, _) if !pack.draining => {
+            pack.start_claimed = true; // The warm reservation paid the pack start.
             if pack.idle_since.is_some() {
                 pack.idle_since = Some(now);
             }
@@ -527,7 +590,14 @@ fn serve_one(pack: &Mutex<Pack>, mut stream: TcpStream) -> io::Result<()> {
     stream.write_all(&http::response(status, &body))
 }
 
-fn launcher(opts: &Options) -> Result<Launch> {
+fn launcher(opts: &Options, mut control: SocketAddr) -> Result<Launch> {
+    if control.ip().is_unspecified() {
+        control.set_ip(if control.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
     let exe = std::env::current_exe().context("finding the h2 binary")?;
     let tunnel_ip = opts.tunnel.ip();
     let data = opts.data.clone();
@@ -541,6 +611,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
             "run",
             "--lease",
             &add.lease,
+            "--pack-control",
+            &control.to_string(),
             "--live",
             &add.live,
             "--token",
@@ -644,7 +716,7 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         limits,
         (opts.base_port, opts.tunnel.port(), opts.agent_port),
         opts.linger,
-        launcher(&opts)?,
+        launcher(&opts, listener.local_addr()?)?,
         Instant::now(),
     )));
     {

@@ -84,6 +84,7 @@ struct ReportBody {
     state: HostState,
     players: u8,
     reason: Option<EndReason>,
+    pack_usage: Option<live_proto::hosts::PackUsage>,
 }
 
 async fn report(
@@ -98,12 +99,13 @@ async fn report(
         return Err(invalid("host report state must be playing or ended"));
     }
     let _ = live
-        .host_report(
+        .host_report_with_usage(
             bearer(&headers),
             &lease,
             report.state,
             report.players,
             report.reason,
+            report.pack_usage,
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)

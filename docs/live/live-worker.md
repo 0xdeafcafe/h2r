@@ -441,7 +441,7 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 
 | Worker setting | Purpose |
 |---|---|
-| `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
+| `LIVE_MAX_HOSTS` | Shared lease cap across both classes. The default is 4. Operators may select 0–4 or a measured fleet step (16, 64, 256, 1,024). Deployment calculates a separate container limit for each class. [Fleet caps](host-halving.md#caps) |
 | `LIVE_HOST_PACK_MATCHES` | Optional slot cap per container. Small packs have five slots and large packs ten. A numeric value lowers the class cap. Admission also checks gameplay tick p99, CPU and memory. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
 | `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
@@ -576,11 +576,12 @@ with it (the switch). Both need `--yes-production`.
 
 Every environment declares the dedicated host containers, built from
 `deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
-that image is staged, deploy with `--no-hosts`: the script writes
-`wrangler.nohosts.toml` beside `wrangler.toml` without the `[[containers]]`
-blocks and with `LIVE_MAX_HOSTS = "0"`, so Live refuses host launches and
-everything else deploys. Without the image and without the flag it stops
-before deploying.
+the image is staged, `deploy.sh --no-hosts` (with the environment name)
+omits the container applications and sets the lease cap to zero. For a host
+deployment, edit the environment's variables in `wrangler.toml`.
+`python3 crates/live/live-worker/host_capacity.py` prints the effective
+config, including each application's container limit. The deploy script
+passes this config to Wrangler and removes its temporary copy on exit.
 
 `deploy.sh` prints each step as it goes:
 

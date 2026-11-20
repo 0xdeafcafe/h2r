@@ -153,7 +153,7 @@ impl Live {
         let accepted = self.matchmaking.lock().unwrap().host_requested(&lease);
         if !accepted {
             let row = self.require_host(&lease.id)?;
-            self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms())
+            self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms(), None)
                 .await?;
             return Err(conflict("the matchmaking assignment has expired"));
         }
@@ -285,7 +285,7 @@ impl Live {
                     .deadline()
                     .filter(|(due, _)| *due <= now)
                     .map_or(EndReason::Crashed, |(_, reason)| reason);
-                self.record_host_end(version, &row, reason, 0, now).await?;
+                self.record_host_end(version, &row, reason, 0, now, None).await?;
             }
             return Err(unavailable(
                 "dedicated host provider failed to start the match",
@@ -306,7 +306,7 @@ impl Live {
                 .map_err(|_| unavailable("late host could not be stopped"))?;
             self.hosts.registry.write().unwrap().launching.remove(id);
             if let Some((_, reason)) = row.deadline() {
-                self.record_host_end(version, &row, reason, 0, now).await?;
+                self.record_host_end(version, &row, reason, 0, now, None).await?;
             }
             return Err(conflict("dedicated host launch is no longer needed"));
         }
@@ -398,12 +398,29 @@ impl Live {
         players: u8,
         reason: Option<EndReason>,
     ) -> ApiResult<HostView> {
+        self.host_report_with_usage(bearer, lease_id, state, players, reason, None).await
+    }
+
+    pub(crate) async fn host_report_with_usage(
+        &self,
+        bearer: Option<&str>,
+        lease_id: &str,
+        state: HostState,
+        players: u8,
+        reason: Option<EndReason>,
+        pack_usage: Option<live_proto::hosts::PackUsage>,
+    ) -> ApiResult<HostView> {
         self.check_host_bearer(bearer, crate::host_identity::HOST_REPORT, lease_id)?;
         let _write = self.hosts.writes.lock().await;
         let version = self.hosts.version();
         let row = self.require_host(lease_id)?;
         if players > row.lease.max_players {
             return Err(invalid("player count exceeds the lease capacity"));
+        }
+        if let Some(usage) = pack_usage
+            && (state != HostState::Ended || usage.container_share_us > usage.slot_us)
+        {
+            return Err(invalid("invalid packed match usage"));
         }
         match state {
             HostState::Playing => {
@@ -437,7 +454,7 @@ impl Live {
                 }
                 // The supervisor still has to receive this response and tear
                 // down the game. A replayable sweep cleans up a lingering process.
-                self.record_host_end(version, &row, reason, players, now_ms())
+                self.record_host_end(version, &row, reason, players, now_ms(), pack_usage)
                     .await?;
             }
             _ => return Err(invalid("host may report only playing or ended")),
@@ -599,6 +616,7 @@ impl Live {
         reason: EndReason,
         players: u8,
         at: i64,
+        pack_usage: Option<live_proto::hosts::PackUsage>,
     ) -> ApiResult<()> {
         self.host_event(
             version,
@@ -610,6 +628,7 @@ impl Live {
                     .started_ms
                     .map_or(0, |start| at.saturating_sub(start).max(0) as u64),
                 players_peak: row.players_peak.max(players),
+                pack_usage,
             },
         )
         .await
@@ -648,7 +667,7 @@ impl Live {
                 version = self.hosts.version();
             }
         }
-        self.record_host_end(version, row, reason, players, at)
+        self.record_host_end(version, row, reason, players, at, None)
             .await
     }
 
@@ -689,7 +708,7 @@ impl Live {
             self.stop_host_locked(version, &row, reason, row.players, at)
                 .await?;
         } else if observed_dead && row.provider_ref == before.provider_ref {
-            self.record_host_end(version, &row, EndReason::Crashed, row.players, at)
+            self.record_host_end(version, &row, EndReason::Crashed, row.players, at, None)
                 .await?;
         }
         Ok(())

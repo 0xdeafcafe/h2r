@@ -296,7 +296,7 @@ pub struct HostBoot {
 - Then it moves through `Booting → Joinable → Playing → Ended`.
 - **Boot timeout:** 60 s → `Failed(BootTimeout)`, plus the fallback.
 - **Reaper:** on the existing alarm/tick, it stops hosts past `max_match_s` or idle past `idle_timeout_s`.
-- **Max concurrent hosts:** `LIVE_MAX_HOSTS`, default 4.
+- **Max concurrent hosts:** `LIVE_MAX_HOSTS` defaults to 4. Both homes use the [fleet cap steps](host-halving.md#caps).
 
 Providers:
 
