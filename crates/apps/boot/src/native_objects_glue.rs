@@ -380,6 +380,17 @@ fn plan_walk<B: d3d::backend::Backend>(
     if marks && !in_mode_1() {
         return Err(ObjectWalk::State);
     }
+    // A part toggling the auxiliary state draws with the view's rows and
+    // clip on (`frame_scene::AuxDepth`); its epilogue leaves them off.
+    // Skipping its handler is state-neutral only if the device already
+    // holds them off.
+    let aux = run.iter().enumerate().any(|(n, e)| {
+        matches!(e, Entry::Object { .. })
+            && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::AUX_DEPTH))
+    });
+    if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(device, mem, &a)) {
+        return Err(ObjectWalk::State);
+    }
     let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
     let table = &*STATE_TABLE;
     let device_state = |slot| device.render_state(&read, slot);
@@ -431,6 +442,9 @@ fn plan_walk<B: d3d::backend::Backend>(
         if stencil_during_draw && scene_part.flags.contains(PartFlags::STENCIL_MARK) {
             native_render::object_state::mark(&mut draw.state);
         }
+        if scene_part.flags.contains(PartFlags::AUX_DEPTH) {
+            draw.aux_depth = Some(view.aux_depth.ok_or(ObjectWalk::Inputs)?);
+        }
         let pass = lit.planned_pass(model, &draw).ok_or(ObjectWalk::Model)?;
         if pass.implementation.vertex_shader != Some(TagId(part.vertex_shader))
             || !stable_render_states(&pass.implementation.render_states, device_state)
@@ -456,6 +470,30 @@ fn plan_walk<B: d3d::backend::Backend>(
         draws.push((model, draw));
     }
     Ok(draws)
+}
+
+/// Whether the device holds what the auxiliary state toggle leaves off
+/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0, `c[0..3]`
+/// the rows off, and the program clip range off, owned by the game and
+/// pushed. Every comparison is of the bits.
+fn aux_depth_at_rest<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth,
+) -> bool {
+    use d3d::layout::device_field::{CLIP_FLAGS, CLIP_PROGRAM};
+    let bits = |r: &[f32]| r.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let layout = d3d::layout::GuestLayout::HALO2;
+    let stored = mem.u32(layout.p_device).ok().and_then(|d| {
+        Some((
+            [mem.u32(d.checked_add(CLIP_PROGRAM)?).ok()?, mem.u32(d.checked_add(CLIP_PROGRAM + 4)?).ok()?],
+            mem.u32(d.checked_add(CLIP_FLAGS)?).ok()?,
+        ))
+    });
+    let read = crate::native_world_glue::ReadMemory(mem);
+    let pushed = device.depth_clip(&read, aux.rest_clip[1]).range;
+    mem.u8(native_render::aux_depth::CACHED) == Ok(0)
+        && (0..4).all(|r| bits(&device.constant(r)) == bits(&aux.rest_rows[r]))
+        && stored.is_some_and(|(clip, flags)| clip == [aux.rest_clip[0].to_bits(), aux.rest_clip[1].to_bits()] && flags & 2 != 0)
+        && bits(&pushed) == bits(&aux.rest_clip)
 }
 
 /// Stencil mode 1, which layer 3's stencil switches leave.

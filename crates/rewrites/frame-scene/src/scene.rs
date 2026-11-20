@@ -119,6 +119,21 @@ pub struct WorldState {
     pub texaccum: bool,
 }
 
+/// What the auxiliary state toggle `0x00012d50` sets for the view
+/// (docs/graphics/framescene.md, slice 3): the view-projection rows it
+/// uploads to `c[0..3]` and the program clip range (W-buffer units) it
+/// stores, on, as a part with [`PartFlags::AUX_DEPTH`] draws, and off, as
+/// the part's epilogue leaves the device. On is off times [`Self::scale`],
+/// the rows whole and the clip's near end.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct AuxDepth {
+    pub scale: f32,
+    pub rows: [Row; 4],
+    pub clip: [f32; 2],
+    pub rest_rows: [Row; 4],
+    pub rest_clip: [f32; 2],
+}
+
 /// One game view.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct View {
@@ -138,6 +153,9 @@ pub struct View {
     pub world: WorldState,
     /// Object items extraction refused: the guest still draws them.
     pub remainder: u32,
+    /// What its [`PartFlags::AUX_DEPTH`] parts draw with; read when the
+    /// view has one.
+    pub aux_depth: Option<AuxDepth>,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -188,8 +206,16 @@ impl PartFlags {
     /// ([`PartDraw::subparts`]), each its own strip with strip topology,
     /// consecutive ones as one list otherwise.
     pub const SUBPARTS: PartFlags = PartFlags(1 << 2);
-    const NAMES: [(PartFlags, &'static str); 3] =
-        [(PartFlags::STENCIL_MARK, "stencil_mark"), (PartFlags::STRIP, "strip"), (PartFlags::SUBPARTS, "subparts")];
+    /// Record bit 11: the draw's prologue and epilogue call the auxiliary
+    /// state toggle `0x00012d50`, and the part draws with its view's
+    /// [`AuxDepth`] (its view-projection rows and clip range scaled).
+    pub const AUX_DEPTH: PartFlags = PartFlags(1 << 3);
+    const NAMES: [(PartFlags, &'static str); 4] = [
+        (PartFlags::STENCIL_MARK, "stencil_mark"),
+        (PartFlags::STRIP, "strip"),
+        (PartFlags::SUBPARTS, "subparts"),
+        (PartFlags::AUX_DEPTH, "aux_depth"),
+    ];
 
     pub fn contains(self, other: PartFlags) -> bool {
         self.0 & other.0 == other.0

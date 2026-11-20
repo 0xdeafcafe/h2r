@@ -35,14 +35,13 @@
 //!   subparts ([`Subparts`]); a part with more than [`Subparts::MAX`]
 //!   subparts, a negative first subpart or a mask that does not read
 //!   refuses ([`Refusal::Subparts`]).
-//! - **Bit 11, the auxiliary state toggle.** The prologue calls
-//!   `0x00012d50` with BL 1 and the epilogue with BL 0: it rewrites the
-//!   device's depth scale (device `+0x1c10`, from the scale at
-//!   `0x00485adc` times one of two constants, flagged dirty in
-//!   `+0x1c18`) and, when the cached byte `0x0055e6bc` differs, the
-//!   transform it builds from the view at `0x0048568c` with its first rows
-//!   scaled (`0x003f7280`). The native object programs do not take
-//!   either, so it refuses ([`Refusal::AuxState`]).
+//! - **Bit 11, the auxiliary state toggle** ([`PartFlags::AUX_DEPTH`]).
+//!   The prologue calls `0x00012d50` with BL 1 and the epilogue with BL
+//!   0: it sets the device's program clip range and the view-projection
+//!   rows `c[0..3]`, both scaled on ([`crate::layout::aux_depth`]). The
+//!   part is in the scene and draws with its view's
+//!   [`frame_scene::AuxDepth`]; when the toggle's inputs do not read it
+//!   refuses ([`Refusal::AuxState`]).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -103,7 +102,8 @@ const PART_TRIANGLE_LIST: u16 = 8;
 /// against the guest's choice, or memory that does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Bit 11: the depth-scale toggle around the draw.
+    /// Bit 11, and what the toggle around the draw reads does not read
+    /// ([`crate::layout::aux_depth::read`]).
     AuxState,
     /// Bit 6 with a subpart mask and subparts, whose visible subparts
     /// cannot be read: more than [`Subparts::MAX`], a negative first one,
@@ -136,12 +136,12 @@ impl Causes {
 /// The [`PartFlags`] of a part whose record has `flags` at `+0`, or the
 /// cause that refuses it: `triangle_list` the part's flag, `subparts`
 /// whether the record's subpart mask and the section's subpart count are
-/// both nonzero. Bit 11 refuses first, then the topology.
+/// both nonzero. Only the topology refuses.
 pub fn record_flags(flags: u32, triangle_list: bool, subparts: bool) -> Result<PartFlags, Refusal> {
-    if flags & RECORD_AUX_STATE != 0 {
-        return Err(Refusal::AuxState);
-    }
     let mut out = PartFlags::NONE;
+    if flags & RECORD_AUX_STATE != 0 {
+        out |= PartFlags::AUX_DEPTH;
+    }
     if flags & RECORD_SUBPARTS != 0 && subparts {
         out |= PartFlags::SUBPARTS;
     }
@@ -271,6 +271,8 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
     let record_count = word(mem, RENDER_RECORD_COUNT, 0)?.min(MAX_RENDER_RECORDS);
     let mut entries = Vec::with_capacity(count as usize);
     let mut causes = Causes::default();
+    // Whether the toggle's inputs read, asked at the first part with bit 11.
+    let mut aux_reads = None;
     for n in 0..count {
         let slot = base.checked_add(n * ITEM_SIZE)?;
         let program = word(mem, slot, ENTRY_PROGRAM)?;
@@ -306,7 +308,7 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
         };
         let render = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
         let part = if build == GEOMETRY_BUILD && draw == GEOMETRY_DRAW {
-            read_part(mem, slot, item, render, program, packed).inspect_err(|&why| causes.add(why)).ok()
+            read_part(mem, slot, item, render, program, packed, &mut aux_reads).inspect_err(|&why| causes.add(why)).ok()
         } else {
             None
         };
@@ -322,9 +324,15 @@ fn read_part(
     record: u32,
     program: u32,
     packed: u32,
+    aux_reads: &mut Option<bool>,
 ) -> Result<Part, Refusal> {
     let (part, flags, conditional) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
     let flags = record_flags(flags, part.triangle_list, conditional.is_some())?;
+    if flags.contains(PartFlags::AUX_DEPTH)
+        && !*aux_reads.get_or_insert_with(|| crate::layout::aux_depth::read(mem).is_some())
+    {
+        return Err(Refusal::AuxState);
+    }
     let subparts = match conditional {
         Some(c) if flags.contains(PartFlags::SUBPARTS) => Some(visible_subparts(mem, c.mask, c.first, c.count)?),
         _ => None,
@@ -661,8 +669,13 @@ mod tests {
         assert_eq!(record_flags(RECORD_SUBPARTS, true, true), Ok(PartFlags::SUBPARTS));
         assert_eq!(record_flags(RECORD_SUBPARTS | RECORD_STRIP, false, true), Ok(PartFlags::SUBPARTS | PartFlags::STRIP));
         assert_eq!(record_flags(RECORD_SUBPARTS, false, true), Err(Refusal::Topology));
-        // Bit 11 first.
-        assert_eq!(record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, false, true), Err(Refusal::AuxState));
+        // Bit 11 draws with the view's auxiliary depth.
+        assert_eq!(record_flags(RECORD_AUX_STATE, true, false), Ok(PartFlags::AUX_DEPTH));
+        assert_eq!(
+            record_flags(RECORD_AUX_STATE | RECORD_SUBPARTS, true, true),
+            Ok(PartFlags::AUX_DEPTH | PartFlags::SUBPARTS)
+        );
+        assert_eq!(record_flags(RECORD_AUX_STATE, false, false), Err(Refusal::Topology));
     }
 
     #[test]
@@ -678,6 +691,20 @@ mod tests {
         assert_eq!(visible_subparts(&mem, 0x100, -1, 2), Err(Refusal::Subparts));
         assert_eq!(visible_subparts(&mem, 0x100, 0, 65), Err(Refusal::Subparts));
         assert_eq!(visible_subparts(&mem, 0x100, 60, 8), Err(Refusal::Subparts), "the third word does not read");
+    }
+
+    /// Every word the auxiliary state toggle reads, made up.
+    fn aux_globals(mem: &mut Mem) {
+        use crate::layout::aux_depth::{AUX_SCALE, CLIP_FAR, CLIP_NEAR, ONE, SCALE_DENOMINATOR, SCALE_NUMERATOR, VIEW};
+        for at in [AUX_SCALE, ONE, CLIP_NEAR, CLIP_FAR, SCALE_NUMERATOR, SCALE_DENOMINATOR] {
+            mem.f(at, 1.0);
+        }
+        for k in 0..12 {
+            mem.f(VIEW + 4 + 4 * k, 0.0);
+        }
+        for k in 0..16 {
+            mem.f(VIEW + 0x78 + 4 * k, 0.0);
+        }
     }
 
     /// The record's `+0` in [`sorted_part`]'s memory, with `bits` added.
@@ -750,10 +777,16 @@ mod tests {
         assert_eq!(walk(&mem).entries, [Entry::Object { handle, part: Some(part()) }], "no subparts to choose");
         mem.w(at_part + 8, 18);
 
-        // The auxiliary state toggle: refused by name.
+        // The auxiliary state toggle: in the scene when what it reads
+        // reads, refused by name when not.
         with_record_bits(&mut mem, RECORD_AUX_STATE);
         let sorted = walk(&mem);
         assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
         assert_eq!(sorted.causes, Causes { aux_state: 1, ..Causes::default() });
+        aux_globals(&mut mem);
+        let aux = Part { flags: PartFlags::AUX_DEPTH, ..part() };
+        let sorted = walk(&mem);
+        assert_eq!(sorted.entries, [Entry::Object { handle, part: Some(aux) }]);
+        assert_eq!(sorted.causes, Causes::default());
     }
 }

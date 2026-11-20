@@ -1,10 +1,11 @@
 //! A scene's summary hash: what `render.scene` and `render.capture`
 //! report, so two runs can say whether they extracted the same frame.
 //! FNV-1a over the content, in order: the tick, the cut, and every view's
-//! key, camera, clusters, world state, remainder, instances (key,
-//! definition, model, nodes, sphere, lighting, defaults) and parts (slot,
-//! key, layer, flags, subparts, rows). Floats by their bits. Not the map epoch, the present
-//! number or the stamp: they count this process, not the frame.
+//! key, camera, clusters, world state, remainder, auxiliary depth,
+//! instances (key, definition, model, nodes, sphere, lighting, defaults)
+//! and parts (slot, key, layer, flags, subparts, rows). Floats by their
+//! bits. Not the map epoch, the present number or the stamp: they count
+//! this process, not the frame.
 
 use crate::object::{Defaults, Lighting};
 use crate::scene::FrameScene;
@@ -54,6 +55,18 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         }
         h.word(u32::from(v.world.texaccum));
         h.word(v.remainder);
+        match &v.aux_depth {
+            Some(a) => {
+                h.word(1);
+                h.float(a.scale);
+                for r in a.rows.iter().chain(&a.rest_rows) {
+                    h.floats(r);
+                }
+                h.floats(&a.clip);
+                h.floats(&a.rest_clip);
+            }
+            None => h.word(0),
+        }
         let instances = scene.instances_of(v);
         h.word(instances.len() as u32);
         for i in instances {

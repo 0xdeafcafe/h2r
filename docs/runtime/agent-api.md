@@ -706,7 +706,7 @@ h2 agent render.parity '{"arm": true}'
   cut, its clusters, instances, parts, rows, lights, shadow maps, the
   instances the guest still draws (`remainder`), its parts by how they
   draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
-  `subparts`;
+  `subparts`, `aux_depth`;
   framescene.md, slice 3), and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,

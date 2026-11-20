@@ -4,9 +4,10 @@
 //! same reads the stages made there before. What extraction cannot read
 //! is a remainder: the guest still draws it, and it is not in the scene.
 
-use frame_scene::{BuildError, Camera, InstanceInput, InstanceKey, Owner, SceneBuilder, WorldState};
+use frame_scene::{BuildError, Camera, InstanceInput, InstanceKey, Owner, PartFlags, SceneBuilder, WorldState};
 
 use crate::GuestRead;
+use crate::layout::aux_depth;
 use crate::layout::camera::{self, RENDER_CAMERA};
 use crate::layout::object_nodes::texaccum_bound;
 use crate::layout::object_walk::Entry;
@@ -67,7 +68,10 @@ pub struct Objects {
 /// The objects of a sorted layer-3 walk (`entries`, indexed by slot) into
 /// the builder's open view: one instance per object that reads, in the
 /// order its first item comes, with its parts in slot order and each
-/// part's palette rows. The model is the first part's render model.
+/// part's palette rows. The model is the first part's render model. At
+/// the first part with [`PartFlags::AUX_DEPTH`] the view takes what the
+/// auxiliary state toggle sets ([`aux_depth::read`]); when that does not
+/// read, such parts are a remainder.
 pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilder) -> Result<Objects, BuildError> {
     // Objects in first-item order, each with its items' slots.
     let mut order: Vec<(u32, Vec<usize>)> = Vec::new();
@@ -80,6 +84,8 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
         }
     }
     let mut out = Objects::default();
+    // Whether the view's auxiliary depth is set, once asked.
+    let mut aux = None;
     for (handle, slots) in order {
         let Some(frame) = read_object(mem, handle) else {
             out.remainder += slots.len() as u32;
@@ -111,6 +117,19 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
                 out.remainder += 1;
                 continue;
             };
+            if part.flags.contains(PartFlags::AUX_DEPTH) {
+                if aux.is_none() {
+                    let read = aux_depth::read(mem);
+                    if let Some(a) = read {
+                        builder.set_aux_depth(a)?;
+                    }
+                    aux = Some(read.is_some());
+                }
+                if aux == Some(false) {
+                    out.remainder += 1;
+                    continue;
+                }
+            }
             builder.push_part_flagged(instance, slot as u32, part.key, 3, part.flags, part.subparts, &rows)?;
             out.parts += 1;
         }
@@ -240,6 +259,42 @@ mod tests {
         assert_eq!(s.part_at(v, 0).unwrap().1.flags, PartFlags::STENCIL_MARK);
         assert_eq!(s.part_at(v, 1).unwrap().1.flags, PartFlags::STRIP);
         assert_eq!(v.remainder, 0, "neither is left to the guest");
+    }
+
+    #[test]
+    fn an_auxiliary_depth_part_is_in_the_scene_and_its_view_has_what_the_toggle_sets() {
+        use crate::layout::aux_depth::{AUX_SCALE, CLIP_FAR, CLIP_NEAR, ONE, SCALE_DENOMINATOR, SCALE_NUMERATOR, VIEW};
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        object_record(&mut m, 4, Some(lighting(8)), 10.0);
+        object_record(&mut m, 5, Some(lighting(8)), 20.0);
+        let aux = Part { flags: PartFlags::AUX_DEPTH, ..part(4, 0) };
+        let plain = part(5, 1);
+        let entries = [Entry::Object { handle: a, part: Some(aux) }, Entry::Object { handle: a, part: Some(plain) }];
+        // What the toggle reads does not read: the part is left to the guest.
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        assert_eq!(objects(&m, &entries, &mut b).unwrap(), Objects { instances: 1, parts: 1, remainder: 1 });
+        assert_eq!(b.seal(Stamp::default()).unwrap().views[0].aux_depth, None);
+        for (at, x) in [(AUX_SCALE, 0.5), (ONE, 1.0), (CLIP_NEAR, 2.0), (CLIP_FAR, 900.0), (SCALE_NUMERATOR, 1.0), (SCALE_DENOMINATOR, 1.0)] {
+            m.f(at, x);
+        }
+        for k in 0..12 {
+            m.f(VIEW + 4 + 4 * k, 1.0);
+        }
+        for k in 0..16 {
+            m.f(VIEW + 0x78 + 4 * k, 1.0);
+        }
+        let mut b = SceneBuilder::default();
+        view(&mut b, &m);
+        assert_eq!(objects(&m, &entries, &mut b).unwrap(), Objects { instances: 1, parts: 2, remainder: 0 });
+        let s = b.seal(Stamp::default()).unwrap();
+        let v = &s.views[0];
+        assert_eq!(s.part_at(v, 0).unwrap().1.flags, PartFlags::AUX_DEPTH);
+        let got = v.aux_depth.unwrap();
+        assert_eq!((got.scale, got.clip, got.rest_clip), (0.5, [1.0, 900.0], [2.0, 900.0]));
+        assert_eq!(got.rows, got.rest_rows.map(|r| r.map(|x| x * 0.5)));
     }
 
     #[test]

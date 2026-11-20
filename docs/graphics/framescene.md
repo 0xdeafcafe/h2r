@@ -746,12 +746,27 @@ and world-layer parts are not.
     are not whole triangles has no native subparts and its chosen draws
     refuse at planning. More than 64 subparts, a negative first subpart
     or a mask that does not read refuse (`Refusal::Subparts`).
-  - **Bit 11, the auxiliary state toggle.** The prologue and epilogue
-    call `0x00012d50`, which rewrites the device's depth scale and the
-    transform it builds from the view. The object programs take neither,
-    so it refuses (`Refusal::AuxState`). Drawing it needs the scale the
-    toggle sets carried in the scene and applied in the object programs'
-    depth.
+  - **Bit 11, the auxiliary state toggle** (`PartFlags::AUX_DEPTH`). The
+    prologue calls `0x00012d50` on and the epilogue off. It stores the
+    device's program clip range (`+0x1c10`, game-owned through
+    `+0x1c18` bit 1, pushed by `0x003f6190`) as `[near · k, far]` from
+    the game's clip words (`0x00485adc`, `0x00485ae0`), `k` the
+    constant at `0x004407b8` on and 1.0 off; and it builds the
+    view-projection rows from the view at `0x0048568c` (its projection
+    columns through its 3x4 matrix, times `[0x0045dd40] /
+    [0x0048565c]`), all sixteen times `k` on, and uploads them to
+    `c[0..3]` when the byte at `0x0055e6bc` differs from the call's.
+    Extraction reads both states once per view
+    (`scene_extract::layout::aux_depth`, the arithmetic in the
+    toggle's order) into `View::aux_depth` (`frame_scene::AuxDepth`).
+    An aux-depth part draws with those rows and that clip in place of
+    the device's (`object_program_gpu::with_aux_depth`). A run holding
+    one is taken only when the device holds the off state (the cached
+    byte 0, `c[0..3]` the rows off, the stored and pushed clip the
+    range off: `boot::native_objects_glue::aux_depth_at_rest`), so
+    skipping the handlers leaves what the epilogue would. When the
+    toggle's inputs do not read the part refuses
+    (`Refusal::AuxState`).
 
   Refused parts count by cause as `native_objects_walk_part_aux_state`,
   `_part_subparts` and `_part_topology` (parts, where

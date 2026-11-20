@@ -11,7 +11,7 @@ use crate::camera::Camera;
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
-    Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, Subparts, View, ViewKey, WorldState,
+    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp, Subparts, View, ViewKey, WorldState,
 };
 
 /// Scenes whose readers are done, emptied, for the builder to fill again.
@@ -167,6 +167,7 @@ impl SceneBuilder {
             order: o..o,
             world: WorldState::default(),
             remainder: 0,
+            aux_depth: None,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
@@ -191,6 +192,13 @@ impl SceneBuilder {
     pub fn set_world(&mut self, world: WorldState) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         scene.views[open].world = world;
+        Ok(())
+    }
+
+    /// What the open view's auxiliary-depth parts draw with.
+    pub fn set_aux_depth(&mut self, aux: AuxDepth) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.views[open].aux_depth = Some(aux);
         Ok(())
     }
 

@@ -30,7 +30,7 @@ use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemKey, ObjectFrame};
-use frame_scene::{Defaults, FrameScene, Instance, Lighting, PartDraw, Subparts};
+use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, Lighting, PartDraw, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
@@ -220,6 +220,10 @@ pub struct PlannedDraw {
     /// What the draw issues: the whole part, or the subparts its record
     /// chose ([`SubpartRanges::drawn`]; none when it chose none).
     pub ranges: Vec<Range<u32>>,
+    /// A part whose record toggles the auxiliary state
+    /// (`frame_scene::PartFlags::AUX_DEPTH`): the view's rows and clip it
+    /// draws with in place of the device's ([`with_aux_depth`]).
+    pub aux_depth: Option<AuxDepth>,
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
     pub state: DrawState,
@@ -476,6 +480,9 @@ impl LitObjects {
         let mut vertex = frame_vertex(&d.vertex, view);
         vertex.w_clamp = d.state.w_clamp;
         let mut pixel = frame_pixel(&d.pixel, view);
+        if let Some(aux) = &d.aux_depth {
+            with_aux_depth(&mut vertex, &mut pixel, aux);
+        }
         if let Some(t) = texaccum.filter(|_| d.texaccum) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
             texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
@@ -657,6 +664,15 @@ impl LitObjects {
     }
 }
 
+/// `vertex` and `pixel` as the auxiliary state toggle leaves the device
+/// for a part's draw (`0x00012d50` on): the view-projection rows `c[0..3]`
+/// and the program clip range it sets, the clamp the device's.
+pub fn with_aux_depth(vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, aux: &AuxDepth) {
+    vertex.constants[..4].copy_from_slice(&aux.rows);
+    vertex.w_clip = Some(aux.clip);
+    pixel.depth_range = [aux.clip[0], aux.clip[1], 0.0, 0.0];
+}
+
 /// The depth and stencil a lit part's pipeline draws with on a
 /// `depth_format` attachment; `None` when it tests the stencil and the
 /// attachment has none.
@@ -761,6 +777,7 @@ fn plan_indexed_part<'a>(
         buffer,
         indices: p.indices.clone(),
         ranges,
+        aux_depth: None,
         vertex,
         pixel,
         state,
@@ -1487,6 +1504,34 @@ mod tests {
         assert!(lit_subparts(&indices, &subparts, &part(0, 0, 65)).is_none());
         assert!(lit_subparts(&indices, &subparts, &part(0, 2, 2)).is_none());
         assert!(lit_subparts(&indices, &[sub(7, 4)], &part(0, 0, 1)).is_none());
+    }
+
+    #[test]
+    fn an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else() {
+        let base = VertexUniforms::default();
+        let view = ViewInputs {
+            constants: std::array::from_fn(|i| [i as f32; 4]),
+            guest_size: (640, 480),
+            size: (640, 480),
+            z_scale: 1000.0,
+            w_clip: Some(([2.0, 900.0], true)),
+        };
+        let mut vertex = frame_vertex(&base, &view);
+        let mut pixel = frame_pixel(&PixelUniforms::default(), &view);
+        let (before_v, before_p) = (vertex.clone(), pixel);
+        let aux = AuxDepth {
+            scale: 0.5,
+            rows: [[9.0; 4], [8.0; 4], [7.0; 4], [6.0; 4]],
+            clip: [1.0, 900.0],
+            rest_rows: [[0.0; 4], [1.0; 4], [2.0; 4], [3.0; 4]],
+            rest_clip: [2.0, 900.0],
+        };
+        with_aux_depth(&mut vertex, &mut pixel, &aux);
+        assert_eq!(vertex.constants[..4], aux.rows);
+        assert_eq!(vertex.constants[4..], before_v.constants[4..], "the view's other constants");
+        assert_eq!((vertex.w_clip, vertex.w_clamp), (Some([1.0, 900.0]), true));
+        assert_eq!(pixel.depth_range, [1.0, 900.0, 0.0, 0.0]);
+        assert_eq!(pixel.depth, before_p.depth, "the W-buffer's scale is the view's");
     }
 
     #[test]
