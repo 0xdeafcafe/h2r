@@ -59,7 +59,7 @@ impl Guest {
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
             flat: None,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-            flat_requested: crate::flat::enabled(),
+            flat_requested: false,
             ram,
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| Default::default()),
@@ -95,7 +95,9 @@ impl Guest {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         {
             self.flat = None;
-            self.flat_requested = crate::flat::enabled();
+            // A refreshed executor view keeps its ordinary page table and
+            // spends no time installing aliases of a short-lived copy.
+            self.flat_requested = false;
         }
         self.ram = ram;
         self.watch_revision = self.watch_revision.wrapping_add(1);
