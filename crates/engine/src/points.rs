@@ -1022,6 +1022,8 @@ points! { ALL;
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Revert the game state to a saved slot.
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
+    /// Restore the whole game state from a saved image (header checked).
+    GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Switch the structure BSP (prepare, dispose, load, publish).
     BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_start`.

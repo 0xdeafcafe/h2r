@@ -16,6 +16,7 @@ evidence. No disassembly listings or game data.
 | [sim-rewrite-collision.md](sim-rewrite-collision.md) | BSP and MOPP queries, collision query, cluster flood, object visit | design: phase 2 collision world, entries, data layouts, slices |
 | [sim-rewrite-objects.md](sim-rewrite-objects.md) | object walks `0xb6f10`, `0xb7060`, `0xb7150`, per-object update `0xbc470`, `0xbc820`, type update trees, lights `0xc1400` | design: phase 3 of the sim rewrite |
 | [hs_vm.md](hs_vm.md) | HaloScript interpreter `0x207c20–0x20a490`, scheduler `0x209310` | native Rust VM in `crates/hs` (`hs::vm`); not yet wired into the game |
+| [anim-sampling.md](anim-sampling.md) | animation sampling `0x2798a0` and everything below it | Rust (`sim-anim`) + adapter behind `impl.sim.native.anim`, default off |
 
 ## Fault behaviour
 

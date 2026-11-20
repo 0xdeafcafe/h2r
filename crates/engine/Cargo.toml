@@ -16,6 +16,10 @@ mopp = { path = "../mopp", optional = true }
 # for bit.
 simd.workspace = true
 x87.workspace = true
+# The native simulation subsystems (docs/engine/sim-rewrite.md): float
+# rules and host lanes, and animation sampling behind src/sim_anim.rs.
+sim-core.workspace = true
+sim-anim.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }
@@ -24,8 +28,16 @@ analyze = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }
 ir = { workspace = true, optional = true }
 lift = { workspace = true, optional = true }
+# For the disc sweep in tests/sim_anim_differential.rs only.
+tags = { workspace = true, optional = true }
+map = { workspace = true, optional = true }
+xiso = { workspace = true, optional = true }
 
 [features]
 runtime-glue = ["dep:runtime", "dep:mopp"]
 # Seeded differential test against the lifted original (tests/differential.rs).
-differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
+differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "dep:tags", "dep:map", "dep:xiso"]
+
+[dev-dependencies]
+# `lanes::with` for the unit tests that compare host lanes and the scalar loop.
+sim-core = { workspace = true, features = ["override"] }

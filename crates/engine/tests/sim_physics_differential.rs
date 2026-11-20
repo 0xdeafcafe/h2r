@@ -7,7 +7,7 @@
 mod common;
 
 use engine::points;
-use engine::sim_physics::{PORTS, Port};
+use engine::sim_physics::{ORACLES, PORTS, Port};
 use ir::interp::{self, Cpu, FlatMemory, Flow};
 use runtime::{CpuAbi, Guest, TransferAbi, abi, guest::Permissions};
 use std::collections::BTreeMap;
@@ -844,7 +844,7 @@ fn oracle() -> Option<&'static Oracle> {
         let lifter = lift::Lifter::new(&analysis, &xbe).unwrap();
         let mut image = lift::harness::load_image(&xbe).unwrap();
         image.bytes.truncate(RAM);
-        let functions = PORTS.iter().map(|port| {
+        let functions = PORTS.iter().chain(ORACLES).map(|port| {
             let function = lifter.lift(port.point.base).expect(port.point.name);
             let mut insns: BTreeMap<_,_> = function.blocks.into_values().flat_map(|b| b.insns)
                 .map(|i| (i.pc,i)).collect();
@@ -873,7 +873,7 @@ type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
     let Some(oracle) = oracle() else { return };
-    let port = PORTS.iter().find(|p| p.point.base == point.base).unwrap();
+    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
     let insns = &oracle.functions[&point.base];
     for case in 0..cases {
         let mut memory = oracle.image.clone();
