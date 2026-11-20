@@ -11,6 +11,7 @@ pub(super) const GUARD: u16 = 5;
 const COVER_FRIEND: u16 = 11;
 const COVER: u16 = 43;
 const COVER_PEEK: u16 = 44;
+const RETREAT: u16 = 56;
 pub(super) const FLEE: u16 = 58;
 const COWER: u16 = 59;
 const AMBUSH: u16 = 70;
@@ -20,7 +21,20 @@ const VISIBLE_ENEMY: u16 = 6;
 const FIRST_SIGHT: u16 = 10;
 const FIRST_SIGHT_FROM_PERCEPTION: u32 = 0x0025_b391;
 
-const RECORD_SIZE: u32 = 20;
+const DANGER_KIND: u32 = 0x358;
+const DANGER_RELATION: u32 = 0x35a;
+const DANGER_OBJECT: u32 = 0x360;
+const DANGER_FUSE: u32 = 0x3ac;
+const PROJECTILE_DANGER: u16 = 2;
+const THROTTLE: u32 = 0x814;
+const BODY_RADIUS: u32 = 0x3c;
+const BODY_POSITION: u32 = 0x64;
+const BODY_FORWARD: u32 = 0x70;
+const BODY_VELOCITY: u32 = 0x88;
+
+const GRENADE: u32 = 20;
+const BLOCKED: u32 = 32;
+const RECORD_SIZE: u32 = 40;
 const ACTORS: u32 = hs::h1_conversation::ACTOR_CAPACITY;
 const BYTES: u32 = ACTORS * RECORD_SIZE;
 
@@ -124,6 +138,160 @@ fn in_cover(behavior: u16) -> bool {
     )
 }
 
+fn grenade(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    record: u32,
+    actor: u32,
+    unit: u32,
+    clock: (u32, u32),
+    retreat: bool,
+) -> Result<(), MemFault> {
+    let (now, rate) = clock;
+    if m.u16(actor + DANGER_KIND)? != PROJECTILE_DANGER {
+        if m.u32(record)? != NONE {
+            m.set_u32(record, NONE)?;
+        }
+        return Ok(());
+    }
+    let projectile = m.u32(actor + DANGER_OBJECT)?;
+    let relation = m.u16(actor + DANGER_RELATION)?;
+    if projectile == NONE || object_address(m, projectile)?.is_none() {
+        return Ok(());
+    }
+    if m.u32(record)? != projectile {
+        m.set_u32(record, projectile)?;
+        m.set_u32(record + 4, now)?;
+        m.set_u32(record + 8, 0)?;
+        if relation == 0 && dialogue::source_offset_row(m, unit, 0x760)?.is_some() {
+            queue.push(m, unit, 0x760, 3)?;
+        }
+    }
+
+    if retreat
+        && relation == 0
+        && dialogue::source_offset_row(m, unit, 0x280)?.is_some()
+        && cast::draw_voice(m, 2)? == 0
+    {
+        queue.push(m, unit, 0x280, 9)?;
+    }
+
+    if m.u32(record + 8)? != 0 {
+        return Ok(());
+    }
+    let fuse = m.u16(actor + DANGER_FUSE)?;
+    let (offset, priority) = match relation {
+        0 if now.wrapping_sub(m.u32(record + 4)?) >= rate.div_ceil(2) => (0x770, 5),
+        1 if u32::from(fuse) * 3 < 2 * rate => (0x790, 5),
+        2 if u32::from(fuse) < rate => (0x780, 6),
+        _ => return Ok(()),
+    };
+    m.set_u32(record + 8, 1)?;
+    if dialogue::source_offset_row(m, unit, offset)?.is_some() {
+        queue.push(m, unit, offset, priority)?;
+    }
+    Ok(())
+}
+
+fn blocking_ally(
+    m: &dyn GuestMemory,
+    speaker: u32,
+    position: [f32; 3],
+    movement: [f32; 2],
+    radius: f32,
+) -> Result<u32, MemFault> {
+    let Some(team) = cast::team(m, speaker)? else {
+        return Ok(NONE);
+    };
+    let pool = DatumArray::at(m.u32(cast::ACTORS)?);
+    let mut next = 0;
+    let mut closest = f32::INFINITY;
+    let mut blocker = NONE;
+    while let Some(index) = pool.next_index(m, next)? {
+        next = index + 1;
+        let Some(actor) = pool.get_absolute(m, index)? else {
+            continue;
+        };
+        let candidate = m.u32(actor + cast::ACTOR_UNIT)?;
+        if candidate == speaker {
+            continue;
+        }
+        let Some(ally) = cast::Unit::read(m, candidate)? else {
+            continue;
+        };
+        let Some(body) = object_address(m, candidate)? else {
+            continue;
+        };
+        let dx = ally.pos[0] - position[0];
+        let dy = ally.pos[1] - position[1];
+        let along = dx * movement[0] + dy * movement[1];
+        let lateral = (dx * movement[1] - dy * movement[0]).abs();
+        let width = radius + m.f32(body + BODY_RADIUS)?;
+        if along > 0.0
+            && along < closest
+            && along <= width + 0.3
+            && lateral < width
+            && (ally.pos[2] - position[2]).abs() < 0.75
+            && !cast::mounted(m, body)?
+            && cast::allied(m, team, ally.team)?
+        {
+            closest = along;
+            blocker = candidate;
+        }
+    }
+    Ok(blocker)
+}
+
+fn blocked(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    record: u32,
+    actor: u32,
+    unit: u32,
+    clock: (u32, u32),
+) -> Result<(), MemFault> {
+    if dialogue::source_offset_row(m, unit, 0x820)?.is_none() {
+        return Ok(());
+    }
+    let Some(body) = object_address(m, unit)? else {
+        return Ok(());
+    };
+    let [forward, sidestep, _] = m.vec3(actor + THROTTLE)?;
+    let vx = m.f32(body + BODY_VELOCITY)?;
+    let vy = m.f32(body + BODY_VELOCITY + 4)?;
+    let (now, rate) = clock;
+    let effort = (forward * forward + sidestep * sidestep).sqrt();
+    if effort <= 0.1
+        || (vx * vx + vy * vy) > 0.0025
+        || cast::mounted(m, body)?
+        || awareness(m, actor)? != 7
+    {
+        m.set_u32(record, 0)?;
+        m.set_u32(record + 4, 0)?;
+        return Ok(());
+    }
+    let started = m.u32(record)?;
+    if started == 0 {
+        m.set_u32(record, now.max(1))?;
+    } else if m.u32(record + 4)? == 0 && now.wrapping_sub(started) >= rate * 3 / 2 {
+        let [x, y, _] = m.vec3(body + BODY_FORWARD)?;
+        let movement = [
+            (forward * x - sidestep * y) / effort,
+            (forward * y + sidestep * x) / effort,
+        ];
+        let origin = m.vec3(body + BODY_POSITION)?;
+        let radius = m.f32(body + BODY_RADIUS)?;
+        let other = blocking_ally(m, unit, origin, movement, radius)?;
+        if other == NONE {
+            m.set_u32(record, now.max(1))?;
+        } else {
+            queue.push_with_other(m, unit, 0x820, 3, 0, other)?;
+            m.set_u32(record + 4, 1)?;
+        }
+    }
+    Ok(())
+}
+
 fn observe(
     m: &mut dyn GuestMemory,
     queue: Queue,
@@ -148,6 +316,10 @@ fn observe(
         return Ok(());
     }
     let now = m.u32(clock + 8)?;
+    let rate = u32::from(m.u16(clock + 2)?);
+    if rate == 0 {
+        return Ok(());
+    }
     let behavior = search::behavior(m, actor)?;
     let status = m.u16(actor + COMBAT_STATUS)?;
     let target = cast::focus_object(m, actor)?;
@@ -173,6 +345,21 @@ fn observe(
         search::PRESEARCH | search::SEARCH | search::INVESTIGATE | search::POSTSEARCH | GUARD
     );
     let changed = old_behavior != behavior;
+    grenade(
+        m,
+        queue,
+        at + GRENADE,
+        actor,
+        unit,
+        (now, rate),
+        changed && matches!(behavior, RETREAT | FLEE),
+    )?;
+    if status >= VISIBLE_ENEMY {
+        blocked(m, queue, at + BLOCKED, actor, unit, (now, rate))?;
+    } else if m.u32(at + BLOCKED)? != 0 {
+        m.set_u32(at + BLOCKED, 0)?;
+        m.set_u32(at + BLOCKED + 4, 0)?;
+    }
     let lost =
         old_status >= VISIBLE_ENEMY && status < VISIBLE_ENEMY && old_target != NONE && searching;
     let candidate = if lost {
@@ -198,7 +385,6 @@ fn observe(
         && now.wrapping_sub(m.u32(at + 16)?) < 0x8000_0000
         && dialogue::source_offset_row(m, unit, offset)?.is_some()
     {
-        let rate = u32::from(m.u16(clock + 2)?);
         m.set_u32(at + 16, now.wrapping_add(seconds * rate))?;
         queue.push(m, unit, offset, priority)?;
     }

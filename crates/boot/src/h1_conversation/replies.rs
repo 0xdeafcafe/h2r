@@ -216,6 +216,7 @@ pub(super) fn on_speech_tick(
     let directed_reply = match offset {
         0x1e0 => Some((0x1f0, 70)),
         0x7e0 => Some((0x7f0, 70)),
+        0x820 => Some((0x830, 50)),
         _ => None,
     };
     if let Some((offset, chance)) = directed_reply {

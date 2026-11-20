@@ -94,20 +94,25 @@ pub(super) fn source_row(
         return Ok(None);
     };
     let count = m.u32(root + 0xc)?;
+    if count == 0 || count > 1024 {
+        return Ok(None);
+    }
     let rows = m.u32(root + 0x10)?;
     let wanted = H1_DIALOGUE_SLOT | u32::from(slot);
-    for k in (0..count.min(1024)).rev() {
-        let row = rows + k * 0x10;
+    let mut first = 0;
+    let mut end = count;
+    while first < end {
+        let index = first + (end - first) / 2;
+        let row = rows + index * 0x10;
         let marker = m.u32(row)?;
-        if marker & 0xffff_0000 != H1_DIALOGUE_SLOT {
-            break;
-        }
-        if marker == wanted {
+        // The native prefix precedes the sorted source slots.
+        if marker & 0xffff_0000 != H1_DIALOGUE_SLOT || marker < wanted {
+            first = index + 1;
+        } else if marker > wanted {
+            end = index;
+        } else {
             let sound = m.u32(row + 0xc)?;
-            if tag_address(m, sound, SND)?.is_some() {
-                return Ok(Some((k, sound)));
-            }
-            break;
+            return Ok(tag_address(m, sound, SND)?.map(|_| (index, sound)));
         }
     }
     Ok(None)

@@ -186,7 +186,7 @@ pub const H1_KILLING_SPREE_REPLY_LINE: usize = 0x5d0;
 pub const fn h1_tactical_dialogue_line(offset: usize) -> bool {
     matches!(
         offset,
-        0x6e0 | 0x7c0 | 0x7d0 | 0x7e0 | 0x7f0 | 0x800 | 0x810
+        0x6e0 | 0x7c0 | 0x7d0 | 0x7e0 | 0x7f0 | 0x800 | 0x810 | 0x820 | 0x830
             | 0x8a0 | 0x8b0 | 0x8f0 | 0x900 | 0x9e0 | 0xa20 | 0xa30
     )
 }
@@ -200,4 +200,9 @@ pub const fn h1_actor_notice_line(offset: usize) -> bool {
 /// Remarks selected by the original firing-burst conditions.
 pub const fn h1_firing_line(offset: usize) -> bool {
     matches!(offset, 0x960 | 0x970 | 0x980 | 0x990 | 0x9a0)
+}
+
+/// Alerts and involuntary speech driven by the selected grenade danger.
+pub const fn h1_grenade_dialogue_line(offset: usize) -> bool {
+    matches!(offset, 0x280 | 0x760 | 0x770 | 0x780 | 0x790)
 }

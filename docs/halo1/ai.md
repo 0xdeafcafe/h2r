@@ -577,6 +577,23 @@ squad. The flee reply is limited to allies at the source's full
 combat awareness level who are still able to act. These checks
 run after the triggering row has finished in Halo 2's speech cache.
 
+**Built.** A new hostile grenade triggers startle in Halo 1 at
+`0x15000b`. Its danger update at `0x166f31` distinguishes enemy,
+allied and own grenades, with 20- and 30-tick fuse conditions for
+the latter two. Halo 2's projectile danger selection at `0x265119`
+records the projectile, its relationship and its remaining fuse
+for that actor. The hook follows the selected grenade, schedules
+the enemy warning after the initial startle, and uses the original
+fuse limits for ally and self warnings. The exposed actor's retreat
+can select the involuntary grenade line with the original one-half
+chance from `0x46c30`.
+
+**Built.** The blocked remark at `0x16376e` requires 45 consecutive
+source ticks of blocked movement during combat. Halo 2's control
+update compares requested movement and actual velocity and looks
+for the allied unit occupying the requested direction. The reply
+goes to that exact blocker after the request has finished.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 
