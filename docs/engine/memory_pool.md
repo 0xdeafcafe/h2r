@@ -1,6 +1,9 @@
 # Memory pool (0x18e1f0–0x18e700): contract notes, not yet in Rust
 
-Recovered 2026-11-14 from `h2 disasm` (`03215919…935d`). This window holds
+Status: Reference. No Rust code implements these functions; the pool
+allocator is still the recompiled original. Code: none. Switch: none.
+
+Recovered from `h2 disasm` (`03215919…935d`). This window holds
 the pool allocator used by objects and UI, not more datum-array code. It is
 documented here because it was surveyed with the datum primitives; the
 Rust port is a separate step (it calls guest allocators and has a debug

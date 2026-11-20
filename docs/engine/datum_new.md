@@ -1,6 +1,12 @@
 # Datum arrays: `datum_new` (0x16b840) and its siblings
 
-Recovered 2026-11-14 from `h2 disasm` of the retail XBE (`03215919…935d`),
+Status: Built. Every leaf of the family has a Rust port with an adapter; `data_new` and
+`data_dispose` stay generated because they call guest allocators.
+Code: `crates/engine/src/datum.rs`, adapters in `crates/engine/src/abi.rs`.
+Tests: `crates/engine/tests/differential.rs`. Switch: `impl.engine.datums`
+(off by default; [switches.md](../runtime/switches.md)).
+
+Recovered from `h2 disasm` of the retail XBE (`03215919…935d`),
 window `0x16b570–0x16bd10`. Names are assigned (engine-map names where it
 has them). Rust: `crates/engine/src/datum.rs`; adapters in
 `crates/engine/src/abi.rs`.
