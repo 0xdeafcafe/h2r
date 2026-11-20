@@ -355,6 +355,13 @@ marker lights. Each of b30's 42 authored placements binds a light with
 that tuple. See [sounds.md](sounds.md#impulse-promotion-built) and
 [objects.md](objects.md#light-fixture-placements-built).
 
+**Built. Native donor promotions.** Halo 2's `0x218f10` returns the
+rule's pitch range within the donor sound. `0x219070` adds its relocated
+first range. Donor transplantation and gestalt compaction share the merge
+that carries those rules and timers with the rebuilt range order. Invalid
+rules and incompatible reuse identify the source sound and map.
+See [sounds.md](sounds.md#merging-a-moved-sound-h1soundsmerge_sound).
+
 ### Dependencies kept from Halo 2
 
 The base map supplies engine globals, global material indices, the sound

@@ -76,7 +76,7 @@ pub mod snd {
     pub const PITCH_RANGE_COUNT: usize = 0xa;
     /// `u8` scale index.
     pub const SCALE: usize = 0xb;
-    /// `u8` promotion index, `ff` none.
+    /// Nonnegative signed byte promotion index. `ff` means none.
     pub const PROMOTION: usize = 0xc;
     /// `u8` custom playback index, `ff` none.
     pub const CUSTOM_PLAYBACK: usize = 0xd;

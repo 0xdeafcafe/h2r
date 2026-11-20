@@ -523,8 +523,8 @@ impl h1sounds::MergeMap for Same {
 /// gestalt, names the same entries there as it did in its own: playback,
 /// scale, each range's name, parameters and runtime flag bits, each
 /// permutation's bytes and chunks, custom playback and extra info. The
-/// merged gestalt still builds. Sounds with promotions are refused and
-/// counted.
+/// merged gestalt still builds, with the sound-relative promotion rules
+/// and their timer blocks carried over.
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC)"]
 fn every_retail_sound_merges() {
@@ -550,14 +550,9 @@ fn every_retail_sound_merges() {
         let mut dst = SoundGestalt::default();
         for id in sounds {
             let h = m.read_tag_bytes(id).unwrap();
-            let out = match h1sounds::merge_sound(&src, &h, &mut dst, owner.0, &mut Same) {
-                Ok(o) => o,
-                Err(h1sounds::Error::Unsupported(_)) if h[snd::PROMOTION] != 0xff => {
-                    promoted += 1;
-                    continue;
-                }
-                Err(e) => panic!("{stem} {id:?}: {e}"),
-            };
+            let out = h1sounds::merge_sound(&src, &h, &mut dst, owner.0, &mut Same)
+                .unwrap_or_else(|e| panic!("{stem} {id:?}: {e}"));
+            promoted += usize::from(out[snd::PROMOTION] != u8::MAX);
             merged += 1;
             assert_eq!(out[snd::MAX_PLAY_TIME..], h[snd::MAX_PLAY_TIME..snd::LEN]);
             assert_eq!(
@@ -610,8 +605,12 @@ fn every_retail_sound_merges() {
                     );
                 }
             }
-            for (i, at) in [(blocks::CUSTOM_PLAYBACKS, snd::CUSTOM_PLAYBACK)] {
-                if h[at] != 0xff {
+            for (i, at) in [
+                (blocks::CUSTOM_PLAYBACKS, snd::CUSTOM_PLAYBACK),
+                (blocks::PROMOTIONS, snd::PROMOTION),
+            ] {
+                assert_eq!(h[at] == u8::MAX, out[at] == u8::MAX);
+                if h[at] != u8::MAX {
                     assert_eq!(
                         src.nested[i][usize::from(h[at])],
                         dst.nested[i][usize::from(out[at])]
@@ -631,8 +630,7 @@ fn every_retail_sound_merges() {
             (0..11).map(|i| dst.count(i)).collect::<Vec<_>>()
         );
     }
-    println!("{merged} sounds merged, {promoted} with promotions refused");
-    assert!(merged > 0);
+    assert_eq!((merged, promoted), (65_309, 231));
 }
 
 /// A character's whole tree moved from one retail map onto another
@@ -671,7 +669,7 @@ fn a_transplanted_tree_takes_its_sounds() {
     let raw = |bytes: &[u8], p: u32, size: u32| -> Option<Vec<u8>> {
         (p >> 30 == 0).then(|| bytes[p as usize..][..size as usize].to_vec())
     };
-    let (mut sounds, mut chunks) = (0, 0);
+    let (mut sounds, mut chunks, mut promotions) = (0, 0, 0);
     for from in &moved.tree.added {
         if src.tag(*from).unwrap().group != FourCC(*b"snd!") {
             continue;
@@ -680,6 +678,16 @@ fn a_transplanted_tree_takes_its_sounds() {
         let h = src.read_tag_bytes(*from).unwrap();
         let o = dst.read_tag_bytes(to).unwrap();
         sounds += 1;
+        assert_eq!(h[snd::PROMOTION] == u8::MAX, o[snd::PROMOTION] == u8::MAX);
+        if h[snd::PROMOTION] != u8::MAX {
+            promotions += 1;
+            assert_eq!(
+                src_g.nested[blocks::PROMOTIONS][usize::from(h[snd::PROMOTION])],
+                dst_g.nested[blocks::PROMOTIONS][usize::from(o[snd::PROMOTION])],
+                "{}",
+                src.tag(*from).unwrap().name.as_deref().unwrap(),
+            );
+        }
         assert_eq!(
             src_g.element(blocks::PLAYBACKS, u16_at(&h, snd::PLAYBACK)),
             dst_g.element(blocks::PLAYBACKS, u16_at(&o, snd::PLAYBACK))
@@ -726,13 +734,12 @@ fn a_transplanted_tree_takes_its_sounds() {
         }
     }
     println!(
-        "{name}: {} tags, {sounds} sounds, {chunks} chunks; {} promotions and {} extra infos cut; {:?} raw copied",
+        "{name}: {} tags, {sounds} sounds, {chunks} chunks, {promotions} promotions, {:?} raw copied",
         moved.tree.added.len(),
-        moved.promotions_cut,
-        moved.extra_infos_cut,
         moved.raw
     );
-    assert_eq!(sounds, moved.sounds);
+    assert_eq!((sounds, promotions), (moved.sounds, moved.promotions));
+    assert_eq!(promotions, 1);
     assert!(sounds > 0 && chunks > 0);
 }
 

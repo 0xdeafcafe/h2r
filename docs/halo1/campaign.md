@@ -514,10 +514,9 @@ tags.
 **The sound gestalt cut to the kept sounds** (`h1convert::compact`, run by
 the builder from scratch). 05a's `ugh!` holds every 05a sound's entries;
 a new gestalt is built from nothing, each kept `snd!` in index order
-taking its entries across (`h1sounds::merge::merge_sound`) with its
-promotion carried whole (its rules index the sound's own pitch ranges:
-`compact::PROMOTION_EVIDENCE`, V on 05a, Coagulation and 03a), and the raw
-no chunk names any more is emptied. a30: 3,270 sounds kept, 18,053 chunks
+taking its entries across (`h1sounds::merge::merge_sound`). The merge
+carries native promotion rules and timers with their rebuilt pitch ranges.
+Raw that no kept chunk names is emptied. a30: 3,270 sounds kept, 18,053 chunks
 to 14,344, 3,830 raw resources (108.9 MB, 05a's own dialogue and music)
 dropped; on every level each kept sound names the same entries, import
 names and chunk bytes as in the pinned map (`compact::map_entries`,
