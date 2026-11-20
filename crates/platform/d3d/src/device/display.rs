@@ -269,13 +269,10 @@ impl<B: Backend> Device<B> {
     ///    for a surface level) is cleared (`0x3fb78d`).
     ///
     /// The fence test runs against this device's GPU model: the queued push
-    /// buffer is executed first, and the device executes everything
-    /// synchronously, so the completion time is the last fence handed out
-    /// ([`Device::gpu_completed`]). A use stamped no later than that has
-    /// passed; only a `Lock` newer than every fence the device issued
-    /// would be busy, and the device never stamps one. Render-to-texture
-    /// targets are written back first, since the caller is about to touch
-    /// the texels: lazily only those of `resource`.
+    /// buffer is executed first. Completion keeps pace with the current GPU
+    /// time ([`Device::gpu_completed`]), so a use stamped at that time has
+    /// passed. Since the caller is about to touch the texels, this also
+    /// writes back render-to-texture targets for `resource` first.
     pub fn resource_busy(
         &mut self,
         mem: &mut dyn GuestMemory,
