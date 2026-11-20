@@ -474,6 +474,25 @@ damage. The host reads the original damage category from the report
 when Halo 2 calls `0x1c9c80` at `0xca512`. A pending line follows the
 salted speaker until its next native speech update.
 
+**Built.** The killer addresses friendly victims and player victims
+using separate source rows. The Halo 1 kill patterns distinguish
+friendly and hostile victims at `0x146816` and test the victim's
+class at `0x146842`. Halo 2's lethal damage notification at
+`0x1c95d0` captures friendly kills for the attacker. Hostile kills of
+a player use the same candidate as the other victim-class lines.
+
+**Built.** The allied responses to damage and kill remarks require a
+completed source utterance. Halo 1 dispatches replies at `0x47073`
+through the table at `0x1efbd8`. It first seeks a living AI in the
+speaker's encounter, or on its team if there is no encounter, within
+nine units. The kill replies also test a five-unit unit-contact
+predicate at `0x145140`. The Halo 2 hook keys off the native sound's
+last active tick at `0x114d8a`. The converted vocalization rows retain
+their source slot so that native and source-only remarks can both
+trigger their own replies. Nearby allied actors are selected from the
+same group and BSP visibility region and speak through their own
+cached bank after the half-second reply delay.
+
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).
 

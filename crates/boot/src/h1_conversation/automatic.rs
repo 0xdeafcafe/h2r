@@ -48,7 +48,10 @@ pub(super) fn source_damage(
     Ok((category & 0xffff_0000 == map::H1_DAMAGE_CATEGORY).then_some((root, category as u16)))
 }
 
-fn actor_class(m: &dyn GuestMemory, unit: u32) -> Result<H1DialogueClass, MemFault> {
+pub(super) fn actor_class(m: &dyn GuestMemory, unit: u32) -> Result<H1DialogueClass, MemFault> {
+    if cast::is_player(m, unit)? {
+        return Ok(H1DialogueClass::Player);
+    }
     let actor = cast::actor_handle(m, unit)?.unwrap_or(NONE);
     let Some(at) = datum(m, cast::ACTORS, actor)? else {
         return Ok(H1DialogueClass::Other);
@@ -269,6 +272,7 @@ mod tests {
             .put_u32(objects + layout::HIGH_WATER, 2)
             .put_u16(object_rows + 12, 0x8400)
             .put_u32(object_rows + 12 + 8, victim_body)
+            .put_u32(victim_body + 0x13c, NONE)
             .put_u32(victim_body + cast::UNIT_ACTOR, actor)
             .put_u32(cast::ACTORS, actors)
             .put_u32(actors + layout::DATA, actor_rows)

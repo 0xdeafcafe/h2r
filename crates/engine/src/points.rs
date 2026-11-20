@@ -259,6 +259,8 @@ points! { ALL;
     UNIT_DIALOGUE_UPDATE @ 0x0011_4c60: [fn(unit: eax) ret 0], Hot; "docs/halo1/ai.md";
     /// Reports a nonlethal hit to the victim's and aggressor's AI.
     AI_INJURY_NOTICE @ 0x001c_9c80: [fn(victim: eax, owner: edx, category: stack 0, amount: stack 1, direction: stack 2, deferred: stack 3) ret 16]; "docs/halo1/ai.md";
+    /// Reports a depleted unit body and the player or unit responsible.
+    AI_KILL_NOTICE @ 0x001c_95d0: [fn(victim: stack 0, owner: stack 1, category: stack 2, amount: stack 3) ret 16]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

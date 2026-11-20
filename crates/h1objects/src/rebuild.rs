@@ -2945,7 +2945,6 @@ pub const DIALOGUE: &[(usize, &str)] = &[
     (0x360, "chr_kllfoe"),       // killedenemy
     (0x420, "chr_kllfoe_blt"),   // killedenemybullet
     (0x460, "chr_kllfoe_bm"),    // killedenemygrenade, event 0 hostile attacker, category 3
-    (0x380, "prs_plr_kll"),      // killedenemyplayer
     (0x550, "prs_plr_sniping"),  // playerkillsnipercm, adlg event 0 pattern 27
     (0x610, "lmnt_deadally"),    // frienddied
     (0x620, "lmnt_deadplr"),     // friendplayerdied
@@ -3002,7 +3001,7 @@ const UDLG_SOUND_GROUP: [u8; 4] = *b"!dns";
 /// whose source events do not have a native vocalization.
 pub fn dialogue(
     vocabulary: &[String],
-    native: &[(&str, TagId)],
+    native: &[(&str, usize, TagId)],
     source: &[(usize, TagId)],
 ) -> Result<Block> {
     let d = def(b"udlg")?;
@@ -3010,9 +3009,10 @@ pub fn dialogue(
     set(&mut r, "unknown_0", Val::Bytes(UDLG_GROUP.to_vec()))?;
     set(&mut r, "unknown_4", Val::Bytes(vec![0xff; 4]))?;
     let el = d.child("vocalizations").expect("udlg vocalizations");
-    let row = |name: &str, sound: TagId| -> Result<Record> {
+    let row = |name: &str, sound: TagId, marker: u32| -> Result<Record> {
         let mut x = defs::default_record(el);
         set(&mut x, "vocalization", Val::text(name))?;
+        set(&mut x, "unknown_0", Val::Bytes(marker.to_le_bytes().to_vec()))?;
         set(&mut x, "unknown_8", Val::Bytes(UDLG_SOUND_GROUP.to_vec()))?;
         set(&mut x, "sound", Val::Datum(defs::Target::Id(sound)))?;
         Ok(x)
@@ -3020,19 +3020,17 @@ pub fn dialogue(
     let mut items = vocabulary
         .iter()
         .map(|name| {
-            let sound = native
-                .iter()
-                .find(|(voc, _)| *voc == name.as_str())
-                .map_or(TagId::NULL, |l| l.1);
-            row(name, sound)
+            let Some(&(_, offset, sound)) = native.iter().find(|(voc, _, _)| *voc == name.as_str()) else {
+                return row(name, TagId::NULL, 0);
+            };
+            let slot = (offset / 0x10 - 1) as u32;
+            row(name, sound, map::H1_NATIVE_DIALOGUE_SLOT | slot)
         })
         .collect::<Result<Vec<_>>>()?;
     for &(offset, sound) in source {
         let slot = (offset / 0x10 - 1) as u32;
-        let mut entry = row(&format!("h1_slot_{slot:03x}"), sound)?;
         let marker = map::H1_DIALOGUE_SLOT | slot;
-        set(&mut entry, "unknown_0", Val::Bytes(marker.to_le_bytes().to_vec()))?;
-        items.push(entry);
+        items.push(row(&format!("h1_slot_{slot:03x}"), sound, marker)?);
     }
     set(&mut r, "vocalizations", Val::Block(items))?;
     built(d, &r)

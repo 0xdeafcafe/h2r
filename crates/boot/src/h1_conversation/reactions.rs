@@ -9,10 +9,11 @@ use super::{
 };
 
 const OBJECT_CAPACITY: u32 = 2048;
-const RECORD_SIZE: u32 = 12;
+const RECORD_SIZE: u32 = 16;
 const BYTES: u32 = OBJECT_CAPACITY * RECORD_SIZE;
 const AI_GLOBALS: u32 = 0x004f_55d0;
 const INJURY_FROM_DAMAGE: u32 = 0x000c_a517;
+const KILL_FROM_DAMAGE: u32 = 0x000c_a4f2;
 const HOSTILE_DAMAGE_MIN: f32 = 0.3;
 const INJURY_PRIORITY: u32 = 3;
 
@@ -34,12 +35,24 @@ impl Queue {
         offset: usize,
         priority: u32,
     ) -> Result<(), MemFault> {
+        self.push_at(m, unit, offset, priority, 0)
+    }
+
+    pub(super) fn push_at(
+        self,
+        m: &mut dyn GuestMemory,
+        unit: u32,
+        offset: usize,
+        priority: u32,
+        due: u32,
+    ) -> Result<(), MemFault> {
         if let Some(record) = self.record(unit)
             && (m.u32(record)? != unit || m.u32(record + 8)? < priority)
         {
             m.set_u32(record, unit)?;
             m.set_u32(record + 4, offset as u32)?;
             m.set_u32(record + 8, priority)?;
+            m.set_u32(record + 12, due)?;
         }
         Ok(())
     }
@@ -51,6 +64,13 @@ impl Queue {
         let priority = m.u32(record + 8)?;
         if priority == 0 || m.u32(record)? != unit {
             return Ok(None);
+        }
+        let due = m.u32(record + 12)?;
+        if due != 0 {
+            let clock = m.u32(points::GAME_TIME.base)?;
+            if clock == 0 || m.u32(clock + 8)?.wrapping_sub(due) >= 0x8000_0000 {
+                return Ok(None);
+            }
         }
         let offset = m.u32(record + 4)? as usize;
         m.set_u32(record + 8, 0)?;
@@ -140,6 +160,38 @@ fn injury(
     Ok(())
 }
 
+pub(super) fn ai_vocalizes(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+    let ai = m.u32(AI_GLOBALS)?;
+    Ok(ai != 0 && m.u8(ai + 1)? != 0 && m.u8(ai + 0x20)? != 0 && read_i16(m, ai + 0x22)? <= 0)
+}
+
+fn friendly_kill(
+    m: &mut dyn GuestMemory,
+    queue: Queue,
+    victim: u32,
+    owner: u32,
+    category: u16,
+) -> Result<(), MemFault> {
+    let Some(attacker) = cast::damage_owner(m, owner, category == 9)? else {
+        return Ok(());
+    };
+    if attacker == victim || cast::is_player(m, attacker)? {
+        return Ok(());
+    }
+    let (Some(victim_team), Some(attacker_team)) =
+        (cast::team(m, victim)?, cast::team(m, attacker)?)
+    else {
+        return Ok(());
+    };
+    if cast::allied(m, victim_team, attacker_team)? {
+        let player = cast::is_player(m, victim)?.then_some(0x340);
+        if let Some(offset) = pick_offset(m, attacker, player, 0x320)? {
+            queue.push(m, attacker, offset, 5)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
     let queue = Queue(b.guest_alloc(BYTES, Permissions::RW)?);
     b.raw().before(
@@ -163,18 +215,33 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
                 if m.u32(cpu.esp)? != INJURY_FROM_DAMAGE || m.u8(cpu.esp + 0x10)? != 0 {
                     return Ok(());
                 }
-                let ai = m.u32(AI_GLOBALS)?;
-                if ai == 0
-                    || m.u8(ai + 1)? == 0
-                    || m.u8(ai + 0x20)? == 0
-                    || read_i16(m, ai + 0x22)? > 0
-                {
+                if !ai_vocalizes(m)? {
                     return Ok(());
                 }
                 let native = m.u16(cpu.esp + 4)?;
                 let category = source_damage(m, cpu.ebp)?.map_or(native, |(_, category)| category);
                 let amount = m.f32(cpu.esp + 8)?;
                 injury(m, queue, cpu.eax, cpu.edx, category, amount)
+            })()
+            .map_err(guest_fault)?;
+            Ok(Flow::Continue)
+        },
+    );
+    b.raw().before(
+        &points::AI_KILL_NOTICE,
+        "capture the killer's friendly-fire reaction",
+        move |call| {
+            let cpu = *call.cpu;
+            let m = &mut *call.ctx.runtime().memory();
+            (|| {
+                if m.u32(cpu.esp)? != KILL_FROM_DAMAGE || !ai_vocalizes(m)? {
+                    return Ok(());
+                }
+                let victim = m.u32(cpu.esp + 4)?;
+                let owner = m.u32(cpu.esp + 8)?;
+                let native = m.u16(cpu.esp + 12)?;
+                let category = source_damage(m, cpu.ebp)?.map_or(native, |(_, category)| category);
+                friendly_kill(m, queue, victim, owner, category)
             })()
             .map_err(guest_fault)?;
             Ok(Flow::Continue)

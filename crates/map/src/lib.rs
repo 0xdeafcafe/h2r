@@ -85,6 +85,9 @@ pub const H1_VOICE_VARIANT: u32 = 0x4831_0000;
 /// native indexed vocabulary. Its low word is the Halo 1 slot index.
 pub const H1_DIALOGUE_SLOT: u32 = 0x4831_0000;
 
+/// Provenance of a native vocalization in a converted dialogue bank.
+pub const H1_NATIVE_DIALOGUE_SLOT: u32 = 0x4832_0000;
+
 /// The original Halo 1 damage category, kept at jpt! +0x34 for dialogue.
 /// Halo 2's own damage category at +0x12 uses Halo 2's numbering.
 pub const H1_DAMAGE_CATEGORY: u32 = 0x4831_0000;
@@ -142,6 +145,7 @@ impl H1DialogueClass {
 
     pub const fn hostile_kill_line(self) -> Option<usize> {
         match self {
+            Self::Player => Some(0x380),
             Self::Covenant => Some(0x3a0),
             Self::CombatForm => Some(0x3c0),
             Self::Carrier => Some(0x3e0),
@@ -153,5 +157,14 @@ impl H1DialogueClass {
 
 /// Victim-specific attacker cheers that use the generic H2 kill candidate.
 pub const fn h1_species_kill_line(offset: usize) -> bool {
-    matches!(offset, 0x3a0 | 0x3c0 | 0x3e0 | 0x400)
+    matches!(offset, 0x380 | 0x3a0 | 0x3c0 | 0x3e0 | 0x400)
+}
+/// Lethal friendly-fire reactions spoken by the attacker.
+pub const fn h1_friendly_kill_line(offset: usize) -> bool {
+    matches!(offset, 0x320 | 0x340)
+}
+
+/// Nearby allies respond after one of these source utterances finishes.
+pub const fn h1_allied_reply_line(offset: usize) -> bool {
+    matches!(offset, 0x190 | 0x330 | 0x350 | 0x370 | 0x390 | 0x3b0 | 0x3d0 | 0x3f0 | 0x410)
 }

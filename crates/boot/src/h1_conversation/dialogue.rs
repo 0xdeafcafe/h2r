@@ -2,7 +2,7 @@
 //! dialogue datum in the per-unit block located by the word at +0x342.
 
 use engine::view::Tags;
-use map::{H1_DIALOGUE_SLOT, H1_VOICE_VARIANT};
+use map::{H1_DIALOGUE_SLOT, H1_NATIVE_DIALOGUE_SLOT, H1_VOICE_VARIANT};
 
 use super::{cast, leaders::guest_fault, voices, *};
 
@@ -49,6 +49,27 @@ pub(super) fn source_offset_row(
     offset: usize,
 ) -> Result<Option<u32>, MemFault> {
     source_row(m, unit, (offset / 0x10 - 1) as u16).map(|row| row.map(|(index, _)| index))
+}
+
+pub(super) fn offset_at_row(
+    m: &dyn GuestMemory,
+    dialogue: u32,
+    index: u16,
+) -> Result<Option<usize>, MemFault> {
+    let Some(root) = tag_address(m, dialogue, UDLG)? else {
+        return Ok(None);
+    };
+    let index = u32::from(index);
+    if index >= m.u32(root + 0xc)? {
+        return Ok(None);
+    }
+    let rows = m.u32(root + 0x10)?;
+    let marker = m.u32(rows + index * 0x10)?;
+    Ok(matches!(
+        marker & 0xffff_0000,
+        H1_DIALOGUE_SLOT | H1_NATIVE_DIALOGUE_SLOT
+    )
+    .then_some((usize::from(marker as u16) + 1) * 0x10))
 }
 
 pub(super) fn source_row(

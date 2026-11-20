@@ -10,7 +10,7 @@ use super::{
     dialogue::{self, Line},
     leaders::guest_fault,
     reactions::Queue,
-    visibility, *,
+    replies, visibility, *,
 };
 
 const ACTOR_COUNT: u32 = hs::h1_conversation::ACTOR_CAPACITY;
@@ -42,7 +42,7 @@ fn behavior(m: &dyn GuestMemory, actor: u32) -> Result<u16, MemFault> {
     m.u16(actor + BEHAVIOR_FRAMES + depth * BEHAVIOR_STRIDE)
 }
 
-fn encounter(m: &dyn GuestMemory, actor: u32) -> Result<Option<u16>, MemFault> {
+pub(super) fn encounter(m: &dyn GuestMemory, actor: u32) -> Result<Option<u16>, MemFault> {
     let scnr = m.u32(points::SCENARIO.base)?;
     let squad = m.u32(actor + SQUAD_INDEX)?;
     if scnr == 0 || squad >= m.u32(scnr + SQUAD_COUNT)? {
@@ -208,6 +208,7 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildErro
             let saved = *call.cpu;
             let scheduled = {
                 let m = &mut *rt.memory();
+                replies::on_speech_tick(m, reactions, saved.eax).map_err(guest_fault)?;
                 match reactions.take(m, saved.eax).map_err(guest_fault)? {
                     Some(line) => Some(line),
                     None => tick(m, records, saved.eax).map_err(guest_fault)?,
@@ -232,7 +233,7 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) -> Result<(), BuildErro
                     call.cpu,
                     &mut m,
                     UNIT_SPEAK,
-                    "halo 1 search speech",
+                    "halo 1 automatic speech",
                     move |cpu, ctx| {
                         *cpu = saved;
                         Ok(original.invoke(cpu, ctx, addr))

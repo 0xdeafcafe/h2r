@@ -897,7 +897,7 @@ impl<'a> Converter<'a> {
                 let index = source
                     .binary_search_by_key(&offset, |&(at, _)| at)
                     .expect("source slot read from this dialogue");
-                (name, source[index].1)
+                (name, offset, source[index].1)
             })
             .collect::<Vec<_>>();
         let root = crate::rebuild::dialogue(&self.base.dialogue_names, &native, &source)?;
@@ -946,6 +946,8 @@ impl<'a> Converter<'a> {
                 !native
                     && !kill_variant
                     && !map::h1_injury_line(*slot)
+                    && !map::h1_friendly_kill_line(*slot)
+                    && !map::h1_allied_reply_line(*slot)
                     && !matches!(
                         *slot,
                         map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE

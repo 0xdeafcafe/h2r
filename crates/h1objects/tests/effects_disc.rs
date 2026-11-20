@@ -828,6 +828,24 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
         }
     }
 
+    let responses = h1.bytes_at(0x001e_fbd8, 45 * 0x24).unwrap();
+    for (primary, response) in [
+        (0x180, 0x190),
+        (0x320, 0x330),
+        (0x340, 0x350),
+        (0x360, 0x370),
+        (0x380, 0x390),
+        (0x3a0, 0x3b0),
+        (0x3c0, 0x3d0),
+        (0x3e0, 0x3f0),
+        (0x400, 0x410),
+    ] {
+        assert!(responses.chunks_exact(0x24).any(|row| {
+            u16_at(row, 0) == slot(primary)
+                && u16_at(row, 4) == 2
+                && u16_at(row, 6) == slot(response)
+        }));
+    }
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [
