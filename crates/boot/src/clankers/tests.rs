@@ -407,7 +407,11 @@ fn with_live_every_phantom_is_a_server_bot_account() {
 
 #[test]
 fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
+    use engine::testing::FakeGuest;
+    use engine::view::{fake, players};
+
     const SESSION: &str = "0123456789abcdef";
+    const PLAYERS: u32 = 0x0060_0000;
     let (s, live, ph, d) = rostered_driver(Some(SESSION));
     on(&s, 5, 2);
     d.report_players();
@@ -423,25 +427,42 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     assert_eq!(d.session_bots(), vec![]);
     d.report_players();
     assert!(live.players.lock().unwrap().is_empty());
-    // Once the game made their players, every joined phantom, and no
-    // other (a removed one's player stays, but it is no bot of ours).
-    let own = d.own.lock().unwrap();
-    let all: Vec<PhantomHandle> = ph.list().iter().map(|p| p.handle).collect();
-    assert_eq!(
-        session_bots_of(&own, |h| all.contains(&h)),
-        vec![x(1), x(2), x(3), x(4), x(5)]
-    );
-    assert_eq!(
-        session_bots_of(&own, |h| h == all[1]),
-        vec![x(1), x(3), x(4), x(5)]
-    );
-    drop(own);
-    // Clankers off: nothing joined, so still nothing to say.
+    // The second phantom is still waiting for a player.
+    let phantoms = ph.list();
+    let mut guest = FakeGuest::new();
+    guest.put_u32(engine::points::PLAYERS.base, PLAYERS);
+    let player_rows = fake::datums::<players::Player>(&mut guest, PLAYERS, 5);
+    for (i, phantom) in phantoms.iter().enumerate() {
+        if i == 1 {
+            continue;
+        }
+        let (_, player) = fake::push(&mut guest, &player_rows);
+        player.set_local_user(&mut guest, -1).unwrap();
+        guest.put(player.addr + players::MACHINE, &phantom.machine);
+    }
+    ph.refresh(&guest).unwrap();
+    d.report_players();
+    let four_joined = vec![x(1), x(3), x(4), x(5)];
+    assert_eq!(*live.players.lock().unwrap(), vec![four_joined.clone()]);
+
+    let (_, player) = fake::push(&mut guest, &player_rows);
+    player.set_local_user(&mut guest, -1).unwrap();
+    guest.put(player.addr + players::MACHINE, &phantoms[1].machine);
+    ph.refresh(&guest).unwrap();
+    d.report_players();
+
+    // Clankers off clears the previously reported accounts once.
     s.set(ENABLED.key, Value::Bool(false)).unwrap();
     d.report_players();
     d.report_players();
-    assert!(live.players.lock().unwrap().is_empty());
-    assert!(live.player_sessions.lock().unwrap().is_empty());
+    assert_eq!(
+        *live.players.lock().unwrap(),
+        vec![four_joined, vec![x(1), x(2), x(3), x(4), x(5)], vec![]]
+    );
+    assert_eq!(
+        *live.player_sessions.lock().unwrap(),
+        vec![Some(SESSION.to_owned()), Some(SESSION.to_owned()), None]
+    );
 }
 
 #[test]
@@ -449,14 +470,15 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
     let (s, live, ph, d) = rostered_driver(Some("0123456789abcdef"));
     on(&s, 4, 1);
     live.answer(0, Err("refused".into()));
-    assert_eq!(ph.list().len(), 4);
-    assert_eq!(ph.list()[0].identity.gamertag, "Clanker 1");
+    let phantoms = ph.list();
+    assert_eq!(phantoms.len(), 4);
+    assert_eq!(phantoms[0].identity.gamertag, "Clanker 1");
     let bots = d.bots_in_force().expect("still bots");
     assert_eq!(bots.session_id, None);
     assert_eq!(
         bots.machines,
-        vec![(ph.list()[0].machine, Xuid(0))],
-        "a bot with no xuid"
+        phantoms.iter().map(|p| (p.machine, Xuid(0))).collect::<Vec<_>>(),
+        "each host-made phantom keeps its machine ID and has no reported XUID"
     );
     // A roster for another session is not taken.
     s.set(COUNT.key, Value::Int(5)).unwrap();
