@@ -1,8 +1,8 @@
 # Pipelined rendering
 
 Status: Built. The worker runs the frame end (device work and present) while the next tick runs; the whole-frame design that preceded it is evidence in the note.
-Code: `crates/hooking/hooks/src/pipeline_render.rs` (`PipelineRender`), `pipeline_scene.rs` (scene segments, animation uses), `pipeline_snapshot.rs` (COW view and access trap); wired by `d3d_glue::pipeline_render` in `crates/apps/boot/src/d3d_glue.rs`.
-Tests: `crates/hooking/hooks/tests/pipeline_render.rs`; `ordered_frame_owners_match_the_serial_tick_hash_while_drawing` in `crates/apps/boot/src/sim_glue/state_hash_pipeline_test.rs`.
+Code: `crates/rewrites/render-bridge/src/pipeline_render.rs` (`PipelineRender`), `pipeline_scene.rs` (scene segments, animation uses), `pipeline_snapshot.rs` (COW view and access trap); wired by `d3d_glue::pipeline_render` in `crates/apps/boot/src/d3d_glue.rs`.
+Tests: `crates/rewrites/render-bridge/tests/pipeline_render.rs`; `ordered_frame_owners_match_the_serial_tick_hash_while_drawing` in `crates/apps/boot/src/sim_glue/state_hash_pipeline_test.rs`.
 Switch: `impl.render.pipelined_frame` (off), listed in [switches.md](../runtime/switches.md). It is independent of `impl.render.native`.
 
 ## Tick ordering and hash parity

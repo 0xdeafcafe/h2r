@@ -368,7 +368,7 @@ fn an_async_implementation_is_a_chains_body() {
 /// `render_scene_passes`; the other stages are missing and dropped.
 #[test]
 fn render_timing_times_each_stage_exclusively() {
-    use hooks::render_timing::{Now, RenderTiming, Stage};
+    use render_bridge::render_timing::{Now, RenderTiming, Stage};
     const MAIN: u32 = 0x40_1000;
     let rt = runtime();
     let ticks = Arc::new(AtomicU32::new(0));
@@ -409,7 +409,7 @@ fn render_timing_times_each_stage_exclusively() {
 /// render time.
 #[test]
 fn render_timing_feeds_the_frame_stats() {
-    use hooks::render_timing::{RenderTiming, Stage};
+    use render_bridge::render_timing::{RenderTiming, Stage};
     use timeline::phase::{self, Phase};
     const MAIN: u32 = 0x40_1000;
     let spin = |ms: u64| {

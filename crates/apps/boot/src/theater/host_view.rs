@@ -171,7 +171,7 @@ impl Frame {
             return None;
         }
         let map = crate::telemetry::loaded_map_name(g).unwrap_or_default();
-        let address = g.u32(hooks::native_world::ACTIVE_BSP).ok();
+        let address = g.u32(render_bridge::native_world::ACTIVE_BSP).ok();
         let index = world_glue::active_bsp_index(g);
         let (Some(index), Some(address)) = (index, address.filter(|&a| a != 0)) else {
             if !eyes.is_empty() {

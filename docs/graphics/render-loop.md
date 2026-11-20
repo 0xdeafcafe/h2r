@@ -1,7 +1,7 @@
 # Render loop (the retail front-end)
 
 Status: Built. The read of the four orchestrators is reference; of the code, only the render-state list port (`engine::render_loop::states::RenderStates`) is placed, by the native world's BSP walk.
-Code: `crates/rewrites/engine/src/render_loop.rs` and `render_loop/` (addresses, record layouts, `states`, `layer`); `crates/hooking/hooks/src/render_loop.rs` (`world_states`). Tests: `crates/rewrites/engine/tests/states_differential.rs`.
+Code: `crates/rewrites/engine/src/render_loop.rs` and `render_loop/` (addresses, record layouts, `states`, `layer`); `crates/rewrites/render-bridge/src/render_loop.rs` (`world_states`). Tests: `crates/rewrites/engine/tests/states_differential.rs`.
 Switch: none. The native world runs the state list under `impl.render.native` ([switches.md](../runtime/switches.md)).
 
 This page holds the read of the four orchestrators in the 1.0 XBE, the
