@@ -2199,6 +2199,35 @@ fn single_copy_reinterprets_colour_memory_on_gpu() {
 }
 
 #[test]
+fn fractional_frame_aliases_keep_cube_faces_and_volume_mips_at_guest_size() {
+    use gfx::texture::{DecodeOptions, TextureKind, decode_texture};
+
+    let Some(ctx) = context() else { return };
+    let grid = d3d::scaled::RenderScale::between((W, H), (149, 101)).unwrap();
+    let mut backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    let frame = backend.create_surface(format, W, H, false).unwrap();
+    let src = gfx::TextureDesc::new(format, TextureKind::D2, W, H, 1, 1);
+    let bytes: Vec<_> = (0..W * H * 4).map(|i| (i ^ (i >> 5)) as u8).collect();
+    assert!(backend.write_surface(frame, &src, &bytes).unwrap());
+
+    let options = DecodeOptions::default();
+    for (kind, depth, layers) in [(TextureKind::Cube, 1, 6), (TextureKind::Volume, 4, 4)] {
+        let desc = gfx::TextureDesc::new(gfx::D3DFormat::A8B8G8R8, kind, 8, 8, depth, 4);
+        let expected = decode_texture(&desc, &bytes, None, options).unwrap();
+        let alias = backend.depth_alias_texture(frame, format, W, H, W * 4, 1, 0, &desc, options)
+            .unwrap().unwrap().view.unwrap().texture;
+        backend.view_mut().flush().unwrap();
+        assert_eq!((alias.width(), alias.height(), alias.depth_or_array_layers()), (8, 8, layers));
+        assert_eq!(alias.mip_level_count(), 4);
+        let first_slice = gfx::readback::read_texture(&ctx, &alias, wgpu::TextureAspect::All, 4, (8, 8));
+        assert_eq!(first_slice.as_slice(), &expected.levels[0].data[..8 * 8 * 4], "{kind:?}");
+    }
+}
+
+#[test]
 fn single_copy_feedback_draw_snapshots_the_active_level() {
     let Some(ctx) = context() else { return };
     let backend = ScaledBackend::new(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 4).unwrap();
