@@ -1,12 +1,15 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slices 0 to 3, 8 and 11 are built: the
+Status: design, 2026-11-20. Slices 0 to 4, 8 and 11 are built: the
 dispatcher and the switch (default off), the views and `sim-state`,
 slice 1's bodies (the walks, the per-object updates, the type
 dispatchers, the wake leaves and the early-mover wake), slice 3's
 (function values, the export evaluator, the import dispatcher, the seven
 type import handlers and change colours, all segments), slice 8's (the
-damage update, and the `Damage` and `Kill` events), and slice 11's (the
+damage update, and the `Damage` and `Kill` events), slice 4's (the
+bounds, attachment refresh, node-matrix notify and component transform,
+the transform setters and getters, and `bd090` as the phase 1 port run
+as a body, without `sim-anim`'s skeleton walk yet), and slice 11's (the
 small type updates, except the projectile step `f8eb0`, which stays a
 callout). The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
@@ -516,8 +519,7 @@ slice 0 confirms the rest and adds the points.
 | `fdfb0`, `efde0`, `10b4d0`, `10a2f0`, `106790`, `1152e0`, `f8de0`, `11bce0`, `118700`, `118b80` | O | segment | 9 to 11 |
 
 Not taken over in this phase: `object_new` `b7b40`, delete `b83b0` and
-`b8460`, the transform setters `b7430` and `b7740` (until slice 4 needs
-them), `fd910`, `bf380`, `109660`, `a9570`, `1cd4e0`, `1ced00`, `1d3920`,
+`b8460`, `fd910`, `bf380`, `109660`, `a9570`, `1cd4e0`, `1ced00`, `1d3920`,
 `1d44f0`. They stay callouts.
 
 ### Guest writes that must still happen

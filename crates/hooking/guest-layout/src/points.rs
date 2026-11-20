@@ -1233,6 +1233,25 @@ points! { ALL;
     CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Creature post-physics update: slot `+44` of `crea`.
     CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 4 of docs/engine/sim-rewrite-objects.md: the post-update shell.
+    /// The bounding spheres from the root node matrix, and the spatial partition relink; `al` 1 when they were stored.
+    OBJECT_BOUNDS @ 0x000b_def0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// The attachment refresh: light lists, the object's lights, then children and (with `recurse`) siblings.
+    OBJECT_ATTACHMENTS @ 0x000b_ef30: [fn(object: stack 0, lights: stack 1, lists: stack 2, recurse: stack 3, keep: stack 4) ret 20], Hot; "docs/engine/object-update.md";
+    /// Hands the node matrices to the slot `+74` dispatcher when the model has them.
+    OBJECT_NODES_NOTIFY @ 0x000b_e1d0: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// The physics component's transform and velocities into the object.
+    OBJECT_COMPONENT_TRANSFORM @ 0x000b_c5e0: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Set position, forward and up (any may be null); `al` 0 when a position was outside the world.
+    OBJECT_SET_TRANSFORM @ 0x000b_7430: [fn(object: stack 0, position: stack 1, forward: stack 2, up: stack 3, connect: stack 4, refresh: stack 5, notify: stack 6, value: stack 7, keep: stack 8) -> al ret 36], Hot; "docs/engine/object-update.md";
+    /// Set linear and angular velocity (either may be null); `quiet` skips the replication mark.
+    OBJECT_SET_VELOCITY @ 0x000b_7740: [fn(object: eax, linear: ecx, angular: edi, quiet: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// The object's position in world space, through its parent's node matrix; returns `out`.
+    OBJECT_WORLD_POSITION @ 0x000b_9dd0: [fn(object: eax, out: esi) -> eax ret 0], Hot; "docs/engine/object-update.md";
+    /// The object's forward and up in world space (either output may be null).
+    OBJECT_WORLD_BASIS @ 0x000b_9fc0: [fn(object: eax, forward: esi, up: edi) ret 0], Hot; "docs/engine/object-update.md";
+    /// The root ancestor's linear and angular velocity (either output may be null).
+    OBJECT_ROOT_VELOCITY @ 0x000b_a1d0: [fn(object: eax, linear: ecx, angular: stack 0) ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

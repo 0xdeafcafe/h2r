@@ -35,6 +35,12 @@ mod machine;
 mod projectile;
 mod scenery;
 mod sse;
+// Slice 4: the post-update shell.
+mod bounds;
+mod pose;
+mod post;
+mod transform;
+mod xform;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -124,6 +130,19 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
     Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
     Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
+    // Slice 4: the post-update shell (`bc820`'s callees: the component
+    // transform, the node matrices, the bounds, the attachment refresh
+    // and the node-matrix notify) and the transform setters and getters.
+    Body { point: &points::OBJECT_COMPONENT_TRANSFORM, sites: &post::COMPONENT_SITES, run: post::component_transform },
+    Body { point: &points::OBJECT_NODE_MATRICES, sites: &pose::POSE_SITES, run: pose::node_matrices },
+    Body { point: &points::OBJECT_BOUNDS, sites: &bounds::BOUNDS_SITES, run: bounds::bounds },
+    Body { point: &points::OBJECT_ATTACHMENTS, sites: &post::ATTACH_SITES, run: post::attachments },
+    Body { point: &points::OBJECT_NODES_NOTIFY, sites: &post::NOTIFY_SITES, run: post::nodes_notify },
+    Body { point: &points::OBJECT_SET_TRANSFORM, sites: &transform::SET_TRANSFORM_SITES, run: transform::set_transform },
+    Body { point: &points::OBJECT_SET_VELOCITY, sites: &transform::SET_VELOCITY_SITES, run: transform::set_velocity },
+    Body { point: &points::OBJECT_WORLD_POSITION, sites: &[], run: transform::world_position },
+    Body { point: &points::OBJECT_WORLD_BASIS, sites: &[], run: transform::world_basis },
+    Body { point: &points::OBJECT_ROOT_VELOCITY, sites: &transform::VELOCITY_SITES, run: transform::root_velocity },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

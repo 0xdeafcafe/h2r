@@ -141,6 +141,10 @@ fn pool(g: &mut Guest, case: u32) {
         byte(g, body + 0xaa, ((slot + case) % 13) as u8);
         g.set_u16(body + 0x12a, u16::MAX).unwrap();
         g.set_u16(body + 0x114, 0).unwrap();
+        // Slice 4: the node matrices `bd090` writes (`+116`) at the
+        // body's end, not over its links, and no orientation block.
+        g.set_u16(body + 0x116, 0x1c0).unwrap();
+        g.set_u16(body + 0x112, u16::MAX).unwrap();
         damage_state(g, body, slot);
     }
     if case >= 3 {
@@ -302,6 +306,8 @@ fn cleanup(target: u32) -> u32 {
             FUNCTION_CALLOUTS.iter().find(|&&(c, _)| c == t).unwrap().1
         }
         t if let Some(&(_, pop)) = SLICE_11_CALLEES.iter().find(|c| c.0 == t) => pop,
+        // Slice 4's callouts.
+        t if let Some(&(_, pop)) = SLICE_4_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -1398,4 +1404,300 @@ fn creature_post_update() {
 fn type_update_dispatch_reaches_the_small_types() {
     dressed(&points::OBJECT_TYPE_UPDATE, 13);
     dressed(&points::OBJECT_TYPE_POST_UPDATE, 13);
+}
+
+// Slice 4: the post-update shell (`bc5e0`, `bd090`, `bdef0`, `bef30`,
+// `be1d0`) and the transform setters and getters (`b7430`, `b7740`,
+// `b9dd0`, `b9fc0`, `ba1d0`). Their roots run over the pool dressed with
+// a definition, node matrices on every body, a physics component, an
+// attachment block and the vectors and outputs the setters and getters
+// take; the walks and `bc820` reach the shell bodies through the table.
+
+/// Every guest function a slice 4 body calls that no earlier table names,
+/// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 4
+/// bodies").
+const SLICE_4_CALLEES: &[(u32, u32)] = &[
+    // `bdef0`.
+    (0x1d44f0, 12),
+    (0xb87b0, 4),
+    (0xb8600, 8),
+    // `bef30`.
+    (0xb9ce0, 0),
+    (0xc3220, 0),
+    (0xc2d00, 4),
+    (0xc1720, 12),
+    // `be1d0`.
+    (0xb8c00, 4),
+    (0x109140, 8),
+    // `bc5e0` (`1d1c10` is in `SLICE_11_CALLEES`), `ba1d0`.
+    (0x1d1ca0, 0),
+    (0x1d4360, 4),
+    (0xb91d0, 0),
+    (0x1d09d0, 0),
+    (0x1d0ad0, 0),
+    (0x1d96d0, 0),
+    // `b7430` (`b58c0` and `bd020` are in `SLICE_11_CALLEES`).
+    (0x1c4a80, 8),
+    // `bd090` (`1d3920` and `b8bd0` are named above).
+    (0xe1670, 0),
+    (0x16d940, 8),
+    (0xbf5a0, 0),
+    (0xbfc90, 0),
+    (0xbff10, 0),
+    (0xbfe80, 0),
+    (0xbfed0, 0),
+    (0xbdb60, 12),
+    (0xbfe20, 0),
+    (0xb6780, 0),
+    (0x1c6440, 0),
+    (0xa98b0, 0),
+    (0xa9940, 0),
+];
+
+/// Where the slice 4 roots' synthetic tags, vectors and outputs live.
+const SHELL_MODEL: u32 = 0x0066_0000;
+const SHELL_RENDER: u32 = 0x0066_0400;
+const SHELL_NODES: u32 = 0x0066_0800;
+const SHELL_VECTORS: u32 = 0x0066_1000;
+const SHELL_OUT: u32 = 0x0066_1100;
+/// Body offsets of the attachment records and the node matrices.
+const SHELL_ATTACHMENTS: u32 = 0x1a0;
+const SHELL_MATRICES: u32 = 0x1c0;
+const NONE: u32 = u32::MAX;
+
+/// A node matrix at `at`: scale, an axis-aligned basis, a translation.
+fn matrix(g: &mut Guest, at: u32, scale: f32, t: [f32; 3]) {
+    let rows = [scale, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, t[0], t[1], t[2]];
+    for (i, v) in rows.into_iter().enumerate() {
+        f32w(g, at + 4 * i as u32, v);
+    }
+}
+
+/// The fields the slice 4 bodies read, varied by `case`, on every body of
+/// the pool (so parents, children and the object a root is called on all
+/// have them) and on one definition, model and render model.
+fn shell_dress(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    word(g, points::TAG_ENTRIES.base, TAGS);
+    word(g, TAGS + 8, DEFINITION);
+    word(g, TAGS + 16 + 8, SHELL_MODEL);
+    word(g, TAGS + 32 + 8, SHELL_RENDER);
+    // Definition: its type byte (scenery, or biped in case 5), flags
+    // (bit 12 picks the second sphere), radius, offset, second sphere,
+    // and a model in some cases.
+    byte(g, DEFINITION, if case == 5 { 0 } else { 6 });
+    g.set_u16(DEFINITION + 2, if case % 2 == 1 { 0x1000 } else { 0 }).unwrap();
+    f32w(g, DEFINITION + 4, 0.75);
+    for (i, v) in [0.5f32, -0.25, 1.0].into_iter().enumerate() {
+        let v = if case == 0 { 0.0 } else { v };
+        f32w(g, DEFINITION + 8 + 4 * i as u32, v);
+        f32w(g, DEFINITION + 0x24 + 4 * i as u32, v * 0.5);
+    }
+    f32w(g, DEFINITION + 0x20, [0.0, 1.5, -1.0][c % 3]);
+    word(g, DEFINITION + 0x38, if case % 3 == 2 { 0x0001_0001 } else { NONE });
+    // Model: the render model (tag 2) and a second reference that is
+    // none in even cases; render model: one node.
+    word(g, SHELL_MODEL + 4, 0x0002_0002);
+    word(g, SHELL_MODEL + 0x14, if case % 2 == 0 { NONE } else { 0x0003_0003 });
+    word(g, SHELL_RENDER + 0x48, 1);
+    word(g, SHELL_RENDER + 0x4c, SHELL_NODES);
+    // Vectors the setters take: a position inside the world, one far
+    // outside it, a basis and velocities.
+    for (i, v) in [1.0f32, 2.0, 3.0, 1.0e9, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.25, -0.5, 0.125]
+        .into_iter()
+        .enumerate()
+    {
+        f32w(g, SHELL_VECTORS + 4 * i as u32, v);
+    }
+    for slot in 0..SLOTS {
+        let body = g.u32(DATA + 12 * slot + 8).unwrap();
+        let k = (slot + case) as usize;
+        // Flags: in the partition (bit 8), attachments (bit 4), lights
+        // (bit 6), and bit 0 for a few.
+        word(g, body + 4, [0x150, 0x100, 0x010, 0x140, 0x001, 0x110][k % 6]);
+        f32w(g, body + 0xa0, [1.0, 2.0, 0.5][k % 3]);
+        for (i, v) in [3.0f32, 4.0, 5.0].into_iter().enumerate() {
+            let at = 4 * i as u32;
+            f32w(g, body + 0x30 + at, v);
+            f32w(g, body + 0x64 + at, v + 1.0);
+            f32w(g, body + 0x88 + at, v * 0.5);
+            f32w(g, body + 0x94 + at, -v);
+        }
+        for (off, v) in [(0x70, [1.0f32, 0.0, 0.0]), (0x7c, [0.0, 0.0, 1.0])] {
+            for (i, x) in v.into_iter().enumerate() {
+                f32w(g, body + off + 4 * i as u32, x);
+            }
+        }
+        // The registered sphere: in case 0 the one the bounds compute
+        // (definition offset zero, scale 1, the matrix translation), so
+        // nothing moved; elsewhere a stale one.
+        let t = [10.0 + slot as f32, 20.0, 30.0 - case as f32];
+        let scale = if case == 0 || k % 3 == 0 { 1.0 } else { 2.0 };
+        for (i, v) in t.into_iter().enumerate() {
+            f32w(g, body + 0x40 + 4 * i as u32, if case == 0 { v } else { v + 7.0 });
+        }
+        f32w(g, body + 0x4c, if case == 0 { 0.75 * [1.0, 2.0, 0.5][k % 3] } else { 9.0 });
+        g.set_u16(body + 0x114, 0x34).unwrap();
+        g.set_u16(body + 0x116, SHELL_MATRICES as u16).unwrap();
+        matrix(g, body + SHELL_MATRICES, scale, t);
+        byte(g, body + 0x18, 0);
+        // A physics component for odd slots: active (`+c0` bit 6, and
+        // bit 11 in some), the rigid body index and count, its flags.
+        let c0 = g.u8(body + 0xc0).unwrap();
+        if slot % 2 == 1 {
+            word(g, body + 0xb4, slot);
+            byte(g, body + 0xc0, c0 | 0x40);
+            byte(g, body + 0xc1, if k % 4 == 1 { 0x08 } else { 0x09 });
+            let record = COMPONENTS + 0x100 + 0xa0 * slot;
+            word(g, record + 4, [0, 0x1_0000, 0x100, 0x2, 0x8000, 0x1_0002][k % 6]);
+            byte(g, record + 0x18, if k % 5 == 4 { 0xff } else { 0 });
+            word(g, record + 0x74, if k % 7 == 6 { 0 } else { 1 });
+        } else {
+            byte(g, body + 0xc1, u8::from(k % 3 == 0));
+        }
+        // A replication entity for some.
+        word(g, body + 0xd4, if k % 3 == 1 { NONE } else { 0x00e7_0000 | slot });
+        // Two attachment records: a light, then an empty one.
+        g.set_u16(body + 0x11c, 2 << 3).unwrap();
+        g.set_u16(body + 0x11e, SHELL_ATTACHMENTS as u16).unwrap();
+        byte(g, body + SHELL_ATTACHMENTS, if k % 4 == 3 { 1 } else { 0 });
+        word(g, body + SHELL_ATTACHMENTS + 4, 0x00e8_0000 | slot);
+        byte(g, body + SHELL_ATTACHMENTS + 8, 0);
+        word(g, body + SHELL_ATTACHMENTS + 12, NONE);
+    }
+}
+
+/// The arguments of a slice 4 root: the object, and the stack and
+/// register arguments each takes, varied by `case`.
+fn shell_arguments(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let object = object(case);
+    let vector = |i: u32| SHELL_VECTORS + 12 * i;
+    let flag = |bit: u32| (case >> bit) & 1;
+    word(g, STACK + 4, object);
+    match root {
+        r if r == points::OBJECT_ATTACHMENTS.base => {
+            for (i, v) in [flag(0), flag(1), u32::from(case % 3 != 0), u32::from(case == 4)].into_iter().enumerate() {
+                word(g, STACK + 8 + 4 * i as u32, v);
+            }
+        }
+        r if r == points::OBJECT_SET_TRANSFORM.base => {
+            // Position inside the world, outside it, or none; forward and
+            // up, or neither; then the five flags.
+            let position = [vector(0), vector(1), 0][case as usize % 3];
+            let basis = if case % 2 == 0 { (vector(2), vector(3)) } else { (0, 0) };
+            let args = [position, basis.0, basis.1, case, flag(0), flag(1), case + 7, flag(2)];
+            for (i, v) in args.into_iter().enumerate() {
+                word(g, STACK + 8 + 4 * i as u32, v);
+            }
+        }
+        r if r == points::OBJECT_SET_VELOCITY.base => {
+            cpu.gpr[0] = object;
+            cpu.gpr[1] = if case % 3 == 1 { 0 } else { vector(4) };
+            cpu.gpr[7] = if case % 2 == 1 { 0 } else { vector(3) };
+            word(g, STACK + 4, flag(2));
+        }
+        r if r == points::OBJECT_NODES_NOTIFY.base => cpu.gpr[0] = object,
+        r if r == points::OBJECT_WORLD_POSITION.base => {
+            cpu.gpr[0] = object;
+            cpu.gpr[6] = SHELL_OUT;
+        }
+        r if r == points::OBJECT_WORLD_BASIS.base => {
+            cpu.gpr[0] = object;
+            cpu.gpr[6] = if case % 3 == 2 { 0 } else { SHELL_OUT };
+            cpu.gpr[7] = if case % 2 == 1 { 0 } else { SHELL_OUT + 0x10 };
+        }
+        r if r == points::OBJECT_ROOT_VELOCITY.base => {
+            cpu.gpr[0] = object;
+            cpu.gpr[1] = if case % 3 == 2 { 0 } else { SHELL_OUT };
+            word(g, STACK + 4, if case % 2 == 1 { 0 } else { SHELL_OUT + 0x10 });
+        }
+        _ => {}
+    }
+}
+
+/// [`transcripts`] over the pool [`shell_dress`]ed, with each root's
+/// arguments; XMM registers compared at every callout and at the return
+/// (the bodies keep retail's `xmm` state).
+fn shell(point: &points::Point, cases: u32, xmm: bool) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    XMM.with(|x| x.set(xmm));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            shell_dress(&mut g, case);
+            shell_arguments(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+}
+
+#[test]
+fn object_bounds() {
+    shell(&points::OBJECT_BOUNDS, 6, true);
+}
+
+#[test]
+fn object_attachments() {
+    shell(&points::OBJECT_ATTACHMENTS, 6, true);
+}
+
+#[test]
+fn object_nodes_notify() {
+    shell(&points::OBJECT_NODES_NOTIFY, 6, true);
+}
+
+#[test]
+fn object_component_transform() {
+    shell(&points::OBJECT_COMPONENT_TRANSFORM, 6, true);
+}
+
+#[test]
+fn object_node_matrices() {
+    shell(&points::OBJECT_NODE_MATRICES, 6, false);
+}
+
+#[test]
+fn object_transform_setters() {
+    for point in [&points::OBJECT_SET_TRANSFORM, &points::OBJECT_SET_VELOCITY] {
+        shell(point, 6, true);
+    }
+}
+
+#[test]
+fn object_transform_getters() {
+    for point in [&points::OBJECT_WORLD_POSITION, &points::OBJECT_WORLD_BASIS, &points::OBJECT_ROOT_VELOCITY] {
+        shell(point, 6, true);
+    }
+}
+
+/// `bc820` over the dressed pool: the shell bodies fused under it.
+#[test]
+fn object_post_update_over_the_shell() {
+    shell(&points::OBJECT_POST_UPDATE, 6, false);
 }

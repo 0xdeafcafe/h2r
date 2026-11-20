@@ -47,7 +47,7 @@ const AFTER_ROOT: u32 = 0x0010_90d0;
 
 /// Return sites of the guest callees. The inlined leaves (pose matrix,
 /// composition and the root transform) have none.
-pub(super) const SITES: [u32; 16] = [
+pub(crate) const SITES: [u32; 16] = [
     0xbd191, 0xbd1ac, 0xbd24c, 0xbd2a6, 0xbd2b4, 0xbd2c3, 0xbd30c, 0xbd328, 0xbd336, 0xbd358,
     0xbd36a, 0xbd377, 0xbd382, 0xbd437, 0xbd467, 0xbd50c,
 ];
@@ -159,7 +159,7 @@ fn leave(c: &mut CpuAbi, g: &Guest) -> Result<TransferAbi> {
 /// flags are modelled wherever a later call or return can observe them.
 /// Shifts and multiplies whose flags are always overwritten first leave
 /// them alone.
-pub(super) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<TransferAbi> {
+pub(crate) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<TransferAbi> {
     loop {
         pc = match pc {
             0xbd090 => {

@@ -16,7 +16,7 @@ mod support;
 mod observer;
 mod objects;
 mod object_update;
-mod node_matrices;
+pub(crate) mod node_matrices;
 mod spatial;
 mod visit;
 mod unit_aim;

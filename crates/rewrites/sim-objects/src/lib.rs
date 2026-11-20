@@ -16,6 +16,8 @@ pub mod defs;
 pub mod events;
 pub mod view;
 pub mod wake;
+// Slice 4: the bounds arithmetic.
+pub mod bounds;
 
 #[cfg(any(test, feature = "synth"))]
 pub mod synth;

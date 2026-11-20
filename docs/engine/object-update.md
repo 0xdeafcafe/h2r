@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates (the projectile step `f8eb0` stays a callout). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 8 and slice 11 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates (the projectile step `f8eb0` stays a callout); the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 8 and slice 11 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -37,7 +37,10 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   change colours are in `sim_physics::ORACLES`: never installed, kept as
   test oracles. The function value, import and base import ports
   (`sim_native::object`, `sim_native::object_base`) are not installed
-  either; `tests/sim_native_differential.rs` keeps them as oracles.
+  either; `tests/sim_native_differential.rs` keeps them as oracles. The
+  node-matrix port `sim_physics::node_matrices` is the `bd090` body's
+  code (`pose.rs` runs it), so it stays installed under
+  `impl.sim.native_pose_matrix` for when this switch is off.
 - A body whose point another feature hooks too is guarded
   (`Table::guard`, called by the plan installer through
   `hooks::install::guard_shared_bodies`): `drive` hands calls into it to the
@@ -97,17 +100,20 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 
 | Entry | Point | ABI | Kind |
 |---|---|---|---|
-| `bdef0` | none yet | `(object: stack 0) -> al`; `ret 4` | segment |
-| `bef30` | none yet | `(object: stack 0, stack 1, stack 2, stack 3, stack 4)`; `ret 14`. `bc820` passes `(object, 1, 1, 0, 0)` | segment |
-| `be1d0` | none yet | `(object: eax)`; `ret`. Calls `b8c00`, then `109140` (below) | segment |
-| `bc5e0` | none yet | `(object: stack 0)`; `ret 4` | segment |
+| `bc5e0` | `OBJECT_COMPONENT_TRANSFORM` | `(object: stack 0)`; `ret 4` | segment |
 | `bd090` | `OBJECT_NODE_MATRICES` | `(object: stack 0)`; `ret 4`. Calls `1090d0` after the root node matrix (`bd507`) | segment; shared with phase 1b |
-| `b8c00` | none yet | `(object: eax, count out: stack 0) -> eax` the node matrices (`body + [body+116]`); stores the node count (`[body+114]` ÷ `34`) at `[stack 0]`; `ret 4` | leaf |
-| `109140` | none yet | `(object: ebx, count: stack 0, matrices: stack 1)`; `ret 8`. Slot `+74`, called `(object, count, matrices)` | segment (indirect callout) |
-| `b7430` | none yet | nine stack arguments; `ret 24` | segment |
-| `b7740` | none yet | `eax`, `ecx`, `edi` and one stack argument; `ret 4` | segment |
-| `b9dd0`, `b9fc0` | none yet | `eax`, `esi` (`b9fc0` also `edi`); `ret` | segment |
-| `ba1d0` | none yet | `eax`, `ecx` and one stack argument; `ret 4` | segment |
+| `bdef0` | `OBJECT_BOUNDS` | `(object: stack 0) -> al`; `ret 4` | segment |
+| `bef30` | `OBJECT_ATTACHMENTS` | `(object: stack 0, lights: stack 1, lists: stack 2, recurse: stack 3, keep: stack 4)`; `ret 14`. `bc820` passes `(object, 1, 1, 0, 0)` | segment |
+| `be1d0` | `OBJECT_NODES_NOTIFY` | `(object: eax)`; `ret`. Calls `b8c00`, then `109140` (below) | segment |
+| `b7430` | `OBJECT_SET_TRANSFORM` | `(object, position, forward, up, connect, refresh, notify, value, keep: stack 0..8) -> al`; `ret 24` | segment |
+| `b7740` | `OBJECT_SET_VELOCITY` | `(object: eax, linear: ecx, angular: edi, quiet: stack 0)`; `ret 4` | segment |
+| `b9dd0` | `OBJECT_WORLD_POSITION` | `(object: eax, out: esi) -> eax` (`out`); `ret` | leaf |
+| `b9fc0` | `OBJECT_WORLD_BASIS` | `(object: eax, forward: esi, up: edi)`; `ret` | leaf |
+| `ba1d0` | `OBJECT_ROOT_VELOCITY` | `(object: eax, linear: ecx, angular: stack 0)`; `ret 4` | segment |
+| `b8c00` | none yet | `(object: eax, count out: stack 0) -> eax` the node matrices (`body + [body+116]`); stores the node count (`[body+114]` ÷ `34`) at `[stack 0]`; `ret 4` | callout |
+| `109140` | none yet | `(object: ebx, count: stack 0, matrices: stack 1)`; `ret 8`. Slot `+74`, called `(object, count, matrices)` | callout (indirect) |
+
+How the slice 4 bodies keep the contract is in "Slice 4 bodies" below.
 
 ### Slice 5: lights
 
@@ -481,6 +487,92 @@ the design) only when every callee it can reach is Rust. Function
 lookups `13bb90`, the scripted override `10aac0`, the colour
 interpolation `131c20`, and the type handlers' callees above are still
 guest code, so every slice 3 body is a segment.
+## Slice 4 bodies
+
+Each is **C**: read at its address with `h2 disasm`, and compared with
+the lifted original by `tests/sim_objects_differential.rs` (each entry
+as a root over a pool dressed with a definition, node matrices on every
+body, a physics component and an attachment block, and `bc820` over the
+same pool). Each body file's header records its frame and the order of
+its calls; this section records what a caller or a later slice relies
+on.
+
+**Shared rules.** The bodies keep all eight integer registers, the `xmm`
+registers and MXCSR as retail leaves them at every call and return
+(scalar SSE through `sim_objects::sse`). The arithmetic flags are
+reproduced at every return from the last instruction that sets them
+(`add esp` at the end of `bdef0` and `bc5e0`, a `test` or `cmp`
+elsewhere, the callee's after a call that ends the function): `b7430`,
+`b7740`, `b9dd0`, `b9fc0` and `ba1d0` are called from all over the
+image. `push`/`pop` pairs around a lookup (`b9dd0`'s `edi`, `b7740`'s
+`ebp`) are made, so the dead stack holds what retail leaves there.
+
+**Node-matrix rows** (`xform.rs`). `bdef0`, `b9dd0` and `b9fc0` inline
+one sequence: each component `(m_z·z + m_y·y) + m_x·x (+ t)` through a
+`34`-byte node matrix (`+0` scale, `+4` forward, `+10` left, `+1c` up,
+`+28` translation), `x`, `y`, `z` in `xmm0` to `xmm2`, the row in `xmm3`
+and `xmm4`. A point is first multiplied by the matrix scale when
+`ucomiss scale, [45dbc0]` (the image's 1.0) is not equal; `lahf` then
+leaves `ah` changed in `eax` where retail's does. `sim_objects::bounds`
+is the same arithmetic as a pure kernel (exact or declining, through
+`sim_core::det::Fp`), for a speculated pass.
+
+**Bounds `bdef0`** (`bounds.rs`). Stores the first sphere (`+30`,
+`+3c`) and the second (`+50`, `+5c`) on every path except a crate's
+component answer, which supplies the first; then the registered sphere
+(`+40`, `+4c`) only when it stores (not in the partition, or moved).
+Moved is `comiss` of the squared distance against `[45e02c]` (`ja`); a
+changed radius is `ucomiss` (unordered counts as changed). Callees:
+`1d44f0` (`ret 0c`), `b87b0` (`ret 4`), `b8600` (`ret 8`).
+
+**Node matrices `bd090`** (`pose.rs`). The port
+`sim_physics::node_matrices` run as a body (design section 6: phase 1
+owns the arithmetic, this phase the orchestration). Its sixteen sites
+are the body's; the after-root dispatcher `1090d0` fuses. The pose
+matrix `1421f0`, the composition `142a60` and the root transform
+`bdc40` run inline through `sim_native`. `sim-anim` has no
+`build_matrices` yet (phase 1b has not landed it); when it does, it
+replaces those inline leaves for the skeleton walk, and the frame and
+callouts here stay.
+
+**Attachment refresh `bef30`** (`post.rs`). Loops over siblings by
+storing the next sibling over its own object argument (`[esp+14]`) and
+jumping back, and recurses into the first child through its own entry
+(fused). Callees: `b9ce0` (`ecx` object, `ret`), `c3220` (`eax` light,
+`ret`), `c2d00` (`ret 4`), `c1720` (`ret 0c`).
+
+**Node-matrix notify `be1d0`** (`post.rs`). `push ecx` makes the count
+local `b8c00` fills; `109140` gets `(count, matrices)` with the object
+in `ebx`.
+
+**Component transform `bc5e0`** (`post.rs`). Callees: `1d1c10` (`esi`
+record, `ret`), `1d1ca0` (`edi` record, `ret`), `1d4360` (`edi` record,
+`ret 4`), `b91d0` (`eax`, `esi`, `edi`; `ret`), `b7430` and `b7740`
+(bodies, fused), `1d09d0` and `1d0ad0` (`eax` 0, `edx` record, `ecx`
+out; `ret`), `1d96d0` (`eax` handle, `ret`). The network mode test is a
+byte `cmp al, 4`.
+
+**Setters and getters** (`transform.rs`). `b7430` keeps a one-dword
+local (`push ecx`) whose byte 3 is the result; its position check is six
+`comiss` against `[45e4ac]` and `[45dffc]`. Callees: `b87b0`, `b58c0`
+(`ret 8`), `1c4a80` (`ret 8`), `bd020` (`ret 4`), `b8600`. `b7740`
+calls `b58c0`; `ba1d0` calls `1d09d0` and `1d0ad0`. `b9dd0` and `b9fc0`
+call nothing.
+
+### Not verified for slice 4
+
+- Captures and run parity (the slice's testable result): registers and
+  RAM at the n-th call of `bc820` on Waterworks and a campaign level,
+  with `impl.sim.native.objects` on and off. The harness covers
+  synthetic pools.
+- The harness compares `xmm` registers at callouts for the slice 4 roots
+  except `bd090`, whose port was differential-tested without them
+  (`tests/sim_physics_differential.rs`).
+- Ret sizes of `b9ce0`, `c3220`, `1d1ca0`, `b91d0`, `1d09d0`, `1d0ad0`,
+  `1d96d0`, `e1670`, `bf5a0`, `bfc90`, `bff10`, `bfe80`, `bfed0`,
+  `bfe20`, `b6780`, `1c6440`, `a98b0`, `a9940` are read from their
+  first `ret`, the rest likewise and checked against their arguments.
+
 ## Slice 8 body
 
 **C**: read at `d5de0` with `h2 disasm`, and compared with the lifted

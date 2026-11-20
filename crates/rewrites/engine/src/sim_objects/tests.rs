@@ -100,7 +100,7 @@ fn slice_one_bodies_form_a_table_that_owns_their_entries_and_sites() {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
     // Callouts that stay guest are not bodies.
-    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0xbd090, 0x320560, 0xbb050] {
+    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0x320560, 0xbb050] {
         assert!(TABLE.at(callout).is_none(), "{callout:#x}");
     }
     // Driving an address no body owns is an execute fault, not a guess.
