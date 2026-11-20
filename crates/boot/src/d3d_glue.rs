@@ -602,7 +602,7 @@ pub struct Interpolation {
 /// `impl.render.reproject` warps frame N's world image by the camera's
 /// turn instead (E1, blended one frame behind), and
 /// `impl.render.reproject_ahead` the same with the turn carried on past N.
-/// They need the render thread and are off under `H2_PIPELINE_RENDER` (the
+/// They need the render thread and are off with `impl.render.pipelined_frame` (the
 /// lockstep harness cannot certify that combination). The rate follows the
 /// Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`): 30 makes nothing.
 pub fn interpolation(
@@ -615,11 +615,9 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    if !interpolation_from(
-        true,
-        render_thread,
-        std::env::var("H2_PIPELINE_RENDER").ok().as_deref(),
-    ) {
+    let legacy = std::env::var(feature::pipeline_render::ENV).ok();
+    let pipeline = feature::pipeline_render::PipelineRender::requested(&switches, legacy.as_deref());
+    if !interpolation_from(true, render_thread, pipeline.then_some("1")) {
         return None;
     }
     match mode {
@@ -701,7 +699,7 @@ pub fn interpolation_from(
     }
     if pipeline_render.is_some_and(|v| v != "0") {
         eprintln!(
-            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off under H2_PIPELINE_RENDER"
+            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off with impl.render.pipelined_frame"
         );
         return false;
     }
@@ -1508,7 +1506,7 @@ pub const WATCH_OWNER: &str = "boot:d3d";
 /// with this D3D layer: the game's D3D entries (the sim's calls there join
 /// the render first), and every D3D override the render thread may run
 /// (the entries with their write barrier, CreateDevice's shadow, the port
-/// I/O stubs). Off unless `H2_PIPELINE_RENDER=1`.
+/// I/O stubs). Enabled by `impl.render.pipelined_frame`.
 pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::PipelineRender {
     let entries: Vec<u32> = match i {
         Some(i) => i.barrier.clone(),

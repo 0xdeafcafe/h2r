@@ -1,16 +1,50 @@
 # Pipelined rendering
 
-Status: **a first prototype is built, off by default**
-(`H2_PIPELINE_RENDER=1`, "The prototype" below), on the census that
-decided it (`render-census`) and the second executor
-(docs/runtime/second-executor.md). The first census run and its verdict
-are in "Census results (2026-11-18)". Not yet run in the game.
+The render worker is available with `H2_FEATURES=impl.render.pipelined_frame=on`.
+It retains the game-tick join described under [Two writers](#two-writers-the-tick-joins-first).
+The worker is opt-in and its switch is independent of `impl.render.native`.
+`H2_PIPELINE_RENDER=1` supplies the default when the exact switch is unset.
 
-The question: can the game's own render front-end
-(`render_frame_and_present` `0x00223240` and everything under it,
-docs/engine/feature-engine.md section 7) run on a second host thread one
-frame behind the simulation, against a copy-on-write snapshot of guest
-RAM, so a frame costs `max(sim, render)` instead of `sim + render`?
+## Snapshot coverage
+
+At `render_frame_and_present`, after simulation and per-frame preparation, the
+worker receives the CPU state, guest address map and a copy-on-write view of
+64 MiB of guest RAM. The census identifies the working set across XBE globals,
+the game-state block and datum arrays, the world and resource pools, the render
+stack and D3D allocations. Together these include object state, animation
+poses and caches, camera and view state, lights, effects and HUD data. Keeping
+the full COW view lets render code follow pointers to newly reached data
+without reading the simulation's current RAM.
+
+The worker uses the census access trap on its own memory. Its previous
+completed frame supplies the pages to check at the next world frame's entry.
+A change to an observed page's virtual mapping, backing offset or permissions
+runs that candidate through the original serial path before the worker starts.
+`snapshot_mapping` logs the first affected page. A truncated trace gives
+`snapshot_trace`. The following eligible frame can collect a fresh footprint.
+A newly observed page that is already in the COW view is counted in
+`new_snapshot_pages`. An unmapped or protected access on the worker increments
+`snapshot_faults` and logs the page through the existing fault path.
+
+The access trap covers checked guest and HLE accessors. It cannot certify
+the absence of future render writes or see raw physical readers. The current
+tick reads particle state and animation-cache bookkeeping that the render also
+updates. Those stores must reach live RAM before the tick reads them, so the
+tick joins the render. The legacy HLE refusal path can resume against live RAM
+and retains the ordering limitation described under
+[The prototype](#the-prototype). Native post-processing also has game-thread
+return hooks listed in boot's `render_thread::REFUSED` audit.
+
+`render.stats.pipeline` reports launch and completion counts, serial reasons,
+fallbacks by call and `overlap_ms`, the cumulative wall time the worker executed
+before the game thread entered the join. The periodic `pipeline:` line reports
+mean overlap per launch. This measures work before the join, which can include
+non-tick work and time while the game thread is descheduled.
+
+At 14 ms of simulation and 28–37 ms of render CPU work, fully overlapping the
+tick would ideally move the CPU limit from 42–51 ms to 28–37 ms, or about
+20–24 fps to 27–36 fps. This assumes the GPU and frame cap can keep up and
+excludes snapshot and merge cost. The guarded prototype retains the tick join.
 
 ## What it would buy
 
@@ -745,11 +779,11 @@ speedup only comes after steps 6 and 7. The native renderer (feature
 engine stages 7b-7d) remains the alternative if steps 6 and 7 cost more
 than they save.
 
-## The prototype (`H2_PIPELINE_RENDER=1`)
+## The prototype
 
 Build plan steps 3 (the cheap remedies), 4 (hand-back) and 5 (measure),
 as `crates/feature/src/pipeline_render.rs`, wired in the boot by
-`d3d_glue::pipeline_render`. Off unless `H2_PIPELINE_RENDER=1`; off under
+`d3d_glue::pipeline_render`. Off under
 lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with
 `render-census`. No image change: it needs a new `h2` binary only.
 
@@ -940,7 +974,7 @@ sight of each listed guest word prints `pipeline: watch <addr> = <value>
 (its page mapped|unmapped) first seen after <step>`, and every change of
 the value, or of whether the page it points at is mapped, prints
 `pipeline: watch <addr> <old> -> <new> after <step>`; at most 200 lines.
-With `H2_PIPELINE_RENDER` unset the watch still runs, at each
+With the pipeline switched off the watch still runs, at each
 `render_frame_and_present` entry (`the game thread ran (pipelining off)`),
 and nothing else of the feature is installed (no render stack in the
 arena): the run to compare with. A step says who changed it: `the game

@@ -1127,6 +1127,43 @@ fn a_render_as_deep_as_the_game_threads_stack_runs_pipelined_and_in_fallbacks() 
 }
 
 #[test]
+fn changed_snapshot_mapping_runs_the_candidate_once_on_the_game_thread() {
+    let mut serial = rig(false);
+    let mut checked = rig_tuned(true, &[], ADDRS.clone(), &[], |f| f.check_snapshot(true));
+    for r in [&mut serial, &mut checked] {
+        r.round(1, false);
+        // The worker wrote PUSH on frame 1. Joining at the tick leaves its
+        // completed footprint available before this page is replaced.
+        r.run(SIM_TICK);
+        let mut m = r.rt.memory();
+        let original = m.fold_address(PUSH).unwrap() & 0x03ff_ffff;
+        m.unmap(PUSH, 0x1000).unwrap();
+        m.map(PUSH, 0x1000, original + 0x20_0000, Permissions::RW)
+            .unwrap();
+    }
+
+    serial.round(2, false);
+    checked.round(2, false);
+    assert!(!checked.feature.in_flight());
+    let stats = checked.feature.stats();
+    assert_eq!(stats.pipelined, 1);
+    assert_eq!(stats.completed, 1);
+    assert_eq!(stats.serial.get("snapshot_mapping"), Some(&1));
+    assert!(stats.overlap <= stats.lead && stats.overlap <= stats.render);
+    assert_eq!(checked.rt.memory().u32(PUSH), Ok(1));
+    for address in [PUSH, WAITS, FRAMES] {
+        assert_eq!(
+            checked.rt.memory().u32(address),
+            serial.rt.memory().u32(address),
+            "{address:#x}"
+        );
+    }
+    assert_eq!(checked.rt.memory().u64(PRESENTS), Ok(2));
+    let log = checked.log.lock().unwrap();
+    assert_eq!(&*log, &[("draw", 1, true), ("draw", 2, false)]);
+}
+
+#[test]
 fn switched_on_it_runs_menu_frames_serially_and_launches_nothing() {
     // Off the world path (menus, loading screens): the original, on the
     // game thread, with the same memory as the feature off.

@@ -1,6 +1,6 @@
 //! `pipeline-render`: the render front-end one frame behind the simulation,
 //! on a second host thread (docs/graphics/pipelined-render.md, "The
-//! prototype"). Off unless `H2_PIPELINE_RENDER=1`.
+//! prototype"). Enable with `impl.render.pipelined_frame=on`.
 //!
 //! At `render_frame_and_present` (`0x00223240`) on the game thread:
 //!
@@ -37,14 +37,20 @@ use std::time::{Duration, Instant};
 
 use engine::points;
 use runtime::executor::{CallOutcome, ExecutorError, SecondExecutor};
-use runtime::guest::{Permissions, WrittenPage};
+use runtime::guest::{FaultReason, Permissions, WrittenPage};
 use runtime::watch::CONTIGUOUS_BASE;
 use runtime::{CpuAbi, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi, abi};
 
 use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
+#[path = "pipeline_snapshot.rs"]
+mod snapshot;
+
+use snapshot::Footprint;
+
 pub const ID: &str = "pipeline-render";
-/// `H2_PIPELINE_RENDER=1` turns it on.
+pub const SWITCH: &str = "impl.render.pipelined_frame";
+/// Legacy default for the exact implementation switch.
 pub const ENV: &str = "H2_PIPELINE_RENDER";
 /// `H2_PIPELINE_WATCH=0x485a80,...`: guest words to watch. Each change is
 /// printed with the step it showed up after (`pipeline: watch ...`), so a
@@ -439,6 +445,10 @@ pub enum Serial {
     Loading,
     /// A snapshot or pause asked for the render to be joined.
     Quiesce,
+    /// A page touched by the previous render lost or changed its mapping.
+    SnapshotMapping,
+    /// The previous render's trace was incomplete.
+    SnapshotTrace,
     /// The game thread's memory could not be read for the decision.
     Unreadable,
 }
@@ -450,6 +460,8 @@ impl Serial {
             Serial::Loading => "loading",
             Serial::Quiesce => "quiesce",
             Serial::Unreadable => "unreadable",
+            Serial::SnapshotMapping => "snapshot_mapping",
+            Serial::SnapshotTrace => "snapshot_trace",
             Serial::IoBusy => "io_busy",
             Serial::Warmup => "warmup",
             Serial::AfterFallback => "after_fallback",
@@ -482,9 +494,14 @@ pub struct Stats {
     /// (not ordered).
     pub d3d_other_thread: u64,
     pub join_wait: Duration,
-    /// The game thread's time from each launch to its join: the work the
-    /// render overlapped (`lead`, per frame on the line).
+    /// Wall time between launch and entry to the game-thread join.
     pub lead: Duration,
+    /// Wall time when the render worker was executing before the game-thread join.
+    pub overlap: Duration,
+    /// Successful COW accesses to pages absent from the preceding trace.
+    pub new_snapshot_pages: u64,
+    /// Faults on the worker from unmapped or protected addresses.
+    pub snapshot_faults: u64,
     pub hand_back: Duration,
     pub snapshot: Duration,
     pub render: Duration,
@@ -558,6 +575,9 @@ impl Stats {
             d3d_other_thread: self.d3d_other_thread - then.d3d_other_thread,
             join_wait: self.join_wait - then.join_wait,
             lead: self.lead - then.lead,
+            overlap: self.overlap - then.overlap,
+            new_snapshot_pages: self.new_snapshot_pages - then.new_snapshot_pages,
+            snapshot_faults: self.snapshot_faults - then.snapshot_faults,
             hand_back: self.hand_back - then.hand_back,
             snapshot: self.snapshot - then.snapshot,
             render: self.render - then.render,
@@ -608,7 +628,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} sim_joins {} d3d_other_thread {} lead {:.2}ms join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) [render {} ({:.2}ms), sim_join {} ({:.2}ms)] io_deferred {} io_refused {} io_joins {} io_sim_first {} io_mismatches {} io_other_thread {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} sim_joins {} d3d_other_thread {} lead {:.2}ms overlap {:.2}ms new_snapshot_pages {} snapshot_faults {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) [render {} ({:.2}ms), sim_join {} ({:.2}ms)] io_deferred {} io_refused {} io_joins {} io_sim_first {} io_mismatches {} io_other_thread {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -621,6 +641,9 @@ impl Stats {
             self.sim_joins,
             self.d3d_other_thread,
             ms(self.lead, joins),
+            ms(self.overlap, joins),
+            self.new_snapshot_pages,
+            self.snapshot_faults,
             ms(self.join_wait, joins),
             ms(self.hand_back, joins),
             ms(self.snapshot, joins),
@@ -656,7 +679,9 @@ fn sub_named(a: &BTreeMap<String, u64>, b: &BTreeMap<String, u64>) -> BTreeMap<S
 struct Done {
     exec: Box<SecondExecutor>,
     result: Result<CallOutcome, ExecutorError>,
-    render: Duration,
+    started: Instant,
+    elapsed: Duration,
+    footprint: Option<Footprint>,
 }
 
 struct Job {
@@ -690,6 +715,7 @@ struct Inner {
     setup: Option<Setup>,
     flight: Option<Flight>,
     stats: Stats,
+    coverage: snapshot::Coverage,
     printed: Stats,
     last_print: Option<Instant>,
     /// The last decision pipelined (a switch either way prints a line).
@@ -799,6 +825,7 @@ struct Shared {
     refuse: Vec<u32>,
     /// Tally and print the hand-backs' conflicts ([`CONFLICTS_ENV`]).
     report_conflicts: bool,
+    check_snapshot: bool,
     /// Defer the render's I/O pool calls ([`DEFER_IO_ENV`]).
     defer_io: bool,
     /// [`Addrs::render_owned`] and the ranges
@@ -822,13 +849,15 @@ impl Default for PipelineRender {
 }
 
 impl PipelineRender {
-    /// On when `H2_PIPELINE_RENDER=1`.
+    /// Configures the runtime feature from the environment.
     pub fn new() -> Self {
         let on = std::env::var(ENV).is_ok_and(|v| v == "1");
         let watch = parse_watch(std::env::var(WATCH_ENV).ok().as_deref());
         let env = |name| std::env::var(name).ok();
         let refuse = parse_watch(env(REFUSE_ENV).as_deref());
         Self::with(on, Addrs::HALO2)
+            .check_snapshot(true)
+            .print(true)
             .watch(&watch)
             .predict_frames(switch(env(PREDICT_FRAMES_ENV).as_deref(), true))
             .replay_seeds(switch(env(SEED_REPLAY_ENV).as_deref(), true))
@@ -865,6 +894,7 @@ impl PipelineRender {
                 predict_frames: true,
                 refuse: Vec::new(),
                 report_conflicts: false,
+                check_snapshot: false,
                 defer_io: true,
                 render_owned,
                 inner: Mutex::new(Inner {
@@ -873,6 +903,7 @@ impl PipelineRender {
                     setup: None,
                     flight: None,
                     stats: Stats::default(),
+                    coverage: snapshot::Coverage::default(),
                     printed: Stats::default(),
                     last_print: None,
                     pipelining: false,
@@ -966,6 +997,17 @@ impl PipelineRender {
         self
     }
 
+    /// Use the render census access trap to check snapshot layout across frames.
+    pub fn check_snapshot(mut self, on: bool) -> Self {
+        self.shared_mut().check_snapshot = on;
+        self
+    }
+
+    /// Resolve the exact switch with the old variable as its fallback.
+    pub fn requested(switches: &crate::Switches, legacy: Option<&str>) -> bool {
+        switches.feature(SWITCH, legacy == Some("1"))
+    }
+
     /// The conflict report so far (tests): the lines
     /// [`CONFLICTS_ENV`] prints.
     pub fn conflict_report(&self) -> Vec<String> {
@@ -1029,7 +1071,7 @@ impl Feature for PipelineRender {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
-        let off = if !self.on {
+        let off = if !b.switches().feature(SWITCH, self.on) {
             true
         } else if let Some(why) = &self.off_reason {
             eprintln!("pipeline: off: {why}");
@@ -1461,16 +1503,25 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .stack_size(64 << 20)
         .spawn(move || {
             while let Ok(mut job) = rx.recv() {
-                let t = Instant::now();
+                if me_t.check_snapshot {
+                    snapshot::arm(&mut job.exec.runtime().memory());
+                }
+                let started = Instant::now();
                 let result = match job.entry {
                     Some(entry) => job.exec.call(&mut job.cpu, entry, &[]),
                     None => job.exec.resume(&mut job.cpu),
                 };
-                me_t.lock().stopped = Some(Instant::now());
+                let stopped = Instant::now();
+                me_t.lock().stopped = Some(stopped);
+                let footprint = me_t
+                    .check_snapshot
+                    .then(|| Footprint::take(&mut job.exec.runtime().memory()));
                 let _ = job.reply.send(Done {
                     exec: job.exec,
                     result,
-                    render: t.elapsed(),
+                    started,
+                    elapsed: stopped - started,
+                    footprint,
                 });
             }
         })
@@ -1501,12 +1552,7 @@ fn join_then(
     let done = flight.rx.recv();
     let wait = t.elapsed();
     me.in_flight.store(false, Ordering::Release);
-    let Ok(Done {
-        exec,
-        result,
-        render,
-    }) = done
-    else {
+    let Ok(done) = done else {
         return Ok(TransferAbi::fault(ctx.emit(Event::Unsupported {
             pc: cpu.eip,
             mnemonic: "pipeline".into(),
@@ -1518,9 +1564,31 @@ fn join_then(
         let mut inner = me.lock();
         inner.stats.join_wait += wait;
         inner.stats.lead += lead;
-        inner.stats.render += render;
+        inner.stats.overlap += t.saturating_duration_since(done.started).min(done.elapsed);
     }
+    let (exec, result) = accept_done(me, done);
     settle(me, cpu, ctx, exec, result, flight.predicted, None, k)
+}
+
+fn accept_done(me: &Shared, done: Done) -> (Box<SecondExecutor>, Result<CallOutcome, ExecutorError>) {
+    let mut inner = me.lock();
+    inner.stats.render += done.elapsed;
+    if let Some(footprint) = done.footprint {
+        inner.coverage.add(footprint);
+    }
+    if let Err(ExecutorError::Fault {
+        event: Some(Event::MemoryFault { fault, .. }),
+        ..
+    }) = &done.result
+        && matches!(fault.reason, FaultReason::Unmapped | FaultReason::Protection)
+    {
+        inner.stats.snapshot_faults += 1;
+        eprintln!(
+            "pipeline: snapshot fault page={:#010x}: {fault}",
+            fault.addr & !0xfff,
+        );
+    }
+    (done.exec, done.result)
 }
 
 /// A render run ended: hand it back and run `k` (completed); make its
@@ -1603,6 +1671,13 @@ fn settle(
     let outcome = match result {
         Ok(out) => {
             inner.stats.completed += 1;
+            let (new_pages, first) = inner.coverage.complete();
+            inner.stats.new_snapshot_pages += new_pages as u64;
+            if let Some(page) = first
+                && me.print
+            {
+                eprintln!("pipeline: snapshot footprint added {new_pages} pages, first={page:#010x}");
+            }
             hand_back(
                 me,
                 &mut inner,
@@ -1656,7 +1731,7 @@ fn settle(
             if unresumable {
                 exec.context().clear_continuations();
                 Some(Err(format!(
-                    "{cause} inside {live:?} on the render thread (run without H2_PIPELINE_RENDER)"
+                    "{cause} inside {live:?} on the render thread (set {SWITCH}=off)"
                 )))
             } else {
                 Some(exec.refused_cpu().ok_or("refused with no CPU".to_string()))
@@ -2090,12 +2165,7 @@ fn carry_on(
         inner.stats.io_stall += t.elapsed();
         inner.stats.io_stall_render += t.elapsed();
     }
-    let Some(Done {
-        exec,
-        result,
-        render,
-    }) = finished
-    else {
+    let Some(done) = finished else {
         return Ok(TransferAbi::fault(ctx.emit(Event::Unsupported {
             pc: cpu.eip,
             mnemonic: "pipeline".into(),
@@ -2103,11 +2173,8 @@ fn carry_on(
             backtrace: Vec::new(),
         })));
     };
-    {
-        let mut inner = me.lock();
-        inner.stats.join_wait += t.elapsed();
-        inner.stats.render += render;
-    }
+    me.lock().stats.join_wait += t.elapsed();
+    let (exec, result) = accept_done(me, done);
     settle(me, cpu, ctx, exec, result, predicted, Some(live), k)
 }
 
@@ -2417,6 +2484,19 @@ fn decide(
         serial_reason(&me.addrs, &rt.memory())
     };
     let reason = guard(me, reason, &rt.memory());
+    let reason = reason.or_else(|| {
+        match me.lock().coverage.check(&rt.memory()) {
+            Err(snapshot::Gap::Mapping(page)) => {
+                eprintln!("pipeline: serial snapshot_mapping page={page:#010x}");
+                Some(Serial::SnapshotMapping)
+            }
+            Err(snapshot::Gap::Trace) => {
+                eprintln!("pipeline: serial snapshot_trace (access log overflow)");
+                Some(Serial::SnapshotTrace)
+            }
+            Ok(()) => None,
+        }
+    });
     watch_now(me, &rt, "the game thread ran (at a frame)");
     if me.print {
         // A line at each switch between serial and pipelined frames, so the
@@ -2440,6 +2520,7 @@ fn decide(
     if let Some(r) = reason {
         let original = {
             let mut inner = me.lock();
+            inner.coverage.reset();
             *inner.stats.serial.entry(r.name()).or_default() += 1;
             inner.setup.as_ref().map(|s| Arc::clone(&s.original))
         };
@@ -2596,6 +2677,7 @@ fn launch(
     let mut render_cpu = saved;
     render_cpu.esp = me.stack_top.load(Ordering::Relaxed);
     let mut inner = me.lock();
+    inner.coverage.begin();
     inner.stats.snapshot += snap;
     inner.stats.pipelined += 1;
     let jobs = inner.setup.as_ref().expect("set up").jobs.clone();
@@ -2746,6 +2828,37 @@ fn maybe_print(me: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_frame_pipeline_uses_its_exact_switch() {
+        use crate::{Base, Registry, Switches};
+
+        for (spec, legacy, expected) in [
+            ("", false, false),
+            ("impl.render.pipelined_frame=on", false, true),
+            ("impl.render.native=off,impl.render.pipelined_frame=on", false, true),
+            ("impl.render.native=on", false, false),
+            ("impl.render.pipelined_frame=off", true, false),
+            ("impl.render=off", true, true),
+        ] {
+            let switches = Switches::parse(spec).unwrap();
+            assert_eq!(
+                PipelineRender::requested(&switches, legacy.then_some("1")),
+                expected,
+                "{spec}"
+            );
+            let mut registry = Registry::new(switches);
+            registry
+                .add(&PipelineRender::with(legacy, Addrs::HALO2))
+                .unwrap();
+            let plan = registry.build(&Base).unwrap();
+            assert_eq!(
+                plan.chains.contains_key(&points::RENDER_FRAME.base),
+                expected,
+                "{spec}"
+            );
+        }
+    }
 
     #[test]
     fn watch_words_parse_as_hex_with_or_without_0x() {
