@@ -1,5 +1,7 @@
 # Gameplay frame budget
 
+Evidence for the in-level frame, [../sim-budget.md](../sim-budget.md) and [../README.md](../README.md). Entries are dated; re-measure before acting on any row.
+
 Where the wall time of an in-level frame goes, what the worst frames are
 made of, and what it would take to get the worst frame under 33 ms (never
 below 30 fps). [menu-budget.md](menu-budget.md) is the same for the main
@@ -220,7 +222,7 @@ Steady frame p50 71.6 ms, p99 81.5, max 721.
 | 0 | **Merged passes in `h2 play`** (this branch; now the default): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
 | 1 | **Compile pipelines off the game thread, and prewarm them** (done: docs/graphics/graphics.md "Pipeline compiles"; draws wait at encode rather than being skipped). Create nv2a programs and render pipelines on a worker. Until one is ready, skip the draw for a frame or two, or block only on a deadline. Persist the keys seen (program hash plus pipeline key) and compile them at map load. Metal's own cache already makes a repeat compile ~5 ms (frame 4256), so the hitch is the first time a material or angle appears. | gfx, d3d nv2a | **721 -> ~80 ms** (-640): the only hitch over 110 ms in either run | ~2 | high: 665 of 721 ms is `pipeline create` |
 | 2 | **FASTMEM on by default** once its P1 is fixed (with `H2_ACCESS_COUNT`) | runtime, emit | follows p50 | **-35 to -40** (119 -> 75 measured, with a load difference) | high: measured |
-| 3 | **Fast exact FYL2X/F2XM1** (done: [x87-transcendentals.md](../lifter/x87-transcendentals.md); both first passes are table-driven now). A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
+| 3 | **Fast exact FYL2X/F2XM1** (done: [x87-transcendentals.md](../../lifter/x87-transcendentals.md); both first passes are table-driven now). A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |
 | 4 | **Render thread:** hand recorded draws to a thread that encodes and submits (the `render-thread` lane). The game thread keeps the D3D resolve. | gfx-perf | follows p50 | **-10 to -12** of game-thread time (encode 12.5 + submit 2.1, minus the handoff) | medium: the GPU must keep up in parallel, and readbacks still sync |
 | 5 | **Render-to-texture write-back without round trips:** 3.6 readbacks a frame (depth decoded on the CPU), 3.3 ms of surface writes, `D3DSWAP_FINISH`'s full wait | d3d, gfx-perf | removes gpu-wait spikes (up to 31 ms in the loaded run) | -5 to -7 | medium: the RTT-direct work on master is the start |
 | 6 | **Guest code and dispatch:** IR passes (flags, dead stores, register promotion), cheaper `handler::execute`/resolve, close the remaining fallback-interpreter targets | codegen-opt, runtime, analyze | follows p50 | -8 to -12 of ~33 (guest 24.5, dispatch 6.1, fallback 2.5) | low: the profile is flat, top guest function 2.2% |
@@ -787,7 +789,7 @@ counters with `impl.render.native=off` against the default. The
 `native_scene_lists_object_setup_*` columns count whole setup calls,
 including their child traversal. Use the refusal columns to separate
 resource I/O, light-probe work and animated poses from the accepted
-calls in a capture. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders).
+calls in a capture. See [native-renderer.md](../../graphics/native-renderer.md#scene-list-builders).
 
 **Overhead.** Twelve observer calls per frame plus two per view and per
 light, each a mutex and a clock read, a few microseconds a frame; plus
@@ -796,7 +798,7 @@ that precision; compare `fps` with the feature off to see the cost.
 
 Whether the front-end could run one frame behind the simulation on its
 own thread, and the `render-census` feature that measures which pages
-the two share, are in [pipelined-render.md](../graphics/pipelined-render.md).
+the two share, are in [pipelined-render.md](../../graphics/pipelined-render.md).
 
 ### What scales with draws on the render thread (2026-11-17)
 

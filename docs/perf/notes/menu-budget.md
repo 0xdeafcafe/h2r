@@ -1,10 +1,12 @@
 # Main-menu frame budget
 
+Evidence for the main-menu frame in [../README.md](../README.md). Entries are dated; re-measure before acting on any row.
+
 Where the wall time of one main-menu frame goes on master plus the boot
 runner, and a ranked plan for getting from under 2 fps to 30 fps.
 Measured 2026-11-15 on master 4620ba0 + `boot` (6eaa2cd), with a dylib
 built from 4620ba0, Apple Silicon (AGX G13), release build. The tools are
-in [profiling.md](profiling.md): the timeline, `h2 profile budget` and the sampler.
+in [profiling.md](../profiling.md): the timeline, `h2 profile budget` and the sampler.
 The runtime's accessor work and its own menu profile are in
 [guest-memory.md](guest-memory.md).
 The in-level budget and its worst frames are in
