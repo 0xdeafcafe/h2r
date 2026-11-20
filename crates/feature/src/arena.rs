@@ -10,8 +10,10 @@
 
 /// Start of the feature arena.
 pub const ARENA_START: u32 = 0xa0f0_0000;
-/// End (exclusive): 512 KiB.
-pub const ARENA_END: u32 = 0xa0f8_0000;
+/// End (exclusive): 832 KiB, up to the community variants' fixed page at
+/// `0xa0fd_0000`. 512 KiB filled once map packs, Halo 1 and mods all
+/// placed their pages.
+pub const ARENA_END: u32 = 0xa0fd_0000;
 const PAGE: u32 = 0x1000;
 
 /// A bump allocator over [`ARENA_START`]..[`ARENA_END`], page-granular.
