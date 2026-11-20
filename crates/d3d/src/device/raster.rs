@@ -959,6 +959,43 @@ impl<B: Backend> Device<B> {
         Ok(Some((info, texture)))
     }
 
+    /// Select the live level a sample can bind without decoding guest pixels.
+    /// Clean overlapping levels do not participate in its write-back.
+    pub(super) fn direct_color_level(
+        &self,
+        data: u32,
+        desc: &TextureDesc,
+        color_sign: u32,
+    ) -> Option<(u32, RttTarget<B::Surface>)> {
+        if !self.rtt_lazy()
+            || color_sign & COLOR_SIGN_MASK != 0
+            || desc.kind != gfx::texture::TextureKind::D2
+            || desc.levels != 1
+            || !matches!(desc.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
+        {
+            return None;
+        }
+        let layout = match desc.format.layout() {
+            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
+            _ => GuestLayoutKind::Linear { pitch: desc.pitch.max(desc.width * 4) },
+        };
+        // Prefer a drawn level when two headers name the same texels; ties
+        // go to the lower header. The active target needs a copy instead.
+        let (&header, &level) = self.rtt.iter().filter(|(_, t)| {
+            !t.depth && t.data == data && t.format == desc.format
+                && (t.width, t.height) == (desc.width, desc.height) && t.layout == layout
+        }).max_by_key(|&(header, t)| (t.dirty, std::cmp::Reverse(*header)))?;
+        (header != self.render_target).then_some((header, level))
+    }
+
+    pub(super) fn dirty_level_overlap(&self, header: u32, level: &RttTarget<B::Surface>) -> bool {
+        let (start, end) = (u64::from(level.data), u64::from(level.data) + u64::from(level.len()));
+        self.rtt.iter().any(|(&other, t)| {
+            other != header && t.dirty && u64::from(t.data) < end
+                && start < u64::from(t.data) + u64::from(t.len())
+        })
+    }
+
     /// The render-to-texture level texture `header` samples in place, as
     /// [`Self::rtt_texture`] finds it (its write-back and refresh done),
     /// and the level's host surface: what a draw, or an external pass
@@ -979,54 +1016,10 @@ impl<B: Backend> Device<B> {
         let Ok(desc) = crate::texdesc::from_header(pc.format, pc.size) else {
             return Ok(None);
         };
-        // Texels that read back unchanged: what the surface holds is what
-        // an upload of the written-back level would hold.
-        if desc.kind != gfx::texture::TextureKind::D2
-            || desc.levels != 1
-            || !matches!(desc.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
-        {
-            return Ok(None);
-        }
         let data = self.cfg.address_map.to_virtual(pc.resource.data);
-        // The colour level over these bytes, preferring one with the
-        // texture's format, size and layout (two headers can name the same
-        // bytes differently), then one drawn into (depth levels go through
-        // guest memory). Ties go to the lower header, so the choice does
-        // not depend on the map's order.
-        let want_layout = match desc.format.layout() {
-            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
-            _ => GuestLayoutKind::Linear { pitch: desc.pitch.max(desc.width * 4) },
-        };
-        let mut found: Option<(u32, RttTarget<B::Surface>)> = None;
-        let rank = |t: &RttTarget<B::Surface>| {
-            let same = t.format == desc.format && (t.width, t.height) == (desc.width, desc.height) && t.layout == want_layout;
-            (same, t.dirty)
-        };
-        for (h, t) in &self.rtt {
-            if !t.depth
-                && t.data == data
-                && found.is_none_or(|(fh, f)| (rank(t), std::cmp::Reverse(*h)) > (rank(&f), std::cmp::Reverse(fh)))
-            {
-                found = Some((*h, *t));
-            }
-        }
-        let Some((h, t)) = found else {
+        let Some((h, t)) = self.direct_color_level(data, &desc, color_sign) else {
             return Ok(None);
         };
-        let pitch = desc.pitch.max(desc.width * 4);
-        let layout = match desc.format.layout() {
-            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
-            _ => GuestLayoutKind::Linear { pitch },
-        };
-        // Sampling the target being drawn reads what it held before the
-        // draw: a copy through guest memory, as before.
-        if h == self.render_target
-            || t.format != desc.format
-            || (t.width, t.height) != (desc.width, desc.height)
-            || t.layout != layout
-        {
-            return Ok(None);
-        }
         // Another level drawn into over part of these bytes (an offset
         // alias) goes to memory first, and this one takes it up there.
         self.write_back_overlapping(mem, h)?;

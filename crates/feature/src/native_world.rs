@@ -83,6 +83,10 @@ pub type PartSet = HashMap<(Owner, u8), u32>;
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
+    /// Prefer resolved scene draws retaining individual fallbacks.
+    fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool { false }
+
+
     /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `camera`
     /// the view's render camera, `stencil` how the layer's items switch
     /// the stencil. Asks for the native pass when a world for `bsp` is
@@ -171,7 +175,7 @@ pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8)
 
 /// The observer before the layer draw, on any guest memory: the last layer
 /// 3's bits back, then this layer's skip.
-pub fn before_layer(mem: &mut dyn GuestMemory) {
+pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let mut m = Mem(mem);
     if m.read_u32(skip::CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
@@ -181,6 +185,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
+    use native_render::world_layers::{Site, layer_site};
+    if layer_site(LIGHTMAP_LAYER, ret) == Site::Scene
+        && let Some(bsp) = m.read_u32(ACTIVE_BSP)
+        && host.use_resolved_scene(m.0, bsp)
+    {
+        return;
+    }
     // A layer 3 that draws no BSP item is not the world's (the first-person
     // render's, `skip::has_structure_items`): the native pass would draw
     // the whole world again over the finished scene.
@@ -264,7 +275,8 @@ impl Feature for NativeWorld {
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_world_skip", |o| {
                 let mut g = o.guest();
-                before_layer(&mut *g);
+                let ret = g.u32(o.cpu.esp).unwrap_or(0);
+                before_layer(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
