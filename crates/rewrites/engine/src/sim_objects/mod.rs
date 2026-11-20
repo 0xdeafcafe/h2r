@@ -49,6 +49,8 @@ mod lights;
 mod unit;
 // Slice 9: the weapon update.
 mod weapon;
+// Slice 10: the vehicle update.
+mod vehicle;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -171,6 +173,11 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::UNIT_AIM_UPDATE, sites: unit::AIM_SITES, run: unit::aim },
     // Slice 9: the weapon update (the `weap` descriptor's slot `+40`).
     Body { point: &points::WEAPON_UPDATE, sites: &weapon::WEAPON_SITES, run: weapon::weapon_update },
+    // Slice 10: the vehicle update (the `vehi` descriptor's slot `+40`)
+    // and the two leaves it calls.
+    Body { point: &points::VEHICLE_UPDATE, sites: &vehicle::VEHICLE_SITES, run: vehicle::vehicle_update },
+    Body { point: &points::VEHICLE_UPDATE_GATE, sites: &[], run: vehicle::vehicle_update_gate },
+    Body { point: &points::VEHICLE_CONTACTS_RESET, sites: &[], run: vehicle::vehicle_contacts_reset },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

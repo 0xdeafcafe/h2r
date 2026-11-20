@@ -1276,6 +1276,16 @@ points! { ALL;
     // Slice 9 of docs/engine/sim-rewrite-objects.md: the weapon update.
     /// Weapon update: slot `+40` of `weap`, after the item update.
     WEAPON_UPDATE @ 0x000f_dfb0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 10 of docs/engine/sim-rewrite-objects.md: the vehicle update.
+    /// Vehicle update: slot `+40` of `vehi`.
+    VEHICLE_UPDATE @ 0x000e_fde0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// The vehicle update's gate: `al` 1 when damage flags `+10a` bit 2 is
+    /// set and the definition's vehicle type (`+1f0`) is 5, or 4 with
+    /// definition `+218` equal to 1; the update then skips its physics.
+    VEHICLE_UPDATE_GATE @ 0x000f_1320: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Sets the first word of the vehicle update's 16 contact records
+    /// (`d8` bytes each, from `buffer + bc0`) to none.
+    VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
