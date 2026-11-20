@@ -1443,6 +1443,34 @@ H2_AGENT=/tmp/h2-play.sock h2 play           # then, holding the touchpad down:
 h2 agent --socket /tmp/h2-play.sock hostpads
 ```
 
+#### `input.lightbar`: PlayStation controller colours
+
+The lightbar methods are available in player runs with XAPI input. They
+work without a controller connected. `input.lightbar` is read-only and
+takes no params. It returns `enabled` and four `ports`, each with a
+zero-based `port`, the last sampled `game_rgb`, the temporary
+`override_rgb`, and the desired `rgb`. Each colour is an array of three
+integers from 0 to 255, or null. The desired colour uses the override if
+set, otherwise the game colour. When the Lightbar setting is Off, desired
+`rgb` is null and the game gives up control of the light.
+
+`input.lightbar.set {port, rgb}` sets an override for one port and returns
+the same state. A null `rgb` clears the override. The override lasts until
+cleared or the run ends. Setting it follows the usual control
+ownership rules for actions. The desired colour applies at input sync
+when that port has a supported controller. It describes the host request
+independently of what the hardware displays.
+
+```sh
+h2 agent input.lightbar
+h2 agent input.lightbar.set '{"port":0,"rgb":[32,128,224]}'
+h2 agent input.lightbar.set '{"port":0,"rgb":null}'
+```
+
+See [controller output](../audio/playstation-audio.md#player-colour-lightbars)
+for the guest palettes and macOS lightbar backend. The methods live in
+`crates/extensions/agent/src/lightbar.rs`.
+
 ## `state`: machine snapshots
 
 `state.save`, `load`, `list`, `drop` and `fork` (types in

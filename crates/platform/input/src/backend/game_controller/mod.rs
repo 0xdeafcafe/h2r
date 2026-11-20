@@ -7,7 +7,7 @@
 //!   vocabulary to [`HostPadState`]) and [`GameControllerPads`], the
 //!   [`HostBackend`] over any source;
 //! * `apple.rs` (macOS only): [`AppleSource`], the `objc2-game-controller`
-//!   implementation, including CoreHaptics rumble.
+//!   implementation, including CoreHaptics rumble and PlayStation lightbars.
 //!
 //! Port handling, hot-plug and the insertion/removal masks live in
 //! [`InputManager`](crate::InputManager): it assigns the first four pads in
@@ -140,6 +140,8 @@ pub trait ControllerSource: Send {
     fn poll(&mut self) -> Vec<RawPad>;
     /// Motor speeds 0..=1 (`left` is the heavy motor). 0/0 stops.
     fn set_rumble(&mut self, key: u64, left: f32, right: f32);
+    /// Set the PlayStation lightbar for this connection. `None` restores its original colour.
+    fn set_lightbar(&mut self, _key: u64, _rgb: Option<[u8; 3]>) {}
 }
 
 /// A haptic locality a controller may advertise (`GCDeviceHaptics.supportedLocalities`).
@@ -345,6 +347,10 @@ impl<S: ControllerSource> HostBackend for GameControllerPads<S> {
         );
     }
 
+    fn set_lightbar(&mut self, id: HostPadId, rgb: Option<[u8; 3]>) {
+        self.source.set_lightbar(id.0, rgb);
+    }
+
     fn devices(&self) -> Vec<DeviceInfo> {
         self.devices.clone()
     }
@@ -363,6 +369,7 @@ mod tests {
     struct Fake {
         pads: Vec<RawPad>,
         rumble: Vec<(u64, f32, f32)>,
+        lightbar: Vec<(u64, Option<[u8; 3]>)>,
     }
     #[derive(Clone, Default)]
     struct FakeSource(Arc<Mutex<Fake>>);
@@ -372,6 +379,9 @@ mod tests {
         }
         fn set_rumble(&mut self, key: u64, l: f32, r: f32) {
             self.0.lock().unwrap().rumble.push((key, l, r));
+        }
+        fn set_lightbar(&mut self, key: u64, rgb: Option<[u8; 3]>) {
+            self.0.lock().unwrap().lightbar.push((key, rgb));
         }
     }
     fn raw(key: u64, snapshot: Snapshot) -> RawPad {
@@ -700,5 +710,67 @@ mod tests {
         .unwrap();
         m.sync();
         assert_eq!(src.0.lock().unwrap().rumble, vec![(9, 1.0, 0.0)]);
+    }
+
+    #[test]
+    fn lightbar_override_and_restore_are_forwarded_by_connection_key() {
+        let src = FakeSource::default();
+        let mut backend = GameControllerPads::with_source(src.clone());
+        backend.set_lightbar(HostPadId(9), Some([17, 23, 29]));
+        backend.set_lightbar(HostPadId(11), Some([31, 37, 41]));
+        backend.set_lightbar(HostPadId(9), None);
+        let log = src.0.lock().unwrap();
+        assert_eq!(
+            log.lightbar,
+            vec![(9, Some([17, 23, 29])), (11, Some([31, 37, 41])), (9, None)]
+        );
+        assert!(log.rumble.is_empty());
+    }
+
+    #[test]
+    fn lightbars_follow_the_ports_through_a_primary_pad_change() {
+        use crate::backend::fallback::KeyboardFallback;
+        use crate::backend::keyboard::KeyboardMouse;
+        use crate::backend::multi::Multi;
+
+        let source = FakeSource::default();
+        source.0.lock().unwrap().pads =
+            vec![raw(9, Snapshot::default()), raw(11, Snapshot::default())];
+        let physical = Multi::new(vec![Box::new(GameControllerPads::with_source(source.clone()))]);
+        let mut input = InputManager::new(Default::default()).unwrap();
+        input.add_backend(Box::new(KeyboardFallback::new(
+            KeyboardMouse::new(Default::default()),
+            Some(Box::new(physical)),
+            Default::default(),
+        )));
+        let take_output = || std::mem::take(&mut source.0.lock().unwrap().lightbar);
+        input.sync();
+        take_output();
+
+        let lightbars = input.lightbars();
+        let first = Some([19, 27, 33]);
+        let second = Some([60, 40, 20]);
+        let colours = [first, second, None, None];
+        lightbars.update_game(true, colours);
+        input.sync();
+        input.sync();
+        assert_eq!(take_output(), [(9, first), (11, second)]);
+
+        source.0.lock().unwrap().pads.remove(0);
+        input.sync();
+        assert_eq!(take_output(), [(9, None), (11, first)]);
+
+        source.0.lock().unwrap().pads.push(raw(13, Snapshot::default()));
+        input.sync();
+        assert_eq!(take_output(), [(13, second)]);
+
+        lightbars.update_game(false, colours);
+        input.sync();
+        assert_eq!(take_output(), [(11, None), (13, None)]);
+        lightbars.update_game(true, colours);
+        input.sync();
+        assert_eq!(take_output(), [(11, first), (13, second)]);
+        input.restore_lightbars();
+        assert_eq!(take_output(), [(11, None), (13, None)]);
     }
 }

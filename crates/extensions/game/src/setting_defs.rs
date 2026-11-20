@@ -232,6 +232,23 @@ pub static PAD_SPEAKER: Def = Def {
     menu: None,
 };
 
+pub static PAD_LIGHTBAR: Def = Def {
+    key: "controls.lightbar",
+    label: "Lightbar",
+    help: "Match each PlayStation controller's lightbar to its player's team or primary armour colour.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (video_screen::model).
+    menu: None,
+};
+
 pub static PAD_MUTE: Def = Def {
     key: "pad.mute_button",
     label: "Mute Button",
@@ -792,6 +809,7 @@ pub static ALL: &[&Def] = &[
     &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
+    &PAD_LIGHTBAR,
     &PAD_MUTE,
     &STEAM_SPEAKER,
     &STEAM_SENSITIVITY,
@@ -924,7 +942,7 @@ mod tests {
         envs.sort();
         envs.dedup();
         assert_eq!(keys.len(), ALL.len());
-        // Skulls are per-profile only and have no variable.
+        // Some settings are only changed through the store.
         assert_eq!(envs.len(), ALL.iter().filter(|d| d.env.is_some()).count());
         for d in ALL {
             assert!(d.key.contains('.'), "{}", d.key);

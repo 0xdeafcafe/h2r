@@ -148,6 +148,10 @@ pub mod method {
     /// see them: profile class, touchpad, buttons, and whether the menu is
     /// open (`h2 agent hostpads`).
     pub const INPUT_HOST: &str = "input.host";
+    /// Desired PlayStation lightbar colours by Xbox controller port.
+    pub const INPUT_LIGHTBAR: &str = "input.lightbar";
+    /// Set or clear a temporary per-port RGB override.
+    pub const INPUT_LIGHTBAR_SET: &str = "input.lightbar.set";
     /// Start the in-process sampling profiler (`{"hz": 1000}`).
     pub const SAMPLE_START: &str = "profile.sample.start";
     /// Stop it and write the samples (`{"inline": true}` returns them too).

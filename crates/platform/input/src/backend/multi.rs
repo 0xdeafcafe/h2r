@@ -5,6 +5,7 @@
 use crate::backend::HostBackend;
 use crate::gamepad::Rumble;
 use crate::host::{HostPad, HostPadId};
+use crate::lightbar::Rgb;
 use crate::report::DeviceInfo;
 
 /// The backends in order; their pads in that order. A pad's id carries its
@@ -52,6 +53,12 @@ impl HostBackend for Multi {
     fn set_rumble(&mut self, id: HostPadId, rumble: Rumble) {
         if let Some((b, id)) = self.route(id) {
             b.set_rumble(id, rumble);
+        }
+    }
+
+    fn set_lightbar(&mut self, id: HostPadId, rgb: Option<Rgb>) {
+        if let Some((b, id)) = self.route(id) {
+            b.set_lightbar(id, rgb);
         }
     }
 
