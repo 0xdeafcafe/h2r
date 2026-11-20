@@ -277,9 +277,12 @@ fn stage(
     Ok(Some(Saved { address, original }))
 }
 
+/// The feature's id, for the features that order their hooks around it.
+pub(crate) const FEATURE: &str = "h1-hud-text";
+
 pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError> {
     let feature = feature::FnFeature {
-        manifest: Manifest::new("h1-hud-text", "Halo 1 help and objectives"),
+        manifest: Manifest::new(FEATURE, "Halo 1 help and objectives"),
         build: |b: &mut Builder| {
             b.snapshot(feature::SnapshotPolicy::Stateless);
             let scratch = b.guest_alloc(

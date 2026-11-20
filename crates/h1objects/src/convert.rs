@@ -615,6 +615,15 @@ impl Tree {
             )
             .into());
         }
+        // No source audio rides along, so a sound or looping-sound
+        // placeholder left in a tag has nothing to point at: a conversion
+        // error naming the tag, never a null reference. Checked before the
+        // set changes.
+        for (name, tag) in &mut self.tags {
+            rewrite_audio(&mut tag.root, SOUND, &[])
+                .and_then(|()| rewrite_audio(&mut tag.root, LOOP, &[]))
+                .map_err(|e| h1convert::Error::no_rebuild(&set.name, name.as_str(), e))?;
+        }
         if donors.len() < self.tags.len() {
             return Err(Error::Invalid(format!(
                 "{} tags but {} donor slots",

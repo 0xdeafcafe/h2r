@@ -647,7 +647,17 @@ pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
                 Ok(Flow::Continue)
             },
         )
-        .context_only();
+        .context_only()
+        // The match-start befores (variant options, aim assist, precision
+        // items, the HUD swap) run first; clearing these clocks reads none
+        // of what they write.
+        .after_feature(crate::variant_ext::FEATURE)
+        .after_feature(crate::aim_assist::FEATURE)
+        .after_feature(crate::precision::FEATURE)
+        .after_feature(crate::hud_swap::FEATURE);
+    // Cheats, our skulls and the touch glue sit inside this hook at the
+    // tick's end (they name this feature), so the sample sees the tick's
+    // final ammo, heat and charge, a bottomless-clip refill included.
     b.raw().after(
         &points::GAME_TICK,
         "sample weapon warning conditions",

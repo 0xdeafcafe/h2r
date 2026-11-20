@@ -1826,9 +1826,11 @@ fn rebuilt_effect_keeps_halo_1s_events_and_the_parts_that_convert() {
 }
 
 #[test]
-fn audio_placeholders_become_null_when_the_sounds_have_no_room() {
+fn audio_placeholders_without_their_sounds_are_a_named_error_over_donor_slots() {
     // A tree whose tag names a sound and a looping sound it holds none of:
-    // installing over donor slots adds no sound, so both become null.
+    // installing over donor slots adds no sound, so neither placeholder has
+    // a datum. The install refuses, naming the map and the tag, and leaves
+    // the donor as it was (no null reference, no stray placeholder datum).
     let t = tag(b"effe", &[(0, crate::convert::sound(0)), (8, crate::convert::looping(0))]);
     let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
     set.add_group(FourCC(*b"effe"), None, None);
@@ -1839,20 +1841,18 @@ fn audio_placeholders_become_null_when_the_sounds_have_no_room() {
         tags: vec![("invented\\effect".into(), t)],
         ..Tree::default()
     };
-    tree.install_over(&mut set, &[donor]).unwrap();
-    let Some(TagPayload::Built(root)) = set.slots[donor.index()].tag.as_ref().map(|e| &e.payload)
+    let Err(crate::Error::Bsp(h1convert::Error::NoRebuild { map, tag, reason })) =
+        tree.install_over(&mut set, &[donor])
     else {
-        panic!()
+        panic!("a tag naming sounds the tree lacks installed over a donor");
     };
-    let ids: Vec<TagId> = root
-        .fixups
-        .iter()
-        .filter_map(|f| match f.kind {
-            map::build::FixupKind::TagRef(t) => Some(t),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(ids, vec![TagId::NULL, TagId::NULL]);
+    assert_eq!((map.as_str(), tag.as_str()), ("h1test", "invented\\effect"));
+    assert!(reason.contains("unresolved tree datum"), "{reason}");
+    let Some(entry) = set.slots[donor.index()].tag.as_ref() else { panic!() };
+    assert_eq!(entry.group, FourCC(*b"effe"));
+    let TagPayload::Built(root) = &entry.payload else { panic!() };
+    assert_eq!(root.bytes, vec![0; 4]);
+    assert!(root.fixups.is_empty());
 }
 
 #[test]

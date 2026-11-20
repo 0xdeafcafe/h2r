@@ -332,8 +332,10 @@ impl feature::Feature for TouchGlue {
                 Ok(())
             })
             // Our skulls hook the same tick; neither reads what the other
-            // writes, so any fixed order will do.
-            .after_feature(crate::skulls_custom::FEATURE);
+            // writes, so any fixed order will do. The Halo 1 weapon HUD's
+            // sample runs outside, after every tick-end write.
+            .after_feature(crate::skulls_custom::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.snapshot(feature::SnapshotPolicy::forbid_while(touch_live));
         Ok(())
     }

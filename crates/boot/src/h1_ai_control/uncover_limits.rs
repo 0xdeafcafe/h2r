@@ -361,7 +361,10 @@ pub(super) fn register(b: &mut Builder<'_>) {
             }
             Ok(())
         },
-    );
+    )
+    // Inside the conversations' damage dialogue check: the hit is on the
+    // actor's record before the dialogue reacts to it.
+    .after_feature("h1-conversations");
 }
 
 #[cfg(test)]

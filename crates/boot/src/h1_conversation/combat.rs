@@ -84,7 +84,10 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
             firing(&mut *m, call.cpu.eax, records, queue).map_err(guest_fault)?;
             Ok(Flow::Continue)
         },
-    );
+    )
+    // The authored command firing interval is chosen first; the remark
+    // follows the burst the command atoms set up.
+    .after_feature("h1-command-atoms");
     b.raw().after(
         &points::AI_MELEE_LEAP_ENTER,
         "vocalize a successful melee leap",

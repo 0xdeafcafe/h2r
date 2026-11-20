@@ -3326,7 +3326,21 @@ mod tests {
         let atlas = TagId(0xe002_0002);
         let b = emblem(stem, atlas).unwrap();
         let r = defs::from_built(shad_def(), &b).unwrap();
-        assert_eq!(r.at("template"), Some(&Val::tag(FourCC(*b"stem"), stem)));
+        // The template is a reference fixup to the stem, its group word
+        // written as `stem`. A builder tree reads a reference fixup back
+        // with group 0 (`defs::from_built`): the map builder writes the
+        // target tag's own group at emit.
+        assert!(b.fixups.iter().any(|f| {
+            f.offset == 0 && f.kind == map::build::FixupKind::TagRef(stem)
+        }));
+        assert_eq!(b.bytes[..4], FourCC(*b"stem").as_u32().to_le_bytes());
+        assert_eq!(
+            r.at("template"),
+            Some(&Val::Ref {
+                group: 0,
+                target: Target::Id(stem),
+            })
+        );
         assert_eq!(
             r.at("postprocess[0].bitmaps[0].bitmap"),
             Some(&datum(Some(atlas)))

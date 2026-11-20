@@ -212,7 +212,9 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
             observe(&mut *m, battles, call.cpu.eax).map_err(guest_fault)?;
             Ok(Flow::Continue)
         },
-    );
+    )
+    // AI control's combat-timer hold runs first; this sees the control it left.
+    .after_feature("h1-ai-control");
     b.raw().before(
         &points::AI_POSTCOMBAT_ENTER,
         "select the Halo 1 encounter outcome remark",
