@@ -312,7 +312,7 @@ export default function Viewer3D(props: Viewer3DProps) {
         sourced = adopted;
         s.setCurtain(false);
       }
-      s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
+      s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen, props.priorityPlayers?.());
       if (choose) {
         if (props.director) applySelection();
         else if (explicit) pick(mode(), follow());

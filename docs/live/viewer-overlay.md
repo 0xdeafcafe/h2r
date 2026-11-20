@@ -1,6 +1,6 @@
 # The 3D view's opening camera, overlay and reveal
 
-Status: Partly built. The opening camera and loading overlay are available. Name-tag declutter and the progressive reveal are designs.
+Status: Partly built. The opening camera, loading overlay and name-tag declutter are available. The progressive reveal is a design.
 Code: `web/src/viewer/Viewer3D.tsx` (the 3D view), `web/src/viewer/scene.ts` (`ViewerScene`), `web/src/viewer/camera.ts`, `web/src/viewer/GameViewer.tsx`. Tests: `web/test/`.
 Switch: none. Address parameters `player`, `dmg` and `fx`, and three `localStorage` keys, are listed under [Interfaces](#interfaces).
 
@@ -407,8 +407,7 @@ function declutter(tags: readonly TagIn[], prev: ReadonlyMap<number, TagState>, 
 - At most 64 tags are laid out (2,016 rectangle tests at worst); AI past
   that are pips.
 
-The floating damage numbers are not tags and are not drawn
-([viewer-effects.md](viewer-effects.md#damage)).
+Damage bars and numbers are specified in [viewer-effects.md](viewer-effects.md#damage).
 
 ### Progressive reveal
 
@@ -538,7 +537,6 @@ tests are `bun test` files in `web/test/`.
 
 | # | Slice | Files | Tests that prove it |
 |---|---|---|---|
-| 3 | Name tags | new `viewer/declutter.ts`; `viewer/scene.ts` (label section: inner `.v3-tag`, measuring, `data-lod`); `viewer/viewer.css` | `declutter.test.ts`: two overlapping tags give one `full` and one `lifted`; a third gives a `pip`; rank beats distance; a level holds for 250 ms; no two `full` or `lifted` rectangles intersect over 500 seeded layouts; 64 is the cap |
 | 4 | Progressive reveal | new `viewer/reveal.ts`; `viewer/scene.ts` (map section: `cutaway`, uniforms, entity gating, `SceneOptions.reveal`); `viewer/level3d.ts` (`setReveal`); `viewer/sky3d.ts` (fade) | `reveal.test.ts`: `revealAt` at 0, 200, mid and end; `T` at its clamps; `objectsRadius` trails by 180 ms; `done` sets the radius off; `patchReveal` fits `THREE.ShaderLib` standard, lambert, phong and basic, with and without the see-through patch, and returns null without its hooks (as `cutaway.test.ts` does for `patchSeeThrough`); a JS mirror of the shader's `revealK` agrees at the band's edges |
 | 5 on | Damage and combat effects | [viewer-effects.md](viewer-effects.md#build-order) | there |
 

@@ -7,7 +7,7 @@
 // over it, so the page keeps Space and the arrows otherwise. Live games and
 // replays both use it, each with its own frame source.
 
-import { Show, Suspense, createEffect, createSignal, lazy, on, onCleanup, onMount, type JSX } from "solid-js";
+import { Show, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup, onMount, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { MapFrame } from "../components/MapCanvas";
 import { mapPicture } from "../components/MapPicture";
@@ -168,10 +168,14 @@ export default function GameViewer(props: {
 
   const players = () => Object.values(props.game.players);
   const signedIn = () => identity.me()?.xuid;
+  const priorityPlayers = createMemo(() => [
+    addressPlayer(players(), params.player),
+    ...players().filter(p => p.xuid != null && p.xuid === signedIn()).map(p => p.index),
+  ]);
   const view3d = () => ({
     player: params.player,
     start: (frame: MapFrame, player?: string) => startCamera(players(), frame.players, player, signedIn(), props.focus?.()),
-    priorityPlayers: () => [addressPlayer(players(), params.player), ...players().filter(p => p.xuid != null && p.xuid === signedIn()).map(p => p.index)],
+    priorityPlayers,
     glb: () => mapGlb(props.game.map, props.game.map_id),
     mode: (params.cam === "orbit" || params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
     ao: params.ao !== "0",

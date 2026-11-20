@@ -35,7 +35,7 @@ import { BipedAnim, HELD, MAX_TWIST, SpeedMeter, WALK_SPEED, actionShot, aimAngl
 import { GroundCache, type Floor } from "./ground";
 import { FloorGrid, type FloorSource } from "./floorgrid";
 import { Bodies, bodyPlace, type Place } from "./bodies";
-import { EventFeed } from "../map/events";
+import { EventFeed, entityIndex } from "../map/events";
 import { Effects3D } from "./effects3d";
 import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
 import { dressWater } from "./water3d";
@@ -56,6 +56,7 @@ import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, eyeView, followDistance, markerScale, orbitDirection, type Box3 } from "./camera";
 import { cutHeight, cutRange, meshRole, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
+import { declutter, type TagIn, type TagState } from "./declutter";
 import { easeOutExpo, playableBounds, type CameraStart } from "./start";
 import { CutawayMaterials } from "./cutaway3d";
 
@@ -88,6 +89,9 @@ interface PlayerObj {
   rayMat: THREE.MeshBasicMaterial;
   label: CSS2DObject;
   el: HTMLDivElement;
+  tag: HTMLDivElement;
+  plate: HTMLDivElement;
+  tagSize: { w: number; h: number } | null;
   /** The weapon's name in the label. */
   gun: HTMLElement;
   colour: string;
@@ -157,6 +161,11 @@ interface MarkObj { group: THREE.Group; mat: THREE.MeshBasicMaterial }
 export class ViewerScene {
   readonly renderer: THREE.WebGLRenderer;
   private labels: CSS2DRenderer;
+  private tagStates = new Map<number, TagState>();
+  private tagActivity = new Map<number, number>();
+  private tagPriority: readonly (number | null)[] = [];
+  private tagHighlight: number | null = null;
+  private tagsPending = false;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
   /** The near plane when the camera is far out; it shrinks as the camera
@@ -1225,18 +1234,28 @@ export class ViewerScene {
     ray.renderOrder = 2;
     const el = document.createElement("div");
     el.className = "v3-label";
+    const tag = document.createElement("div");
+    tag.className = "v3-tag";
+    tag.style.setProperty("--tag-colour", colour);
+    const plate = document.createElement("div");
+    plate.className = "v3-tag-plate";
     const pip = document.createElement("i");
-    pip.style.background = colour;
     const gun = document.createElement("small");
-    el.append(pip, document.createTextNode(name));
+    plate.append(pip, document.createTextNode(name));
     if (bot) {
-      const tag = document.createElement("b");
-      tag.className = "v3-bot";
-      tag.textContent = "BOT";
-      tag.title = "A Clanker bot";
-      el.append(tag);
+      const badge = document.createElement("b");
+      badge.className = "v3-bot";
+      badge.textContent = "BOT";
+      badge.title = "A Clanker bot";
+      plate.append(badge);
     }
-    el.append(gun);
+    plate.append(gun);
+    const lonePip = document.createElement("span");
+    lonePip.className = "v3-pip";
+    lonePip.title = name;
+    lonePip.append(document.createElement("i"));
+    tag.append(plate, lonePip);
+    el.append(tag);
     if (!actor) el.addEventListener("pointerdown", (e) => { e.stopPropagation(); this.opts.onPick?.(index); });
     const label = new CSS2DObject(el);
     label.center.set(0.5, 1);
@@ -1246,7 +1265,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, tag, plate, tagSize: null, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }
@@ -1283,10 +1302,7 @@ export class ViewerScene {
         this.dirty = true;
       }
     }
-    if (s.weapon !== p.weaponName) {
-      p.weaponName = s.weapon;
-      p.gun.textContent = weaponLabel(s.weapon);
-    }
+    this.tagWeapon(p, s.weapon);
   }
 
   /** The class of clips a player's weapon calls for. */
@@ -1599,12 +1615,58 @@ export class ViewerScene {
     return m;
   }
 
+  private layoutTags(now: number) {
+    if (this.opts.bare) return;
+    const tags: TagIn[] = [];
+    for (const [id, p] of this.players) {
+      if (!p.group.visible || !p.label.visible || p.el.style.display === "none") continue;
+      const rank = id === this.followIndex ? 0 : id === this.tagHighlight || this.tagPriority.includes(id) ? 1
+        : p.actor ? 4 : this.tagActivity.has(id) ? 2 : 3;
+      const position = this.v0.setFromMatrixPosition(p.label.matrixWorld);
+      const depth = this.camera.position.distanceTo(position);
+      const hidden = rank > 1 && depth > 25 * this.scale;
+      if (p.gun.hidden !== hidden) {
+        p.gun.hidden = hidden;
+        p.tagSize = null;
+      }
+      const size = p.tagSize ??= { w: p.tag.offsetWidth, h: p.tag.offsetHeight };
+      position.project(this.camera);
+      tags.push({ id, x: (position.x + 1) * this.w / 2, y: (1 - position.y) * this.h / 2 - 4, ...size, depth, rank });
+    }
+    this.tagStates = declutter(tags, this.tagStates, now);
+    this.tagsPending = false;
+    for (const [id, state] of this.tagStates) {
+      const tag = this.players.get(id)!.tag;
+      if (tag.dataset.lod !== state.lod) tag.dataset.lod = state.lod;
+      this.tagsPending ||= state.pending !== null;
+    }
+  }
+
+  private tagWeapon(p: PlayerObj, weapon: string | null) {
+    if (p.weaponName === weapon) return;
+    p.weaponName = weapon;
+    p.gun.textContent = weaponLabel(weapon);
+    p.tagSize = null;
+    this.dirty = true;
+  }
+
   /** Places players and marks for this moment, moves the camera, and draws
    *  if anything changed. */
-  update(now: number, frame: MapFrame, roster: Map<number, RosterEntry>, highlight: number | null, seeking: boolean) {
+  update(now: number, frame: MapFrame, roster: Map<number, RosterEntry>, highlight: number | null, seeking: boolean, priority: readonly (number | null)[] = []) {
     if (this.disposed) return;
     const dt = this.lastNow ? Math.min(250, now - this.lastNow) : 16;
     this.lastNow = now;
+    if (highlight !== this.tagHighlight || priority.length !== this.tagPriority.length
+      || priority.some((index, i) => index !== this.tagPriority[i])) {
+      this.tagHighlight = highlight;
+      this.tagPriority = priority;
+      this.dirty = true;
+    }
+    if (seeking) {
+      this.tagActivity.clear();
+      this.tagStates.clear();
+      this.dirty = true;
+    }
 
     for (const p of frame.players) if (p.alive && p.z < this.lowZ) this.lowZ = p.z;
     this.fitGrid(frame.seen);
@@ -1621,10 +1683,24 @@ export class ViewerScene {
     const fired = this.shots.observe(frame.players, now, { quiet: seeking });
     if (frame.actors?.length) fired.push(...this.shots.observe(frame.actors, now, { quiet: seeking }));
     // A sword (or anything that melees) swings rather than shoots.
-    for (const index of fired) this.oneShot(index, this.shotLook(index).kind === "melee" ? "melee" : "fire", now);
+    for (const index of fired) {
+      this.tagActivity.set(index, now);
+      this.oneShot(index, this.shotLook(index).kind === "melee" ? "melee" : "fire", now);
+    }
     for (const e of this.feed.observe(frame, now, { quiet: seeking })) {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
+    }
+    const hits = this.feed.liveHits(now);
+    if (!seeking) for (const h of hits) for (const id of [h.fromId, h.toId]) {
+      if (id === null) continue;
+      const index = entityIndex(id);
+      const born = now - h.age;
+      if (born > (this.tagActivity.get(index) ?? -Infinity)) this.tagActivity.set(index, born);
+    }
+    for (const [index, at] of this.tagActivity) if (now - at >= 2000) {
+      this.tagActivity.delete(index);
+      this.dirty = true;
     }
     this.followZone(now, frame.bsp ?? null, highlight, seeking);
     const S = this.scale;
@@ -1709,7 +1785,6 @@ export class ViewerScene {
           p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
           p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S - (g.position.y - ride.group.position.y);
           p.el.classList.toggle("on", highlight === index || this.followIndex === index);
-          if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
           continue;
         }
         // In a vehicle with no seat to show them in: the vehicle stands for them, and carries their label.
@@ -1722,7 +1797,6 @@ export class ViewerScene {
         p.label.visible = !this.opts.bare && (!p.actor || this.actorNames);
         p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
         p.el.classList.toggle("on", highlight === index || this.followIndex === index);
-        if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
         continue;
       }
       // An AI's body comes in the frames (the `dead` stance) and is drawn
@@ -1789,7 +1863,7 @@ export class ViewerScene {
     this.drawShots(now, frame);
     if (this.effects.film(frame.filmEffects ?? [], still)) this.dirty = true;
     if (this.projectiles.update(now)) this.dirty = true;
-    if (this.effects.update(this.feed.liveHits(now), still ? [] : frame.projectileTrails ?? [], S, still)) this.dirty = true;
+    if (this.effects.update(hits, still ? [] : frame.projectileTrails ?? [], S, still)) this.dirty = true;
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));
@@ -1852,12 +1926,12 @@ export class ViewerScene {
     // (Held still when motion is reduced, but the weather still follows the view.)
     const moving = this.look.animate(this.opts.reducedMotion ? 0 : now / 1000, this.controls.target, this.camera.position.distanceTo(this.controls.target));
     if (moving && !this.opts.reducedMotion) this.dirty = true;
-    if (!this.dirty || this.curtain) return;
+    if ((!this.dirty && !this.tagsPending) || this.curtain) return;
     this.dirty = false;
-    this.draw(dt);
+    this.draw(dt, now);
   }
 
-  private draw(dt: number) {
+  private draw(dt: number, now: number) {
     // Marks for the perf harness (web/bench/viewer.bench.ts): the first
     // frame with the level in it.
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
@@ -1872,6 +1946,7 @@ export class ViewerScene {
       if (this.composer && this.aoWanted) this.composer.render();
       else this.renderer.render(this.scene, this.camera);
       this.labels.render(this.scene, this.camera);
+      this.layoutTags(now);
     } finally {
       this.scene.matrixWorldAutoUpdate = true;
     }

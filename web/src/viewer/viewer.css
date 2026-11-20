@@ -55,20 +55,27 @@ html.gv-locked, html.gv-locked body { overflow: hidden; }
 .v3-host { position: absolute; inset: 0; }
 .v3-canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
 .v3-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.v3-label { display: flex; align-items: center; gap: 4px; padding: 1px 6px 1px 4px; margin-top: -4px; font: 600 11px/15px var(--font-ui, system-ui, sans-serif); color: #fff; white-space: nowrap; background: rgba(0, 0, 0, .62); border: 1px solid rgba(255, 255, 255, .16); cursor: pointer; pointer-events: auto; user-select: none; }
-.v3-label i { width: 7px; height: 7px; border: 1px solid rgba(0, 0, 0, .8); border-radius: 50%; }
-.v3-label small { font-weight: 400; font-size: 10px; color: #b9c6d2; }
-.v3-label small:empty { display: none; }
-.v3-label .v3-bot { padding: 0 3px; font-size: 9px; line-height: 12px; letter-spacing: .04em; color: #dfe7f2; background: #33496a; }
-.v3-label--ai { font-weight: 400; font-size: 10px; line-height: 13px; padding: 0 4px 0 3px; background: rgba(0, 0, 0, .45); cursor: default; }
+.v3-label { margin-top: -4px; user-select: none; }
+.v3-tag { position: relative; transition: transform 120ms linear; }
+.v3-tag-plate { display: flex; align-items: center; gap: 4px; padding: 1px 6px 1px 4px; font: 600 11px/15px var(--font-ui, system-ui, sans-serif); color: #fff; white-space: nowrap; background: rgba(0, 0, 0, .62); border: 1px solid rgba(255, 255, 255, .16); cursor: pointer; pointer-events: auto; }
+.v3-tag i { display: block; flex: none; width: 7px; height: 7px; background: var(--tag-colour); border: 1px solid rgba(0, 0, 0, .8); border-radius: 50%; }
+.v3-tag small { font-weight: 400; font-size: 10px; color: #b9c6d2; }
+.v3-tag small:empty, .v3-tag small[hidden] { display: none; }
+.v3-tag .v3-bot { padding: 0 3px; font-size: 9px; line-height: 12px; letter-spacing: .04em; color: #dfe7f2; background: #33496a; }
+.v3-label--ai .v3-tag-plate { font-weight: 400; font-size: 10px; line-height: 13px; padding: 0 4px 0 3px; background: rgba(0, 0, 0, .45); cursor: default; }
+.v3-label:is(:hover, .on) .v3-tag-plate { background: rgba(0, 0, 0, .88); border-color: #fff; }
+.v3-label:is(:hover, .on) { z-index: 5 !important; }
+.v3-tag[data-lod="lifted"] { transform: translateY(calc(-100% - 3px)); }
+.v3-tag[data-lod="lifted"]::after { content: ""; position: absolute; top: 100%; left: 50%; width: 1px; height: calc(100% + 3px); background: var(--tag-colour); opacity: .66; pointer-events: none; }
+.v3-pip { display: none; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 16px; height: 16px; place-items: center; pointer-events: auto; cursor: pointer; }
+.v3-label--ai .v3-pip { cursor: default; }
+.v3-tag[data-lod="pip"] .v3-tag-plate { visibility: hidden; pointer-events: none; }
+.v3-tag[data-lod="pip"] .v3-pip { display: grid; }
+@media (prefers-reduced-motion: reduce) { .v3-tag { transition: none; } }
 .v3-hit { font: 700 12px/1 var(--font-ui, system-ui, sans-serif); white-space: nowrap; text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 0 4px rgba(0, 0, 0, .8); pointer-events: none; user-select: none; }
 .v3-hit--kill { font-size: 16px; }
-.v3-label:hover, .v3-label.on { background: rgba(0, 0, 0, .88); border-color: #fff; z-index: 5 !important; }
 .v3:focus { outline: none; }
 .v3:focus-visible { outline: 1px solid #56aacd; outline-offset: -1px; }
-
-/* The Show menu: what of the level to draw. */
-
 
 .vo-menu { position: absolute; top: 36px; right: 8px; width: min(240px, calc(100% - 16px)); max-height: calc(100% - 48px); display: flex; pointer-events: auto; z-index: 2; animation: vo-menu-in 160ms cubic-bezier(.2, .8, .2, 1) both; }
 .vo-menu > div { width: 100%; overflow: auto; }
