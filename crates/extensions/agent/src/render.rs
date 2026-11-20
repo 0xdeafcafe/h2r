@@ -680,7 +680,7 @@ pub fn set_parity_source(source: Option<ParitySource>) {
 // ---- render.capture ----
 
 mod private_capture;
-pub use private_capture::{PrivateCaptureScene, PrivateCaptureSource, private_capture_available, set_private_capture_source};
+pub use private_capture::{PrivateCaptureScene, PrivateCaptureSource, PrivateCaptureWrite, private_capture_available, set_private_capture_source};
 
 fn capture_interrupted() -> RpcError {
     RpcError::new(code::INTERRUPTED, "a later render.capture or a renderer reset replaced this one")
@@ -1041,11 +1041,12 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
             serde_json::from_value(v).map_err(invalid)?
         };
         let seq = capture.arm(&p, &agent_proto::cache_dir().join("frames"))?;
-        let finish = move || capture.finish(seq).map(|r| r.and_then(|r| reply(serde_json::to_value(r))));
+        let encode = move |result: Result<CaptureReply, RpcError>| result.and_then(|r| reply(serde_json::to_value(r)));
         if p.lighting.is_some() {
-            ctx.defer_host(finish);
+            let lease = private_capture::Lease::new(capture, seq);
+            ctx.defer_host(move || lease.finish().map(encode));
         } else {
-            ctx.defer(DEFER_TICKS_MAX, Box::new(move |_| finish()));
+            ctx.defer(DEFER_TICKS_MAX, Box::new(move |_| capture.finish(seq).map(encode)));
         }
         Ok(Value::Null)
     });
@@ -1667,7 +1668,7 @@ mod frame_scene_tests {
 
         // The renderer can answer while the guest is held on this
         // boundary. A private draw should not need a simulation step.
-        r.capture.set_private_source(Some(|_| Err("tick expired".into())));
+        r.capture.set_private_source(Some(|_| Err(RpcError::new(code::UNAVAILABLE, "tick expired"))));
         let out = r.call(method::RENDER_CAPTURE, json!({"lighting": "retail", "tick": 3}), 10);
         assert_eq!(out["error"]["message"], "tick expired", "{out}");
     }

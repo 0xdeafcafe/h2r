@@ -845,9 +845,12 @@ h2 agent render.parity '{"arm": true}'
 - **`render.capture`.** With `lighting: "retail" | "e3"`, the native
   renderer draws a sealed scene into a private target. The default is
   the latest sealed scene. An explicit `tick` selects that exact scene
-  tick. The answer includes its tick, present, summary hash, lighting
-  and a fresh PNG path. The most recent successful private capture
-  retains its scene for another request with the same tick. Pass both
+  tick, up to 240 ticks ahead of the latest seal. The draw uses the
+  resolution shown for that particular present, including a frame the
+  backend showed from its 1x reference. The answer includes the tick,
+  present, summary hash, lighting and a fresh PNG path. The most recent
+  successful private capture retains its scene for another request with
+  the same tick. Pass both
   paths to `render.compare` to compare the modes while play continues.
   A renderer reset releases the retained scene. A missing private
   renderer or an unreplayable scene gives `UNAVAILABLE`. Combining

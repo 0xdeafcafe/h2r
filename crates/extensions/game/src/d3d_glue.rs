@@ -237,12 +237,10 @@ impl PrivateScenes {
     fn install(
         self,
         display: &mut d3d::GfxBackend,
-        scale: impl Fn() -> u32 + Send + Sync + 'static,
     ) -> anyhow::Result<crate::frame_owner::Service> {
         let worker = crate::frame_owner::Service::new(
             d3d::GfxBackend::new(share_context(&display.ctx)),
             self.mode,
-            Box::new(scale),
         )?;
         display.observe_guest_present(worker.reference_observer());
         Ok(worker)
@@ -923,7 +921,7 @@ pub fn install_game_view(
 ) -> anyhow::Result<Installed> {
     let scenes = if let Some(private) = private {
         Some(SceneOutput {
-            service: private.install(&mut backend, || 1)?,
+            service: private.install(&mut backend)?,
             owner: crate::frame_cutover::owner(current_lighting(settings, d3d::Lighting::Retail)),
         })
     } else {
@@ -944,9 +942,8 @@ pub fn install_scaled_view(
 ) -> anyhow::Result<Installed> {
     let stats = backend.shared_stats();
     let scenes = if let Some(private) = private {
-        let effective = Arc::clone(&stats);
         Some(SceneOutput {
-            service: private.install(backend.view_mut(), move || effective.lock().unwrap_or_else(|e| e.into_inner()).scale)?,
+            service: private.install(backend.view_mut())?,
             owner: crate::frame_cutover::scaled_owner(),
         })
     } else {

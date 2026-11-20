@@ -2,15 +2,14 @@
 //! begin/seal interval. A renderer holds both by value. Private work runs
 //! on its render thread even while the guest is paused.
 
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::thread::{self, JoinHandle, Thread};
 
 use agent::compare::Rgba;
-use agent::render::{PrivateCaptureScene, set_private_capture_source};
-use agent_proto::CaptureLighting;
+use agent::render::{PrivateCaptureScene, PrivateCaptureWrite, set_private_capture_source};
+use agent_proto::{CaptureLighting, FrameCaptureParams, RpcError, code};
 use d3d::scene_sink::ReplayFrame;
 use frame_scene::mailbox::{self, Mode, Publisher};
 use frame_scene::{Cut, FrameScene, SceneId, ViewKind};
@@ -21,9 +20,14 @@ type Identity = (u64, SceneId);
 
 /// Exactly one swap can supply a game-view frame. For instance, after a
 /// load it is possible to see the same guest frame and tick a second time.
-#[derive(Default)]
 struct Pending<T> {
     item: Option<(Identity, Result<T, &'static str>)>,
+}
+
+impl<T> Default for Pending<T> {
+    fn default() -> Self {
+        Self { item: None }
+    }
 }
 
 impl<T> Pending<T> {
@@ -45,11 +49,56 @@ impl<T> Pending<T> {
     }
 }
 
+/// Metadata from the physical display surface of this Swap. The scaled
+/// backend may present from its reference, or adopt a new scale immediately
+/// afterwards. Reading the global scale at either scene seal or take can
+/// therefore give a different answer from the surface that was shown.
+#[derive(Default)]
+struct DisplaySize {
+    extent: OnceLock<[u32; 2]>,
+    failed: AtomicBool,
+}
+
+impl DisplaySize {
+    fn ready(&self) -> bool {
+        self.extent.get().is_some() || self.failed.load(Ordering::Acquire)
+    }
+
+    fn scale(&self, guest: Option<frame_scene::AuxTarget>) -> Result<u32, String> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err("reference present failed".into());
+        }
+        let &[width, height] = self
+            .extent
+            .get()
+            .ok_or("display size unavailable for this Swap")?;
+        let guest = guest.ok_or("no guest present target descriptor")?;
+        let scale = width
+            .checked_div(guest.width)
+            .ok_or("guest present target has zero width")?;
+        if !(1..=d3d::MAX_SCALE).contains(&scale)
+            || guest.width.checked_mul(scale) != Some(width)
+            || guest.height == 0
+            || guest.height.checked_mul(scale) != Some(height)
+        {
+            return Err(format!(
+                "display target {width}x{height} is not an integer scale of {}x{}",
+                guest.width, guest.height
+            ));
+        }
+        Ok(scale)
+    }
+}
+
+struct Collected {
+    replay: ReplayFrame,
+    display: Arc<DisplaySize>,
+}
+
 struct Inputs {
     scene: Arc<FrameScene>,
     replay: Arc<ReplayFrame>,
-    // A pair of captures keeps the scale of the first draw of this scene.
-    scale: OnceLock<u32>,
+    display: Arc<DisplaySize>,
     hash: OnceLock<u64>,
 }
 
@@ -104,7 +153,10 @@ struct Entry {
 
 #[derive(Default)]
 struct Scenes {
-    pending: Pending<ReplayFrame>,
+    pending: Pending<Collected>,
+    // Weak so expired, omitted or superseded frames retain no GPU inputs.
+    displays: BTreeMap<u64, Weak<DisplaySize>>,
+    parity_wait: Option<Arc<Inputs>>,
     // The two latest scenes taken by the render thread. Explicit capture requests also pin
     // their first successful selection across the second request.
     recent: VecDeque<Entry>,
@@ -117,9 +169,29 @@ struct Scenes {
 impl Scenes {
     fn reset(&mut self) {
         self.pending.item = None;
+        self.displays.clear();
+        self.parity_wait = None;
         self.recent.clear();
         self.published = None;
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn track(&mut self, frame: &Collected) {
+        self.displays.retain(|_, sample| sample.strong_count() != 0);
+        self.displays
+            .insert(frame.replay.present, Arc::downgrade(&frame.display));
+    }
+
+    fn ready_parity(&mut self) -> Option<(u64, Arc<Inputs>)> {
+        if self.parity_wait.as_ref()?.display.ready() {
+            Some((self.generation, self.parity_wait.take()?))
+        } else {
+            None
+        }
+    }
+
+    fn newest(&self) -> Option<&Entry> {
+        self.published.as_ref().or_else(|| self.recent.back())
     }
 
     fn retain(&mut self, entry: Entry) {
@@ -132,21 +204,43 @@ impl Scenes {
         self.recent.push_back(entry);
     }
 
-    fn select(&self, tick: Option<u64>) -> Result<Option<&Arc<Inputs>>, String> {
-        let Some(newest) = self.recent.back() else {
+    fn select(&self, tick: Option<u64>) -> Result<Option<&Arc<Inputs>>, RpcError> {
+        let Some(newest) = self.newest() else {
             return Ok(None);
         };
         let entry = match tick {
             None => newest,
+            Some(t) if t == u64::from(newest.id.tick) => newest,
+            Some(t)
+                if t.saturating_sub(u64::from(newest.id.tick)) > FrameCaptureParams::MAX_AHEAD =>
+            {
+                return Err(RpcError::new(
+                    code::INVALID_PARAMS,
+                    format!(
+                        "tick {t} is more than {} ticks ahead of sealed tick {}",
+                        FrameCaptureParams::MAX_AHEAD,
+                        newest.id.tick,
+                    ),
+                ));
+            }
             Some(t) if t > u64::from(newest.id.tick) => return Ok(None),
             Some(t) => self
                 .recent
                 .iter()
                 .rev()
                 .find(|e| u64::from(e.id.tick) == t)
-                .ok_or_else(|| format!("sealed scene tick {t} was skipped or has expired"))?,
+                .ok_or_else(|| {
+                    RpcError::new(
+                        code::UNAVAILABLE,
+                        format!("sealed scene tick {t} was skipped or has expired"),
+                    )
+                })?,
         };
-        entry.inputs.as_ref().map(Some).map_err(Clone::clone)
+        entry
+            .inputs
+            .as_ref()
+            .map(Some)
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e.clone()))
     }
 }
 
@@ -154,8 +248,7 @@ enum Job {
     Png {
         frame: Arc<Inputs>,
         lighting: d3d::Lighting,
-        path: PathBuf,
-        done: mpsc::Sender<Result<(), String>>,
+        output: PrivateCaptureWrite,
     },
     Parity(Arc<Inputs>),
 }
@@ -166,26 +259,32 @@ struct RenderJob {
 }
 
 impl RenderJob {
-    fn run(self, gpu: &mut d3d::GfxBackend, current: u64, scale: &dyn Fn() -> u32) {
+    fn run(self, gpu: &mut d3d::GfxBackend, current: u64) {
         let draw = |gpu: &mut d3d::GfxBackend, frame: &Inputs, lighting, observed| {
             if current != self.generation {
                 return Err("scene timeline changed".to_owned());
             }
-            frame.pixels(gpu, *frame.scale.get_or_init(scale), lighting, observed)
+            frame.pixels(
+                gpu,
+                frame.display.scale(frame.replay.colour)?,
+                lighting,
+                observed,
+            )
         };
         match self.work {
             Job::Png {
                 frame,
                 lighting,
-                path,
-                done,
+                output,
             } => {
-                let result = draw(gpu, &frame, lighting, true).and_then(|rgba| {
-                    agent::compare::write_png(&path, &rgba).map_err(|e| e.to_string())
-                });
-                let _ = done.send(result);
+                if output.waiting() {
+                    output.finish(draw(gpu, &frame, lighting, true));
+                }
             }
             Job::Parity(frame) => {
+                if !crate::frame_parity::wanted(frame.replay.present) {
+                    return;
+                }
                 let result = draw(gpu, &frame, d3d::Lighting::Retail, false);
                 crate::frame_parity::native(frame.replay.present, result);
             }
@@ -217,24 +316,33 @@ fn sealed(sequence: u64, scene: Arc<FrameScene>) {
             || scene.cut.contains(Cut::REVERT)
     }) {
         scenes.reset();
+        if let Ok(frame) = &pending {
+            scenes.track(frame);
+        }
         set_private_capture_source(Some(capture));
+        crate::frame_parity::reset("scene timeline changed");
     }
-    let present = pending.as_ref().ok().map(|f| f.present);
-    let inputs = pending.map_err(str::to_owned).and_then(|mut replay| {
-        if !scene.views.iter().any(|v| v.key.kind == ViewKind::Game) {
-            return Err("sealed scene has no game view".to_owned());
-        }
-        if !replay.refusals.is_empty() {
-            return Err(replay.refusals.join(", "));
-        }
-        replay.classify_cameras(&scene);
-        Ok(Arc::new(Inputs {
-            scene: Arc::clone(&scene),
-            replay: Arc::new(replay),
-            scale: OnceLock::new(),
-            hash: OnceLock::new(),
-        }))
-    });
+    let present = pending.as_ref().ok().map(|f| f.replay.present);
+    let inputs = pending.map_err(str::to_owned).and_then(
+        |Collected {
+             mut replay,
+             display,
+         }| {
+            if !scene.views.iter().any(|v| v.key.kind == ViewKind::Game) {
+                return Err("sealed scene has no game view".to_owned());
+            }
+            if !replay.refusals.is_empty() {
+                return Err(replay.refusals.join(", "));
+            }
+            replay.classify_cameras(&scene);
+            Ok(Arc::new(Inputs {
+                scene: Arc::clone(&scene),
+                replay: Arc::new(replay),
+                display,
+                hash: OnceLock::new(),
+            }))
+        },
+    );
     let generation = scenes.generation;
     let entry = Entry {
         id: scene.id,
@@ -242,17 +350,15 @@ fn sealed(sequence: u64, scene: Arc<FrameScene>) {
         inputs: inputs.clone(),
     };
     scenes.published = Some(entry.clone());
-    drop(scenes);
-
     if let Some(present) = present.filter(|&n| crate::frame_parity::wanted(n)) {
-        let queued = inputs
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|frame| shared.enqueue(generation, Job::Parity(Arc::clone(frame))));
-        if let Err(e) = queued {
-            crate::frame_parity::native(present, Err(e));
+        match inputs {
+            Ok(frame) => scenes.parity_wait = Some(frame),
+            Err(reason) => crate::frame_parity::native(present, Err(reason)),
         }
     }
+    let parity = scenes.ready_parity();
+    drop(scenes);
+    shared.submit_parity(parity);
     // Only locked publication may wait. Never hold the builder or
     // capture-state lock while the render thread makes room.
     if shared.frames.publish(entry).is_ok() {
@@ -291,32 +397,30 @@ impl PrivateCaptureScene for Selection {
             .hash
             .get_or_init(|| frame_scene::summary_hash(&self.frame.scene))
     }
-    fn draw(
-        &self,
-        lighting: CaptureLighting,
-        path: PathBuf,
-    ) -> Result<mpsc::Receiver<Result<(), String>>, String> {
+    fn ready(&self) -> bool {
+        self.frame.display.ready()
+    }
+
+    fn draw(&self, lighting: CaptureLighting, output: PrivateCaptureWrite) -> Result<(), String> {
         let owner = self.owner.upgrade().ok_or("frame renderer stopped")?;
         let lighting = match lighting {
             CaptureLighting::Retail => d3d::Lighting::Retail,
             CaptureLighting::E3 => d3d::Lighting::E3,
         };
-        let (done, result) = mpsc::channel();
         owner.enqueue(
             self.generation,
             Job::Png {
                 frame: Arc::clone(&self.frame),
                 lighting,
-                path,
-                done,
+                output,
             },
-        )?;
-        Ok(result)
+        )
     }
 }
 
-fn capture(tick: Option<u64>) -> Result<Option<Arc<dyn PrivateCaptureScene>>, String> {
-    let shared = active().ok_or("frame renderer stopped")?;
+fn capture(tick: Option<u64>) -> Result<Option<Arc<dyn PrivateCaptureScene>>, RpcError> {
+    let shared =
+        active().ok_or_else(|| RpcError::new(code::UNAVAILABLE, "frame renderer stopped"))?;
     let scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
     Ok(scenes.select(tick)?.map(|frame| {
         Arc::new(Selection {
@@ -349,8 +453,16 @@ pub fn pair_for_present(present: u64) -> Option<(Arc<FrameScene>, Arc<ReplayFram
 pub fn present_failed(present: u64) {
     if let Some(shared) = active() {
         let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+        let known = if let Some(display) = scenes.displays.get(&present).and_then(Weak::upgrade) {
+            display.failed.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        };
         if let Some((_, slot)) = &mut scenes.pending.item
-            && slot.as_ref().is_ok_and(|frame| frame.present == present)
+            && slot
+                .as_ref()
+                .is_ok_and(|frame| frame.replay.present == present)
         {
             *slot = Err("reference present failed");
         }
@@ -361,6 +473,9 @@ pub fn present_failed(present: u64) {
                 .is_ok_and(|f| f.replay.present == present)
         }) {
             scenes.reset();
+        }
+        if known {
+            // Invalidates an RPC pin even if newer frames have since been published.
             set_private_capture_source(Some(capture));
         }
     }
@@ -380,6 +495,15 @@ pub fn camera_counts(id: SceneId, view: u8) -> Option<[u32; 3]> {
 }
 
 impl Shared {
+    fn submit_parity(&self, request: Option<(u64, Arc<Inputs>)>) {
+        if let Some((generation, frame)) = request {
+            let present = frame.replay.present;
+            if let Err(error) = self.enqueue(generation, Job::Parity(frame)) {
+                crate::frame_parity::native(present, Err(error));
+            }
+        }
+    }
+
     fn enqueue(&self, generation: u64, work: Job) -> Result<(), String> {
         self.jobs
             .try_send(RenderJob { generation, work })
@@ -400,11 +524,7 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(
-        mut backend: d3d::GfxBackend,
-        mode: Mode,
-        current_scale: Box<dyn Fn() -> u32 + Send + Sync>,
-    ) -> std::io::Result<Self> {
+    pub fn new(mut backend: d3d::GfxBackend, mode: Mode) -> std::io::Result<Self> {
         let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
         if active.upgrade().is_some() {
             return Err(std::io::Error::new(
@@ -429,9 +549,6 @@ impl Service {
                         continue;
                     }
                     if let Some(entry) = entry {
-                        if let Ok(frame) = &entry.inputs {
-                            frame.scale.get_or_init(&current_scale);
-                        }
                         retained
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -442,7 +559,7 @@ impl Service {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .generation;
-                        request.run(&mut backend, generation, &current_scale);
+                        request.run(&mut backend, generation);
                     }
                 }
             })?;
@@ -469,19 +586,39 @@ impl Service {
     /// image. Late presents from an earlier device do not enter a new pair.
     pub fn reference_observer(
         &self,
-    ) -> impl FnMut(u64, &gfx::GfxContext, &gfx::surface::SurfaceStore, gfx::surface::SurfaceId)
+    ) -> impl FnMut(
+        u64,
+        &gfx::GfxContext,
+        &gfx::surface::SurfaceStore,
+        gfx::surface::SurfaceId,
+        d3d::Lighting,
+    )
     + Send
     + 'static
     + use<> {
         let weak = Arc::downgrade(&self.shared);
         let observe = crate::frame_parity::reference_observer();
-        move |present, ctx, store, id| {
-            if crate::frame_parity::wanted(present)
-                && weak
-                    .upgrade()
-                    .is_some_and(|s| !s.stopping.load(Ordering::Acquire))
-            {
-                observe(present, ctx, store, id);
+        move |present, ctx, store, id, lighting| {
+            let Some(shared) = weak.upgrade() else { return };
+            if shared.stopping.load(Ordering::Acquire) {
+                return;
+            }
+            let parity = {
+                let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(display) = scenes.displays.get(&present).and_then(Weak::upgrade) {
+                    match store.get(id) {
+                        Ok(surface) => {
+                            let desc = surface.desc();
+                            let _ = display.extent.set([desc.width, desc.height]);
+                        }
+                        Err(_) => display.failed.store(true, Ordering::Release),
+                    }
+                }
+                scenes.ready_parity()
+            };
+            shared.submit_parity(parity);
+            if crate::frame_parity::wanted(present) {
+                observe(present, ctx, store, id, lighting);
             }
         }
     }
@@ -502,14 +639,19 @@ impl Service {
                 }
                 if let Some((previous, Ok(frame))) = &scenes.pending.item
                     && *previous == id
-                    && crate::frame_parity::wanted(frame.present)
+                    && crate::frame_parity::wanted(frame.replay.present)
                 {
                     crate::frame_parity::native(
-                        frame.present,
+                        frame.replay.present,
                         Err("multiple presents in the sealed scene".to_owned()),
                     );
                 }
-                scenes.pending.put(id, replay);
+                let frame = Collected {
+                    replay,
+                    display: Arc::new(DisplaySize::default()),
+                };
+                scenes.track(&frame);
+                scenes.pending.put(id, frame);
             } else {
                 scenes.pending.item = None;
             }
@@ -578,10 +720,58 @@ mod tests {
                     present: u64::from(tick) + 10,
                     ..Default::default()
                 }),
-                scale: OnceLock::new(),
+                display: Arc::new(DisplaySize::default()),
                 hash: OnceLock::new(),
             })),
         }
+    }
+
+    #[test]
+    fn captures_use_the_actual_display_size_of_their_own_swap() {
+        let guest = Some(frame_scene::AuxTarget {
+            width: 8,
+            height: 4,
+            ..Default::default()
+        });
+        let mut scenes = Scenes::default();
+        let a = entry(2, 0);
+        let b = entry(3, 0);
+        let first = Arc::clone(a.inputs.as_ref().unwrap());
+        let second = Arc::clone(b.inputs.as_ref().unwrap());
+        scenes.retain(a);
+        scenes.published = Some(b);
+
+        assert_eq!(
+            scenes.select(None).unwrap().unwrap().scene.id.tick,
+            3,
+            "newest seal can precede mailbox take"
+        );
+        scenes.parity_wait = Some(Arc::clone(&first));
+        assert!(scenes.ready_parity().is_none());
+        second.display.extent.set([32, 16]).unwrap();
+        assert_eq!(second.display.scale(guest), Ok(4));
+        assert!(
+            scenes.ready_parity().is_none(),
+            "the later Swap is not the armed reference"
+        );
+
+        first.display.extent.set([8, 4]).unwrap();
+        let (_, reference) = scenes.ready_parity().unwrap();
+        assert_eq!(reference.replay.present, first.replay.present);
+        assert_eq!(
+            reference.display.scale(guest),
+            Ok(1),
+            "a presented reference can be 1x"
+        );
+        assert!(
+            scenes.ready_parity().is_none(),
+            "only schedule the draw once"
+        );
+        first.display.failed.store(true, Ordering::Release);
+        assert!(reference.display.scale(guest).is_err());
+        let anisotropic = DisplaySize::default();
+        anisotropic.extent.set([16, 4]).unwrap();
+        assert!(anisotropic.scale(guest).is_err());
     }
 
     #[test]
@@ -598,6 +788,13 @@ mod tests {
         assert_eq!(capture(Some(12)), Ok(Some(22)));
         assert_eq!(capture(None), Ok(Some(24)));
         assert_eq!(capture(Some(15)), Ok(None));
+        assert_eq!(capture(Some(14 + FrameCaptureParams::MAX_AHEAD)), Ok(None));
+        assert_eq!(
+            capture(Some(15 + FrameCaptureParams::MAX_AHEAD))
+                .unwrap_err()
+                .code,
+            code::INVALID_PARAMS
+        );
         assert!(capture(Some(10)).is_err());
         assert!(capture(Some(13)).is_err());
         let old = entry(18, 0);
@@ -618,11 +815,11 @@ mod tests {
         };
         scenes.retain(next);
         assert_eq!(
-            scenes.select(Some(8)).err().as_deref(),
+            scenes.select(Some(8)).err().map(|e| e.message).as_deref(),
             Some("missing texture")
         );
         assert_eq!(
-            scenes.select(None).err().as_deref(),
+            scenes.select(None).err().map(|e| e.message).as_deref(),
             Some("missing texture")
         );
     }
