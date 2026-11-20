@@ -1242,11 +1242,13 @@ fn cold_accesses_by_cause() {
         assert_eq!(c[2], 39, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
-        // tries the gate for that span even when this runtime cannot
-        // supply a flat mapping. Its dispatched entry and all 39 direct
-        // entries avoid a cold call. The 39 caller resumes still need it.
+        // keeps the gate for that span only when the backend is enabled.
+        // Otherwise the flat-capable image follows the paged entry policy.
         let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
-        assert_eq!(flat[..3], [2, 0, 39], "{flat:?}");
+        let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
+            && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
+        let expected = if flat_runtime { [2, 0, 39] } else { [3, 39, 39] };
+        assert_eq!(flat[..3], expected, "{flat:?}");
         // H2_DIRECT_GATE lends the hold across the calls: the leaves and
         // main after them start inline, but for the calls a tick ended the
         // hold before (one in 32 trips, calls and loop headers alike).
@@ -2080,6 +2082,44 @@ fn flat_span_matches_checked_stores_aliases_and_fault_order() {
         };
         assert_eq!(run(true), run(false), "address {address:#x}, backing={backing:#x}, ro={ro}, mapped={mapped}");
     }
+
+    // Drain at different rates while both VAs name the same shifted page.
+    // The generated RMW must execute once on a protection retry, and keep
+    // seeing the preceding store after the page moves to the software barrier.
+    let epochs = |fast| {
+        let mut g = Guest::new();
+        g.map(A, 16384, 0x10000, Permissions::RX).unwrap();
+        g.map(SP, 16384, 0x14000, Permissions::RW).unwrap();
+        for va in [DATA, ALIAS] { g.map(va, 8192, 4096, Permissions::RW).unwrap(); }
+        g.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
+        let frequent = g.subscribe_writes("each tick");
+        let sparse = g.subscribe_writes("every third tick");
+        for id in [frequent, sparse] { g.watch_writes(id, CONTIGUOUS_BASE + 4096, 8192).unwrap(); }
+        *rt.memory() = g;
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.enable_fast_memory(fast);
+        let mut samples = Vec::new();
+        let mut sum = 0;
+        for tick in 1..=6 {
+            let (esi, edi) = if tick % 2 == 0 { (ALIAS, DATA) } else { (DATA, ALIAS) };
+            // The two stores share the last eight bytes of a page. The
+            // RMW is the first write to the next protected physical page.
+            let (esi, edi) = (esi + 4088, edi + 4088);
+            ctx.arm_preemption(1000);
+            let mut cpu = CpuAbi { eax: 13, ecx: tick, esi, edi, esp: SP, ..CpuAbi::default() };
+            assert_eq!(Runner::default().run(&mut cpu, &mut ctx, A).kind, abi::STOP);
+            let mut g = rt.memory();
+            sum += tick;
+            assert_eq!(g.u32(esi + 8).unwrap(), sum);
+            assert_eq!(g.u32(edi + 4).unwrap(), tick);
+            let first = g.take_dirty(frequent).unwrap();
+            assert_eq!(first, [runtime::DirtyRange { addr: CONTIGUOUS_BASE + 4096, len: 8192 }]);
+            if tick % 3 == 0 { assert_eq!(g.take_dirty(sparse).unwrap(), first); }
+            samples.push((cpu, ctx.take_slice_spent(), sum));
+        }
+        samples
+    };
+    assert_eq!(epochs(true), epochs(false));
 
     // Refresh a shifted host page at each end of the 4 GiB guest range.
     // Check the affected entry and the neighbors rebuilt outside it.

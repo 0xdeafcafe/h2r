@@ -660,9 +660,10 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
 /* Distinct host virtual addresses can name the same physical bytes, even
- * when clang proves their C pointer ranges disjoint. Keep copies through
- * alias views ordered against ordinary page-table copies and each other.
- * Empty asm with a memory clobber emits no host instruction. */
+ * when clang proves their C pointer ranges disjoint. Bracket every inline
+ * store so reads through any VA see stores in guest order. Two RAM loads
+ * under one gate need no fence between them. Cold helpers and bulk copies
+ * cross a gate boundary. The clobber emits no host instruction. */
 #if H2_FLAT_RAM && H2_FASTMEM
 #define H2_ALIAS_FENCE() __asm__ __volatile__("" ::: "memory")
 #else
@@ -687,7 +688,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_ACC_ONE();                              \
         H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_,                 \
                     H2_FLAT_NOTE(H2FC_FLAT, 1));                                \
-        H2_ALIAS_FENCE(); memcpy(&dst, p_, (n)); H2_ALIAS_FENCE();              \
+        memcpy(&dst, p_, (n));                                                  \
         goto done_;                                                             \
     slow_:                                                                      \
         H2_COLD_NOTE(h2g_);                                                     \
@@ -748,14 +749,13 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
  * PC, MMIO and fault semantics. Taking the gate alone has no guest effect. */
 #if H2_FLAT_RAM && H2_FASTMEM
 #define H2_SPAN(name, addr, n, rw)                                              \
-    if (!h2g_.held && h2_mem_) h2_gate_adopt(&h2g_, h2_gate_try(h2_mem_));       \
-    uint8_t *const name = h2_flat_span(&h2g_, (addr), (n), (rw))
+    uint8_t *const name = h2_begin_span(h2_mem_, &h2g_, (addr), (n), (rw))
 #define H2_SPAN_LD(span, off, T, n, dst, pc, addr)                              \
     T dst = 0;                                                                  \
     if (span) {                                                                 \
         H2_FLAT_NOTE(H2FC_TOTAL, 1); H2_FLAT_NOTE(H2FC_FLAT, 1);                \
         H2_ACC_ONE(); H2_FAST_CHARGE(h2_mem_);                                  \
-        H2_ALIAS_FENCE(); memcpy(&dst, (span) + (off), n); H2_ALIAS_FENCE();    \
+        memcpy(&dst, (span) + (off), n);                                        \
     } else { H2_LD(T, n, slow_value_, pc, addr); dst = slow_value_; }
 #define H2_SPAN_ST(span, off, T, n, pc, addr, value)                            \
     do {                                                                        \

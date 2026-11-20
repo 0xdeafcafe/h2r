@@ -112,7 +112,8 @@ impl Ram {
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let copy = {
-            let mut copy = Self::zeroed(self.len);
+            let mut copy = linux::reserve(self.len, linux::PREFERRED_BASE, false)
+                .expect("reserve guarded snapshot RAM");
             copy.copy_from_slice(self);
             copy
         };
@@ -120,6 +121,16 @@ impl Ram {
         let copy = Self::from_box(self[..].into());
         (copy, CopyKind::Copied)
     }
+    /// Only these backings can supply writable shared aliases of the live
+    /// bytes. A MAP_PRIVATE file and a snapshot must keep their COW identity.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    pub(crate) fn can_alias(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        { matches!(self.backing, Backing::MachLive) }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        { matches!(self.backing, Backing::Guarded { file: Some(_), .. }) }
+    }
+
     /// Install a shared alias over a host-page-aligned subrange of a
     /// private address-space reservation.
     ///
@@ -128,7 +139,7 @@ impl Ram {
     /// It synchronizes alias accesses with the canonical RAM owner.
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub(crate) unsafe fn alias(&self, dst: *mut u8, offset: usize, len: usize) -> bool {
-        if offset.checked_add(len).is_none_or(|end| end > self.len) {
+        if !self.can_alias() || offset.checked_add(len).is_none_or(|end| end > self.len) {
             return false;
         }
         #[cfg(target_os = "macos")]
@@ -209,6 +220,13 @@ impl Ram {
                     backing: Backing::FilePrivate,
                     cow_base: None,
                 };
+            }
+            // MAP_FIXED kept the Linux address and guards but replaced
+            // the mapping. The old memfd no longer describes these bytes.
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                let Backing::Guarded { file, .. } = &mut self.backing;
+                *file = None;
             }
             self.cow_base = Some(file);
             Ok(())

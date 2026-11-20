@@ -127,10 +127,13 @@ access budgets, host concurrency and replacement of the backing Guest.
 
 #### Opt-in flat RAM and first-write faults
 
-Set `H2_FLAT_RAM=1` for both the image build and execution on macOS or
-x86-64 Linux. The generated image needs a rebuild. Run the same image with
-`H2_FLAT_RAM=0` for the ordinary page-table path. With flat RAM enabled,
-`H2_FLAT_WRITE_WATCH=0` keeps the software dirty barrier on watched stores.
+On macOS or x86-64 Linux, set `H2_EMIT_FLAT_RAM=1` for the image build and
+leave it set for both executions. Rebuild the generated image once. Select
+the backend at execution with `H2_FLAT_RAM=0` (ordinary page table) or
+`H2_FLAT_RAM=1` (flat). Both settings then produce the same image stamp.
+Without an explicit emitter setting the image flags follow `H2_FLAT_RAM`
+for compatibility. With flat RAM enabled, `H2_FLAT_WRITE_WATCH=0` keeps
+every watched store on the software dirty barrier.
 
 Each Guest reserves a guarded 4 GiB virtual window on hosts with 4 KiB pages.
 The OS picks a stable base per live RAM backing. macOS maps shared aliases
@@ -168,7 +171,13 @@ writes to exactly one guest subpage through that window. All guest VAs for
 that physical page choose the same window. Only watched pages awaiting a
 write need protection. Their first store faults, opens
 the host page with `mprotect`, records the physical page, and retries.
-Same-value writes count. Repeated stores have no software dirty mark.
+Same-value writes count. If a physical page faults in two separate watch
+epochs, it stays writable and subsequent stores use the ordinary physical
+dirty bit until the mirror is retired. Every subscriber can continue to
+drain independently. Bit 30 advertises a further descriptor containing
+the cold-store mirror and a bitmap of software-tracked pages. Once any
+page switches, the runtime clears the original store pointer so older
+images also use the software barrier.
 
 The opt-in runtime installs a process-wide SIGBUS handler on macOS or
 SIGSEGV handler on Linux when it first creates a protected store view.
@@ -187,8 +196,16 @@ the same window share a protection call. Host writes, REP chunks and
 atomics keep their existing physical write notifications. Installing a
 census trap suspends flat accesses. Mapping changes refresh affected host
 pages under the same gate. Guest replacement and COW refresh retire the
-old window. Snapshot restore rebuilds the translations and reports
-restored pages through the existing watch.
+old window. A file-backed COW restore retires the store mirror as well.
+Private file mappings and snapshot executor views use the canonical page-table
+pointer for both loads and stores. Restores report all watched RAM dirty.
+
+Set `H2_FLAT_STATS=1` at execution for process totals on stderr at normal
+exit. `faults` counts owned protection faults, and `retries` counts those
+successfully reopened for instruction retry. `pages-armed` counts host-page
+slots protected, including initial arms. `re-protects` counts slots armed
+again after a fault. A coalesced system call can arm several slots.
+`software-pages` counts physical pages promoted across all mirror lifetimes.
 
 To count accesses in one generated owner, set `H2_FLAT_STATS_OWNER` to
 its hexadecimal entry address at image build. At module unload the image

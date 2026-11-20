@@ -146,7 +146,12 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_ENTRY_GATE", false),
         ("H2_VIEW_CHARGE", true),
     ] {
-        if flag(name, env(name).as_deref(), default)? {
+        let enabled = if name == "H2_FLAT_RAM" {
+            flat_image_flag(env("H2_EMIT_FLAT_RAM").as_deref(), env(name).as_deref())?
+        } else {
+            flag(name, env(name).as_deref(), default)?
+        };
+        if enabled {
             v.push(format!("-D{name}=1"));
         }
     }
@@ -177,6 +182,13 @@ fn flag(name: &str, value: Option<&str>, default: bool) -> Result<bool, Error> {
         Some("0") => Ok(false),
         Some("1") => Ok(true),
         Some(value) => Err(err(format!("{name}={value}: expected 0 or 1"))),
+    }
+}
+
+fn flat_image_flag(image: Option<&str>, runtime: Option<&str>) -> Result<bool, Error> {
+    match image {
+        None | Some("") => flag("H2_FLAT_RAM", runtime, false),
+        value => flag("H2_EMIT_FLAT_RAM", value, false),
     }
 }
 
@@ -1242,6 +1254,17 @@ mod tests {
             &move |k| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
             &move |cmd, args| Some(if args == ["--version"] { version.clone() } else { format!("{cmd} ok") }),
         )
+    }
+
+    #[test]
+    fn pinned_flat_image_flags_are_identical_for_both_runtime_settings() {
+        for setting in [None, Some("0"), Some("1")] {
+            assert!(flat_image_flag(Some("1"), setting).unwrap());
+            assert!(!flat_image_flag(Some("0"), setting).unwrap());
+        }
+        assert!(flat_image_flag(None, Some("1")).unwrap());
+        assert!(!flat_image_flag(None, Some("0")).unwrap());
+        assert!(flat_image_flag(Some("invalid"), None).is_err());
     }
 
     #[test]
