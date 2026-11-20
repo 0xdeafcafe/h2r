@@ -173,7 +173,7 @@ fn model_reflection_changes_both_endpoints_and_restores_the_authored_material() 
 
 #[test]
 fn video_noise_uses_the_two_retail_draws_for_each_frame() {
-    use hooks::pipeline_render::{RANDOM_A, RANDOM_C};
+    use render_bridge::pipeline_render::{RANDOM_A, RANDOM_C};
     let mut seed = 0u32;
     for tick in 0..200 {
         let pair = std::array::from_fn(|_| {

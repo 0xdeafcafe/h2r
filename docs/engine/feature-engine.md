@@ -415,7 +415,7 @@ The render front-end is replaced by the native renderer
 features in `crates/hooking/hooks/src/native_*`; its one switch is
 `impl.render.native`. The reads of the retail call tree are in
 [render-loop.md](../graphics/render-loop.md). `render-timing`
-(`crates/hooking/hooks/src/render_timing.rs`, off by default) puts observers on both
+(`crates/rewrites/render-bridge/src/render_timing.rs`, off by default) puts observers on both
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage

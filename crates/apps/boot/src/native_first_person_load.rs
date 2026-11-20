@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use hooks::native_objects::{NativeSet, SetPart};
+use render_bridge::native_objects::{NativeSet, SetPart};
 use map::TagId;
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;

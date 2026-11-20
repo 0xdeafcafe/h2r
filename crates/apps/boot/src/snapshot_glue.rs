@@ -835,7 +835,7 @@ impl Part for FeaturesPart<'_> {
         let saved = snapshot::features::load_features(snapshot).map_err(err)?;
         self.plan.load_sections(&saved, self.rt)?;
         #[cfg(feature = "gpu")]
-        hooks::native_map_work::reset();
+        render_bridge::native_map_work::reset();
         Ok(())
     }
 }

@@ -4,7 +4,7 @@
 use super::{Mode, Session};
 use crate::{Host, RunOpts, level_boot, setting_defs, sim_glue};
 use anyhow::{Context, Result, ensure};
-use hooks::pipeline_render::{self, HandbackOptions};
+use render_bridge::pipeline_render::{self, HandbackOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, Write};

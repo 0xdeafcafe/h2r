@@ -1,7 +1,7 @@
 # Occlusion culling of objects
 
 Status: Partly built. The test, the hooks and the device's depth grid are built and tested on synthetic data; the switch waits for a first in-game check ([Status](#status)).
-Code: `crates/rewrites/engine/src/render_loop/occlusion.rs`, `crates/hooking/hooks/src/occlusion.rs`, `crates/platform/gfx` (depth grid), `crates/platform/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/hooking/hooks/tests/occlusion.rs`, `crates/platform/d3d/tests/occlusion_grid.rs`, `crates/platform/gfx/tests/depth_grid.rs`.
+Code: `crates/rewrites/engine/src/render_loop/occlusion.rs`, `crates/rewrites/render-bridge/src/occlusion.rs`, `crates/platform/gfx` (depth grid), `crates/platform/d3d/src/backend.rs` (`Backend` depth-grid ask). Tests: `crates/rewrites/render-bridge/tests/occlusion.rs`, `crates/platform/d3d/tests/occlusion_grid.rs`, `crates/platform/gfx/tests/depth_grid.rs`.
 Switch: `impl.render.occlusion` (off), listed in [switches.md](../runtime/switches.md).
 
 The game's render front-end is CPU-bound guest code: each draw costs

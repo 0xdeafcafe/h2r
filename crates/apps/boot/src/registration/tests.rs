@@ -124,7 +124,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         replay: None,
     };
     let pipeline = super::pipeline_for(
-        hooks::pipeline_render::PipelineRender::with(true, hooks::pipeline_render::Addrs::HALO2),
+        render_bridge::pipeline_render::PipelineRender::with(true, render_bridge::pipeline_render::Addrs::HALO2),
         lockstep.enabled(),
         false,
     );
@@ -199,7 +199,7 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 
 #[test]
 fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
-    use hooks::pipeline_render::{Addrs, PipelineRender, SWITCH};
+    use render_bridge::pipeline_render::{Addrs, PipelineRender, SWITCH};
 
     for (switches, lockstep, light, expected) in [
         ("", false, false, false),

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 
 use engine::memory::{GuestMemory, MemFault};
-use hooks::native_lights::{Dispatch, Host};
+use render_bridge::native_lights::{Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, LightTarget, StaticLightTexture, TextureDim, light_gpu_key};
@@ -314,13 +314,13 @@ impl LightLayer {
 
 impl d3d::DrawAdmission for LightAdmission {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        if hooks::native_map_work::Stage::Lights.standing_down() {
+        if render_bridge::native_map_work::Stage::Lights.standing_down() {
             return None;
         }
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let geometry = context.geometry?;
         let draw = snapshot.draw;
-        if context.layer.list != hooks::native_lights::LIGHT_LIST
+        if context.layer.list != render_bridge::native_lights::LIGHT_LIST
             || !matches!(context.layer.number, 12 | 13)
             || draw.entry != "D3DDevice_DrawIndexedVertices"
             || context.index_count? as usize != draw.indices.as_ref()?.len()
@@ -585,14 +585,14 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State, gels: Arc<Outputs>) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
-    if !hooks::native_lights::on(&switches) {
+    if !render_bridge::native_lights::on(&switches) {
         return;
     }
     let admission = Arc::new(LightAdmission::default());
     if let Ok(mut device) = device.lock() {
         device.add_draw_admission(admission.clone());
     }
-    hooks::native_lights::set_host(Arc::new(Glue {
+    render_bridge::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state, gels, checkpoint: Mutex::default(),
         tally: Mutex::new(Tally::default()),

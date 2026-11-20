@@ -10,8 +10,8 @@ were replaced by the switch `impl.render.pipelined_frame`.
 
 Entries are from 2026-11-17 and 2026-11-18. Commit: not recorded; the
 page they come from was last revised at `b8b163968`. Method: `render-census`
-(`crates/hooking/hooks/src/render_census.rs`) and the prototype
-(`crates/hooking/hooks/src/pipeline_render.rs`) on the owner's disc, headless.
+(`crates/rewrites/render-bridge/src/render_census.rs`) and the prototype
+(`crates/rewrites/render-bridge/src/pipeline_render.rs`) on the owner's disc, headless.
 Not re-run.
 
 ## What it would buy
@@ -162,7 +162,7 @@ existing rule applies.
 
 ## The census (`render-census`)
 
-Built: `crates/hooking/hooks/src/render_census.rs`, on the runtime's access
+Built: `crates/rewrites/render-bridge/src/render_census.rs`, on the runtime's access
 trap `crates/runtime/runtime/src/trap.rs`. Off by default.
 
 **How it sees accesses.** Every inline guest access, in generated C
@@ -495,7 +495,7 @@ after it is weeks of work.
 
 ### Build plan, in order
 
-1. **Census v2** (`crates/hooking/hooks/src/render_census.rs` only, no image
+1. **Census v2** (`crates/rewrites/render-bridge/src/render_census.rs` only, no image
    change):
    - pick sticky pages per region (for example the top 8 of each of
      `game_state`, `datum:*`, `world_pool`, `other`, after the XBE pages
@@ -750,7 +750,7 @@ than they save.
 ## The prototype
 
 Build plan steps 3 (the cheap remedies), 4 (hand-back) and 5 (measure),
-as `crates/hooking/hooks/src/pipeline_render.rs`, wired in the boot by
+as `crates/rewrites/render-bridge/src/pipeline_render.rs`, wired in the boot by
 `d3d_glue::pipeline_render`. Off under
 lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with
 `render-census`. No image change: it needs a new `h2` binary only.
@@ -1258,7 +1258,7 @@ stamp also make every serial comparison in the rig check this.
 - Visit marks are render-private by design (the sim never sees the
   render's counters).
 
-**Tests.** `crates/hooking/hooks/tests/pipeline_render.rs`: a synthetic render
+**Tests.** `crates/rewrites/render-bridge/tests/pipeline_render.rs`: a synthetic render
 front-end (a Rust function registered as generated code with resume
 points) and sim, run serially and pipelined over 120 rounds
 (`H2_PIPELINE_ROUNDS`; 2,000 pass): the same final memory but the marks,

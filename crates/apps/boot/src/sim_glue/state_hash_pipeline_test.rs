@@ -3,7 +3,7 @@
 //! following tick evicts both slots while the worker still has its pose.
 use super::{Snapshot, gameplay};
 use engine::points;
-use hooks::pipeline_render::{
+use render_bridge::pipeline_render::{
     Addrs, DrawBoundary, PipelineRender, RANDOM_A, RANDOM_C, ResidentCache, SceneTraversal,
 };
 use hooks::{Registry, Remap, Switches};
