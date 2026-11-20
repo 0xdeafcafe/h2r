@@ -138,6 +138,8 @@ pub const TABLE: &[Switch] = &[
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
     sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
+        "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),

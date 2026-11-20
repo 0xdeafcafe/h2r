@@ -651,7 +651,7 @@ fn vector_test_ties_match_the_guest() {
         b.surfaces.push((0x8000, e1, 8, 2, 2));
         let starts = [-2.0f32, 0.0, -0.0, 2.0, -1.0];
         let deltas = [4.0f32, 2.0, -2.0, 1.0, 3.0, 0.0];
-        let mut n = 0;
+        let mut n = 0u32;
         for &sx in &starts {
             for &dx in &deltas {
                 for flags in [0u32, 1, 2, 3, 4, 5, 9, 0x11] {

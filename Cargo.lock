@@ -58,6 +58,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "input",
+ "lifted",
  "live-proto",
  "live-telemetry",
  "map",
@@ -664,6 +665,7 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
+ "lifted",
  "live-hle",
  "live-proto",
  "live-telemetry",
@@ -1910,11 +1912,13 @@ dependencies = [
  "guest-layout",
  "ir",
  "lift",
+ "lifted",
  "map",
  "mopp",
  "paste",
  "runtime",
  "sim-anim",
+ "sim-collision",
  "sim-core",
  "simd",
  "tags",
@@ -1981,6 +1985,7 @@ name = "feature"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "lifted",
  "native-render",
  "runtime",
  "runtime-test-probe",
@@ -3480,6 +3485,20 @@ dependencies = [
  "iced-x86",
  "ir",
  "opt",
+ "serde_json",
+ "xbe",
+]
+
+[[package]]
+name = "lifted"
+version = "0.1.0"
+dependencies = [
+ "analyze",
+ "iced-x86",
+ "ir",
+ "lift",
+ "runtime",
+ "serde",
  "serde_json",
  "xbe",
 ]
@@ -5932,10 +5951,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-collision"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
 name = "sim-core"
 version = "0.1.0"
 dependencies = [
  "simd",
+ "x87",
 ]
 
 [[package]]
