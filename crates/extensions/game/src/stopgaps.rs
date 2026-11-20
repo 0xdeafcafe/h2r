@@ -172,7 +172,7 @@ const GAPS: &[Gap] = &[
     gap(Export::stdcall(246, "ObReferenceObjectByHandle", 3), "dummy object (only SetThreadPriority seen)", ob_reference),
     gap(Export::fastcall(250, "ObfDereferenceObject", 1), "no-op", void),
     gap(Export::stdcall(182, "MmSetAddressProtect", 3), "no-op (runtime protect() is whole-mapping only)", void),
-    gap(Export::stdcall(335, "XcSHAInit", 1), "real SHA-1 (crates/apps/boot sha.rs)", crate::sha::init),
+    gap(Export::stdcall(335, "XcSHAInit", 1), "real SHA-1 (crates/extensions/game sha.rs)", crate::sha::init),
     gap(Export::stdcall(336, "XcSHAUpdate", 3), "real SHA-1", crate::sha::update_g),
     gap(Export::stdcall(337, "XcSHAFinal", 2), "real SHA-1", crate::sha::final_g),
     gap(Export::stdcall(178, "MmPersistContiguousMemory", 3), "ignored (no quick reboot)", void),

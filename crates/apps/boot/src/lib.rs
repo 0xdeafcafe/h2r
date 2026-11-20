@@ -1,7 +1,9 @@
 //! The composition root: the module `recomp` built (`boot::build`, the
 //! re-exported pipeline), registered with the runtime, the kernel HLE
-//! attached, every feature planned onto the hooks, and the entry thread run
-//! until something stops it. See docs/runtime/BOOT.md.
+//! attached, every feature `game` holds planned onto the hooks
+//! (`registration`), and the entry thread run until something stops it.
+//! `game` is re-exported whole, so `boot::skulls` and `boot::RunOpts`
+//! resolve. See docs/runtime/BOOT.md.
 //!
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
