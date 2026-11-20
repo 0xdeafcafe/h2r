@@ -23,7 +23,7 @@ use crate::gestalt::{Chunk, ChunkPointer, SoundGestalt, blocks};
 use crate::{Error, Result};
 use map::build::{TagPayload, TagSet};
 
-/// An extra info's `snd!` owner datum.
+/// An extra info's `ugh!` owner datum.
 const EXTRA_OWNER: usize = 0x20;
 /// An extra info's raw pointer.
 const EXTRA_RAW: usize = 8;
@@ -75,8 +75,7 @@ pub trait MergeMap {
 
 /// Appends the gestalt entries `header` (a source `snd!`, at least
 /// [`snd::LEN`] bytes) names in `src` to `dst`, and returns the `snd!`
-/// with its indices rewritten for `dst`. `owner` is the datum the moved
-/// `snd!` has in the destination (written into its extra info).
+/// with its indices rewritten for `dst`. `owner` is the destination gestalt datum.
 pub fn merge_sound(
     src: &SoundGestalt,
     header: &[u8],
@@ -191,31 +190,34 @@ pub fn merge_sound(
 
     let extra = u16_at(header, snd::EXTRA_INFO);
     if extra != 0xffff {
+        let index = i16::try_from(dst.count(blocks::EXTRA_INFOS))
+            .map_err(|_| Error::Unsupported("extra info index exceeds signed 16 bits".into()))?;
         let mut e = src.nested[blocks::EXTRA_INFOS]
             .get(extra as usize)
             .ok_or_else(|| Error::Invalid(format!("snd!: extra info {extra}")))?
             .clone();
         let p = u32_at(&e.bytes, EXTRA_RAW);
-        if p != 0 && p != u32::MAX {
+        let pointer = src
+            .extra_raws
+            .get(&(extra as usize))
+            .copied()
+            .map(ChunkPointer::Local)
+            .or_else(|| (p != 0 && p != u32::MAX).then_some(ChunkPointer::Stored(p)));
+        if let Some(pointer) = pointer {
             let size = u32_at(&e.bytes, EXTRA_RAW + 4);
-            match map.raw(ChunkPointer::Stored(p), size)? {
+            match map.raw(pointer, size)? {
                 ChunkPointer::Stored(v) => {
-                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].copy_from_slice(&v.to_le_bytes())
+                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].copy_from_slice(&v.to_le_bytes());
                 }
-                ChunkPointer::Local(_) => {
-                    return Err(Error::Unsupported(
-                        "snd!: an extra info's raw can only stay where it is".into(),
-                    ));
+                ChunkPointer::Local(raw) => {
+                    e.bytes[EXTRA_RAW..EXTRA_RAW + 4].fill(0);
+                    dst.extra_raws.insert(index as usize, raw);
                 }
             }
         }
         e.bytes[EXTRA_OWNER..EXTRA_OWNER + 4].copy_from_slice(&owner.to_le_bytes());
         dst.nested[blocks::EXTRA_INFOS].push(e);
-        put_u16(
-            &mut out,
-            snd::EXTRA_INFO,
-            index16("extra info", dst.count(blocks::EXTRA_INFOS) - 1)?,
-        );
+        put_u16(&mut out, snd::EXTRA_INFO, index as u16);
     }
     Ok(out)
 }
@@ -229,8 +231,7 @@ pub struct Moved {
     pub sounds: usize,
     /// Of those, sounds whose promotion was cut (merging refuses them).
     pub promotions_cut: usize,
-    /// Of those, sounds whose extra info was cut (its raw lives in the
-    /// source map's file, which an extra info can't point into).
+    /// Extra infos cut (zero for resource-preserving transplants).
     pub extra_infos_cut: usize,
     /// Sound chunks copied as local raw resources, and their bytes.
     pub raw: (usize, u64),
@@ -280,8 +281,7 @@ impl<R: std::io::Read + std::io::Seek> MergeMap for Between<'_, R> {
 /// `dst`, with the sounds: every `snd!` the tree copies takes its entries
 /// from `src_gestalt` (the source map's) into `gestalt` (the
 /// destination's, which the caller installs afterwards), its chunks'
-/// local raw copied. A promotion is cut (merging refuses them), and so is
-/// an extra info whose raw is in the source file. `Ok(Err(..))`, and
+/// local raw and extra-info resources copied. A promotion is cut (merging refuses them). `Ok(Err(..))`, and
 /// `dst` unchanged, when the schema refuses the tree.
 pub fn transplant<R: std::io::Read + std::io::Seek>(
     schema: &tags::schema::Schema,
@@ -327,6 +327,10 @@ pub fn transplant_from<R: std::io::Read + std::io::Seek>(
         sounds: sounds.len(),
         ..Moved::default()
     };
+    if sounds.is_empty() {
+        return Ok(Ok(Moved { tree, ..moved }));
+    }
+    let owner = SoundGestalt::owner(dst, crate::gestalt::DEFAULT_NAME)?.0;
     let strings = src.strings().to_vec();
     let mut map = Between {
         src,
@@ -344,18 +348,7 @@ pub fn transplant_from<R: std::io::Read + std::io::Seek>(
             header[snd::PROMOTION] = 0xff;
             moved.promotions_cut += 1;
         }
-        let extra = u16_at(&header, snd::EXTRA_INFO);
-        if extra != 0xffff {
-            let local = src_gestalt.nested[blocks::EXTRA_INFOS]
-                .get(extra as usize)
-                .map(|e| u32_at(&e.bytes, EXTRA_RAW))
-                .is_some_and(|p| p != 0 && p != u32::MAX && p >> 30 == 0);
-            if local {
-                put_u16(&mut header, snd::EXTRA_INFO, 0xffff);
-                moved.extra_infos_cut += 1;
-            }
-        }
-        let out = merge_sound(src_gestalt, &header, gestalt, to.0, &mut map)?;
+        let out = merge_sound(src_gestalt, &header, gestalt, owner, &mut map)?;
         let t = map
             .dst
             .tag_mut(to)

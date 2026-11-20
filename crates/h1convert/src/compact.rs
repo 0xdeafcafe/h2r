@@ -230,7 +230,8 @@ impl MergeMap for Same {
 /// `set` is unchanged on error.
 pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
     let slot = SoundGestalt::slot(set).ok_or_else(|| fail("no ugh!"))?;
-    let TagPayload::Built(old) = &set.slots[slot].tag.as_ref().expect("tag").payload else {
+    let owner = set.slots[slot].tag.as_ref().expect("gestalt");
+    let TagPayload::Built(old) = &owner.payload else {
         return Err(fail("the ugh! is not built"));
     };
     let mut root = old.clone();
@@ -255,7 +256,7 @@ pub fn gestalt(set: &mut TagSet) -> Result<Compacted> {
         let mut header = b.bytes.clone();
         let promotion = header[snd::PROMOTION];
         header[snd::PROMOTION] = 0xff;
-        let mut out = merge_sound(&src, &header, &mut dst, t.id.0, &mut Same)
+        let mut out = merge_sound(&src, &header, &mut dst, owner.id.0, &mut Same)
             .map_err(|e| fail(format!("{:?}: {e}", s.name)))?;
         if promotion != 0xff {
             let e = src.nested[blocks::PROMOTIONS]

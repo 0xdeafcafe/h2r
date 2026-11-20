@@ -567,30 +567,22 @@ fn sound_gestalt<R: Read + Seek>(
     mut g: SoundGestalt,
 ) -> Result<usize> {
     use h1sounds::gestalt::{ChunkPointer, blocks};
-    // Extra infos (lip-sync) hold a raw pointer at +8 with no stored
-    // length: copy up to the next known raw start, chunks included.
     const EXTRA_RAW: usize = 8;
-    let extra = |e: &h1sounds::gestalt::Nested| {
-        u32::from_le_bytes(e.bytes[EXTRA_RAW..EXTRA_RAW + 4].try_into().expect("4"))
-    };
+    let extra = |e: &h1sounds::gestalt::Nested| word(&e.bytes, EXTRA_RAW as u32);
     u.add_starts(g.chunks.iter().filter_map(|c| match c.pointer {
         ChunkPointer::Stored(p) => Some(p),
         ChunkPointer::Local(_) => None,
     }));
     u.add_starts(g.nested[blocks::EXTRA_INFOS].iter().map(extra));
     let mut copied = 0;
-    // Local lip-sync data: copied as a raw resource of its own, its
-    // pointer a raw fixup on the element (added once the tree is built).
-    let mut lip_sync = Vec::new();
     for (k, e) in g.nested[blocks::EXTRA_INFOS].iter_mut().enumerate() {
         let p = extra(e);
-        if p != u32::MAX && p != 0 && p >> 30 == 0 {
-            let len = u.extent(p);
-            let raw = u
-                .copy_raw(src, fresh, p, len)
+        if p != 0 && p >> 30 == 0 {
+            let len = word(&e.bytes, 0xc);
+            let raw = u.copy_raw(src, fresh, p, len)
                 .map_err(|e| Error::Fresh(format!("lip-sync data at {p:#x}: {e}")))?;
             e.bytes[EXTRA_RAW..EXTRA_RAW + 4].fill(0);
-            lip_sync.push((k, raw));
+            g.extra_raws.insert(k, raw);
             copied += 1;
         }
     }
@@ -606,20 +598,7 @@ fn sound_gestalt<R: Read + Seek>(
             copied += 1;
         }
     }
-    let mut block = g.to_block();
-    if !lip_sync.is_empty() {
-        let at = (blocks::EXTRA_INFOS * 8) as u32;
-        let infos = child_mut(&mut block, at)
-            .ok_or(Error::Invalid("the gestalt's extra infos did not build"))?
-            .1;
-        let stride = h1sounds::gestalt::STRIDES[blocks::EXTRA_INFOS];
-        for (k, raw) in lip_sync {
-            infos.raw(
-                (k * stride + EXTRA_RAW) as u32,
-                map::build::RawRef::Local(raw),
-            );
-        }
-    }
+    let block = g.to_block();
     fresh
         .tag_mut(id)
         .ok_or(Error::Invalid("no ugh! slot"))?

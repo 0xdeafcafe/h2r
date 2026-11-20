@@ -47,6 +47,7 @@ fn perm(name: &str, next: u16, at: usize, data: &[u8]) -> Permutation {
             address: 0,
         },
         mouth: DataRef::default(),
+        mouth_samples: Vec::new(),
         subtitles: DataRef::default(),
     }
 }
@@ -148,11 +149,19 @@ fn a_header_and_its_blocks_parse_at_the_disc_offsets() {
             &(0x9000u32 + 72 * i as u32).to_le_bytes(),
         );
     }
+    put(&mut mem, 0x254, &3u32.to_le_bytes());
+    put(&mut mem, 0x25c, &0xdead_beefu32.to_le_bytes());
+    put(&mut mem, 0x260, &0x1310u32.to_le_bytes());
+    put(&mut mem, 0x310, &[0, 241, 32]);
     let s = Sound::parse(&mem[..0xa4], |b: H1Block, len| {
         let at = (b.address - base) as usize;
         Ok(&mem[at..at + b.count as usize * len])
     })
     .unwrap();
+    assert_eq!(
+        s.pitch_ranges[0].permutations[0].mouth_samples,
+        [0, 241, 32]
+    );
     assert_eq!(
         (s.class, s.sample_rate, s.encoding, s.compression),
         (13, 1, 1, Compression::XboxAdpcm)
@@ -653,4 +662,42 @@ fn a_moved_sound_takes_its_gestalt_entries_and_flag_bits() {
         crate::merge_sound(&src, &header, &mut dst, 0, &mut map),
         Err(Error::Unsupported(_))
     ));
+}
+
+#[test]
+fn mouth_descriptors_span_ranges_and_survive_gestalt_reinstallation() {
+    use crate::convert::snd;
+    let (mut sound, file) = invented(1);
+    // Range 0 has a silent split permutation and one voiced permutation.
+    // Range 1 starts at descriptor 2, even though its range-local index is 0.
+    for (r, p, bytes) in [(0, 1, &[0, 120, 255][..]), (1, 0, &[24, 0][..])] {
+        let perm = &mut sound.pitch_ranges[r].permutations[p];
+        perm.mouth.size = bytes.len() as u32;
+        perm.mouth_samples = bytes.into();
+    }
+    let mut g = SoundGestalt::default();
+    let mut set = TagSet::new(CacheType::Campaign, "mouth", "mouth");
+    let converted = convert_sound(&sound, &file)
+        .unwrap()
+        .add_to(&mut g, &mut set)
+        .unwrap();
+    assert_eq!(
+        &converted.root.bytes[snd::EXTRA_INFO..][..2],
+        &0u16.to_le_bytes()
+    );
+    let owner = g.install(&mut set, "gestalt").unwrap();
+    let g = SoundGestalt::from_set(&set).unwrap();
+    assert_eq!(g.install(&mut set, "gestalt").unwrap(), owner);
+    let e = &g.nested[blocks::EXTRA_INFOS][0];
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(word(&e.bytes, 0x20), owner.0);
+    let raw = &set.raw[g.extra_raws[&0].0].bytes;
+    assert_eq!(&raw[28..33], &[0, 120, 255, 24, 0]);
+    let at = 24 + word(&e.children[1].bytes, 28) as usize;
+    assert_eq!(&raw[at - 4..at], b"crsr");
+    for (i, (offset, len)) in [(0, 0), (0, 3), (3, 2)].into_iter().enumerate() {
+        assert_eq!(g.element(blocks::PERMUTATIONS, i)[5], i as u8);
+        let d = &raw[at + i * 16..][..16];
+        assert_eq!((word(d, 0), word(d, 4), word(d, 12)), (offset, len, 0));
+    }
 }

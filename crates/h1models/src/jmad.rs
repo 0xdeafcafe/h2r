@@ -10,14 +10,17 @@
 //!
 //! Layouts are those `crates/tags` decodes (`docs/formats/animation.md`).
 
+mod biped;
 mod player;
 mod sentinel;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GraphRole {
+pub(crate) enum GraphRole<'a> {
     Other,
+    Biped(&'a [(String, String)]),
     Sentinel,
     Player,
+    CampaignPlayer,
 }
 
 use std::collections::BTreeMap;
@@ -709,7 +712,7 @@ pub(crate) fn convert_graph_for(
     g: &Graph,
     skeleton: Option<&[AnimNode]>,
     opts: &GraphOptions,
-    role: GraphRole,
+    role: GraphRole<'_>,
 ) -> Result<(Converted, GraphReport)> {
     let node_list: &[AnimNode] = match (g.nodes.is_empty(), skeleton) {
         (false, _) => &g.nodes,
@@ -746,7 +749,8 @@ pub(crate) fn convert_graph_for(
     } else {
         Overlays::new()
     };
-    let player = role == GraphRole::Player;
+    let player = matches!(role, GraphRole::Player | GraphRole::CampaignPlayer);
+    let npc = matches!(role, GraphRole::Biped(_) | GraphRole::Sentinel);
     let fp = is_first_person(g);
     let mut player_data = if player {
         player::bindings(g, &mut tree, &mut slot_overlays, &mut plan)?
@@ -822,16 +826,30 @@ pub(crate) fn convert_graph_for(
             .put_i16(0x3e, movement_size)
             .put_u16(0x42, static_size as u16)
             .put_u32(0x48, animated_size as u32);
+        if player || fp || npc {
+            // H1 0xa318e caps the loop start. H2 0x1c6810 consumes it directly.
+            let start = (anim.loop_frame as i16).max(0) as u16;
+            r.put_u16(0x2e, start.min(anim.frame_count - 1));
+        }
         if player || fp {
             player::playback(anim, &mut r)?;
         }
-        if player {
+        if player || npc {
             player::permutation(g, i, &mut r)?;
         }
         records.push(r);
     }
     if !player {
         borrow_slots(g, &names, &mut tree);
+    }
+    match role {
+        GraphRole::Biped(weapon_classes) => {
+            biped::bindings(g, &mut tree, &mut slot_overlays, weapon_classes)?;
+        }
+        GraphRole::CampaignPlayer | GraphRole::Sentinel => {
+            biped::bindings(g, &mut tree, &mut slot_overlays, &[])?;
+        }
+        _ => {}
     }
     first_person_slots(g, &mut tree)?;
     let mut overlays = first_person_overlays(g, &mut tree);
@@ -857,7 +875,7 @@ pub(crate) fn convert_graph_for(
         .iter()
         .map(|n| {
             let mut b = Block::zeroed(NODE_LEN);
-            if player {
+            if player || npc {
                 b.put_u16(0xa, player::node_flags(n));
             }
             b.string_id(0, &n.name)
@@ -929,7 +947,7 @@ pub(crate) fn convert_graph_for(
 
     let mut h = Block::zeroed(HEADER_LEN);
     h.tag_ref(0, map::TagId::NULL);
-    if player {
+    if player || npc {
         player::write_masks(node_list, &mut h);
     }
     h.block(0x0c, node_blocks.len() as u32, array(node_blocks, NODE_LEN));

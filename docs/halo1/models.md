@@ -608,9 +608,9 @@ grenades left from its origin (inferred: the lookup's fallback).
 | What | How |
 |---|---|
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
-| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, source frame info type and, on the cyborg, permutation links and weights |
+| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, source frame info type and biped permutation links and weights |
 | Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on steering, look and aim screens. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
-| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The cyborg's bindings come directly from the source slot tables (Multiplayer cyborg, above). Other biped graphs also carry borrowed actions where a slot names a different class's animation. |
+| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The cyborg's bindings come directly from the source slot tables (Multiplayer cyborg, above). Campaign bipeds bind their resting poses, locomotion and talk overlays by slot. |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
 Animation sounds (converter version 97, first-person graphs): see
@@ -618,6 +618,50 @@ Animation sounds (converter version 97, first-person graphs): see
 inheritance, static poses and the header word at `+8`. Cyborg and vehicle
 graphs carry their blend screens and weapon pairs. First-person graphs
 carry the single pair (`any`, `any`).
+
+## Campaign biped idles and talking (Built)
+
+The ten Xbox campaign maps reference 25 distinct animation graphs from
+their biped object layers. On a10, crew and armored marines share the marine
+graph. Keyes and Cortana have their own. The pilot and cinematic Chief
+reference graphs in the cinematics directory. The biped's animation
+reference selects the conversion, including graphs shared by several models.
+
+Halo 1 selects a resting pose from class slot 0 and directional cycles
+from slots 8–11. Keyes's standing slot points to `stand unarmed idle%1`.
+The marine's standing unarmed slot points to an alert pistol idle, and
+its bridge-chair mode has its own seated idle. In v99, label splitting
+could produce a variant key without an `idle` key. It also merged standing
+and alert labels. Halo 2 searches the actual action key and tries the
+eight combinations of specific and wildcard mode, class and weapon type
+(`0x1db170`, `0x2963f0`). The converted graph now binds each source slot
+to that key, including `patrol` for the alert pose and the rebuilt vehicle's
+seat label for a passenger. Explicit script pose requests use the same mode.
+When a rebuilt weapon carries the cyborg's class, the exact weapon type
+still selects the owner's pose. A marine holds the Needler with its rifle
+idle, and an Elite holds the plasma rifle with its pistol idle.
+
+For a wildcard class, conversion uses the mode's unarmed idle when present,
+then the first class with an authored idle. For unspecified modes it uses
+the standing pose. The x30 pilot has an explicit standalone base animation
+named `idle` and an empty standing slot. A cinematic actor without a walking
+cycle keeps its authored base when asked to move. Conversion reports a
+missing or ambiguous base. Base clips retain their loop and permutation
+links. The graph uses the model's node order, enables the biped channels
+and partitions the left arm from the remaining nodes. Xbox H1 can encode
+the graph root as its own parent. H2 terminates it with -1, as does the H1
+model. All other hierarchy links agree in the campaign biped/model pairs.
+
+Halo 1 unit slot 10 supplies a weighted talk overlay. The converted
+`talk` entry is in the weapon type's overlay block. Keyes's pose rotates
+`frame jawbone`. Cortana's also translates her mouth corners. The shared
+marine graph moves its own head and facial rig. Wounded marine graphs
+without a talk slot retain their authored poses. Sound timing and native
+playback are documented in [sounds.md](sounds.md#dialogue-mouth-curves-built).
+
+The ignored `campaign_biped_slots_and_talk_frames` check follows every
+campaign biped reference, checks the installed action and overlay lookups,
+and decodes a10's talk frames against the original animated channels.
 
 ## Animation names
 

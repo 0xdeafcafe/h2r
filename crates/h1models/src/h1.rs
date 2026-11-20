@@ -879,11 +879,17 @@ impl Graph {
         let h = m.read(address, ANTR_HEADER)?;
         let nodes = block(m, h, ANTR_NODES, ANTR_NODE_LEN)?
             .into_iter()
-            .map(|e| AnimNode {
+            .enumerate()
+            .map(|(i, e)| AnimNode {
                 name: name32(e, 0),
                 next_sibling: i16_at(e, 0x20),
                 first_child: i16_at(e, 0x22),
-                parent: i16_at(e, 0x24),
+                // Xbox antr encodes the first node's root as self. Its mode
+                // and H2 jmad both terminate the parent chain with -1.
+                parent: match (i, i16_at(e, 0x24)) {
+                    (0, 0) => -1,
+                    (_, parent) => parent,
+                },
                 joint_flags: u32_at(e, 0x28),
                 base_vector: f32s(e, 0x2c),
                 vector_range: f32_at(e, 0x38),

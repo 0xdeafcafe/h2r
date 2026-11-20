@@ -30,6 +30,7 @@ pub mod gestalt;
 pub mod h1;
 pub mod looping;
 pub mod merge;
+mod mouth;
 
 pub use convert::{ConvertedSound, convert_sound, install_sounds};
 pub use decode::{Pcm, decode_all, decode_chain};

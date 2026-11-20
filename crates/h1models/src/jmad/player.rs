@@ -65,7 +65,7 @@ fn index(g: &Graph, value: i16) -> Result<Option<usize>> {
         -1 => Ok(None),
         i if i >= 0 && (i as usize) < g.animations.len() => Ok(Some(i as usize)),
         _ => Err(Error::Invalid(format!(
-            "cyborg animation index {value} outside graph"
+            "animation index {value} outside graph"
         ))),
     }
 }
@@ -324,11 +324,8 @@ pub(super) fn write_masks(nodes: &[AnimNode], h: &mut Block) {
     }
 }
 
-/// H1 0xa318e..0xa31aa loops to the lesser of the authored positive
-/// start and the last frame. H2 0x1c6810 consumes the start directly.
+/// Write the frame events used during player and first-person playback.
 pub(super) fn playback(anim: &Animation, out: &mut Block) -> Result<()> {
-    let start = (anim.loop_frame as i16).max(0) as u16;
-    out.put_u16(0x2e, start.min(anim.frame_count - 1));
     let mut events = Vec::new();
     let mut add = |kind: i16, frame: i16| {
         let mut event = Block::zeroed(4);
@@ -371,7 +368,7 @@ pub(super) fn permutation(g: &Graph, i: usize, out: &mut Block) -> Result<()> {
     let next = index(g, a.next_permutation)?;
     if next.is_some_and(|n| n <= i) || !a.cumulative_weight.is_finite() {
         return Err(Error::Invalid(format!(
-            "{}: invalid cyborg permutation chain",
+            "{}: invalid animation permutation chain",
             a.name
         )));
     }

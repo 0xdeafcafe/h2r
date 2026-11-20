@@ -2010,7 +2010,7 @@ fn install_scripts(
             h1scripts::compile::SEAT_POSE => s
                 .catalog
                 .has_unit_pose(&h.token)
-                .then(|| h1models::names::mode_name(&h.token)),
+                .then(|| h1models::names::unit_mode(&h.token)),
             _ => Some(h.token.clone()),
         };
         // The same text can be a marker, a vehicle seat or an animation

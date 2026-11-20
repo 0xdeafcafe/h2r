@@ -111,6 +111,15 @@ pub fn mode_name(unit: &str) -> String {
         .unwrap_or_else(|| unit.replace('-', "_").to_ascii_lowercase())
 }
 
+/// Mode used for H1 unit slots and a script's explicit unit pose.
+pub fn unit_mode(label: &str) -> String {
+    if label.eq_ignore_ascii_case("alert") {
+        "patrol".into()
+    } else {
+        mode_name(label)
+    }
+}
+
 /// Splits and renames a Halo 1 animation name. A `%n` suffix (a random
 /// variant) becomes `:var<n>` on the action.
 pub fn map_name(h1: &str) -> H2Name {
@@ -450,5 +459,6 @@ mod tests {
         assert_eq!(mode_name("cargo"), "cargo");
         assert_eq!(mode_name("cd-passengerl01"), "cd_passengerl01");
         assert_eq!(mode_name("alert"), "combat");
+        assert_eq!(unit_mode("alert"), "patrol");
     }
 }

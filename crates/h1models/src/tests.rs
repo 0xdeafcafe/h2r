@@ -597,7 +597,7 @@ fn synthetic_graph() -> (Image, u32) {
     let mut img = Image::default();
     let mut nodes = vec![0u8; 3 * 0x40];
     for (i, (n, parent, child, sib)) in [
-        ("root", -1i16, 1i16, -1i16),
+        ("root", 0i16, 1i16, -1i16),
         ("a", 0, -1, 2),
         ("b", 0, -1, -1),
     ]
@@ -635,6 +635,8 @@ fn synthetic_graph() -> (Image, u32) {
         e[0x24..0x26].copy_from_slice(&fs.to_le_bytes());
         put(&mut e, 0x28, 0xabcd);
         e[0x2c] = 3;
+        put16(&mut e, 0x38, -1);
+        put16(&mut e, 0x42, -1);
         put(&mut e, 0x5c, trans);
         put(&mut e, 0x6c, rot | 0xff00_0000); // junk above the node count
         put(&mut e, 0x7c, scale);
@@ -864,6 +866,7 @@ fn reads_synthetic_graph() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
     assert_eq!(g.nodes.len(), 3);
+    assert_eq!(g.nodes[0].parent, -1);
     let a = &g.animations[0];
     assert_eq!(a.animated, [0b010, 0b100, 0b100]);
     assert_eq!(a.frames[4][2].translation, [1.0, 2.0, -1.0]);
@@ -2467,3 +2470,5 @@ fn bloodgulch_player_frame_data() {
     }
     assert_eq!(count, 12, "cyborg and eleven first-person graphs");
 }
+
+mod campaign_bipeds;
