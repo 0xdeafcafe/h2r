@@ -41,11 +41,12 @@
 //! everything listed as seen; the entries stay tagged "New" for that visit.
 //!
 //! **Off the game thread.** A thread of ours asks the HLE for the list
-//! (the Live worker reads it with the signed-in account's token) when the
-//! Live menu is drawn or the screen opens, and every five minutes; the
-//! download runs on a thread of its own. The screens only read the state
-//! ([`Repo`]) and every text is ours, written into guest memory slots when
-//! it changes (on the frame tick and before a row's texts are set).
+//! once the guest signs in to Live. The Live worker reads it with that
+//! account's token when the menu is drawn or the screen opens, and every
+//! five minutes. Downloads run on a thread of their own. The screens only
+//! read the state ([`Repo`]) and every text is ours, written into guest
+//! memory slots when it changes (on the frame tick and before a row's texts
+//! are set).
 //!
 //! The state is pure over a [`Source`] and tested without a guest or a
 //! server.
@@ -124,6 +125,8 @@ pub const MAX_PAGE_ROWS: usize = 1;
 /// Where the list and installs come from: the HLE and the map gate in a
 /// boot, a fake in tests.
 pub trait Source: Send + Sync {
+    /// Checks whether a list read can start, without asking the server.
+    fn check_list(&self) -> Result<(), ModsError>;
     fn list(&self, limit: u32, done: ListDone) -> Result<(), ModsError>;
     fn install(&self, id: MapId, progress: Progress, done: InstallDone) -> Result<(), ModsError>;
     /// The maps of `ids` a package here already has.
@@ -140,6 +143,9 @@ pub struct LiveSource {
 }
 
 impl Source for LiveSource {
+    fn check_list(&self) -> Result<(), ModsError> {
+        self.hle.check_mod_list()
+    }
     fn list(&self, limit: u32, done: ListDone) -> Result<(), ModsError> {
         self.hle.mod_list(limit, None, done)
     }
@@ -523,6 +529,22 @@ impl Repo {
     /// drawn, the screen opened). Never waits; safe with guest memory held.
     pub fn want_list(&self) {
         self.wanted.store(true, Ordering::SeqCst);
+    }
+
+    fn read_if_due(self: &Arc<Self>, now: Instant) {
+        if let Err(e) = self.source.check_list() {
+            let mut g = self.lock();
+            // A new sign-in can fetch at once, even after a recent read.
+            g.asked = None;
+            if !g.in_flight && matches!(g.list, List::Loading) {
+                g.list = List::Failed(e);
+                self.touch();
+            }
+            return;
+        }
+        if self.due(now) {
+            self.fetch(now);
+        }
     }
 
     /// Whether the reader should ask now.
@@ -2035,15 +2057,12 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
     ]
 }
 
-/// The reader: asks for the list whenever [`Repo::due`].
+/// The reader: checks for a due read once a second.
 fn reader(repo: std::sync::Weak<Repo>) {
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let Some(repo) = repo.upgrade() else { return };
-        let now = Instant::now();
-        if repo.due(now) {
-            repo.fetch(now);
-        }
+        repo.read_if_due(Instant::now());
     }
 }
 

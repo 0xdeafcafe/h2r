@@ -556,6 +556,11 @@ impl Hle {
     ) {
         self.lock().bot_card(xuid, done)
     }
+    /// Whether the guest has a signed-in player who can read the mod list.
+    /// Makes no request and never touches guest memory.
+    pub fn check_mod_list(&self) -> Result<(), mods::ModsError> {
+        self.lock().check_mod_list()
+    }
     /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
     /// at once; `done` is called on the Live worker with the page, or why

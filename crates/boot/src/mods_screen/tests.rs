@@ -5,6 +5,7 @@ use super::*;
 
 #[derive(Default)]
 struct Fake {
+    signed_out: AtomicBool,
     lists: Mutex<Vec<ListDone>>,
     installs: Mutex<Vec<(MapId, Progress, InstallDone)>>,
     here: Mutex<BTreeSet<MapId>>,
@@ -13,6 +14,13 @@ struct Fake {
 }
 
 impl Source for Fake {
+    fn check_list(&self) -> Result<(), ModsError> {
+        if self.signed_out.load(Ordering::SeqCst) {
+            Err(ModsError::NotSignedIn)
+        } else {
+            Ok(())
+        }
+    }
     fn list(&self, _limit: u32, done: ListDone) -> Result<(), ModsError> {
         if let Some(e) = self.refuse.lock().unwrap().clone() {
             return Err(e);
@@ -196,6 +204,43 @@ fn a_failed_refresh_keeps_the_list_shown() {
     done(Err(ModsError::Server("HTTP 503".into())));
     assert_eq!(repo.list_row(0).unwrap().0, "Lockout Swords");
     assert_eq!(repo.list_count(), 3);
+}
+
+#[test]
+fn the_reader_waits_for_live_sign_in_then_fetches_without_a_retry_delay() {
+    let fake = Arc::new(Fake::default());
+    fake.signed_out.store(true, Ordering::SeqCst);
+    let repo = Repo::new(fake.clone(), None);
+    let t0 = Instant::now();
+    let sign_in = t0 + REFRESH_EVERY + Duration::from_secs(1);
+    for now in [t0, t0 + RETRY_AFTER, t0 + MIN_GAP, t0 + REFRESH_EVERY] {
+        repo.want_list();
+        repo.read_if_due(now);
+        assert!(fake.lists.lock().unwrap().is_empty());
+    }
+    assert_eq!(repo.list_state(), List::Failed(ModsError::NotSignedIn));
+
+    fake.signed_out.store(false, Ordering::SeqCst);
+    repo.read_if_due(sign_in);
+    repo.read_if_due(sign_in + Duration::from_secs(1));
+    let mut lists = fake.lists.lock().unwrap();
+    assert_eq!(lists.len(), 1);
+    let done = lists.pop().unwrap();
+    drop(lists);
+    done(Ok(ModPage {
+        items: three(),
+        ..Default::default()
+    }));
+    assert_eq!(repo.menu_text(), "Mods (3 new)");
+
+    fake.signed_out.store(true, Ordering::SeqCst);
+    repo.read_if_due(sign_in + Duration::from_secs(2));
+    assert!(fake.lists.lock().unwrap().is_empty());
+    assert_eq!(repo.menu_text(), "Mods (3 new)");
+
+    fake.signed_out.store(false, Ordering::SeqCst);
+    repo.read_if_due(sign_in + Duration::from_secs(3));
+    assert_eq!(fake.lists.lock().unwrap().len(), 1);
 }
 
 #[test]

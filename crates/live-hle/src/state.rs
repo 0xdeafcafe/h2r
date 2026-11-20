@@ -1045,6 +1045,19 @@ impl State {
             );
         }
     }
+    fn mod_list_session(&self) -> std::result::Result<(&Service, Session), crate::mods::ModsError> {
+        use crate::mods::ModsError;
+        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
+        if !self.connected() || !(0..4).any(|c| self.service_user(c) != 0) {
+            return Err(ModsError::NotSignedIn);
+        }
+        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        Ok((service, session))
+    }
+    /// Whether a player can ask for the mod repository, without making a request.
+    pub fn check_mod_list(&self) -> std::result::Result<(), crate::mods::ModsError> {
+        self.mod_list_session().map(|_| ())
+    }
     /// A page of the mod repository ([`crate::Hle::mod_list`]).
     pub fn mod_list(
         &self,
@@ -1053,8 +1066,7 @@ impl State {
         done: crate::mods::ListDone,
     ) -> std::result::Result<(), crate::mods::ModsError> {
         use crate::mods::ModsError;
-        let service = self.service.as_ref().ok_or(ModsError::Offline)?;
-        let session = self.session().ok_or(ModsError::NotSignedIn)?;
+        let (service, session) = self.mod_list_session()?;
         service
             .mods(
                 &session,
