@@ -198,3 +198,7 @@ Reading and converting Halo 1 data:
 - [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)
+
+## Working on the repository (`dev/`)
+
+- [crate-structure.md](dev/crate-structure.md): the crate graph as measured, the target crate map by layer, the ordered freeze-window moves to reach it, local registration, the gate proposal (design; nothing has moved)
