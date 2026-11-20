@@ -817,7 +817,10 @@ h2 agent render.parity '{"arm": true}'
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
   person's `first_person:0:0`) whether it
-  cut, its clusters, instances, parts, rows, lights, shadow maps (its
+  cut, its clusters, instances, parts, rows, guest-selected lights
+  (`lights`), all light candidates including those selections
+  (`lights_candidates`), candidates with both constant sets and any
+  required projection (`lights_with_constants`), shadow maps (its
   lights that cast their shadow), its lights by each layer their passes
   draw (`light_layers`, `"10"` to `"14"`), the items of its typed layer
   draws by layer (`layer_items`) and those the guest still draws
@@ -848,7 +851,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_decorator_remainder`, and the decorator stage's
   `scene_decorator_views`, `scene_decorator_views_native`,
   `scene_decorator_items_skipped`, `scene_decorator_draws_unready` and
-  `scene_decorator_views_declined` (native-decorators.md), `scene_light_groups`, `scene_light_groups_whole` (the
+  `scene_decorator_views_declined` (native-decorators.md),
+  `scene_light_extract_views`, `scene_light_extract_ns` and
+  `scene_light_extract_unread` (candidate extraction attempts, their
+  elapsed nanoseconds and attempts that return no candidates because
+  the input could not be read), `scene_light_groups`, `scene_light_groups_whole` (the
   gathered light and shadow layers in the scene, and those with every
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
   from the scene with no handler run), `scene_light_objects_alone`
