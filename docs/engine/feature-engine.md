@@ -415,8 +415,7 @@ emitter must route through entry dispatch for those stages.
 
 ## State
 
-A subsystem's state moves through three stages as it is rewritten
-([ARCHITECTURE.md](../ARCHITECTURE.md), "typed memory in stages"):
+A subsystem's state moves through three stages as it is rewritten:
 
 1. **Guest layout.** The state stays in guest memory in the original layout and
    Rust works through views. Always the first stage, and the only one for
