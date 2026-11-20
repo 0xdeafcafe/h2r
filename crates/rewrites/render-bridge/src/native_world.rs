@@ -324,6 +324,7 @@ pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
         return;
     }
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let _dispatch = timeline::setup::dispatch();
     if !host.is_some_and(|host| host.load_bsp(mem, bsp)) {
         native_map_work::request_bsp_load();
     }

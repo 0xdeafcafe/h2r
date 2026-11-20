@@ -19,11 +19,14 @@ pub enum Stage {
 }
 
 const STAGES: usize = Stage::Visibility as usize + 1;
-pub(crate) const LABELS: [&str; STAGES + 1] = [
+const DISPATCH_NS: usize = STAGES + 1;
+const DISPATCH_STALLS: usize = STAGES + 2;
+pub(crate) const LABELS: [&str; STAGES + 3] = [
     "setup_world_worker_ns", "setup_lights_worker_ns", "setup_fog_worker_ns",
     "setup_water_worker_ns", "setup_decorators_worker_ns", "setup_objects_worker_ns",
     "setup_layers_worker_ns", "setup_pipelines_worker_ns", "setup_nav_worker_ns",
     "setup_visibility_worker_ns", "setup_over_33ms_frames",
+    "setup_dispatch_ns", "setup_dispatch_stalled_frames",
 ];
 
 impl Stage {
@@ -45,6 +48,26 @@ impl Drop for Worker {
             phase::end_setup(self.stage, generation);
         }
     }
+}
+
+/// Time the foreground handoff that captures guest state and starts a loader.
+pub fn dispatch() -> Dispatch {
+    Dispatch(phase::enabled().then(crate::now_ns))
+}
+
+#[must_use = "keep the guard through the foreground handoff"]
+pub struct Dispatch(Option<u64>);
+
+impl Drop for Dispatch {
+    fn drop(&mut self) {
+        if let Some(start) = self.0 {
+            phase::count_index(phase::SETUP_BASE + DISPATCH_NS, crate::now_ns().saturating_sub(start));
+        }
+    }
+}
+
+pub(crate) fn finish_dispatch(counts: &mut [u64], frame_ns: u64) {
+    counts[DISPATCH_STALLS] = u64::from(frame_ns > 33_333_333 && counts[DISPATCH_NS] > 33_333_333);
 }
 
 #[derive(Default)]
@@ -93,6 +116,17 @@ impl Accounting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_overlap_and_a_foreground_stall_count_separately() {
+        let mut counts = [0; LABELS.len()];
+        counts[Stage::Objects as usize] = 90_000_000;
+        finish_dispatch(&mut counts, 90_000_000);
+        assert_eq!(counts[DISPATCH_STALLS], 0);
+        counts[DISPATCH_NS] = 40_000_000;
+        finish_dispatch(&mut counts, 90_000_000);
+        assert_eq!(counts[DISPATCH_STALLS], 1);
+    }
 
     #[test]
     fn workers_span_frames_and_a_slow_present_counts_once() {

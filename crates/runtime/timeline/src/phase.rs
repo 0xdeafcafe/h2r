@@ -181,7 +181,7 @@ pub enum Counter {
 }
 
 /// Number of [`Counter`]s.
-const SETUP_BASE: usize = Counter::ALL.len() + crate::native::COLUMNS;
+pub(crate) const SETUP_BASE: usize = Counter::ALL.len() + crate::native::COLUMNS;
 pub const COUNTERS: usize = SETUP_BASE + crate::setup::LABELS.len();
 /// Every field in a frame, in storage and CSV order.
 pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
@@ -1108,6 +1108,7 @@ impl Recorder {
             for (a, n) in s.counts.iter_mut().zip(p.worker.counts) {
                 *a += n;
             }
+            crate::setup::finish_dispatch(&mut s.counts[SETUP_BASE..], s.total_ns);
             let now = s.end_ns;
             self.push_with_materials(s, p.world_materials);
             if let Some(every) = self.config.log_every_ns

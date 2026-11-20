@@ -138,6 +138,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return Some((s.resident(timeline::frames())?, generation));
             }
         }
+        let _dispatch = timeline::setup::dispatch();
         let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
         let formats = StreamFormats::read(&Ro(mem));
         let mut state = self.state.lock().ok()?;
