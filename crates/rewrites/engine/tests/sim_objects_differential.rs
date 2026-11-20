@@ -22,10 +22,12 @@
 //!
 //! Roots: the three walks, the two per-object updates, the four type
 //! dispatchers, the wake leaves and the early-mover wake (slice 1 of
-//! docs/engine/sim-rewrite-objects.md). Every body the root reaches is
-//! part of its tree; a callee that is not a body is a callout. The
-//! fused finalize run must also record one `ObjectDeleted` event per
-//! object it deletes.
+//! docs/engine/sim-rewrite-objects.md), and the damage update (slice 8).
+//! Every body the root reaches is part of its tree; a callee that is not
+//! a body is a callout. The fused finalize run must also record one
+//! `ObjectDeleted` event per object it deletes. A damage update root also
+//! compares the XMM registers at every callout: the function keeps a
+//! value in `xmm3` across its calls.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -61,6 +63,9 @@ const SLOTS: u32 = 100;
 const PHASE_STATE: u32 = 0x004d_e2f4;
 const LIST_OWNER: u32 = 0x0051_07f0;
 const COMPONENT_ARRAY: u32 = 0x0051_e9b8;
+/// The damage information `d5b60` answers with, and the actor array.
+const DAMAGE_INFO: u32 = 0x0065_0000;
+const ACTOR_ARRAY: u32 = 0x0065_8000;
 
 /// The runtime's guest memory as the interpreter's.
 struct OnGuest<'a>(&'a mut Guest);
@@ -130,6 +135,7 @@ fn pool(g: &mut Guest, case: u32) {
         byte(g, body + 0xaa, ((slot + case) % 13) as u8);
         g.set_u16(body + 0x12a, u16::MAX).unwrap();
         g.set_u16(body + 0x114, 0).unwrap();
+        damage_state(g, body, slot);
     }
     if case >= 3 {
         // Slot 2 is the parent of 6 and 7: children are visited after it.
@@ -143,6 +149,54 @@ fn pool(g: &mut Guest, case: u32) {
     word(g, BITS + 4, if case == 4 { u32::MAX } else { 1 });
     word(g, BITS + 8, 0);
     word(g, BITS + 12, u32::MAX);
+    damage_info(g);
+}
+
+/// The damage update's inputs on one body: the damage flags in every
+/// combination the function branches on, vitalities and timers, two
+/// damage sections, a player and an actor for some.
+fn damage_state(g: &mut Guest, body: u32, slot: u32) {
+    let s = slot as usize;
+    let f = |v: f32| v.to_bits();
+    g.set_u16(body + 0x10a, [0, 0x0200, 0x0010, 0x0004, 0x0860, 0x2000, 0x0008, 0x0400, 0x0a10][s % 9]).unwrap();
+    word(g, body + 0xe4, f([0.0, 1.0, 0.5][s % 3]));
+    word(g, body + 0xe8, f(if slot % 5 == 0 { 0.0 } else { 1.0 }));
+    word(g, body + 0xec, f([0.5, 2.0][s % 2]));
+    word(g, body + 0xf0, f([0.25, 1.5, 3.5, 1.0][s % 4]));
+    word(g, body + 0xf4, f(0.125));
+    word(g, body + 0xfc, f(0.0625));
+    g.set_u16(body + 0x104, if slot % 4 == 3 { 5 } else { 0 }).unwrap();
+    g.set_u16(body + 0x106, if slot % 4 == 1 { 3 } else { 0 }).unwrap();
+    byte(g, body + 0x108, [0, 2, 0x81][s % 3]);
+    byte(g, body + 0x109, 1);
+    // Two sections at body + 0x180: a record word each (timer bits and
+    // a low three-bit field), then a level byte and a timer.
+    g.set_u16(body + 0x120, 2 << 3).unwrap();
+    g.set_u16(body + 0x122, 0x180).unwrap();
+    g.set_u16(body + 0x184, ((slot * 9) & 0x3f) as u16).unwrap();
+    g.set_u16(body + 0x18c, 0x0f).unwrap();
+    byte(g, body + 0x182, if slot % 2 == 0 { 200 } else { 0 });
+    g.set_u16(body + 0x186, (slot % 3) as u16).unwrap();
+    byte(g, body + 0x18a, 3);
+    word(g, body + 0x12c, if slot % 2 == 0 { u32::MAX } else { slot % 3 });
+    word(g, body + 0x13c, if slot % 3 == 0 { u32::MAX } else { 0xe100_0000 | slot });
+    g.set_u16(body + 0x138, (slot % 4) as u16).unwrap();
+}
+
+/// What `d5b60` points at: two sections with definitions 0x38 apart,
+/// recharge rates and the recharge effect.
+fn damage_info(g: &mut Guest) {
+    let f = |v: f32| v.to_bits();
+    word(g, DAMAGE_INFO + 0xbc, 2);
+    word(g, DAMAGE_INFO + 0xc0, DAMAGE_INFO + 0x200);
+    word(g, DAMAGE_INFO + 0xb8, 0xe300_0005);
+    word(g, DAMAGE_INFO + 0xd0, f(0.5));
+    word(g, DAMAGE_INFO + 0xd4, f(0.25));
+    word(g, DAMAGE_INFO + 0x38, f(1.0));
+    word(g, DAMAGE_INFO + 0x200 + 0x2c, f(2.0));
+    word(g, DAMAGE_INFO + 0x238 + 0x2c, f(0.0));
+    word(g, points::ACTORS.base, ACTOR_ARRAY);
+    word(g, ACTOR_ARRAY + 0x44, ACTOR_ARRAY + 0x100);
 }
 
 /// The object a per-object root is called on.
@@ -158,6 +212,7 @@ fn object_on_stack(root: u32) -> bool {
         &points::OBJECT_TYPE_UPDATE,
         &points::OBJECT_WAKE_CHILDREN,
         &points::OBJECT_EARLY_MOVER_WAKE,
+        &points::OBJECT_DAMAGE_UPDATE,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -204,7 +259,7 @@ const STACK_PROBE: u32 = 0x320560;
 /// Callee cleanup (`ret N`) of every function the roots call.
 fn cleanup(target: u32) -> u32 {
     match target {
-        0xbc470 | 0xbc820 | 0x109580 | 0x108c60 | 0xd5de0 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
+        0xbc470 | 0xbc820 | 0x109580 | 0x108c60 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
         t if SLOT_UPDATE.contains(&t) || SLOT_POST.contains(&t) => 4,
         0xb83b0 | 0xb8460 => 8,
         t if SLOT_AFTER_ROOT.contains(&t) => 8,
@@ -213,6 +268,13 @@ fn cleanup(target: u32) -> u32 {
         0xbef30 => 20,
         0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
+        // The damage update's callees.
+        0xd9f70 | 0xd6bc0 | 0x1588b0 | 0x13a6e8 | 0xa7a30 | 0xd8b50 => 4,
+        0xd66d0 => 8,
+        0xdbc80 | 0xdbfb0 => 12,
+        0xd6800 | 0xba7f0 | 0x176780 => 16,
+        0xda110 => 20,
+        0xd5b60 | 0x1e4a10 | 0x14de90 | 0x1e9720 | 0x138880 => 0,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -220,7 +282,7 @@ fn cleanup(target: u32) -> u32 {
 /// Callouts after which the live set changes: type callbacks, damage,
 /// deletion, deferred weapon fire and the early-mover record.
 fn mutates(target: u32) -> bool {
-    matches!(target, 0xbc470 | 0xbc820 | 0x109580 | 0xb83b0 | 0xd5de0 | 0xfd910 | 0x109660)
+    matches!(target, 0xbc470 | 0xbc820 | 0x109580 | 0xb83b0 | 0xdbfb0 | 0xd6800 | 0xfd910 | 0x109660)
         || SLOT_UPDATE.contains(&target)
         || SLOT_POST.contains(&target)
 }
@@ -259,8 +321,13 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     let seed = target.wrapping_mul(0x9127).rotate_left(n as u32 % 32) ^ case;
     cpu.gpr[0] = match target {
         // Per-object updates answer in `al`.
-        0xbc470 | 0x108c60 | 0xd5de0 | 0xbe8e0 | 0x1cd4e0 => n as u32 % 2,
+        0xbc470 | 0x108c60 | 0xbe8e0 | 0x1cd4e0 => n as u32 % 2,
         0xbdef0 => (n as u32 / 2) % 2,
+        // The damage update's: its information (none in some calls),
+        // yes-or-no answers in `al`, and an overshield owner.
+        0xd5b60 => if (n + case as usize) % 4 == 3 { 0 } else { DAMAGE_INFO },
+        0xd9f70 | 0x138880 | 0xd8b50 => (seed >> 3) % 2,
+        0x14de90 => if n % 2 == 0 { u32::MAX } else { handle(3) },
         _ => 0x006e_1000 | (seed & 0xff),
     };
     cpu.gpr[1] = seed.rotate_left(9);
@@ -309,6 +376,8 @@ struct Callout {
     eflags: u32,
     defined: u32,
     ram: u64,
+    /// The XMM registers, for roots that compare them.
+    xmm: Option<[u128; 8]>,
 }
 
 impl PartialEq for Callout {
@@ -317,6 +386,7 @@ impl PartialEq for Callout {
         (self.kind, self.target, self.resume, self.gpr, self.ram)
             == (o.kind, o.target, o.resume, o.gpr, o.ram)
             && self.eflags & both == o.eflags & both
+            && self.xmm == o.xmm
     }
 }
 
@@ -332,7 +402,9 @@ fn digest(g: &Guest, esp: u32) -> u64 {
 }
 
 fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
+    let xmm = XMM.with(std::cell::Cell::get).then_some(cpu.xmm);
     Callout {
+        xmm,
         kind: t.kind,
         target: t.target_pc,
         resume: t.resume_pc,
@@ -341,6 +413,11 @@ fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
         defined: cpu.flags_valid,
         ram: digest(g, cpu.gpr[4]),
     }
+}
+
+std::thread_local! {
+    /// Whether the root being run compares the XMM registers.
+    static XMM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// One run's record: the callouts, the pc at each resume point, and the
@@ -490,6 +567,7 @@ fn transcripts(point: &points::Point, cases: u32) {
         code.prime(body.point.base);
     }
     assert!(code.insn(point.base).is_some(), "{}", point.name);
+    XMM.with(|x| x.set(point.base == points::OBJECT_DAMAGE_UPDATE.base));
     let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
     for case in 0..cases {
         h.case = case;
@@ -583,6 +661,11 @@ fn wake_leaves() {
 #[test]
 fn early_mover_wake() {
     transcripts(&points::OBJECT_EARLY_MOVER_WAKE, 6);
+}
+
+#[test]
+fn object_damage_update() {
+    transcripts(&points::OBJECT_DAMAGE_UPDATE, 6);
 }
 
 /// The harness on its own: a run is deterministic, and a changed callee

@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake. Slices 3 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, finalize and a leaf on a synthetic pool), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake. So is slice 8's damage update `d5de0`, with the tick's `Damage` and `Kill` events. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies, `damage.rs` the slice 8 body and the event recorders), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/hooking/hooks/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1 root and the damage update, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -35,6 +35,15 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   switch is on (`hooks::sim_objects::owns`). The ports the slice 1 bodies
   replaced (the two walks and the two per-object updates) are in
   `sim_physics::ORACLES`: never installed, kept as test oracles.
+- A body whose point another feature hooks too is guarded
+  (`Table::guard`, called by the plan installer through
+  `hooks::sim_objects::guard_hooked`): `drive` hands calls into it to the
+  runtime, so the point's chain runs its hooks around the body. The Halo
+  1 health model's `before` and `after` on `OBJECT_DAMAGE_UPDATE` make
+  that body guarded whenever both are on.
+- `hooks::sim_objects` also installs the event observers: the buffer is
+  emptied at `GAME_TICK`'s entry, and `Damage` and `Kill` events are
+  appended at `DAMAGE_REPORT` and `PLAYER_KILLED` ("Slice 8 body").
 
 ## Entries
 
@@ -106,7 +115,15 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `c3220` | none yet | `(light: eax)`, light array `[4e030c]`, stride `110`; `ret` | segment |
 | `c3260` | none yet | `(stack 0, stack 1)`; `ret 8` | segment |
 
-Slices 6 to 11 (unit, biped, damage, weapon, vehicle, small types) add
+### Slice 8: damage
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `d5de0` | `OBJECT_DAMAGE_UPDATE` | `(object: stack 0) -> al`, whether anything changed; `ret 4` | segment |
+
+How the body keeps the contract is in "Slice 8 body" below.
+
+Slices 6, 7 and 9 to 11 (unit, biped, weapon, vehicle, small types) add
 one block each here, in the same shape.
 
 ### Callouts that stay guest in this phase
@@ -127,7 +144,6 @@ one block each here, in the same shape.
 | `bb050` | `OBJECT_SPATIAL_VISIT` | seven stack arguments; `ret 1c` |
 | `b87b0` | none yet | `(object: stack 0)`; `ret 4` |
 | `b8600` | none yet | `(object: stack 0, stack 1)`; `ret 8` |
-| `d5de0` | `OBJECT_DAMAGE_UPDATE` | `(object: stack 0) -> al`; `ret 4` |
 | `baeb0` | none yet | `(iterator: stack 0) -> eax` the next body or 0; `ret 4` |
 | `fd980` | none yet | `(weapon: stack 0)`; `ret 4` |
 | `320560` | none yet | stack probe: `(size: eax)` |
@@ -290,8 +306,7 @@ the lifted original by `tests/sim_objects_differential.rs`.
 
 **Walks** (`engine::sim_objects::walks`). The pre- and post-physics
 bodies are the per-function ports, with each transfer returned to
-`drive` instead of the runtime. The pre-physics entry also clears the
-tick's events. Finalize `b7150` keeps the objects array in `ebp`, read
+`drive` instead of the runtime. Finalize `b7150` keeps the objects array in `ebp`, read
 once per pass. Its scan is one slot at a time: `test eax, eax; jl`, the
 high-water mark into `esi`, `cmp eax, esi; jge`, the bitmap into `edx`,
 then `ecx` the word index and `edi` the bit of each slot tried, until a
@@ -310,7 +325,7 @@ and `pop ebp`, before `pop ebx` and the jump to `bf380`.
 `ObjectDeleted { id, kind, definition }` (the handle, header `+3`, body
 `+0`) to the tick's buffer (`sim_objects::events`, read through
 `sim_state::events`). The buffer belongs to the thread that runs the
-walks; the pre-physics entry clears it. Those two reads are not retail's,
+walks, and it is emptied at `GAME_TICK`'s entry ("Slice 8 body"). Those two reads are not retail's,
 so a fault there leaves the field none instead of faulting the guest.
 
 **Per-object updates** (`object.rs`). `bc470` and `bc820` are the ports,
@@ -367,6 +382,73 @@ every call. The visit is `bb050(0, 3f, location, centre, radius bits,
 buffer, 400)`; its `ax` is sign-extended. Per result: `or` body `+c0`
 with 4, then store the mover at `+b8`, then `b7360`; for types 2 to 5,
 `bba20` and `or` the header with NEW.
+
+## Slice 8 body
+
+**C**: read at `d5de0` with `h2 disasm`, and compared with the lifted
+original by `tests/sim_objects_differential.rs` (root
+`OBJECT_DAMAGE_UPDATE`, and inside `bc470`'s tree), which for this root
+also compares the XMM registers at every callout.
+
+**Frame** (`engine::sim_objects::damage`). `sub esp, 70`, then `ebx`,
+`ebp`, `esi`; `edi` is pushed only once the damage information `d5b60`
+returns is non-zero, so the early exit (`d664f`) pops three and returns
+`al` = `dl` (0). With `S` the `esp` after the four pushes: `S+13` the
+changed byte (the result), `S+14` the actor's record or 0, `S+18` the
+damage information, `S+1c` the section cursor and then the shield
+ceiling, `S+20` the header offset and then float temporaries, `S+24`
+the section count and temporaries, `S+4c` a 13-dword record zeroed with
+`rep stosd` for `da110`, `S+84` the object. `ebp` holds the body from
+the entry to the return and `edi` the object from `d5fe9`. The body is
+the retail code block by block, keyed by retail address, so the lifted
+original can take over at any of its 26 return sites and the reverse.
+
+**Floating point.** `xmm3` holds the image's 1.0 from `d6095` across the
+calls to `14de90`, `13a6e8` and `a7a30`, and `xmm1` holds 0 from `d6159`
+into the regeneration and decay blocks; the body keeps every XMM
+register as retail leaves it at each call. The section decay rounds
+with `fld` / `fistp` (`d6551`, `d6555`) under the guest's x87 control
+word, and leaves the x87 state as `fistp` does (FIP `d6555`, its FOP
+and data pointer).
+
+**Callees**, every one a callout, with the bytes `ret` pops: `d5b60`
+the damage information (`ecx` the object; 0), `d9f70` (4), `da110`
+(`14`), `dbc80` (`c`) and `d6bc0` (4) per section, `1e4a10` the actor
+(0), `d66d0` the damage owner (8) and `d6800` the depletion (`10`) for a
+pending kill (flags bit 13), `dbfb0` pending damage (`c`), `1588b0` a
+player's recharge rate (4), `14de90` (0) and `13a6e8` (4) the
+overshield's drain, `a7a30` replication (4), `1e9720` a team's rate
+(0), `ba7f0` (`10`) and `176780` (`10`) the shield effects, `138880`
+whether stun timers hold (0), and `d8b50` the recent-damage accumulators
+(4).
+
+**Events.** The function applies no damage itself: damage reaches an
+object through the damage report `d9640` and a kill is credited at
+`15ce70` (`PLAYER_KILLED`), whichever code calls them (`dbfb0` from
+here, projectiles, melee, explosions). So `hooks::sim_objects` records
+the events with observers at those two entries, the same places the
+Live telemetry's hooks read, and the events equal the hook-derived
+ones over a match:
+
+- `Damage` (`sim_objects::damage::damage`, at `DAMAGE_REPORT`): the
+  report (`guest_layout::DamageReport`: damage code, flags, effect tag,
+  owner player, object and team, direction, origin, and body and shield
+  damage, L), the victim's handle, type, controlling player and position,
+  and the game tick. A report that does not read records nothing.
+- `Kill` (`sim_objects::damage::kill`, at `PLAYER_KILLED`): the attacker
+  and victim players (`[esp+4]`, `[esp+8]`), the damage code (`[esp+10]`'s
+  low byte, L), each player's unit and its position, and the tick.
+
+The buffer (`sim_objects::events`, read through `sim_state::events` and
+the agent API's `sim.events`) belongs to the game thread and is emptied
+at `GAME_TICK`'s entry, so at a tick boundary it holds the tick that
+just ran. Events are recorded only while `impl.sim.native.objects` is on.
+
+**The Halo 1 health model** ([health.md](../halo1/health.md)) hooks
+this point with a `before` and an `after`. With both on, the installer
+guards the body (see "Code paths"): `bc470` reaches it through the
+runtime, the chain runs the `before`, the body through its shadow, then
+the `after`, as it does around the original.
 
 ## Register liveness
 
@@ -768,6 +850,9 @@ registers whose value at the caller's own return may be the callee's.
 
 ## Not verified
 
+- That the `Damage` and `Kill` events equal the Live telemetry's hits and
+  kills over a recorded match. Both read the same two entries; no match
+  has been compared.
 - Nodes posed per tick on Waterworks and in co-op campaign (slice 12,
   step 0: a count at `bd090` through the agent API).
 - That no other DEFER setter exists outside the `or` forms scanned (a flags

@@ -14,7 +14,12 @@
 //! bodies stays in Rust; only a transfer to code that is still guest goes
 //! back to the runtime. [`BODIES`] lists every body; slice lanes append to
 //! it, one row block each.
+//!
+//! A body whose point other features hook as well (a `before` or `after`,
+//! an observer) is [`Table::guard`]ed: calls into it go through the
+//! runtime, so its hooks run around it as around the original.
 
+pub mod damage;
 pub mod frame;
 mod object;
 mod wake;
@@ -23,6 +28,7 @@ mod walks;
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 
@@ -77,6 +83,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
     Body { point: &points::OBJECT_WAKE_CHILDREN, sites: &[], run: wake::wake_children },
     Body { point: &points::OBJECT_EARLY_MOVER_WAKE, sites: &wake::EARLY_MOVER_SITES, run: wake::early_mover_wake },
+    // Slice 8: the object damage update.
+    Body { point: &points::OBJECT_DAMAGE_UPDATE, sites: &damage::SITES, run: damage::update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
@@ -102,6 +110,8 @@ pub enum TableError {
 pub struct Table {
     bodies: Vec<&'static Body>,
     index: Vec<(u32, Role, u16)>,
+    /// Per body: calls into it go through the runtime ([`Table::guard`]).
+    guarded: Vec<AtomicBool>,
 }
 
 impl Table {
@@ -117,7 +127,8 @@ impl Table {
         if let Some(w) = index.windows(2).find(|w| w[0].0 == w[1].0) {
             return Err(TableError::Duplicate(w[0].0));
         }
-        Ok(Table { bodies, index })
+        let guarded = bodies.iter().map(|_| AtomicBool::new(false)).collect();
+        Ok(Table { bodies, index, guarded })
     }
 
     pub fn bodies(&self) -> &[&'static Body] {
@@ -130,9 +141,42 @@ impl Table {
 
     /// The body `pc` enters or resumes, and which.
     pub fn at(&self, pc: u32) -> Option<(&'static Body, Role)> {
+        let (role, body) = self.find(pc)?;
+        Some((self.bodies[usize::from(body)], role))
+    }
+
+    fn find(&self, pc: u32) -> Option<(Role, u16)> {
         let i = self.index.binary_search_by_key(&pc, |e| e.0).ok()?;
         let (_, role, body) = self.index[i];
-        Some((self.bodies[usize::from(body)], role))
+        Some((role, body))
+    }
+
+    /// Send calls into the body at `entry` through the runtime from now
+    /// on: another feature hooks its point too (the Halo 1 health model's
+    /// `before` and `after` on the damage update), and a call [`drive`]
+    /// fused would skip those hooks. The body still runs, entered by the
+    /// point's chain. False when no body starts at `entry`. The installer
+    /// guards every such point when the plan is installed; a guard is
+    /// never lifted, which costs a dispatch, never a hook.
+    pub fn guard(&self, entry: u32) -> bool {
+        match self.find(entry) {
+            Some((Role::Entry, body)) => {
+                self.guarded[usize::from(body)].store(true, Ordering::Relaxed);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the body at `entry` is [`Table::guard`]ed.
+    pub fn guarded(&self, entry: u32) -> bool {
+        matches!(self.find(entry), Some((Role::Entry, body)) if self.guarded[usize::from(body)].load(Ordering::Relaxed))
+    }
+
+    /// Whether [`drive`] runs a call or tail jump to `target` itself: a
+    /// body starts there and is not guarded.
+    fn fuses(&self, target: u32) -> bool {
+        matches!(self.find(target), Some((Role::Entry, body)) if !self.guarded[usize::from(body)].load(Ordering::Relaxed))
     }
 
     /// Whether a body starts at `addr`: the installer gives such a point
@@ -170,8 +214,9 @@ fn unowned(pc: u32) -> GuestFault {
 
 /// Run the body at `pc` (an entry or a site in `table`) and every body it
 /// reaches by call, return or tail jump, until a transfer leaves the
-/// table: a call to a function with no body (a true callout), a return to
-/// a caller that is not a body site, or a tail jump to guest code. That
+/// table: a call to a function with no body (a true callout) or to a
+/// guarded one, a return to a caller that is not a body site, or a tail
+/// jump to guest code. That
 /// transfer is returned for the runtime to take. The guest stack holds
 /// every frame, so the runtime can stop at any callout and resume at the
 /// site, which the installer registers.
@@ -190,7 +235,7 @@ pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Res
                     body.point.name
                 );
                 frame::push(cpu, g, site)?;
-                if table.owns(target) && supported(cpu) {
+                if table.fuses(target) && supported(cpu) {
                     pc = target;
                     continue;
                 }
@@ -206,7 +251,7 @@ pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Res
                 return Ok(TransferAbi::ret(target));
             }
             Next::Tail { target } => {
-                if table.owns(target) && supported(cpu) {
+                if table.fuses(target) && supported(cpu) {
                     pc = target;
                     continue;
                 }

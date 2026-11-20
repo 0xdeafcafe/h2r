@@ -27,6 +27,7 @@ fn all_views() -> Vec<(&'static str, u32, &'static [FieldInfo])> {
         v::<GameEngine>(),
         v::<PlayerStats>(),
         v::<TeamStats>(),
+        v::<DamageReport>(),
     ]
 }
 

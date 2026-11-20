@@ -41,7 +41,8 @@ crate's tests check for overlaps and bounds.
   its physics flag bits, the definition's bounds, `ObjectType`), `unit`
   (unit, biped, weapon, device), `player`, `game` (game globals, options,
   variant, game time, player globals, engine statistics), `datum_array`
-  (a datum array's header), `tag` (the tag index and its entries).
+  (a datum array's header), `tag` (the tag index and its entries),
+  `damage` (the damage report `d9640` applies).
 - **Globals.** `global` is the one table of global addresses, moved from
   `engine::points`, which re-exports it unchanged. New globals go here.
 - **Readers.** `engine::view`'s player and object records take their

@@ -140,6 +140,9 @@ plan:
   Damage in the same update (a fall) still lands. Health from anywhere
   else (packs, scripts, checkpoints, respawns) is untouched, because it is
   not written by this function.
+  With `impl.sim.native.objects` on, the update is a Rust body, and the
+  installer guards it so these hooks still run around it
+  ([object-update.md](../engine/object-update.md), "Slice 8 body").
 - **Health packs**: no hook needed. An observer on `BODY_RESTORE` logs
   each use.
 - **HUD**: the converted player's HUD draws the meter (below, "The

@@ -95,11 +95,12 @@ fn slice_one_bodies_form_a_table_that_owns_their_entries_and_sites() {
         &crate::points::OBJECT_WAKE_FOR_POST,
         &crate::points::OBJECT_WAKE_CHILDREN,
         &crate::points::OBJECT_EARLY_MOVER_WAKE,
+        &crate::points::OBJECT_DAMAGE_UPDATE,
     ] {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
     // Callouts that stay guest are not bodies.
-    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0xd5de0, 0xbd090, 0x320560, 0xbb050] {
+    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0xbd090, 0x320560, 0xbb050] {
         assert!(TABLE.at(callout).is_none(), "{callout:#x}");
     }
     // Driving an address no body owns is an execute fault, not a guess.
@@ -293,6 +294,29 @@ fn an_unsupported_float_environment_stops_fusion() {
     cpu.x87.status |= 0x80;
     assert!(!supported(&cpu));
     assert!(supported(&CpuAbi::default()));
+}
+
+#[test]
+fn a_guarded_body_is_called_through_the_runtime() {
+    let t = table();
+    assert!(!t.guarded(INNER.base));
+    assert!(!t.guard(0x1010), "a site is not an entry");
+    assert!(!t.guard(GUEST));
+    assert!(t.guard(INNER.base));
+    assert!(t.guarded(INNER.base) && !t.guarded(OUTER.base));
+    let (mut cpu, mut g) = guest();
+    let out = drive(&mut cpu, &mut g, &t, OUTER.base).unwrap();
+    assert_eq!(out, TransferAbi::call(INNER.base, 0x1010));
+    assert_eq!((cpu.eax, cpu.esp), (1, STACK - 4));
+    // Entered by its chain, the body runs and returns to outer's site,
+    // which resumes in Rust.
+    let out = drive(&mut cpu, &mut g, &t, INNER.base).unwrap();
+    assert_eq!(out, TransferAbi::call(GUEST, 0x1020));
+    assert_eq!(cpu.eax, 12);
+    // A tail jump to it leaves too.
+    let (mut cpu, mut g) = guest();
+    let out = drive(&mut cpu, &mut g, &t, TAIL.base).unwrap();
+    assert_eq!(out, TransferAbi::jump(INNER.base));
 }
 
 #[test]

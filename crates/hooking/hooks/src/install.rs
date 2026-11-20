@@ -264,6 +264,9 @@ impl Plan {
                     })?;
             }
         }
+        // Bodies other hooks share a point with are entered through their
+        // chains, not fused past them.
+        crate::sim_objects::guard_hooked(chains.iter().map(|(c, _)| c));
         rt.edit_dispatch(|d| {
             for (c, body) in chains {
                 out.placed.push(c.addr);

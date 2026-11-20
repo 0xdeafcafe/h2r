@@ -3,8 +3,8 @@
 //! "sim").
 //!
 //! - The wire types of `sim.player.*`, `sim.state.set`, `sim.view`,
-//!   `sim.expect` and `sim.session` (here), and `sim.objects`
-//!   ([`objects`]).
+//!   `sim.expect` and `sim.session` (here), `sim.objects`
+//!   ([`objects`]) and `sim.events` ([`events`]).
 //! - `sim.view`: the game as one JSON document ([`ROOTS`]), which
 //!   `h2 agent run`'s `expect` lines and `sim.expect` check in the same
 //!   [`crate::expect`] format.
@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use crate::expect::Expect;
 use crate::{PadStep, RpcError, code};
 
+pub mod events;
 pub mod hashes;
 pub mod menu;
 pub mod objects;
@@ -57,6 +58,8 @@ pub mod method {
     /// Every live object through the simulation's typed views
     /// ([`super::objects`]).
     pub const OBJECTS: &str = "sim.objects";
+    /// The last tick's simulation events ([`super::events`]).
+    pub const EVENTS: &str = "sim.events";
 
     /// The running game's `state_hashes_v1` rows ([`super::hashes`]). Not
     /// in [`ALL`]: boot's agent glue registers it, not `agent::sim::install`.
@@ -74,6 +77,7 @@ pub mod method {
         GIVE,
         SPAWN,
         OBJECTS,
+        EVENTS,
     ];
 }
 

@@ -16,6 +16,8 @@
 //! - `sim.session`: the session kind, from the host's [`SessionProbe`].
 //! - `sim.objects`: every live object through `sim-state`'s typed views
 //!   ([`objects`]).
+//! - `sim.events`: the last tick's simulation events from `sim-state`
+//!   ([`events`]).
 //!
 //! They are game methods ([`crate::Agent::add_game_method`]): answered on
 //! the game's thread at a tick boundary while the game ticks, with guest
@@ -23,6 +25,7 @@
 
 pub mod bots;
 pub mod calls;
+pub mod events;
 pub mod hashes;
 pub mod objects;
 pub mod state;
@@ -131,6 +134,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
+    add(method::EVENTS, Access::Read, Sim::events_method);
     h
 }
 
@@ -518,6 +522,14 @@ impl Sim {
     fn objects_method(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
         let p: wire::objects::ObjectsParams = params(v)?;
         let reply = ctx.with_guest(|m| objects::list(&*m, &p))?;
+        Ok(serde_json::to_value(reply).expect("serialises"))
+    }
+
+    /// Answered at the tick boundary on the game thread, whose event
+    /// buffer holds the tick that just ran.
+    fn events_method(&mut self, v: Value, _: &mut GameCtx<'_>) -> R {
+        let p: wire::events::EventsParams = params(v)?;
+        let reply = sim_state::events(|e| events::reply(e, &p))?;
         Ok(serde_json::to_value(reply).expect("serialises"))
     }
 

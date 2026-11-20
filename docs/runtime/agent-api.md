@@ -1132,6 +1132,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
+| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`), `{events}` |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -1173,6 +1174,32 @@ parent), `velocity` (units a second), `sphere {center, radius}`,
 `vitality {body, shield, depleted}`, `nodes` (node matrix count) and, for
 bipeds and vehicles, `unit {player, actor, team, seat, weapons, held}`.
 The wire types are `agent_proto::sim::objects`.
+
+**`sim.events`** reads the simulation's event buffer through `sim-state`
+(`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)
+section 8). The game answers at a tick boundary, so the events are the
+tick that just ran, in the order they happened. The buffer is emptied when
+each tick starts. `kinds` filters by type (`deleted`, `damage`, `kill`;
+another name is `INVALID_PARAMS`). Datums are `0x` and eight hex digits,
+or `null` for none. Each event has a `type`:
+
+- `deleted`: finalize deleted an object. `id`, `kind` (its tag group) and
+  `definition`.
+- `damage`: the damage report applied one damage instance. `tick`,
+  `victim`, `victim_kind`, `victim_player`, `owner_player`,
+  `owner_object`, `owner_team`, `code` with its halves `damage_type` (low
+  6 bits) and `modifier` (high 2), `effect` (the damage effect tag),
+  `flags`, `depleting` (the body was depleted), `body` and `shield`
+  (damage as fractions of full vitality), `direction`, `origin` and
+  `position` (the victim's).
+- `kill`: the game credited a kill. `tick`, `attacker` and `victim` (player
+  datums), `code`, `damage_type`, `modifier`, `victim_unit`,
+  `attacker_unit`, `position` and `attacker_position`.
+
+Events are recorded only while `impl.sim.native.objects` is on; with it
+off the list is empty. The records and where they are read are in
+[object-update.md](../engine/object-update.md), "Slice 8 body". The wire
+types are `agent_proto::sim::events`.
 
 **`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
 answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the `world`

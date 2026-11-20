@@ -11,6 +11,7 @@
 //! guest call or a tick.
 #![deny(clippy::disallowed_methods)]
 
+pub mod damage;
 pub mod defs;
 pub mod events;
 pub mod view;
@@ -20,5 +21,5 @@ pub mod wake;
 pub mod synth;
 
 pub use defs::{Def, DefTable};
-pub use events::SimEvent;
+pub use events::{Damage, Kill, SimEvent};
 pub use view::{ObjRef, Objects};

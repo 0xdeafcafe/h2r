@@ -24,6 +24,7 @@ mod macros;
 mod field;
 mod mem;
 
+pub mod damage;
 pub mod datum_array;
 pub mod game;
 pub mod global;
@@ -35,6 +36,7 @@ pub mod unit;
 pub use field::{Datum, Field, FieldInfo, MAX_FIELD, Off, View};
 pub use mem::{Fault, FlatRam, Mem, MemMut};
 
+pub use damage::DamageReport;
 pub use datum_array::DatumArray;
 pub use game::{GameEngine, GameGlobals, GameOptions, GameTime, GameVariant, PlayerGlobals};
 pub use object::{Object, ObjectDefinition, ObjectHeader, ObjectType};

@@ -114,14 +114,14 @@ fn restore(c: &mut CpuAbi, g: &Guest) -> Result<()> {
     Ok(())
 }
 
-/// `b6f10`. Clears the tick's event buffer: a tick starts here.
+/// `b6f10`. The tick's event buffer is emptied earlier, at `GAME_TICK`'s
+/// entry (`damage::tick_starts`): damage lands before the walks run.
 pub(super) fn pre(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     let (c, g) = (&mut *cx.cpu, &mut *cx.g);
     if pc == PRE_SITES[2] {
         return pre_slots(c, g);
     }
     if pc == points::OBJECTS_PRE_PHYSICS.base {
-        events::clear();
         push(c, g, c.ecx)?;
         c.eax = g.u32(LIST_OWNER)?;
         c.ecx = g.u32(PHASE_STATE)?;

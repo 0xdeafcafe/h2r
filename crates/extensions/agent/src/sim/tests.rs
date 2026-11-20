@@ -1011,3 +1011,38 @@ fn sim_objects_lists_the_pool_through_the_typed_views() {
     let e = h.err(&mut game, method::OBJECTS, json!({"kinds": ["moon"]}));
     assert_eq!(e["code"], code::INVALID_PARAMS);
 }
+
+#[test]
+fn sim_events_answers_the_tick_events_the_game_thread_recorded() {
+    use engine::sim_objects::damage;
+    let (h, mut game) = (Harness::new(), game());
+    damage::tick_starts();
+    let r = h.ok(&mut game, method::EVENTS, Value::Null);
+    assert_eq!(r, json!({"events": []}));
+
+    // A kill credited at PLAYER_KILLED's entry, recorded by the observer
+    // the object update's switch installs: attacker, victim, code.
+    let mut g = runtime::Guest::new();
+    g.map_zeroed(0x1_0000, 0x1000, runtime::guest::Permissions::RW).unwrap();
+    let esp = 0x1_0800;
+    for (i, v) in [(1, 0xe101_0001), (2, 0xe100_0000), (4, 0x4d)] {
+        g.set_u32(esp + 4 * i, v).unwrap();
+    }
+    damage::player_killed(&g, esp);
+    let r = h.ok(&mut game, method::EVENTS, json!({"kinds": ["kill"]}));
+    let events = r["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{r}");
+    assert_eq!(events[0]["type"], "kill");
+    assert_eq!(events[0]["attacker"], "0xe1010001");
+    assert_eq!(events[0]["victim"], "0xe1000000");
+    assert_eq!((events[0]["damage_type"].as_u64(), events[0]["modifier"].as_u64()), (Some(13), Some(1)));
+    // No players array or game time in this guest: no units, no tick.
+    assert_eq!(events[0]["victim_unit"], Value::Null);
+    assert_eq!(events[0]["tick"], Value::Null);
+    let r = h.ok(&mut game, method::EVENTS, json!({"kinds": ["damage"]}));
+    assert_eq!(r, json!({"events": []}));
+
+    let e = h.err(&mut game, method::EVENTS, json!({"kinds": ["moon"]}));
+    assert_eq!(e["code"], code::INVALID_PARAMS);
+    damage::tick_starts();
+}

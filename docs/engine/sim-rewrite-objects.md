@@ -3,7 +3,8 @@
 Status: design, 2026-11-20. Slices 0 to 2 are built: the dispatcher and
 the switch (default off), the views and `sim-state`, and slice 1's bodies
 (the walks, the per-object updates, the type dispatchers, the wake leaves
-and the early-mover wake). The contracts they keep are in
+and the early-mover wake). So is slice 8 (the damage update, and the
+`Damage` and `Kill` events). The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
@@ -276,6 +277,7 @@ crates/rewrites/sim-objects/      no `runtime` dependency
   src/walk.rs                     early-mover list
   src/wake.rs                     b7360, baf80, bba20, bc7b0 (leaf kernels)
   src/events.rs                   the tick's SimEvent buffer (section 8)
+  src/damage.rs                   Damage and Kill events, read at d9640 and 15ce70
   src/bounds.rs                   bdef0 arithmetic
   src/functions.rs                bab40, ba8c0, 108d90 evaluator
   src/colors.rs                   be8e0
@@ -292,6 +294,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   walks.rs                        b6f10, b7060, b7150
   object.rs                       bc470, bc820, dispatchers 108c60/108cd0/109050/1090d0
   wake.rs                         the wake leaves' bodies over src/wake.rs; 109580
+  damage.rs                       d5de0; the Damage and Kill recorders
   ...                             one file per ported segment body
 crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
@@ -724,14 +727,17 @@ pub struct ObjectIter<'a>;                         // live headers in slot order
   clip store itself).
 - Views borrow guest memory for the call. Nothing is cached, so a revert or
   a keyframe load needs no invalidation here.
-- **Events.** A per-tick `Vec<SimEvent>`, cleared when the pre-physics walk
-  starts a new tick, appended only by serial code on the game thread:
-  `ObjectDeleted { id, kind, definition }` from finalize pass B (slice 1),
-  `Damage` and `Kill` from the damage body (slice 8; until then the existing
-  hooks at `15ce70` and `d9640` keep feeding them). Events are not persistent
-  state: they are read at tick end and are not in keyframes or the hash.
-  The buffer (`sim_objects::events`, read through `sim_state::events`)
-  belongs to the thread that runs the walks.
+- **Events.** A per-tick `Vec<SimEvent>`, cleared at `GAME_TICK`'s entry,
+  appended only by serial code on the game thread: `ObjectDeleted { id,
+  kind, definition }` from finalize pass B (slice 1), `Damage` at the
+  damage report `d9640` and `Kill` at the kill credit `15ce70` (slice 8:
+  the damage update applies damage only through those callees, so the
+  events are read at their entries, whoever calls them). Events are not
+  persistent state: they are read at tick end and are not in keyframes or
+  the hash. The buffer (`sim_objects::events`, read through
+  `sim_state::events` and the agent API's `sim.events`) belongs to the
+  thread that runs the walks. The records are in
+  [object-update.md](object-update.md), "Slice 8 body".
 - `live-telemetry/src/raw.rs` and `agent/src/raw.rs` move onto these views at
   their owners' pace. This lane does not edit them.
 
@@ -762,9 +768,9 @@ set:
   contract's exactness is not needed for co-op to stay in sync; it is needed
   so that `h2 sim diff` against the lifted build proves each slice.
 - **Halo 1 content** runs the same bodies. Halo 1 health hooks
-  `OBJECT_DAMAGE_UPDATE`; slice 8 must keep that extension point (the hook
-  then runs before or instead of the Rust body, as it does for the lifted
-  one).
+  `OBJECT_DAMAGE_UPDATE`; slice 8 keeps that extension point: a body
+  another feature hooks is guarded, so its chain runs the hooks around
+  the Rust body as around the lifted one.
 
 ## 10. Invalidation
 
