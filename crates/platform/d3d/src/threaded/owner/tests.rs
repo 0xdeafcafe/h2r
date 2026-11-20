@@ -51,6 +51,9 @@ impl Backend for Pixels {
         self.surfaces[dst as usize] = self.surfaces[src as usize];
         Ok(true)
     }
+    fn snapshot_surface(&mut self, surface: u32, _: bool) -> Result<Option<u32>, String> {
+        Ok(Some(u32::from(self.surfaces[surface as usize])))
+    }
     fn present(&mut self, surface: u32, _: u32) -> Result<(), String> {
         self.shown.push(self.surfaces[surface as usize]);
         Ok(())
@@ -216,4 +219,64 @@ fn a_fresh_allocation_after_a_draw_preserves_that_frames_admission() {
     assert_eq!(value(&mut gpu, target), 1);
     assert_eq!(value(&mut gpu, spare), 0);
     assert_eq!(accepted.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present() {
+    use crate::scene_sink::ReplaySample;
+
+    for matches in [true, false] {
+        for release_before_swap in [true, false] {
+            let owned = Arc::new(AtomicUsize::new(0));
+            let count = owned.clone();
+            let mut gpu = ThreadedBackend::new(Pixels::default()).unwrap().with_frame_owner(FrameOwner {
+                select: Box::new(move |n| {
+                    let mut replay = frame(n, 11);
+                    let name = TargetRef::SceneColour;
+                    let at = replay.ops[0].0;
+                    replay.ops.push((at, ReplayOp::Sample {
+                        of: name,
+                        id: 17,
+                        how: ReplaySample::Snapshot { opaque: matches },
+                    }));
+                    replay.ops.extend(frame(n, 22).ops);
+                    let count = count.clone();
+                    Some(Candidate {
+                        frame: Arc::new(replay),
+                        eligible: Box::new(|_, _| true),
+                        draw: Box::new(move |device: &mut Pixels, targets| {
+                            count.fetch_add(1, Ordering::Relaxed);
+                            let target = targets[&name];
+                            device.clear(target, None, clear(11))?;
+                            let frozen = device.snapshot_surface(target, true)?.unwrap();
+                            device.clear(target, None, clear(22))?;
+                            device.present(target, 0)?;
+                            Ok(Outputs {
+                                samples: HashMap::from([(17, frozen)]),
+                                ..Default::default()
+                            })
+                        }),
+                    })
+                }),
+                declined: |_| {},
+                failed: |_| {},
+                stopped: || {},
+            });
+            let target = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+            gpu.clear(target, None, clear(11)).unwrap();
+            let mut frozen = gpu.snapshot_surface(target, true).unwrap();
+            let handle = frozen.as_ref().unwrap().id;
+            gpu.clear(target, None, clear(22)).unwrap();
+            if release_before_swap {
+                drop(frozen.take());
+            }
+            gpu.present(target, 0).unwrap();
+            let stored = gpu.call(move |w| Ok(w.textures.get(&handle).copied())).unwrap();
+            assert_eq!(stored, (!release_before_swap).then_some(11));
+            assert_eq!(owned.load(Ordering::Relaxed), usize::from(matches));
+            assert_eq!(value(&mut gpu, target), 22);
+            drop(frozen);
+            assert!(gpu.call(move |w| Ok(!w.textures.contains_key(&handle))).unwrap());
+        }
+    }
 }
