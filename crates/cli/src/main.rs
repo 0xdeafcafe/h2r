@@ -180,6 +180,7 @@ const USAGE: &str = "usage: h2 <command>
   serve <disc> --system-link --host-light
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
+  host pack ...           run several leased matches in one container
   theater play FILM --render-every 0
                           replay a host film headlessly
   sim <run|batch|compare> run or compare bot matches
