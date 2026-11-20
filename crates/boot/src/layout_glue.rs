@@ -572,12 +572,10 @@ pub fn install(
     let with_pause = model
         .as_ref()
         .is_some_and(|m| !m.rows(List::GameSettings).is_empty());
-    let with_custom_games = custom_games::row_enabled();
     let with_theater = theater.is_some();
-    let with_live_menu = with_custom_games || with_theater;
     let live_menu = move || custom_games::Menu {
-        custom_games: with_custom_games,
-        coop: with_custom_games && custom_games::coop_row_enabled(),
+        custom_games: true,
+        coop: custom_games::coop_row_enabled(),
         theater: with_theater,
     };
     let with_skulls = model
@@ -601,7 +599,7 @@ pub fn install(
     let extra_rows =
         model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     // The Live menu's (tag copies, item widgets, pane word) in our data.
-    let mut live = (0u32, 0u32, 0u32);
+    let live: (u32, u32, u32);
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
@@ -611,9 +609,7 @@ pub fn install(
         }
         let mut served = served_strings(with_speaker);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
-        if with_live_menu {
-            served.extend(custom_games::strings());
-        }
+        served.extend(custom_games::strings());
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
@@ -626,18 +622,14 @@ pub fn install(
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
-        if with_live_menu {
-            // The Live menu's tag copies, item widgets and pane word: fixed
-            // places, reused each time a map load brings the tag back.
-            live = (
-                alloc,
-                alloc + custom_games::TAG_SPACE,
-                alloc
-                    + custom_games::TAG_SPACE
-                    + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
-            );
-            alloc = live.2 + 0x100;
-        }
+        // The Live menu's tag copies, item widgets and pane word: fixed
+        // places, reused each time a map load brings the tag back.
+        live = (
+            alloc,
+            alloc + custom_games::TAG_SPACE,
+            alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
+        );
+        alloc = live.2 + 0x100;
         ALLOC.store(alloc, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
     }
@@ -689,8 +681,8 @@ pub fn install(
         .chain(text_hooks)
         // Also for our classes' taller lists (`list_class::extra_items`).
         .chain(controls_hooks)
-        .chain(live_menu_hooks.into_iter().filter(|_| with_live_menu))
-        .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
+        .chain(live_menu_hooks)
+        .chain(custom_games_hooks)
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = wanted
@@ -842,7 +834,7 @@ pub fn install(
                 // The Xbox Live menu: our row shows our pane, Content
                 // Download (moved down one) its own. The row is handed over
                 // in our word, not written back through the caller's pointer.
-                if with_live_menu && id == custom_games::SCREEN_ID {
+                if id == custom_games::SCREEN_ID {
                     let tag = LIVE_TAG.load(Ordering::SeqCst);
                     let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
                         mem.u32(tag + 0x20).unwrap_or(0)
@@ -911,7 +903,7 @@ pub fn install(
                 };
                 let wanted = id == SCREEN_ID
                     || (extra_rows > 0 && id == speaker_row::SCREEN_ID)
-                    || (with_live_menu && id == custom_games::SCREEN_ID)
+                    || id == custom_games::SCREEN_ID
                     || ours;
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
@@ -1049,7 +1041,7 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
                         };
                         (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
-                    } else if with_live_menu && vtable == custom_games::HANDLER_VTABLE {
+                    } else if vtable == custom_games::HANDLER_VTABLE {
                         // Extra datums beyond the visible slots scroll normally.
                         let n = live_menu().visible() - custom_games::VANILLA_ITEMS;
                         let mut g = live_slots.lock().unwrap_or_else(|e| e.into_inner());
@@ -1252,9 +1244,6 @@ pub fn install(
                     };
                     theater.open(mask.trailing_zeros(), player);
                     return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
-                }
-                if !with_custom_games {
-                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.

@@ -743,8 +743,8 @@ game" below.
 - **The row.** The Xbox Live menu's last row, where retail had Content
   Download, reads **Mods**, or **Mods (3 new)** when maps were published
   since the player last opened the screen. Its pane's help text says what
-  it is (`custom_games::MODS_HELP`). Without Live or the map gate (or with
-  `H2_NO_MODS_ROW=1`) the row is Content Download again, with its Map
+  it is (`custom_games::MODS_HELP`). Without Live or the map gate the row is
+  Content Download again, with its Map
   Pack dialog ([live-custom-games.md](../live/live-custom-games.md) §5).
 - **New.** An entry is new when its `position` (the event-log position it
   was published at) is above the last-seen position, kept in
