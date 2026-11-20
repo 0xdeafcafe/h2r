@@ -614,7 +614,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             w.push(t);
         }
     }
-    for (k, a) in s.art.iter().enumerate() {
+    for (k, a) in s.shown_art().iter().enumerate() {
         w.push(Widget {
             id: format!("art.{k}"),
             rect: [

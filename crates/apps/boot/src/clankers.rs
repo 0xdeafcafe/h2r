@@ -11,9 +11,9 @@
 //! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
 //! Options page is: Quick Options' panel, header and list (its
 //! `setting_lists` skin, label left and the value alone in the value
-//! column), Quick Options' header (a Spartan icon in its game type
-//! picture and the page's line, [`HEADER_HELP`], in its help line; each
-//! row's own description shows in the value picker A opens), and the
+//! column), Quick Options' header (the focused row's icon in its game
+//! type picture and the row's one line in its help line; the value picker
+//! A opens says what the row does and what each choice means), and the
 //! legend in its footer (docs/game/ui-builder.md "The Dialog kind", "A
 //! page's header").
 //!
@@ -49,7 +49,7 @@ use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
 use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::DialogBase;
+use crate::ui_kit::dialog::{DialogBase, icon};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
@@ -201,30 +201,74 @@ static ROWS: [ChoiceRow; 8] = [
         &ENABLED,
         "Clankers",
         "Bots join this game and show in the lobby.",
-    ),
-    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15."),
+    )
+    .explain(
+        "Clankers are bots that play this game with you. On adds them to \
+         the lobby like any other player. Off plays without them.",
+    )
+    .icon(icon::SPARTAN),
+    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15.")
+        .explain(
+            "How many Clankers join this game, from 1 to 15. Each one \
+             takes a place in the lobby, so leave room for your friends.",
+        )
+        .icon(icon::SQUARES),
     ChoiceRow::new(
         &DIFFICULTY,
         "Difficulty",
         "How well they play. Mixed varies it around Normal.",
-    ),
-    ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game."),
+    )
+    .explain(
+        "How well the Clankers aim, move and pick their fights. Easy is \
+         forgiving and Legendary plays like a veteran. Mixed gives you a \
+         spread of Easy, Normal and Heroic bots.",
+    )
+    .icon(icon::SKULL),
+    ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game.")
+        .explain(
+            "Where the Clankers go in a team game. Auto-balance spreads \
+             them so the teams stay even. Red or Blue puts every bot on \
+             that team. Free for all games ignore this.",
+        )
+        .icon(icon::FLAG),
     ChoiceRow::new(
         &AGGRESSION,
         "Aggression",
         "How eagerly they push into a fight.",
-    ),
+    )
+    .explain(
+        "How hard the Clankers push. Calm bots hold back and wait for a \
+         good shot. Wild bots rush in and chase every kill. Normal sits \
+         in between.",
+    )
+    .icon(icon::BOMB),
     ChoiceRow::new(
         &AIM_STYLE,
         "Aim style",
         "Steady tracks smoothly; Twitchy flicks.",
-    ),
-    ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
+    )
+    .explain(
+        "How the Clankers move their aim. Steady bots track you smoothly \
+         and stay on target. Twitchy bots snap onto you in quick flicks.",
+    )
+    .icon(icon::HELMET),
+    ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill.")
+        .explain(
+            "On lets the Clankers show off over you after a kill, as \
+             players do. Off keeps them on the move.",
+        )
+        .icon(icon::CROWN),
     ChoiceRow::new(
         &GLITCHES,
         "Glitches",
         "Whether they BXR, sword fly and super bounce.",
-    ),
+    )
+    .explain(
+        "Halo 2's famous tricks: button combos like BXR, double shots, \
+         sword flying and super bounces. Off plays it straight. Some \
+         shows off now and then. Lots uses them whenever it can.",
+    )
+    .icon(icon::LIGHTNING),
 ];
 
 /// The Game Setup row's text; the page's title stays [`TITLE`].
@@ -233,11 +277,6 @@ pub const ROW_LABEL: &str = "Clanker Options...";
 /// the focus, as retail's rows have theirs (`crate::game_setup_help`).
 pub const ROW_HELP: &str =
     "Add bots to this game: how many, how well they play, and which team they join.";
-/// The page's own line at its top, in Quick Options' help line beside the
-/// page's icon ([`KitScreen::header`]): [`ROW_HELP`] cut to the one line
-/// the help line holds (409 of its 494 units in the disc's font 1; the
-/// whole of [`ROW_HELP`] is 492 and wraps on the kit's own measure).
-pub const HEADER_HELP: &str = "Add bots: how many, how well they play and which team they join.";
 /// The page's title, in capitals as Quick Options' header ("QUICK
 /// OPTIONS") is.
 pub const TITLE: &str = "CLANKERS";
@@ -249,7 +288,7 @@ pub fn page(store: Arc<Store>) -> KitScreen {
         .row_label(ROW_LABEL)
         .row_help(ROW_HELP)
         .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
-        .header(HEADER_HELP, crate::ui_kit::dialog::icon::SPARTAN);
+        .header(icon::SPARTAN);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }

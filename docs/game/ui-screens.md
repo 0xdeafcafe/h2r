@@ -86,7 +86,11 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
    units at most) unless `.description` names another block. A settings
    page that should look like the game's own (Clankers, Halo 1 Options)
-   is this and nothing more: no `.layout`, no `.description`. Or
+   is this and nothing more: no `.layout`, no `.description`, plus
+   `.header(icon)` for Quick Options' game type picture, which shows the
+   focused row's `Row::icon` ([ui-builder.md](ui-builder.md) "A page's
+   header"). `Row::explain` is what the value picker says about a value
+   row, when it should say more than the one-line description. Or
    `DialogBase::Large`, the one the game maps have; see
    [ui-builder.md](ui-builder.md) "The Dialog kind". The prompts go in the footer
    (below). `.scrolls()` says more rows than the list shows is meant.
@@ -97,14 +101,20 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    labels, a `Kind::Int`'s steps or else every number of its range, Off and
    On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
    left and right step and wrap, A opens the value picker, and each change
-   is saved in the store at once, so its change callbacks see it. A bots page's Count
-   and Difficulty are two of them:
+   is saved in the store at once, so its change callbacks see it.
+   `.explain(text)` gives the value picker its fuller text and
+   `.icon(icon)` the row's header icon. A bots page's Count and
+   Difficulty are two of them:
 
    ```rust
-   static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
-   static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.");
+   static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.")
+       .explain("How many bots join this game, from 1 to 15.")
+       .icon(icon::SQUARES);
+   static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.")
+       .icon(icon::SKULL);
    let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
+       .header(icon::SPARTAN)
        .row(COUNT.row(Arc::clone(&store)))
        .row(LEVEL.row(store))
        .prompts(&[

@@ -940,37 +940,89 @@ fn a_opens_the_value_picker_and_the_row_has_a_description() {
     assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
 }
 
-/// The page has Quick Options' header: its line in the help line whatever
-/// the focus (not the focused row's description, which the value picker
-/// shows), a Spartan in the game type picture, both in the spec the
-/// preview draws.
+/// The page has Quick Options' header: the focused row's one line in the
+/// help line and its icon in the game type picture, both following the
+/// focus, in the game (`Rows::description`, `Rows::row_image`) and in the
+/// spec the preview draws.
 #[test]
-fn the_page_has_quick_options_header() {
+fn the_header_follows_the_focused_row() {
     use crate::list_class::Rows;
-    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, icon, quick_icon};
-    use crate::ui_kit::spec::Describe;
+    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, quick_icon};
+    use crate::ui_kit::spec::{Describe, ScreenSpec};
     let p = page(store());
-    let header = Rows::description(&p, 0).expect("the help line");
-    assert_eq!(
-        Rows::description(&p, 5),
-        Some(header),
-        "the same whatever the focus"
-    );
-    assert!(IDS.owns(header));
-    assert_ne!(Some(header), p.row_help_id());
-    assert_eq!(Rows::description(&p, 99), None, "no such row");
-    assert_eq!(Rows::picture_image(&p), Some(icon::SPARTAN));
     assert!(p.slots() <= IDS.len);
     let s = p.spec();
-    assert_eq!(s.help.as_deref(), Some(HEADER_HELP));
-    assert_eq!(s.description_text().as_deref(), Some(HEADER_HELP));
-    assert_eq!(s.art, [quick_icon(icon::SPARTAN)]);
-    assert_eq!(s.art[0].at, QUICK_PICTURE.at);
-    // The rows keep their own descriptions, for the picker.
-    assert!(s.rows.iter().all(|r| r.description.is_some()));
-    // One line on the kit's own measure in Quick Options' help line.
+    assert_eq!(s.help, None, "no page line in place of the rows'");
+    assert!(s.art.is_empty(), "the icon is the focused row's");
     let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
-    assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
+    let mut lines = Vec::new();
+    for (row, r) in ROWS.iter().enumerate() {
+        let icon = r.icon.expect("every row has an icon");
+        assert_eq!(Rows::row_image(&p, row as i16), Some(icon), "{}", r.label);
+        let focused = ScreenSpec {
+            focus: row,
+            ..s.clone()
+        };
+        assert_eq!(focused.description_text().as_deref(), Some(r.description));
+        let art = focused.shown_art();
+        assert_eq!(art, [quick_icon(icon)], "{}", r.label);
+        assert_eq!(art[0].at, QUICK_PICTURE.at);
+        let line = Rows::description(&p, row as i16).expect("the help line");
+        assert!(IDS.owns(line));
+        lines.push(line);
+        assert!(
+            crate::ui_kit::spec::fallback::width(r.description) <= room,
+            "{}: one line",
+            r.label
+        );
+    }
+    lines.dedup();
+    assert_eq!(lines.len(), ROWS.len(), "a line per row");
+    assert_ne!(Some(lines[0]), p.row_help_id());
+    assert_eq!(Rows::picture_image(&p), ROWS[0].icon, "the focus starts on row 0");
+    assert_eq!(Rows::row_image(&p, ROWS.len() as i16), None, "no such row");
+    assert_eq!(Rows::description(&p, 99), None, "no such row");
+}
+
+/// Every row has an icon of Quick Options' picture, a one-line help and
+/// an explanation for the value picker that says more than the help and
+/// is player copy: what the option does and what its choices mean.
+#[test]
+fn every_row_has_an_icon_a_line_and_real_picker_copy() {
+    use crate::ui::Chosen;
+    use crate::ui_kit::dialog::{PICKER_HELP_TEXT, icon};
+    use crate::ui_kit::picker;
+    use crate::ui_kit::spec::{fallback, wrap};
+    let width = i32::from(PICKER_HELP_TEXT.rect[3]) - i32::from(PICKER_HELP_TEXT.rect[1]);
+    let height = i32::from(PICKER_HELP_TEXT.rect[0]) - i32::from(PICKER_HELP_TEXT.rect[2]);
+    let p = page(store());
+    let mut icons = Vec::new();
+    for (row, r) in ROWS.iter().enumerate() {
+        let i = r.icon.unwrap_or_else(|| panic!("{}: an icon", r.label));
+        assert!(i < icon::COUNT, "{}", r.label);
+        icons.push(i);
+        assert!(!r.description.is_empty() && !r.description.contains('\n'));
+        assert!(
+            r.description.encode_utf16().count() <= crate::h1_options::HELP_UNITS,
+            "{}: one line",
+            r.label
+        );
+        let e = r.explain;
+        assert!(!e.is_empty() && e != r.description, "{}", r.label);
+        assert!(e.encode_utf16().count() <= crate::h1_options::EXPLAIN_UNITS, "{}: {e}", r.label);
+        let lines = wrap(e, width, &fallback::width).len() as i32;
+        assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+        let lower = e.to_lowercase();
+        for bad in ["docs/", "todo", "placeholder", "lorem", "tbd", "phantom", "peer", "session"] {
+            assert!(!lower.contains(bad), "{}: {e}", r.label);
+        }
+        // A opens the value picker with that explanation.
+        assert_eq!(p.press(row as i16), Chosen::Open(picker::NAME), "{}", r.label);
+        assert_eq!(picker::current().expect("a pick").description, e, "{}", r.label);
+    }
+    icons.sort();
+    icons.dedup();
+    assert_eq!(icons.len(), ROWS.len(), "each row its own icon");
 }
 
 #[test]
