@@ -1428,6 +1428,10 @@ where
     type Surface = B::Surface;
     type Texture = Arc<B::Texture>;
 
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        self.inner.frozen_images(texture)
+    }
+
     fn create_surface(
         &mut self,
         format: D3DFormat,

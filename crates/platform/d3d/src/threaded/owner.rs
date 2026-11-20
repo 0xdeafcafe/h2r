@@ -275,6 +275,7 @@ fn target_map<B: Backend>(
                 if !textures.iter().zip(&packet.textures).all(|(binding, &proxy)| match (binding, proxy) {
                     (None, None) => true,
                     (Some(ReplayTexture::Sample(id)), Some(proxy)) => samples.get(id) == Some(&proxy),
+                    (Some(ReplayTexture::Frozen(sample)), Some(proxy)) => sample.proxy == Some(proxy),
                     (Some(ReplayTexture::Upload(asset)), Some(proxy)) => uploads
                         .get(&proxy).is_some_and(|source| source.as_ptr() == Arc::as_ptr(asset)),
                     _ => false,

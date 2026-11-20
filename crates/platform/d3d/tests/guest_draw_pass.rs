@@ -222,3 +222,82 @@ fn an_in_place_frame_retains_pixels_outside_its_scissor_and_releases_no_live_sur
     assert_eq!(gpu.surface_extent(id), Some((W, H)));
     gpu.destroy_surface(id).unwrap();
 }
+
+#[test]
+fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_path() {
+    use d3d::threaded::owner::{Candidate, FrameOwner};
+    use d3d::{Backend, SceneSink, ThreadedBackend};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    texture(&mut memory, 0x7f);
+    device.set_texture(&mut memory, 0, TEX_HEADER).unwrap();
+    textured_quad(&mut device, &mut memory, (0., 0., W as f32 / 2., H as f32));
+    let draw = device.backend.draws()[0].clone();
+
+    for adopt_first in [false, true] {
+        let shown = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&shown);
+        let latest = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+        let select = Arc::clone(&latest);
+        let original = ThreadedBackend::new(GfxBackend::new(ctx.clone())).unwrap()
+            .with_frame_owner(FrameOwner {
+                select: Box::new(move |n| {
+                    if n == 1 && !adopt_first { return None; }
+                    let frame = select.lock().unwrap().clone()?;
+                    let draw = Arc::clone(&frame);
+                    let count = Arc::clone(&count);
+                    Some(Candidate {
+                        frame,
+                        eligible: Box::new(|_, _| true),
+                        draw: Box::new(move |gpu: &mut GfxBackend, targets| {
+                            let mut pass = GuestDrawPass::on_existing(gpu, &draw, targets)?;
+                            for (_, op) in &draw.ops { pass.apply(op)?; }
+                            let result = pass.present_with_outputs(0, None)?;
+                            count.fetch_add(1, Ordering::Relaxed);
+                            Ok(result)
+                        }),
+                    })
+                }),
+                declined: |_| {},
+                failed: |_| {},
+                stopped: || {},
+            });
+        let keep = Arc::clone(&latest);
+        let mut sink = SceneSink::new(original, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+            .with_replay(move |frame| *keep.lock().unwrap() = Some(Arc::new(frame)));
+        let target = sink.create_texture_target(D3DFormat::LinA8R8G8B8, W, H).unwrap();
+        sink.clear(target, None, Clear { color: Some([1., 0., 0., 1.]), ..Clear::NONE }).unwrap();
+        let red = sink.snapshot_surface(target, true).unwrap().unwrap();
+        sink.present(target, 0).unwrap();
+
+        sink.clear(target, None, Clear { color: Some([0., 0., 1., 1.]), ..Clear::NONE }).unwrap();
+        let blue = sink.snapshot_surface(target, true).unwrap().unwrap(); // same frame-local sample id
+        sink.draw(target, None, &draw, [Some(&red), None, None, None]).unwrap();
+        drop((red, blue));
+        sink.present(target, 0).unwrap();
+        assert_eq!(sink.inner().waits().reads, 0);
+        assert_eq!(sink.inner_mut().with_inner(|gpu| gpu.readbacks()).unwrap(), 0);
+        assert_eq!(shown.load(Ordering::Relaxed), if adopt_first { 2 } else { 1 });
+        sink.destroy_surface(target).unwrap();
+        drop(sink);
+
+        let frame = latest.lock().unwrap().take().unwrap();
+        assert!(frame.refusals.is_empty());
+        assert!(frame.ops.iter().any(|(_, op)| matches!(op, ReplayOp::Draw { textures, .. }
+            if matches!(textures[0], Some(ReplayTexture::Frozen(_))))));
+        let mut private_gpu = GfxBackend::new(ctx.clone());
+        let mut pass = GuestDrawPass::new(&mut private_gpu, &frame, 1).unwrap();
+        for (_, op) in &frame.ops { pass.apply(op).unwrap(); }
+        let ([width, height], pixels) = pass.read_rgba().unwrap();
+        let pixel = |x| {
+            let i = ((height / 2 * width + x) * 4) as usize;
+            &pixels[i..i + 4]
+        };
+        assert_eq!(pixel(width / 4), [255, 0, 0, 255]);
+        assert_eq!(pixel(3 * width / 4), [0, 0, 255, 255]);
+    }
+}

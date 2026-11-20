@@ -177,7 +177,15 @@ fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
     sink.draw(shown, Some(depth), &draw, [Some(&snap), None, None, None]).unwrap();
     sink.present(shown, 0).unwrap();
     let next = frames.lock().unwrap().pop().unwrap();
-    assert_eq!(next.refusals, ["uncaptured_texture"]);
+    assert_eq!(next.refusals, ["unavailable_frozen_sample"]);
+
+    sink.inner_mut().sample_surfaces = true;
+    let live = sink.surface_texture(shown).unwrap().unwrap();
+    sink.present(shown, 0).unwrap();
+    sink.clear(shown, Some(depth), Clear::all([1.0; 4])).unwrap();
+    sink.draw(shown, Some(depth), &draw, [Some(&live), None, None, None]).unwrap();
+    sink.present(shown, 0).unwrap();
+    assert_eq!(frames.lock().unwrap().last().unwrap().refusals, ["previous_in_place_view"]);
 }
 
 #[test]

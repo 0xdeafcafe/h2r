@@ -15,6 +15,8 @@ pub enum ReplayTexture {
     Upload(Arc<DecodedTexture>),
     Placeholder(TextureDesc),
     Sample(u32),
+    #[cfg(feature = "gpu")]
+    Frozen(super::FrozenSample),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,7 +92,7 @@ impl ReplayOp {
 }
 
 /// A present's resources and commands. A frame with a refusal cannot be
-/// redrawn independently. No handle belongs to the device that captured it.
+/// redrawn independently. Frozen texture inputs require the producing GPU device.
 #[derive(Debug)]
 pub struct ReplayFrame {
     /// Guest presents, including those without captured ops; first present is 1.
@@ -210,8 +212,9 @@ impl<S: Copy + Eq> Recorder<S> {
     pub fn sample(&mut self, at: SlotAt, of: TargetRef, how: ReplaySample) -> Origin {
         let id = self.next_sample;
         self.next_sample += 1;
+        let origin = Origin::sample(self.seq, Some(id), &how);
         self.frame.ops.push((at, ReplayOp::Sample { of, id, how }));
-        Origin::Sample { seq: self.seq, id }
+        origin
     }
 
     pub fn finish(&mut self, present: TargetRef) {
@@ -270,7 +273,24 @@ impl<S: Copy + Eq> Recorder<S> {
 pub(super) enum Origin {
     Upload(Arc<DecodedTexture>),
     Placeholder(TextureDesc),
-    Sample { seq: u64, id: u32 },
+    Sample {
+        seq: u64,
+        id: Option<u32>,
+        immutable: bool,
+        #[cfg(feature = "gpu")]
+        frozen: std::sync::OnceLock<Option<super::FrozenSample>>,
+    },
+}
+
+impl Origin {
+    pub fn sample(seq: u64, id: Option<u32>, how: &ReplaySample) -> Self {
+        Self::Sample {
+            seq, id,
+            immutable: !matches!(how, ReplaySample::InPlace),
+            #[cfg(feature = "gpu")]
+            frozen: Default::default(),
+        }
+    }
 }
 
 /// The original backend's texture plus the information needed to bind

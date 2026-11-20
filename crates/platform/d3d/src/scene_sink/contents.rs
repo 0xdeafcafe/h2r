@@ -138,6 +138,11 @@ impl ReplayFrame {
                     let r = draw.state.render;
                     let mut inputs = textures.iter().flatten().all(|t| match t {
                         ReplayTexture::Upload(_) => true,
+                        // Immutable input has complete pixels. The display
+                        // worker validates its device and reference/view pair
+                        // before it changes a live attachment.
+                        #[cfg(feature = "gpu")]
+                        ReplayTexture::Frozen(_) => true,
                         ReplayTexture::Placeholder(_) => false,
                         ReplayTexture::Sample(id) => samples.get(id).is_some_and(|(defined, live)| {
                             live.map_or(*defined, |(target, mask)| state.has(target, mask))

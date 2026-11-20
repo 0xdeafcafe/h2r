@@ -319,25 +319,31 @@ impl<B: Backend> SceneSink<B> {
         let replay = self.replay.as_mut().expect("recording replay");
         replay.bind(at, c, d);
         let inputs = textures.map(|t| {
-            let t = t?;
-            match &t.origin {
-            Some(Origin::Upload(data)) => Some(ReplayTexture::Upload(data.clone())),
-            Some(Origin::Placeholder(desc)) => Some(ReplayTexture::Placeholder(desc.clone())),
-            Some(Origin::Sample { seq, id: Some(id), .. }) if *seq == replay.seq => Some(ReplayTexture::Sample(*id)),
-            #[cfg(feature = "gpu")]
-            Some(Origin::Sample { seq, immutable: true, frozen, .. }) if *seq != replay.seq => {
-                let sample = frozen.get_or_init(|| self.inner.retain_scene_sample(&t.inner));
-                if sample.is_none() { replay.frame.refuse("unavailable_frozen_sample"); }
-                sample.clone().map(ReplayTexture::Frozen)
-            }
-            Some(Origin::Sample { seq, immutable: false, .. }) if *seq != replay.seq => {
-                replay.frame.refuse("previous_in_place_view");
-                None
-            }
-            _ => {
-                replay.frame.refuse("uncaptured_texture");
-                None
-            }
+            let texture = t?;
+            match &texture.origin {
+                Some(Origin::Upload(data)) => Some(ReplayTexture::Upload(data.clone())),
+                Some(Origin::Placeholder(desc)) => Some(ReplayTexture::Placeholder(desc.clone())),
+                Some(Origin::Sample { seq, id: Some(id), .. }) if *seq == replay.seq => {
+                    Some(ReplayTexture::Sample(*id))
+                }
+                Some(Origin::Sample { seq, immutable: true, .. }) if *seq != replay.seq => {
+                    #[cfg(feature = "gpu")]
+                    if let Some(Origin::Sample { frozen, .. }) = &texture.origin
+                        && let Some(sample) = frozen.get_or_init(|| self.inner.retain_scene_sample(&texture.inner))
+                    {
+                        return Some(ReplayTexture::Frozen(sample.clone()));
+                    }
+                    replay.frame.refuse("unavailable_frozen_sample");
+                    None
+                }
+                Some(Origin::Sample { seq, immutable: false, .. }) if *seq != replay.seq => {
+                    replay.frame.refuse("previous_in_place_view");
+                    None
+                }
+                _ => {
+                    replay.frame.refuse("uncaptured_texture");
+                    None
+                }
             }
         });
         let camera = if draw.layout.pretransformed {

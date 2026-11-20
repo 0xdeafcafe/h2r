@@ -1221,6 +1221,11 @@ records which game frames the native graph actually presents.
   flare query results under the tickets already held by the guest. An
   early guest access that needs buffered work runs those commands in
   order. Menus and declined game frames continue on the same device.
+  On the first draw using an earlier frame's immutable snapshot, the
+  worker pins the GPU textures behind its original proxy. A sealed draw
+  can sample those images after the guest releases the proxy. Reference
+  and display versions retain their own resolutions. An older in-place
+  view has no frozen contents and makes the frame ineligible for replay.
 - **Scheduling and probes.** For private drawing, `frame_scene::mailbox`
   keeps the newest pending scene in paced mode and blocks at two waiting
   scenes in locked mode. The display worker accepts two waiting transactions

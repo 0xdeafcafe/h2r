@@ -1005,6 +1005,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     type Texture = ProxyTexture<B>;
 
     fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        if !Arc::ptr_eq(&self.queue, &texture.queue) { return None; }
         let id = texture.id;
         let (sample, send) = crate::scene_sink::FrozenSample::pending(id);
         // Only earlier-frame immutable results come here. Their producing
@@ -1014,6 +1015,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let images = worker.textures.get(&id).and_then(|t| worker.inner.frozen_images(t));
             let _ = send.send(images);
         })));
+        // The sim may pause at the sealed-frame boundary before its next
+        // Swap. Dispatch the job now without waiting for the worker.
+        self.flush();
         Some(sample)
     }
 
