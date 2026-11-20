@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::camera::Camera;
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
+use crate::light_group::{LightEntry, LightGroup, LightPose};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
@@ -82,6 +83,8 @@ pub enum BuildError {
     SlotOrder,
     /// A layer item with no layer pass open in the view.
     NoLayer,
+    /// A light group with no light in the open view.
+    NoLight,
 }
 
 /// What the builder remembers of the scene before, for cuts.
@@ -325,6 +328,35 @@ impl SceneBuilder {
         }
         scene.layer_passes.last_mut().expect("the view's last pass").remainder += items;
         Ok(())
+    }
+
+    /// Adds a gathered group to the open view's last light, after its
+    /// groups so far, with its entries in the sorted order; its index in
+    /// the scene. Each entry comes with the node rows of a
+    /// [`LightPose::Rows`] pose (the builder sets the range; other poses
+    /// take none). The builder sets `group.light` and `group.entries`.
+    pub fn push_light_group(&mut self, group: LightGroup, entries: &[(LightEntry, Vec<Row>)]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let lights = &scene.views[open].lights;
+        if lights.is_empty() {
+            return Err(BuildError::NoLight);
+        }
+        let light = lights.end - 1;
+        let e = scene.light_entries.len() as u32;
+        for (entry, rows) in entries {
+            let pose = match entry.pose {
+                LightPose::Rows(_) => {
+                    let r = scene.rows.len() as u32;
+                    scene.rows.extend_from_slice(rows);
+                    LightPose::Rows(r..scene.rows.len() as u32)
+                }
+                ref other => other.clone(),
+            };
+            scene.light_entries.push(LightEntry { pose, ..entry.clone() });
+        }
+        let index = scene.light_groups.len() as u32;
+        scene.light_groups.push(LightGroup { light, entries: e..scene.light_entries.len() as u32, ..group });
+        Ok(index)
     }
 
     /// Seals the open view: its parts ordered by the guest's list.

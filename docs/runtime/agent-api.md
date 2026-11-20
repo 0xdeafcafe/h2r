@@ -717,7 +717,13 @@ h2 agent render.parity '{"arm": true}'
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
-  did not read), and from `d3d::scene_stage`
+  did not read), `scene_light_groups`, `scene_light_groups_whole` (the
+  gathered light and shadow layers in the scene, and those with every
+  sorted entry in it), `scene_light_entries` and
+  `scene_light_entry_remainder_<cause>` (sorted entries left to the
+  guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
+  `callback`, `owner`, `section`, `range`, `state`, `subparts`,
+  `material`, `pose`; framescene.md, slice 4), and from `d3d::scene_stage`
   `scene_stages_world`, `scene_stages_objects`, the scene stages queued
   to the render thread, and `scene_dropped_world`,
   `scene_dropped_objects`, those it could not record after the guest

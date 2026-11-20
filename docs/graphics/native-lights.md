@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
-Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
+Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -97,6 +97,29 @@ their original draw dispatch. Clears, map
 freezes, object shadow filters, gel updates and target restores run at
 their original points. The live-binding requirement still costs one
 guest handler even for a successful group.
+
+### Gathered groups in the scene
+
+At the same build, the walk's sorted entries go into the frame scene
+as a group of the light (`scene_extract::light_groups`,
+`frame_scene::LightGroup`; framescene.md, slice 4), with what the first
+`LIGHT_GEOMETRY_DRAW` supplies to the path above: per entry its stream
+(the model's section, the cluster, or the placement's definition; the
+part, vertex class, index range and topology), its pose (world, the
+placement by index, or the object's node rows) and its bindings
+(shader, pass selector, variant, implementation), and for layers 10 and
+11 the shadow projection block. The additional casters' layers are
+groups of their own site. An entry the handler would do more for (the
+auxiliary state toggle, state around one part, visible subparts, a
+shader flag, a material animation, a template callback) is the group's
+remainder, counted by cause in `render.scene`
+(`scene_light_entry_remainder_<cause>`). Object shadows are not
+grouped. `native_render::light_scene::plan` gives a whole group's draws
+from the scene alone, against the resident geometry (`Resident`): the
+sorted order and duplicates kept, adjacent list ranges of one stream,
+binding, class and pose joined, a missing stream or placement transform
+refused by name. No GPU recorder draws those plans yet, so every group
+still runs its first handler.
 
 Frame stats count completed dynamic lights in `lights_walked_native`,
 `lights_walked_fallback` and `lights_walk_empty`. Each fallback adds

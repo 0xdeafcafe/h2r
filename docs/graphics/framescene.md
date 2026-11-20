@@ -880,9 +880,27 @@ to the guest's draws (**Code**):
 - **The light passes and the shadow layers.** Models and rigid
   placements keep their D3D handlers ([native-lights.md](native-lights.md),
   "What a native light draws"), every layer keeps its handlers with the
-  additional casters' pair, and a gathered group takes its live streams,
-  pose, constants and bindings from the first geometry handler, which
-  the guest runs.
+  additional casters' pair, and the gathered walk's GPU path takes a
+  group's live streams, pose, constants and bindings from the first
+  geometry handler, which the guest runs. The scene carries what that
+  handler supplies (built): at each layer build, the sorted entries the
+  walk builds (`render_bridge::native_lights::walk`) go into a group of
+  the light (`scene_extract::light_groups::push`,
+  `frame_scene::LightGroup`, `LightEntry`; `FrameScene::groups_of`),
+  each entry with its stream (section, part, vertex class, index range,
+  topology), its pose (world, a placement by index, or an object's node
+  rows) and its bindings (shader, pass selector, variant,
+  implementation), and layers 10 and 11 with the shadow projection
+  block. The additional casters' layers 10 and 11 are groups of their
+  own site (`GroupSite::AdditionalCasters`). What the handler does
+  beyond binding and drawing (the auxiliary state toggle, state around
+  one part, visible subparts, a shader flag, a material animation, a
+  template callback) leaves the entry to the guest by named cause.
+  `native_render::light_scene::plan` turns a whole group into native
+  draws from the scene alone, sorted order and duplicates kept,
+  adjacent list ranges joined. Not built: the light and shadow GPU
+  recorders drawing those plans over resident model and placement
+  streams, and the walk running no handler for a planned group.
 
 The entry census (`render_bridge::entry_census`, built) measures both
 halves of 8.2's first two rules per entry, so the coordinator can tell

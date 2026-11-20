@@ -11,6 +11,7 @@ pub mod builder;
 pub mod camera;
 pub mod layer;
 pub mod light;
+pub mod light_group;
 pub mod node;
 pub mod object;
 pub mod scene;
@@ -20,6 +21,7 @@ pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use layer::{LayerItem, LayerOwner, LayerPass};
 pub use light::{LightStep, LightTarget, SceneLight};
+pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, PROJECTION_ROWS, Topology};
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
 pub use scene::{

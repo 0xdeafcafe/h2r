@@ -242,6 +242,7 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
 
 fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     finish_candidate();
+    crate::scene_step::light_entry();
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }

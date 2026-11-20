@@ -227,6 +227,13 @@ pub(super) struct Built {
 impl Built {
     pub(super) fn count(&self) -> usize { self.count }
 
+    /// The sorted entries the handlers would run, as the scene reads them.
+    fn sorted(&self) -> Vec<scene_extract::light_groups::Sorted> {
+        self.slots[..self.count].iter().map(|s| scene_extract::light_groups::Sorted {
+            index: half(s, 0), implementation: s[4], vertex_class: half(s, 8),
+        }).collect()
+    }
+
     pub(super) fn store(&self, mem: &mut dyn GuestMemory, buffer: u32) -> bool {
         self.slots.is_empty() || mem.write(buffer, self.slots.as_flattened()).is_ok()
     }
@@ -515,6 +522,16 @@ pub(super) fn install(b: &mut Builder) {
         if !built.store(mem, buffer) {
             refused(Counter::LightWalkMemory);
             return Ok(Flow::Continue);
+        }
+        // The group into the scene, with what the first handler supplies
+        // (framescene.md, slice 4): object shadows are not a light's.
+        let group_site = match site {
+            None | Some(shadows::Site::Light) => Some(frame_scene::GroupSite::Light),
+            Some(shadows::Site::AdditionalCaster) => Some(frame_scene::GroupSite::AdditionalCasters),
+            Some(shadows::Site::Object) => None,
+        };
+        if let Some(group_site) = group_site {
+            crate::scene_step::light_group(mem, list, layer, group_site, &built.sorted());
         }
         IN_LAYER.set(batch.is_some());
         PENDING.set(batch);
