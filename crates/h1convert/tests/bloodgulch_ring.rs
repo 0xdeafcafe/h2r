@@ -20,7 +20,7 @@
 //!
 //! Only names, counts and positions are printed.
 //!
-//! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test --release -p h1convert --test bloodgulch_ring -- --ignored --nocapture
+//! H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test --release -p h1convert --test it bloodgulch_ring:: -- --ignored --nocapture
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};

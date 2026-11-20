@@ -3,6 +3,8 @@ name = "h1objects"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 h1map = { path = "../h1map" }
@@ -35,3 +37,7 @@ xbe.workspace = true
 variants = { path = "../variants" }
 # Halo 2's HUD text font measured against Halo 1's digits (tests/hud_layout_disc.rs).
 font = { path = "../font" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

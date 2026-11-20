@@ -5,7 +5,7 @@
 //! only. Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test -p h1objects --test it -- disc:: --skip _disc:: --ignored --nocapture
 //! ```
 
 use std::fs::File;

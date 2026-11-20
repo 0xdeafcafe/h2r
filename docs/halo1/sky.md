@@ -466,7 +466,7 @@ There is no CLI here; the crate is a library step of the campaign import
 cargo test -p h1sky                                   # invented bytes
 H1_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h1
 H2_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h2
-H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test bloodgulch_ring -- --ignored --nocapture
+H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test it bloodgulch_ring:: -- --ignored --nocapture
 ```
 
 `real_h1_disc_a30_bloodgulch_round_trip` converts both skies with their

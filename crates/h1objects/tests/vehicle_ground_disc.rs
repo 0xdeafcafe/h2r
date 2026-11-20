@@ -4,7 +4,7 @@
 //! `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test vehicle_ground_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it vehicle_ground_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `bounding_centres_sit_inside_the_body`: the retail warthog and its

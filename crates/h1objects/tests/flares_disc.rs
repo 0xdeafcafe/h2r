@@ -2,7 +2,7 @@
 //! `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test flares_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it flares_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! Surveys (print only): `halo1_layout_survey` (`H1_GROUP`, the root words

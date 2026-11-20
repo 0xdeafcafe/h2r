@@ -5,7 +5,7 @@
 //! unless `ROLE_AUDIT_OUT` names a file for the markdown report.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it role_audit_disc:: -- --ignored --nocapture
 //! H1_MAPS=all ...   # all multiplayer and campaign maps (default bloodgulch)
 //! ```
 //!

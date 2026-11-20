@@ -429,7 +429,7 @@ leaves the set unchanged if one is refused.
 
 ```sh
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso [H1_MAPS=bloodgulch,beavercreek] \
-  cargo test --release -p h1convert --test fresh -- --ignored --nocapture
+  cargo test --release -p h1convert --test it fresh:: -- --ignored --nocapture
 ```
 
 Each fresh map reads back with a valid checksum and the same index as the

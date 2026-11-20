@@ -3,7 +3,7 @@
 //! discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test vehicle_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it vehicle_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `vehicle_type_and_flags_match_halo_2s_counterparts`: on eight pairs of

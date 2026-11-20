@@ -3,7 +3,7 @@
 //! alpha is not the shader's (`h1convert::sky_shaders::alpha_reach`).
 //! Only names and counts are printed.
 //!
-//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test sky_pictures_disc -- --ignored --nocapture
+//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test it sky_pictures_disc:: -- --ignored --nocapture
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};

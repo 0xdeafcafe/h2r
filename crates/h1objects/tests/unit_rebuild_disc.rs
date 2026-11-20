@@ -2,7 +2,7 @@
 //! against the discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test unit_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it unit_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `turret_role_is_the_retail_turrets_majority`: the role table

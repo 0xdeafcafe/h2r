@@ -3,7 +3,7 @@
 //! encodings, densely.
 //!
 //! ```sh
-//! H1_ISO=... cargo test --release -p h1convert --test bloodgulch_ramp -- --ignored --nocapture
+//! H1_ISO=... cargo test --release -p h1convert --test it bloodgulch_ramp:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;
