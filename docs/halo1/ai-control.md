@@ -212,6 +212,14 @@ A child inherits its parent's property blocks and carries its flags,
 unit, creature and style (squad setup reads the unit at `0x00200d11`).
 A conflicting character no palette entry names stays a conversion error.
 Test: `a_conflicting_promotion_gets_its_own_rebuilt_major`.
+Built: a character transplanted from a donor map holds its references
+as remapped datums in its bytes, with no fixups
+(`tags::schema::transplant`). The major reader only looked at fixups, so
+c10's flood combat elite (from `04b_floodlab`) found no major, and
+`floodcombat_elite_shielded` had no row. A built tag's reference is now
+its fixup, or else the datum in its bytes when it names a tag in the
+set. The same reader gives a rebuilt child its parent's unit, creature
+and style. Test: `a_transplanted_characters_major_is_read_from_its_bytes`.
 
 Conversations and command lists have separate converter lanes.
 
