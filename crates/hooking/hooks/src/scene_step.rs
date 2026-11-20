@@ -1,7 +1,8 @@
 //! The frame step's scene (docs/graphics/framescene.md, slice 1): a
 //! `FrameScene` begun at `render_views`, a view opened at each base-layer
 //! layer 3 with its camera, visible clusters and world state, its objects
-//! extracted at the object walk, sealed and published after
+//! extracted at the object walk, its lights at each light passes' entry
+//! (`native_lights`), sealed and published after
 //! `render_frame_and_present`.
 //!
 //! Still game-thread, still packets, still masks: the world and object
@@ -16,7 +17,7 @@ use std::time::Instant;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
-use frame_scene::{Camera, Cut, FrameScene, SceneBuilder, SceneId, Stamp, View, ViewKey, ViewKind};
+use frame_scene::{Camera, Cut, FrameScene, LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind};
 use native_render::object_walk::Entry;
 use native_render::objects::SCENE_LAYER3_RETURN;
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
@@ -135,6 +136,19 @@ pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
     let m = Ro(mem);
     with_step(|step| {
         if extract::objects(&m, entries, &mut step.builder).is_err() {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// A light of the open view at its passes' entry, with its steps.
+/// Opens the view first when none is.
+pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
+    if view(mem).is_none() {
+        return;
+    }
+    with_step(|step| {
+        if step.builder.push_light(light, steps).is_err() {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
     });

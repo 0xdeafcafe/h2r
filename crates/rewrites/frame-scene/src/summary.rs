@@ -2,8 +2,9 @@
 //! report, so two runs can say whether they extracted the same frame.
 //! FNV-1a over the content, in order: the tick, the cut, and every view's
 //! key, camera, clusters, world state, remainder, auxiliary depth,
-//! instances (key, definition, model, nodes, sphere, lighting, defaults)
-//! and parts (slot, key, layer, flags, subparts, rows). Floats by their
+//! instances (key, definition, model, nodes, sphere, lighting, defaults),
+//! parts (slot, key, layer, flags, subparts, rows) and lights (handle,
+//! definition, flags, additional casters, steps). Floats by their
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
 
@@ -111,6 +112,27 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 }
             }
         }
+        let lights = scene.lights_of(v);
+        h.word(lights.len() as u32);
+        for l in lights {
+            h.word(l.handle);
+            h.word(l.definition);
+            h.word(l.flags);
+            h.word(l.definition_flags);
+            h.word(u32::from(l.additional_casters));
+            let steps = scene.steps_of(l);
+            h.word(steps.len() as u32);
+            for s in steps {
+                h.word(u32::from(s.layer));
+                h.word(s.stencil.map_or(u32::MAX, u32::from));
+                h.word(match s.target {
+                    crate::light::LightTarget::ShadowMap => 0x100,
+                    crate::light::LightTarget::View => 0x200,
+                    crate::light::LightTarget::Target(n) => u32::from(n),
+                });
+                h.word(u32::from(s.draws));
+            }
+        }
     }
     h.0
 }
@@ -181,5 +203,21 @@ mod tests {
         assert_eq!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(5, 0.0)), "epoch, frame and stamp do not count");
         assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, 0.5)), "a node moved");
         assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, -0.0)), "floats by their bits");
+    }
+
+    #[test]
+    fn a_lights_steps_count_in_the_hash() {
+        use crate::light::{LightStep, LightTarget, SceneLight};
+        let with = |stencil| {
+            let mut s = (*scene(1, 0.0)).clone();
+            s.light_steps.push(LightStep { layer: 12, stencil, target: LightTarget::View, draws: true });
+            s.lights.push(SceneLight {
+                handle: 4, definition: 5, flags: 0, definition_flags: 0, additional_casters: false, steps: 0..1,
+            });
+            s.views[0].lights = 0..1;
+            summary_hash(&s)
+        };
+        assert_ne!(with(Some(0)), summary_hash(&scene(1, 0.0)), "a light");
+        assert_ne!(with(Some(0)), with(None), "its stencil change");
     }
 }

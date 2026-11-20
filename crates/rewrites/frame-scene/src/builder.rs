@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::camera::Camera;
+use crate::light::{LightStep, SceneLight};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 use crate::scene::{
@@ -158,6 +159,7 @@ impl SceneBuilder {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let cut = !self.previous.views.contains(&key);
         let (c, i, o) = (scene.clusters.len() as u32, scene.instances.len() as u32, scene.order.len() as u32);
+        let l = scene.lights.len() as u32;
         scene.views.push(View {
             key,
             cut,
@@ -168,6 +170,7 @@ impl SceneBuilder {
             world: WorldState::default(),
             remainder: 0,
             aux_depth: None,
+            lights: l..l,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
@@ -266,6 +269,19 @@ impl SceneBuilder {
             subparts,
         });
         scene.instances[instance as usize].parts.end = index + 1;
+        Ok(index)
+    }
+
+    /// Adds a light to the open view, after its lights so far, with its
+    /// passes' steps in order; its index in the scene. The builder sets
+    /// `light.steps`.
+    pub fn push_light(&mut self, light: SceneLight, steps: &[LightStep]) -> Result<u32, BuildError> {
+        let (scene, open) = self.open_mut()?;
+        let s = scene.light_steps.len() as u32;
+        scene.light_steps.extend_from_slice(steps);
+        let index = scene.lights.len() as u32;
+        scene.lights.push(SceneLight { steps: s..scene.light_steps.len() as u32, ..light });
+        scene.views[open].lights.end = index + 1;
         Ok(index)
     }
 
@@ -421,6 +437,46 @@ mod tests {
         // Bits past the part's own subparts draw nothing.
         assert_eq!(Subparts { first: 0, count: 2, visible: u64::MAX }.drawn().count(), 2);
         assert_eq!(Subparts { first: 0, count: 0, visible: u64::MAX }.drawn().count(), 0);
+    }
+
+    #[test]
+    fn a_views_lights_keep_their_steps_in_order_and_count_their_shadows() {
+        use crate::light::{LightStep, LightTarget, SceneLight};
+        let step = |layer, stencil, target| LightStep { layer, stencil, target, draws: true };
+        let light = |handle, flags| SceneLight {
+            handle, definition: 0xe300_0000, flags, definition_flags: 0, additional_casters: false, steps: 0..0,
+        };
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        assert_eq!(b.push_light(light(1, 0), &[]).unwrap_err(), BuildError::NoView);
+        b.open_view(key(0), camera()).unwrap();
+        let shadowed = [
+            step(10, None, LightTarget::ShadowMap),
+            step(11, Some(0), LightTarget::View),
+            step(14, Some(0), LightTarget::Target(1)),
+            step(12, Some(0), LightTarget::View),
+        ];
+        b.push_light(light(7, 4), &shadowed).unwrap();
+        b.push_light(light(8, 3), &[step(14, Some(0), LightTarget::Target(1)), step(12, Some(0), LightTarget::View)]).unwrap();
+        b.open_view(key(1), camera()).unwrap();
+        b.push_light(light(9, 0), &[step(12, Some(0), LightTarget::View)]).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let v = &s.views[0];
+        let lights = s.lights_of(v);
+        assert_eq!(lights.iter().map(|l| l.handle).collect::<Vec<_>>(), [7, 8]);
+        assert_eq!(s.steps_of(&lights[0]), &shadowed);
+        assert_eq!(s.steps_of(&lights[1]).iter().map(|s| s.layer).collect::<Vec<_>>(), [14, 12]);
+        assert_eq!((s.counts(v).lights, s.counts(v).shadows), (2, 1));
+        let w = &s.views[1];
+        assert_eq!((s.counts(w).lights, s.counts(w).shadows), (1, 0));
+        assert_eq!(s.steps_of(&s.lights_of(w)[0]).len(), 1);
+        let mut bad = (*s).clone();
+        bad.lights[0].steps = 0..100;
+        assert!(bad.check().unwrap_err().contains("steps"));
+        let mut bad = (*s).clone();
+        bad.views[1].lights = 1..3;
+        assert!(bad.check().is_err());
     }
 
     #[test]

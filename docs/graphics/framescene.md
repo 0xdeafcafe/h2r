@@ -704,8 +704,8 @@ commands are for the coordinator.
 ### Slice 3: no remainder in the opaque block
 
 Research first (`h2 disasm`), then code. Three parts, each its own
-commits. The objects part is built; the lights and the first-person
-and world-layer parts are not.
+commits. The objects and lights parts are built; the first-person and
+world-layer part is not.
 
 - **Objects.** The geometry draw `0x0004d0b0` reads four bits of the
   render record's `+0` in layer 3 (**Code**; the module notes of
@@ -772,36 +772,58 @@ and world-layer parts are not.
   `_part_subparts` and `_part_topology` (parts, where
   `walk_unsupported` counts objects). `render.scene` reports each view's
   parts by flag (`part_flags`).
-- **Lights.** The refusals in `light_list.rs` and
-  `native_lights::walk` ("shadow, stencil or layer 14 work", "both
-  sorted light layers are required", the split-light case). Type the
-  light list, its geometry and the shadow maps; draw the shadow maps
-  as one batch at the start of the view's stage, not as a pass per
-  light.
+- **Lights.** The light passes `0x00031170` draw, per light, layer 10
+  (shadow casters, `0x000312ad`), layer 11 (shadow receivers,
+  `0x00031348`), the additional casters' pair `0x00030ed0`, layer 14
+  (`0x000313dd`), layer 12 (diffuse, `0x0003144a`) and layer 13
+  (specular, `0x000314ca`) (**Code**; the module notes of
+  `scene_extract::layout::light_passes` give each layer's condition).
+  Before each of layers 11, 14, 12 and 13 they set stencil mode 0
+  through `0x00015370`, the test off; before layer 10 they set none. So
+  no layer reads a stencil an earlier one wrote: a later layer reads
+  the shadow map (target 9) and the destination alpha layer 11 writes,
+  both kept by the GPU's order. At the passes' entry
+  (`hooks::native_lights::begin_light`) `light_passes::read` takes the
+  flags the light's constants computed, its lists' masks and the
+  additional casters' inputs, `light_passes::steps` gives the layers in
+  order, each with its stencil change, target and whether it draws, and
+  the light goes into the open view (`frame_scene::SceneLight`,
+  `LightStep`; `View::lights`). The resolved-draw path takes each of
+  layers 12 and 13 the steps draw, one at a time, with the candidate
+  kept from the entry to the next light; the gathered walk batches any
+  layer the steps draw, each its own reservation
+  (`walk::light_layer_draws`); layers 10, 11 and 14 are the shadow
+  stage's. A shadowed light's layers 12 and 13 draw like any other's:
+  a pass that samples the shadow maps is refused by `light_look` by
+  name. With the additional casters' pair every layer keeps its
+  handlers (`lights_walk_fallback_graph`). Drawing the shadow maps as
+  one batch at the start of the view's stage is not built.
 - **First person and world layers 1, 5, 7, 8, 20**, typed.
-- **Lights, research.** The light passes `0x00031170` draw, per light,
-  layer 10 (shadow casters, `0x000312ad`), layer 11 (shadow receivers,
-  `0x00031348`), layer 14 (`0x000313dd`), layer 12 (diffuse,
-  `0x0003144a`) and layer 13 (specular, `0x000314ca`), each after a
-  stencil mode change through `0x00015370` (**Code**).
-  `light_list::single_layer` refuses a light with any of layers 10, 11
-  or 14 ("shadow, stencil or layer 14 work"), which set the stencil the
-  later layers test (**S**, from the mode changes between them), and a
-  light with both 12 and 13 ("both sorted light layers are required"):
-  the hook takes one layer's sorted entries per light, and the other
-  layer's are built only when its own layer draw runs. Typing the light
-  list therefore means typing the whole sequence, stencil modes
-  included, at the light passes' entry rather than per layer.
 - **Tests.** One synthetic case per former refusal reason, asserting
   the part or light is in the scene: for objects,
   `each_former_special_record_flag_is_a_part_or_a_named_cause` and
   `a_records_flags_become_part_flags_or_name_their_refusal`
   (`scene_extract::layout::object_walk`),
-  `a_marked_or_strip_part_is_in_the_scene_with_its_flags`
+  `a_marked_or_strip_part_is_in_the_scene_with_its_flags`,
+  `a_part_drawing_chosen_subparts_is_in_the_scene_with_its_mask` and
+  `an_auxiliary_depth_part_is_in_the_scene_and_its_view_has_what_the_toggle_sets`
   (`scene_extract::extract`),
   `a_marked_part_draws_in_mode_2_whatever_its_implementation_left`
-  (`native_render::object_state`). Shadow batch: N lights record at
-  most N target changes and no pass in between.
+  (`native_render::object_state`),
+  `chosen_subparts_draw_their_ranges_joined_where_adjacent` and
+  `an_auxiliary_depth_draw_takes_the_toggles_rows_and_clip_and_nothing_else`
+  (`native_render::object_program_gpu`); for lights,
+  `the_passes_order_is_10_11_14_12_13_and_each_flag_adds_its_layers`,
+  `every_step_after_the_casters_turns_the_stencil_off_first` and
+  `a_step_draws_only_with_its_layer_in_its_lists_mask`
+  (`scene_extract::layout::light_passes`),
+  `a_light_drawing_both_sorted_layers_is_the_candidate_of_each_in_turn`
+  (`hooks::native_lights`),
+  `each_layer_a_light_draws_batches_alone_unless_additional_casters_run`
+  (`hooks::native_lights::walk`),
+  `a_views_lights_keep_their_steps_in_order_and_count_their_shadows`
+  (`frame_scene::builder`). Shadow batch: N lights record at most N
+  target changes and no pass in between.
 - **Gate.** `walk_unsupported`, every lights refusal counter and every
   `refused_*` counter of the five stages are zero on the census corpus.
   Pixels and hashes on the gate corpus. Shadow passes per frame equal

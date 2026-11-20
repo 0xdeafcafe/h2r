@@ -63,8 +63,6 @@ pub enum Keep {
     NoWorld,
     /// The hook did not compute the light's constants.
     NoConstants,
-    /// A shadowed light: the shadow maps are not drawn natively.
-    Shadowed,
     /// A part it meets has no material (its shader does not read).
     NoMaterial,
     /// A pass it needs is refused (`light_look`, `compile_light`, the
@@ -80,7 +78,6 @@ impl std::fmt::Display for Keep {
         match self {
             Keep::NoWorld => f.write_str("the world's lights are not loaded"),
             Keep::NoConstants => f.write_str("no constants from the hook"),
-            Keep::Shadowed => f.write_str("shadowed"),
             Keep::NoMaterial => f.write_str("meets a part without a material"),
             Keep::Refused(why) => write!(f, "pass refused: {why}"),
             Keep::Unloaded(what) => write!(f, "samples an unloaded {what}"),
@@ -154,8 +151,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !uses_gel_target(mem, definition, shader, c.flags, c.definition_flags) {
             return Err(Keep::Unsupported("engine texture 10 does not select this gel invocation"));
         }
-        let (_, before) = self.checkpoint.lock().unwrap_or_else(|e| e.into_inner())
-            .take_if(|(id, _)| *id == serial).ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
+        // The light's entry checkpoint serves each of its layers.
+        let held = *self.checkpoint.lock().unwrap_or_else(|e| e.into_inner());
+        let before = held.filter(|(id, _)| *id == serial).map(|(_, c)| c)
+            .ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
         let target = gels::Target::read(&ReadMemory(mem)).ok_or(Keep::Unsupported("unavailable gel target 13"))?;
         self.gels.binding_after(before, definition, shader, target.surface)
             .filter(|b| b.guest_size == target.size)
@@ -213,7 +212,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<(), Keep> {
-        let Dispatch { light, serial, shader_gel, view_target, sorted } = dispatch;
+        let Dispatch { light, serial, layer, shader_gel, view_target, sorted } = dispatch;
         let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
         if !d.begin_external_boundary(&mut DeviceMemory(mem)).map_err(|_| Keep::Unsupported("could not drain light state"))? {
             return Err(Keep::Unsupported("light has an outstanding push callback"));
@@ -224,9 +223,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, binding)?;
         let c = &plan.constants;
-        let layers = mem.u32(hooks::native_lights::LIGHT_LIST + 8).ok()
-            .and_then(|mask| native_render::light_list::single_layer(mask, c.flags, c.definition_flags).ok());
-        if layers != plan.draws.first().map(|p| p.layer as u32) {
+        // The layer is one the light's steps draw, and every planned draw
+        // is the layer's.
+        use native_render::light_passes;
+        let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
+            .map_or(0, |i| light_passes::steps(&i).drawn());
+        if drawn & 1 << layer == 0 || plan.draws.iter().any(|p| p.layer as u32 != layer) {
             return Err(Keep::Unsupported("active light layers changed during setup"));
         }
         if mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags) ||
@@ -375,12 +377,12 @@ fn uses_gel_target(mem: &dyn GuestMemory, definition: u32, shader: u32, flags: u
             .and_then(|a| mem.u32(a).ok()) == Some(shader)
 }
 
+/// The light's constants. A shadowed light's layers 12 and 13 are drawn
+/// like any other's: no stencil links them to its layers 10, 11 and 14
+/// (`light_passes`), and a pass sampling the shadow maps is refused by
+/// `light_look` by name.
 fn constants(light: &Light) -> Result<LightConstants, Keep> {
-    let c = light.constants.ok_or(Keep::NoConstants)?;
-    if c.shadowed() {
-        return Err(Keep::Shadowed);
-    }
-    Ok(c)
+    light.constants.ok_or(Keep::NoConstants)
 }
 
 type ClusterParts = HashMap<(Owner, u8), (TagId, WorldDraw)>;
@@ -1386,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn only_unshadowed_lights_with_constants_are_drawable() {
+    fn lights_with_constants_are_drawable_shadowed_or_not() {
         use native_render::lights::LightConstants;
         let c = LightConstants {
             frame: [0; 36],
@@ -1416,7 +1418,7 @@ mod tests {
             constants,
         };
         assert!(constants(&light(Some(c))).is_ok());
-        assert!(matches!(constants(&light(Some(LightConstants { flags: 4 | 0x20, ..c }))), Err(Keep::Shadowed)));
+        assert!(constants(&light(Some(LightConstants { flags: 4 | 0x20, ..c }))).is_ok(), "shadowed");
         assert!(constants(&light(Some(LightConstants { animated_gel: true, ..c }))).unwrap().animated_gel);
         assert!(matches!(constants(&light(None)), Err(Keep::NoConstants)));
     }

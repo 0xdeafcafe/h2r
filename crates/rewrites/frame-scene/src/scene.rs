@@ -3,8 +3,9 @@
 //! ([`crate::FreeList`]) and can be walked without chasing pointers.
 //!
 //! Slice 1 fills the views, their cameras, clusters, object instances,
-//! parts and palette rows. Lights, shadow maps, the carried part and
-//! texture uploads join in the slices that type or carry them (3 and 6).
+//! parts and palette rows; slice 3 the lights and their passes' steps.
+//! Shadow maps, the carried part and texture uploads join in the slices
+//! that type or carry them (3 and 6).
 
 use std::fmt;
 use std::ops::Range;
@@ -13,6 +14,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::camera::Camera;
+use crate::light::{LightStep, SceneLight};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
 
@@ -156,6 +158,8 @@ pub struct View {
     /// What its [`PartFlags::AUX_DEPTH`] parts draw with; read when the
     /// view has one.
     pub aux_depth: Option<AuxDepth>,
+    /// Into [`FrameScene::lights`], in the guest's light order.
+    pub lights: Range<u32>,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -306,6 +310,9 @@ pub struct FrameScene {
     /// Part indices, each view's in its guest list order.
     pub order: Vec<u32>,
     pub rows: Vec<Row>,
+    pub lights: Vec<SceneLight>,
+    /// Each light's steps; lights index ranges of it.
+    pub light_steps: Vec<LightStep>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -325,6 +332,8 @@ impl FrameScene {
         self.parts.clear();
         self.order.clear();
         self.rows.clear();
+        self.lights.clear();
+        self.light_steps.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -349,6 +358,14 @@ impl FrameScene {
 
     pub fn rows_of(&self, part: &PartDraw) -> &[Row] {
         slice(&self.rows, &part.rows)
+    }
+
+    pub fn lights_of(&self, view: &View) -> &[SceneLight] {
+        slice(&self.lights, &view.lights)
+    }
+
+    pub fn steps_of(&self, light: &SceneLight) -> &[LightStep] {
+        slice(&self.light_steps, &light.steps)
     }
 
     /// The part of `view` at `slot` of the guest's list, with its
@@ -383,6 +400,7 @@ impl FrameScene {
                 }
             }
         }
+        let lights = self.lights_of(view);
         ViewCounts {
             clusters: view.clusters.len() as u32,
             instances: instances.len() as u32,
@@ -390,6 +408,8 @@ impl FrameScene {
             rows,
             remainder: view.remainder,
             flagged,
+            lights: lights.len() as u32,
+            shadows: lights.iter().filter(|l| l.shadowed()).count() as u32,
         }
     }
 
@@ -404,12 +424,13 @@ impl FrameScene {
             }
             Ok(())
         }
-        let mut last = [0u32; 3];
+        let mut last = [0u32; 4];
         for (n, v) in self.views.iter().enumerate() {
             within(&v.clusters, self.clusters.len(), &format!("view {n} clusters"))?;
             within(&v.instances, self.instances.len(), &format!("view {n} instances"))?;
             within(&v.order, self.order.len(), &format!("view {n} order"))?;
-            for (k, (r, l)) in [&v.clusters, &v.instances, &v.order].into_iter().zip(&mut last).enumerate() {
+            within(&v.lights, self.lights.len(), &format!("view {n} lights"))?;
+            for (k, (r, l)) in [&v.clusters, &v.instances, &v.order, &v.lights].into_iter().zip(&mut last).enumerate() {
                 if r.start < *l {
                     return Err(format!("view {n} range {k} {r:?} overlaps the view before"));
                 }
@@ -441,6 +462,9 @@ impl FrameScene {
                 within(&p.rows, self.rows.len(), &format!("instance {n} part {k} rows"))?;
             }
         }
+        for (n, l) in self.lights.iter().enumerate() {
+            within(&l.steps, self.light_steps.len(), &format!("light {n} steps"))?;
+        }
         Ok(())
     }
 }
@@ -456,4 +480,7 @@ pub struct ViewCounts {
     /// Parts with each [`PartFlags`] flag, by name; flags no part has are
     /// left out.
     pub flagged: Vec<(&'static str, u32)>,
+    pub lights: u32,
+    /// Lights that cast their shadow: the shadow maps the view draws.
+    pub shadows: u32,
 }

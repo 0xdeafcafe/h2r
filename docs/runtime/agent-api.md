@@ -703,7 +703,9 @@ h2 agent render.parity '{"arm": true}'
   `scene_glue` over `hooks::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
-  cut, its clusters, instances, parts, rows, lights, shadow maps, the
+  cut, its clusters, instances, parts, rows, lights, shadow maps (its
+  lights that cast their shadow), its lights by each layer their passes
+  draw (`light_layers`, `"10"` to `"14"`), the
   instances the guest still draws (`remainder`), its parts by how they
   draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
   `subparts`, `aux_depth`;

@@ -52,8 +52,9 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
                     instances: c.instances,
                     parts: c.parts,
                     rows: c.rows,
-                    lights: 0,
-                    shadows: 0,
+                    lights: c.lights,
+                    shadows: c.shadows,
+                    light_layers: light_layers(scene, v),
                     remainder: c.remainder,
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: BTreeMap::new(),
@@ -64,6 +65,17 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
         counters,
         dump: None,
     }
+}
+
+/// The view's lights by each layer their passes draw.
+fn light_layers(scene: &FrameScene, view: &frame_scene::View) -> BTreeMap<String, u32> {
+    let mut out = BTreeMap::new();
+    for light in scene.lights_of(view) {
+        for step in scene.steps_of(light).iter().filter(|s| s.draws) {
+            *out.entry(step.layer.to_string()).or_insert(0) += 1;
+        }
+    }
+    out
 }
 
 /// The cache directory: `$XDG_CACHE_HOME/h2recomp`, else
@@ -92,7 +104,8 @@ fn write_dump(scene: &FrameScene) -> Result<String, String> {
 mod tests {
     use super::*;
     use frame_scene::{
-        InstanceInput, InstanceKey, ItemKey, NodeMatrix, PartFlags, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind,
+        InstanceInput, InstanceKey, ItemKey, LightStep, LightTarget, NodeMatrix, PartFlags, RenderCamera, SceneBuilder, SceneId,
+        SceneLight, Stamp, ViewKey, ViewKind,
     };
 
     #[test]
@@ -126,6 +139,12 @@ mod tests {
         b.push_part(i, 4, key, 3, &[[0.0; 4]; 3]).unwrap();
         b.push_part_flagged(i, 5, key, 3, PartFlags::STENCIL_MARK, None, &[[0.0; 4]; 3]).unwrap();
         b.add_remainder(1).unwrap();
+        let step = |layer| LightStep { layer, stencil: Some(0), target: LightTarget::View, draws: true };
+        let light = |handle, flags| SceneLight {
+            handle, definition: 9, flags, definition_flags: 0, additional_casters: false, steps: 0..0,
+        };
+        b.push_light(light(1, 4), &[step(11), step(12)]).unwrap();
+        b.push_light(light(2, 0), &[step(12)]).unwrap();
         let scene = b.seal(Stamp::default()).unwrap();
         let r = reply(&scene, BTreeMap::new());
         assert!(r.sealed);
@@ -134,6 +153,8 @@ mod tests {
         let v = &r.views[0];
         assert_eq!(v.key, "game:0:0");
         assert_eq!((v.clusters, v.instances, v.parts, v.rows, v.remainder), (2, 1, 2, 6, 1));
+        assert_eq!((v.lights, v.shadows), (2, 1));
+        assert_eq!(v.light_layers, BTreeMap::from([("11".to_owned(), 1), ("12".to_owned(), 2)]));
         assert_eq!(v.part_flags, BTreeMap::from([("stencil_mark".to_owned(), 1)]));
         assert!(serde_json::to_string(&*scene).unwrap().contains("\"slot\":4"));
     }
