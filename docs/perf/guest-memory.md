@@ -131,7 +131,7 @@ Every transfer that leaves generated code goes through the runner
 ### The D3D write barrier
 
 Every D3D entry is wrapped by `boot::d3d_glue::barrier_handler`
-(`crates/apps/boot/src/d3d_glue.rs`): it drains the watch, then invokes the
+(`crates/extensions/game/src/d3d_glue.rs`): it drains the watch, then invokes the
 entry's own handler in place, so a D3D call costs one runner transfer. The
 guest sees the same registers, memory and return; the dead stack word under
 the caller's `ESP` keeps the caller's return address. Nothing is drained on

@@ -378,7 +378,7 @@ pub struct DefTable { by_tag_index: Vec<u32 /* 0 = absent, else index + 1 */>, d
 
 Keyed by tag datum index (an entry also keeps the full datum, so a reused
 index with a new salt decodes again), valid for one epoch. Map overrides
-and mods (`crates/apps/boot/src/map_override.rs`) replace map files through
+and mods (`crates/extensions/game/src/map_override.rs`) replace map files through
 the VFS, so their tags are in memory before any object exists, and lazy
 building sees them. The one writer of tag data after load is a hot tag
 edit (`edit.set`, `edit.revert`, `crates/extensions/hot-tags`), which

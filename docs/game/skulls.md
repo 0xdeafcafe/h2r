@@ -1,7 +1,7 @@
 # Campaign skulls per profile
 
 Status: Built. Pickup tracking, per-profile storage and the campaign-start apply (`boot::skulls`, the settings store's per-profile values) are seen working. The Skulls page between the difficulty and the level (`boot::skulls_screen`, `boot::skulls_menu`, our own list class with the level select's layout, "Menu" below) is tested offline; "Not verified" lists what only a run shows.
-Code: `crates/apps/boot/src/skulls.rs`, `skulls_screen.rs`, `skulls_menu.rs`, `skulls_mp.rs`, `skulls_custom.rs`. Tests: in those files.
+Code: `crates/extensions/game/src/skulls.rs`, `skulls_screen.rs`, `skulls_menu.rs`, `skulls_mp.rs`, `skulls_custom.rs`. Tests: in those files.
 Switch: feature ids `skulls`, `skulls-page`, `skulls-screen`, `skulls-mp`, `skulls-mp-row`, `skulls-mp-screen`, `skulls-custom` (`H2_FEATURES=<id>=off`), and `H2_SKULLS_REVEAL`; listed in [switches.md](../runtime/switches.md).
 
 The ask: a skull a player has picked up is remembered on their profile, and

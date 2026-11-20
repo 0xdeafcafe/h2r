@@ -4,7 +4,7 @@ Status: Built, with one scale for both axes. A per-axis scale for anamorphic
 widescreen is Design (not built).
 Code: `crates/platform/d3d/src/scaled.rs` and `crates/platform/d3d/src/scaled/single.rs`
 (`ScaledBackend`), `crates/platform/gfx/src/renderer.rs` (`window_shift`),
-`crates/apps/boot/src/d3d_glue.rs` (wiring). Tests: `crates/platform/d3d/tests/render_scale.rs`,
+`crates/extensions/game/src/d3d_glue.rs` (wiring). Tests: `crates/platform/d3d/tests/render_scale.rs`,
 `seams_gpu.rs`, `glyph_text.rs`.
 Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
 listed in [switches.md](../runtime/switches.md).
@@ -41,7 +41,7 @@ view").
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,
-`graphics.single_copy` in `crates/apps/boot/src/setting_defs.rs`). Set
+`graphics.single_copy` in `crates/extensions/game/src/setting_defs.rs`). Set
 `single_copy = false` under `[graphics]` for exact-reference captures or
 replays. The lighting A/B capture always uses its separate reference.
 
@@ -169,7 +169,7 @@ This differs from the render thread, where a disagreement stops the run,
 because there the disagreeing backend is the one the guest observes.
 Headless runs (`H2_BOOT_GFX` with `H2_RENDER_SCALE`) write `frame-NNNNN.png`
 from the view and `frame-NNNNN-1x.png` from the reference
-(`crates/apps/boot/src/d3d_glue.rs`, [BOOT.md](../runtime/BOOT.md)).
+(`crates/extensions/game/src/d3d_glue.rs`, [BOOT.md](../runtime/BOOT.md)).
 
 ### Changing the scale during a run
 

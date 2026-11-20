@@ -529,7 +529,7 @@ held.
 
 ### Boot integration
 
-`crates/apps/boot/src/xapi_glue.rs` is this integration, in place. The kernel is
+`crates/extensions/game/src/xapi_glue.rs` is this integration, in place. The kernel is
 attached with its VFS first (`k.set_vfs(v)`, which also mounts the raw
 disk), then:
 

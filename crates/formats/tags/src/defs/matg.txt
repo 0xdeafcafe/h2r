@@ -1,6 +1,6 @@
 # matg: game globals. Only the offsets this repo reads with a known meaning are named.
-# Evidence: crates/apps/boot/src/aim_assist.rs, crates/tools/h1convert/src/globals.rs, crates/tools/h1objects/src/base.rs,
-# crates/formats/content/src/campaign_list.rs, crates/apps/boot/src/level_boot.rs, crates/apps/cli/src/live_catalog.rs,
+# Evidence: crates/extensions/game/src/aim_assist.rs, crates/tools/h1convert/src/globals.rs, crates/tools/h1objects/src/base.rs,
+# crates/formats/content/src/campaign_list.rs, crates/extensions/game/src/level_boot.rs, crates/apps/cli/src/live_catalog.rs,
 # crates/formats/tags/src/localization.rs, crates/rewrites/engine/src/locale.rs, docs/formats/ui.md, localization.md, map-format.md,
 # docs/halo1/campaign-picker.md, docs/game/aim-assist.md.
 group matg 0x284 align 16

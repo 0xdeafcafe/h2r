@@ -3652,7 +3652,7 @@ fn build_vehicles(disc: &Disc) -> Vec<(String, Result<Model>)> {
 }
 
 /// A vehicle's seats block: `vehi +0x1c8` (count, address; stride `0xb0`,
-/// crates/formats/tags/src/defs/unit.txt and crates/apps/boot/src/touch_glue.rs), the
+/// crates/formats/tags/src/defs/unit.txt and crates/extensions/game/src/touch_glue.rs), the
 /// block the unit's seat index (`unit +0x1fc` at run time) points into.
 /// Each seat's label (string ID at `+4`) is the rider's animation mode and
 /// `+8` (string ID) the marker the rider sits at.

@@ -1,7 +1,7 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
 Status: Partly built. The speaker routing and the mute button are built; the microphone is a design only.
-Code: `crates/platform/dsound/src/padroute.rs`, `crates/apps/boot/src/pad_speaker.rs`, `crates/apps/boot/src/speaker_setting.rs`, `crates/apps/boot/src/speaker_row.rs`, `crates/platform/input/src/pad_hid.rs`. Tests: `crates/platform/dsound/tests/padroute.rs`.
+Code: `crates/platform/dsound/src/padroute.rs`, `crates/extensions/game/src/pad_speaker.rs`, `crates/extensions/game/src/speaker_setting.rs`, `crates/extensions/game/src/speaker_row.rs`, `crates/platform/input/src/pad_hid.rs`. Tests: `crates/platform/dsound/tests/padroute.rs`.
 Switch: `H2_PAD_SPEAKER`, `H2_PAD_SPEAKER_EXCLUSIVE`, `H2_PAD_MUTE`, listed in [switches.md](../runtime/switches.md).
 
 Three things were asked for, on a DualSense (and a DualShock 4 where it can):
@@ -310,7 +310,7 @@ widgets and raising the count together is what it takes.
 
 The row text is redrawn every update (the item's update method `0x24abe0`
 calls the screen's row text slot), so the value changes as soon as the row
-is pressed. Code: `crates/apps/boot/src/speaker_row.rs` (logic over the `Gm`
+is pressed. Code: `crates/extensions/game/src/speaker_row.rs` (logic over the `Gm`
 trait), registered by `layout_glue::install` because both features share
 those entries.
 

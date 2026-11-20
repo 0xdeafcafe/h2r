@@ -80,7 +80,7 @@ change.
 ## Cheats
 
 The retail game has no usable cheat commands, so these are our own
-(`crates/apps/boot/src/cheats.rs`). They are applied after each game tick to the
+(`crates/extensions/game/src/cheats.rs`). They are applied after each game tick to the
 local players' units, with the helpers our custom skulls use:
 
 | Cheat | What it does |
@@ -202,7 +202,7 @@ answers the calls the way the host methods do.
   the input layer and the agent connection share.
 - `crates/extensions/agent/src/menu.rs`: the menu's in-process agent connection, plus
   `settings.list`/`settings.set` and `perf.overlay`.
-- `crates/apps/boot/src/debug_menu_glue.rs`: installs those methods. A game
+- `crates/extensions/game/src/debug_menu_glue.rs`: installs those methods. A game
   without `H2_AGENT` still gets a socketless agent for the menu. Its shader
   overrides are not loaded or watched until asked.
 - `crates/apps/app/src/menu_overlay.rs`: the drawing (top left of the game image,

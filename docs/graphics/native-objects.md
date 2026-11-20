@@ -1,7 +1,7 @@
 # Native renderer stage 2: objects and skinning
 
 Status: Built. Objects draw natively in the default configuration; the first-person lights are not native.
-Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/native_objects.rs`, `crates/apps/boot/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
+Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/native_objects.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 2 of [native-renderer.md](native-renderer.md). Bipeds, vehicles, weapons,
@@ -251,7 +251,7 @@ Opaque parts are drawn with the game's own vertex program and pixel shader
 (see "Object programs"). `model_gpu::GpuModels` and `models.wgsl` draw the
 base map times a fixed ambient plus one directional term
 (`ambient + diffuse · max(n·l, 0)`); only the theater viewer uses that pass
-(`crates/apps/boot/src/theater/host_view.rs`). Materials without a decodable
+(`crates/extensions/game/src/theater/host_view.rs`). Materials without a decodable
 base map keep their D3D draws (the skip leaves their items alone). Transparent
 parts (kind 4) are not in layer 3 and are left out.
 
@@ -610,7 +610,7 @@ vertex and no matrix work on the CPU.
   registration tests); `render_thread`'s test checks the layer draw is
   render-thread safe with the world and objects on (see "Pipelined
   render").
-- **Boot glue** (`crates/apps/boot/src/native_objects_glue.rs`). Per map, a
+- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`). Per map, a
   worker with the map, its shared maps and the object tag context open;
   definitions arrive one at a time from the feature and are loaded once;
   a model is queued for upload before its definition is published, so a

@@ -590,7 +590,7 @@ commands are for the coordinator.
 - **Code.** `render.compare`, `render.capture`, `sim.hashes`: types in
   `crates/extensions/agent-proto/src/render.rs` and `sim/`, logic in
   `crates/extensions/agent/src/render.rs` (PNG compare as a pure function), host
-  glue in `crates/apps/boot/src/agent_glue.rs`, the `h2 agent frame compare`
+  glue in `crates/extensions/game/src/agent_glue.rs`, the `h2 agent frame compare`
   verb in the CLI, docs in [agent-api.md](../runtime/agent-api.md).
 - **Tests.** Compare: synthetic images (equal, one pixel, size
   mismatch, the bar's edges). Capture: the frame recorder's existing

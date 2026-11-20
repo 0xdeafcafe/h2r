@@ -1,7 +1,7 @@
 # Button icons for the device in use
 
 Status: Built. Unit tested on synthetic fonts; the game's own text path is under "Not verified".
-Code: `crates/apps/boot/src/icons.rs`, `crates/formats/font/src/icons/`, `crates/platform/input/src/active.rs`. Tests: listed under "Tests".
+Code: `crates/extensions/game/src/icons.rs`, `crates/formats/font/src/icons/`, `crates/platform/input/src/active.rs`. Tests: listed under "Tests".
 Switch: `H2_ICONS` (`--icons`), see [switches.md](../runtime/switches.md).
 
 Halo 2 draws button prompts ("Press X to pick up", the menu legends, the
@@ -169,7 +169,7 @@ The mapping is:
 
 ## How it works
 
-Two parts, both in `crates/apps/boot/src/icons.rs`.
+Two parts, both in `crates/extensions/game/src/icons.rs`.
 
 **1. The fonts get every set.** `vfs::RewriteBackend` wraps the disc. When
 the game opens a file under `maps\fonts` (not the `.txt` tables), the whole

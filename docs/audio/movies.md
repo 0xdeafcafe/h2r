@@ -1,6 +1,6 @@
 # Movies
 
-Status: Built. Code: `crates/formats/movies/src` (installer), `crates/platform/bink-hle/src`, `crates/apps/boot/src/movies_glue.rs`, `crates/apps/cli/src/movies_cmd.rs` (`h2 movies`). Tests: see "Tests".
+Status: Built. Code: `crates/formats/movies/src` (installer), `crates/platform/bink-hle/src`, `crates/extensions/game/src/movies_glue.rs`, `crates/apps/cli/src/movies_cmd.rs` (`h2 movies`). Tests: see "Tests".
 Switch: `--movies`, `--no-movies` (command-line flags).
 
 The retail disc contains three Bink 1 movies: `/bink/intro_60.bik`,
