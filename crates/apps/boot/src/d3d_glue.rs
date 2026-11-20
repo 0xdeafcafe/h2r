@@ -107,7 +107,7 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
 /// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
 /// exact two-copy mode also writes `frame-NNNNN-1x.png`. The run report gives the
 /// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
-/// one-tap shadow maps (docs/graphics/e3-lighting.md), with a view at 1x
+/// one-tap shadow maps (docs/graphics/e3-lighting-setting.md), with a view at 1x
 /// too when the scale is 1. `H2_BOOT_GFX_LIGHTING_AB=1` draws a retail and
 /// an E3 view of the same run (`d3d::LightingAb`, at least 2x), compares
 /// them on every shadow-map frame and writes differing pairs as
@@ -1125,6 +1125,22 @@ impl d3d::backend::Backend for Headless {
 
     fn reusable_external_attachments(&self) -> bool {
         self.0.reusable_external_attachments()
+    }
+
+    fn runs_scene_stages(&self) -> bool {
+        self.0.runs_scene_stages()
+    }
+
+    fn run_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> Result<bool, String> {
+        self.0.run_scene_stage(stage)
+    }
+
+    fn queues_scene_stages(&self) -> bool {
+        self.0.queues_scene_stages()
+    }
+
+    fn queue_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> bool {
+        self.0.queue_scene_stage(stage)
     }
 
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {

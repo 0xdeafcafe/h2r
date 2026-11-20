@@ -119,7 +119,7 @@ fn light_reset_preserves_live_records_their_owners_and_registered_lights() {
 
 #[test]
 fn model_reflection_changes_both_endpoints_and_restores_the_authored_material() {
-    use h1convert::shad::MODEL_REFLECTION_SIGNATURE;
+    use h1_contract::shader::MODEL_REFLECTION_SIGNATURE;
     let mut m = FakeGuest::new();
     let cells = globals(&mut m);
     let (table, shad, pp, colors, vectors) = (0x60000, 0x70000, 0x80000, 0x90000, 0xa0000);

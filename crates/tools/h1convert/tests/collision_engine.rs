@@ -16,7 +16,7 @@
 //! follows the Halo 2 engine's projection and side rules.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1convert --test collision_engine -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1convert --test it collision_engine:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

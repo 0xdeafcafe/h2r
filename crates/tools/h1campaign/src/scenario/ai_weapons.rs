@@ -1,6 +1,6 @@
 //! AI characters use the retail weapon their firing profiles and animations support.
 
-use h1ai::h1::H1Ai;
+use crate::ai::h1::H1Ai;
 use h1map::H1Map;
 use map::TagId;
 use map::build::{Block, TagSet};
@@ -44,7 +44,7 @@ pub(super) fn retail_tags(
         };
         let tag = h1.tag(id)?;
         let loud =
-            h1ai::h1::weapon_loudness(h1, tag).map_err(|e| invalid(format!("ai weapon {}: {e}", tag.name)))?;
+            crate::ai::h1::weapon_loudness(h1, tag).map_err(|e| invalid(format!("ai weapon {}: {e}", tag.name)))?;
         // A weapon the swap leaves out, or one with no retail counterpart
         // in the map, has no AI weapon here: a named error, not an
         // unarmed variant.

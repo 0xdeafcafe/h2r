@@ -1,4 +1,4 @@
-# Halo 1 models and animations as Halo 2 tags (`crates/tools/h1models`)
+# Halo 1 models and animations as Halo 2 tags (`crates/tools/h1-assets`)
 
 Status: **Built** (2026-11-16) for Halo 1 Xbox `mode` -> Halo 2 `mode` and
 `antr` -> `jmad`, including compressed (keyframed) animations
@@ -27,12 +27,12 @@ run time and print only counts and error figures.
   ignored test `retail_h2_mode_layouts`.
 - **V3:** checked against the `jmad` mode/class/type/action trees of every
   map on the owner's retail disc (30 maps, 2,268 graphs) by the ignored test
-  `retail_h2_animation_names` in `crates/tools/h1models/src/names.rs` (2026-11-17).
+  `retail_h2_animation_names` in `crates/tools/h1-assets/src/models/names.rs` (2026-11-17).
 - **V4:** checked on every map of the owner's Halo 1 disc (24 maps, 628
   graphs, 186 compressed animations) by the ignored test
   `h1_disc_compressed_animations_decode` (2026-11-17).
 - **V5:** checked on every biped and first-person model of the disc's a10
-  and Blood Gulch by the ignored tests in `crates/tools/h1models/src/skin_tests.rs`
+  and Blood Gulch by the ignored tests in `crates/tools/h1-assets/src/models/skin_tests.rs`
   (2026-11-18), which print only counts and error figures.
 - **X:** read from the Halo 1 Xbox XBE's own code (disassembled from
   `default.xbe` on the disc; addresses are virtual addresses in that XBE).
@@ -392,7 +392,7 @@ the node does *not* animate, and is constant over the animation.
 (`cinematics\animations\...`: the pilot, captain, chief, Cortana,
 marines and others on a10, a30, a50, b40, c40, d20 and d40). None occur in
 the multiplayer maps. They are keyframed rather than stored per frame;
-`crates/tools/h1models/src/compressed.rs` decodes them to the same per-frame
+`crates/tools/h1-assets/src/models/compressed.rs` decodes them to the same per-frame
 transforms as the uncompressed path, and they convert through the same
 `jmad` path.
 

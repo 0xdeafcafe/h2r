@@ -86,5 +86,5 @@ checked. `crates/rewrites/engine/tests/point_shapes.rs` checks the whole table
 against the user's XBE:
 
 ```text
-H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential --test point_shapes
+H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential --test it point_shapes::
 ```

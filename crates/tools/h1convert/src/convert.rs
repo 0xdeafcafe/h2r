@@ -241,7 +241,7 @@ pub struct Lightmap {
     /// Pages (images).
     pub pages: usize,
     /// The converted tag.
-    pub bitmap: h1models::Converted,
+    pub bitmap: h1_assets::models::Converted,
     /// The base tag whose slot it takes, and that tag's name.
     pub slot: TagId,
     /// The name of the tag in that slot before.

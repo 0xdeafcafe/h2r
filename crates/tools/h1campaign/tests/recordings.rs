@@ -271,7 +271,7 @@ fn script_calls_reach_the_native_recording_player() {
     ] {
         let source = s.catalog.index_of(name).unwrap();
         let tr = s.table.builtin(source).unwrap();
-        assert_eq!(tr.kind, h1scripts::translate::Kind::Direct, "{name}");
+        assert_eq!(tr.kind, h1campaign::scripts::translate::Kind::Direct, "{name}");
         assert_eq!(tr.target.as_ref().unwrap().1.index, index, "{name}");
         let evaluate = catalog.function(index).unwrap().evaluate();
         assert!(evaluate <= call && call - evaluate < 0x60, "{name}");

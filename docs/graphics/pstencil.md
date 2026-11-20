@@ -2,8 +2,8 @@
 
 Status: Built (research). A reading of published tags and a decision; it states nothing about our code beyond what it cites.
 
-A companion to [e3-lighting.md](e3-lighting.md). That page has the design,
-the Lighting setting, and phase 0 (the light record and render path in retail);
+A companion to [e3-lighting.md](e3-lighting.md). That page has the design
+and the retail light record and render path ("Phase 0 findings");
 the history of the cut renderer is in [pstencil-history.md](pstencil-history.md)
 and the shadowlab prototype results in [notes/e3-lighting.md](notes/e3-lighting.md). This page adds what a
 study of the Digsite crew's published tag set says about lights, corrects
@@ -130,24 +130,30 @@ was not searched for these names.
 
 ## Sev's shadow-apply contract
 
-Sev's shaders replace the MCC kit's shadow-apply pixel pass. Read as
-documentation of that pass (**C**): it samples a projected shadow depth map
-with a small depth bias, multiplies by a fog term from a second texture,
-fades by a constant and is gated by vertex alpha. The sharp mode is a single
-tap ("stencil-like"), the soft mode a wide percentage-closer filter over a
-Poisson disk. The E3 variants differ only for that tag set.
+Sev's shaders replace the MCC kit's two shadow-apply pixel passes (its
+one-sample and three-sample slots). Read as documentation of that pass
+(**C**; the reading is recorded in
+[notes/e3-lighting.md](notes/e3-lighting.md), "Sev's shadow-apply
+shaders"): it compares a projected shadow depth map with a small constant
+bias, multiplies by a fog term from a second texture, fades by a constant
+and is gated by vertex alpha. Neither mode is a single tap. Both filter a
+wide footprint of the map; the sharp mode ("stencil-like" in the README)
+then steepens the filtered result around half coverage, and the soft mode
+leaves it. The E3 variants are the same two files in the other slots.
 
 This is the same shape as retail's layer 11 (shadow apply, `ShadowFunc
-GREATER` on the shadow depth level), and what phase 1 already does in the
-view: scale the shadow map and force one tap (e3-lighting.md, "The Lighting setting").
+GREATER` on the shadow depth level). The restoration's hard edge is
+therefore a filtered edge made steep, not a nearest tap; e3-lighting.md's
+Sharp form ("The edge") is that idea with four taps. The Lighting row on
+the D3D path uses one nearest tap instead
+([e3-lighting-setting.md](e3-lighting-setting.md)).
 
 ## The technique: why shadow maps
 
 The design note recommended true depth-fail stencil volumes for cast
 shadows, per shadow-casting light, as "historically accurate" with fill rate
 "free on modern GPUs", keeping shadow maps only for compositing. This
-project's decision stays **shadow maps with a one-tap comparison**, for four
-reasons:
+project's decision stays **shadow maps**, for four reasons:
 
 1. **Measured cost.** shadowlab on Zanzibar (Apple M1 Max, GPU timestamps,
    notes/e3-lighting.md) put volumes at or above
@@ -167,25 +173,25 @@ reasons:
 3. **The look does not need volumes.** Volume and one-tap map disagree on
    0.03% to 0.28% of lit pixels, falling with resolution. Every public
    description of the E3 look (hard edges, everything casts, self-shadowing)
-   is met by a high-resolution one-tap map (e3-lighting.md, "What this means
+   is met by a dense map with a steep edge (e3-lighting.md, "What this means
    for the technique").
 4. **The authors' own record.** Digsite's lights are "not pstencil" and the
-   crew's restoration gets its look from shadow maps (Sev's one-tap mode).
+   crew's restoration gets its look from shadow maps (Sev's sharp mode).
    Bungie's stated reasons for leaving volumes were exteriors, fill and
    caster complexity (pstencil-history.md, section 5), the cases point 2
    and the Pelican measure. Retail and Halo 3 both went to shadow maps.
 
 What volumes would still buy is exact edges at grazing angles and no bias.
-That is for phase 4's pictures to judge against the target look's items 1
-and 2, not a reason to change course now. If a case turns up that maps cannot
-meet, volumes for closed object casters only would be the narrow fallback.
+e3-lighting.md answers that with a map fitted to each caster and the Sharp
+edge, adds the reasons the native renderer brings (blended frames, the
+stencil buffer, the baked sun), and keeps no volume fallback.
 
-The rest of the design note's plan matches e3-lighting.md's phases and is not
-repeated: the light data first (phase 0, now including the `ligh` reader),
-per-pixel dynamic lights over the lightmap (phase 5), content wiring, and a
-sharp or soft filter. One point from it is kept for phase 5: MCC's dimness
-came from culling lights early, so a modern renderer should not cap the
-lights in view as the Xbox did.
+The rest of the design note's plan is not followed where retail already
+has the answer: per-pixel dynamic lights are the materials' own light
+passes, not a new shading path (e3-lighting.md, "What retail already
+has"). One point from it is kept: MCC's dimness came from culling lights
+early, so the renderer chooses its own lights and does not cap them as
+the Xbox did (e3-lighting.md, "Lights: which, and how many").
 
 ## Not known
 

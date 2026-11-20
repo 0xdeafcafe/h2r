@@ -26,12 +26,11 @@ content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 hs.workspace = true
-h1scripts = { path = "../../tools/h1scripts" }
 coop = { path = "../../live/coop" }
-h1text = { path = "../../tools/h1text" }
 map.workspace = true
-h1convert = { path = "../../tools/h1convert" }
-h1map = { path = "../../tools/h1map" }
+# What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);
+# no converter crate.
+h1-contract.workspace = true
 # Our settings (setting_defs, the ui model).
 settings = { path = "../../formats/settings" }
 hooks = { path = "../../hooking/hooks", default-features = false }

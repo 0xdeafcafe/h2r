@@ -1,7 +1,7 @@
 //! The Halo 1 level's own skies (`h1sky`) in place of the base's.
 //!
 //! Each sky the Halo 1 scenario names (`scnr` skies) is converted with its
-//! model, lights and fog by [`h1sky::convert::sky_from_map`] and added as a
+//! model, lights and fog by [`h1_assets::sky::convert::sky_from_map`] and added as a
 //! new tag. The base scenario's skies block (`scnr +0x08`, count; `+0x0c`,
 //! pointer; 8-byte tag references) keeps its length: element `k` names
 //! Halo 1's sky `k`, or Halo 1's last when the base has more, so no element
@@ -30,19 +30,19 @@ pub struct Sky {
     /// The Halo 1 sky's tag path (the new tag's name).
     pub name: String,
     source_map: String,
-    pub sky: h1sky::h1::Sky,
+    pub sky: h1_assets::sky::h1::Sky,
     /// Its render model's path and conversion.
-    pub model: Option<(String, h1models::Converted)>,
+    pub model: Option<(String, h1_assets::models::Converted)>,
     /// `sky +0x14`: the least that keeps the sky behind the level
-    /// ([`h1sky::convert::model_scale`]).
+    /// ([`h1_assets::sky::convert::model_scale`]).
     pub model_scale: f32,
     /// Halo 1's shader of each model material, where it reads.
     pub shaders: Vec<Option<H1SkyShader>>,
     /// The Halo 1 bitmaps they draw: (Halo 1 id, name, conversion).
-    pub bitmaps: Vec<(h1map::TagId, String, h1models::Converted)>,
+    pub bitmaps: Vec<(h1map::TagId, String, h1_assets::models::Converted)>,
     /// Opaque copies of the pictures drawn without their own alpha
     /// ([`H1SkyShader::opaque_picture`]), named [`opaque_name`].
-    pub opaque_bitmaps: Vec<(h1map::TagId, String, h1models::Converted)>,
+    pub opaque_bitmaps: Vec<(h1map::TagId, String, h1_assets::models::Converted)>,
     /// Per sky light, its lens flare ([`crate::lens`]), where it has one
     /// that reads.
     pub flares: Vec<Option<crate::lens::Flare>>,
@@ -92,7 +92,7 @@ impl Sky {
     /// Reads and converts the Halo 1 sky `tag`: its model, and its
     /// model's shaders and their bitmaps.
     pub fn from_map(h1: &h1map::H1Map, tag: &h1map::Tag) -> Result<Self> {
-        let f = h1sky::convert::sky_from_map(h1, tag)
+        let f = h1_assets::sky::convert::sky_from_map(h1, tag)
             .map_err(|e| Error::Sky(format!("{}: {e}", tag.name)))?;
         let shaders = f
             .shaders
@@ -115,7 +115,7 @@ impl Sky {
                 continue;
             }
             let t = h1.tag(m.bitmap)?;
-            let (_, c, _) = h1bitmaps::convert_bitmap(h1, t)
+            let (_, c, _) = h1_assets::bitmaps::convert_bitmap(h1, t)
                 .map_err(|e| Error::no_rebuild(&h1.header().name, &t.name, e))?;
             bitmaps.push((m.bitmap, t.name.clone(), c));
         }
@@ -130,7 +130,7 @@ impl Sky {
                 continue;
             }
             let t = h1.tag(id)?;
-            let (_, c, _) = h1bitmaps::convert::convert_bitmap_opaque(h1, t)
+            let (_, c, _) = h1_assets::bitmaps::convert::convert_bitmap_opaque(h1, t)
                 .map_err(|e| Error::no_rebuild(&h1.header().name, &t.name, e))?;
             opaque_bitmaps.push((id, opaque_name(&t.name), c));
         }
@@ -283,7 +283,7 @@ impl Sky {
             .iter()
             .map(|f| f.as_ref().map(|f| f.install(set)).transpose())
             .collect::<Result<_>>()?;
-        h1sky::convert::install_sky_with_flares(
+        h1_assets::sky::convert::install_sky_with_flares(
             set,
             &self.sky,
             model,
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(&b[SKIES..SKIES + 4], &0u32.to_le_bytes());
     }
 
-    /// A converted model's materials, as `h1models::mode` lays them out:
+    /// A converted model's materials, as `h1_assets::models::mode` lays them out:
     /// each a null `+0x00` reference and its shader at `+0x08`.
     #[test]
     fn every_sky_material_names_the_shader() {

@@ -42,7 +42,7 @@ pub struct Prepared {
     pub templates: Templates,
     /// The cluster lightmap pages cut from Halo 1's lightmap bitmap
     /// (`h1convert::clusters::lightmap_bitmap`), and its tag name.
-    pub lightmap: Option<(String, h1models::Converted)>,
+    pub lightmap: Option<(String, h1_assets::models::Converted)>,
     pub pathfinding: PathfindingData,
     /// Per cluster, its background sound and sound environment (indices
     /// into the level's palettes, -1 none), and per collision leaf its

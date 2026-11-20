@@ -3,7 +3,7 @@
 //! only.
 //!
 //! ```sh
-//! H2_DISC=... cargo test -p h1objects --test hlmt_materials_disc -- --ignored --nocapture
+//! H2_DISC=... cargo test -p h1objects --test it hlmt_materials_disc:: -- --ignored --nocapture
 //! ```
 
 use std::fs::File;

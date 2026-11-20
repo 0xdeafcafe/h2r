@@ -44,8 +44,8 @@ fn survey_bases() {
     let e = d.map("a30").unwrap().clone();
     let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
     println!("a30 bsps: {}", h1.structure_bsps().unwrap().len());
-    let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
-    let plan = h1ai::convert::convert(&ai, &Default::default()).unwrap();
+    let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
+    let plan = h1campaign::ai::convert::convert(&ai, &Default::default()).unwrap();
     let chars: Vec<&str> = plan
         .characters
         .iter()
@@ -197,7 +197,7 @@ fn ai_and_name_literal_encoding() {
         let scnr = m.scenario().unwrap().clone();
         let b = m.read_tag_bytes(scnr.id).unwrap();
         let view = tags::geometry::TagView::new(&b, scnr.location.unwrap().address);
-        let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
+        let ai = h1campaign::ai::h2::ScenarioAi::read(&view).unwrap();
         let mut kinds = std::collections::BTreeMap::<String, Vec<String>>::new();
         for n in s.nodes() {
             if n.flags() & 1 == 0 {
@@ -376,7 +376,7 @@ fn h1_ai_sizes() {
     for level in h1map::disc::CAMPAIGN_LEVELS {
         let e = d.map(level).unwrap().clone();
         let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-        let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+        let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
         let fps: usize = ai.encounters.iter().map(|e| e.firing_positions.len()).sum();
         let max = ai
             .encounters
@@ -427,7 +427,7 @@ fn squad_flag_bits() {
         let s = m.scenario().unwrap().clone();
         let b = m.read_tag_bytes(s.id).unwrap();
         let view = tags::geometry::TagView::new(&b, s.location.unwrap().address);
-        let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
+        let ai = h1campaign::ai::h2::ScenarioAi::read(&view).unwrap();
         let mut v = [0usize; 32];
         for q in &ai.squads {
             bits(&mut v, q.flags);
@@ -451,7 +451,7 @@ fn squad_flag_bits() {
     for level in h1map::disc::CAMPAIGN_LEVELS {
         let e = d.map(level).unwrap().clone();
         let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-        let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+        let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
         let mut v = [0usize; 32];
         let mut sq = [0usize; 32];
         for e in &ai.encounters {
@@ -928,7 +928,7 @@ fn lifepod_use() {
     let mut h1iso = xiso::Xiso::open(BufReader::new(File::open(&h1p).unwrap())).unwrap();
     let e = h1iso.find("/default.xbe").unwrap();
     let catalog =
-        h1scripts::Catalog::from_xbe(&xbe::Xbe::parse(&h1iso.read(&e).unwrap()).unwrap()).unwrap();
+        h1campaign::scripts::Catalog::from_xbe(&xbe::Xbe::parse(&h1iso.read(&e).unwrap()).unwrap()).unwrap();
     let d = h1map::disc::Disc::open(&mut h1iso).unwrap();
     for level in h1map::disc::CAMPAIGN_LEVELS {
         let e = d.map(level).unwrap().clone();
@@ -960,8 +960,8 @@ fn lifepod_use() {
                 })
             })
         };
-        let t = h1scripts::Tables::read(&h1).unwrap();
-        let src = h1scripts::decompile::decompile(&t, &catalog)
+        let t = h1campaign::scripts::Tables::read(&h1).unwrap();
+        let src = h1campaign::scripts::decompile::decompile(&t, &catalog)
             .unwrap()
             .source;
         for (i, path) in &pods {
@@ -1077,7 +1077,7 @@ fn h1_initial_encounters() {
     let level = std::env::var("H1_LEVEL").unwrap_or("a10".into());
     let e = d.map(&level).unwrap().clone();
     let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-    let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+    let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
     for e in ai.encounters.iter().filter(|e| e.flags & 1 == 0) {
         for s in &e.squads {
             let variant = usize::try_from(s.actor)
@@ -1107,9 +1107,9 @@ fn ai_counts_against_the_caps() {
     for level in h1map::disc::CAMPAIGN_LEVELS {
         let e = d.map(level).unwrap().clone();
         let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-        let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
-        let named = h1scripts::Tables::read(&h1)
-            .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
+        let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
+        let named = h1campaign::scripts::Tables::read(&h1)
+            .map(|t| t.atom_tokens(h1campaign::scripts::catalog::types::AI))
             .unwrap_or_default()
             .into_iter()
             .map(|n| n.to_ascii_lowercase())
@@ -1155,7 +1155,7 @@ fn empty_squad_uses() {
     let level = std::env::var("H1_LEVEL").unwrap_or("a50".into());
     let e = d.map(&level).unwrap().clone();
     let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-    let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
+    let ai = h1campaign::ai::h1::H1Ai::read(&h1).unwrap();
     let empty: std::collections::BTreeSet<String> = ai
         .encounters
         .iter()
@@ -1166,7 +1166,7 @@ fn empty_squad_uses() {
                 .map(move |q| format!("{}/{}", e.name, q.name))
         })
         .collect();
-    let t = h1scripts::Tables::read(&h1).unwrap();
+    let t = h1campaign::scripts::Tables::read(&h1).unwrap();
     let mut uses = std::collections::BTreeMap::<String, usize>::new();
     for n in t.nodes.iter().filter(|n| n.live() && !n.atom()) {
         let Ok(head) = t.node(hs::Datum(n.data())) else {
@@ -1179,7 +1179,7 @@ fn empty_squad_uses() {
             let x = *t.node(a).unwrap();
             if x.atom()
                 && !x.global()
-                && x.opcode() == h1scripts::catalog::types::AI
+                && x.opcode() == h1campaign::scripts::catalog::types::AI
                 && empty.contains(t.string(x.string_offset()).unwrap_or(""))
             {
                 *uses.entry(format!("{name} arg {k}")).or_default() += 1;
@@ -1203,8 +1203,8 @@ fn h1_atoms_by_token() {
     let level = std::env::var("H1_LEVEL").unwrap_or("b30".into());
     let e = d.map(&level).unwrap().clone();
     let h1 = h1map::H1Map::from_reader(Cursor::new(h1iso.read(&e).unwrap())).unwrap();
-    let t = h1scripts::Tables::read(&h1).unwrap();
-    let lv = h1scripts::level::Level::read(&h1).unwrap();
+    let t = h1campaign::scripts::Tables::read(&h1).unwrap();
+    let lv = h1campaign::scripts::level::Level::read(&h1).unwrap();
     let flags: Vec<&str> = lv.flags.iter().map(|f| f.name.as_str()).collect();
     for tok in std::env::var("TOKENS").unwrap_or_default().split(',') {
         for n in t
@@ -1225,7 +1225,7 @@ fn h1_atoms_by_token() {
             }
         }
     }
-    use h1scripts::level::h2;
+    use h1campaign::scripts::level::h2;
     let bytes = lv.flags.len() * h2::FLAGS.1
         + lv.camera_points.len() * h2::CAMERA_POINTS.1
         + lv.titles.len() * h2::TITLES.1

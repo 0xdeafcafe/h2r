@@ -23,7 +23,7 @@
 //! with the structure's next round.
 
 use h1map::{H1Map, TagRef};
-use h1sounds::looping::{Looping, install_environment, install_looping};
+use h1_assets::sounds::looping::{Looping, install_environment, install_looping};
 use map::build::TagSet;
 use map::{FourCC, TagId};
 
@@ -54,7 +54,7 @@ pub struct Environment {
     pub entry: String,
     /// The `snde` tag path (the new tag's name).
     pub name: String,
-    pub tag: h1models::Converted,
+    pub tag: h1_assets::models::Converted,
 }
 
 /// The level's palettes, converted.
@@ -89,17 +89,17 @@ fn entry_name(e: &[u8]) -> String {
 /// Reads both palettes of every structure BSP (entries the BSPs share
 /// once), converting each looping sound with its sounds.
 pub fn read(h1: &H1Map) -> Result<Ambience> {
-    read_with(h1, h1sounds::looping::read_looping)
+    read_with(h1, h1_assets::sounds::looping::read_looping)
 }
 
 /// Read the palettes when the campaign installs all looping sounds in a single pass.
 pub fn read_campaign(h1: &H1Map) -> Result<Ambience> {
-    read_with(h1, h1sounds::looping::read_definition)
+    read_with(h1, h1_assets::sounds::looping::read_definition)
 }
 
 fn read_with(
     h1: &H1Map,
-    read_loop: fn(&H1Map, &h1map::Tag) -> h1sounds::Result<Looping>,
+    read_loop: fn(&H1Map, &h1map::Tag) -> h1_assets::sounds::Result<Looping>,
 ) -> Result<Ambience> {
     let mut out = Ambience::default();
     for bsp in h1.structure_bsps()? {
@@ -144,7 +144,7 @@ fn read_with(
                 Some(match out.environments.iter().position(|v| v.entry == entry && v.name == t.name) {
                     Some(k) => k,
                     None => {
-                        let tag = h1sounds::looping::read_environment(h1, t).map_err(|e| fail(&t.name, e.to_string()))?;
+                        let tag = h1_assets::sounds::looping::read_environment(h1, t).map_err(|e| fail(&t.name, e.to_string()))?;
                         out.environments.push(Environment { entry, name: t.name.clone(), tag });
                         out.environments.len() - 1
                     }

@@ -40,6 +40,7 @@ pub mod surface_alias;
 pub mod dxt;
 #[cfg(feature = "gpu")]
 pub mod encode;
+pub mod external;
 pub mod format;
 #[cfg(feature = "gpu")]
 pub mod guest_words;

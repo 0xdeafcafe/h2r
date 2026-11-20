@@ -81,7 +81,7 @@ pub struct Model {
     pub collision: Option<TagId>,
     pub animation: Option<TagId>,
     pub physics: Option<TagId>,
-    /// Node count and the node array ([`h1models::mode::hlmt_nodes`]).
+    /// Node count and the node array ([`h1_assets::models::mode::hlmt_nodes`]).
     pub nodes: (u32, Block),
     pub regions: Vec<Region>,
     /// The materials ([`model_materials`]).
@@ -541,7 +541,7 @@ pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatNames {
     /// `label`: the rider's animation mode, the name the converted biped
-    /// graphs give Halo 1's seat label (`h1models::names::mode_name`, the
+    /// graphs give Halo 1's seat label (`h1_assets::models::names::mode_name`, the
     /// whole label): `W-driver` is `warthog_d`, an unlisted label its
     /// lower-case, `-` to `_` form (a10's lifepod: `driver lifepod`).
     pub label: String,
@@ -574,7 +574,7 @@ pub const SEAT_CAMERA_TRACKS: &str = "block_74";
 
 /// A Halo 2 camera track (`trak`) with Halo 1's control points: the
 /// same layout, each point's position as it is and its orientation in
-/// Halo 2's convention, the conjugate ([`h1models::h1::h2_rotation`]).
+/// Halo 2's convention, the conjugate ([`h1_assets::models::h1::h2_rotation`]).
 ///
 /// The engine places the following camera by searching the track for the
 /// look pitch (E: `0x0023c980` bisects the track parameter in `[0, 1]`,
@@ -600,7 +600,7 @@ pub fn camera_track(t: &h1::CameraTrack) -> Result<Block> {
         set(
             &mut x,
             "orientation",
-            Val::floats(&h1models::h1::h2_rotation(*orientation)),
+            Val::floats(&h1_assets::models::h1::h2_rotation(*orientation)),
         )?;
         out.push(x);
     }
@@ -625,7 +625,7 @@ pub fn camera_elevation(q: [f32; 4]) -> f32 {
 /// marker names, which the converted model keeps as they are).
 pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     // The converted model keeps Halo 1's marker names as they are
-    // (`h1models::mode`), so a seat names them the same way.
+    // (`h1_assets::models::mode`), so a seat names them the same way.
     // A name the model lacks is written empty: the engine's marker
     // lookup (`0x000b8d30`) takes an empty name as the object's origin
     // but fails a name it cannot find, and the seat search (`0x000c7160`)
@@ -640,7 +640,7 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     };
     let enter = format!("{} enter", seat.marker);
     SeatNames {
-        label: h1models::names::mode_name(&seat.label),
+        label: h1_assets::models::names::mode_name(&seat.label),
         marker: found(&seat.marker),
         enter_marker: if markers.iter().any(|m| m.eq_ignore_ascii_case(&enter)) {
             found(&enter)
@@ -879,7 +879,7 @@ fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
 /// Retail vehicles hold their centre inside the body: the warthog's 0.29
 /// above an origin its wheels touch 0.02 below, the ghost's on an origin
 /// 0.15 above its belly (`tests/vehicle_ground_disc.rs`).
-pub fn model_sphere(model: &h1models::h1::Model) -> Option<(f32, [f32; 3])> {
+pub fn model_sphere(model: &h1_assets::models::h1::Model) -> Option<(f32, [f32; 3])> {
     let mut lo = [f32::MAX; 3];
     let mut hi = [f32::MIN; 3];
     let mut any = false;

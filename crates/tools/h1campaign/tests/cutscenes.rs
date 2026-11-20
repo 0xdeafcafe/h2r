@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
-use h1scripts::translate::Kind;
+use h1campaign::scripts::translate::Kind;
 
 const LEVELS: [&str; 10] = [
     "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
@@ -192,7 +192,7 @@ const CUTSCENE_BUILTINS: &[&str] = &[
 
 /// Every builtin call in a level's scripts: (builtin index, argument
 /// datums).
-fn calls(t: &h1scripts::Tables) -> Vec<(u16, Vec<hs::Node>)> {
+fn calls(t: &h1campaign::scripts::Tables) -> Vec<(u16, Vec<hs::Node>)> {
     let mut out = Vec::new();
     for n in t.nodes.iter().filter(|n| n.live()) {
         if n.atom() || n.script_call() {
@@ -213,7 +213,7 @@ fn calls(t: &h1scripts::Tables) -> Vec<(u16, Vec<hs::Node>)> {
     out
 }
 
-fn token(t: &h1scripts::Tables, n: &hs::Node) -> String {
+fn token(t: &h1campaign::scripts::Tables, n: &hs::Node) -> String {
     t.string(n.string_offset()).unwrap_or("?").to_owned()
 }
 
@@ -226,14 +226,14 @@ fn cutscene_survey() {
     let mut iso = h1_iso();
     let e = iso.find("/default.xbe").unwrap();
     let h1_xbe = iso.read(&e).unwrap();
-    let catalog = h1scripts::Catalog::from_xbe(&xbe::Xbe::parse(&h1_xbe).unwrap()).unwrap();
+    let catalog = h1campaign::scripts::Catalog::from_xbe(&xbe::Xbe::parse(&h1_xbe).unwrap()).unwrap();
     let (h2_xbe, scenarios) = h2_scenarios();
     let mut c = hs::Catalog::from_xbe(&xbe::Xbe::parse(&h2_xbe).unwrap()).unwrap();
     for s in &scenarios {
         c.observe(s).unwrap();
     }
-    let target = h1scripts::translate::Target::from_catalog(&c);
-    let table = h1scripts::translate::Table::build(&catalog, &target);
+    let target = h1campaign::scripts::translate::Target::from_catalog(&c);
+    let table = h1campaign::scripts::translate::Table::build(&catalog, &target);
 
     println!("== builtins");
     for name in CUTSCENE_BUILTINS {
@@ -363,7 +363,7 @@ fn cutscene_survey() {
     ];
     for level in levels() {
         let h1 = h1_level(&level);
-        let t = h1scripts::Tables::read(&h1).unwrap();
+        let t = h1campaign::scripts::Tables::read(&h1).unwrap();
         let all = calls(&t);
         let mut counts: BTreeMap<String, (usize, Kind)> = BTreeMap::new();
         let mut graphs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -420,7 +420,7 @@ fn cutscene_survey() {
                 );
                 continue;
             };
-            let graph = h1models::h1::Graph::read(&h1, tag.data_address).unwrap();
+            let graph = h1_assets::models::h1::Graph::read(&h1, tag.data_address).unwrap();
             let named: Vec<_> = anims
                 .iter()
                 .filter(|a| {
@@ -482,7 +482,7 @@ fn donors() -> h1campaign::donor::Donors {
 }
 
 /// Script calls (by name) anywhere under node `d`.
-fn script_calls(t: &h1scripts::Tables, d: hs::Datum, out: &mut BTreeSet<String>, depth: usize) {
+fn script_calls(t: &h1campaign::scripts::Tables, d: hs::Datum, out: &mut BTreeSet<String>, depth: usize) {
     let Ok(n) = t.node(d) else { return };
     if n.atom() || depth > 400 {
         return;
@@ -502,7 +502,7 @@ fn script_calls(t: &h1scripts::Tables, d: hs::Datum, out: &mut BTreeSet<String>,
 
 /// The scripts a level's skippable cinematics run: those called under
 /// `(if (cinematic_skip_start) ...)`, and every script they call.
-fn cinematic_scripts(t: &h1scripts::Tables, c: &h1scripts::Catalog) -> BTreeSet<String> {
+fn cinematic_scripts(t: &h1campaign::scripts::Tables, c: &h1campaign::scripts::Catalog) -> BTreeSet<String> {
     let if_ = c.index_of("if").unwrap();
     let mut roots = BTreeSet::new();
     for n in t
@@ -525,7 +525,7 @@ fn cinematic_scripts(t: &h1scripts::Tables, c: &h1scripts::Catalog) -> BTreeSet<
         let Ok(ch) = t.node(hs::Datum(cond.data())) else {
             continue;
         };
-        if token(t, ch) != h1scripts::compile::SKIP_GUARD {
+        if token(t, ch) != h1campaign::scripts::compile::SKIP_GUARD {
             continue;
         }
         script_calls(t, cond.next(), &mut roots, 0);
@@ -539,7 +539,7 @@ fn cinematic_scripts(t: &h1scripts::Tables, c: &h1scripts::Catalog) -> BTreeSet<
         let mut found = BTreeSet::new();
         script_calls(t, script.root, &mut found, 0);
         for f in found {
-            if f != h1scripts::compile::SKIP_GUARD && all.insert(f.clone()) {
+            if f != h1campaign::scripts::compile::SKIP_GUARD && all.insert(f.clone()) {
                 todo.push(f);
             }
         }
@@ -549,14 +549,14 @@ fn cinematic_scripts(t: &h1scripts::Tables, c: &h1scripts::Catalog) -> BTreeSet<
 
 #[test]
 fn default_campaign_cinematics_play_every_authored_path() {
-    use h1scripts::compile::Cutscenes;
+    use h1campaign::scripts::compile::Cutscenes;
     for level in LEVELS {
         assert_eq!(h1campaign::cutscenes::policy(&Default::default(), level), Cutscenes::Play);
     }
     assert_eq!(Cutscenes::default(), Cutscenes::Play);
 }
 
-fn command_targets(t: &h1scripts::Tables, d: hs::Datum, out: &mut Vec<u16>) {
+fn command_targets(t: &h1campaign::scripts::Tables, d: hs::Datum, out: &mut Vec<u16>) {
     let n = t.node(d).unwrap();
     if n.atom() { return; }
     let head = t.node(hs::Datum(n.data())).unwrap();
@@ -571,7 +571,7 @@ fn command_targets(t: &h1scripts::Tables, d: hs::Datum, out: &mut Vec<u16>) {
     }
 }
 
-fn command_script_links(level: &str, t: &h1scripts::Tables, output: &hs::Scenario, cinematic: &BTreeSet<String>) {
+fn command_script_links(level: &str, t: &h1campaign::scripts::Tables, output: &hs::Scenario, cinematic: &BTreeSet<String>) {
     let mut count = 0;
     for script in t.scripts.iter().filter(|s| matches!(level, "c10" | "c40") || cinematic.contains(&s.name)) {
         let mut source = Vec::new();
@@ -613,13 +613,13 @@ fn command_script_links(level: &str, t: &h1scripts::Tables, output: &hs::Scenari
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn cutscenes_convert_and_read_back() {
-    use h1scripts::compile::{Cutscenes, Missing, compile_with};
+    use h1campaign::scripts::compile::{Cutscenes, Missing, compile_with};
     let s = scripting();
     let donors = donors();
     let mut failed = Vec::new();
     for level in levels() {
         let h1 = h1_level(&level);
-        let t = h1scripts::Tables::read(&h1).unwrap();
+        let t = h1campaign::scripts::Tables::read(&h1).unwrap();
         let cinematic = cinematic_scripts(&t, &s.catalog);
         let played = compile_with(
             &t,
@@ -739,11 +739,11 @@ fn cutscenes_convert_and_read_back() {
         let tag = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(tag.id).unwrap();
         let w = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        let level_data = h1scripts::level::Level::read(&h1).unwrap();
+        let level_data = h1campaign::scripts::level::Level::read(&h1).unwrap();
         for (field, count) in [
-            (h1scripts::level::h2::CAMERA_POINTS.0, level_data.camera_points.len()),
-            (h1scripts::level::h2::FLAGS.0, level_data.flags.len()),
-            (h1scripts::level::h2::TITLES.0, level_data.titles.len()),
+            (h1campaign::scripts::level::h2::CAMERA_POINTS.0, level_data.camera_points.len()),
+            (h1campaign::scripts::level::h2::FLAGS.0, level_data.flags.len()),
+            (h1campaign::scripts::level::h2::TITLES.0, level_data.titles.len()),
         ] {
             assert_eq!(w(field as usize) as usize, count, "{level}: scenario +{field:#x}");
         }
@@ -797,7 +797,7 @@ fn cutscenes_convert_and_read_back() {
         }
         if let Some(op) = s.catalog.index_of("cinematic_screen_effect_set_video")
             && calls(&t).iter().any(|(index, _)| *index == op) {
-            for name in h1scripts::cinematics::VIDEO_BITMAPS {
+            for name in h1campaign::scripts::cinematics::VIDEO_BITMAPS {
                 assert!(scripts.references().iter().any(|r| r.group() == map::FourCC(*b"bitm") &&
                     m.tag(r.id()).is_ok_and(|t| t.name.as_deref() == Some(name) && t.location.is_some())));
             }
@@ -885,19 +885,19 @@ fn cutscenes_convert_and_read_back() {
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn seat_names_name_seats_the_vehicles_carry() {
     use h1campaign::scenario::h1 as scnr;
-    use h1scripts::compile::SEAT_NAME;
+    use h1campaign::scripts::compile::SEAT_NAME;
     let s = scripting();
     let enter = s.target.builtins["unit_enter_vehicle"].index;
     let mut matched = 0;
     for level in levels() {
         let h1 = h1_level(&level);
-        let t = h1scripts::Tables::read(&h1).unwrap();
-        let compiled = h1scripts::compile::compile(
+        let t = h1campaign::scripts::Tables::read(&h1).unwrap();
+        let compiled = h1campaign::scripts::compile::compile(
             &t,
             &s.catalog,
             &s.table,
             &s.target,
-            h1scripts::compile::Missing::Stub,
+            h1campaign::scripts::compile::Missing::Stub,
             &[],
         )
         .unwrap();
@@ -926,7 +926,7 @@ fn seat_names_name_seats_the_vehicles_carry() {
             let index = u16::from_le_bytes([placement[0], placement[1]]);
             let tag = h1map::TagRef::read(palette[usize::from(index)], 0).unwrap();
             let unit = h1objects::h1::Unit::read(&h1, h1.tag(tag.id).unwrap()).unwrap();
-            let expected = h1models::names::mode_name(&seat.token);
+            let expected = h1_assets::models::names::mode_name(&seat.token);
             assert!(
                 unit.seats.iter().any(|s| h1objects::rebuild::seat_names(s, &[]).label == expected),
                 "{level}: vehicle {:?} has no seat {expected:?}",
@@ -949,7 +949,7 @@ fn player_add_equipment_names_rebuilt_profiles() {
     for level in levels() {
         let h1 = h1_level(&level);
         let profiles = h1campaign::profiles::read(&h1).unwrap();
-        let tables = h1scripts::Tables::read(&h1).unwrap();
+        let tables = h1campaign::scripts::Tables::read(&h1).unwrap();
         for (index, args) in calls(&tables).into_iter().filter(|(index, _)| *index == add) {
             let name = tables.string(args[1].string_offset()).unwrap();
             let expected = u32::from(args[1].data() as u16);

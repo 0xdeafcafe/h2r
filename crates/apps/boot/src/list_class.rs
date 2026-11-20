@@ -178,6 +178,13 @@ pub trait Rows: Send + Sync {
     fn picture_image(&self) -> Option<u16> {
         None
     }
+    /// The image of its bitmap the picture shows while row `row` has the
+    /// focus ([`set_image`] as the focus moves), for a class with a
+    /// picture: each row's own icon in Quick Options' game type picture
+    /// (the Clankers and Halo 1 Options pages). `None` leaves it.
+    fn row_image(&self, _row: i16) -> Option<u16> {
+        None
+    }
     /// Text that changes while the screen is up, asked at each row text:
     /// bytes to write to guest memory first (the strings the ids this
     /// class shows are served from), and whether the description must be
@@ -1716,6 +1723,18 @@ pub async fn row_text(
                 moved,
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
+            }
+            if let (Some(picture), Some(image), Some(_)) = (
+                shown.picture(screen),
+                focused.and_then(|r| rows.row_image(r)),
+                moved,
+            ) {
+                if !cx.write(|m| set_image(m, picture, image))? {
+                    once(
+                        &PICTURE_MISSING,
+                        &format!("list class: the picture has no image {image}"),
+                    );
+                }
             }
             if let Some((picture, original)) = shown.picture_block(screen) {
                 let datum = focused

@@ -1,7 +1,7 @@
 # Halo 1 Xbox bitmaps (`bitm`)
 
 How Halo 1's Xbox maps store bitmaps, read by `h1map::bitmap`, decoded by
-`crates/tools/h1bitmaps` with Halo 2's texture decoder, and converted to Halo 2
+`crates/tools/h1-assets` with Halo 2's texture decoder, and converted to Halo 2
 `bitm` tags for the Halo 1 → Halo 2 map converter
 ([multiplayer.md](multiplayer.md)). The cache file around them
 is in [map-format.md](map-format.md); Halo 2's bitmaps are in
@@ -142,7 +142,7 @@ rasterizer's normalization cube map has it); its meaning is unknown, Halo
 2's decoder ignores it and the conversion keeps it. The census above counts
 flags masked to the low five bits.
 
-## Decoding (`crates/tools/h1bitmaps`)
+## Decoding (`crates/tools/h1-assets`)
 
 ```rust
 use h1bitmaps::BitmapExt;

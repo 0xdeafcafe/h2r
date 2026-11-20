@@ -7,7 +7,7 @@
 //! the body words of every retail physics model.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test biped_physics_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it biped_physics_disc:: -- --ignored --nocapture
 //! ```
 
 use std::collections::BTreeMap;

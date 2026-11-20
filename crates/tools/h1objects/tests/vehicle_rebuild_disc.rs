@@ -3,7 +3,7 @@
 //! discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test vehicle_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it vehicle_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `vehicle_type_and_flags_match_halo_2s_counterparts`: on eight pairs of
@@ -356,7 +356,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 // The sphere is the model's (`rebuild::model_sphere`;
                 // `tests/vehicle_ground_disc.rs`), Halo 1's without one.
                 let model = u.object.model.map(|m| {
-                    h1models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default()).unwrap().0
+                    h1_assets::models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default()).unwrap().0
                 });
                 let (radius, centre) = model
                     .as_ref()
@@ -378,7 +378,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                     // of the cyborg's graph of its own.
                     assert_eq!(
                         text(&r, &format!("{p}.label")),
-                        h1models::names::mode_name(&s.label),
+                        h1_assets::models::names::mode_name(&s.label),
                         "{name}: seat {k} label"
                     );
                     // Halo 1's marker, or none where the model lacks it.
@@ -495,13 +495,13 @@ fn powered_mass_points_become_friction_and_hover_points() {
             .unwrap();
         let u = h1::Unit::read(&h1, t).unwrap();
         let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
-        let model = h1models::model_from_map(&h1, h1.tag(u.object.model.unwrap()).unwrap(), &Default::default())
+        let model = h1_assets::models::model_from_map(&h1, h1.tag(u.object.model.unwrap()).unwrap(), &Default::default())
             .unwrap()
             .0;
         // Halo 1's mass point positions are in the object's space: each
         // powered point lies within its radius (plus a tenth of a unit)
         // of its node's default position.
-        let world = h1models::mode::world_transforms(
+        let world = h1_assets::models::mode::world_transforms(
             &model
                 .nodes
                 .iter()
@@ -665,7 +665,7 @@ fn seat_flags_match_halo_2s_counterparts() {
         let r = base.record(d, base.find(b"vehi", h2_name).unwrap()).unwrap();
         let Some(Val::Block(seats)) = r.at(VEHI_SEATS) else { panic!() };
         for s in &u.seats {
-            let mode = h1models::names::map_name(&s.label).mode;
+            let mode = h1_assets::models::names::map_name(&s.label).mode;
             let Some(x) = seats.iter().find(|x| string(x, "label", &strings) == mode) else {
                 continue;
             };
@@ -799,7 +799,7 @@ fn every_seat_passes_the_engines_boarding_rule() {
             }) {
                 let u = h1::Unit::read(&h1, t).unwrap();
                 let h1_graph =
-                    h1models::graph_from_map(&h1, h1.tag(u.object.animation.unwrap()).unwrap(), None)
+                    h1_assets::models::graph_from_map(&h1, h1.tag(u.object.animation.unwrap()).unwrap(), None)
                         .unwrap()
                         .0;
                 let id = c.object(t).unwrap();
@@ -1061,14 +1061,14 @@ fn wheels_and_treads_are_solid_above_the_hull() {
             .unwrap();
         let u = h1::Unit::read(&h1, t).unwrap();
         let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
-        let model = h1models::model_from_map(
+        let model = h1_assets::models::model_from_map(
             &h1,
             h1.tag(u.object.model.unwrap()).unwrap(),
             &Default::default(),
         )
         .unwrap()
         .0;
-        let world = h1models::mode::world_transforms(
+        let world = h1_assets::models::mode::world_transforms(
             &model
                 .nodes
                 .iter()
@@ -1211,14 +1211,14 @@ fn every_powered_point_rides_the_root_node() {
         .unwrap();
     let u = h1::Unit::read(&h1, t).unwrap();
     let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
-    let model = h1models::model_from_map(
+    let model = h1_assets::models::model_from_map(
         &h1,
         h1.tag(u.object.model.unwrap()).unwrap(),
         &Default::default(),
     )
     .unwrap()
     .0;
-    let world = h1models::mode::world_transforms(
+    let world = h1_assets::models::mode::world_transforms(
         &model
             .nodes
             .iter()

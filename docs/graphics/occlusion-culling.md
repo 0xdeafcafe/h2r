@@ -342,7 +342,7 @@ Built and tested, all behind `impl.render.occlusion` (exactly that key;
 - the device's grid: the depth the draws before the ask left, not what
   comes after, the W parameters, nothing when not W-buffered, on the
   device's thread, through the render thread and through `InterpBackend`
-  (`cargo test -p d3d --test occlusion_grid`, needs
+  (`cargo test -p d3d --test it occlusion_grid::`, needs
   `DEPTH32FLOAT_STENCIL8`), and the viewport-to-texel rectangle
   (`cargo test -p d3d --lib grid_rect`);
 - the guest side (`occlusion::guest`) and the feature on the runtime

@@ -148,7 +148,7 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.static-light", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
-    // Simulation: hand ports (`crate::sim_native`).
+    // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_rotation_codec", Off, "sim", "2026-11-20", SIM_PORT),

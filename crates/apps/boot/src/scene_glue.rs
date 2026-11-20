@@ -1,6 +1,8 @@
 //! `render.scene`'s source (docs/runtime/agent-api.md): the frame step's
 //! last sealed `FrameScene` (`hooks::scene_step`, docs/graphics/framescene.md),
-//! summarised per view, and written whole as JSON on `dump`.
+//! summarised per view, and written whole as JSON on `dump`; with the
+//! scene stages each typed stage queued to the render thread and dropped
+//! there (`d3d::scene_stage`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,8 +16,11 @@ pub fn install() {
 }
 
 fn source(dump: bool) -> Result<SceneReply, String> {
-    let counters: BTreeMap<String, u64> =
-        hooks::scene_step::counters().into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+    let counters: BTreeMap<String, u64> = hooks::scene_step::counters()
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .chain(d3d::scene_stage::counters())
+        .collect();
     let Some(scene) = hooks::scene_step::last() else {
         return Ok(SceneReply { counters, ..SceneReply::default() });
     };

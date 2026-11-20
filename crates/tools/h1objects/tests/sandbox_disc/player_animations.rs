@@ -1,7 +1,7 @@
 //! Exercise the installed player's graph through the same sorted tables
 //! and wildcard order as the action, overlay and damage searches.
 use super::*;
-use h1models::h1::{AnimType, Graph};
+use h1_assets::models::h1::{AnimType, Graph};
 use tags::schema::Memory;
 
 struct Lookup<'a> {
@@ -170,7 +170,7 @@ fn check_first_person(source: &Graph, out: &Lookup<'_>) {
     for (slot, &i) in source.first_person_slots.iter().enumerate() {
         let key = match slot {
             13 => "melee_strike_1".to_string(),
-            _ => h1models::h1::FIRST_PERSON_SLOTS[slot].replace('-', "_"),
+            _ => h1_assets::models::h1::FIRST_PERSON_SLOTS[slot].replace('-', "_"),
         };
         if i == -1 {
             assert!(

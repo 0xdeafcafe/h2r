@@ -1204,16 +1204,16 @@ pub fn alpha_scaled_argb(
     img: &h1map::bitmap::Image,
     pixels: &[u8],
     alpha: u8,
-) -> h1bitmaps::Result<(h1map::bitmap::Image, Vec<u8>)> {
+) -> h1_assets::bitmaps::Result<(h1map::bitmap::Image, Vec<u8>)> {
     use h1map::bitmap::{self as b, ImageKind, PixelFormat};
     if img.kind != ImageKind::D2 {
-        return Err(h1bitmaps::Error::Unsupported(format!("HUD image type {:?}", img.kind)));
+        return Err(h1_assets::bitmaps::Error::Unsupported(format!("HUD image type {:?}", img.kind)));
     }
-    let levels = h1bitmaps::decode_image(img, pixels)?;
+    let levels = h1_assets::bitmaps::decode_image(img, pixels)?;
     let top = levels
         .iter()
         .find(|l| l.face == 0 && l.level == 0)
-        .ok_or_else(|| h1bitmaps::Error::Invalid("no top level".into()))?;
+        .ok_or_else(|| h1_assets::bitmaps::Error::Invalid("no top level".into()))?;
     let mut argb = img.clone();
     argb.format = PixelFormat::A8R8G8B8;
     argb.flags = (img.flags & !(b::FLAG_COMPRESSED | b::FLAG_PALETTIZED | b::FLAG_SWIZZLED))
@@ -1222,8 +1222,8 @@ pub fn alpha_scaled_argb(
     argb.depth = 1;
     let (w, h) = (top.width as usize, top.height as usize);
     // The row pitch Halo 2's descriptor gives a linear image (64-byte rows).
-    let pitch = h1bitmaps::texture_desc(&argb)?.pitch as usize;
-    let mut out = vec![0u8; h1bitmaps::decode::layout_len(&argb)?.max(pitch * h)];
+    let pitch = h1_assets::bitmaps::texture_desc(&argb)?.pitch as usize;
+    let mut out = vec![0u8; h1_assets::bitmaps::decode::layout_len(&argb)?.max(pitch * h)];
     for y in 0..h {
         for x in 0..w {
             let s = &top.rgba[(y * w + x) * 4..][..4];
@@ -2308,7 +2308,7 @@ mod tests {
         // Rows padded to 64 bytes.
         assert_eq!(&out[..8], &[1, 2, 3, 0x28, 4, 5, 6, 0x28]);
         assert_eq!(&out[64..72], &[7, 8, 9, 0x28, 10, 11, 12, 0x28]);
-        let back = h1bitmaps::decode_image(&argb, &out).unwrap();
+        let back = h1_assets::bitmaps::decode_image(&argb, &out).unwrap();
         assert_eq!(&back[0].rgba[..8], &[3, 2, 1, 0x28, 6, 5, 4, 0x28]);
         assert_eq!(&back[0].rgba[8..], &[9, 8, 7, 0x28, 12, 11, 10, 0x28]);
     }

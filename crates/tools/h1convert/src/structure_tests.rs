@@ -1027,7 +1027,7 @@ fn each_cluster_gets_one_lightmap_page_sampling_what_its_meshes_did() {
             for k in 0..2 {
                 let from = texel(vb.lightmap[k], piece.page_size[k]) - piece.from[k] as f32;
                 let to = texel(va.lightmap[k], page.size[k])
-                    - (piece.at[k] + h1bitmaps::atlas::BORDER) as f32;
+                    - (piece.at[k] + h1_assets::bitmaps::atlas::BORDER) as f32;
                 assert!((from - to).abs() < 1e-3, "{from} vs {to}");
             }
         }

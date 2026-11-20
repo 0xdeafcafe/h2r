@@ -78,7 +78,7 @@ fn a10_shield_charger_keeps_its_lamp_four_scrolls_and_power_colours() {
         let bitmap = Bitmap::read(&h1, source(b"bitm", image)).unwrap();
         let img = &bitmap.images[0];
         assert_eq!((img.width, img.height, img.format), (size, size, format));
-        let payload = h1bitmaps::decode::layout_len(img).unwrap();
+        let payload = h1_assets::bitmaps::decode::layout_len(img).unwrap();
         assert_eq!(
             &conv.tree.tags[bitmap_id].1.raw[0].0[..payload],
             &bitmap.pixels(&h1, 0).unwrap()[..payload]

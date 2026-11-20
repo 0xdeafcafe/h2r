@@ -64,7 +64,7 @@ No game data is in the repo. More shots are in the issue threads:
 | Graphics | Native GPU renderer, on by default: world, objects, lights, shadows, transparents, decals, particles, fog, water, post, HUD and UI. Scene lists are built in Rust, the guest's opaque handlers are skipped, geometry is cached across frames, and anything it can't take falls back to D3D (`impl.render.native=off` turns it all off) | Built | [native renderer](docs/graphics/native-renderer.md), [switches](docs/graphics/notes/not-adopted.md) |
 | | Render scale 1x to 6x (Resolution row), one copy rendered at the scaled size | Built | [high-res](docs/graphics/high-resolution.md) |
 | | Pipelined frames: tick N+1 overlapping frame N (off by default, `impl.render.pipelined_frame`) | Built, off | [pipelined](docs/graphics/pipelined-render.md) |
-| | E3 2003-style lighting: the Lighting row (sharper shadow maps) | Built | [E3 lighting](docs/graphics/e3-lighting.md) |
+| | E3 2003-style lighting: the Lighting row (sharper shadow maps, D3D path) | Built | [The Lighting row](docs/graphics/e3-lighting-setting.md) |
 | | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness, interpolated replay and reprojection are built and tested on synthetic draws; not yet run in the game | Partly built | [high-framerate](docs/game/high-framerate.md) |
 | Game | Expanded settings screens: Video, Controls, FOV | Built | [settings](docs/game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |

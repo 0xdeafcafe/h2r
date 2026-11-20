@@ -2,7 +2,7 @@
 //! `0x00173130`) run offline over converted Halo 1 structures, from the
 //! owner's Halo 1 disc (`$H1_ISO`). Only counts are printed.
 //!
-//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test portal_flood -- --ignored --nocapture
+//! H1_ISO=disc/halo1.iso cargo test --release -p h1convert --test it portal_flood:: -- --ignored --nocapture
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -377,7 +377,7 @@ fn a10_clusters_no_sky_reaches_show_none() {
 fn bloodgulch_and_a10_skies() {
     for name in ["bloodgulch", "a10"] {
         let h1 = level(name);
-        let reach = h1sky::convert::level_reach(&h1).unwrap();
+        let reach = h1_assets::sky::convert::level_reach(&h1).unwrap();
         for r in h1.multiplayer().unwrap().skies {
             let tag = h1.tag(r.id).unwrap();
             let sky = h1convert::sky::Sky::from_map(&h1, tag).unwrap();

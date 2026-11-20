@@ -24,7 +24,7 @@
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
-//!     --test colour_pass_differential -- --nocapture
+//!     --test it colour_pass_differential:: -- --nocapture
 //! ```
 
 #![cfg(feature = "differential")]

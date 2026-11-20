@@ -1703,6 +1703,8 @@ impl Backend for GfxBackend {
 
     fn reusable_external_attachments(&self) -> bool { true }
 
+    fn runs_scene_stages(&self) -> bool { true }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,

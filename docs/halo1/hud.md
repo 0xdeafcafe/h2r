@@ -713,7 +713,7 @@ Not converted, for two reasons:
 - `cargo test -p h1objects --lib` covers primary-only weapon widget
   visibility with the retail widget gate and zoom fields rebuilt from
   synthetic Halo 1 weapon tags.
-- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- weapon_hud_ --ignored`
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test it sandbox_disc:: -- weapon_hud_ --ignored`
   checks retail held, off-hand and stowed placement and gating on
   Coagulation and Zanzibar. It also checks the weapon zoom fields and
   both widget types' hide flags in the freshly built Blood Gulch map.
@@ -722,16 +722,16 @@ Not converted, for two reasons:
   entries, placement and native scale and flash data.
 - `cargo test -p boot --lib h1_hud_text::weapon` checks warning predicates,
   clock transitions, input transfer and the draw frame.
-- `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1objects --test hud_layout_disc -- --ignored every_retail_weapon_hud_element_is_placed`
+- `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1objects --test it hud_layout_disc:: -- --ignored every_retail_weapon_hud_element_is_placed`
   compares the source entries, including child interfaces, with their
   actual rebuilt bitmap and text records on each map's base.
 
 - `cargo test -p boot --lib hud`: the swap both ways on bipeds and
   weapons, other HUDs left alone, refused targets, the campaign tables.
-- `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored`: every
+- `H1_ISO=... cargo test -p h1objects --test it hud_disc:: -- --ignored`: every
   `unhi` on every Halo 1 map reads (root at least `0x56c`), each element a
   sprite or image of a `bitm`.
-- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- --ignored`:
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test it sandbox_disc:: -- --ignored`:
   Blood Gulch's player HUD in the built map: every interface names the
   `_h1_hud` `nhdt`, each widget a Halo 1 bitmap through the right shader,
   shield and health meters present; every Halo 1 weapon with a `wphi`
@@ -745,7 +745,7 @@ Not converted, for two reasons:
   XBE's table.
 - `cargo test -p boot --lib hud`: also the sensor table both ways, and
   Halo 2's back on a map without a Halo 1 centre.
-- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test it hud_layout_disc::
   -- --ignored`: every element's rectangle as Halo 2 draws the widget
   against Halo 1's; shield and health meters sharing no shown texel (and
   the unconverted bitmaps sharing some on the cyborg's); the grenade
@@ -757,7 +757,7 @@ Not converted, for two reasons:
   six dormant colour-0 statics; each weapon inheriting
   `master rounds` or `master plasma` with one ammunition type icon
   (`ammo_type_icons_are_drawn_always`), placed as Halo 1's.
-- `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
+- `H1_ISO=... cargo test -p h1objects --test it hud_disc:: -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.
 
