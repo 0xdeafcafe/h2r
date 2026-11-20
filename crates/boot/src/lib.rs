@@ -1721,6 +1721,11 @@ fn run_configured(
             host.perf_overlay.clone(),
         );
     }
+    if sim_mode.is_some() || host_light {
+        features
+            .add(&feature::sim_native::SimNative::new(&loaded.runtime))
+            .map_err(anyhow::Error::msg)?;
+    }
     if host_light {
         let frame = match &sim_mode {
             Some(sim) => sim.frame().clone(),

@@ -45,6 +45,7 @@ pub mod render_census;
 pub mod render_loop;
 pub mod render_timing;
 pub mod sim_frame;
+pub mod sim_native;
 pub mod snapshot;
 pub mod switches;
 
