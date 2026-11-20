@@ -240,8 +240,10 @@ Notes on the table:
   that pattern while `STIPPLEENABLE` is set. The row and bit ordering match
   the [asymmetric Xbox capture](https://github.com/abaire/nxdk_pgraph_tests_golden_results/blob/55958b25a77bd011b39bf16241a5b8ea0481e568/results/Stipple_tests/Asymmetric_On.png)
   and its [test source](https://github.com/abaire/nxdk_pgraph_tests/blob/2cfe6073d59ab2a69f98cf4c6ca003c1a02c8c6d/src/tests/stipple_tests.cpp)
-  at 640x480: row `31 - (y mod 32)`, bit `(x mod 32) XOR 7`. Vertical
-  anchoring at heights not divisible by 32 still needs a hardware capture.
+  at 640x480: row `31 - (y mod 32)`, bit `(x mod 32) XOR 7`. The scaled
+  view maps fragments back to the same guest grid
+  ([high-resolution.md](high-resolution.md#positions)). Vertical anchoring
+  at heights not divisible by 32 still needs a hardware capture.
   Wireframe and point fill modes do not use polygon stipple. The visibility
   count pass does not yet apply this discard.
 - **`D3DResource_IsBusy`** (`0x3fb710`, called from `0x1db90`/`0x1de50`

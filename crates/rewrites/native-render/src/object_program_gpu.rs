@@ -670,7 +670,7 @@ impl LitObjects {
 pub fn with_aux_depth(vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, aux: &AuxDepth) {
     vertex.constants[..4].copy_from_slice(&aux.rows);
     vertex.w_clip = Some(aux.clip);
-    pixel.depth_range = [aux.clip[0], aux.clip[1], 0.0, 0.0];
+    pixel.depth_range = aux.clip;
 }
 
 /// The depth and stencil a lit part's pipeline draws with on a
@@ -1544,7 +1544,7 @@ mod tests {
         assert_eq!(vertex.constants[..4], aux.rows);
         assert_eq!(vertex.constants[4..], before_v.constants[4..], "the view's other constants");
         assert_eq!((vertex.w_clip, vertex.w_clamp), (Some([1.0, 900.0]), true));
-        assert_eq!(pixel.depth_range, [1.0, 900.0, 0.0, 0.0]);
+        assert_eq!(pixel.depth_range, [1.0, 900.0]);
         assert_eq!(pixel.depth, before_p.depth, "the W-buffer's scale is the view's");
     }
 
