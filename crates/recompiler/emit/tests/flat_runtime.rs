@@ -126,12 +126,12 @@ struct Run {
 
 /// Run `m` from CODE with `eax` on a fresh runtime over `guest`, in the
 /// window or (`window` false) the null window.
-fn run(m: &Module, window: bool, eax: u32, guest: Guest) -> Run {
+fn run(m: &Module, window: bool, arg: u32, guest: Guest) -> Run {
     let rt = Runtime::new(guest, dispatch(m));
     assert!(rt.flat_ram());
     let mut ctx = ExecCtx::new(rt.clone(), 1);
     ctx.enable_fast_memory(window);
-    let mut cpu = CpuAbi { eax, esp: STACK - 4, ..CpuAbi::default() };
+    let mut cpu = CpuAbi { eax: arg, esp: STACK - 4, ..CpuAbi::default() };
     let before = rt.window_stats().fixups;
     let t = Runner::default().run(&mut cpu, &mut ctx, CODE);
     let fixups = rt.window_stats().fixups - before;
