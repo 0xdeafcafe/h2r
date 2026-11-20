@@ -49,7 +49,8 @@ pub(in crate::sim_objects) const CONTACT_SITES: [u32; 3] = [0xe3024, 0xe3033, 0x
 /// length is the step: toward 1 (at most `[45dbc0]` less body `+2c4`) when
 /// body `+134` bit 23 is set, else toward 0 (at least `-[+2c4]`); in state
 /// 6 with `+3f8` set and `+348` bit 13, at least `[45dbc0] - [+2c4]`.
-/// `esi` and `ecx` are pushed and popped back.
+/// `esi` is pushed and popped back; `ecx`'s push is the local, so `pop
+/// ecx` returns the rate (as scaled by `25aad0`), not the caller's `ecx`.
 pub(in crate::sim_objects) fn crouch_step(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     let (c, g) = (&mut *cx.cpu, &mut *cx.g);
     let entry = points::BIPED_CROUCH_STEP.base;
