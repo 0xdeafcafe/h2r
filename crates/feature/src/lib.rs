@@ -63,6 +63,9 @@ pub mod render_census;
 pub mod render_loop;
 pub mod render_timing;
 pub mod sim_frame;
+pub mod sim_observer;
+pub mod sim_static_light;
+pub mod sim_submix;
 pub mod snapshot;
 pub mod switches;
 

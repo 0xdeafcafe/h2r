@@ -78,6 +78,7 @@ fn fixture(id: &str, map: &str, variant: &str, playable: bool) -> FilmMeta {
         saved: id == "game-1",
         result: Some(if playable { "Won" } else { "Lost" }.into()),
         host: Some("Live Europe".into()),
+        web_game_id: Some(id.into()),
     }
 }
 
@@ -333,6 +334,35 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_live_films_offer_their_archive_link() {
+        let theater = Theater::default();
+        let film = serde_json::from_value::<live_hle::films::RecentFilm>(serde_json::json!({
+            "game_id": "played-game", "map": "h1_bloodgulch", "mode": "multiplayer",
+            "variant": "Slayer", "started_at": "2026-11-20T02:26:06.627Z",
+            "duration_s": 69, "result": "win", "has_host_film": false
+        }))
+        .unwrap();
+        theater.state().load = Load::Ready(vec![FilmMeta::try_from(film).unwrap()]);
+
+        let recent = pages::spec(&theater, true);
+        assert_eq!(recent.rows.len(), 2);
+        assert_eq!(recent.rows[1].description.as_deref(), Some("Live archive"));
+
+        let entry = theater.state().entries().pop().unwrap();
+        theater.state().select(entry);
+        let detail = pages::spec(&theater, false);
+        assert_eq!(detail.rows.len(), 1);
+        assert_eq!(detail.rows[0].label, "Open on the web");
+        assert!(!theater.step_detail(0));
+        assert_eq!(
+            theater.web_url().as_deref(),
+            Some("https://live.forbes.red/theater/played-game")
+        );
+        theater.state().tab = Tab::Saved;
+        assert!(theater.state().entries().is_empty());
+    }
 
     #[test]
     fn theater_tabs_only_show_matching_entries() {
