@@ -379,6 +379,8 @@ fn lit_parts(
                 .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
                 .map(|(index, part)| (index as u8, part.material, geometry.part_triangles(part)))
                 .collect(),
+            // First-person items draw whole parts (`plan` with no subparts).
+            subparts: HashMap::new(),
         });
     }
 

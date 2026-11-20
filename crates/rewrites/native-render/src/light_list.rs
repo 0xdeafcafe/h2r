@@ -104,23 +104,6 @@ pub fn sorted_at(mem: &dyn GuestRead, list: u32, layer: u32, esp: u32, esi: u32,
     Ok(SortedLayer { entries, first_slot: esi, remaining, counter })
 }
 
-/// Take a light only when the entire set of relevant sorted entries is
-/// available before any replacement. The other layer has its own build.
-pub fn single_layer(or: u32, flags: u32, definition: u32) -> Result<u32, &'static str> {
-    if flags & 4 != 0 || (or & (1 << 11) != 0 && (flags & 2 != 0 || definition & 32 != 0))
-        || or & (1 << 14) != 0 {
-        return Err("light has shadow, stencil or layer 14 work");
-    }
-    const DIFFUSE: u32 = 1 << 12;
-    const SPECULAR: u32 = 1 << 13;
-    match or & (DIFFUSE | if flags & 3 == 3 { SPECULAR } else { 0 }) {
-        DIFFUSE => Ok(12),
-        SPECULAR => Ok(13),
-        0 => Err("no diffuse or specular light entries"),
-        _ => Err("both sorted light layers are required"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,11 +136,5 @@ mod tests {
         assert_eq!(sorted.cursor_after(4), None);
         m.0.remove(&(base+3*ITEM_SIZE+16));
         assert!(super::sorted(&m, list, 12, esp, base).is_err());
-    }
-    #[test]
-    fn second_active_layer_prevents_early_ownership() {
-        assert_eq!(single_layer(3 << 12, 1, 0), Ok(12));
-        assert!(single_layer(3 << 12, 3, 0).is_err());
-        assert_eq!(single_layer(1 << 13, 3, 0), Ok(13));
     }
 }

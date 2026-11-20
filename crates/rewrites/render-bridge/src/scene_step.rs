@@ -1,7 +1,10 @@
 //! The frame step's scene (docs/graphics/framescene.md, slice 1): a
 //! `FrameScene` begun at `render_views`, a view opened at each base-layer
 //! layer 3 with its camera, visible clusters and world state, its objects
-//! extracted at the object walk, sealed and published after
+//! extracted at the object walk, its lights at each light passes' entry
+//! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
+//! each one's draw, and a first-person view with the items of its layers
+//! at the first-person draw `0x0003fdf0`, sealed and published after
 //! `render_frame_and_present`.
 //!
 //! Still game-thread, still packets, still masks: the world and object
@@ -16,10 +19,10 @@ use std::time::Instant;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
-use frame_scene::{Camera, Cut, FrameScene, SceneBuilder, SceneId, Stamp, View, ViewKey, ViewKind};
+use frame_scene::{Camera, Cut, FrameScene, LightStep, SceneBuilder, SceneId, SceneLight, Stamp, View, ViewKey, ViewKind};
 use native_render::object_walk::Entry;
-use native_render::objects::SCENE_LAYER3_RETURN;
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
+use native_render::world_layers::{Site, layer_site};
 use scene_extract::GuestRead;
 use scene_extract::extract;
 
@@ -44,6 +47,9 @@ struct Step {
     builder: SceneBuilder,
     /// The tick of the scene sealed last.
     tick: Option<u32>,
+    /// The open view's clusters and world state are read: at its base
+    /// layer 3, which its layer 1 can precede.
+    based: bool,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -53,6 +59,10 @@ static UNSEALED: AtomicU64 = AtomicU64::new(0);
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static NO_CAMERA: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
+static LAYERS: AtomicU64 = AtomicU64::new(0);
+static LAYER_ITEMS: AtomicU64 = AtomicU64::new(0);
+static LAYER_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
 
 fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     let mut step = STEP.lock().unwrap_or_else(|e| e.into_inner());
@@ -97,33 +107,68 @@ pub fn view(mem: &dyn GuestMemory) -> Option<Camera> {
 /// [`view`], returning the view itself (a copy: its ranges index the
 /// scene being written).
 pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
+    open_kind(mem, ViewKind::Game)
+}
+
+/// The open view of `kind` for the current guest view and camera, opened
+/// when none is. At a layer-3 draw the view's clusters and world state
+/// are read, once: they are layer 3's (its list and its texture
+/// accumulation target), and the view can open earlier, at its layer 1.
+fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
     let m = Ro(mem);
     let Some(camera) = extract::camera(&m) else {
         NO_CAMERA.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    let key = ViewKey { kind: ViewKind::Game, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let key = ViewKey { kind, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
+    let base = m.read_u32(CURRENT_LAYER) == Some(LIGHTMAP_LAYER);
     with_step(|step| {
         if !step.builder.is_building() {
             // A render this step did not see begin (no `render_views`
             // observer in this plan): the scene starts here.
             begin_step(step, &m);
         }
-        if let Some(v) = step.builder.view().filter(|v| v.key == key && v.camera == camera) {
-            return Some(v.clone());
+        if step.builder.view().is_none_or(|v| v.key != key || v.camera != camera) {
+            if step.builder.open_view(key, camera).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            VIEWS.fetch_add(1, Ordering::Relaxed);
+            step.based = false;
         }
-        if step.builder.open_view(key, camera).is_err() {
-            REFUSED.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
-        VIEWS.fetch_add(1, Ordering::Relaxed);
-        let clusters = extract::layer_clusters(&m, LIGHTMAP_LAYER).unwrap_or_default();
-        let set = step.builder.set_clusters(clusters).and_then(|()| step.builder.set_world(extract::world(&m)));
-        if set.is_err() {
-            REFUSED.fetch_add(1, Ordering::Relaxed);
+        if base && !step.based {
+            step.based = true;
+            let clusters = extract::layer_clusters(&m, LIGHTMAP_LAYER).unwrap_or_default();
+            let set = step.builder.set_clusters(clusters).and_then(|()| step.builder.set_world(extract::world(&m)));
+            if set.is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
         }
         step.builder.view().cloned()
     })
+}
+
+/// The current list's `layer` items into the open view of `kind` (a
+/// layer draw of the scene's world layers or of the first person's).
+fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
+    if open_kind(mem, kind).is_none() {
+        return;
+    }
+    let m = Ro(mem);
+    let Ok(layer) = u8::try_from(layer) else { return };
+    with_step(|step| match extract::layer(&m, layer, kind == ViewKind::FirstPerson, &mut step.builder) {
+        Ok(Some(got)) => {
+            LAYERS.fetch_add(1, Ordering::Relaxed);
+            LAYER_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);
+            LAYER_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+        }
+        Ok(None) => {
+            LAYER_UNREAD.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
 }
 
 /// The objects of the base layer's sorted walk into the open view (its
@@ -135,6 +180,19 @@ pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
     let m = Ro(mem);
     with_step(|step| {
         if extract::objects(&m, entries, &mut step.builder).is_err() {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// A light of the open view at its passes' entry, with its steps.
+/// Opens the view first when none is.
+pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
+    if view(mem).is_none() {
+        return;
+    }
+    with_step(|step| {
+        if step.builder.push_light(light, steps).is_err() {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
     });
@@ -183,13 +241,25 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_views", VIEWS.load(Ordering::Relaxed)),
         ("scene_no_camera", NO_CAMERA.load(Ordering::Relaxed)),
         ("scene_refused_writes", REFUSED.load(Ordering::Relaxed)),
+        ("scene_layers", LAYERS.load(Ordering::Relaxed)),
+        ("scene_layer_items", LAYER_ITEMS.load(Ordering::Relaxed)),
+        ("scene_layer_remainder", LAYER_REMAINDER.load(Ordering::Relaxed)),
+        ("scene_layers_unread", LAYER_UNREAD.load(Ordering::Relaxed)),
     ]
 }
 
-/// The observer before a layer draw: a base-layer layer 3 opens its view.
+/// The observer before a layer draw: the scene's layer 3 opens its view;
+/// the scene's layers 1, 5, 7, 8 and 20 and the first person's layers
+/// put their items in the scene.
 fn at_layer(mem: &dyn GuestMemory, ret: u32) {
-    if ret == SCENE_LAYER3_RETURN && mem.u32(CURRENT_LAYER).ok() == Some(LIGHTMAP_LAYER) {
-        view(mem);
+    let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
+    match (layer_site(layer, ret), layer) {
+        (Site::Scene, LIGHTMAP_LAYER) => {
+            view(mem);
+        }
+        (Site::Scene, 1 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
+        (Site::FirstPerson, _) => layer_items(mem, ViewKind::FirstPerson, layer),
+        _ => {}
     }
 }
 

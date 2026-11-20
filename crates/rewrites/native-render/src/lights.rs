@@ -116,8 +116,8 @@ pub struct LightConstants {
 }
 
 impl LightConstants {
-    /// Whether the light casts its shadow (flag bit 2): the shadow maps
-    /// are not drawn natively, so the host leaves such a light to D3D.
+    /// Whether the light casts its shadow (flag bit 2): its passes run
+    /// layers 10 and 11 before the others (`light_passes`).
     pub fn shadowed(&self) -> bool {
         self.flags & 4 != 0
     }

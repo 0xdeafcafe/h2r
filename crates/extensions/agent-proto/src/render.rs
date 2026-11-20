@@ -361,9 +361,26 @@ pub struct SceneViewRecord {
     pub parts: u32,
     pub rows: u32,
     pub lights: u32,
+    /// Lights that cast their shadow: the view's shadow maps.
     pub shadows: u32,
+    /// Lights by each layer their passes draw (`"10"` to `"14"`); layers
+    /// no light draws are left out.
+    #[serde(default)]
+    pub light_layers: BTreeMap<String, u32>,
+    /// Items of each typed layer draw, by layer (`"1"`, `"5"`, ...);
+    /// a layer drawn twice sums.
+    #[serde(default)]
+    pub layer_items: BTreeMap<String, u32>,
+    /// Items of the typed layer draws the guest still draws (refused by
+    /// extraction).
+    #[serde(default)]
+    pub layer_remainder: u32,
     /// Instances the guest still draws (refused by extraction).
     pub remainder: u32,
+    /// Parts by how they draw beyond their material (`stencil_mark`,
+    /// `strip`); flags no part has are left out.
+    #[serde(default)]
+    pub part_flags: BTreeMap<String, u32>,
     /// Carried ops by slot name, then by CameraUse; empty until slice 6.
     #[serde(default)]
     pub carried: BTreeMap<String, u32>,
