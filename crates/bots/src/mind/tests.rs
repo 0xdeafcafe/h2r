@@ -1369,7 +1369,7 @@ fn temperament_showboats_attempt_risky_melee_but_still_reach_for_the_button() {
 fn strip() -> NavMesh {
     let mut polys = Vec::new();
     let mut edges = Vec::new();
-    for i in 0..8 {
+    for i in 0..8u32 {
         let x = i as f32 * 10.0;
         polys.push(Poly::new(vec![
             [x, 0.0, 0.0],

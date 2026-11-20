@@ -324,7 +324,10 @@ fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
 fn a_mounted_weapons_shot_is_the_seated_players_and_a_held_one_is_its_holder() {
     let g = world();
     // The Warthog's chaingun: its gunner (player 1) fires it.
-    assert_eq!(firing_player(&g, handle(6)).unwrap(), Some(FiredBy::Seated(1)));
+    assert_eq!(
+        firing_player(&g, handle(6)).unwrap(),
+        Some(FiredBy::Seated(1))
+    );
     // The Ghost's plasma with nobody aboard: nobody.
     assert_eq!(firing_player(&g, handle(7)).unwrap(), None);
     // A handheld weapon: its holder's biped.
@@ -336,5 +339,8 @@ fn a_mounted_weapons_shot_is_the_seated_players_and_a_held_one_is_its_holder() {
     let mut g = world();
     g.put_u32(body(0) + 0x14, handle(4).raw())
         .put_u16(body(0) + UNIT_SEAT, 0);
-    assert_eq!(firing_player(&g, handle(7)).unwrap(), Some(FiredBy::Seated(0)));
+    assert_eq!(
+        firing_player(&g, handle(7)).unwrap(),
+        Some(FiredBy::Seated(0))
+    );
 }
