@@ -981,19 +981,22 @@ h2 agent render.parity '{"arm": true}'
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".
-- **`render.parity`.** A temporary diagnostic, deleted with the D3D
-  backend. `{"arm": true}` makes the next frame step draw the tick twice,
-  the guest's whole front end into the D3D backend's targets and the
-  native path into private ones, and compare them as `render.compare`
-  does; the answer comes at the first tick boundary after the frame step
-  took the arming, with `tick`, the last tick that ended before that
-  frame step. Unarmed, the frame step's check is one relaxed load
-  (`agent::render::parity_armed`, `take_parity_arm`). The two-path draw
-  needs a stage that replaces a whole guest entry (framescene.md
-  slice 4); with no source registered
-  (`agent::render::set_parity_source`), the answer is `UNAVAILABLE`
-  saying so, and nothing is armed. `{"arm": false}` is
-  `INVALID_PARAMS`.
+- **`render.parity`.** `{"arm": true}` requests one game frame from the
+  sealed scene's private renderer and the D3D display. The sink retains
+  the original guest draws while armed. A frame that already admitted
+  a typed stage before arming gives way to the next complete guest
+  frame. The reference readback uses the ordinary display surface,
+  before gamma, at its display scale. The worker renders that same
+  present's sealed inputs on fresh targets at the matching scale.
+  The reply carries the sealed scene's `tick` and the pixel comparison
+  returned by `render.compare`. The comparison covers the carried
+  guest commands. Pixel parity of a typed substitution needs a separate
+  reference run exercising that stage.
+  The request completes at a tick boundary after both render paths
+  finish. A new arming interrupts one still waiting. Unavailable
+  inputs or a missing reference or private renderer give `UNAVAILABLE`.
+  A request that receives no game frame within the deferred request
+  limit times out. `{"arm": false}` gives `INVALID_PARAMS`.
 - **`sim.hashes`.** The running game's post-tick digests in the rows sim
   mode writes to its report as `state_hashes_v1` (sim.md §6): `tick`,
   `gameplay` (16 hex digits) and, under `impl.sim.arena-hash`, `arena`
