@@ -1,5 +1,9 @@
 # Xbox storage boundary
 
+Status: Built.
+Code: `crates/vfs/src`. Tests: `crates/vfs/tests/`, `crates/vfs/src/host_write_behind_tests.rs`.
+Switch: `H2_MAP_DIR` (unset), listed in [switches.md](switches.md).
+
 `crates/vfs` owns storage names, mounted filesystems, open file objects and
 filesystem status results. It is safe Rust and has no dependency on guest
 memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
@@ -343,7 +347,7 @@ NtWriteFile pairs), a 250 Hz profile put 10.8% of that thread in file
 calls, most of it (355 of their samples) in the write syscall itself. `HostBackend` therefore queues the host data write
 on a per-backend `vfs-write-behind` thread and returns.
 
-What stays on the calling thread, exactly as before: path resolution,
+What stays on the calling thread: path resolution,
 capacity and growth checks (DiskFull, FileTooLarge), allocation and usage
 accounting, the dirty set, write metadata (`touch`), and the returned
 byte count (the whole buffer: the queued write is a `pwrite` loop that

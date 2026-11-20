@@ -34,11 +34,11 @@ every page here and the plan to bring them to those rules.
 ## Runtime: booting and running the game (`runtime/`)
 
 - [BOOT.md](runtime/BOOT.md) (**start here**): `h2 build` and `h2 run`, the boot runner's flags and environment, stopgaps, current state
+- [boot-log.md](runtime/notes/boot-log.md): the boot milestone log and the retired stopgaps, dated
 - [switches.md](runtime/switches.md): every env var and `H2_FEATURES` switch left, one line each, and the experiments still waiting for a measurement
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
-- [level-preflight.md](runtime/level-preflight.md): static audit of what the first campaign levels need, ranked by risk
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/xapi`) and which stay generated, native saves included
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides

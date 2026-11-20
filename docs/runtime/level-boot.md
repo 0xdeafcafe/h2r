@@ -1,5 +1,9 @@
 # Level boot: start a level directly
 
+Status: Built.
+Code: `crates/boot/src/level_boot.rs`. Tests: its unit tests over a fake guest, and the ignored `level_boot::tests::every_disc_level_resolves`.
+Switch: `H2_LEVEL`, `H2_DIFFICULTY` (unset), listed in [switches.md](switches.md).
+
 `h2 play disc/halo2.iso --level 03a_oldmombasa [--difficulty heroic]`, or
 `H2_LEVEL=03a_oldmombasa [H2_DIFFICULTY=heroic]` for `h2 run` (and `h2
 play`), loads that campaign level in place of the main menu: no title
@@ -138,7 +142,7 @@ file names (`h2 maps` lists them; cache types Campaign and Multiplayer).
 Our guest memory: `0xa2f40000` (the activation original's alias, RX) and
 `0xa2f41000` (the options we build, `0x2000` RW).
 
-## Unverified
+## Not verified
 
 Proved by tests over a fake guest (the options fields, the globals read,
 the level match, the perf trigger, the level-list read, the name lookup)
