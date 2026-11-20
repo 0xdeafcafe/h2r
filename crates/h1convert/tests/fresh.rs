@@ -261,13 +261,12 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
         let s = r.scratch.as_ref().expect("built from scratch");
         println!(
             "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSP; {} datum words \
-             rewritten), {} dangling; index {} slots",
+             rewritten); index {} slots",
             s.tags,
             s.from_base,
             s.from_level,
             s.built_here,
             s.words,
-            s.dangling.len(),
             f.index_slots()
         );
         assert_eq!(f.index_slots() as usize, f.tags().len(), "index holes");

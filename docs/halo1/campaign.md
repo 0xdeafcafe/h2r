@@ -399,7 +399,18 @@ convert --pinned` skip it):
    own blocks: their datum words are renamed to the new index, their raw
    blobs copied and their BSP sections made anew (`Transfer`), then the
    simulation table is written for the new index. A tag the extractor
-   cannot take whole fails the build. Equal blocks are shared across
+   cannot take whole fails the build. So does a reference to a tag no
+   source holds, from a retail or converted tag or from the scenario's
+   and BSPs' datum words: the error names the map, the naming tag, the
+   field (its offsets from the root, element indices where an array has
+   more than one) and the missing tag. **Built** (version 101): such a
+   reference used to be nulled and counted (`ScratchReport::dangling`).
+   Every count recorded on retail data was 0 (the version 55 table above,
+   Blood Gulch in multiplayer.md, c20 in the version 100 run), so no
+   writer or missing target needed fixing; any that appears is now a
+   named error. Tests: `a_reference_no_source_holds_fails_the_build_naming_the_field`,
+   `a_datum_the_new_set_lacks_is_an_error_naming_the_field`
+   (`h1convert::scratch`). Equal blocks are shared across
    tags, as retail shares arrays across tags in 25 to 28 groups per map
    (05a: 377,044 bytes of `effe` arrays and 245,966 of `shad` lie in
    other tags), except `bitm` (shares only within itself) and `ugh!` (not

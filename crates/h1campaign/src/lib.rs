@@ -374,13 +374,12 @@ impl std::fmt::Display for Report {
         if let Some(s) = &self.scratch {
             writeln!(
                 f,
-                "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSPs; {} datum words rewritten), {} dangling",
+                "  from scratch: {} tags ({} retail, {} converted, {} scenario and BSPs; {} datum words rewritten)",
                 s.tags,
                 s.from_base,
                 s.from_level,
                 s.built_here,
-                s.words,
-                s.dangling.len()
+                s.words
             )?;
             match (&s.gestalt, &s.gestalt_whole) {
                 (Some(g), _) => writeln!(

@@ -602,7 +602,8 @@ fn every_multiplayer_job_builds_in_both_sandboxes() {
 /// Every job the import runs (the 10 levels in both asset variants and the
 /// 13 multiplayer maps in both sandboxes: 46 on the retail disc) built
 /// from scratch, as the import builds it, in memory: nothing of the base
-/// pinned, a dense index with no empty slot, no reference nulled, and the
+/// pinned, a dense index with no empty slot, every reference resolving (a
+/// dangling one is the build's error, `h1convert::scratch`), and the
 /// file and tag memory inside the engine's bounds (the native campaign
 /// slot, `map::writer::NATIVE_CAMPAIGN_FILE_LIMIT`; the multiplayer cache
 /// limit). A map that cannot be built so is the conversion's error, so
@@ -649,10 +650,8 @@ fn every_job_builds_from_scratch() {
                     Err(e) => return vec![format!("{e:#}")],
                 };
                 let r = &done.report;
-                match &r.scratch {
-                    Some(s) if s.dangling.is_empty() => {}
-                    Some(s) => bad.push(format!("{} nulled: {:?}", s.dangling.len(), s.dangling)),
-                    None => bad.push(format!("not from scratch: {:?}", r.dropped)),
+                if r.scratch.is_none() {
+                    bad.push(format!("not from scratch: {:?}", r.dropped));
                 }
                 if !r.fresh {
                     bad.push("written pinned".into());
@@ -678,10 +677,8 @@ fn every_job_builds_from_scratch() {
                     Ok((_, f)) => f,
                     Err(e) => return vec![format!("{e:#}")],
                 };
-                match &f.report.scratch {
-                    Some(s) if s.dangling.is_empty() => {}
-                    Some(s) => bad.push(format!("{} nulled: {:?}", s.dangling.len(), s.dangling)),
-                    None => bad.push("not from scratch".into()),
+                if f.report.scratch.is_none() {
+                    bad.push("not from scratch".into());
                 }
                 if f.bytes.len() as u64 > mp_file_max {
                     bad.push(format!("file {:#x} over {mp_file_max:#x}", f.bytes.len()));

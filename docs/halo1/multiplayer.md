@@ -873,7 +873,9 @@ sound gestalt, which the readers that take one tag's bytes
 (`tags::DecodedTag`, `SoundGestalt::decode`) need whole
 (`scratch::SELF_CONTAINED`). If it fails, the conversion fails with
 the reason (`Error::Fresh`, "not built from scratch"); the pruned set is
-never written. Blood Gulch on Coagulation: 4,385 tags
+never written. A reference to a tag no source holds is the same
+error, naming the tag, field and missing tag (it was nulled before
+version 101). Blood Gulch on Coagulation: 4,385 tags
 (4,333 retail, 49 converted, 3 scenario and structure), 4,385 index
 slots, 0 dangling, 25.2 MB (pinned 48.6 MB); every tag but the sounds
 identical to the pinned map's by name, address- and index-free, the
