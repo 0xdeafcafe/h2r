@@ -500,9 +500,9 @@ Snapshots never enter the repository: they contain game data.
   script pool is a research point (**S**).
 ### HaloScript state
 
-Both read methods take an empty parameter object and sample the loaded
-scenario at a tick boundary. They return `UNAVAILABLE` while its interpreter
-tables are uninitialized or unreadable.
+These read methods take an empty parameter object and sample guest state at a
+tick boundary. Each returns `UNAVAILABLE` if its backing state is unreadable
+or uninitialized.
 
 - `hs.threads` returns a `threads` array of live slots. Each row has
   `slot`, numeric thread `category`, and signed `wake` tick. Scenario
@@ -512,6 +512,13 @@ tables are uninitialized or unreadable.
   Each row has `name`, `type`, `type_index`, and `value.bits`. For scalar
   types the value also includes `boolean`, `real`, or signed `number`.
   Scenario declarations start after the interpreter's external-global cells.
+
+- `hs.player_actions` returns three unsigned masks from local player control.
+  `latched` records inputs seen since the script's last action-test reset.
+  `capture` identifies inputs claimed by script tests. `until_release`
+  retains suppression through button-up after a reset. Bit 0 of each
+  mask denotes the mapped action/reload button. This state is shared by
+  local controls. The method takes no player index.
 
 ### `input`: act like a player
 

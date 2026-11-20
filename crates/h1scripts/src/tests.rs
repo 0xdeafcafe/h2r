@@ -1716,3 +1716,32 @@ fn renamed_unit_and_misc_builtins_translate() {
         assert_eq!(tr.target.as_ref().unwrap().0, to);
     }
 }
+
+#[test]
+fn action_test_compiles_to_the_native_boolean_evaluator() {
+    let name = "player_action_test_action";
+    let catalog = Catalog::new(
+        vec![f(name, BOOL, ORDINARY, &[])],
+        h1_types(),
+        h1_catalog().script_kinds().to_vec(),
+    ).unwrap();
+    let spec = crate::unit_builtins::RETAIL_BUILTINS.iter().find(|b| b.name == name).unwrap();
+    let mut target = h2_target();
+    let descriptor = H2Builtin {
+        index: spec.index,
+        return_type: target.type_index(spec.returns).unwrap(),
+        parameters: spec.parameters.iter().map(|p| target.type_index(p).unwrap()).collect(),
+        special: false,
+    };
+    target.builtins.insert(name.into(), descriptor);
+    let mut source = Builder::default();
+    let root = source.call(0, BOOL, name, &[]);
+    let input = read(&scenario(&source, &[("pressed", 3, BOOL, root)], &[])).unwrap();
+    let table = Table::build(&catalog, &target);
+    let out = compile(&input, &catalog, &table, &target, Missing::Stub, &[]).unwrap();
+    assert!(out.missing.is_empty());
+    let scripts = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    let call = scripts.node(scripts.script("pressed").unwrap().root()).unwrap();
+    assert!(!call.atom() && !call.script_call());
+    assert_eq!((call.opcode(), call.value_type()), (488, BOOL));
+}

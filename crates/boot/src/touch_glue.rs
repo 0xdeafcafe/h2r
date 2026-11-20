@@ -56,7 +56,7 @@ use crate::layout_glue::Gm;
 pub const FEATURE: &str = "touch-glue";
 
 /// The player-control array pointer; elements start `0x14` in.
-pub const PLAYER_CONTROL: u32 = 0x004e_d284;
+pub use engine::hs_actions::PLAYER_CONTROL;
 pub const PC_HEADER: u32 = 0x14;
 pub const PC_STRIDE: u32 = 0x94;
 pub const PC_UNIT: u32 = 0x00;

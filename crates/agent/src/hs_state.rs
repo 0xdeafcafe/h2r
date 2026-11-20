@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::{Access, Agent};
 
+use engine::hs_actions;
 use engine::hs_pool::{EXTERNALS, GLOBALS as CELLS, THREADS};
 // hs_new_map at 0x20915f offsets scenario globals past the external cells.
 const EXTERNAL_CELLS: usize = EXTERNALS as usize;
@@ -12,6 +13,7 @@ const KINDS: [&str; 6] = ["startup", "dormant", "continuous", "static", "stub", 
 
 pub fn install(agent: &Agent) {
     agent.add_game_method("hs.threads", Access::Read, |_, ctx| ctx.with_guest(|m| threads(m)));
+    agent.add_game_method("hs.player_actions", Access::Read, |_, ctx| ctx.with_guest(|m| player_actions(m)));
     agent.add_game_method("hs.globals", Access::Read, |_, ctx| ctx.with_guest(|m| globals(m)));
 }
 
@@ -26,6 +28,18 @@ fn fault(e: MemFault) -> RpcError {
 fn pointer(m: &dyn GuestMemory, at: u32) -> Result<u32, RpcError> {
     let p = m.u32(at).map_err(fault)?;
     if p == 0 { Err(unavailable("HS state has not been initialized")) } else { Ok(p) }
+}
+
+fn player_actions(m: &dyn GuestMemory) -> Result<Value, RpcError> {
+    let control = pointer(m, hs_actions::PLAYER_CONTROL)?;
+    if control.checked_add(hs_actions::UNTIL_RELEASE + 3).is_none() {
+        return Err(unavailable("invalid player-control address"));
+    }
+    Ok(json!({
+        "latched": m.u32(control + hs_actions::LATCHED).map_err(fault)?,
+        "capture": m.u32(control + hs_actions::CAPTURE).map_err(fault)?,
+        "until_release": m.u32(control + hs_actions::UNTIL_RELEASE).map_err(fault)?,
+    }))
 }
 
 fn definitions(m: &dyn GuestMemory, offset: u32) -> Result<(usize, u32), RpcError> {
@@ -103,6 +117,17 @@ fn globals(m: &dyn GuestMemory) -> Result<Value, RpcError> {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn player_actions_distinguish_a_press_from_a_script_claim() {
+        let mut m = FakeGuest::new();
+        m.put_u32(hs_actions::PLAYER_CONTROL, 0);
+        assert!(player_actions(&m).is_err());
+        m.put_u32(hs_actions::PLAYER_CONTROL, 0x1000)
+            .put_u32(0x1004, 0x401).put_u32(0x1008, 0).put_u32(0x100c, 1);
+        assert_eq!(player_actions(&m).unwrap(),
+                   json!({"latched":0x401, "capture":0, "until_release":1}));
+    }
 
     #[test]
     fn scenario_globals_follow_external_cells_and_keep_signed_values() {

@@ -4,6 +4,8 @@
 
 #[path = "disc/ground_ai.rs"]
 mod ground_ai;
+#[path = "disc/a10_tutorial.rs"]
+mod a10_tutorial;
 #[path = "disc/a30_flow.rs"]
 mod a30_flow;
 
@@ -1961,6 +1963,10 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         );
         let bytes = done.bytes;
         let mut m = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        a10_tutorial::check(
+            &hs::Scenario::read(&mut m).unwrap(),
+            done.report.scenario.scripts.as_ref().unwrap(),
+        );
         let mem = map_memory(&mut m);
         let scnr = m.scenario().unwrap().clone();
         let root = m.read_tag_bytes(scnr.id).unwrap();

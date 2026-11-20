@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::handle::DatumHandle;
+use engine::hs_actions;
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{
     HUD_INTERACTION_VISIBLE, PLAYER_PICKUP_CANDIDATE, PLAYER_PICKUP_SCAN, PLAYER_PRESS_INTERACT,
@@ -112,6 +113,19 @@ fn subject(mem: &dyn GuestMemory, tag: u32, definition: u32) -> Option<u16> {
 
 fn exit_subject(mem: &dyn GuestMemory, tag: u32, unit: u32) -> Option<u16> {
     let seat = u32::try_from(mem.u16(unit + UNIT_SEAT).ok()? as i16).ok()?;
+    // A seated unit can have its input disabled (player_enable_input,
+    // 0x2a8f16) or its action reserved for a script. In either case a
+    // contextual exit prompt would advertise an unavailable interaction.
+    let users = word(mem, LOCAL_USERS)?;
+    let control = word(mem, hs_actions::PLAYER_CONTROL)?;
+    if users == 0 || control == 0 || mem.u8(users + 6).ok()? != 0 {
+        return None;
+    }
+    let claimed = word(mem, control + hs_actions::CAPTURE)?
+        | word(mem, control + hs_actions::UNTIL_RELEASE)?;
+    if claimed & hs_actions::ACTION != 0 {
+        return None;
+    }
     let vehicle = object(mem, word(mem, unit + OBJECT_PARENT)?, Some(VEHICLE))?;
     let id = word(mem, vehicle)?;
     let def = definition(mem, id)?;
@@ -405,6 +419,7 @@ mod tests {
             (TAG + 0x10, 5),
             (TAG + 0x14, rows),
             (LOCAL_USERS, users),
+            (hs_actions::PLAYER_CONTROL, 0x0045_4000),
             (users + 0xc + 4 * USER, PLAYER),
             (PLAYERS, players),
             (players + 0x38, 1),
@@ -505,6 +520,18 @@ mod tests {
         );
         assert_eq!(mem.u8(screen + 0x444).unwrap(), 1);
         assert_eq!(mem.u8(HUD_SCREENS + 0x444).unwrap(), 0);
+        let users = mem.u32(LOCAL_USERS).unwrap();
+        mem.set_u8(users + 6, 1).unwrap();
+        assert!(prompt(&mem, USER, &candidates).is_none());
+        mem.set_u8(users + 6, 0).unwrap();
+        let control = mem.u32(hs_actions::PLAYER_CONTROL).unwrap();
+        for (capture, held) in [(1, 1), (0, 1)] {
+            mem.set_u32(control + hs_actions::CAPTURE, capture).unwrap();
+            mem.set_u32(control + hs_actions::UNTIL_RELEASE, held).unwrap();
+            assert!(prompt(&mem, USER, &candidates).is_none());
+        }
+        mem.set_u32(control + hs_actions::UNTIL_RELEASE, 0).unwrap();
+        assert!(prompt(&mem, USER, &candidates).is_some());
         mem.set_u32(UNIT_BODY + OBJECT_PARENT, NONE).unwrap();
         assert!(prompt(&mem, USER, &candidates).is_none());
     }
