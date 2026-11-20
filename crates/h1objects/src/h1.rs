@@ -246,7 +246,7 @@ pub struct Trigger {
     /// `+0x38`, `+0x3c` seconds.
     pub error_acceleration_time: f32,
     pub error_deceleration_time: f32,
-    /// `+0x50` charging effect.
+    /// `+0x5c` charging effect.
     pub charging_effect: Option<TagId>,
     /// `+0x6c` distribution function, `+0x6e` projectiles per shot, `+0x70`
     /// distribution angle (radians).
@@ -393,7 +393,7 @@ impl Weapon {
                     firing_noise: i16_at(t, 0x2e),
                     error_acceleration_time: f32_at(t, 0x38),
                     error_deceleration_time: f32_at(t, 0x3c),
-                    charging_effect: reference(map, t, 0x50),
+                    charging_effect: reference(map, t, 0x5c),
                     distribution_function: i16_at(t, 0x6c),
                     projectiles_per_shot: i16_at(t, 0x6e),
                     distribution_angle: f32_at(t, 0x70),

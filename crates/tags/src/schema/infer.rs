@@ -456,6 +456,7 @@ pub const ENGINE_REFS: &[(FourCC, &[u32], u32)] = &[
     (FourCC(*b"weap"), &[], 0x244),
     (FourCC(*b"weap"), &[], 0x24c),
     (FourCC(*b"weap"), &[0x2c0], 0x44),
+    (FourCC(*b"weap"), &[0x2d0], 0x94), // 0x1053f6, optional barrel damage
 ];
 
 /// Applies [`ENGINE_REFS`] to a schema: each is a tag reference.

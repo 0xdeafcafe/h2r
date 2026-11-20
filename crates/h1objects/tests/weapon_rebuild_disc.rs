@@ -19,6 +19,9 @@
 //!   every reference is a converted tag or a Halo 2 one of the right group,
 //!   and the Halo 2 ones are listed with why.
 
+#[path = "support/weapon_firing.rs"]
+mod firing;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -419,6 +422,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
             match &g {
                 b"weap" => {
                     let t = src.expect("weapons are converted directly");
+                    firing::compare(&h1, t, &c.tree, &r);
                     let w = h1::Weapon::read(&h1, t).unwrap();
                     assert_eq!(
                         r.at("item.obje.object_type"),
