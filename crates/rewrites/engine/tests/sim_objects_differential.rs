@@ -22,12 +22,18 @@
 //!
 //! Roots: the three walks, the two per-object updates, the four type
 //! dispatchers, the wake leaves and the early-mover wake (slice 1 of
-//! docs/engine/sim-rewrite-objects.md), and the damage update (slice 8).
-//! Every body the root reaches is part of its tree; a callee that is not
-//! a body is a callout. The fused finalize run must also record one
-//! `ObjectDeleted` event per object it deletes. A damage update root also
-//! compares the XMM registers at every callout: the function keeps a
-//! value in `xmm3` across its calls.
+//! docs/engine/sim-rewrite-objects.md); function values, the export
+//! evaluator, the import dispatcher, every import handler and change
+//! colours (slice 3), over synthetic object definitions whose exports,
+//! imports and colour functions ask for the image's own function names
+//! (read from the instructions that compare them, never written here);
+//! the damage update (slice 8); and the small type updates (slice 11),
+//! over the pool dressed with the fields they branch on. Every body the
+//! root reaches is part of its tree; a callee that is not a body is a
+//! callout. The fused finalize run must also record one `ObjectDeleted`
+//! event per object it deletes. A damage update root also compares the
+//! XMM registers at every callout: the function keeps a value in `xmm3`
+//! across its calls.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -212,10 +218,22 @@ fn object_on_stack(root: u32) -> bool {
         &points::OBJECT_TYPE_UPDATE,
         &points::OBJECT_WAKE_CHILDREN,
         &points::OBJECT_EARLY_MOVER_WAKE,
+        // Slice 8.
         &points::OBJECT_DAMAGE_UPDATE,
+        // Slice 11.
+        &points::ITEM_UPDATE,
+        &points::SCENERY_UPDATE,
+        &points::DEVICE_UPDATE,
+        &points::MACHINE_UPDATE,
+        &points::MACHINE_SLOT_48,
+        &points::PROJECTILE_UPDATE,
+        &points::CRATE_UPDATE,
+        &points::CREATURE_UPDATE,
+        &points::CREATURE_POST_UPDATE,
     ]
     .iter()
     .any(|p| p.base == root)
+        || (function_root(root) && !object_in_eax(root))
 }
 
 /// Entry state for a root: the planted return, the stack arguments, and
@@ -236,6 +254,9 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     };
     if let Some(reg) = reg {
         cpu.gpr[reg] = object(case);
+    }
+    if function_root(root) {
+        function_entry(g, cpu, root, case);
     }
 }
 
@@ -268,13 +289,19 @@ fn cleanup(target: u32) -> u32 {
         0xbef30 => 20,
         0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
-        // The damage update's callees.
-        0xd9f70 | 0xd6bc0 | 0x1588b0 | 0x13a6e8 | 0xa7a30 | 0xd8b50 => 4,
+        // The damage update's callees (`1588b0` is slice 3's, `d6bc0` and
+        // `176780` slice 11's, with the same `ret`).
+        0xd9f70 | 0x13a6e8 | 0xa7a30 | 0xd8b50 => 4,
         0xd66d0 => 8,
         0xdbc80 | 0xdbfb0 => 12,
-        0xd6800 | 0xba7f0 | 0x176780 => 16,
+        0xd6800 | 0xba7f0 => 16,
         0xda110 => 20,
         0xd5b60 | 0x1e4a10 | 0x14de90 | 0x1e9720 | 0x138880 => 0,
+        // Slice 3's callouts.
+        t if FUNCTION_CALLOUTS.iter().any(|&(c, _)| c == t) => {
+            FUNCTION_CALLOUTS.iter().find(|&&(c, _)| c == t).unwrap().1
+        }
+        t if let Some(&(_, pop)) = SLICE_11_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -322,6 +349,8 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     cpu.gpr[0] = match target {
         // Per-object updates answer in `al`.
         0xbc470 | 0x108c60 | 0xbe8e0 | 0x1cd4e0 => n as u32 % 2,
+        // Slice 3's callouts that answer in `al`: yes and no by turns.
+        t if FUNCTION_ANSWERS_AL.contains(&t) => (n as u32 + case) % 2,
         0xbdef0 => (n as u32 / 2) % 2,
         // The damage update's: its information (none in some calls),
         // yes-or-no answers in `al`, and an overshield owner.
@@ -536,6 +565,9 @@ fn start(ram: &ir::interp::FlatMemory, root: u32, case: u32) -> (Cpu, Guest) {
     g.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
     g.write_bytes(0, &ram.bytes, 1).unwrap();
     pool(&mut g, case);
+    if function_root(root) {
+        definitions(&mut g, case);
+    }
     let mut cpu = Cpu {
         gpr: [0x1234_5678, 0x9876_5432, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
         eip: root,
@@ -668,6 +700,418 @@ fn object_damage_update() {
     transcripts(&points::OBJECT_DAMAGE_UPDATE, 6);
 }
 
+// Slice 3: function values, the imports and change colours.
+
+/// Slice 3's roots, each entered directly.
+const FUNCTION_ROOTS: &[&points::Point] = &[
+    &points::OBJECT_FUNCTION_VALUE,
+    &points::OBJECT_FUNCTION_EVALUATE,
+    &points::OBJECT_FUNCTION_IMPORT,
+    &points::BASE_OBJECT_IMPORT,
+    &points::OBJECT_CHANGE_COLORS,
+    &points::UNIT_FUNCTION_IMPORT,
+    &points::UNIT_IMPORT_FRACTION,
+    &points::UNIT_IMPORT_ANIMATION,
+    &points::BIPED_FUNCTION_IMPORT,
+    &points::VEHICLE_FUNCTION_IMPORT,
+    &points::WEAPON_FUNCTION_IMPORT,
+    &points::PROJECTILE_FUNCTION_IMPORT,
+    &points::DEVICE_FUNCTION_IMPORT,
+    &points::MACHINE_FUNCTION_IMPORT,
+];
+
+fn function_root(root: u32) -> bool {
+    FUNCTION_ROOTS.iter().any(|p| p.base == root)
+}
+
+/// The two unit helpers take the unit in `eax`.
+fn object_in_eax(root: u32) -> bool {
+    root == points::UNIT_IMPORT_FRACTION.base || root == points::UNIT_IMPORT_ANIMATION.base
+}
+
+/// Guest functions slice 3's bodies call, and their `ret N`.
+const FUNCTION_CALLOUTS: &[(u32, u32)] = &[
+    (0x10aac0, 12),
+    (0x13bb90, 8),
+    (0x131c20, 0),
+    (0xb8bd0, 4),
+    (0xbff60, 4),
+    (0xbca70, 0),
+    (0xbcbb0, 0),
+    (0xbcad0, 0),
+    (0xbcb60, 0),
+    (0xbcb10, 0),
+    (0x1588b0, 4),
+    (0xc18e0, 0),
+    (0xbc970, 4),
+    (0x102070, 4),
+    (0x10cf50, 0),
+    (0x162b10, 0),
+    (0x162b70, 4),
+    (0x1c6e30, 0),
+    (0x1d3550, 4),
+    (0xf5d70, 0),
+    (0xe6fe0, 0),
+    (0xf78e0, 4),
+    (0xf78b0, 8),
+    (0x24590, 0),
+    (0xf8070, 4),
+    (0x11d580, 0),
+];
+
+/// Those that answer in `al`.
+const FUNCTION_ANSWERS_AL: &[u32] = &[0x10aac0, 0xbc970, 0x10cf50, 0x162b10, 0x1d3550, 0xf5d70, 0xe6fe0, 0xf8070];
+
+/// Synthetic definitions: a tag table of four object definitions and a
+/// model, export records, colour blocks and colour functions.
+const TAG_TABLE: u32 = 0x0064_0000;
+const DEFS: u32 = 0x0064_1000;
+const DEF_BYTES: u32 = 0x400;
+const MODEL_TAG: u32 = 0x0064_2000;
+const EXPORT_RECORDS: u32 = 0x0064_3000;
+const COLOR_BLOCKS: u32 = 0x0064_4000;
+const COLOR_FUNCTIONS: u32 = 0x0064_5000;
+const INPUT_KINDS: u32 = 0x0064_6000;
+/// The value and active outputs a root writes.
+const VALUE_OUT: u32 = 0x0060_0f00;
+const ACTIVE_OUT: u32 = 0x0060_0f10;
+/// Synthetic names: an export every definition has, one only some have,
+/// one nothing has.
+const EXPORT_NAME: u32 = 0x0abc_0001;
+const OTHER_NAME: u32 = 0x0abc_0002;
+const UNKNOWN_NAME: u32 = 0x0abc_0003;
+
+/// Where the image keeps the function names the bodies compare: each
+/// name is the sum of the imm32s at `.0` (the `cmp reg, imm32` or
+/// `sub reg, imm32` that tests it), the sign-extended imm8s at `.1` (a
+/// `sub reg, imm8` step between two names) and `.2`. The names
+/// themselves are read from the image at run time; none is written here.
+const NAMES: &[(&[u32], &[u32], u32)] = &[
+    // bab40: one, zero.
+    (&[0xbabab], &[], 0),
+    (&[0xbabb7], &[], 0),
+    // bcc20, including the two `sub` chains and the two ranges' tops.
+    (&[0xbcc48], &[], 0),
+    (&[0xbcc67], &[], 0),
+    (&[0xbcc78], &[], 0),
+    (&[0xbcc85], &[], 0),
+    (&[0xbcc90], &[], 0),
+    (&[0xbcc9b], &[], 0),
+    (&[0xbcd13], &[], 0),
+    (&[0xbcd1a], &[], 0),
+    (&[0xbcd21], &[], 0),
+    (&[0xbcdb3], &[], 0),
+    (&[0xbcdbc], &[], 0),
+    (&[0xbcdbc, 0xbcdc7], &[], 0),
+    (&[0xbcdbc, 0xbcdc7], &[], 1),
+    (&[0xbcdfc], &[], 0),
+    (&[0xbce07], &[], 0),
+    (&[0xbce55], &[], 0),
+    (&[0xbce66], &[], 0),
+    (&[0xbce77], &[], 0),
+    (&[0xbce7e], &[], 0),
+    (&[0xbce85], &[], 0),
+    (&[0xbcf04], &[], 0),
+    (&[0xbcf12], &[], 0),
+    (&[0xbcf46], &[], 0),
+    (&[0xbcf52], &[], 0),
+    (&[0xbcf52, 0xbcf5a], &[], 0),
+    (&[0xbcf52, 0xbcf5a], &[], 1),
+    (&[0xbcf8a], &[], 0),
+    (&[0xbcf98], &[], 0),
+    // c6b90, its `sub` chain and the two names it passes to the weapon.
+    (&[0xc6bb2], &[], 0),
+    (&[0xc6bc7], &[], 0),
+    (&[0xc6bd1], &[], 0),
+    (&[0xc6bd9], &[], 0),
+    (&[0xc6be1], &[], 0),
+    (&[0xc6c31], &[], 0),
+    (&[0xc6c39], &[], 0),
+    (&[0xc6c41], &[], 0),
+    (&[0xc6cc8], &[], 0),
+    (&[0xc6cd3], &[], 0),
+    (&[0xc6cd3, 0xc6cda], &[], 0),
+    (&[0xc6cd3, 0xc6cda], &[], 1),
+    (&[0xc6d29], &[], 0),
+    (&[0xc6d31], &[], 0),
+    (&[0xc6d39], &[], 0),
+    (&[0xc6d43], &[], 0),
+    (&[0xc6d4c], &[], 0),
+    // de3b0.
+    (&[0xde3f1], &[], 0),
+    (&[0xde3fc], &[], 0),
+    (&[0xde404], &[], 0),
+    // ff5f0, its two `sub` chains.
+    (&[0xff632], &[], 0),
+    (&[0xff649], &[], 0),
+    (&[0xff655], &[], 0),
+    (&[0xff661], &[], 0),
+    (&[0xff66d], &[], 0),
+    (&[0xff7b2], &[], 0),
+    (&[0xff7c4], &[], 0),
+    (&[0xff7ce], &[], 0),
+    (&[0xff7d6], &[], 0),
+    (&[0xff7de], &[], 0),
+    (&[0xff82d], &[], 0),
+    (&[0xff835], &[], 0),
+    (&[0xff8d8], &[], 0),
+    (&[0xff8e2], &[], 0),
+    (&[0xff8ee], &[], 0),
+    (&[0xff8f6], &[], 0),
+    (&[0xff90c], &[], 0),
+    (&[0xff918], &[], 0),
+    (&[0xff955], &[], 0),
+    (&[0xff977], &[], 0),
+    (&[0xff9a1], &[], 0),
+    (&[0xff9d2], &[], 0),
+    (&[0xffa17], &[], 0),
+    (&[0xffa29], &[], 0),
+    (&[0xffa31], &[], 0),
+    (&[0xffa39], &[], 0),
+    (&[0xffa8a], &[], 0),
+    (&[0xffab3], &[], 0),
+    (&[0xffafe], &[], 0),
+    (&[0xffafe], &[0xffb0a], 0),
+    (&[0xffb37], &[], 0),
+    (&[0xffb37], &[0xffb3f], 0),
+    (&[0xffb37, 0xffb43], &[0xffb3f], 0),
+    (&[0xffba4], &[], 0),
+    (&[0xffbff], &[], 0),
+    // fbe70.
+    (&[0xfbea5], &[], 0),
+    (&[0xfbeb1], &[], 0),
+    (&[0xfbeb8], &[], 0),
+    (&[0xfbf05], &[], 0),
+    (&[0xfbf0c], &[], 0),
+    // 106d70.
+    (&[0x106dad], &[], 0),
+    (&[0x106dc4], &[], 0),
+    (&[0x106dcb], &[], 0),
+    (&[0x106dd2], &[], 0),
+    (&[0x106ec9], &[], 0),
+    (&[0x106ed4], &[], 0),
+    (&[0x106edf], &[], 0),
+    // f6d10.
+    (&[0xf6d51], &[], 0),
+    (&[0xf6d66], &[], 0),
+    (&[0xf6d78], &[], 0),
+    (&[0xf6d8a], &[], 0),
+    (&[0xf6d94], &[], 0),
+    (&[0xf6d9c], &[], 0),
+    (&[0xf6e03], &[], 0),
+    (&[0xf6e0b], &[], 0),
+    (&[0xf6e58], &[], 0),
+    (&[0xf6e66], &[], 0),
+    (&[0xf6e66], &[0xf6e6e], 0),
+    (&[0xf6eec], &[], 0),
+    (&[0xf6f59], &[], 0),
+    (&[0xf6f6b], &[], 0),
+    (&[0xf6f7d], &[], 0),
+    (&[0xf6f89], &[], 0),
+    (&[0xf7091], &[], 0),
+    (&[0xf71c2], &[], 0),
+    (&[0xf721c], &[], 0),
+    (&[0xf722e], &[], 0),
+    (&[0xf722e], &[0xf7236], 0),
+    (&[0xf7320], &[], 0),
+    (&[0xf73ea], &[], 0),
+    (&[0xf73fc], &[], 0),
+    (&[0xf740e], &[], 0),
+    (&[0xf7420], &[], 0),
+    (&[0xf7420], &[0xf7428], 0),
+    (&[0xf756c], &[], 0),
+    (&[0xf7621], &[], 0),
+    (&[0xf7633], &[], 0),
+    (&[0xf7633], &[0xf763b], 0),
+    (&[0xf7734], &[], 0),
+    (&[0xf776d], &[], 0),
+    (&[0xf777b], &[], 0),
+    (&[0xf7789], &[], 0),
+    (&[0xf7791], &[], 0),
+    (&[0xf77f8], &[], 0),
+    (&[0xf780c], &[], 0),
+    (&[0xf7816], &[], 0),
+    (&[0xf7816], &[0xf781e], 0),
+    (&[0xf7823], &[], 0),
+];
+
+fn image_name(g: &Guest, (imm32, imm8, plus): (&[u32], &[u32], u32)) -> u32 {
+    let mut name = plus;
+    for &at in imm32 {
+        name = name.wrapping_add(g.u32(at).unwrap());
+    }
+    for &at in imm8 {
+        name = name.wrapping_add(g.u8(at).unwrap() as i8 as i32 as u32);
+    }
+    name
+}
+
+/// Names a root or a record asks for: none, the synthetic ones, then
+/// every image name in turn.
+fn pick(g: &Guest, k: u32) -> u32 {
+    let synthetic = [0, EXPORT_NAME, OTHER_NAME, UNKNOWN_NAME];
+    let k = k as usize % (synthetic.len() + NAMES.len());
+    if k < synthetic.len() {
+        return synthetic[k];
+    }
+    image_name(g, NAMES[k - synthetic.len()])
+}
+
+/// How many cases a slice 3 root runs: every name twice (`pick(case / 2)`),
+/// over the six pool shapes.
+fn function_cases() -> u32 {
+    2 * (4 + NAMES.len() as u32)
+}
+
+fn f(v: f32) -> u32 {
+    v.to_bits()
+}
+
+/// Definitions, exports and colours for `case`, over the slice 1 pool.
+fn definitions(g: &mut Guest, case: u32) {
+    word(g, points::TAG_ENTRIES.base, TAG_TABLE);
+    for i in 0..4 {
+        word(g, TAG_TABLE + 16 * i + 8, DEFS + DEF_BYTES * i);
+    }
+    word(g, TAG_TABLE + 16 * 4 + 8, MODEL_TAG);
+    word(g, MODEL_TAG + 0x50, case % 4);
+    byte(g, INPUT_KINDS, 3);
+    byte(g, INPUT_KINDS + 1, 0);
+    for i in 0..4 {
+        let def = DEFS + DEF_BYTES * i;
+        // Change colours on for two of the four.
+        byte(g, def + 0x1c, (i & 1) as u8);
+        word(g, def + 0x38, 4);
+        // Zero to three exports; the second never matches `EXPORT_NAME`.
+        word(g, def + 0x64, i);
+        word(g, def + 0x68, EXPORT_RECORDS + 0x100 * i);
+        for j in 0..3 {
+            let r = EXPORT_RECORDS + 0x100 * i + 0x20 * j;
+            let k = case + j;
+            word(g, r, k & 0xf);
+            let input = pick(g, k + i);
+            word(g, r + 4, input);
+            word(g, r + 8, if j == 1 { OTHER_NAME } else { EXPORT_NAME });
+            let gate = if k % 3 == 0 { 0 } else { pick(g, k + 7) };
+            word(g, r + 0xc, gate);
+            word(g, r + 0x10, [f(0.0), f(0.5), f(-1.0)][k as usize % 3]);
+            word(g, r + 0x18, INPUT_KINDS + k % 2);
+            // A scale from another value; never the record's own name, so
+            // the evaluation ends.
+            word(g, r + 0x1c, if j != 1 && k % 4 == 1 { OTHER_NAME } else { 0 });
+        }
+        word(g, def + 0xb0, COLOR_BLOCKS + 0x100 * i);
+        for k in 0..3 {
+            let block = COLOR_BLOCKS + 0x100 * i + 0x10 * k;
+            word(g, block + 8, (case + k) % 3);
+            let functions = COLOR_FUNCTIONS + 0x100 * (3 * i + k);
+            word(g, block + 0xc, functions);
+            for m in 0..2 {
+                let rec = functions + 0x28 * m;
+                word(g, rec + 4, case + m);
+                word(g, rec + 0x20, if (case + m) % 3 == 0 { 0 } else { pick(g, case + m + 1) });
+                word(g, rec + 0x24, if (case + m + k) % 2 == 0 { EXPORT_NAME } else { pick(g, case + k) });
+            }
+        }
+    }
+    for slot in 0..SLOTS {
+        let body = RECORDS + BODY * slot;
+        word(g, body, (slot + case) % 4);
+        // Children (slots 6 and 7 under 2 in cases 3 to 5) take their
+        // parent's value for a name they lack.
+        if slot == 6 || slot == 7 {
+            word(g, body + 4, 1 << 26);
+        }
+        // The scripted override for some.
+        let c1 = g.u8(body + 0xc1).unwrap();
+        byte(g, body + 0xc1, c1 | u8::from(slot % 7 == 3) << 1);
+        // Up to two change colours, after a base RGB per colour.
+        g.set_u16(body + 0x124, (24 * ((slot + case) % 3)) as u16).unwrap();
+        g.set_u16(body + 0x126, 0x160).unwrap();
+        for c in 0..6u32 {
+            word(g, body + 0x160 + 4 * c, [f(0.25), f(1.5), f(-0.5)][((c + slot) % 3) as usize]);
+        }
+        // Vitality and shields, some out of range.
+        for (n, off) in [0xec, 0xf0, 0xf4, 0xf8].into_iter().enumerate() {
+            word(g, body + off, [f(-1.0), f(0.0), f(0.375), f(2.5), f(1.0)][(n + (slot + case) as usize) % 5]);
+        }
+        byte(g, body + 0xb1, (slot + case) as u8);
+        byte(g, body + 0x10a, (slot * 3 + case) as u8);
+    }
+}
+
+/// Arguments for slice 3's roots: the name, the outputs, and the record
+/// for the export evaluator.
+fn function_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let name = pick(g, case / 2);
+    word(g, VALUE_OUT, 0xdead_beef);
+    word(g, ACTIVE_OUT, 0xdead_beef);
+    if object_in_eax(root) {
+        cpu.gpr[0] = object(case);
+        return;
+    }
+    if root == points::OBJECT_CHANGE_COLORS.base {
+        return;
+    }
+    if root == points::OBJECT_FUNCTION_EVALUATE.base {
+        // A record of the object's definition, the value out.
+        let def = (object(case) as u16 as u32 + case) % 4;
+        cpu.gpr[0] = EXPORT_RECORDS + 0x100 * def + 0x20 * (case % 3);
+        word(g, STACK + 8, VALUE_OUT);
+        return;
+    }
+    word(g, STACK + 8, if root == points::OBJECT_FUNCTION_VALUE.base && case % 3 == 0 { EXPORT_NAME } else { name });
+    if root == points::OBJECT_FUNCTION_IMPORT.base {
+        cpu.gpr[3] = VALUE_OUT;
+        cpu.gpr[7] = ACTIVE_OUT;
+        return;
+    }
+    word(g, STACK + 12, VALUE_OUT);
+    word(g, STACK + 16, ACTIVE_OUT);
+}
+
+#[test]
+fn function_value() {
+    transcripts(&points::OBJECT_FUNCTION_VALUE, function_cases());
+}
+
+#[test]
+fn function_evaluate() {
+    transcripts(&points::OBJECT_FUNCTION_EVALUATE, function_cases());
+}
+
+#[test]
+fn function_import_dispatch() {
+    transcripts(&points::OBJECT_FUNCTION_IMPORT, function_cases());
+}
+
+#[test]
+fn base_object_import() {
+    transcripts(&points::BASE_OBJECT_IMPORT, function_cases());
+}
+
+#[test]
+fn change_colors() {
+    transcripts(&points::OBJECT_CHANGE_COLORS, function_cases());
+}
+
+#[test]
+fn type_imports() {
+    for point in [
+        &points::UNIT_FUNCTION_IMPORT,
+        &points::UNIT_IMPORT_FRACTION,
+        &points::UNIT_IMPORT_ANIMATION,
+        &points::BIPED_FUNCTION_IMPORT,
+        &points::VEHICLE_FUNCTION_IMPORT,
+        &points::WEAPON_FUNCTION_IMPORT,
+        &points::PROJECTILE_FUNCTION_IMPORT,
+        &points::DEVICE_FUNCTION_IMPORT,
+        &points::MACHINE_FUNCTION_IMPORT,
+    ] {
+        transcripts(point, function_cases());
+    }
+}
+
 /// The harness on its own: a run is deterministic, and a changed callee
 /// answer shows up as a different transcript, so equal transcripts mean
 /// something.
@@ -698,4 +1142,260 @@ fn the_harness_sees_a_difference() {
         a.callouts != c.callouts || a.end != c.end,
         "a different pool gave the same transcript"
     );
+}
+
+// Slice 11: the small type updates (item, scenery, device, machine,
+// crate, creature, projectile). Their roots run over the same pool,
+// dressed per case with a definition, a game-time record and the fields
+// each update branches on; with the full body table, so the dispatchers
+// and walks above reach them too.
+
+/// Every guest function a slice 11 body calls, with the bytes its `ret`
+/// pops (docs/engine/object-update.md, "Slice 11 bodies").
+const SLICE_11_CALLEES: &[(u32, u32)] = &[
+    // Item `10b4d0`.
+    (0x184000, 0),
+    (0xbadc0, 4),
+    // `b8bd0` (`ret 4`) is in `FUNCTION_CALLOUTS`.
+    (0x142570, 4),
+    (0x10d710, 8),
+    (0x10cf80, 8),
+    (0x10d5f0, 0),
+    (0xbc190, 0),
+    (0xb9dd0, 0),
+    (0xd6660, 4),
+    (0xba300, 0),
+    (0xd6c80, 8),
+    (0x176780, 16),
+    (0xb8540, 4),
+    (0x16eb20, 4),
+    (0x10b850, 4),
+    // Scenery `10a2f0`.
+    (0x1cb710, 20),
+    (0x1daea0, 4),
+    // Crate `11bce0`, machine `1152e0`.
+    (0x1d24a0, 8),
+    // Projectile `f8de0`.
+    (0x109a00, 12),
+    (0xf8eb0, 8),
+    // Machine `1152e0` and device `106790`.
+    (0x1c6620, 4),
+    (0x1c6920, 16),
+    (0xb58c0, 8),
+    (0x107520, 4),
+    (0xb8d30, 12),
+    (0xb9fc0, 0),
+    (0x1071e0, 8),
+    (0xbd020, 4),
+    (0x115b10, 4),
+    (0x115c70, 0),
+    (0x107cc0, 12),
+    (0x107980, 0),
+    (0x11eed0, 20),
+    (0xb6760, 0),
+    // Creature `118700` and `118b80`.
+    (0x118f90, 0),
+    (0x119380, 8),
+    (0x1197b0, 4),
+    (0xba1d0, 4),
+    (0x1e5bb0, 84),
+    (0x1e6360, 8),
+    (0x1e5af0, 4),
+    (0x1e6120, 16),
+    (0x1e55d0, 8),
+    (0x119bc0, 0),
+    (0x1c4b00, 8),
+    (0x119500, 4),
+    (0x1195c0, 0),
+    (0x119c10, 4),
+    (0x11a140, 0),
+    (0xd6bc0, 4),
+    (0x1ec500, 0),
+    (0x118b10, 0),
+    (0x1d1c10, 0),
+    (0x1e68a0, 40),
+    (0x1e5a60, 0),
+];
+
+/// The synthetic definition every pool object points at (tag index 0),
+/// the game-time record, and `115a40`'s cluster tables and arguments.
+const TAGS: u32 = 0x0064_0000;
+const DEFINITION: u32 = 0x0064_1000;
+const TIME: u32 = 0x0064_2000;
+const STRUCTURE: u32 = 0x0064_3000;
+const CLUSTER_LIST: u32 = 0x0064_3400;
+const CLUSTER_INDICES: u32 = 0x0064_3800;
+const CLUSTER_RECORDS: u32 = 0x0064_4000;
+const VISIBLE: u32 = 0x0064_5000;
+const ANSWER: u32 = 0x0064_5100;
+/// Holds the structure the machine's cluster test reads (`+60` the
+/// records, `+220` the index list).
+const STRUCTURE_GLOBAL: u32 = 0x004e_0348;
+/// Where the stubs' `eax` answers point (`answer`): `0x6e1000` plus a
+/// byte.
+const ANSWERS: u32 = 0x006e_1000;
+
+fn f32w(g: &mut Guest, a: u32, v: f32) {
+    word(g, a, v.to_bits());
+}
+
+/// The fields the slice 11 updates branch on, varied by `case`, on the
+/// object a root is called on and its definition.
+fn dress(g: &mut Guest, case: u32) {
+    word(g, points::TAG_ENTRIES.base, TAGS);
+    word(g, TAGS + 8, DEFINITION);
+    word(g, points::GAME_TIME.base, TIME);
+    g.set_u16(TIME + 2, 30).unwrap();
+    f32w(g, TIME + 4, 1.0 / 30.0);
+    word(g, TIME + 8, 0x1000 + case);
+    // Definition: item `+bc` bit 2, `+104` positive or not, `+110` an
+    // effect or none, `+128`; creature `+d4` bits 3 and 4.
+    word(g, DEFINITION + 0xbc, if case % 3 == 2 { 4 } else { 0 });
+    word(g, DEFINITION + 0x104, [0, 1, 0, 2, 0, 3][case as usize % 6]);
+    word(g, DEFINITION + 0x110, if case % 2 == 0 { u32::MAX } else { 0x00e3_0001 });
+    word(g, DEFINITION + 0x128, 0x00e4_0002);
+    word(g, DEFINITION + 0xd4, [0, 8, 0x10, 0x18][case as usize % 4]);
+
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    // In the world (body `+04` bit 8) for most cases.
+    word(g, body + 4, if case == 4 { 0 } else { 1 << 8 });
+    // Woken by an early mover (`+c1` bit 0), crate component flag (`+c0`
+    // bit 12), and a physics component for some.
+    byte(g, body + 0xc1, [0, 1, 0x11, 0x10, 1, 0x11][case as usize % 6]);
+    word(g, body + 0xb4, if case % 2 == 1 { case } else { u32::MAX });
+    // Velocity and its damping.
+    for (i, v) in [1.5f32, -0.25, 3.0].into_iter().enumerate() {
+        f32w(g, body + 0x88 + 4 * i as u32, v * (case + 1) as f32);
+        f32w(g, body + 0x94 + 4 * i as u32, v);
+    }
+    // Type flags `+12c` (item bits 4 to 6, projectile bits 14 and 15,
+    // creature bits 5 and 7), the item timer `+12e`, the creature
+    // counters `+130`, `+131`.
+    word(g, body + 0x12c, [0x10, 0x20, 0x40, 0x4000, 0x8030, 0xc060][case as usize % 6]);
+    g.set_u16(body + 0x12e, [0, 1, 5, 1, 0, 2][case as usize % 6]).unwrap();
+    byte(g, body + 0x130, [0, 3, 0xfe, 1, 0, 9][case as usize % 6]);
+    byte(g, body + 0x131, [0xfe, 0, 2, 7, 0, 1][case as usize % 6]);
+    word(g, body + 0x13c, if case % 3 == 1 { handle(3) } else { u32::MAX });
+    // Scenery: an animation block at `+180` in cases 1 to 5, its state
+    // `+68`, tag `+0` and word `+6` none in turn.
+    g.set_u16(body + 0x12a, if case == 0 { u16::MAX } else { 0x180 }).unwrap();
+    let block = body + 0x180;
+    word(g, block, if case == 2 { u32::MAX } else { 0 });
+    word(g, block + 4, 0x00e5_0003);
+    g.set_u16(block + 6, if case == 3 { u16::MAX } else { 1 }).unwrap();
+    word(g, block + 0x68, if case == 1 { u32::MAX } else { 0 });
+    // `115a40`: a range of entries at `+1da`/`+1dc`, each two cluster
+    // indices; the visible-cluster bits; the answer byte.
+    g.set_u16(body + 0x1da, 1).unwrap();
+    g.set_u16(body + 0x1dc, [0, 1, 2, 3, 2, 1][case as usize % 6]).unwrap();
+    word(g, STRUCTURE_GLOBAL, STRUCTURE);
+    word(g, STRUCTURE + 0x220, CLUSTER_LIST);
+    word(g, CLUSTER_LIST + 0xc, CLUSTER_INDICES);
+    word(g, STRUCTURE + 0x60, CLUSTER_RECORDS);
+    for i in 0..4u32 {
+        g.set_u16(CLUSTER_INDICES + 2 * i, (3 - i) as u16).unwrap();
+        g.set_u16(CLUSTER_RECORDS + 0x24 * i, (7 * i + case) as u16).unwrap();
+        g.set_u16(CLUSTER_RECORDS + 0x24 * i + 2, (40 + i) as u16).unwrap();
+    }
+    word(g, VISIBLE, [0, 1 << 4, 1 << 9, 0, 1 << 2, 0][case as usize % 6]);
+    word(g, VISIBLE + 4, if case == 5 { 1 << 9 } else { 0 });
+    byte(g, ANSWER, 0);
+    word(g, STACK + 8, VISIBLE);
+    word(g, STACK + 12, ANSWER);
+    // A record a stub answer points at: its `+14` word above 1 in odd
+    // cases (the scenery's lookup then wakes it for the post walk).
+    let fill = if case % 2 == 1 { 2 } else { 0 };
+    g.write_bytes(ANSWERS, &[fill; 0x120], 1).unwrap();
+}
+
+/// [`transcripts`] over a [`dress`]ed pool.
+fn dressed(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    XMM.with(|x| x.set(false));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (cpu, mut g) = start(ram, point.base, case);
+            dress(&mut g, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+}
+
+#[test]
+fn item_update() {
+    dressed(&points::ITEM_UPDATE, 6);
+}
+
+#[test]
+fn scenery_update() {
+    dressed(&points::SCENERY_UPDATE, 6);
+}
+
+#[test]
+fn device_update() {
+    dressed(&points::DEVICE_UPDATE, 6);
+}
+
+#[test]
+fn machine_update() {
+    dressed(&points::MACHINE_UPDATE, 6);
+}
+
+#[test]
+fn machine_slot_48() {
+    dressed(&points::MACHINE_SLOT_48, 6);
+}
+
+#[test]
+fn projectile_update() {
+    dressed(&points::PROJECTILE_UPDATE, 6);
+}
+
+#[test]
+fn crate_update() {
+    dressed(&points::CRATE_UPDATE, 6);
+}
+
+#[test]
+fn creature_update() {
+    dressed(&points::CREATURE_UPDATE, 6);
+}
+
+#[test]
+fn creature_post_update() {
+    dressed(&points::CREATURE_POST_UPDATE, 6);
+}
+
+/// The dispatcher reaches each slice 11 body by its type's slot: every
+/// type, over the dressed pool.
+#[test]
+fn type_update_dispatch_reaches_the_small_types() {
+    dressed(&points::OBJECT_TYPE_UPDATE, 13);
+    dressed(&points::OBJECT_TYPE_POST_UPDATE, 13);
 }

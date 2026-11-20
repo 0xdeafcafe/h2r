@@ -50,17 +50,13 @@ sim_native=(
   sim.native_marker_transforms
   sim.native_bsp_segment
   sim.native_collision_query
-  sim.native_base_object_import
   sim.native_mopp_box
   sim.native_mopp_ray
-  sim.native_object_import
-  sim.native_object_value
 )
 sim_physics=(
   sim.native_havok_solver
   sim.native_havok_support_vertices
   sim.native_havok_weld
-  sim.native_object_change_colors
   sim.native_spatial_visit
   sim.native_spatial_portal
   sim.native_unit_aim

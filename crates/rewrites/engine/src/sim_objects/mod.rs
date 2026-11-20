@@ -24,6 +24,17 @@ pub mod frame;
 mod object;
 mod wake;
 mod walks;
+mod functions;
+// Slice 11: the small type updates.
+mod alu;
+mod bloc;
+mod creature;
+mod device;
+mod item;
+mod machine;
+mod projectile;
+mod scenery;
+mod sse;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -83,8 +94,36 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
     Body { point: &points::OBJECT_WAKE_CHILDREN, sites: &[], run: wake::wake_children },
     Body { point: &points::OBJECT_EARLY_MOVER_WAKE, sites: &wake::EARLY_MOVER_SITES, run: wake::early_mover_wake },
+    // Slice 3: function values, the imports and change colours
+    // (`functions`).
+    Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &functions::value::VALUE_SITES, run: functions::value::value },
+    Body { point: &points::OBJECT_FUNCTION_EVALUATE, sites: &functions::value::EVALUATE_SITES, run: functions::value::evaluate },
+    Body { point: &points::OBJECT_FUNCTION_IMPORT, sites: &functions::value::IMPORT_SITES, run: functions::value::import },
+    Body { point: &points::BASE_OBJECT_IMPORT, sites: &functions::base::BASE_SITES, run: functions::base::base },
+    Body { point: &points::OBJECT_CHANGE_COLORS, sites: &functions::colors::COLORS_SITES, run: functions::colors::colors },
+    Body { point: &points::UNIT_FUNCTION_IMPORT, sites: &functions::unit::UNIT_SITES, run: functions::unit::unit },
+    Body { point: &points::UNIT_IMPORT_FRACTION, sites: &[], run: functions::unit::d1210 },
+    Body { point: &points::UNIT_IMPORT_ANIMATION, sites: &functions::unit::D1410_SITES, run: functions::unit::d1410 },
+    Body { point: &points::BIPED_FUNCTION_IMPORT, sites: &[], run: functions::biped::biped },
+    Body { point: &points::VEHICLE_FUNCTION_IMPORT, sites: &functions::vehicle::VEHICLE_SITES, run: functions::vehicle::vehicle },
+    Body { point: &points::WEAPON_FUNCTION_IMPORT, sites: &functions::weapon::WEAPON_SITES, run: functions::weapon::weapon },
+    Body { point: &points::PROJECTILE_FUNCTION_IMPORT, sites: &[], run: functions::projectile::projectile },
+    Body { point: &points::DEVICE_FUNCTION_IMPORT, sites: &[], run: functions::device::device },
+    Body { point: &points::MACHINE_FUNCTION_IMPORT, sites: &functions::machine::MACHINE_SITES, run: functions::machine::machine },
     // Slice 8: the object damage update.
     Body { point: &points::OBJECT_DAMAGE_UPDATE, sites: &damage::SITES, run: damage::update },
+    // Slice 11: the small type updates (the descriptors' slots `+40`,
+    // `+44` and `+48` for item, scenery, device, machine, crate, creature
+    // and projectile).
+    Body { point: &points::ITEM_UPDATE, sites: &item::ITEM_SITES, run: item::item_update },
+    Body { point: &points::SCENERY_UPDATE, sites: &scenery::SCENERY_SITES, run: scenery::scenery_update },
+    Body { point: &points::DEVICE_UPDATE, sites: &device::DEVICE_SITES, run: device::device_update },
+    Body { point: &points::MACHINE_UPDATE, sites: &machine::MACHINE_SITES, run: machine::machine_update },
+    Body { point: &points::MACHINE_SLOT_48, sites: &[], run: machine::machine_slot_48 },
+    Body { point: &points::PROJECTILE_UPDATE, sites: &projectile::PROJECTILE_SITES, run: projectile::projectile_update },
+    Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
+    Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
+    Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

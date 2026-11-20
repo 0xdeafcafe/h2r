@@ -1,10 +1,14 @@
 //! A scene's summary hash: what `render.scene` and `render.capture`
 //! report, so two runs can say whether they extracted the same frame.
 //! FNV-1a over the content, in order: the tick, the cut, and every view's
-//! key, camera, clusters, world state, remainder, instances (key,
-//! definition, model, nodes, sphere, lighting, defaults) and parts (slot,
-//! key, layer, rows). Floats by their bits. Not the map epoch, the present
-//! number or the stamp: they count this process, not the frame.
+//! key, camera, clusters, world state, remainder, auxiliary depth,
+//! instances (key, definition, model, nodes, sphere, lighting, defaults),
+//! parts (slot, key, layer, flags, subparts, rows), lights (handle,
+//! definition, flags, additional casters, steps) and layer draws (layer,
+//! flags, remainder, items with their owner, model, rows and lighting).
+//! Floats by their
+//! bits. Not the map epoch, the present number or the stamp: they count
+//! this process, not the frame.
 
 use crate::object::{Defaults, Lighting};
 use crate::scene::FrameScene;
@@ -54,6 +58,18 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         }
         h.word(u32::from(v.world.texaccum));
         h.word(v.remainder);
+        match &v.aux_depth {
+            Some(a) => {
+                h.word(1);
+                h.float(a.scale);
+                for r in a.rows.iter().chain(&a.rest_rows) {
+                    h.floats(r);
+                }
+                h.floats(&a.clip);
+                h.floats(&a.rest_clip);
+            }
+            None => h.word(0),
+        }
         let instances = scene.instances_of(v);
         h.word(instances.len() as u32);
         for i in instances {
@@ -81,6 +97,16 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.word(p.key.implementation as u32);
                 h.word(u32::from(p.layer));
                 h.word(u32::from(p.flags.0));
+                match p.subparts {
+                    Some(sp) => {
+                        h.word(1);
+                        h.word(u32::from(sp.first));
+                        h.word(u32::from(sp.count));
+                        h.word(sp.visible as u32);
+                        h.word((sp.visible >> 32) as u32);
+                    }
+                    None => h.word(0),
+                }
                 let rows = scene.rows_of(p);
                 h.word(rows.len() as u32);
                 for r in rows {
@@ -88,8 +114,66 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 }
             }
         }
+        let lights = scene.lights_of(v);
+        h.word(lights.len() as u32);
+        for l in lights {
+            h.word(l.handle);
+            h.word(l.definition);
+            h.word(l.flags);
+            h.word(l.definition_flags);
+            h.word(u32::from(l.additional_casters));
+            let steps = scene.steps_of(l);
+            h.word(steps.len() as u32);
+            for s in steps {
+                h.word(u32::from(s.layer));
+                h.word(s.stencil.map_or(u32::MAX, u32::from));
+                h.word(match s.target {
+                    crate::light::LightTarget::ShadowMap => 0x100,
+                    crate::light::LightTarget::View => 0x200,
+                    crate::light::LightTarget::Target(n) => u32::from(n),
+                });
+                h.word(u32::from(s.draws));
+            }
+        }
+        let passes = scene.layers_of(v);
+        h.word(passes.len() as u32);
+        for p in passes {
+            h.word(u32::from(p.layer));
+            h.word(u32::from(p.stencil_off));
+            h.word(u32::from(p.texaccum));
+            h.word(p.remainder);
+            let items = scene.items_of(p);
+            h.word(items.len() as u32);
+            for i in items {
+                h.word(i.slot);
+                h.word(u32::from(i.key.record));
+                h.word(i.key.shader);
+                h.word(u32::from(i.key.section));
+                h.word(u32::from(i.key.part));
+                h.word(i.key.implementation as u32);
+                match i.owner {
+                    crate::layer::LayerOwner::Cluster(c) => h.word(0x1_0000 | u32::from(c)),
+                    crate::layer::LayerOwner::Placement(c) => h.word(0x2_0000 | u32::from(c)),
+                    crate::layer::LayerOwner::Object(k) => {
+                        h.word(0x3_0000);
+                        h.word(k.0);
+                    }
+                }
+                h.word(i.model);
+                let rows = slice_rows(scene, &i.rows);
+                h.word(rows.len() as u32);
+                for r in rows {
+                    h.floats(r);
+                }
+                lighting(&mut h, i.lighting.as_ref());
+            }
+        }
     }
     h.0
+}
+
+fn slice_rows<'a>(scene: &'a FrameScene, r: &std::ops::Range<u32>) -> &'a [crate::scene::Row] {
+    scene.rows.get(r.start as usize..r.end as usize).unwrap_or(&[])
 }
 
 fn lighting(h: &mut Fnv, l: Option<&Lighting>) {
@@ -158,5 +242,21 @@ mod tests {
         assert_eq!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(5, 0.0)), "epoch, frame and stamp do not count");
         assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, 0.5)), "a node moved");
         assert_ne!(summary_hash(&scene(1, 0.0)), summary_hash(&scene(1, -0.0)), "floats by their bits");
+    }
+
+    #[test]
+    fn a_lights_steps_count_in_the_hash() {
+        use crate::light::{LightStep, LightTarget, SceneLight};
+        let with = |stencil| {
+            let mut s = (*scene(1, 0.0)).clone();
+            s.light_steps.push(LightStep { layer: 12, stencil, target: LightTarget::View, draws: true });
+            s.lights.push(SceneLight {
+                handle: 4, definition: 5, flags: 0, definition_flags: 0, additional_casters: false, steps: 0..1,
+            });
+            s.views[0].lights = 0..1;
+            summary_hash(&s)
+        };
+        assert_ne!(with(Some(0)), summary_hash(&scene(1, 0.0)), "a light");
+        assert_ne!(with(Some(0)), with(None), "its stencil change");
     }
 }

@@ -73,7 +73,6 @@ pub const PORTS: &[Port] = {
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
-        port(&OBJECT_CHANGE_COLORS, "sim.native_object_change_colors", Sse, &colors::SITES, colors::update),
         port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
@@ -89,7 +88,7 @@ pub const PORTS: &[Port] = {
 /// replaces them owns the switch now (docs/engine/sim-rewrite.md section 8).
 /// The additive-layer node evaluator runs under `0x2798a0`, which
 /// `impl.sim.native.anim` replaces whole (docs/engine/anim-sampling.md).
-/// The object walks and per-object updates are bodies under
+/// The object walks, the per-object updates and change colours are bodies under
 /// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*`
 /// names are labels, not switches.
 pub const ORACLES: &[Port] = {
@@ -100,6 +99,7 @@ pub const ORACLES: &[Port] = {
         port(&OBJECTS_POST_PHYSICS, "oracle.objects_post_physics", Integer, &objects::POST_SITES, objects::post),
         port(&OBJECT_PRE_UPDATE, "oracle.object_pre_update", Integer, &object_update::PRE, object_update::pre),
         port(&OBJECT_POST_UPDATE, "oracle.object_post_update", Integer, &object_update::POST, object_update::post),
+        port(&OBJECT_CHANGE_COLORS, "oracle.object_change_colors", Sse, &colors::SITES, colors::update),
         // Other codecs are guest calls that resume at the call's return.
         port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
     ]

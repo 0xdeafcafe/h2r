@@ -448,6 +448,27 @@ points! { ALL;
     OBJECT_WAKE_CHILDREN @ 0x000b_c7b0: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
     /// Wake what an early mover's sphere touches.
     OBJECT_EARLY_MOVER_WAKE @ 0x0010_9580: [fn(mover: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // Slice 3 of docs/engine/sim-rewrite-objects.md: function values and change colours.
+    /// Evaluate one function export of an object's definition.
+    OBJECT_FUNCTION_EVALUATE @ 0x000b_a8c0: [fn(record: eax, object: stack 0, value: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
+    /// The `unit` level's function import (slot `+4c`).
+    UNIT_FUNCTION_IMPORT @ 0x000c_6b90: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// A unit import helper: a fraction from the unit's body `+334`/`+338`.
+    UNIT_IMPORT_FRACTION @ 0x000d_1210: [fn(unit: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// A unit import helper: a value from the unit's animation state.
+    UNIT_IMPORT_ANIMATION @ 0x000d_1410: [fn(unit: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// The `bipd` level's function import (slot `+4c`).
+    BIPED_FUNCTION_IMPORT @ 0x000d_e3b0: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `vehi` level's function import (slot `+4c`).
+    VEHICLE_FUNCTION_IMPORT @ 0x000f_6d10: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `weap` level's function import (slot `+4c`).
+    WEAPON_FUNCTION_IMPORT @ 0x000f_f5f0: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `proj` level's function import (slot `+4c`).
+    PROJECTILE_FUNCTION_IMPORT @ 0x000f_be70: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `devi` level's function import (slot `+4c`).
+    DEVICE_FUNCTION_IMPORT @ 0x0010_6d70: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The `mach` and `bloc` levels' function import (slot `+4c`).
+    MACHINE_FUNCTION_IMPORT @ 0x0011_bd60: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1193,6 +1214,25 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
+    // Slice 11 of docs/engine/sim-rewrite-objects.md: the small type updates.
+    /// Item update: slot `+40` of `item` (weapons, equipment and garbage inherit it).
+    ITEM_UPDATE @ 0x0010_b4d0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Scenery update: slot `+40` of `scen`.
+    SCENERY_UPDATE @ 0x0010_a2f0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Device update: slot `+40` of `devi` (machines, controls and light fixtures inherit it).
+    DEVICE_UPDATE @ 0x0010_6790: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Machine update: slot `+40` of `mach`.
+    MACHINE_UPDATE @ 0x0011_52e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Machine slot `+48`: whether any of the machine's entries has its bit set in `bits`; 1 to `[out]` on a hit.
+    MACHINE_SLOT_48 @ 0x0011_5a40: [fn(object: stack 0, bits: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/object-update.md";
+    /// Projectile update: slot `+40` of `proj`; calls the projectile step `0xf8eb0`.
+    PROJECTILE_UPDATE @ 0x000f_8de0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Crate update: slot `+40` of `bloc`.
+    CRATE_UPDATE @ 0x0011_bce0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Creature update: slot `+40` of `crea`.
+    CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Creature post-physics update: slot `+44` of `crea`.
+    CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

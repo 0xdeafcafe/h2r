@@ -96,4 +96,4 @@ pub mod world;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;
 
-pub use scene_extract::layout::{object_lighting, object_nodes, object_walk, objects, skip, world_layers, world_ranges};
+pub use scene_extract::layout::{aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, skip, world_layers, world_ranges};

@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Unshadowed dynamic lights over cluster geometry, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
-Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Dynamic lights' layers 12 and 13 over cluster geometry, the light passes typed into the frame scene, the gathered light and shadow geometry walk and the shadow replacements are built; the visible-light gather, object-model lights, the first-person lights and parity with D3D are not.
+Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/apps/boot/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -38,9 +38,13 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   `[0x004ba134]` positive (not traced); layer 14 (opaque,
   depth write, role unknown); layer 12 (diffuse) and, with bits 0 and 1,
   layer 13 (specular), each on `0x004c1a60` through the layer draw
-  (`0x00044550`). It ends by turning stencil off, clearing the scissor,
+  (`0x00044550`). Before each of layers 11, 14, 12 and 13 it sets
+  stencil mode 0 (`0x00015370`, the test off); it sets none before
+  layer 10. It ends by turning stencil off, clearing the scissor,
   setting the view's target back (`0x00014bc0`) and zeroing both flag
-  words.
+  words. `scene_extract::layout::light_passes` gives the steps a light's
+  flags and lists make, and each light goes into the frame scene's open
+  view with them (`frame_scene::SceneLight`, framescene.md, slice 3).
 - **Object shadows.** `0x000335e0(mode)` (from `0x0002c021`, before layer
   7) picks up to 32 casters (`0x00033400`, entries of `0x14` bytes) and
   calls `0x00032350` (stdcall, two words of the entry, `ret 8`) for each:
@@ -68,8 +72,11 @@ same unusable programs, and sorts the surviving 24-byte entries with
 the original tie order. A failed read or unknown callback leaves the
 guest builder at its entry with its original output buffer.
 
-A dynamic light can skip handlers when only one reachable layer
-has active geometry. Empty intervals still run their target setup and clears. An object shadow can do so separately for generation
+A dynamic light's layer can skip handlers when the light's steps draw
+it (`light_passes`, with the flags and lists the pass set); each layer
+is its own reservation, so a light's other layers do not hold it back.
+With the additional casters' pair every layer keeps its handlers.
+Empty intervals still run their target setup and clears. An object shadow can do so separately for generation
 and application. All sorted entries must share one record, shader,
 selector, implementation, vertex class, topology and per-part state.
 The first `LIGHT_GEOMETRY_DRAW` runs to its complete-part indexed
@@ -85,8 +92,8 @@ required target copy before shortening the loop to one. The guest then
 finishes the first handler and exits the loop normally. A missing
 resource, different binding, target feedback, incomplete copy or failed
 cursor write leaves the original draw and every remaining handler in
-place. Multi-layer dynamic lights and additional-caster chains can use
-the Rust builder and retain their original draw dispatch. Clears, map
+place. Additional-caster chains can use the Rust builder and retain
+their original draw dispatch. Clears, map
 freezes, object shadow filters, gel updates and target restores run at
 their original points. The live-binding requirement still costs one
 guest handler even for a successful group.
@@ -113,7 +120,7 @@ object shadows outside a dynamic light.
   device scissor, intersects the viewport and scales the half-open
   rectangle independently for each copy. Empty rectangles cover no pixels.
 
-- **Shadows.** Layer 10's casters draw into a depth texture of our own from the light's projection (`0x00048ee0`, ported as a pure function), as [native-shadows.md](native-shadows.md) describes. Applying the shadow term inside the light's own pass (`GREATER`, one tap as the D3D path's), instead of layer 11's stencil and alpha marks, is not built; lights whose shadow cannot be drawn keep their D3D passes.
+- **Shadows.** Layer 10's casters draw into a depth texture of our own from the light's projection (`0x00048ee0`, ported as a pure function), as [native-shadows.md](native-shadows.md) describes. Applying the shadow term inside the light's own pass (`GREATER`, one tap as the D3D path's), instead of layer 11's alpha marks, is not built; layers 10, 11 and 14 are the shadow stage's or D3D's, in their place before layers 12 and 13.
 
 ### The light's constants
 
@@ -169,9 +176,9 @@ These globals are what the layer-12/13 templates' engine inputs read,
 so the port's output is that block, compared word for word with the
 game's in a test that runs on recorded inputs.
 
-### Unshadowed lights over the native world
+### Lights over the native world
 
-The host takes lights without the shadow bit, with the light's list copied at the hook, and draws the world's lit parts with their materials' layer-12 and 13 passes. This is implemented for cluster geometry. `boot::native_lights_glue` checks the loaded map and BSP, resolves the sorted layer and reserves both physical copies before advancing the guest dispatch cursor. Placements, objects and shadow maps keep their D3D draws. A shader-driven gel requires a fresh target-13 binding from the original constants call. The consumer pins that read-only slot in its reservation, samples the matching physical copy and normalizes linear texture coordinates by the guest gel width and height. A missing invocation, slot or copy keeps the whole light on D3D. See [native-gels.md](native-gels.md) for the producer.
+The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, with the light's list copied at the hook, and draws the world's lit parts with their materials' layer-12 and 13 passes. The hook's candidate is the light's from its passes' entry to the next light, and its layers are taken one at a time, each when its own layer draw runs (`native_lights::enter_layer`); a layer the gathered walk batches leaves the candidate without a submission. No stencil links layers 12 and 13 to layers 10, 11 and 14: what they read of those is the shadow map and layer 11's destination alpha, which the queue order keeps, and each admitted packet must match the live render state (`PreparedLight::matches`). The light's gel checkpoint serves both layers. This is implemented for cluster geometry. `boot::native_lights_glue` checks the loaded map and BSP, resolves the sorted layer and reserves both physical copies before advancing the guest dispatch cursor. Placements, objects and shadow maps keep their D3D draws. A shader-driven gel requires a fresh target-13 binding from the original constants call. The consumer pins that read-only slot in its reservation, samples the matching physical copy and normalizes linear texture coordinates by the guest gel width and height. A missing invocation, slot or copy keeps the whole light on D3D. See [native-gels.md](native-gels.md) for the producer.
 
 - **Engine textures** (`0x00019530`, a jump table at `0x00019b68`
   indexed by id - 1; Code): ids 1, 9 and 14 are bitmaps from the
@@ -268,8 +275,8 @@ The host takes lights without the shadow bit, with the light's list copied at th
   chosen implementation of layer 12 or 13, refusing passes that read
   inputs nobody supplies, animated ones, engine-driven states, and
   engine textures but 1 (`Normalization`, bound as a cube), 9
-  (`Attenuation`, a volume) and 10 (`Gel`, 2D): the shadow maps (13,
-  8) keep a shadowed light on the D3D path. `compile_light` translates
+  (`Attenuation`, a volume) and 10 (`Gel`, 2D): a pass sampling the
+  shadow maps (13, 8) keeps its D3D draws. `compile_light` translates
   it through the same code as the world's and transparents' passes
   (`program::translate_pass`), and `light_vertex` puts the light's
   frame constants into `c[31]`..`c[39]`.
@@ -362,6 +369,7 @@ The host takes lights without the shadow bit, with the light's list copied at th
 
 ## Not verified
 
+- A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).
 - Pixel parity at equal presents, with render scale 1 and 2, with the lights stage on and off (`impl.render.native=off`). Captures from a run with zero native submissions establish no light coverage, and a scene with zero shader-gel admissions says nothing about the target-13 binding.
 - That reservations are not dropped and the invariant counters stay zero, in `native_lights_v*_reference_ranges` and the other `lights` stage counters of `H2_FRAME_STATS`.
 - The time of the light site after parity is established.
