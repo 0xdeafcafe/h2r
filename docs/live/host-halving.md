@@ -108,14 +108,13 @@ reasons in [Measure before pruning](dedicated-host.md#measure-before-pruning).
 
 **Tick rate.** The sim is fixed at 30 Hz and clients expect that rate, so
 there is no lower "network rate" to drop to, and there are no in-between
-frames to remove. What remains is the pacer
-(`crates/runtime/kernel/src/pacer.rs`) waking for the odd vblank, audio
-completion deadlines and packet work between ticks. On a host those
-deadlines are coalesced into the tick's own wake, except a socket wake,
-which stays so that a packet is never held longer than it is today. In a
-pack the supervisor gives slot *n* of *m* a phase offset of 33.3 × *n* / *m*
-ms, so game threads on one vCPU do not all want the core at the same
-instant.
+frames to remove. The experimental light-host pacer groups host waits on a
+30 Hz monotonic wall-clock grid. Inbound guest UDP, including datagrams from
+the tunnel bridge, interrupts the grouped wait. The guest processes its
+original logical deadlines in order. Slot *n* of capacity *m* uses a phase
+offset of 33.3 × *n* / *m* ms across processes. The switch defaults off
+pending paced hash parity, lower process CPU, unchanged packet latency and
+a four-match wall p99 under 36 ms on one vCPU.
 
 **Bots.** `H2_BOT_THREADS=auto` sizes a pool per process, which
 oversubscribes a 1 vCPU pack. The supervisor passes each match its thread
@@ -419,7 +418,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
-| 3 | One wake per tick and pack phase stagger | `crates/runtime/kernel/src/pacer.rs`, `host_cmd/pack.rs` (the offset) | pacer unit tests: deadlines coalesce, a socket wake does not wait | Hashes equal; `process_cpu_ms_per_tick` down; late-tick p99 of four matches on one vCPU under 36 ms |
 | 4 | Mapped reads | `crates/runtime/vfs/src/sim_store.rs`, `disc.rs`, `map_override.rs`, `crates/runtime/runtime/src/guest.rs`, `cli/src/sim_store_cmd.rs` (padding) | synthetic file: same bytes, a write stays private, a non-congruent read copies, both page sizes | `Private_Dirty` down ≥ 40 MiB per match on one map; hashes equal |
 | 5 | Heap census, budgets and allocator | the owners the census names; `deploy/host/entrypoint.sh` for allocator settings | a budget test per cache that gets one | `footprint_mib` ≤ 80 on a 2v2 |
 | 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |

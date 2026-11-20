@@ -147,7 +147,10 @@ paced or not (`crates/runtime/kernel/src/pacer.rs`). So a paced and an unpaced r
 of the same match are the same match. `sim::clock` holds the parsing and
 the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
 `--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
-file for this invocation.
+file for this invocation. A real-time light host can group its wall waits
+on the pack slot’s 30 Hz phase. Socket readiness releases the grouped wait
+at the ordinary deadline. The guest still observes each intervening vblank,
+audio completion and thread deadline. [Switches](switches.md)
 
 The report's speed-up is game time over wall time from the match's first
 tick to its end (`sim::clock::SpeedMeter`), and also over the whole

@@ -465,7 +465,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
     let data = opts.data.clone();
     let public = std::env::var("H2_PUBLIC_ADDR").ok();
     let pack_base = opts.base_port;
-    Ok(Box::new(move |add: &AddMatch, _slot: u16, ports: SlotPorts| {
+    let slots = opts.max_matches as u64;
+    Ok(Box::new(move |add: &AddMatch, slot: u16, ports: SlotPorts| {
         let mut cmd = Command::new(&exe);
         cmd.args([
             "host",
@@ -512,6 +513,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
         if let Some(public) = slot_public_addr(public.as_deref(), pack_base, ports.base_port)? {
             cmd.env("H2_PUBLIC_ADDR", public);
         }
+        let phase_ns = (1_000_000_000 / 30) * u64::from(slot) / slots;
+        cmd.env("H2_HOST_TICK_PHASE_NS", phase_ns.to_string());
         cmd.env("H2_HOST_LEASE_JSON", &add.lease_json)
             // Each match gets a private diagnostic agent of its own.
             .env(

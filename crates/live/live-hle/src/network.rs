@@ -279,6 +279,20 @@ impl Network {
         }
         Ok(())
     }
+    /// A pace wait observes the same native descriptors as guest select.
+    /// The tunnel's bridge delivers into those sockets too. Only the Arc
+    /// snapshot is held over poll, so cleanup can interrupt a wait.
+    pub fn wait_for_input(&self, timeout: std::time::Duration) -> bool {
+        let sockets: Vec<_> = lock(&self.state).sockets.values().cloned().collect();
+        if sockets.is_empty() {
+            return false;
+        }
+        let read: Vec<_> = sockets.iter().map(|socket| (&socket.host, 1)).collect();
+        let millis = timeout.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32;
+        // Interrupts and socket errors use the ordinary pace for this turn.
+        host::wait(&read, millis).map_or(true, |events| events.iter().any(|&e| e != 0))
+    }
+
     /// The round trips pinging peers reported within `fresh`, by address.
     pub fn reported_pings(&self, fresh: std::time::Duration) -> Vec<(Ipv4Addr, u16)> {
         lock(&self.pings)

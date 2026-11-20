@@ -14,7 +14,7 @@ snapshot = { path = "../snapshot" }
 # Slice, wait, DPC and idle events (docs/perf/profiling.md).
 timeline = { path = "../timeline" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "thread", "time"] }
 
 [dev-dependencies]

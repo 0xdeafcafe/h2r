@@ -180,6 +180,7 @@ fn run_configured(
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
+    let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -1146,6 +1147,20 @@ fn run_configured(
     } else {
         None
     };
+    if coalesce_host_ticks
+        && let Some(pacer) = m.pacer.as_mut()
+        && pacer.ticks_per_second == kernel::clock::Clock::FREQUENCY
+    {
+        let phase = std::env::var_os("H2_HOST_TICK_PHASE_NS")
+            .map(|value| value.to_string_lossy().parse::<u64>())
+            .transpose()
+            .context("H2_HOST_TICK_PHASE_NS must be an unsigned integer")?
+            .unwrap_or(0);
+        let live = _live.clone();
+        pacer.coalesce_host_ticks(phase, move |timeout| {
+            live.as_ref().is_some_and(|hle| hle.wait_for_network_input(timeout))
+        });
+    }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
