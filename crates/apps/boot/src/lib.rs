@@ -940,6 +940,14 @@ fn run_configured(
         {
             a.agent.set_live_session_probe(agent_glue::remote_live_game);
         }
+        #[cfg(feature = "desktop-runtime")]
+        if let Some(vfs) = k.vfs() {
+            agent::render::CAPTURE.set_map_source(move |name| {
+                let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let path = vfs.content_map_path(name)?;
+                vfs.map_id(&path)
+            });
+        }
         hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).

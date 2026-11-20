@@ -303,6 +303,10 @@ pub struct FrameCaptureParams {
     /// instead of the presented image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<usize>,
+    /// Include the rendered package, spawn camera and PNG digest for this
+    /// Live capture game. Only whole frames from a spawn view qualify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_id: Option<String>,
 }
 
 impl FrameCaptureParams {
@@ -328,6 +332,27 @@ pub struct CaptureReply {
     /// The sealed scene's summary hash at that present (`render.scene`);
     /// `null` with no scene source.
     pub scene_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CaptureSource>,
+}
+
+/// Render provenance for the captured frame. The capture reply supplies
+/// the corresponding game tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureSource {
+    pub game_id: String,
+    pub map_id: String,
+    pub map: String,
+    pub camera: CaptureCamera,
+    pub digest: String,
+}
+
+/// World-space eye position and orientation used to render this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CaptureCamera {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
 }
 
 /// `render.scene`.

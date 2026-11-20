@@ -36,6 +36,8 @@ use agent_proto::{
     FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply, PassRecord,
     RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
+use agent_proto::render::{CaptureCamera, CaptureSource};
+use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
@@ -698,12 +700,16 @@ pub fn take_parity_arm() -> bool {
 pub struct FrameCapture {
     /// A capture waits for its present: the tick and present calls look.
     pending: AtomicBool,
+    source_armed: AtomicBool,
     /// The present whose image the frame writer should write; 0 for none.
     want: AtomicU64,
     probe: &'static FrameProbe,
     hosted: &'static Hosted,
     state: Mutex<CaptureState>,
+    map_source: Mutex<Option<Arc<CaptureMapSource>>>,
 }
+
+type CaptureMapSource = dyn Fn(&str) -> Option<MapId> + Send + Sync;
 
 struct CaptureState {
     /// The host can write presented frames.
@@ -722,8 +728,22 @@ struct CaptureJob {
     bound: Option<(u64, u64)>,
     scene_hash: Option<String>,
     path: PathBuf,
+    source: Option<CaptureSourceJob>,
     /// The frame writer's result, or why it failed before.
-    outcome: Option<Result<(), String>>,
+    outcome: Option<Result<Option<Sha256>, String>>,
+}
+
+struct CaptureSourceJob {
+    game_id: String,
+    drawn: Option<(String, CaptureCamera)>,
+    frame: Option<(String, MapId, CaptureCamera)>,
+}
+
+/// The frame writer's destination and whether the exact PNG needs a digest.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CaptureWrite {
+    pub path: PathBuf,
+    pub digest: bool,
 }
 
 /// The game's.
@@ -733,9 +753,11 @@ impl FrameCapture {
     pub const fn new(probe: &'static FrameProbe, hosted: &'static Hosted) -> FrameCapture {
         FrameCapture {
             pending: AtomicBool::new(false),
+            source_armed: AtomicBool::new(false),
             want: AtomicU64::new(0),
             probe,
             hosted,
+            map_source: Mutex::new(None),
             state: Mutex::new(CaptureState {
                 writer: false,
                 next_seq: 1,
@@ -754,10 +776,38 @@ impl FrameCapture {
         self.lock().writer = true;
     }
 
+    /// The host resolves a drawn map's cache alias to its installed package.
+    pub fn set_map_source(&self, source: impl Fn(&str) -> Option<MapId> + Send + Sync + 'static) {
+        *self.map_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(source));
+    }
+
+    /// The renderer applied this spawn view to the frame in progress.
+    /// Resolves the map and the pose only for an armed provenance capture.
+    pub fn note_drawn_camera(&self, read: impl FnOnce() -> Option<(String, CaptureCamera)>) {
+        if self.source_armed.load(Ordering::Relaxed)
+            && let Some(source) = self.lock().job.as_mut().and_then(|j| j.source.as_mut())
+        {
+            source.drawn = read();
+        }
+    }
+
+    /// The old map's draw can no longer be used for a provenance capture.
+    pub fn clear_drawn_camera(&self) {
+        self.note_drawn_camera(|| None);
+    }
+
     /// Arms for `p.tick` (default: the tick after the last one ended); the
     /// image goes under `dir`. Replaces a capture still waiting. Answers
     /// the arming's number for [`finish`](Self::finish).
     pub fn arm(&self, p: &FrameCaptureParams, dir: &Path) -> Result<u64, RpcError> {
+        if let Some(id) = &p.game_id
+            && (p.pass.is_some() || !live_proto::game::valid_id(id))
+        {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "game_id must be a valid Live id and can only accompany a whole-frame capture",
+            ));
+        }
         let Some(last) = self.hosted.last_tick() else {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
@@ -799,6 +849,11 @@ impl FrameCapture {
             bound: None,
             scene_hash: None,
             path: dir.join(format!("capture-{}-{seq}-tick-{target}.png", std::process::id())),
+            source: p.game_id.clone().map(|game_id| CaptureSourceJob {
+                game_id,
+                drawn: None,
+                frame: None,
+            }),
             outcome: None,
         };
         if let Some(pass) = p.pass
@@ -808,6 +863,7 @@ impl FrameCapture {
         }
         s.job = Some(job);
         self.want.store(0, Ordering::Relaxed);
+        self.source_armed.store(p.game_id.is_some(), Ordering::Relaxed);
         self.pending.store(true, Ordering::Relaxed);
         Ok(seq)
     }
@@ -856,7 +912,7 @@ impl FrameCapture {
             return;
         }
         let last = self.hosted.last_tick();
-        let seq = {
+        let (seq, drawn) = {
             let mut s = self.lock();
             let Some(j) = &mut s.job else {
                 return;
@@ -864,29 +920,47 @@ impl FrameCapture {
             if j.bound.is_some() || j.outcome.is_some() {
                 return;
             }
+            // A view belongs only to this present. Dropping a draw from an
+            // early present prevents a later, camera-less frame using it.
+            let drawn = j.source.as_mut().and_then(|source| source.drawn.take());
             let Some(tick) = last.filter(|&t| t >= j.target) else {
                 return;
             };
-            j.bound = Some((tick, n));
-            if j.pass.is_none() {
-                self.want.store(n, Ordering::Relaxed);
+            if j.source.is_some() && drawn.is_none() {
+                return;
             }
+            j.bound = Some((tick, n));
             self.pending.store(false, Ordering::Relaxed);
-            j.seq
+            self.source_armed.store(false, Ordering::Relaxed);
+            (j.seq, drawn)
         };
-        // The source is the host's; called without the lock held.
+        // The sources are the host's. Call them without the capture lock.
+        let frame = drawn.and_then(|(map, camera)| {
+            let source = self.map_source.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+            Some((source(&map)?, map, camera))
+        });
         let hash = self.hosted.scene_hash();
         if let Some(j) = &mut self.lock().job
             && j.seq == seq
         {
             j.scene_hash = hash;
+            if let Some(source) = &mut j.source {
+                let Some((map_id, map, camera)) = frame else {
+                    j.outcome = Some(Err("the drawn map is not an installed package".into()));
+                    return;
+                };
+                source.frame = Some((map, map_id, camera));
+            }
+            if j.pass.is_none() {
+                self.want.store(n, Ordering::Relaxed);
+            }
         }
     }
 
     /// The frame writer, at present `present`: where to write its image,
     /// when it is wanted (one relaxed load when not). Call
     /// [`written`](Self::written) after.
-    pub fn wanted(&self, present: u64) -> Option<PathBuf> {
+    pub fn wanted(&self, present: u64) -> Option<CaptureWrite> {
         if present == 0 || self.want.load(Ordering::Relaxed) != present {
             return None;
         }
@@ -894,12 +968,15 @@ impl FrameCapture {
         s.job
             .as_ref()
             .filter(|j| j.bound.map(|b| b.1) == Some(present) && j.outcome.is_none())
-            .map(|j| j.path.clone())
+            .map(|j| CaptureWrite {
+                path: j.path.clone(),
+                digest: j.source.is_some(),
+            })
     }
 
     /// The frame writer wrote present `present`'s image where
-    /// [`wanted`](Self::wanted) said, or failed.
-    pub fn written(&self, present: u64, result: Result<(), String>) {
+    /// [`wanted`](Self::wanted) said, with a digest if requested, or failed.
+    pub fn written(&self, present: u64, result: Result<Option<Sha256>, String>) {
         let _ = self
             .want
             .compare_exchange(present, 0, Ordering::Relaxed, Ordering::Relaxed);
@@ -929,6 +1006,7 @@ impl FrameCapture {
         };
         s.job = None;
         self.pending.store(false, Ordering::Relaxed);
+        self.source_armed.store(false, Ordering::Relaxed);
         self.want.store(0, Ordering::Relaxed);
         Some(out)
     }
@@ -939,14 +1017,32 @@ impl FrameCapture {
                 code::UNAVAILABLE,
                 format!("writing the frame: {e}"),
             ))),
-            Ok(()) => {
+            Ok(digest) => {
                 let (tick, present) = j.bound?;
+                let source = if let Some(source) = &j.source {
+                    let (Some((map, map_id, camera)), Some(digest)) = (&source.frame, digest) else {
+                        return Some(Err(RpcError::new(
+                            code::UNAVAILABLE,
+                            "the capture writer did not supply complete provenance",
+                        )));
+                    };
+                    Some(CaptureSource {
+                        game_id: source.game_id.clone(),
+                        map_id: map_id.to_string(),
+                        map: map.clone(),
+                        camera: *camera,
+                        digest: digest.to_string(),
+                    })
+                } else {
+                    None
+                };
                 Some(Ok(CaptureReply {
                     path: j.path.display().to_string(),
                     tick,
                     present,
                     pass: None,
                     scene_hash: j.scene_hash.clone(),
+                    source,
                 }))
             }
         }
@@ -988,6 +1084,7 @@ impl FrameCapture {
                     present,
                     pass: Some(pass),
                     scene_hash: j.scene_hash.clone(),
+                    source: None,
                 })),
                 (None, e) => fail(format!(
                     "reading pass {pass} back: {}",
@@ -1380,7 +1477,7 @@ mod frame_scene_tests {
     fn whole(tick: u64) -> FrameCaptureParams {
         FrameCaptureParams {
             tick: Some(tick),
-            pass: None,
+            ..Default::default()
         }
     }
 
@@ -1421,10 +1518,12 @@ mod frame_scene_tests {
         c.tick_ended(12);
         c.present(42);
         assert_eq!(c.wanted(41), None, "only the bound present");
-        let path = c.wanted(42).unwrap();
+        let write = c.wanted(42).unwrap();
+        assert!(!write.digest);
+        let path = write.path;
         assert_eq!(path, dir.join(format!("capture-{}-{seq}-tick-12.png", std::process::id())));
         assert_eq!(c.finish(seq), None, "not written yet");
-        c.written(42, Ok(()));
+        c.written(42, Ok(None));
         assert_eq!(c.wanted(42), None);
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!(r.path, path.display().to_string());
@@ -1434,6 +1533,87 @@ mod frame_scene_tests {
         c.tick_ended(13);
         c.present(43);
         assert_eq!(c.wanted(43), None);
+    }
+
+    fn spawn_camera() -> CaptureCamera {
+        CaptureCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn live_capture_binds_the_drawn_map_camera_and_png_to_one_present() {
+        let (_, _, c) = rigs();
+        let map = MapId([0x1f; 32]);
+        c.set_map_source(move |name| (name == "package-alias").then_some(map));
+        c.set_writer();
+        c.tick_ended(10);
+        let params = FrameCaptureParams {
+            tick: Some(12),
+            game_id: Some("private-game-id".into()),
+            ..Default::default()
+        };
+        let seq = c.arm(&params, Path::new(DIR)).unwrap();
+        let camera = spawn_camera();
+        c.note_drawn_camera(|| Some(("earlier-map".into(), camera)));
+        c.present(40); // Tick 10's draw must not carry forward.
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        assert_eq!(c.finish(seq), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), camera)));
+        c.tick_ended(13);
+        c.present(42);
+        let write = c.wanted(42).unwrap();
+        assert!(write.digest);
+        assert_eq!(c.finish(seq), None);
+        let digest = Sha256::of(b"synthetic PNG");
+        c.written(42, Ok(Some(digest)));
+        let capture = c.finish(seq).unwrap().unwrap();
+        assert_eq!((capture.tick, capture.present), (13, 42));
+        assert_eq!(capture.path, write.path.display().to_string());
+        let source = capture.source.unwrap();
+        assert_eq!(source.game_id, "private-game-id");
+        assert_eq!(source.map_id, map.to_string());
+        assert_eq!(source.map, "package-alias");
+        assert_eq!(source.camera, camera);
+        assert_eq!(source.digest, digest.to_string());
+    }
+
+    #[test]
+    fn live_capture_requires_a_whole_frame_installed_map_and_writer_digest() {
+        let (_, _, c) = rigs();
+        c.set_writer();
+        c.tick_ended(10);
+        let mut params = FrameCaptureParams {
+            game_id: Some("private-game-id".into()),
+            pass: Some(0),
+            ..Default::default()
+        };
+        let dir = Path::new(DIR);
+        assert_eq!(c.arm(&params, dir).unwrap_err().code, code::INVALID_PARAMS);
+        params.pass = None;
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.tick_ended(11);
+        c.present(40);
+        assert_eq!(c.wanted(40), None);
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
+
+        c.set_map_source(|_| Some(MapId([0x1f; 32])));
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.clear_drawn_camera();
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.present(42);
+        assert!(c.wanted(42).unwrap().digest);
+        c.written(42, Ok(None));
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
     }
 
     fn sealed(dump: bool) -> Result<SceneReply, String> {
@@ -1476,7 +1656,7 @@ mod frame_scene_tests {
         let seq = c.arm(&FrameCaptureParams::default(), Path::new(DIR)).unwrap();
         c.tick_ended(14);
         c.present(51);
-        c.written(51, Ok(()));
+        c.written(51, Ok(None));
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!((r.tick, r.present), (14, 51));
         assert_eq!(r.scene_hash.as_deref(), Some("00ff00ff"));
@@ -1499,6 +1679,7 @@ mod frame_scene_tests {
         let p = FrameCaptureParams {
             tick: Some(22),
             pass: Some(1),
+            ..Default::default()
         };
         let seq = c.arm(&p, Path::new(DIR)).unwrap();
         assert!(!probe.armed(), "armed at the end of the tick before");
@@ -1525,8 +1706,8 @@ mod frame_scene_tests {
         // A pass the frame doesn't have.
         let seq = c.arm(
             &FrameCaptureParams {
-                tick: None,
                 pass: Some(5),
+                ..Default::default()
             },
             Path::new(DIR),
         )
@@ -1678,7 +1859,7 @@ mod frame_scene_tests {
         r.capture.tick_ended(8);
         r.capture.present(30);
         assert!(r.capture.wanted(30).is_some());
-        r.capture.written(30, Ok(()));
+        r.capture.written(30, Ok(None));
         let c = r.tick(8).expect("the capture");
         assert_eq!(c["result"]["tick"], 8, "{c}");
         assert_eq!(c["result"]["present"], 30);

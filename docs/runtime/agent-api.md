@@ -754,7 +754,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
-| `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
+| `render.capture` | read | `{tick?, pass?, game_id?}` | `{path, tick, present, pass?, scene_hash, source?}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
@@ -811,6 +811,14 @@ h2 agent render.parity '{"arm": true}'
   which answers `INTERRUPTED`. Unasked, the cost is one relaxed load per
   tick and per present. Capture does not wait for unresident scene
   content (framescene.md 9.2).
+  For a Live gallery capture, pass the capture session's `game_id` after
+  selecting a spawn view. The method waits for a whole frame that draws
+  that view at or after the requested tick. The result includes
+  `source: {game_id, map_id, map, camera, digest}`. The game resolves the
+  draw's cache alias to the installed package's full `MapId`.
+  `camera` gives the world-space `position`, `forward` and `up` the renderer
+  uses. `digest` is the SHA-256 of the exact PNG the display writer saves.
+  The Live CLI adds the capture permit when it submits the image.
 - **`render.scene`.** The last sealed `FrameScene`, from the source the
   frame step registers (`agent::render::set_scene_source`, in boot's
   `scene_glue` over `render_bridge::scene_step`): whether

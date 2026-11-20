@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use agent_proto::render::CaptureCamera;
 use agent_proto::{RpcError, SpawnViewParams, code, method};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
 use hooks::{Builder, Flow};
@@ -117,6 +118,15 @@ impl SpawnViews {
                                 // Completion stamp only. The render thread reads the selected
                                 // pose and changes only its private view and call context.
                                 view.drawn.store(true, Ordering::Release);
+                                agent::render::CAPTURE.note_drawn_camera(|| {
+                                    let map = crate::health::loaded_map_name(&*call.ctx.memory()).ok()?;
+                                    let (forward, up) = view.pose.axes();
+                                    Some((map, CaptureCamera {
+                                        position: view.pose.position,
+                                        forward,
+                                        up,
+                                    }))
+                                });
                             }
                         }
                     }
@@ -131,6 +141,7 @@ impl SpawnViews {
             "release agent spawn camera",
             move |_| {
                 views.select(None);
+                agent::render::CAPTURE.clear_drawn_camera();
             },
         );
         Ok(())
