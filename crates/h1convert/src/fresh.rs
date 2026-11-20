@@ -200,13 +200,33 @@ fn from_scratch<R: Read + Seek>(
     shared_level.unread_ok = true;
     let base_map = Map::from_reader(Cursor::new(&file[..]))?;
     let level_map = Map::from_reader(Cursor::new(bytes))?;
+    let mut level = MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?;
+    level.add_regions(grown(pinned).1);
     let mut src = LevelSource {
         base: MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?,
-        level: MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?,
+        level,
         from_level,
     };
     let from_level = src.from_level.clone();
     build(&mut src, fresh, &MULTIPLAYER, extra, &from_level, low)
+}
+
+/// The pinned tags of `pinned` an edit grew past their own bytes, and the
+/// arrays it wrote for them (metadata no tag owns), from
+/// [`map::build::PinnedImage::grown`]: a reader of the map `pinned` builds
+/// reads those arrays, which no tag's bytes hold.
+pub fn grown(pinned: &TagSet) -> (Vec<TagId>, Vec<(u32, Vec<u8>)>) {
+    let Some(p) = &pinned.pinned else {
+        return (Vec::new(), Vec::new());
+    };
+    let tags = p.grown.iter().map(|&(id, _)| id).collect();
+    let arrays = p
+        .unowned
+        .iter()
+        .filter(|(at, _)| p.grown.iter().any(|&(_, a)| a == *at))
+        .cloned()
+        .collect();
+    (tags, arrays)
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
@@ -255,6 +275,13 @@ pub fn unpin_all<R: Read + Seek>(
     let schema = Schema::builtin();
     let mut u = Unpinner::new(schema, src).map_err(tags_error)?;
     u.add_starts(bounds.iter().copied());
+    // Pinned tags an edit grew (the globals' damage table,
+    // `h1objects::player_damage`): their new arrays read, their replaced
+    // ones left out.
+    let (grown_tags, grown_arrays) = grown(pinned);
+    if !grown_tags.is_empty() {
+        u.add_grown(src, grown_tags, grown_arrays);
+    }
     // A campaign intermediate (`built_too`): arrays of base tags live in
     // metadata no tag owns (05a's scenario range and the gaps between
     // tags), the base tags point only into the base's own metadata, and a
@@ -1735,6 +1762,7 @@ mod pinned_prune_tests {
             metadata_base: BASE,
             metadata_size: 0x1000,
             unowned: vec![(BASE + 0xa00, live), (BASE + 0xc00, dead)],
+            grown: Vec::new(),
         });
         // `zzzz` points into tag 3's bytes and into the first gap.
         let b = bytes(&mut set, 2);

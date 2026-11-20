@@ -468,6 +468,72 @@ fn a_whole_map_unpins_with_its_raw_copied_and_reads_back_the_same() {
     }
 }
 
+/// A pinned tag an edit grew: its 0x8 block moved to a larger array past
+/// the metadata (`PinnedImage::grown`), the old array left in its bytes.
+/// The plain unpin refuses it (the new array is in no tag); with the
+/// grown arrays added it unpins, the new array its block, the old one
+/// left out.
+#[test]
+fn a_grown_tag_unpins_with_its_new_array_and_without_its_old_one() {
+    let (mut map, ids) = invented(1, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let id = ids[0];
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let TagPayload::Pinned { address, bytes } = &set.tag(id).unwrap().payload else {
+        panic!("pinned");
+    };
+    let (at, root) = (*address, bytes.clone());
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let old = word(&root, 0xc);
+    let old_elem = map
+        .read_file_range(map.file_offset(old, 0x14).unwrap(), 0x14)
+        .unwrap();
+    // Two elements with no data, each keeping the old string ID.
+    let mut grown = vec![0u8; 0x28];
+    for e in 0..2 {
+        grown[e * 0x14..e * 0x14 + 4].copy_from_slice(&(0x5678_0000 + e as u32).to_le_bytes());
+        grown[e * 0x14 + 0x10..e * 0x14 + 0x14].copy_from_slice(&old_elem[0x10..0x14]);
+    }
+    let pinned = set.pinned.as_mut().unwrap();
+    let new = pinned.metadata_base + pinned.metadata_size.next_multiple_of(16);
+    pinned.metadata_size = new - pinned.metadata_base + grown.len() as u32;
+    pinned.unowned.push((new, grown.clone()));
+    pinned.grown.push((id, new));
+    let TagPayload::Pinned { bytes, .. } = &mut set.tag_mut(id).unwrap().payload else {
+        unreachable!()
+    };
+    bytes[8..0xc].copy_from_slice(&2u32.to_le_bytes());
+    bytes[0xc..0x10].copy_from_slice(&new.to_le_bytes());
+    assert!((at..at + root.len() as u32).contains(&old), "the old array is the tag's own");
+    let mut built = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+
+    let mut dst = TagSet::from_map(&mut built).unwrap();
+    let mut plain = transplant::Unpinner::new(&schema, &mut built).unwrap();
+    let refused = plain.unpin(&mut built, &[id], &mut dst).unwrap().unwrap_err();
+    assert_eq!(refused[0].detail.refusal, Refusal::OutOfBounds);
+
+    let mut u = transplant::Unpinner::new(&schema, &mut built).unwrap();
+    u.add_grown(&mut built, [id], [(new, grown.clone())]);
+    assert_eq!(u.unpin(&mut built, &[id], &mut dst).unwrap().unwrap(), 1);
+    let TagPayload::Built(tree) = &dst.tag(id).unwrap().payload else {
+        panic!("built");
+    };
+    let block = tree
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            map::build::FixupKind::Block { count, child } if f.offset == 8 => Some((*count, child)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(block.0, 2);
+    assert_eq!(block.1.bytes.len(), grown.len());
+    assert_eq!(word(&block.1.bytes, 0), 0x5678_0000);
+    assert_eq!(word(&block.1.bytes, 0x14), 0x5678_0001);
+}
+
 #[test]
 fn matg_locales_use_descriptor_lengths_across_a_large_raw_gap() {
     use crate::localization::{Language, Localization};

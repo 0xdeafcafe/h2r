@@ -246,6 +246,13 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
         self.rel.memory_mut().data_words(words);
     }
 
+    /// Metadata of this map no tag owns that tags' arrays point into (the
+    /// arrays an edit wrote for a pinned tag it grew,
+    /// [`map::build::PinnedImage::grown`]): read as the tags' own.
+    pub fn add_regions(&mut self, regions: impl IntoIterator<Item = (u32, Vec<u8>)>) {
+        self.rel.memory_mut().add_regions(regions);
+    }
+
     /// Raw resources read since the last call (with [`MapSource::keep_raw`]).
     pub fn take_raw(&mut self) -> Vec<([u8; 32], Vec<u8>)> {
         std::mem::take(&mut self.kept)

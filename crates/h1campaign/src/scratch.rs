@@ -39,9 +39,13 @@ pub fn build(
     let mut base_src = MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?;
     // The few 05a words the schema takes for pointers.
     base_src.data_words(&h1convert::fresh::DATA_WORDS);
+    let mut level = MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?;
+    // The arrays the conversion wrote for base tags it grew (the globals'
+    // damage table), which no tag's bytes hold.
+    level.add_regions(h1convert::fresh::grown(set).1);
     let mut src = LevelSource {
         base: base_src,
-        level: MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?,
+        level,
         from_level,
     };
     let from_level = src.from_level.clone();

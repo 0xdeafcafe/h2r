@@ -164,8 +164,11 @@ pub(crate) fn install(set: &mut TagSet, profiles: &BTreeSet<Scales>) -> Result<(
 
     // The pinned intermediate retains all stock matg fields at their
     // original addresses. Append the new matrix arrays to metadata and
-    // change the existing matrix header. Fresh builds read the arrays
-    // through the regular matg schema; string IDs stay in the same order.
+    // change the existing matrix header. The globals are recorded as grown
+    // there (`PinnedImage::grown`): fresh builds read the new arrays
+    // through the regular matg schema and leave the replaced rows out;
+    // string IDs stay in the same order.
+    let globals = set.globals;
     let pinned = set
         .pinned
         .as_ref()
@@ -203,6 +206,7 @@ pub(crate) fn install(set: &mut TagSet, profiles: &BTreeSet<Scales>) -> Result<(
     let pinned = set.pinned.as_mut().expect("pinned metadata");
     pinned.metadata_size = offset + bytes.len() as u32;
     pinned.unowned.push((address, bytes));
+    pinned.grown.push((globals, address));
     Ok(())
 }
 
@@ -239,6 +243,7 @@ mod tests {
             metadata_base: BASE,
             metadata_size: 0x500,
             unowned: Vec::new(),
+            grown: Vec::new(),
         });
         set.globals = set
             .add_tag(
@@ -280,6 +285,10 @@ mod tests {
 
         let pair = [0.5f32.to_bits(), 2.0f32.to_bits()];
         install(&mut set, &BTreeSet::from([pair])).unwrap();
+        // The new arrays sit past the metadata, recorded as the globals'.
+        let pinned = set.pinned.as_ref().unwrap();
+        assert_eq!(pinned.grown, [(set.globals, BASE + 0x500)]);
+        assert!(pinned.unowned.iter().any(|(at, _)| *at == BASE + 0x500));
         let key = set.intern(&damage_key(pair)).unwrap();
         let body = word(read_pinned(&set, body_address + 0x14, 4).unwrap(), 0);
         let shield = word(read_pinned(&set, shield_address + 0x14, 4).unwrap(), 0);

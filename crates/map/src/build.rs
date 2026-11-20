@@ -375,6 +375,13 @@ pub struct PinnedImage {
     pub metadata_size: u32,
     /// Metadata bytes no tag owns (nonzero gaps between tags), by address.
     pub unowned: Vec<(u32, Vec<u8>)>,
+    /// Pinned tags an edit grew past their own bytes, and where: (tag, the
+    /// address of an [`Self::unowned`] region holding arrays the edit wrote
+    /// for it). The arrays they replaced stay in the tag's bytes with
+    /// nothing pointing at them, so a reader that lays the tag out anew
+    /// reads these regions and leaves the replaced arrays out
+    /// (`tags::schema::Unpinner::add_grown`).
+    pub grown: Vec<(TagId, u32)>,
 }
 
 /// Owned tags plus everything else a v8 cache needs. Build with
@@ -777,6 +784,7 @@ impl TagSet {
                 metadata_base: space.virtual_base,
                 metadata_size: map.metadata_size(),
                 unowned,
+                grown: Vec::new(),
             }),
         })
     }

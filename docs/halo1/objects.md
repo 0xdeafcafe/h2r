@@ -1187,6 +1187,14 @@ uses the node BSPs (`0x001695fb`).
   The cyborg armour and shield scales now use native damage table
   rows (`matg +0xd0`, Halo 2 `0x000d5bc0`). For example, a plasma
   rifle bolt scales shield damage by 2 and body damage by 0.5.
+  The grown rows go after the pinned intermediate's metadata, outside
+  the globals' bytes, so the globals are recorded as grown there
+  (`map::build::PinnedImage::grown`). The fresh build's unpinning and
+  its from-scratch read take those arrays as the globals' own and leave
+  the replaced rows out (`tags::schema::transplant::Unpinner::add_grown`,
+  `h1convert::fresh::grown`). Without that, the globals were refused
+  and dropped, and every Halo 1 sandbox build and Halo 1 assets level
+  failed with "root tag missing or of the wrong class".
   The plasma grenade's free explosion and the needler's super
   explosion list an impulse-only `jpt!` before the vitality damage.
   The damaging part goes in the projectile's native damage slot.
