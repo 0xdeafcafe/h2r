@@ -173,6 +173,17 @@ How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/runtime/B
 Bindings are input's defaults plus Enter for A and Backspace for B, so the
 menus work with arrows and Enter. Escape is START.
 
+| Key | Pad |
+| --- | --- |
+| Enter or Space | A |
+| Backspace or V | B |
+| E / Q | X / Y |
+| Escape / Tab | Start / Back |
+| Arrows | D-pad |
+| WASD, mouse (click to capture) | Left stick, look |
+
+Cmd+F toggles fullscreen and Cmd+P pauses.
+
 Quitting: Cmd+Q or the close button stop the guest through the lifecycle
 (the run ends as `HostStop` and prints the boot report), then the window
 closes. Ctrl-C or SIGTERM in the terminal does the same from outside the

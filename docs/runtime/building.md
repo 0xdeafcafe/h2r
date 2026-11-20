@@ -132,6 +132,53 @@ build's artifacts, and back. Each can be moved (to another volume, say):
 | `H2_APPLE_HOST_TARGET_DIR` | the host-side `h2` and packer that `build.sh` runs for the disc subset and game module | `target/apple-host-pack` |
 | `H2_WINDOWS_TARGET_DIR` | the Windows cross build (`platform/windows/env.sh`, so `windows-dll` and `check-windows`) | `target/windows-cross` |
 
+## The `h2` command
+
+`.cargo/config.toml` defines an alias, so `cargo h2 <command>` is
+`cargo run --release -q -p cli -- <command>`. `cargo install --locked
+--path crates/apps/cli` installs the same program as `h2`.
+
+```sh
+cargo h2 info                    # title, sections, libraries
+cargo h2 ls                      # files on the disc
+cargo h2 maps                    # map headers and tag counts
+cargo h2 tags <map> [group]      # tags in a map
+cargo h2 extract                 # copy the disc's files to disc/extracted/
+cargo h2 analyze                 # function discovery and coverage
+cargo h2 lift --stats            # lowering coverage
+cargo h2 emit --out $TMPDIR/h2gen   # generate C and build the host library
+cargo h2 h1 info disc/halo1.iso  # Halo 1 map headers (your own Halo 1 disc)
+```
+
+`emit` is slow and writes about 1 GB, so point `--out` at scratch space.
+Unchanged output is cached ([BUILD-CACHE.md](../lifter/BUILD-CACHE.md)).
+`cargo h2` with no arguments prints every command, including the tag
+decoders (`tag`, `bitmap`, `sound`, `strings`, `ui`, `hs` and more).
+
+Profiling and benchmarks need the `perf` feature, which the alias does not
+pass ([profiling.md](../perf/profiling.md)):
+
+```sh
+cargo run --release -p cli --features perf -- bench list
+cargo run --release -p cli --features perf -- bench --only hot-loop
+cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
+```
+
+## Ghidra
+
+Ghidra is a second opinion and a browser. The pipeline never depends on it
+at build time.
+
+```sh
+scripts/setup-ghidra.sh     # Ghidra 12.1.4 + XboxDev XBE loader + ghidra-cli, into .tools/
+scripts/ghidra-export.sh    # import + analyse once, write disc/ghidra-functions.tsv
+cargo h2 analyze --against disc/ghidra-functions.tsv
+scripts/ghidra decompile <address>
+```
+
+Ghidra is pinned to 12.1.4 because the XBE loader only loads on the
+version it was built for.
+
 ## Tests
 
 `scripts/tests/just_test.sh` runs the justfile in a scratch copy of the

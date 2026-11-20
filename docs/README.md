@@ -9,6 +9,8 @@ partly built code or a design. Pages are written to the rules in
 goals, targets, the pipeline and the crate table. Dated reviews of the code
 are under [Reviews](#reviews).
 
+[features.md](features.md) lists every feature beyond the retail game with its state and its page, the measured speed numbers and the roadmap.
+
 ## Lifter: analysis, lifting and CPU semantics (`lifter/`)
 
 - [LIFTER.md](lifter/LIFTER.md) (**start here**): the lifter: x86 to IR to C11, the runtime contract, the validation plan. Where it and the code differ, the code wins
