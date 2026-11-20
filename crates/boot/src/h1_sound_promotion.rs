@@ -30,17 +30,17 @@ impl Feature for H1SoundPromotion {
                     // The caller has passed the native sound's admission checks.
                     let sp = call.cpu.esp;
                     let mut m = call.ctx.memory();
-                    let original = m.u32(sp + 12).map_err(fault)?;
+                    let original = m.u32(sp + 12)?;
                     match choose(&mut *m, original).map_err(fault)? {
                         Some(id) => {
                             if id != original {
-                                m.set_u32(sp + 12, id).map_err(fault)?;
-                                m.set_u32(sp + 16, u32::MAX).map_err(fault)?;
+                                m.set_u32(sp + 12, id)?;
+                                m.set_u32(sp + 16, u32::MAX)?;
                             }
                             Ok(Flow::Continue)
                         }
                         None => {
-                            let ret = m.u32(sp).map_err(fault)?;
+                            let ret = m.u32(sp)?;
                             call.cpu.eax = u32::MAX;
                             call.cpu.esp = sp + 20;
                             Ok(Flow::Return(runtime::TransferAbi::ret(ret)))
