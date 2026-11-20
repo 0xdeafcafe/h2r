@@ -38,6 +38,8 @@ pub struct ExternalDraws {
 pub struct ExternalEncoded {
     /// Guest ranges recorded.
     pub ranges: usize,
+    /// GPU draws the commands issue, including any intermediate draws.
+    pub draws: usize,
     /// Render passes the commands begin (a submission's passes are bounded).
     pub passes: usize,
     pub commands: Box<dyn Fn(&mut wgpu::CommandEncoder) + Send>,

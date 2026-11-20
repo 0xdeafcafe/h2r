@@ -782,6 +782,7 @@ impl GpuWorld {
         let (vertices, indices) = (program_vertices.clone(), indices.clone());
         let has_stencil = depth_format.has_stencil_aspect();
         let ranges = selected.len();
+        let draws = items.len();
         let commands = move |encoder: &mut wgpu::CommandEncoder| {
             for (src, at, dst, offset, len) in &copies {
                 encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
@@ -818,7 +819,7 @@ impl GpuWorld {
                 pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
             }
         };
-        Ok(gfx::external::ExternalEncoded { ranges, passes: 1, commands: Box::new(commands) })
+        Ok(gfx::external::ExternalEncoded { ranges, draws, passes: 1, commands: Box::new(commands) })
     }
 
     /// The fog uniforms for one view ([`FogSet::prepare`]), through the

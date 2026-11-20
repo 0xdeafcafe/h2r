@@ -635,6 +635,14 @@ impl GfxBackend {
         }
     }
 
+    fn submit_full_external_batch(&mut self) {
+        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
+            + self.pending.as_ref().map_or(0, |p| p.encoded);
+        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
+            self.submit_open();
+        }
+    }
+
     /// Submits the pending pass, if any, and every pass encoded before it.
     pub fn flush(&mut self) -> Result<(), String> {
         let encoded = self.encode_pending();
@@ -1750,11 +1758,7 @@ impl Backend for GfxBackend {
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
-            + self.pending.as_ref().map_or(0, |p| p.encoded);
-        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
-            self.submit_open();
-        }
+        self.submit_full_external_batch();
     }
 
     fn supports_external_pass(&self) -> bool {

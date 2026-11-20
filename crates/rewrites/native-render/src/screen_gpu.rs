@@ -1064,6 +1064,15 @@ impl ScreenCommands {
         self.ranges
     }
 
+    /// GPU draws in the call, including alpha fills of feedback copies.
+    pub fn draws(&self) -> usize {
+        self.steps.iter().map(|step| match step {
+            Step::Copy { .. } => 0,
+            Step::Strips(strips) => strips.ranges.len(),
+            Step::Opaque { .. } | Step::Quad(_) => 1,
+        }).sum()
+    }
+
     /// The render passes [`Self::record`] begins.
     pub fn passes(&self) -> usize {
         self.steps.iter().filter(|s| !matches!(s, Step::Copy { .. })).count()
