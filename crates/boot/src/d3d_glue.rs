@@ -230,7 +230,6 @@ pub(crate) fn install_headless_with_settings(
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
                 // Every shadow-map frame is compared between the views; the
@@ -295,10 +294,9 @@ pub(crate) fn install_headless_with_settings(
                     e3_shots(ctx, store, id, flags, gamma);
                 };
                 let retail = configure_gfx(
-                    "retail",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
-                let e3 = configure_gfx("e3", d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
                     eprintln!(
                         "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
@@ -329,13 +327,11 @@ pub(crate) fn install_headless_with_settings(
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
-                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
                         .on_present(shots("-1x", shadow_shots, None))
                         .on_present_replay(|_, _, _, _, _| {}),
                 );
                 let view = configure_gfx(
-                    "display",
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
@@ -355,7 +351,6 @@ pub(crate) fn install_headless_with_settings(
                 };
             }
             let mut backend = configure_gfx(
-                "reference",
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
@@ -540,8 +535,7 @@ impl BetweenShots {
 
 #[cfg(feature = "gpu")]
 /// `h2 run`'s settings for a headless `GfxBackend`.
-fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
-    crate::native_shadows_glue::configure(&mut backend, copy);
+fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
     // Merged render passes under the loose rule are the default (a few
     // edge pixels can differ from one render pass per draw).
     // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
@@ -1325,7 +1319,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     #[cfg(feature = "gpu")]
     crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
     #[cfg(feature = "gpu")]
-    crate::native_residual_glue::install(rt, &device, &r.implemented);
+    crate::native_residual_glue::install(&device);
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();

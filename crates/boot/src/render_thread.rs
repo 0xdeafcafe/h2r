@@ -28,11 +28,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          and its timed points need the after continuation",
     ),
     (
-        "render-loop",
-        "*",
-        "off by default; the Rust ports park in Rust continuations around their guest calls",
-    ),
-    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
@@ -291,7 +286,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::REFUSED;
-    use crate::registration::tests::{ALL_ON, Case, NATIVE_WORLD_OFF, registry};
+    use crate::registration::tests::{ALL_ON, Case, NATIVE_OFF, registry};
 
     fn refused(feature: &str, point: &str) -> Option<usize> {
         REFUSED
@@ -321,7 +316,7 @@ mod tests {
         // screen-quad and HUD-quad befores.
         for switches in [
             String::new(),
-            format!("{ALL_ON},{NATIVE_WORLD_OFF}"),
+            format!("{ALL_ON},{NATIVE_OFF}"),
             ALL_ON.to_owned(),
             format!("{ALL_ON},render-census"),
         ] {

@@ -78,10 +78,6 @@ pub struct FrameRecord {
     /// More draws than `max_draws`: the list stops there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// Calls into each native render path (`impl.render.*`) during the
-    /// frame; a path not listed made none.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub paths: BTreeMap<String, u64>,
     /// Surface copies and readbacks, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ops: Vec<OpRecord>,
@@ -232,9 +228,6 @@ pub struct RenderStats {
     /// The pipelined render (`impl.render.pipelined_frame`): frame counts,
     /// serial and fallback reasons, joins, snapshot coverage and times in ms.
     pub pipeline: Value,
-    /// Calls into each native render path (`impl.render.*` placed as an
-    /// implementation) since the start; 0 for a path that is off.
-    pub paths: BTreeMap<String, u64>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
 }

@@ -1486,9 +1486,9 @@ pub fn install(
         )));
         match registry.add(&crate::skulls_mp_row::mp_class(
             Arc::clone(&mp),
-            block,
-            layout,
-            picture,
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
         )) {
             Ok(true) => {}
             Ok(false) => eprintln!("skulls menu: features.skulls-mp-screen is off"),

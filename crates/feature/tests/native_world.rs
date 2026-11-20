@@ -17,11 +17,10 @@ use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RE
 use native_render::world::Owner;
 
 #[test]
-fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
-    let switches = "render-timing=on,render-timing.deep=on,impl.render.layer_draw=on";
+fn the_plan_orders_it_inside_render_timing() {
+    let switches = "render-timing=on,render-timing.deep=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
-    assert!(r.add(&feature::render_loop::RenderLoop).unwrap());
     assert!(r.add(&NativeWorld).unwrap());
     let plan = match r.build(&Base) {
         Ok(p) => p,

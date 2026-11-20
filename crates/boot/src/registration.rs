@@ -368,12 +368,6 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // sim, on its own host thread (docs/graphics/pipelined-render.md, "The
     // prototype"). Pipelined and serial runs are not lockstep-compatible.
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
-    // Stage 7a: the Rust render_views, when H2_FEATURES has
-    // impl.render.views=on (off by default; docs/graphics/render-loop.md).
-    #[cfg(feature = "desktop-runtime")]
-    features
-        .add(&feature::render_loop::RenderLoop)
-        .map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
     // Occlusion culling of objects (H2_FEATURES=impl.render.occlusion=on,
     // off by default; docs/graphics/occlusion-culling.md).
     features

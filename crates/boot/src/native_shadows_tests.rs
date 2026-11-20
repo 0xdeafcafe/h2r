@@ -386,7 +386,6 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         backend.store.read_color(&ctx, color).unwrap().0
     };
     backend.set_merge_passes(true);
-    backend.set_merge_discards(true);
     backend.set_merge_masks(true);
     backend.set_defer_side_passes(true);
     let expected = render(&mut backend, false, false);

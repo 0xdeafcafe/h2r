@@ -99,7 +99,7 @@ impl Switches {
 /// The native GPU renderer's one switch: on unless `H2_FEATURES` says
 /// `impl.render.native=off`, which turns off every native stage, scene
 /// walk, scene list and the native UI together. Looked up exactly: the
-/// `impl.render` group (the lifted render-loop ports) does not reach it.
+/// `impl.render` group does not reach it.
 pub const NATIVE: &str = "impl.render.native";
 
 /// Whether the native renderer ([`NATIVE`]) is on.

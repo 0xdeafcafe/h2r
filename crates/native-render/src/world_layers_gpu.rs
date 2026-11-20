@@ -32,7 +32,7 @@ pub struct Cache {
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { devices: Mutex::default(), fetch: FetchMode::from_env() }
+        Self { devices: Mutex::default(), fetch: FetchMode::Gpu }
     }
 }
 

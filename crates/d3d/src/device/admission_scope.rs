@@ -24,7 +24,7 @@ impl<B: Backend> Device<B> {
 
     fn native_boundary_ready(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
         if !self.created || !self.can_external_pass() || self.swallowing.is_some()
-            || self.scoped_admission.is_some() || self.trace.is_some()
+            || self.scoped_admission.is_some()
         {
             return Ok(false);
         }

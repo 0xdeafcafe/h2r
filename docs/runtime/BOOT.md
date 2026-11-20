@@ -34,6 +34,8 @@ copies. Nothing is ever written next to it.
 | `--no-movies` | | skip every movie (Bink HLE skip mode) |
 | `--no-mappack` | | skip installing a `mappack.iso` beside the disc into `--data` (`H2_MAPPACK=0` does the same; [map-pack.md](../game/map-pack.md)) |
 
+Every environment variable and `H2_FEATURES` switch, one line each, is in [switches.md](switches.md); the table below has the boot runner's details.
+
 | Environment | Effect |
 | --- | --- |
 | `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. Requires the current boot bridge. This is the gated inline path, not fault-driven fastmem. |
@@ -44,9 +46,8 @@ copies. Nothing is ever written next to it.
 | `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
 | `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics, each sampled bot join gate, and repeat messages while Mods has no in-game Live session. Also enables `H2_FEATURE_PLAN` detail. |
 | `H2_FEATURE_PLAN=1` | list features, hooks, entries, locale sources, and hot-point warnings. Also log the first time each hook runs and show the skull and health install reports. The default prints a one-line installation summary and any problems. |
-| `H2_FEATURES=impl.render.native=off` | disable the native GPU render stages. An explicit stage switch wins in either order. For example, `impl.render.native=off,impl.render.native_world=on` enables the world and its material programs. The `impl.render` switch still controls the lifted render-loop ports independently. |
-| `H2_NATIVE_LISTS_COMPARE=1` | compare the Rust scene list builders with the original guest output and log the first mismatch at each seam. See [native-renderer.md](../graphics/native-renderer.md#scene-list-builders). |
-| `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines and comparison dumps. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
+| `H2_FEATURES=impl.render.native=off` | disable the native GPU renderer: every stage, scene walk and the scene list builders return to the D3D path. It is the renderer's only switch. The `impl.render` switch still controls the lifted render-loop ports independently. |
+| `H2_NATIVE_VERBOSE=1` | show the native renderer's per-definition and per-material load lines. With verbose logging off, a stage that finds no work logs when it stands down for the map. See [native-renderer.md](../graphics/native-renderer.md). |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS` | Any value, even `0`, counts as set. D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |

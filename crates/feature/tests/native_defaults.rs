@@ -170,7 +170,6 @@ fn the_old_stage_keys_reach_nothing() {
 #[test]
 fn the_render_group_and_the_native_renderer_are_independent() {
     let ordinary_render_off = Switches::parse("impl.render=off").unwrap();
-    assert!(!ordinary_render_off.implementation("render.layer_draw", true));
     for stage in stages() {
         assert!((stage.on)(&ordinary_render_off), "{}", stage.name);
     }
