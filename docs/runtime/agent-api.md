@@ -1541,6 +1541,13 @@ boundary. It takes no parameters. The result contains `at` and a `bots`
 array. Each row has the seat's `handle`, `name`, `player` (null until
 bound to a game player), `skill`, `profile`, `combat` and `accuracy`.
 
+`maintenance` measures the host's phantom roster work on render frames with
+configured seats or pending removals. `frames` counts calls, `total_ns` sums
+their wall time, and `max_ns` is the longest call. `unchanged_lobby_frames`
+counts frames where the seated custom lobby's peer and player records matched
+the previous sample. Subtract two readings in the same session to get a
+window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,

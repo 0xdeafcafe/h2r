@@ -33,12 +33,16 @@ pub struct Bots {
     phantoms: bots::phantom::Phantoms,
     /// Where each map's data is written (`h2 bots nav`, `bots_nav_auto`).
     dir: std::path::PathBuf,
-    map: Arc<Mutex<String>>,
+    map: Arc<Mutex<[u8; 32]>>,
     frame: Arc<AtomicU64>,
-    /// The last lobby facts line said.
-    lobby_said: Arc<Mutex<String>>,
-    /// The lobby's player count last said (`bots::lobby::players_line`).
-    players_said: Arc<Mutex<Option<u32>>>,
+    diagnostics: Arc<Mutex<LobbyDiagnostics>>,
+}
+
+#[derive(Default)]
+struct LobbyDiagnostics {
+    facts: Option<bots::lobby::Facts>,
+    players: Option<u32>,
+    fault: Option<u32>,
 }
 
 impl Bots {
@@ -49,8 +53,7 @@ impl Bots {
             dir: bots::cache::dir(data_root),
             map: Arc::default(),
             frame: Arc::default(),
-            lobby_said: Arc::default(),
-            players_said: Arc::default(),
+            diagnostics: Arc::default(),
         }
     }
 }
@@ -162,8 +165,7 @@ impl hooks::Feature for Bots {
             Arc::clone(&self.map),
             self.dir.clone(),
         );
-        let lobby_said = Arc::clone(&self.lobby_said);
-        let players_said = Arc::clone(&self.players_said);
+        let diagnostics = Arc::clone(&self.diagnostics);
         let film = self.film.clone();
         b.raw().before(
             &points::RENDER_FRAME,
@@ -200,26 +202,36 @@ impl hooks::Feature for Bots {
                 }
                 let mut mem = rt.memory();
                 load_map_data(&map, &dir, &mem);
-                match phantoms.tick(&mut *mem, f) {
-                    Ok(lines) => lines.iter().for_each(|l| eprintln!("{l}")),
-                    Err(e) => eprintln!("bots: phantoms: fault at {:#x}", e.addr),
-                }
-                // What the lobby read gave, once per change, and its own
-                // player count: what a Clankermatch's start counts.
-                if let Ok(f) = bots::lobby::facts(&*mem) {
-                    let line = bots::lobby::pregame_line(&f);
-                    let mut said = lock(&lobby_said);
-                    if *said != line {
-                        eprintln!("{line}");
-                        *said = line;
+                let result = phantoms.tick(&mut *mem, f);
+                let lobby = bots::lobby::membership(&*mem).ok().map(|facts| {
+                    let n = bots::lobby::lobby_players(&*mem, &facts).ok().flatten();
+                    (facts, n)
+                });
+                drop(mem);
+                let mut said = lock(&diagnostics);
+                match result {
+                    Ok(lines) => {
+                        said.fault = None;
+                        for line in lines {
+                            eprintln!("{line}");
+                        }
                     }
-                    let n = bots::lobby::lobby_players(&*mem, &f).ok().flatten();
-                    let mut said = lock(&players_said);
-                    if *said != n {
-                        if let Some(n) = n {
+                    Err(e) if said.fault != Some(e.addr) => {
+                        said.fault = Some(e.addr);
+                        eprintln!("bots: phantoms: fault at {:#x}", e.addr);
+                    }
+                    Err(_) => {}
+                }
+                if let Some((facts, players)) = lobby {
+                    if said.facts.as_ref() != Some(&facts) {
+                        eprintln!("{}", bots::lobby::pregame_line(&facts));
+                        said.facts = Some(facts);
+                    }
+                    if said.players != players {
+                        if let Some(n) = players {
                             eprintln!("{}", bots::lobby::players_line(n));
                         }
-                        *said = n;
+                        said.players = players;
                     }
                 }
                 Ok(Flow::Continue)
@@ -312,48 +324,60 @@ const MAP_KIND: u32 = 0x0054_7840;
 /// the map runs goes in when it lands ([`bots::autonav::offer`]). The main
 /// menu and the shared resource maps get nothing: no bot plays there
 /// ([`bots::autonav::map_use`]).
-fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Guest) {
+fn load_map_data(seen: &Mutex<[u8; 32]>, dir: &std::path::Path, mem: &runtime::Guest) {
     use bots::autonav::{self, MapUse};
-    use engine::memory::GuestMemory;
-    let Ok(raw) = mem.cstr(MAP_NAME, 32) else {
+    let Ok(mut raw) = mem.read::<32>(MAP_NAME) else {
         return;
     };
-    let name = String::from_utf8_lossy(&raw).into_owned();
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    raw[end..].fill(0);
     let mut last = lock(seen);
-    if *last == name {
+    if *last == raw {
         return;
     }
-    last.clone_from(&name);
-    autonav::map_loaded(&name);
+    *last = raw;
+    let name = String::from_utf8_lossy(&raw[..end]).into_owned();
+    let (generation, retired) = autonav::map_loaded(&name);
     let kind = mem
         .u16(MAP_KIND)
         .ok()
         .map(|k| map::CacheType::from(u32::from(k)));
     let usage = autonav::map_use(&name, kind);
-    if usage == MapUse::Never {
+    if usage == MapUse::Never && retired.is_none() {
         return;
     }
     let auto = autonav::handle().filter(|_| usage == MapUse::Build);
     if let Some(h) = auto {
         h.want(&name);
     }
-    let file = dir.join(bots::cache::file_name(&name, 0));
     let dir = dir.to_path_buf();
     let thread_name = name.clone();
     let spawned = background::spawn("bots-map-data", move || {
+        // Free the retired mesh and its many polygon, edge and visibility
+        // allocations away from the frame that observed the transition.
+        drop(retired);
+        if usage == MapUse::Never {
+            return;
+        }
+        let file = dir.join(bots::cache::file_name(&name, 0));
+        let nav_stage = timeline::setup::Stage::Nav.worker();
         let read = std::fs::read(&file);
         let data = read
             .as_ref()
             .ok()
             .and_then(|b| bots::cache::MapData::from_bytes(b));
+        drop(nav_stage);
         match (data, read.is_ok(), auto.is_some()) {
             (Some((d, stamp)), ..) => {
                 // The visibility grid beside it, or a line saying why not
                 // (every sight ray is then cast).
-                let vis = bots::vis::load(&dir, &name, 0, stamp, &d.walls);
+                let vis = {
+                    let _stage = timeline::setup::Stage::Visibility.worker();
+                    bots::vis::load(&dir, &name, 0, stamp, &d.walls)
+                };
                 let (polys, links, walls) =
                     (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
-                if autonav::offer(&name, d, false) {
+                if autonav::offer(&name, d, Some(generation)) {
                     eprintln!(
                         "bots: {name}: {polys} polygons, {links} links, {walls} wall triangles"
                     );

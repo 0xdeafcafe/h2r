@@ -111,6 +111,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 struct Phantom {
+    peer_identity: session::PeerIdentity,
+    peer_hint: Option<u32>,
     info: PhantomInfo,
     /// Shared with a think in flight (`crate::think`).
     source: Source,
@@ -166,6 +168,8 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 
 #[derive(Default)]
 struct Books {
+    lobby_membership: session::lobby_membership::LobbyMembership,
+    maintenance: Maintenance,
     list: Vec<Phantom>,
     hosted_game: Option<u32>,
     /// Last sampled game tick and whether the opening fade was still active.
@@ -190,6 +194,16 @@ struct Books {
     /// matchmaking life cycle, types 6 to 9), never the party's lobby
     /// ([`Phantoms::set_match_only`]).
     match_only: bool,
+}
+
+/// Roster maintenance from the render-frame hook. Counts and wall times accumulate
+/// independently of combat decisions (which do not run in a lobby).
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct Maintenance {
+    pub frames: u64,
+    pub unchanged_lobby_frames: u64,
+    pub total_ns: u64,
+    pub max_ns: u64,
 }
 
 /// One tick's batched pads ([`Mode::Batched`]).
@@ -250,6 +264,8 @@ impl Phantoms {
         b.next += 1;
         let uplink = action::Uplink::new(identity.xuid);
         b.list.push(Phantom {
+            peer_identity: session::PeerIdentity::new(&identity.gamertag),
+            peer_hint: None,
             info: PhantomInfo {
                 handle,
                 identity,
@@ -499,6 +515,25 @@ impl Phantoms {
     /// this console hosts no session any more, every phantom's peer comes
     /// out and the phantom waits for the next. Returns lines for the log.
     pub fn tick(&self, m: &mut dyn GuestMemory, _frame: u64) -> Result<Vec<String>, MemFault> {
+        let start = std::time::Instant::now();
+        let result = self.maintain(m);
+        let ns = start.elapsed().as_nanos() as u64;
+        let mut books = self.lock();
+        if result.is_err() {
+            books.lobby_membership.invalidate();
+        }
+        let perf = &mut books.maintenance;
+        perf.frames += 1;
+        perf.total_ns = perf.total_ns.saturating_add(ns);
+        perf.max_ns = perf.max_ns.max(ns);
+        result
+    }
+
+    pub fn maintenance(&self) -> Maintenance {
+        self.lock().maintenance
+    }
+
+    fn maintain(&self, m: &mut dyn GuestMemory) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
         // A starting game waits for no phantom (§5.1, "Phantoms in the
         // game"), whichever way they came in.
@@ -553,6 +588,34 @@ impl Phantoms {
             b.thinker.settle();
         }
         b.hosted_game = hosted_game;
+
+        // A menu or lobby has no current game player data. A previous map's
+        // player table can stay mapped through the post-game screen.
+        if hosted_game.is_none() {
+            for seat in &mut b.list {
+                seat.info.player = None;
+                if seat.info.state == State::Joined {
+                    seat.info.state = State::Pending;
+                }
+            }
+        }
+        // Inspect the actual peer and player records. A host-side profile edit
+        // can leave the revision word alone, and an incarnation can reuse the
+        // same guest address. Pending joins must keep trying even if a host
+        // profile outside the session is all that changes.
+        let settled = b.gone.is_empty() && b.list.iter().all(|p| p.made);
+        let custom = matches!(phase, Some(Phase::Lobby(_)))
+            && m.u32(crate::lobby::SESSION_TYPE).is_ok_and(|t| matches!(t, 1 | 2));
+        if let Some(Phase::Lobby(s)) = phase
+            && custom && settled
+        {
+            if b.lobby_membership.unchanged(&*m, s, self.roster_revision()) {
+                b.maintenance.unchanged_lobby_frames += 1;
+                return Ok(log);
+            }
+        } else {
+            b.lobby_membership.invalidate();
+        }
 
         // Out: removed phantoms, and all of them once this console hosts
         // no session (with the lobby join off: once no game runs).
@@ -609,8 +672,6 @@ impl Phantoms {
                     p.waiting = Some(why.clone());
                 }
             }
-            drop(b);
-            self.refresh_where(&*m, true)?;
             return Ok(log);
         };
         let (s, in_lobby) = match phase {
@@ -618,16 +679,24 @@ impl Phantoms {
             Phase::Lobby(s) => (s, true),
         };
 
+        let revision_before = if custom && settled {
+            Some(m.u32(s + session::at::UPDATE)?)
+        } else {
+            None
+        };
+
+        let host = session::host_properties(&*m, s)?;
         // Kept: a made phantom's peer the game took out (its own removal)
         // joins again; the others' properties follow this console's.
         for p in &mut b.list {
             if !p.made {
                 continue;
             }
-            match session::find_peer(&*m, s, p.info.machine)? {
+            match session::find_peer_near(&*m, s, p.info.machine, p.peer_hint)? {
                 Some(peer) => {
-                    session::sync_props(m, s, peer, &p.info.identity.gamertag)?;
-                    session::sync_identity(m, s, peer, &p.info.identity.gamertag)?;
+                    p.peer_hint = Some(peer);
+                    session::sync_peer(m, s, peer, host.as_ref(), &p.peer_identity)?;
+                    session::sync_identity(m, s, peer, &p.peer_identity)?;
                 }
                 None => {
                     p.made = false;
@@ -672,8 +741,9 @@ impl Phantoms {
             // ever found here.
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
                 if session::peer_players(&*m, s, stale)? > 0 {
-                    session::sync_props(m, s, stale, &p.info.identity.gamertag)?;
-                    session::sync_identity(m, s, stale, &p.info.identity.gamertag)?;
+                    p.peer_hint = Some(stale);
+                    session::sync_peer(m, s, stale, host.as_ref(), &p.peer_identity)?;
+                    session::sync_identity(m, s, stale, &p.peer_identity)?;
                     p.made = true;
                     p.waiting = None;
                     log.push(format!(
@@ -689,7 +759,8 @@ impl Phantoms {
                 p.info.state = State::Failed("the session has no room for another machine".into());
                 continue;
             };
-            session::sync_props(m, s, peer, &p.info.identity.gamertag)?;
+            p.peer_hint = Some(peer);
+            session::sync_peer(m, s, peer, host.as_ref(), &p.peer_identity)?;
             let id = session::player_id(p.info.identity.xuid, mac);
             if session::add_player(m, s, peer, id, &config)?.is_none() {
                 session::remove_peer(m, s, peer)?;
@@ -715,28 +786,38 @@ impl Phantoms {
             session::match_roster::sync(m, s, b.match_only)?;
         }
 
-        // Even teams in the lobby: the phantoms with no team asked for
-        // follow the humans' moves.
-        if in_lobby {
-            let mut movable = Vec::new();
+        // Peer indexes can move when an empty peer is taken out during a join.
+        // Validate each hint before using it, and resolve a name only on a move.
+        if in_lobby && team_game {
+            let mut peers = [0; MAX_PHANTOMS];
+            let mut n = 0;
             for p in b.list.iter().filter(|p| p.made && p.info.team.is_none()) {
-                if let Some(i) = session::find_peer(&*m, s, p.info.machine)? {
-                    movable.push((i, p.info.identity.gamertag.clone()));
+                if let Some(i) = session::find_peer_near(&*m, s, p.info.machine, p.peer_hint)? {
+                    peers[n] = i;
+                    n += 1;
                 }
             }
-            let peers: Vec<u32> = movable.iter().map(|m| m.0).collect();
-            for (peer, from, to) in session::rebalance(m, s, &peers)? {
-                let name = movable
-                    .iter()
-                    .find(|x| x.0 == peer)
-                    .map_or("?", |x| x.1.as_str());
+            for (peer, from, to) in session::rebalance(m, s, &peers[..n])? {
+                let machine = session::peer_machine(&*m, s, peer)?;
+                let name = b.list.iter().find(|p| p.info.machine == machine)
+                    .map_or("?", |p| p.info.identity.gamertag.as_str());
                 log.push(format!(
                     "bots: phantom {name} changes team {from} -> {to} to keep the teams even"
                 ));
             }
         }
-        drop(b);
-        self.refresh_where(&*m, true)?;
+        if in_lobby {
+            // If a repair changed the guest, the sample above was the damaged
+            // state. Never treat it as the repaired state on a later frame.
+            if let Some(before) = revision_before
+                && m.u32(s + session::at::UPDATE)? != before
+            {
+                b.lobby_membership.invalidate();
+            }
+        } else {
+            drop(b);
+            self.refresh_where(&*m, true)?;
+        }
         Ok(log)
     }
 }

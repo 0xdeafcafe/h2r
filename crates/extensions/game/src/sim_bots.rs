@@ -177,7 +177,7 @@ pub(crate) fn stats(
             }))
         })
         .collect();
-    Ok(serde_json::json!({ "bots": bots }))
+    Ok(serde_json::json!({ "bots": bots, "maintenance": phantoms.maintenance() }))
 }
 
 impl Bots for SimBots {
@@ -257,7 +257,11 @@ mod tests {
         use serde_json::json;
 
         let seats = Phantoms::default();
-        assert_eq!(stats(json!(null), &seats).unwrap(), json!({"bots": []}));
+        assert_eq!(stats(json!(null), &seats).unwrap(), json!({
+            "bots": [], "maintenance": {
+                "frames": 0, "unchanged_lobby_frames": 0, "total_ns": 0, "max_ns": 0
+            }
+        }));
         seats.add(
             Identity { xuid: 1, gamertag: "Brain".into() },
             None,
