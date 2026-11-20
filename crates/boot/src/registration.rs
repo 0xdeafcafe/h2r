@@ -437,10 +437,6 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
     #[cfg(feature = "gpu")]
     features
-        .add(&feature::native_residual::NativeResidual)
-        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
-    #[cfg(feature = "gpu")]
-    features
         .add(&feature::native_scene_lists::NativeSceneLists)
         .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
     // Mark the sorted geometry entries so their resolved indexed draws

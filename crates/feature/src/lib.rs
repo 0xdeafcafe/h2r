@@ -44,8 +44,6 @@ mod native_effects;
 #[cfg(feature = "native-render")]
 pub mod native_post;
 #[cfg(feature = "native-render")]
-pub mod native_residual;
-#[cfg(feature = "native-render")]
 pub mod native_scene_lists;
 #[cfg(feature = "native-render")]
 pub mod native_shadows;
