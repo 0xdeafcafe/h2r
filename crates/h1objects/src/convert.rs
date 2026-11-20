@@ -2540,7 +2540,14 @@ impl<'a> Converter<'a> {
             "none: rebuilt from source vehicle type and powered mass points",
         );
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
-        if b[0x17c] & 0x40 != 0 && let Some(h) = hlmt {
+        let airborne_flags = *b.get(0x17c).ok_or_else(|| {
+            h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "vehicle tag too short for its dialogue flags (+0x17c)",
+            )
+        })?;
+        if airborne_flags & 0x40 != 0 && let Some(h) = hlmt {
             let bits = map::H1_PHYSICAL_DIALOGUE | map::H1_DIALOGUE_AIRBORNE_PASSENGERS;
             let root = &mut self.tree.tags[h.0 as usize & 0xffff].1.root;
             root.bytes[0x80..0x84].copy_from_slice(&bits.to_le_bytes());
@@ -2961,7 +2968,14 @@ impl<'a> Converter<'a> {
                 crate::biped_hits::write_player_targets(hd, &mut r, &markers, &tag.name)?;
             }
             if !voices.is_empty() {
-                let freefall = if b[0x2f4] & 0x84 == 0 {
+                let biped_flags = *b.get(0x2f4).ok_or_else(|| {
+                    h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &tag.name,
+                        "biped tag too short for its dialogue flags (+0x2f4)",
+                    )
+                })?;
+                let freefall = if biped_flags & 0x84 == 0 {
                     map::H1_DIALOGUE_CAN_SCREAM_IN_FREEFALL
                 } else {
                     0

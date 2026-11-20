@@ -672,8 +672,7 @@ Halo ring were already built this way.
   Since converter version 77 the points are written in the order of
   the role's phantom spheres (`rebuild::role_spheres`: the physics
   element's first multisphere, count at `+0x6c`, centres from `+0x70`,
-  `0x10` each): each sphere in turn takes the nearest point left
-  (`convert::sphere_order`). E: the engine takes friction point `i`'s
+  `0x10` each): each sphere in turn takes the nearest point left. E: the engine takes friction point `i`'s
   suspension compression from the phantom's sphere `i` (the per-point
   loop at `0x2067dd`; `0x207ab0` writes the point's radius less the
   sphere's ground distance, clamped to the radius; the spring is the
@@ -690,12 +689,9 @@ Halo ring were already built this way.
   version 76 it was the role's word. E: `0x205fd1` turns a point off
   once that region's damage state reaches `+0x42`.
   The wheels and treads (`convert::wheel_nodes`: the gripping points'
-  nodes and every node under them) follow the role (since version 86):
-  where most of the role's members have wheel or tread shapes in their
-  `phmo` (`rebuild::member_wheel_shapes`, since version 87: most of
-  the member's friction points name no region or a region its `phmo`
-  has; `VehicleRole::wheel_shapes`)
-  the body holds them above the hull's lowest point, each wheel node's
+  nodes and every node under them) follow the source vehicle type: a
+  wheeled vehicle (`vehicle_type == 0`, `vehicle_rebuilt`'s `wheels`)
+  has its body hold them above the hull's lowest point, each wheel node's
   cells cut there and enclosed in one piece (`convert::held_wheels`);
   otherwise they stay out. Halo 2 holds a vehicle up on its
   friction-point springs and keeps its body clear of the ground either
