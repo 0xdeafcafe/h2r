@@ -418,6 +418,11 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             .unwrap()
         };
         let gb = gestalt(&mut f);
+        let owner = f.tags().iter().find(|t| t.group == FourCC(*b"ugh!")).unwrap().id;
+        for info in &gb.nested[h1sounds::gestalt::blocks::EXTRA_INFOS] {
+            let stored = u32::from_le_bytes(info.bytes[0x20..0x24].try_into().unwrap());
+            assert_eq!(stored, owner.0, "compacted extra-info resource owner");
+        }
         let c = s
             .gestalt
             .as_ref()

@@ -29,11 +29,45 @@ data from `0x22ab800`); no two spans overlap (sounds that share samples
 share the span), and none reaches the tag data. Xbox Halo 1 has no
 `sounds.map`; every sample is in the map that plays it.
 
-The lip-sync (`+0x54`) and subtitle (`+0x68`) data references carry a
-running offset that looks like a position in a PC-style resource file (it
-advances by the samples' size plus the tag's size); it is not a file offset
-in the Xbox map and is not read. 34,315 permutations have lip-sync data,
-none have subtitles (V for the counts).
+The mouth data reference at permutation `+0x54` holds the byte count.
+Its virtual address at `+0x60` resolves in the Xbox tag data. The
+separate resource-file offset at `+0x5c` is unused on Xbox. Across the
+disc, 34,315 permutations have mouth data and none have subtitles.
+
+### Dialogue mouth curves (Built)
+
+On a10, 1,038 sounds contain 4,659 authored mouth curves. Each byte
+gives the aperture for one 30 Hz tick. H1 clamps the tick to the curve,
+reads the byte through the permutation's tag-memory pointer and scales it
+by 1/255 (`0x2821f..0x2828d`). The unit updates its aperture at `+0x298`
+(`0x3b7a0`). Its pose update reads the current unit mode's slot 10 and
+blends frame zero of that overlay with this weight (`0x3ee2a..0x3ee70`).
+
+H2 requests the sound's extra-info resource for a speaking unit when its
+sound class enables lip sync (`0x18c630`). It converts elapsed audio
+time to 30 Hz ticks, updates the unit aperture at `+0x208` and checks for
+an optional facial sequence (`0x18c720`, `0x18c9b0`, `0x18ca20`). The
+signed descriptor index at permutation `+5` picks an element containing
+mouth offset, mouth length, facial-sequence offset and facial-sequence
+length. The sampler clamps the tick, reads the aperture byte and scales
+by 1/255 (`0x218e50`). With no facial sequence, the unit looks up `talk`
+in the overlay block and mixes it at that aperture (`0x1cc150`,
+`0x112335..0x1123b5`). Retail 01b's marine has a one-frame talk overlay
+in both combat and patrol. Actor-bound H1 conversation lines already use
+the native biped sound callback.
+
+Conversion copies the H1 curve bytes into the H2 extra-info resource.
+The first locator relocates the data buffer and the second relocates the
+16-byte descriptors. Their indices span all pitch ranges of the sound.
+An unvoiced permutation has a zero-length mouth entry when another
+permutation in the sound is voiced. H1 supplies aperture and an authored
+graph pose, so the H2 facial-sequence length is zero. The resource keeps
+its owning `ugh!` datum through installation, transplant and compaction.
+No campaign sound carrying mouth data uses a split permutation chain.
+Conversion reports a split voiced chain because its segment timing has
+no retail example. The ignored `a10_dialogue_mouth_curves_reach_the_retail_resource_layout`
+check reads the retail locators, then compares every exported a10 curve
+through the installed sound's pitch range and permutation.
 
 ## `snd!` header (`0xa4` bytes)
 
@@ -232,7 +266,7 @@ let ids = install_sounds(&mut set, vec![(name, c)])?;
 
 - `ConvertedSound` holds the header with its indices unset, the playback and
   scale elements, and per range its parameters and permutations with their
-  chunks. `dropped` lists what had no Halo 2 place (promotions, lip-sync).
+  chunks. `dropped` lists sound promotions.
 - `ConvertedSound::add_to(gestalt, set) -> h1models::Converted` appends the
   entries to a `SoundGestalt`, adds the chunks to the set as raw resources,
   and returns the 20-byte `snd!` in the `Converted { group, root, raw }`
@@ -365,8 +399,7 @@ new indices:
   fresh byte-aligned run with the source bits copied; the other form
   (`+4` = 0) keeps `+6` as it is;
 - custom playback and extra info appended whole, and the extra info's
-  owner set to `owner`. An extra info's raw pointer may only be mapped to
-  a stored pointer;
+  owner set to the destination gestalt datum. Its resource can be local or shared;
 - sounds with a promotion (`+0xc` not `ff`) are refused
   (`Error::Unsupported`), since the promotion rules hold indices this
   doesn't map.
@@ -408,12 +441,10 @@ dst_gestalt)` runs `tags::schema::transplant::transplant` and then merges
 every `snd!` the tree copied into `dst_gestalt`, which the caller installs
 once at the end (`SoundGestalt::install`). The `MergeMap` maps import
 names through the source's string table into the set's (`TagSet::intern`)
-and copies a chunk whose pointer is in the source's own file as a local
-raw resource, once per pointer; shared-cache pointers stay. Two things
-merging refuses are cut first instead: a promotion (the header's index
-set to `ff`), and an extra info whose raw is in the source file. The
-copied `snd!` is rewritten with the new indices; its extra info's owner
-is its new datum.
+and copies each local chunk or extra-info resource once per pointer.
+Shared-cache pointers keep their file selector. A promotion is cut before
+merging and counted in the transplant report. The copied sound references
+the destination gestalt entries, whose resource owner is the gestalt datum.
 
 A gestalt the set already holds as a built tag reads back through
 `SoundGestalt::from_block` (the inverse of `to_block`, local chunks
@@ -479,9 +510,8 @@ music, Cortana, UI.
 - **Chunk size bit 31**: set on some retail chunks, never `0x7ff8` ones; meaning open.
 - **Playback, scale and pitch range parameter fields** are S; the
   conversions (dB, cents, half cone angles) are untested in game.
-- **Promotions** (258 Halo 1 sounds) and **lip-sync** (34,315 permutations)
-  are dropped and listed in `ConvertedSound::dropped`. Halo 2 has blocks for
-  both (9, 10); filling them needs their element layouts.
+- **Promotions** (258 Halo 1 sounds) are dropped and listed in
+  `ConvertedSound::dropped`. Translating their rules remains open.
 - **Class 45** holds the Halo 1 multiplayer announcer as well as scripted
   effects; whether Halo 2's mixer treats `scripted_cinematic_foley` well for
   announcer lines is unchecked.

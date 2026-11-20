@@ -154,7 +154,7 @@ and warthog face away from their own normals. With this rule, 52 of 5,692
 | `18` | weapons block | S |
 | `24` | vehicles block, `0x74`: steering screen `00` (`0x18`), vehicle slots `5c` (i16 per `h1::VEHICLE_SLOTS`), suspension `68` (`0x14`: i16 mass point, i16 animation, f32 full extension and full compression ground depths, negative) | V (Blood Gulch's warthog, ghost, scorpion) |
 | `30` | devices block | S |
-| `3c` | unit damage block | S |
+| `3c` | unit damage block of signed 16-bit animation indices, ordered by kind, direction and region | Blood Gulch cyborg, 4 × 4 × 11 |
 | `48` | first-person weapons block, `0x1c`: 16 bytes, then at `10` a block of i16 animation indices, one per first-person slot (`h1::FIRST_PERSON_SLOTS`) | V (all 11 first-person graphs on Blood Gulch: one element; each slot's animation carries the slot's label wherever the two agree) |
 | `54` | sound references block | S |
 | `60` | f32 limp body node radius; `64` u16 flags | S |
@@ -169,23 +169,27 @@ the shotgun's and flamethrower's `reload-full` their `reload-empty`, the
 assault rifle's `light-on` its `light-off`. Halo 2 asks a first-person
 graph for actions by name, so the converted tree also names each filled
 slot's action for the animation it holds (`jmad::first_person_slots`),
-unless an animation of that label already has it. Before this the
-assault rifle had no `reload_empty` action. Slot words 6 (`light-on`) and
-19 (`misfire-2`) are S: no Blood Gulch graph fills them with an animation
-of that label.
+overriding the clip label. An empty source slot leaves its key empty.
+The Halo 1 XBE's slot label table confirms the names of light-on (6)
+and misfire-2 (19), even though Blood Gulch has no clips with those labels.
 
-**The assault rifle's firing (converter version 79).** Its `fire-1` slot
-(2) is empty, and its 21-frame base animation `first-person firing` fills
-no slot: of every first-person graph on Blood Gulch, a10, c10 and d40 it is
-the only one with a firing animation and an empty `fire-1` slot (the
-flamethrower, ball and flag have no firing animation at all). Halo 1 plays
-by slot, so it plays nothing on the assault rifle's shots (I). Halo 2
-gives every weapon that fires a `fire_1` (13 of the Chief's 17 retail
-first-person graphs on Coagulation; the four without, flag, ball, bomb and
-energy sword, do not fire), so the converted graph names `fire_1` for
-`first-person firing` when no slot or label took it
-(`jmad::first_person_fire`). Before, the converted assault rifle fired
-with no recoil animation.
+**Built. First-person fire and per-shell reloads.** Blood Gulch's assault
+rifle has a 21-frame clip named `first-person firing` and an empty firing
+slot (2). The Halo 1 XBE selects slot 2 at `0xd70d8`. At
+`0xd757b..0xd75c5` it reads the weapon graph's slot and returns on −1,
+before the clip and frame writes at `0xd7609..0xd7611`. The converted
+AR therefore leaves the current first-person animation playing when it
+fires. Its third-person firing overlay comes from its populated weapon
+slot 4. For per-shell reloads Halo 2 asks for `reload_enter`,
+`reload_continue_empty`, `reload_continue_full` and `reload_exit`
+(`0x166620..0x166637`). The shotgun supplies slots 23, 7, 8 and 25. Both
+continuation slots point to its shell insertion. Halo 1 has separate dry
+and loaded exits. Halo 2's single post-insertion exit uses the loaded
+clip. Both source exits retain their own names. Halo 1 changes a ready
+request on an overheated weapon to state 2 at `0xd7448..0xd7463`, selecting
+slot 22 at `0xd712c`. Both plasma weapons thus bind `ready_overheated`
+(`0x16664a`) to their `overheating-again` clip. Halo 1's melee slot 13
+supplies both the generic and strike requests (`0x166638`, `0x16667a`).
 
 **First-person overlays (converter version 79).** Halo 1's first-person
 overlay animations (type 1: every graph's `moving` and `overlays`, the
@@ -200,16 +204,46 @@ setup asks it for `overcharged_jitter`, `overlays`, `ammunition` and
 graph on Coagulation keeps `moving`, `overlays` and `pitch_and_turn` (the
 needler also `ammunition`, some `sprint`) there and none of them among its
 actions. Until version 79 they were actions, where the engine never looks
-for an overlay. Halo 1's `overlays` keeps its name; Halo 2's
-`pitch_and_turn` has no Halo 1 animation (which of Halo 2's two 9-frame
-overlays Halo 1's 9-frame `overlays` matches is not established). Third-
-person graphs keep their overlays among the actions, as before (retail
-keeps those in `+0xc` too: `aim_still_up`, `look`, ...; not changed here).
+for an overlay. Halo 1 requires at least nine frames for slot 4
+(`0xd8284..0xd82aa`). Halo 2 makes the same check on `overlays`
+(`0x1679a4..0x1679ae`) and samples its additional `pitch_and_turn` slot
+independently (`0x16791b..0x16796b`).
 
-The units, weapons and vehicles blocks map fixed engine slots to animation
-indices. A third-person graph's tree comes from the animations' own names
-(below); a vehicle graph also reads its vehicles block, objects block and
-screens (Vehicle graphs, next). **Some graphs have no node block** (the warthog, ghost,
+- Standing, crouching and seated units bind by slot position in the unit
+  (`+0x40`), class (`+0x98`) and weapon type (`+0x30`). For example,
+  the missile class borrows one forward stun for several directions. The
+  cyborg's alert rifle supplies the forward movement and moving aim
+  override under `patrol`, as on Coagulation's Chief.
+- Halo 2 searches whole-body actions at type `+0x04` (`0x1db170`) and
+  overlays at `+0x0c` (`0x1dbd01..0x1dbd12`). The latter holds aim,
+  fire and the reload and melee replacements. The grenade throw is a
+  base action. The unit dispatch tries the overlay and then the action
+  (`0x113f6f..0x113fff`). Both games' grenade release is frame 8.
+- Look and aim carry the source yaw and pitch grids and use aligned codec
+  8 frames. Classes carry their source hand/grip marker pairs. The node
+  flags and graph masks at `+0x5c/+0x7c` select the left arm and remaining
+  nodes in the cyborg's own node order. The retail Chief uses these masks
+  during channel sampling (`0x1c7013..0x1c703a`).
+- The source damage table supplies all 176 positions under the four keys
+  `s_ping`, `h_ping`, `s_kill` and `h_kill`. Halo 2 looks up the key
+  at type `+0x14`, then indexes direction and body region (`0x1dc808`).
+  Cyborg permutations retain their head, next index and cumulative weight
+  (`0x1dd6b9`). Cyborg and first-person clips carry their primary and
+  secondary key frames in the frame-event block at `+0x4c`. Foot contact
+  bytes `+0x40/+0x41` become event types 2 and 3. The Chief and cyborg
+  turn left at frames 7/14 and right at frames 14/7.
+- **Built. Loop starts.** H1 `0xa318e..0xa31aa` bounds a positive loop
+  frame by the last frame of the clip. H2 consumes the loop start at
+  record `+0x2e` directly (`0x1c6810..0x1c6835`). Standing rifle
+  airborne repeats from frame 40. The plasma pistol's nine-frame
+  overheated clip specifies frame 34, so its effective loop starts at 8.
+- The Halo 2 sandbox selects Coagulation's Chief and Elite. The disc
+  cases in `sandbox_disc/player_animations.rs` check both representation
+  paths, and compare Halo 1 slot indices and Halo 2 retail bindings in
+  their respective sandboxes. `bloodgulch_player_frame_data` compares
+  pose channels and root displacement with the Halo 1 disc.
+
+**Some graphs have no node block** (the warthog, ghost,
 scorpion and the scenery on beavercreek): they animate their model's
 skeleton, and the converter takes the nodes from the model.
 
@@ -254,8 +288,7 @@ retail's are (`jmad::vehicle_plan`):
   on its `aim_still_up` / `aim_move_up`.
 - **Aim names.** E: the unit aim update asks for `aim_still_up`
   (`0x001134a3`). Halo 1's `stand fixed aim-still` becomes
-  `combat:fixed:any:aim_still_up` (vehicle graphs only; biped aim is not
-  converted).
+  `combat:fixed:any:aim_still_up` (the cyborg uses its class screen as described above).
 - **Overlays, not actions.** Every type 1 animation of a vehicle graph
   goes to its type's overlays (`+0xc`): V, no retail vehicle tree holds an
   overlay among its actions, and no base animation among its overlays
@@ -314,8 +347,10 @@ f32 vector range (`38`). V1 (links).
 | `26` | u16 frame info type: 0 none, 1 dx dy, 2 dx dy dyaw, 3 dx dy dz dyaw | S; nonzero on 109 cyborg animations |
 | `28` | u32 node list checksum | V1 |
 | `2c` | u16 node count | V1 (equals the graph's or the model's) |
-| `2e` | u16 loop frame | S |
-| `38` | i16 next animation (random permutation chain) | S |
+| `2e` | loop start, signed i16 | H1 XBE `0xa3193..0xa31aa` |
+| `34`, `36` | primary and secondary key frames | H1 XBE `0xa31f4..0xa3200` |
+| `38`, `42`, `44` | i16 next and head indices, f32 cumulative weight | cyborg permutation chains |
+| `40`, `41` | foot contact frames | cyborg and retail Chief turn cycles |
 | `3a` | u16 flags; bit 0 compressed data | X (`0x000a2d60` tests it), V4 |
 | `3c` | i16 sound, `3e` sound frame | S |
 | `48` | tag data: frame info (root movement) | V1 (size 0 when the type is 0) |
@@ -573,16 +608,60 @@ grenades left from its origin (inferred: the lookup's fallback).
 | What | How |
 |---|---|
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
-| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, both link indices -1, source frame info type |
-| Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on a vehicle's steering and aim overlays. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
-| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The tree also carries Halo 1's **borrowed slots**: Halo 1 finds a unit's animations through slot tables (`antr +0x0c` units, `0x64` each, label at +0, weapon classes at +0x58; a class is `0xbc`, label at +0, slot indices (`i16`) at +0x98, types at +0xb0; a type is `0x3c`, label at +0, slots at +0x30), and a slot may name another class's animation (every cyborg class's throw slot is `stand rifle throw-grenade`). Each such slot becomes an action of the borrowing mode, class and type naming the same animation, unless that path already has the action |
+| Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, source frame info type and biped permutation links and weights |
+| Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on steering, look and aim screens. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
+| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The cyborg's bindings come directly from the source slot tables (Multiplayer cyborg, above). Campaign bipeds bind their resting poses, locomotion and talk overlays by slot. |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
 Animation sounds (converter version 97, first-person graphs): see
 "Animation sounds" below. Left empty: effect references and events,
-blend screens (but a vehicle's, above),
-inheritance, the `+0x54` string-ID pairs (count >= 1 on every retail graph;
-meaning unknown; written only on first-person graphs, as (`any`, `any`)), static poses, and the header word at `+8`.
+inheritance, static poses and the header word at `+8`. Cyborg and vehicle
+graphs carry their blend screens and weapon pairs. First-person graphs
+carry the single pair (`any`, `any`).
+
+## Campaign biped idles and talking (Built)
+
+The ten Xbox campaign maps reference 25 distinct animation graphs from
+their biped object layers. On a10, crew and armored marines share the marine
+graph. Keyes and Cortana have their own. The pilot and cinematic Chief
+reference graphs in the cinematics directory. The biped's animation
+reference selects the conversion, including graphs shared by several models.
+
+Halo 1 selects a resting pose from class slot 0 and directional cycles
+from slots 8–11. Keyes's standing slot points to `stand unarmed idle%1`.
+The marine's standing unarmed slot points to an alert pistol idle, and
+its bridge-chair mode has its own seated idle. In v99, label splitting
+could produce a variant key without an `idle` key. It also merged standing
+and alert labels. Halo 2 searches the actual action key and tries the
+eight combinations of specific and wildcard mode, class and weapon type
+(`0x1db170`, `0x2963f0`). The converted graph now binds each source slot
+to that key, including `patrol` for the alert pose and the rebuilt vehicle's
+seat label for a passenger. Explicit script pose requests use the same mode.
+When a rebuilt weapon carries the cyborg's class, the exact weapon type
+still selects the owner's pose. A marine holds the Needler with its rifle
+idle, and an Elite holds the plasma rifle with its pistol idle.
+
+For a wildcard class, conversion uses the mode's unarmed idle when present,
+then the first class with an authored idle. For unspecified modes it uses
+the standing pose. The x30 pilot has an explicit standalone base animation
+named `idle` and an empty standing slot. A cinematic actor without a walking
+cycle keeps its authored base when asked to move. Conversion reports a
+missing or ambiguous base. Base clips retain their loop and permutation
+links. The graph uses the model's node order, enables the biped channels
+and partitions the left arm from the remaining nodes. Xbox H1 can encode
+the graph root as its own parent. H2 terminates it with -1, as does the H1
+model. All other hierarchy links agree in the campaign biped/model pairs.
+
+Halo 1 unit slot 10 supplies a weighted talk overlay. The converted
+`talk` entry is in the weapon type's overlay block. Keyes's pose rotates
+`frame jawbone`. Cortana's also translates her mouth corners. The shared
+marine graph moves its own head and facial rig. Wounded marine graphs
+without a talk slot retain their authored poses. Sound timing and native
+playback are documented in [sounds.md](sounds.md#dialogue-mouth-curves-built).
+
+The ignored `campaign_biped_slots_and_talk_frames` check follows every
+campaign biped reference, checks the installed action and overlay lookups,
+and decodes a10's talk frames against the original animated channels.
 
 ## Animation names
 
@@ -596,7 +675,7 @@ the cyborg).
 | Halo 1 | Halo 2 | Status |
 |---|---|---|
 | unit `stand` | mode `combat` | V3 (`combat:rifle:any:idle` and the movement actions on the retail masterchief/elite graphs) |
-| unit `alert` | mode `combat` (no alert mode exists in retail) | V3; collides with `stand`, variants result |
+| unit `alert` | mode `combat` (no alert mode exists in retail) | record labels share the standing prefix; the cyborg binds the rifle override in `patrol` |
 | unit `crouch` | `crouch` | V3 (`crouch:rifle:any:idle`) |
 | `W-driver`, `W-gunner`, `W-passenger` | `warthog_d`, `warthog_g`, `warthog_p` | V3 (`warthog_g:fixed:any:idle` proves the gunner seat and the `fixed` class together) |
 | `G-driver`, `B-driver`, `scorpion-driver` | `ghost_d`, `banshee_d`, `scorpion_d` | V3 (all three are modes of the retail biped graphs) |
@@ -606,21 +685,17 @@ the cyborg).
 | `scorpionLF` | `scorpion_p_lf` | V3 (`scorpion_p_lf:any:any:enter`; retail also has `_p_lb`, `_p_rf`, `_p_rb`, which no Halo 1 name feeds) |
 | weapon `unarmed`, `pistol`, `rifle`, `missile`, `fixed` | the same class | V3 (classes of the retail biped graphs; `fixed` under `warthog_g`) |
 | third word before the action (`stand rifle sg reload-1`) | weapon type | V3 for the labels Halo 1 and Halo 2 share (`pr`, `sg`, `sr`, `hp`, `ne`, `pp`, `rl`, `f`); `ar` has no Halo 2 type (the assault rifle became several weapons) |
-| action `reload` / `reload-1` | `reload_full` | V3 that `reload_full` is the retail action and `reload_1` exists nowhere; retail reloads are first-person-only, so in a third-person graph no engine lookup uses it |
-| action `melee` | `melee` (unchanged) | V3 (`combat:rifle:any:melee`, `combat:pistol:any:melee` on the retail elite; `melee_strike_1..3` are first-person actions only) |
+| action `reload` / `reload-1` | `reload_full` | record label; the cyborg binds the replacement under third-person overlay `reload_1` |
+| action `melee` | `melee` (unchanged) | V3 (`combat:rifle:any:melee`, `combat:pistol:any:melee` on the retail elite; the cyborg binds its weapon melee under overlay `melee_strike_1`) |
 | action `throw-grenade` | `throw_grenade` | V3 (`combat:sword:any:throw_grenade` on the masterchief) |
 | vehicle actions `stand opening` / `stand closing` | `combat:opening` / `combat:closing` | V3 — the only actions any retail vehicle graph carries (banshee, scorpion, pelican, `c_turret_ap`, the phantom and wraith turrets) |
-| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation, 34, has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes`, which lists the converted actions retail has and has not: 19 shared on Blood Gulch, and `ammunition`, `enter`, `firing`, `light_off`, `moving`, `overcharged_jitter`, `overheating_again`, `overlays`, `reload_full2`, `stealth_melee` it lacks; since converter version 79 `ammunition`, `moving`, `overcharged_jitter` and `overlays` are overlays, not actions, and the assault rifle has `fire_1`: First-person overlays and The assault rifle's firing above) |
+| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation, 34, has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes`, which lists the converted actions retail has and has not: 19 shared on Blood Gulch, and `ammunition`, `enter`, `firing`, `light_off`, `moving`, `overcharged_jitter`, `overheating_again`, `overlays`, `reload_full2`, `stealth_melee` it lacks; since converter version 79 `ammunition`, `moving`, `overcharged_jitter` and `overlays` are overlays, not actions, and the AR follows its empty firing slot as described above) |
 | `%n` | `:var<n>` on the action | Design; retail variant suffixes (`:var0`, ...) sit on animation names, never on tree actions |
 
 **No Halo 2 equivalent, or not mapped:**
 
-- Unit damage (`h-kill`, `s-kill`, `s-ping`, with direction and region)
-  stays one action from all its words (`h_kill:back_gut`): V3 that no
-  retail tree holds `h_kill`, `s_kill` or `s_ping` (nor any mode for them).
-  Retail death vocabulary is `dead`, `mortal_wound`, `landing_dead`,
-  `airborne_dead`, `thrash_front/back`, `resurrect_front/back`, driven by
-  the engine's damage tables rather than name lookup.
+- Unit damage outside the cyborg still has only record labels. The
+  cyborg uses the directional damage tables described above.
 - Vehicle overlays (`suspension left back`, `vehicle steering`,
   `vehicle ground-speed`, `firing`, `acc-front-back` and kin): V3 that
   retail vehicle graphs carry only `combat:opening`/`combat:closing` as
@@ -633,10 +708,8 @@ the cyborg).
   is not recoverable from the trees) and the dropship seats
   `CD-passengerL01`/`CD-passenger01` (retail phantom seats are columns
   `phantom_p_a01..c03`, with no left/right correspondence).
-- The engine-slot structure of Halo 1 graphs (units/weapons blocks) is
-  not converted beyond borrowed slots, aiming screens and weapon pairs;
-  Halo 2's tree comes from names. The vehicles and objects blocks are
-  (Vehicle graphs, above).
+- Other biped graphs use named actions and borrowed slots. The cyborg,
+  sentinel and vehicle graphs have dedicated slot bindings.
 - **Built.** Root movement follows both channel flag sets in the rebuilt
   resource. H2 `0x20aa70` reads one record per frame, with strides of 8,
   12 and 16 for XY, XY/yaw and XYZ/yaw. The source values retain their
@@ -644,8 +717,8 @@ the cyborg).
 - Overlay and replacement animations keep only their animated channels.
   Their Halo 1 default data is mostly the rest pose (1,567 non-identity
   channels on the cyborg, 202 on the warthog), and is dropped.
-- Sounds, the loop frame, key frames, foot frames and permutation chains
-  (`next animation`) are not carried over.
+- Playback timing for the cyborg and first-person weapons is described
+  above. Other graphs still omit loop starts and foot contacts.
 
 ## API
 

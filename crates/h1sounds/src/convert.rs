@@ -102,6 +102,8 @@ pub struct PermutationOut {
     /// converted permutation gets its own length, so a script's wait on
     /// its sound (`sound_impulse_language_time`) never ends at once.
     pub time_ms: u16,
+    /// The authored 30 Hz mouth aperture curve.
+    pub mouth: Vec<u8>,
     /// The samples, cut into chunks of at most [`CHUNK_LEN`].
     pub chunks: Vec<Vec<u8>>,
 }
@@ -135,7 +137,7 @@ pub struct ConvertedSound {
     pub scale: [u8; 0x14],
     /// Pitch ranges.
     pub ranges: Vec<RangeOut>,
-    /// What had no Halo 2 place and was dropped (promotions, lip-sync).
+    /// What had no Halo 2 place and was dropped (promotions).
     pub dropped: Vec<String>,
 }
 
@@ -270,8 +272,22 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
         let mut permutations = Vec::new();
         for chain in sound.chains(r)? {
             let first = &range.permutations[chain[0]];
-            if chain.iter().any(|&i| range.permutations[i].mouth.size > 0) {
-                dropped.push(format!("lip-sync of {}", first.name));
+            for &i in &chain {
+                let p = &range.permutations[i];
+                if p.mouth.size as usize != p.mouth_samples.len() {
+                    return Err(Error::Invalid(format!(
+                        "{}: mouth data length mismatch",
+                        p.name
+                    )));
+                }
+            }
+            // Retail Xbox dialogue has one envelope per playable permutation.
+            // A split sound would need to rebase segment-local sample times.
+            if chain.len() > 1 && chain.iter().any(|&i| range.permutations[i].mouth.size > 0) {
+                return Err(Error::Unsupported(format!(
+                    "{}: mouth data on a split sound",
+                    first.name
+                )));
             }
             let bytes = crate::decode::chain_bytes(sound, file, r, &chain)?;
             if bytes.len() % block != 0 {
@@ -287,6 +303,7 @@ pub fn convert_sound(sound: &Sound, file: &[u8]) -> Result<ConvertedSound> {
                 name: first.name.clone(),
                 skip_fraction: (first.skip_fraction.clamp(0.0, 1.0) * 32767.0).round() as i16,
                 gain: decibels(first.gain).round().clamp(-128.0, 127.0) as i8,
+                mouth: first.mouth_samples.clone(),
                 chunks: bytes.chunks(CHUNK_LEN).map(<[u8]>::to_vec).collect(),
             });
         }
@@ -344,6 +361,18 @@ impl ConvertedSound {
             let n = gestalt.push(blocks::IMPORT_NAMES, &id.to_le_bytes(), true);
             index16("import name", n)
         };
+        let curves: Vec<_> = self
+            .ranges
+            .iter()
+            .flat_map(|r| r.permutations.iter())
+            .map(|p| p.mouth.as_slice())
+            .collect();
+        let has_mouth = curves.iter().any(|curve| !curve.is_empty());
+        if has_mouth {
+            let index = crate::mouth::add(&curves, gestalt, set)?;
+            put_u16(&mut header, snd::EXTRA_INFO, index);
+        }
+        let mut descriptor = 0;
         for range in self.ranges {
             let range_name = name(gestalt, set, &range.name)?;
             let params = gestalt.push(blocks::PITCH_RANGE_PARAMETERS, &range.parameters, true);
@@ -377,7 +406,13 @@ impl ConvertedSound {
                 put_u16(&mut e, 0, perm_name);
                 put_u16(&mut e, 2, p.skip_fraction as u16);
                 e[4] = p.gain as u8;
-                e[5] = u8::try_from(i).unwrap_or(u8::MAX);
+                e[5] = if has_mouth {
+                    let index = descriptor;
+                    descriptor += 1;
+                    index as u8
+                } else {
+                    u8::try_from(i).unwrap_or(u8::MAX)
+                };
                 put_u16(&mut e, 6, p.time_ms);
                 e[8..12].copy_from_slice(&size.to_le_bytes());
                 put_u16(&mut e, 12, first_chunk);

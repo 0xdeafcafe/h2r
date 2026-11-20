@@ -85,16 +85,13 @@ pub const CLASSES: &[&str] = &["unarmed", "pistol", "rifle", "missile", "fixed"]
 
 /// Action labels whose Halo 2 name differs beyond `-` -> `_`.
 pub const ACTIONS: &[(&str, &str)] = &[
-    // Retail has no `reload_1`, and no third-person reload at all: the
-    // reload actions (`reload_full`, `reload_empty`, ...) belong to the
-    // first-person weapon graphs. `reload_full` is the full-magazine one.
-    // Halo 1 spells the action both `reload` and `reload-1`.
+    // Animation record names. The cyborg's weapon slot 0 binds the
+    // corresponding third-person replacement under the key reload_1.
     ("reload", "reload_full"),
     ("reload-1", "reload_full"),
     ("throw-grenade", "throw_grenade"),
-    // `melee` maps to itself — retail `combat:rifle:any:melee`, on the
-    // elite; `melee_strike_1..3` are first-person-only — so no rename is
-    // listed for it.
+    // The elite also has a base melee action. The cyborg's weapon slot
+    // 8 supplies its separate melee_strike_1 replacement overlay.
 ];
 
 fn action_name(s: &str) -> String {
@@ -112,6 +109,15 @@ pub fn mode_name(unit: &str) -> String {
         .find(|(a, _)| a.eq_ignore_ascii_case(unit))
         .map(|(_, b)| (*b).to_owned())
         .unwrap_or_else(|| unit.replace('-', "_").to_ascii_lowercase())
+}
+
+/// Mode used for H1 unit slots and a script's explicit unit pose.
+pub fn unit_mode(label: &str) -> String {
+    if label.eq_ignore_ascii_case("alert") {
+        "patrol".into()
+    } else {
+        mode_name(label)
+    }
 }
 
 /// Splits and renames a Halo 1 animation name. A `%n` suffix (a random
@@ -290,7 +296,7 @@ mod tests {
     /// absence establishes: `(kind, level, name)` where level is `mode` or
     /// `action`.
     const RETAIL_ABSENT: &[(&str, &str, &str)] = &[
-        // Halo 1 reload animations must not become `reload_1`.
+        // reload_1 is in the overlay list, outside this action search.
         ("biped", "action", "reload_1"),
         // Unit damage has no Halo 2 tree names at all.
         ("biped", "mode", "h_kill"),
@@ -453,5 +459,6 @@ mod tests {
         assert_eq!(mode_name("cargo"), "cargo");
         assert_eq!(mode_name("cd-passengerl01"), "cd_passengerl01");
         assert_eq!(mode_name("alert"), "combat");
+        assert_eq!(unit_mode("alert"), "patrol");
     }
 }

@@ -533,10 +533,16 @@ fn every_retail_sound_merges() {
             .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
             .map(|t| t.id)
             .collect();
+        let owner = m
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"ugh!"))
+            .unwrap()
+            .id;
         let mut dst = SoundGestalt::default();
         for id in sounds {
             let h = m.read_tag_bytes(id).unwrap();
-            let out = match h1sounds::merge_sound(&src, &h, &mut dst, id.0, &mut Same) {
+            let out = match h1sounds::merge_sound(&src, &h, &mut dst, owner.0, &mut Same) {
                 Ok(o) => o,
                 Err(h1sounds::Error::Unsupported(_)) if h[snd::PROMOTION] != 0xff => {
                     promoted += 1;
@@ -608,7 +614,7 @@ fn every_retail_sound_merges() {
                 let a = &src.nested[blocks::EXTRA_INFOS][u16_at(&h, snd::EXTRA_INFO)];
                 let b = &dst.nested[blocks::EXTRA_INFOS][u16_at(&out, snd::EXTRA_INFO)];
                 assert_eq!(a.children, b.children);
-                assert_eq!(a.bytes[..0x20], b.bytes[..0x20]);
+                assert_eq!(a.bytes, b.bytes);
             }
         }
         let _ = dst.to_block();
@@ -720,4 +726,160 @@ fn a_transplanted_tree_takes_its_sounds() {
     );
     assert_eq!(sounds, moved.sounds);
     assert!(sounds > 0 && chunks > 0);
+}
+
+/// Follow both resource locators as the Xbox cache loader does. Offsets in
+/// the permutation descriptors are relative to the first locator's data.
+fn mouth_resource<'a>(e: &h1sounds::gestalt::Nested, file: &'a [u8]) -> (&'a [u8], &'a [u8]) {
+    let word = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+    let raw = &file[word(&e.bytes, 8)..][..word(&e.bytes, 12)];
+    assert_eq!(
+        (&raw[..4], &raw[raw.len() - 4..]),
+        (&b"hklb"[..], &b"fklb"[..])
+    );
+    assert_eq!(raw.len(), 28 + word(raw, 4));
+    assert_eq!(word(&e.bytes, 0x10), 16);
+    assert_eq!(word(&e.bytes, 0x14), word(raw, 4));
+    let loc = &e.children[1];
+    assert_eq!(loc.count, 2);
+    assert_eq!(&loc.bytes[..8], &[1, 2, 0, 0, 0, 0, 255, 255]);
+    assert_eq!(&loc.bytes[16..24], &[0, 2, 8, 0, 8, 0, 16, 0]);
+    let child = |at| {
+        let start = 24 + word(&loc.bytes, at + 12);
+        assert_eq!(&raw[start - 4..start], b"crsr");
+        &raw[start..][..word(&loc.bytes, at + 8)]
+    };
+    let (data, descriptors) = (child(0), child(16));
+    assert_eq!(word(raw, 8), data.len());
+    assert_eq!(word(raw, 16) * 16, descriptors.len());
+    (data, descriptors)
+}
+
+#[test]
+#[ignore = "reads a10 from H1_ISO and 01b_spacestation from H2_DISC"]
+fn a10_dialogue_mouth_curves_reach_the_retail_resource_layout() {
+    use h1sounds::convert::snd;
+    let word = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+    let short = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+    {
+        let retail = h2_bytes("01b_spacestation");
+        let mut map = Map::from_reader(Cursor::new(&retail)).unwrap();
+        let owner = map
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"ugh!"))
+            .unwrap()
+            .id;
+        let (g, _) = gestalt_of(&retail);
+        let example = g.nested[blocks::EXTRA_INFOS]
+            .iter()
+            .find(|e| {
+                let p = word(&e.bytes, 8);
+                p != 0 && p >> 30 == 0 && e.children[1].count == 2
+            })
+            .unwrap();
+        assert_eq!(word(&example.bytes, 0x20), owner.0);
+        let (data, desc) = mouth_resource(example, &retail);
+        assert!(desc.chunks_exact(16).any(|d| {
+            let start = word(d, 0) as usize;
+            let len = word(d, 4) as usize;
+            data[start..start + len].iter().any(|&x| x != 0)
+        }));
+        let marine = map
+            .tags()
+            .iter()
+            .find(|t| {
+                t.group == FourCC(*b"jmad")
+                    && t.name.as_deref() == Some(r"objects\characters\marine\marine")
+            })
+            .unwrap()
+            .id;
+        let graph = tags::anim::AnimationGraph::read(&mut map, marine).unwrap();
+        for key in ["combat", "patrol"] {
+            let mode = graph
+                .modes
+                .iter()
+                .find(|m| m.name.resolve(map.strings()).unwrap() == Some(key))
+                .unwrap();
+            let class = mode
+                .classes
+                .iter()
+                .find(|c| c.name.resolve(map.strings()).unwrap() == Some("any"))
+                .unwrap();
+            let ty = class
+                .types
+                .iter()
+                .find(|t| t.name.resolve(map.strings()).unwrap() == Some("any"))
+                .unwrap();
+            let talk = ty
+                .overlays
+                .iter()
+                .find(|a| a.name.resolve(map.strings()).unwrap() == Some("talk"))
+                .unwrap();
+            assert_eq!(
+                graph.animations[talk.animation_index as usize].frame_count,
+                1
+            );
+        }
+    }
+
+    let h1 = h1_map("a10");
+    let mut set = TagSet::new(map::CacheType::Campaign, "a10", "a10");
+    let mut sounds = Vec::new();
+    let mut expected = Vec::new();
+    for tag in h1.tags().iter().filter(|t| t.group == SND) {
+        let s = Sound::read(&h1, tag).unwrap();
+        let mut ranges = Vec::new();
+        for (r, range) in s.pitch_ranges.iter().enumerate() {
+            let mut curves = Vec::new();
+            for chain in s.chains(r).unwrap() {
+                let p = &range.permutations[chain[0]];
+                let curve = if p.mouth.size > 0 {
+                    assert_eq!(chain.len(), 1);
+                    h1.read(p.mouth.address, p.mouth.size as usize).unwrap()
+                } else {
+                    &[]
+                };
+                curves.push(curve);
+            }
+            ranges.push(curves);
+        }
+        if ranges.iter().flatten().all(|curve| curve.is_empty()) {
+            continue;
+        }
+        sounds.push((tag.name.clone(), convert_sound(&s, h1.bytes()).unwrap()));
+        expected.push(ranges);
+    }
+    let ids = install_sounds(&mut set, sounds).unwrap();
+    assert_eq!(ids.len(), 1038);
+    let (bytes, _) = set.build().unwrap();
+    let (g, _) = gestalt_of(&bytes);
+    let mut map = Map::from_reader(Cursor::new(&bytes)).unwrap();
+    let owner = map
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"ugh!"))
+        .unwrap()
+        .id;
+    let mut count = 0;
+    for (id, ranges) in ids.into_iter().zip(expected) {
+        let h = map.read_tag_bytes(id).unwrap();
+        let e = &g.nested[blocks::EXTRA_INFOS][short(&h, snd::EXTRA_INFO)];
+        assert_eq!(word(&e.bytes, 0x20), owner.0);
+        let (data, descriptors) = mouth_resource(e, &bytes);
+        for (r, curves) in ranges.into_iter().enumerate() {
+            let range = g.element(blocks::PITCH_RANGES, short(&h, snd::FIRST_PITCH_RANGE) + r);
+            assert_eq!(short(range, 10), curves.len());
+            for (i, curve) in curves.into_iter().enumerate() {
+                let perm = g.element(blocks::PERMUTATIONS, short(range, 8) + i);
+                let at = usize::try_from(perm[5] as i8).unwrap() * 16;
+                let d = &descriptors[at..at + 16];
+                assert_eq!(word(d, 12), 0);
+                let offset = word(d, 0) as usize;
+                assert_eq!(&data[offset..][..word(d, 4) as usize], curve);
+                count += usize::from(!curve.is_empty());
+            }
+        }
+    }
+    assert_eq!(count, 4659);
 }

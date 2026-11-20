@@ -96,6 +96,8 @@ pub struct Permutation {
     pub samples: DataRef,
     /// `+0x54`: lip-sync (mouth) data.
     pub mouth: DataRef,
+    /// One mouth-aperture byte per tick, resident in H1 tag memory.
+    pub mouth_samples: Vec<u8>,
     /// `+0x68`: subtitle data.
     pub subtitles: DataRef,
 }
@@ -195,17 +197,33 @@ impl Sound {
             let pb = Block::read(r, PERMUTATIONS).expect("in the pitch range");
             let permutations = block(pb, PERMUTATION_LEN)?
                 .chunks_exact(PERMUTATION_LEN)
-                .map(|p| Permutation {
-                    name: name_at(p, 0),
-                    skip_fraction: f32_at(p, 0x20),
-                    gain: f32_at(p, 0x24),
-                    compression: Compression::from_raw(u16_at(p, 0x28)),
-                    next: u16_at(p, 0x2a),
-                    samples: DataRef::read(p, 0x40),
-                    mouth: DataRef::read(p, 0x54),
-                    subtitles: DataRef::read(p, 0x68),
+                .map(|p| -> Result<Permutation> {
+                    let mouth = DataRef::read(p, 0x54);
+                    let mouth_samples = if mouth.size == 0 {
+                        Vec::new()
+                    } else {
+                        block(
+                            Block {
+                                count: mouth.size,
+                                address: mouth.address,
+                            },
+                            1,
+                        )?
+                        .to_vec()
+                    };
+                    Ok(Permutation {
+                        name: name_at(p, 0),
+                        skip_fraction: f32_at(p, 0x20),
+                        gain: f32_at(p, 0x24),
+                        compression: Compression::from_raw(u16_at(p, 0x28)),
+                        next: u16_at(p, 0x2a),
+                        samples: DataRef::read(p, 0x40),
+                        mouth,
+                        mouth_samples,
+                        subtitles: DataRef::read(p, 0x68),
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             pitch_ranges.push(PitchRange {
                 name: name_at(r, 0),
                 natural_pitch: f32_at(r, 0x20),

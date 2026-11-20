@@ -1799,12 +1799,8 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The weapon class a Halo 1 weapon `label` (its animation label,
-    /// the units' weapon type) is held under: of every animation of every
-    /// graph on the map named `<unit> <class> <label> <action>`
-    /// ([`h1models::names::map_name`], which names the converted `jmad`
-    /// tree too), the class most of them name (ties: the first by name).
-    /// `None` when no graph holds the label.
+    /// The player graph's standing class for the weapon label. Other units
+    /// supply the classes of weapons the player graph does not list.
     pub fn weapon_class(&mut self, label: &str) -> Result<Option<String>> {
         if self.weapon_classes.is_none() {
             let mut votes: HashMap<(String, String), usize> = HashMap::new();
@@ -1818,14 +1814,7 @@ impl<'a> Converter<'a> {
                 }
             }
             let mut classes = weapon_classes(votes);
-            // A label no animation is named for takes the class whose
-            // slot table lists it as a type (V: the warthog's gun, `cg`,
-            // under the warthog's `fixed`; the converted vehicle graph's
-            // aim overlays are found under that class, h1models
-            // `jmad::vehicle_plan`). Until converter version 84 the gun had
-            // no class, and the warthog no aim. Vehicle graphs' tables only
-            // (`h1models::h1::weapon_types`): a biped's converted graph holds
-            // just the types its animation names hold.
+            // Vehicle-mounted weapons may have no clip named for the gun.
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
                 for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
                     if h1models::names::CLASSES.contains(&class.as_str()) {
@@ -1833,6 +1822,7 @@ impl<'a> Converter<'a> {
                     }
                 }
             }
+            classes.extend(h1models::player_weapon_types(self.h1)?);
             self.weapon_classes = Some(classes);
         }
         Ok(self

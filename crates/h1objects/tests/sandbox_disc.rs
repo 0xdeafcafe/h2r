@@ -1411,10 +1411,12 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             })
             .collect();
         assert!(!graphs.is_empty(), "{name}: no converted biped");
-        // The weapon types some Halo 1 graph of the map holds (the third
-        // word of `<unit> <class> <type> <action>`): a weapon whose label
-        // none holds (Derelict's flamethrower, `ft`) has no class to name.
+        // The cyborg's source class determines whether it has a standing
+        // idle, even when the type has no named weapon animation.
         let h1 = h1_map(name).unwrap();
+        let cyborg = h1.find(h1map::Group::new(b"antr"), r"characters\cyborg\cyborg").unwrap();
+        let src = h1models::h1::Graph::read(&h1, cyborg.data_address).unwrap();
+        let stand = src.units.iter().find(|u| u.label == "stand").unwrap();
         let mut held = BTreeSet::new();
         for t in h1.tags().iter().filter(|t| t.group.to_string() == "antr") {
             for n in h1models::graph_names(&h1, t).unwrap() {
@@ -1440,7 +1442,19 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
             }
             let Some(l) = t.location else { continue };
             let (class, kind) = (s(rw(&mem, l.address + 0x288)), s(rw(&mem, l.address + 0x28c)));
-            if !held.contains(&labels[n]) {
+            let source_class = stand.classes.iter().find(|c| c.label == class
+                && c.types.iter().any(|(ty, _)| ty == &labels[n]));
+            if let Some(c) = source_class {
+                assert_eq!(kind, labels[n], "{name}: {n} weapon type");
+                if c.slots.first().copied().unwrap_or(-1) == -1 {
+                    for (b, tree, j) in &graphs {
+                        assert!(tree.contains(&("combat".into(), class.clone(), kind.clone())), "{name}: {b}: {n}");
+                        assert!(!graph_finds(&mem, &strings, *j, ["combat", &class, &kind, "idle"]), "{name}: {b}: {n}");
+                    }
+                    continue;
+                }
+            }
+            if source_class.is_none() && !held.contains(&labels[n]) {
                 println!("{name}: {n}: label {:?} held by no Halo 1 graph", labels[n]);
                 if !(class.is_empty() && kind.is_empty()) {
                     bad.push(format!("{name}: {n} names ({class:?}, {kind:?}) for a label no graph holds"));
@@ -2037,3 +2051,6 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         assert!(dangling.is_empty(), "{sandbox:?}: {dangling:#?}");
     }
 }
+
+#[path = "sandbox_disc/player_animations.rs"]
+mod player_animations;

@@ -114,6 +114,8 @@ pub struct SoundGestalt {
     /// Element bytes of the flat blocks, by header index (`IMPORT_NAMES`,
     /// `CHUNKS` and the nested blocks stay empty here).
     pub flat: [Vec<u8>; 11],
+    /// Resource fixups at extra-info +8, indexed by extra-info number.
+    pub extra_raws: std::collections::BTreeMap<usize, RawId>,
     /// Chunks.
     pub chunks: Vec<Chunk>,
     /// Elements of the nested blocks, by header index.
@@ -257,6 +259,10 @@ impl SoundGestalt {
 
     /// The gestalt as a block tree.
     pub fn to_block(&self) -> Block {
+        self.block_with_owner(None)
+    }
+
+    fn block_with_owner(&self, owner: Option<map::TagId>) -> Block {
         let mut root = Block::zeroed(HEADER_LEN);
         for i in 0..11 {
             let child = if i == blocks::CHUNKS {
@@ -280,6 +286,14 @@ impl SoundGestalt {
                 for (n, e) in self.nested[i].iter().enumerate() {
                     let at = n * stride;
                     b.bytes[at..at + stride].copy_from_slice(&e.bytes);
+                    if i == blocks::EXTRA_INFOS
+                        && let Some(&raw) = self.extra_raws.get(&n)
+                    {
+                        b.raw((at + 8) as u32, RawRef::Local(raw));
+                        if let Some(id) = owner {
+                            b.put_u32(at + 0x20, id.0);
+                        }
+                    }
                     for (&(off, _), c) in child_blocks(i).iter().zip(&e.children) {
                         b.block((at + off) as u32, c.count, Block::new(c.bytes.clone()));
                     }
@@ -359,6 +373,16 @@ impl SoundGestalt {
                 let stride = STRIDES[i];
                 for k in 0..n {
                     let at = k * stride;
+                    if i == blocks::EXTRA_INFOS
+                        && let Some(f) = b.fixups.iter().find(|f| f.offset as usize == at + 8)
+                    {
+                        match f.kind {
+                            FixupKind::Raw(RawRef::Local(r)) => {
+                                g.extra_raws.insert(k, r);
+                            }
+                            _ => return Err(bad("an extra-info resource pointer")),
+                        }
+                    }
                     let mut e = Nested {
                         bytes: b.bytes[at..at + stride].to_vec(),
                         children: Vec::new(),
@@ -379,16 +403,21 @@ impl SoundGestalt {
         Ok(g)
     }
 
+    /// Reserve the final resource-owner datum before writing extra infos.
+    pub(crate) fn owner(set: &mut TagSet, name: &str) -> Result<map::TagId> {
+        if let Some(slot) = Self::slot(set) {
+            return Ok(set.slots[slot].tag.as_ref().expect("gestalt").id);
+        }
+        set.add_group(UGH, None, None);
+        Ok(set.add_tag(UGH, name, TagPayload::Built(Block::zeroed(HEADER_LEN)))?)
+    }
+
     /// Writes the gestalt into `set`: in place of its `ugh!` (same slot and
     /// datum), or as a new `ugh!` tag named `name`.
     pub fn install(&self, set: &mut TagSet, name: &str) -> Result<map::TagId> {
-        let payload = TagPayload::Built(self.to_block());
-        if let Some(slot) = Self::slot(set) {
-            let t = set.slots[slot].tag.as_mut().expect("a tag");
-            t.payload = payload;
-            return Ok(t.id);
-        }
-        set.add_group(UGH, None, None);
-        Ok(set.add_tag(UGH, name, payload)?)
+        let id = Self::owner(set, name)?;
+        set.tag_mut(id).expect("gestalt slot").payload =
+            TagPayload::Built(self.block_with_owner(Some(id)));
+        Ok(id)
     }
 }

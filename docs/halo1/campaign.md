@@ -130,6 +130,23 @@ Each step is proven with tests; the user plays the result.
    saved per campaign. **Built** ([campaign-picker.md](campaign-picker.md)),
    confirmed in the game.
 
+### a10 character animation integration checks
+
+These commands assume the checkout has the two ISOs in `disc/`. The disc
+checks read the original maps and the converted tags offline.
+
+```sh
+cargo test -p h1models -p h1sounds --lib
+```
+
+```sh
+H1_ISO=disc/halo1.iso cargo test -p h1models --release --lib campaign_biped_slots_and_talk_frames -- --ignored
+```
+
+```sh
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc a10_dialogue_mouth_curves_reach_the_retail_resource_layout -- --ignored
+```
+
 ### Open work (2026-11-19)
 
 Everything the converter still lacks, each on its own branch
@@ -138,6 +155,8 @@ merged, built and tested together, then played.
 
 | Gap | Branch | Notes |
 |---|---|---|
+| a10 characters T-pose outside scripted animations | `h1-bg-anims` | **Built.** Campaign bipeds bind the source standing, alert and seat idles, directional cycles and skeleton masks. [Graph conversion](models.md#campaign-biped-idles-and-talking-built) |
+| a10 dialogue lacks mouth movement | `h1-bg-anims` | **Built.** H1 mouth curves drive the native H2 aperture and the source talk pose. [Sound conversion](sounds.md#dialogue-mouth-curves-built) |
 | a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built in converter version 99.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
 | a10, a50, c40, d20 and d40 failed unpinning with Halo 1 assets in the v90 import | `a30convert` | **Built.** Both fresh paths read locale data at the lengths recorded in `matg`. The 20-variant disc test is pending the integration run (§9) |
 | Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |

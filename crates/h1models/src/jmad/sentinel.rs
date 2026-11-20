@@ -2,9 +2,6 @@
 //! nine-frame aim in slot 25. 04b's aggressor looks both up under any/any.
 use super::*;
 
-pub(super) type Actions =
-    BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>;
-
 pub(super) fn bindings(g: &Graph, plan: &mut VehiclePlan, actions: &mut Actions) -> Overlays {
     let mut overlays = Overlays::new();
     let class = |u: &crate::h1::UnitSlots| u.classes.iter().position(|c| c.label == "fixed");
