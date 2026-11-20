@@ -3,7 +3,7 @@
 //! live by pad presses ([`boot::ui_kit::page::Live`]), the picture drawn
 //! from the editor's disc (or the synthetic source without one), the
 //! widgets' rectangles and the layout checks' findings, and the export.
-//! docs/game/ui-builder.md, docs/tools/editor.md.
+//! docs/game/ui-builder.md, docs/editor/editor.md.
 
 use std::path::{Path, PathBuf};
 
