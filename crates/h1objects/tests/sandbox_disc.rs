@@ -504,20 +504,24 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 let input = x[widget::INPUTS];
                 // A meter draws its copy with clear texels black.
                 // A static draws its copy with the colour's alpha.
-                let bitmap = if input != 0 {
-                    bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}")).to_owned()
+                let meter = tags::weapon_hud::METER;
+                let bitmap = if (meter..=meter + 5).contains(&input) {
+                    bitmap.strip_suffix("_meter").unwrap_or_else(|| panic!("{name}: meter {bitmap}"))
                 } else {
-                    bitmap.rsplit_once("_alpha_").map_or(bitmap.clone(), |(s, _)| s.to_owned())
+                    assert!([0, tags::weapon_hud::WARNING].contains(&input), "{name}: input {input}");
+                    bitmap.strip_suffix("_direct")
+                        .or_else(|| bitmap.rsplit_once("_alpha_").map(|(source, _)| source))
+                        .unwrap_or(&bitmap)
                 };
                 // A later zoom level draws a copy starting at its sprite.
                 let bitmap = match bitmap.rsplit_once("_seq") {
-                    Some((s, k)) if k.contains("_sprite") => s.to_owned(),
+                    Some((s, k)) if k.contains("_sprite") => s,
                     _ => bitmap,
                 };
-                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
-                // Colour 0 draws nothing in Halo 1 (h1hud::static_alpha).
-                assert!(!bitmap.ends_with("hud_ammo_alphas"), "{name}: a colour-0 static");
-                assert!([0, 0x31, 0x36, 0x38].contains(&input), "{name}: input {input}");
+                assert!(h1_bitmaps.contains(bitmap), "{name}: {bitmap} is Halo 1's");
+                if bitmap.ends_with("hud_ammo_alphas") {
+                    assert_eq!(&x[widget::STATE..widget::STATE + 8], &[0; 8], "{name}: a colour-0 static");
+                }
                 if x[widget::ANCHOR] == h1hud::Anchor::Centre as u8 {
                     centred += 1;
                 }
@@ -533,14 +537,22 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             let mut counts = Vec::new();
             for t in tb.as_chunks::<{ h1hud::text::SIZE }>().0 {
                 assert_eq!(w(t, h1hud::text::STRING), 0x0a00_05cf, "{name}: hud_input1");
-                assert_eq!(u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]), h1hud::TEXT_NUMBER);
+                let flags = u16::from_le_bytes([t[h1hud::text::FLAGS], t[h1hud::text::FLAGS + 1]]);
+                assert_eq!(flags & h1hud::TEXT_NUMBER, h1hud::TEXT_NUMBER);
                 let (sg, shader) = names[&TagId(w(t, h1hud::text::SHADER + 4))].clone();
                 assert_eq!((sg, shader.as_str()), (FourCC(*b"shad"), h1hud::TEXT_SHADER));
                 counts.push(t[h1hud::text::INPUTS]);
             }
-            if !wname.contains("flamethrower") && !wname.starts_with("vehicles") {
-                assert!(counts == [0x33] || counts == [0x32], "{name}: counts {counts:x?}");
-            }
+            let source = h1.find(h1map::Group::new(b"weap"), &wname).unwrap();
+            let hud = h1objects::h1::reference(&h1, h1.tag_data(source).unwrap(), 0x480).unwrap();
+            let expected: Vec<_> = h1hud::weapon_entries(&h1, hud).unwrap().iter()
+                .filter_map(|e| match e.kind {
+                    h1hud::WeaponEntryKind::Number(_, _, true) => Some(tags::weapon_hud::MAGAZINES),
+                    h1hud::WeaponEntryKind::Number(state, _, false) => Some(h1hud::weapon_number_input(state).unwrap()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(counts, expected, "{name}: number sources");
             eprintln!("{wname}: {name}, {n} widgets, {centred} centred, counts {counts:x?}");
             weapons += 1;
         }
@@ -1121,6 +1133,11 @@ fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
             );
             let mut i = 0;
             while let Some(w) = base.element(&root, block, size, i).unwrap() {
+                if w[8..0x10] == [0; 8] {
+                    // An authored hidden element has no matching show state in any slot.
+                    i += 1;
+                    continue;
+                }
                 let hide = u16::from_le_bytes(w[0x14..0x16].try_into().unwrap());
                 assert_eq!(
                     hide & 7,
