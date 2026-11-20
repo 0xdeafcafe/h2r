@@ -78,6 +78,9 @@ typedef struct H2GenResume {
 /* The block clock (below, "Block clock"). Bits 8 and 16 are the contract
  * slices' (docs/runtime/contract-thin-transfers-flat-ram.md). */
 #define H2GEN_FEATURE_BLOCK_CLOCK 32u
+/* The IR passes ran with imprecise-faults (crates/recompiler/opt): a memory
+ * fault's exit has exact EIP and registers, EFLAGS as it happens to be. */
+#define H2GEN_FEATURE_IMPRECISE_FAULTS 64u
 typedef struct H2GenModule {
     uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;

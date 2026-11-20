@@ -133,3 +133,112 @@ fn a_spec_names_its_passes_and_parses_back() {
     }
     assert_eq!(Passes::NONE.spec(), "none");
 }
+
+// ---- imprecise memory faults (docs/runtime/block-clock-imprecise-faults.md)
+
+/// The precise passes plus `imprecise-faults`.
+fn imprecise() -> Passes {
+    Passes::parse("all,imprecise-faults").unwrap()
+}
+
+#[test]
+fn imprecise_faults_are_named_not_part_of_all() {
+    assert!(!Passes::ALL.imprecise_faults);
+    assert!(!Passes::parse("all").unwrap().imprecise_faults);
+    let p = imprecise();
+    assert!(p.dead_flags && p.lazy_flags && p.imprecise_faults);
+    assert_eq!(p.spec(), "dead-flags,lazy-flags,imprecise-faults");
+    assert_eq!(Passes::parse(&p.spec()).unwrap(), p);
+    assert_eq!(Passes::parse("imprecise-faults,all").unwrap(), p, "all keeps it");
+    assert_eq!(Passes::parse("all,imprecise-faults,-imprecise-faults").unwrap(), Passes::ALL);
+}
+
+#[test]
+fn with_imprecise_faults_a_load_observes_no_flag() {
+    use iced_x86::code_asm::*;
+    let f = function(|a| {
+        a.add(eax, ebx)?;
+        a.mov(ecx, dword_ptr(esi))?;
+        a.mov(dword_ptr(edi), ecx)?;
+        a.sub(eax, ecx)?;
+        a.ret()
+    });
+    let mut passes = dead_flags();
+    passes.imprecise_faults = true;
+    let (g, r) = optimized(&f, passes);
+    assert!(writes(&g)[0].is_empty(), "sub rewrites add's flags; the accesses between see none");
+    assert!(r.imprecise_faults, "the report says the module must declare it");
+    let (g, r) = optimized(&f, dead_flags());
+    assert_eq!(writes(&g)[0].len(), 6, "precise: the load may fault with add's flags");
+    assert!(!r.imprecise_faults);
+}
+
+#[test]
+fn with_imprecise_faults_other_exits_stay_precise() {
+    use iced_x86::code_asm::*;
+    let mut passes = dead_flags();
+    passes.imprecise_faults = true;
+    // A divide may fault (#DE): add's flags reach it.
+    let f = function(|a| {
+        a.add(eax, ebx)?;
+        a.div(ecx)?;
+        a.sub(eax, ecx)?;
+        a.ret()
+    });
+    let (g, _) = optimized(&f, passes);
+    assert_eq!(writes(&g)[0].len(), 6, "a FaultIf still observes every flag");
+    // An atomic hands the flags to the runtime.
+    let f = function(|a| {
+        a.add(eax, ebx)?;
+        a.lock().inc(dword_ptr(esi))?;
+        a.sub(eax, ecx)?;
+        a.ret()
+    });
+    let (g, _) = optimized(&f, passes);
+    assert_eq!(writes(&g)[0].len(), 6, "an atomic still observes every flag");
+}
+
+/// From many random states (with random preemption at loop headers), the
+/// optimised IR ends the same way, with the same memory and registers, and
+/// the same flags unless the end is a memory fault: there only EFLAGS and
+/// its defined mask may differ.
+#[test]
+fn imprecise_faults_change_only_a_memory_faults_flags() {
+    use common::{End, Rng, run, state};
+    let (mut faults, mut removed_precise, mut removed_imprecise) = (0, 0, 0);
+    for (name, body) in fixtures() {
+        let f = function(body);
+        let (g, r) = optimized(&f, imprecise());
+        removed_imprecise += r.dead_flags;
+        removed_precise += optimized(&f, Passes::ALL).1.dead_flags;
+        let mut rng = Rng(0x696d_7072_6563_6973 ^ name.len() as u64);
+        for s in 0..300 {
+            let (cpu0, mem0) = state(&mut rng);
+            let seed = rng.next() as u64 | 1;
+            let mut ends = Vec::new();
+            for func in [&f, &g] {
+                let (mut cpu, mut mem) = (cpu0.clone(), mem0.clone());
+                let mut prng = Rng(seed);
+                let end = run(func, &mut cpu, &mut mem, &mut || prng.next().is_multiple_of(7));
+                ends.push((end, cpu, mem.bytes));
+            }
+            let (a, b) = (&ends[0], &ends[1]);
+            assert_eq!(a.0, b.0, "{name} state {s}: end differs");
+            assert!(a.2 == b.2, "{name} state {s}: memory differs");
+            if matches!(&a.0, End::Exit(e) if e.starts_with("memory")) {
+                faults += 1;
+                let strip = |c: &ir::interp::Cpu| {
+                    let mut c = c.clone();
+                    c.eflags = 0;
+                    c.flags_valid = 0;
+                    c
+                };
+                assert_eq!(strip(&a.1), strip(&b.1), "{name} state {s}: registers differ at a memory fault\n{g}");
+            } else {
+                assert_eq!(a.1, b.1, "{name} state {s}: cpu differs after {:?}\n{g}", a.0);
+            }
+        }
+    }
+    assert!(faults > 0, "the fixtures fault somewhere");
+    assert!(removed_imprecise > removed_precise, "{removed_imprecise} <= {removed_precise}");
+}

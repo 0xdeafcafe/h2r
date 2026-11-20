@@ -21,10 +21,10 @@ pub struct Runtime {
     pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
     pub(crate) dispatch_census: Option<crate::entry_stats::DispatchCensus>,
     fault_census: crate::fault_census::FaultCensus,
-    /// The registered modules count with the block clock
-    /// ([`crate::generated::FEATURE_BLOCK_CLOCK`]): kept in step with the
-    /// dispatch by `new` and `edit_dispatch`.
-    block_clock: std::sync::atomic::AtomicBool,
+    /// The registered modules' features, OR-ed
+    /// ([`Dispatch::module_features`]): kept in step with the dispatch by
+    /// `new` and `edit_dispatch`, read without its lock.
+    module_features: std::sync::atomic::AtomicU32,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -72,7 +72,7 @@ impl LockContention {
 
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
-        let block_clock = dispatch.module_features() & crate::generated::FEATURE_BLOCK_CLOCK != 0;
+        let module_features = dispatch.module_features();
         Arc::new(Self {
             memory: crate::ffi::Memory::new(memory),
             dispatch: RwLock::new(dispatch),
@@ -84,15 +84,21 @@ impl Runtime {
             dispatch_census: (std::env::var("H2_DISPATCH_STATS").as_deref() == Ok("1"))
                 .then(crate::entry_stats::DispatchCensus::default),
             fault_census: Default::default(),
-            block_clock: block_clock.into(),
+            module_features: module_features.into(),
         })
+    }
+    /// The registered generated modules' features, OR-ed
+    /// (`crate::generated::FEATURE_*`).
+    #[inline]
+    pub fn module_features(&self) -> u32 {
+        self.module_features.load(Ordering::Relaxed)
     }
     /// Whether the registered generated modules count with the block clock
     /// (docs/runtime/block-clock-imprecise-faults.md): then a Rust handler
     /// the runner invokes charges [`crate::preempt::HLE_COST`].
     #[inline]
     pub fn block_clock(&self) -> bool {
-        self.block_clock.load(Ordering::Relaxed)
+        self.module_features() & crate::generated::FEATURE_BLOCK_CLOCK != 0
     }
     /// Every memory fault and what became of its state
     /// ([`crate::fault_census`]; the agent's `profile.faults`).
@@ -176,10 +182,7 @@ impl Runtime {
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);
-        self.block_clock.store(
-            d.module_features() & crate::generated::FEATURE_BLOCK_CLOCK != 0,
-            Ordering::Relaxed,
-        );
+        self.module_features.store(d.module_features(), Ordering::Relaxed);
         // Under the write lock: a context that resolves after this sees the
         // new tables and the new generation together.
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);

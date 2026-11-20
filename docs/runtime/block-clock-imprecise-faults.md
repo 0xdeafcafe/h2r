@@ -1,8 +1,8 @@
 # Block clock and imprecise memory faults
 
-Status: Partly built. The fault census and the block clock are built; imprecise memory faults are design.
-Code: `crates/runtime/runtime/src/fault_census.rs` (`FaultCensus`), `crates/recompiler/emit/src/clock.rs` (the costs), `crates/recompiler/emit/c/h2gen.h` ("Block clock"). Tests: `crates/runtime/runtime/src/fault_census.rs` (unit), `crates/runtime/runtime/tests/generated.rs`, `crates/recompiler/emit/tests/block_clock.rs`.
-Switch: `H2_ACCESS_COUNT=block` (the block clock; the access clock by default), listed in [switches.md](switches.md).
+Status: Built. The block clock and imprecise memory faults are opt-in at build time; the census runs in every build.
+Code: `crates/runtime/runtime/src/fault_census.rs` (`FaultCensus`), `crates/recompiler/emit/src/clock.rs` (the costs), `crates/recompiler/emit/c/h2gen.h` ("Block clock"), `crates/recompiler/opt/src/flags.rs` (`Observers`). Tests: `crates/runtime/runtime/src/fault_census.rs` (unit), `crates/runtime/runtime/tests/generated.rs`, `crates/recompiler/emit/tests/block_clock.rs`, `crates/recompiler/opt/tests/flags.rs`.
+Switch: `H2_ACCESS_COUNT=block` (the block clock; the access clock by default) and `H2_PASSES=all,imprecise-faults` (imprecise memory faults; precise by default), listed in [switches.md](switches.md).
 
 Item 3 of the [architecture review](../reviews/2026-11-20-architecture.md)
 (sections 1.4 and 5) changes two rules of the recompiler contract
@@ -79,13 +79,26 @@ units.
 
 ### Imprecise memory faults
 
-Design. When the census shows no generated fault is gone on from, loads and
-stores stop being observation points for `opt`: flag writes die across
-them by the ordinary dead-flag rule, and most lazy-flag groups go with
-them. A faulting access still leaves with the exact EIP and registers (no
-pass removes a register write), and EFLAGS as it happens to be. Calls,
-returns, loop polls, `FaultIf` (divide errors), stops, REP and atomics
-stay precise.
+With the pass spec `imprecise-faults` (`H2_PASSES=all,imprecise-faults`;
+`all` alone leaves it off), loads and stores stop observing the flags in
+`opt`'s dead-flag analysis (`flags::Observers::IMPRECISE_FAULTS`): a flag
+write that is rewritten before anything else observes it dies even with an
+access in between, and the formulas that fed it go with it. A faulting
+access still leaves with the exact EIP and registers (no pass removes a
+register write), and with EFLAGS and its defined mask as they happen to be.
+Calls, returns, loop polls, `FaultIf` (divide errors), stops, intrinsics,
+`Repeat` and atomics still observe every flag, so their exits stay exact.
+
+`opt::Report::imprecise_faults` says a function was planned this way, and
+the emitter then declares `H2GEN_FEATURE_IMPRECISE_FAULTS` (64) for the
+module. The runtime accepts the bit; the census counts a continuation from
+a fault while the bit is registered as `continued_imprecise` as well, and
+logs the first one: that is the case the rule forbids.
+
+It is safe while `continued_generated` stays 0 over the runs that matter,
+because then no fault's EFLAGS is ever read. A future SEH dispatch or
+fault recovery that goes on from a generated memory fault needs an image
+without the bit.
 
 ## Interfaces
 
@@ -93,18 +106,22 @@ stay precise.
 |---|---|---|---|
 | `H2GEN_FEATURE_ACCOUNTING` | 1 | `H2_ACCESS_COUNT` unset or `1` | the access clock, counted by the handler |
 | `H2GEN_FEATURE_BLOCK_CLOCK` | 32 | `H2_ACCESS_COUNT=block` | needs bit 1; one clock per dispatch; `HLE_COST` per Rust handler |
+| `H2GEN_FEATURE_IMPRECISE_FAULTS` | 64 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
 
 Bits 8 and 16 belong to the contract slices T2 and F3
 ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md)).
 
 - `Runtime::fault_census()`: `snapshot()` gives `FaultCounts`; `reset()`
   starts a new window.
-- `Runtime::block_clock()`: whether the registered modules count with the
-  block clock, kept in step by `Runtime::new` and `edit_dispatch`.
+- `Runtime::module_features()`: the registered modules' features, kept in
+  step by `Runtime::new` and `edit_dispatch`; `Runtime::block_clock()`
+  tests bit 32.
 - `Dispatch::module_features()`: the registered modules' features, OR-ed.
 
 ## Rules and limits
 
+- An image without bit 64 keeps precise faults. A runtime older than bit
+  64 refuses an image with it.
 - An image without bit 32 keeps the access clock. A runtime older than bit
   32 refuses a block-clock image (`RegistrationError::UnknownFeatures`).
 - Bit 32 without bit 1 is refused
@@ -140,6 +157,12 @@ Bits 8 and 16 belong to the contract slices T2 and F3
   the generated C gives up its slice where a model built from the IR alone
   says, and two loops of the same shape, one with memory operands and one
   without, interleave identically.
+- **Test.** `imprecise_faults_change_only_a_memory_faults_flags`
+  (opt/tests/flags.rs): every opt fixture, from random states with random
+  preemption, ends the same way with the same memory and registers, and
+  the same flags unless it ends at a memory fault; and more flag writes go
+  than with the precise rule. `with_imprecise_faults_other_exits_stay_precise`
+  keeps a divide's and an atomic's flags.
 
 ## Not verified
 
@@ -148,7 +171,9 @@ Bits 8 and 16 belong to the contract slices T2 and F3
 - Guest timing under the block clock: work moves logical time at
   `ACCESSES_PER_TICK` in block units, and `HLE_COST` is a harness choice.
 - Lockstep traces, films and sim-diff baselines re-recorded under the block
-  clock.
+  clock and imprecise faults.
+- How much generated C and run time imprecise faults save on the game's
+  code.
 
 ## Related
 

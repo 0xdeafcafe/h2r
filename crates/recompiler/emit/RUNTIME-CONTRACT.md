@@ -497,8 +497,11 @@ typedef struct H2GenModule {
 - `features` is a bit set of optional schemes the module's handlers use:
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
   §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
-  section), `H2GEN_FEATURE_BLOCK_CLOCK` (32, §1.5 "The block clock"), or
-  0. It was `reserved`, always 0.
+  section), `H2GEN_FEATURE_BLOCK_CLOCK` (32, §1.5 "The block clock"),
+  `H2GEN_FEATURE_IMPRECISE_FAULTS` (64: a memory fault's exit leaves EFLAGS
+  and its defined mask inexact; registers and EIP stay exact;
+  docs/runtime/block-clock-imprecise-faults.md), or 0. It was `reserved`,
+  always 0.
 
 ## 3. Registration adapter (**new**)
 

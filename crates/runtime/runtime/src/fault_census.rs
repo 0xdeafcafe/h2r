@@ -74,6 +74,10 @@ pub struct FaultCounts {
     /// these, need a precise exit: zero over a campaign run and a match is
     /// what imprecise memory faults require.
     pub continued_generated: u64,
+    /// Of `continued_generated`, faults from a module built with imprecise
+    /// faults (`generated::FEATURE_IMPRECISE_FAULTS`): execution went on
+    /// from best-effort EFLAGS. Any is a bug, reported on stderr once.
+    pub continued_imprecise: u64,
     /// Fault PCs by count, at most [`MAX_SITES`].
     pub sites: Vec<FaultSite>,
     /// Some PCs were not kept ([`MAX_SITES`]).
@@ -132,11 +136,21 @@ impl FaultCensus {
         self.inner().counts.ended += 1;
     }
 
-    fn note_continued(&self, open: OpenFault) {
+    fn note_continued(&self, open: OpenFault, imprecise: bool) {
         let mut i = self.inner();
         i.counts.continued += 1;
         if open.source == FaultSource::Generated {
             i.counts.continued_generated += 1;
+            if imprecise {
+                i.counts.continued_imprecise += 1;
+                if i.counts.continued_imprecise == 1 {
+                    eprintln!(
+                        "fault census: execution went on from the fault at {:#010x}, built with imprecise faults: \
+                         its EFLAGS are best-effort (docs/runtime/block-clock-imprecise-faults.md)",
+                        open.pc
+                    );
+                }
+            }
         }
         if let Some(site) = i.by_pc.get_mut(&open.pc) {
             site.continued += 1;
@@ -206,7 +220,9 @@ impl ExecCtx {
     #[inline(never)]
     fn census_continue_cold(&mut self) {
         if let Some(open) = self.open_fault.take() {
-            self.runtime().fault_census().note_continued(open);
+            let imprecise =
+                self.runtime().module_features() & crate::generated::FEATURE_IMPRECISE_FAULTS != 0;
+            self.runtime().fault_census().note_continued(open, imprecise);
         }
     }
 
@@ -273,12 +289,13 @@ mod tests {
     fn only_continued_generated_faults_need_precise_exits() {
         let c = FaultCensus::default();
         c.note_fault(0x10, &fault(0), FaultSource::Runtime);
-        c.note_continued(OpenFault { event: 1, pc: 0x10, source: FaultSource::Runtime });
+        c.note_continued(OpenFault { event: 1, pc: 0x10, source: FaultSource::Runtime }, true);
         assert!(!c.snapshot().precise_exits_needed());
+        assert_eq!(c.snapshot().continued_imprecise, 0, "a Rust handler's fault is not the passes'");
         c.note_fault(0x30, &fault(0), FaultSource::Generated);
-        c.note_continued(OpenFault { event: 2, pc: 0x30, source: FaultSource::Generated });
+        c.note_continued(OpenFault { event: 2, pc: 0x30, source: FaultSource::Generated }, false);
         let s = c.snapshot();
-        assert_eq!((s.continued, s.continued_generated), (2, 1));
+        assert_eq!((s.continued, s.continued_generated, s.continued_imprecise), (2, 1, 0));
         assert!(s.precise_exits_needed());
         assert_eq!(s.sites.iter().find(|s| s.pc == 0x30).unwrap().continued, 1);
     }

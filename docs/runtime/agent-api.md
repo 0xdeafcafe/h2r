@@ -514,7 +514,10 @@ h2 agent faults
   `precise_exits_needed`, true when `continued_generated` is not 0; and
   the `top` fault PCs by count, each with `source`, `count`, `continued`
   and the first fault's `addr`, `len`, `access` and `reason`. Kept per PC,
-  at most 4096 (`sites_full`). It counts from the process's start.
+  at most 4096 (`sites_full`). It counts from the process's start. It also
+  names the image's choices: `clock` (`accesses` or `blocks`),
+  `imprecise_faults` (module feature 64), and `continued_imprecise`, the
+  continuations from a fault whose EFLAGS were inexact (should be 0).
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
   what `profile.sample.stop` answers: the module-relative dump

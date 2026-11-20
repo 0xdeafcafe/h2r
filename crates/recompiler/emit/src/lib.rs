@@ -535,11 +535,17 @@ fn registry(owners: &[&Owner], home: &BTreeMap<u32, String>, banner: &str, codeg
         s.push_str(&format!("    {{{pc:#010x}u, {owner:#010x}u, {pc:#010x}u}},\n"));
     }
     s.push_str("    {0u, 0u, 0u},\n};\n\n");
+    // Faults may leave EFLAGS inexact when the passes ran with
+    // imprecise-faults (opt::Passes::imprecise_faults): the module says so.
+    let features = if owners.iter().any(|o| o.opt.imprecise_faults) {
+        format!("{} | H2GEN_FEATURE_IMPRECISE_FAULTS", codegen.features())
+    } else {
+        codegen.features().to_owned()
+    };
     s.push_str(&format!(
-        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes}};\n",
+        "H2_EXPORT const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {features}, entries, resumes}};\n",
         entries.len(),
         resumes.len(),
-        codegen.features()
     ));
     s
 }
@@ -633,6 +639,26 @@ mod tests {
         assert_eq!(format!("{:?}", Codegen::accesses(true)), "Codegen { accounting: true }");
         assert_eq!(format!("{:?}", Codegen::accesses(false)), "Codegen { accounting: false }");
         assert_eq!(format!("{:?}", Codegen::BLOCK_CLOCK), "Codegen { accounting: true, block_clock: true }");
+    }
+
+    #[test]
+    fn a_module_planned_with_imprecise_faults_declares_them() {
+        let owner = |entry| Owner {
+            func: IrFunction { entry, blocks: BTreeMap::new(), interior_entries: Vec::new(), errors: Vec::new() },
+            selectors: BTreeSet::from([entry]),
+            entries: vec![(entry, EntryKind::Function)],
+            resumes: Vec::new(),
+            entry_exits: 0,
+            loops: Default::default(),
+            opt: Default::default(),
+        };
+        let mut owners = [owner(0x1000), owner(0x2000)];
+        let home: BTreeMap<u32, String> = owners.iter().map(|o| (o.func.entry, "shard_00001".to_owned())).collect();
+        let table = registry(&owners.iter().collect::<Vec<_>>(), &home, "", Codegen::accesses(true));
+        assert!(!table.contains("IMPRECISE"), "{table}");
+        owners[1].opt.imprecise_faults = true;
+        let table = registry(&owners.iter().collect::<Vec<_>>(), &home, "", Codegen::accesses(true));
+        assert!(table.contains("H2GEN_FEATURE_ACCOUNTING | H2GEN_FEATURE_DIRECT | H2GEN_FEATURE_IMPRECISE_FAULTS"), "{table}");
     }
 
     #[test]

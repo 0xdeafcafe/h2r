@@ -475,6 +475,10 @@ it the runner charges `preempt::HLE_COST` per Rust handler.
 `Runtime::fault_census` counts every memory fault and whether execution went
 on from it; `ExecCtx::discard_fault` and `ExecCtx::open_fault_pc` go with it
 (docs/runtime/block-clock-imprecise-faults.md).
+`generated::FEATURE_IMPRECISE_FAULTS` (64) marks a module whose memory
+faults leave EFLAGS inexact; `Runtime::module_features` reports the
+registered modules' bits, and the census counts going on from such a fault
+as `continued_imprecise`.
 
 ## One call at a handler's exit
 

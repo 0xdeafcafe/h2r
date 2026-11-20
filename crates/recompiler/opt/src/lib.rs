@@ -5,6 +5,8 @@
 //! faults, stops, preemption polls) sees exactly the registers, flags,
 //! defined mask and memory the unoptimised IR would give it. Between those
 //! points a pass may change anything, which is where the savings are.
+//! [`Passes::imprecise_faults`] narrows the observers: a memory fault's
+//! exit then keeps exact registers and EIP but not EFLAGS.
 //!
 //! What a pass needs to know beyond the function is its [`Shape`]: where
 //! the handler can be entered (start selectors, including REP restart
@@ -42,18 +44,30 @@ pub struct Passes {
     /// block into [`ir::Stmt::LazyFlags`] ([`lazy::lazy_flags`]): the
     /// backend computes the read flag in place and the rest on exit.
     pub lazy_flags: bool,
+    /// Imprecise memory faults: loads and stores are not observers for
+    /// `dead-flags` ([`flags::Observers::IMPRECISE_FAULTS`]), so a flag
+    /// write dies across them. A faulting access leaves with exact EIP and
+    /// registers and EFLAGS as they happen to be. Not part of `all`: it is
+    /// named (`all,imprecise-faults`), and a module built with it declares
+    /// `H2GEN_FEATURE_IMPRECISE_FAULTS` (docs/runtime/block-clock-imprecise-faults.md).
+    pub imprecise_faults: bool,
 }
 
 /// Turns one pass on or off.
 type Setter = fn(&mut Passes, bool);
 
 /// `(name, setter)` for every pass, in the order they run.
-const NAMES: &[(&str, Setter)] =
-    &[("dead-flags", |p, on| p.dead_flags = on), ("lazy-flags", |p, on| p.lazy_flags = on)];
+const NAMES: &[(&str, Setter)] = &[
+    ("dead-flags", |p, on| p.dead_flags = on),
+    ("lazy-flags", |p, on| p.lazy_flags = on),
+    ("imprecise-faults", |p, on| p.imprecise_faults = on),
+];
 
 impl Passes {
-    pub const NONE: Passes = Passes { dead_flags: false, lazy_flags: false };
-    pub const ALL: Passes = Passes { dead_flags: true, lazy_flags: true };
+    pub const NONE: Passes = Passes { dead_flags: false, lazy_flags: false, imprecise_faults: false };
+    /// Every pass that keeps faults precise: what `all` and the default
+    /// select. `imprecise-faults` is added by name.
+    pub const ALL: Passes = Passes { dead_flags: true, lazy_flags: true, imprecise_faults: false };
 
     /// Every pass name, for usage text.
     pub fn names() -> impl Iterator<Item = &'static str> {
@@ -62,7 +76,8 @@ impl Passes {
 
     /// Parse a comma-separated spec: `all`, `none`, pass names to turn on
     /// and `-name` to turn one off, applied left to right from nothing
-    /// (`all,-dead-flags`; `dead-flags`).
+    /// (`all,-dead-flags`; `dead-flags`; `all,imprecise-faults`). `all`
+    /// and `-all` leave `imprecise-faults` as it is.
     pub fn parse(spec: &str) -> Result<Passes, String> {
         let mut p = Passes::NONE;
         for item in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -71,7 +86,11 @@ impl Passes {
                 None => (true, item),
             };
             match name {
-                "all" => p = if on { Passes::ALL } else { Passes::NONE },
+                "all" => {
+                    let keep = p.imprecise_faults;
+                    p = if on { Passes::ALL } else { Passes::NONE };
+                    p.imprecise_faults = keep;
+                }
                 "none" if on => p = Passes::NONE,
                 _ => match NAMES.iter().find(|(n, _)| *n == name) {
                     Some((_, set)) => set(&mut p, on),
@@ -96,10 +115,14 @@ impl Passes {
     /// The canonical spec: the names of the passes that are on, in order,
     /// or `none`. [`Passes::parse`] gives back the same selection.
     pub fn spec(&self) -> String {
-        let on: Vec<&str> = [("dead-flags", self.dead_flags), ("lazy-flags", self.lazy_flags)]
-            .into_iter()
-            .filter_map(|(n, on)| on.then_some(n))
-            .collect();
+        let on: Vec<&str> = [
+            ("dead-flags", self.dead_flags),
+            ("lazy-flags", self.lazy_flags),
+            ("imprecise-faults", self.imprecise_faults),
+        ]
+        .into_iter()
+        .filter_map(|(n, on)| on.then_some(n))
+        .collect();
         if on.is_empty() { "none".into() } else { on.join(",") }
     }
 }
@@ -121,6 +144,9 @@ pub struct Report {
     pub lazy_flags: usize,
     /// Pure statements removed because their results became unused.
     pub dead_stmts: usize,
+    /// The passes ran with [`Passes::imprecise_faults`]: the module must
+    /// declare it.
+    pub imprecise_faults: bool,
 }
 
 impl std::ops::AddAssign for Report {
@@ -129,12 +155,17 @@ impl std::ops::AddAssign for Report {
         self.dead_flags += o.dead_flags;
         self.lazy_flags += o.lazy_flags;
         self.dead_stmts += o.dead_stmts;
+        self.imprecise_faults |= o.imprecise_faults;
     }
 }
 
 /// Run the enabled passes over `f`.
 pub fn optimize(f: &mut IrFunction, shape: &Shape<'_>, passes: Passes) -> Report {
-    let mut r = Report { flag_writes: flags::count_writes(f), ..Report::default() };
+    let mut r = Report {
+        flag_writes: flags::count_writes(f),
+        imprecise_faults: passes.imprecise_faults,
+        ..Report::default()
+    };
     // Lazy first, so each lazy group keeps every flag its instruction
     // writes; dead-flags then removes dead eager writes and whole dead
     // groups.
@@ -142,7 +173,9 @@ pub fn optimize(f: &mut IrFunction, shape: &Shape<'_>, passes: Passes) -> Report
         r.lazy_flags = lazy::lazy_flags(f);
     }
     if passes.dead_flags {
-        r.dead_flags = flags::dead_flags(f, shape);
+        let observers =
+            if passes.imprecise_faults { flags::Observers::IMPRECISE_FAULTS } else { flags::Observers::PRECISE };
+        r.dead_flags = flags::dead_flags_with(f, shape, observers);
     }
     if passes != Passes::NONE {
         for b in f.blocks.values_mut() {

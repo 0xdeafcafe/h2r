@@ -174,9 +174,19 @@ pub const FEATURE_DIRECT_VIEW: u32 = 4;
 /// (docs/runtime/block-clock-imprecise-faults.md). Bits 8 and 16 are the
 /// contract slices' (docs/runtime/contract-thin-transfers-flat-ram.md).
 pub const FEATURE_BLOCK_CLOCK: u32 = 32;
+/// Module feature (`H2GEN_FEATURE_IMPRECISE_FAULTS`, `H2_PASSES` with
+/// `imprecise-faults`): the IR passes did not keep EFLAGS exact at memory
+/// accesses, so a memory FAULT from the module's handlers has exact EIP and
+/// registers and best-effort EFLAGS. Nothing in the runtime goes on from a
+/// fault; the fault census reports any host that does
+/// (`fault_census`, `continued_imprecise`).
+pub const FEATURE_IMPRECISE_FAULTS: u32 = 64;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 =
-    FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW | FEATURE_BLOCK_CLOCK;
+pub const FEATURES: u32 = FEATURE_ACCOUNTING
+    | FEATURE_DIRECT_CALLS
+    | FEATURE_DIRECT_VIEW
+    | FEATURE_BLOCK_CLOCK
+    | FEATURE_IMPRECISE_FAULTS;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

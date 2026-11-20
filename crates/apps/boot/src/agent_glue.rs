@@ -241,7 +241,7 @@ pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Ru
     let rt = std::sync::Arc::clone(rt);
     agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
         let top = top_param(&v, 20)?;
-        Ok(faults_json(&rt.fault_census().snapshot(), top))
+        Ok(faults_json(&rt.fault_census().snapshot(), rt.module_features(), top))
     });
 }
 
@@ -262,9 +262,11 @@ fn top_param(v: &Value, default: usize) -> std::result::Result<usize, RpcError> 
     }
 }
 
-/// `profile.faults`' answer: the census totals, its verdict, and the `top`
-/// fault PCs by count.
-pub fn faults_json(c: &runtime::fault_census::FaultCounts, top: usize) -> Value {
+/// `profile.faults`' answer: the census totals, its verdict, the module's
+/// clock and fault precision (from its `features`), and the `top` fault PCs
+/// by count.
+pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: usize) -> Value {
+    use runtime::generated::{FEATURE_BLOCK_CLOCK, FEATURE_IMPRECISE_FAULTS};
     let sites: Vec<Value> = c
         .sites
         .iter()
@@ -288,7 +290,10 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, top: usize) -> Value 
         "ended": c.ended,
         "continued": c.continued,
         "continued_generated": c.continued_generated,
+        "continued_imprecise": c.continued_imprecise,
         "precise_exits_needed": c.precise_exits_needed(),
+        "imprecise_faults": features & FEATURE_IMPRECISE_FAULTS != 0,
+        "clock": if features & FEATURE_BLOCK_CLOCK != 0 { "blocks" } else { "accesses" },
         "sites": c.sites.len(),
         "sites_full": c.sites_full,
         "top": sites,
@@ -528,6 +533,8 @@ mod tests {
         let r = call(method::PROFILE_FAULTS, json!({"top": 3}));
         assert_eq!(r["result"]["generated"], 0, "{r}");
         assert_eq!(r["result"]["precise_exits_needed"], false, "{r}");
+        assert_eq!(r["result"]["clock"], "accesses", "{r}");
+        assert_eq!(r["result"]["imprecise_faults"], false, "{r}");
         assert!(r["result"]["top"].is_array(), "{r}");
         let r = call(method::PROFILE_FAULTS, json!({"top": 3, "x": 1}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
