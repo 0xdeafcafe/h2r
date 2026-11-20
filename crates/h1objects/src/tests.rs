@@ -153,6 +153,51 @@ fn weapon_hud_references_distinguish_absent_stale_and_wrong_group() {
 }
 
 #[test]
+fn scaled_weapon_bitmap_keeps_its_anchor_and_each_authored_axis() {
+    use crate::h1hud::{self, Anchor, WeaponEntry, WeaponEntryKind, WeaponState};
+    use tags::defs::{self, Defs, Val};
+    use tags::effects::function::{Function, FunctionType};
+
+    let e = WeaponEntry {
+        wphi: h1map::TagId(1),
+        kind: WeaponEntryKind::Static(WeaponState::TotalAmmo),
+        thresholds: [0; 4],
+        flash: [0; 24],
+        split_flags: 0,
+        frame_period: 0,
+        screen: 0,
+        hidden: false,
+        anchor: Anchor::TopRight,
+        offset: (30, 12),
+        scale: [2.0, 0.25],
+        bitmap: Some(h1map::TagId(9)),
+        sequence: 0,
+        colour: 0xffff_ffff,
+    };
+    let mut hud = h1hud::weapon::Interface::new();
+    let widget = h1hud::weapon_widget(&e, Some(TagId(9)), TagId(10), TagId(11)).unwrap();
+    hud.bitmap(&e, widget).unwrap();
+    let def = Defs::builtin().group(FourCC(*b"nhdt")).unwrap();
+    let r = defs::from_built(def, &hud.build().unwrap()).unwrap();
+    for mode in ["full", "half", "quarter"] {
+        assert_eq!(
+            r.at(&format!("bitmap_widgets[0].offset_{mode}")),
+            Some(&Val::List(vec![Val::Int(-30), Val::Int(12)]))
+        );
+    }
+    let effect = "bitmap_widgets[0].effects[0]";
+    assert_eq!(r.at(&format!("{effect}.scale_flags")), Some(&Val::Flags(1)));
+    for (field, scale) in [("block_10", 2.0), ("block_24", 0.25)] {
+        let Some(Val::Data(bytes)) = r.at(&format!("{effect}.{field}")) else {
+            panic!("missing scale function {field}");
+        };
+        let function = Function::parse(bytes).unwrap();
+        assert_eq!(function.kind, FunctionType::Constant);
+        assert_eq!(function.range, [scale, scale]);
+    }
+}
+
+#[test]
 fn collision_moves_node_bsps_under_region_permutations() {
     // Region "body" has two permutations; node 0 holds a BSP for each,
     // node 1 (no region) none, node 2 one for the first only.

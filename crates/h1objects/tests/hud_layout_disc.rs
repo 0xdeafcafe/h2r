@@ -1056,6 +1056,15 @@ fn every_retail_weapon_hud_element_is_placed() {
                                 "{desc}"
                             );
                         }
+                        if let Kind::Crosshair(kind, flags) = e.kind {
+                            let mut expected = vec![kind as u8, flags as u8];
+                            expected.extend(e.flash);
+                            assert_eq!(
+                                row.at("effects[0].block_4c"),
+                                Some(&Val::Data(expected)),
+                                "{desc} lost its aim or zoom sprite profile"
+                            );
+                        }
                         if matches!(e.kind, Kind::Warning(..)) {
                             let Some(Val::Data(profile)) = row.at("effects[0].block_38") else {
                                 panic!("{desc} has no warning profile");
