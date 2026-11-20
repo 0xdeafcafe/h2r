@@ -46,6 +46,7 @@ mod h1_particle_physics;
 mod h1_flag;
 mod h1_glow;
 mod h1_lightning;
+mod h1_sound_promotion;
 mod h1_cinematics;
 mod h1_script_builtins;
 mod h1_squad_storage;

@@ -88,6 +88,8 @@ fn invented(channels: usize) -> (Sound, Vec<u8>) {
             id: H1TagId(u32::MAX),
         },
         promotion_count: 0,
+        promotion_millis: 0,
+        promotion_name: None,
         pitch_ranges: vec![
             PitchRange {
                 name: "idle".into(),
@@ -656,12 +658,158 @@ fn a_moved_sound_takes_its_gestalt_entries_and_flag_bits() {
 
     // The merged gestalt still builds and reads back.
     let _ = dst.to_block();
+}
 
-    header[snd::PROMOTION] = 0;
-    assert!(matches!(
-        crate::merge_sound(&src, &header, &mut dst, 0, &mut map),
-        Err(Error::Unsupported(_))
-    ));
+fn promotion_entry() -> crate::gestalt::Nested {
+    use crate::gestalt::{Child, Nested};
+
+    let mut bytes = vec![0; 0x1c];
+    bytes[0x10..0x14].fill(0xff);
+    let mut rules = vec![0; 2 * 0x10];
+    // First rule selects the default range, the next rule selects range 1.
+    rules[..2].fill(0xff);
+    rules[2..4].copy_from_slice(&2u16.to_le_bytes());
+    rules[4..8].copy_from_slice(&0.4f32.to_le_bytes());
+    rules[8..12].copy_from_slice(&1000u32.to_le_bytes());
+    rules[12..16].copy_from_slice(&500u32.to_le_bytes());
+    rules[0x10..0x12].copy_from_slice(&1u16.to_le_bytes());
+    Nested {
+        bytes,
+        children: vec![
+            Child {
+                count: 2,
+                bytes: rules,
+            },
+            Child {
+                count: 2,
+                bytes: vec![0; 8],
+            },
+        ],
+    }
+}
+
+#[test]
+fn native_promotion_selects_the_same_samples_after_its_sound_moves() {
+    use crate::convert::snd;
+
+    let (sound, file) = invented(1);
+    let sound = convert_sound(&sound, &file).unwrap();
+    let mut src_set = TagSet::new(CacheType::Multiplayer, "donor", "donor");
+    let mut src = SoundGestalt::default();
+    sound.clone().add_to(&mut src, &mut src_set).unwrap();
+    let mut tag = sound.add_to(&mut src, &mut src_set).unwrap();
+    for (i, chunk) in src.chunks.iter_mut().enumerate() {
+        chunk.pointer = ChunkPointer::Stored(0x8000_0000 + 0x8000 * i as u32);
+    }
+    src.nested[blocks::PROMOTIONS].push(promotion_entry());
+    tag.root.bytes[snd::PROMOTION] = 0;
+
+    let mut dst = SoundGestalt::default();
+    dst.push(
+        blocks::PITCH_RANGES,
+        &element(blocks::PITCH_RANGES, 0),
+        false,
+    );
+    dst.nested[blocks::PROMOTIONS].push(promotion_entry());
+    let out =
+        crate::merge_sound(&src, &tag.root.bytes, &mut dst, 0, &mut Shift(Vec::new())).unwrap();
+    assert_eq!(out[snd::PROMOTION], 1);
+    assert_eq!(
+        dst.nested[blocks::PROMOTIONS][1],
+        src.nested[blocks::PROMOTIONS][0]
+    );
+    let short = |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]) as usize;
+    let selected_chunk = |g: &SoundGestalt, header: &[u8]| {
+        let promotion = &g.nested[blocks::PROMOTIONS][header[snd::PROMOTION] as usize];
+        let relative = short(&promotion.children[0].bytes, 0x10);
+        let range = g.element(
+            blocks::PITCH_RANGES,
+            short(header, snd::FIRST_PITCH_RANGE) + relative,
+        );
+        let perm = g.element(blocks::PERMUTATIONS, short(range, 8));
+        g.chunks[short(perm, 12)].pointer
+    };
+    let ChunkPointer::Stored(source) = selected_chunk(&src, &tag.root.bytes) else {
+        panic!("source chunk has a stored pointer");
+    };
+    assert_eq!(
+        selected_chunk(&dst, &out),
+        ChunkPointer::Stored(source + 0x100)
+    );
+    assert_eq!(short(&tag.root.bytes, snd::FIRST_PITCH_RANGE), 2);
+    assert_eq!(short(&out, snd::FIRST_PITCH_RANGE), 1);
+    assert_eq!(
+        SoundGestalt::from_block(&dst.to_block()).unwrap().nested[blocks::PROMOTIONS],
+        dst.nested[blocks::PROMOTIONS]
+    );
+}
+
+#[test]
+fn native_promotion_rejects_missing_targets_and_unaddressable_entries() {
+    use crate::convert::snd;
+
+    let mut src = SoundGestalt::default();
+    src.nested[blocks::PROMOTIONS].push(promotion_entry());
+    let mut header = vec![0; snd::LEN];
+    header[snd::PITCH_RANGE_COUNT] = 1;
+    let mut dst = SoundGestalt::default();
+    let mut map = Shift(Vec::new());
+    let error = crate::merge_sound(&src, &header, &mut dst, 0, &mut map).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("promotion 0 rule 1 targets pitch range 1 of 1")
+    );
+    assert_eq!(dst, SoundGestalt::default());
+
+    header[snd::PITCH_RANGE_COUNT] = 2;
+    dst.nested[blocks::PROMOTIONS].resize(usize::from(i8::MAX as u8) + 1, promotion_entry());
+    let before = dst.clone();
+    let error = crate::merge_sound(&src, &header, &mut dst, 0, &mut map).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("destination promotion index exceeds signed 8 bits")
+    );
+    assert_eq!(dst, before);
+}
+
+#[test]
+fn a_reused_donor_sound_must_keep_its_promotion() {
+    use crate::convert::snd;
+
+    let (sound, file) = invented(1);
+    let sound = convert_sound(&sound, &file).unwrap();
+    let mut donor = TagSet::new(CacheType::Multiplayer, "donor", "donor");
+    let mut source_gestalt = SoundGestalt::default();
+    let mut tag = sound
+        .clone()
+        .add_to(&mut source_gestalt, &mut donor)
+        .unwrap();
+    source_gestalt.nested[blocks::PROMOTIONS].push(promotion_entry());
+    tag.root.bytes[snd::PROMOTION] = 0;
+    let root = tag.install(&mut donor, "crash").unwrap();
+    source_gestalt.install(&mut donor, "sounds").unwrap();
+    let (bytes, _) = donor.build().unwrap();
+    let mut donor = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let mut dest = TagSet::new(CacheType::Multiplayer, "destination", "destination");
+    install_sounds(&mut dest, vec![("crash".to_owned(), sound)]).unwrap();
+    let mut gestalt = SoundGestalt::from_set(&dest).unwrap();
+    let error = crate::transplant(
+        tags::schema::Schema::builtin(),
+        &mut donor,
+        &source_gestalt,
+        root,
+        &mut dest,
+        &mut gestalt,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("donor: snd! crash"), "{error}");
+    assert!(
+        error.contains("destination has a different promotion"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -699,5 +847,41 @@ fn mouth_descriptors_span_ranges_and_survive_gestalt_reinstallation() {
         assert_eq!(g.element(blocks::PERMUTATIONS, i)[5], i as u8);
         let d = &raw[at + i * 16..][..16];
         assert_eq!((word(d, 0), word(d, 4), word(d, 12)), (offset, len, 0));
+    }
+}
+
+#[test]
+fn cyclic_promotion_targets_resolve_to_the_new_sound_datums() {
+    use tags::sound::h1_promotion::*;
+
+    let (mut snd, file) = invented(1);
+    snd.promotion.id = H1TagId(0xe111_0002);
+    snd.promotion_count = 2;
+    snd.promotion_millis = 750;
+    snd.promotion_name = Some("large".to_owned());
+    let small = convert_sound(&snd, &file).unwrap();
+    snd.promotion.id = H1TagId(0xe112_0003);
+    snd.promotion_name = Some("small".to_owned());
+    let large = convert_sound(&snd, &file).unwrap();
+    let mut set = TagSet::new(CacheType::Multiplayer, "synthetic", "synthetic");
+    let ids = install_sounds(
+        &mut set,
+        vec![("small".to_owned(), small), ("large".to_owned(), large)],
+    )
+    .unwrap();
+    let (bytes, _) = set.build().unwrap();
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        let bytes = map.read_tag_bytes(*id).unwrap();
+        assert!(present(&bytes));
+        let at = |offset: u32| {
+            let offset = offset as usize;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        assert_eq!(at(TARGET), ids[1 - i].0);
+        assert_eq!(
+            (at(COUNT), at(MILLIS), at(CREDIT), at(LAST_TIME)),
+            (2, 750, 0, 0)
+        );
     }
 }

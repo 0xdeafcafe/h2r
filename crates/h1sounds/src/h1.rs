@@ -154,6 +154,10 @@ pub struct Sound {
     pub promotion: TagRef,
     /// `+0x80`.
     pub promotion_count: u16,
+    /// `+0x84`: milliseconds credited to the promotion counter per request.
+    pub promotion_millis: u32,
+    /// Path resolved from the authored datum by `read`.
+    pub promotion_name: Option<String>,
     /// `+0x98`.
     pub pitch_ranges: Vec<PitchRange>,
 }
@@ -183,7 +187,18 @@ impl Sound {
             )));
         }
         let h = map.read(tag.data_address, HEADER_LEN)?;
-        Self::parse(h, |block, len| Ok(map.block(block, len)?))
+        let mut sound = Self::parse(h, |block, len| Ok(map.block(block, len)?))?;
+        if let Some(id) = sound.promotion_id() {
+            let target = map.tag(id)?;
+            if sound.promotion.group != SND || target.group != SND {
+                return Err(Error::Invalid(format!(
+                    "{}: promotion {id} is not a snd!",
+                    tag.name
+                )));
+            }
+            sound.promotion_name = Some(target.name.clone());
+        }
+        Ok(sound)
     }
 
     /// Parses a header whose blocks `block(b, elem_len)` resolves.
@@ -249,6 +264,8 @@ impl Sound {
             compression: Compression::from_raw(u16_at(h, 0x6e)),
             promotion: TagRef::read(h, 0x70).expect("in the header"),
             promotion_count: u16_at(h, 0x80),
+            promotion_millis: u32_at(h, 0x84),
+            promotion_name: None,
             pitch_ranges,
         })
     }

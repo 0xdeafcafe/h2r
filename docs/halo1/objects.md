@@ -307,6 +307,24 @@ carried: the state sequence, the creation physics and its constants (no
 proven meaning), the system states, the rotation rate. The particles
 start still at the part's location.
 
+### Light fixture placements (Built)
+
+The Halo 1 XBE's fixture descriptor at `0x1fca28` selects scenario
+`+0x2c4` with stride `0x58`. Its constructor at `0x118e00` copies
+placement RGB at `+0x30` and intensity at `+0x3c` into the live fixture.
+The converter retains each fixture as a machine with its original
+marker attachments. An authored tuple selects a rebuilt light variant
+with that RGB at both colour endpoints and that intensity at both
+brightness endpoints. Halo 2's `0xc0dc9` path reads those fields. A zero
+tuple uses the fixture's own attached light.
+
+There are 886 fixture placements across the retail maps. b30 has all 42
+authored RGB and intensity tuples. Carousel, Damnation and Rat Race add
+46 multiplayer placements. Both multiplayer asset variants install their
+fixture machines and palette into the fresh scenario. The ignored
+`both_sandboxes_rebuild_every_retail_map` check follows each placement and
+its authored light values through the output.
+
 ### Object attachments
 
 **Built.** Every converted object kind uses Halo 1's `obje +0x140`

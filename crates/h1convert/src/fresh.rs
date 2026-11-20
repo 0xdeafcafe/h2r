@@ -124,6 +124,9 @@ impl Prepared {
         if let Some(scenery) = &self.scenery {
             put_scenery(&mut fresh, scenery)?;
         }
+        if !self.fixtures.placements.is_empty() {
+            put_fixtures(&mut fresh, &self.fixtures)?;
+        }
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
         // So is each owner's Halo 2 HUD, for `boot::hud_swap` (docs/halo1/hud.md).
@@ -356,8 +359,12 @@ pub fn unpin_all<R: Read + Seek>(
             gestalt = Some((t.id, g));
             continue;
         }
+        let carries_promotion = t.group == FourCC(*b"snd!")
+            && matches!(&t.payload, TagPayload::Built(block)
+                if tags::sound::h1_promotion::present(&block.bytes));
         if built_too
             && matches!(t.payload, TagPayload::Built(_))
+            && !carries_promotion
             && t.id != pinned.scenario
             && ![*b"sbsp", *b"ltmp", *b"ugh!"].contains(&t.group.0)
         {
@@ -833,6 +840,28 @@ pub fn put_scenery(set: &mut TagSet, scenery: &crate::convert::halo1::Scenery) -
             scenery.placements_block(),
         );
     }
+    Ok(())
+}
+
+fn put_fixtures(set: &mut TagSet, fixtures: &crate::convert::halo1::Fixtures) -> Result<()> {
+    use crate::convert::halo1::{MACHINE_PALETTE, MACHINE_PLACEMENTS};
+
+    let scenario = set.scenario;
+    let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) else {
+        return Err(Error::Invalid("the fresh scenario is not a built tree"));
+    };
+    root.fixups
+        .retain(|f| ![MACHINE_PALETTE, MACHINE_PLACEMENTS].contains(&f.offset));
+    root.block(
+        MACHINE_PALETTE,
+        fixtures.palette.len() as u32,
+        fixtures.palette_block(),
+    );
+    root.block(
+        MACHINE_PLACEMENTS,
+        fixtures.placements.len() as u32,
+        map::build::Block::new(fixtures.placements.concat()),
+    );
     Ok(())
 }
 

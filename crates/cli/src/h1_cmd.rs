@@ -1090,14 +1090,13 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
 }
 
 /// The campaign conversion's layers: everything, scripts when the Halo 1
-/// disc's XBE gave them, and up to 1000 sounds.
+/// disc's XBE gave them, and all the sounds they reference.
 pub(crate) fn campaign_options<'a>(
     scripts: Option<&'a h1campaign::Scripting>,
     donors: Option<&'a h1campaign::donor::Donors>,
 ) -> h1campaign::Options<'a> {
     h1campaign::Options {
         scripts,
-        sounds: usize::MAX,
         donors,
         ..Default::default()
     }

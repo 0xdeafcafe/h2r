@@ -51,6 +51,19 @@ impl Halo1Objects for Objects<'_> {
         Ok((id.0 & 0xffff) as usize)
     }
 
+    fn fixture(
+        &mut self,
+        tag: &h1map::Tag,
+        lighting: Option<h1convert::fixture::Lighting>,
+    ) -> Result<usize, String> {
+        let id = self
+            .conv
+            .fixture(tag, lighting)
+            .map_err(|e| e.to_string())?;
+        crate::convert::local_index(id)
+            .ok_or_else(|| format!("{}: fixture is not rebuilt", tag.name))
+    }
+
     fn first_person_arms(&mut self, id: h1map::TagId) -> Result<usize, String> {
         let got = self.conv.first_person_arms(id).map_err(|e| e.to_string())?;
         if got.0 & 0xffff_0000 != local(0).0 {

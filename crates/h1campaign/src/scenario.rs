@@ -168,8 +168,8 @@ pub mod h1 {
     pub const MACHINE_PALETTE: (usize, usize) = (0x2a0, 0x30);
     pub const CONTROLS: (usize, usize) = (0x2ac, 0x40);
     pub const CONTROL_PALETTE: (usize, usize) = (0x2b8, 0x30);
-    pub const LIGHT_FIXTURES: (usize, usize) = (0x2c4, 0x58);
-    pub const LIGHT_FIXTURE_PALETTE: (usize, usize) = (0x2d0, 0x30);
+    pub const LIGHT_FIXTURES: (usize, usize) = h1convert::fixture::PLACEMENTS;
+    pub const LIGHT_FIXTURE_PALETTE: (usize, usize) = h1convert::fixture::PALETTE;
     /// A device placement after the object fields: `i16` power group and
     /// position group (indices into the device groups, -1 none), `u32`
     /// device flags, then for machines and controls their own `u32` flags.
@@ -411,10 +411,8 @@ pub struct ScriptReport {
     pub resolved_by_level: usize,
     /// A few unresolved tokens per type.
     pub samples: Vec<(String, String)>,
-    /// Sounds the scripts name, converted (`h1sounds`), and those left out
-    /// by the caller's explicit count limit.
+    /// Distinct source sounds installed for the scripts.
     pub sounds: usize,
-    pub sounds_dropped: usize,
     pub missing_calls: usize,
     /// Missing builtin calls and external globals, with their authored definition.
     pub missing_builtins: Vec<h1scripts::compile::Unresolved>,
@@ -530,8 +528,8 @@ impl std::fmt::Display for ScenarioReport {
             }
             writeln!(
                 f,
-                "    script sounds: {} converted, {} left out",
-                s.sounds, s.sounds_dropped
+                "    script sounds: {} converted",
+                s.sounds
             )?;
             writeln!(
                 f,
@@ -1324,7 +1322,6 @@ pub fn write(
                 } else {
                     Default::default()
                 },
-                opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
                 opts.cutscene_data
@@ -1485,6 +1482,34 @@ fn place_objects(
             pal.push(got);
         }
         palettes.push(Some(pal));
+    }
+    let mut fixture_variants = HashMap::new();
+    if devices == crate::Devices::All {
+        let palette = h1_block(h1, h1::LIGHT_FIXTURE_PALETTE)?;
+        for (index, row) in h1_block(h1, h1::LIGHT_FIXTURES)?.into_iter().enumerate() {
+            let slot = i16_at(row, 0) as usize;
+            let id = palette
+                .get(slot)
+                .and_then(|row| h1map::TagRef::read(row, 0))
+                .filter(|r| !r.id.is_none())
+                .ok_or_else(|| {
+                    h1convert::Error::no_rebuild(
+                        &h1.header().name,
+                        format!("light fixture {index}"),
+                        format!("invalid palette slot {slot}"),
+                    )
+                })?
+                .id;
+            let tag = h1.tag(id)?;
+            let lighting = h1convert::fixture::Lighting::read(row)
+                .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+            if let Some(lighting) = lighting {
+                let id = conv
+                    .fixture(tag, Some(lighting))
+                    .map_err(|e| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+                fixture_variants.insert(index, id);
+            }
+        }
     }
     // Starting profiles' weapons, through the same converter.
     let profiles = crate::profiles::read(h1)?;
@@ -1708,12 +1733,25 @@ fn place_objects(
         let converted = targets.iter().flatten().count();
         let src = h1_block(h1, k.h1)?;
         let mut n = 0;
+        let mut variant_palette = HashMap::new();
         for (i, e) in src.iter().enumerate() {
             let p = i16_at(e, 0);
             let entry =
                 h1convert::placements::placement_entry(&h1.header().name, k.label, i, p, &targets)?;
             let Some((ty, palette)) = entry.copied().flatten() else {
                 continue;
+            };
+            let palette = if k.device == Device::Fixture
+                && let Some(id) = fixture_variants.get(&i)
+            {
+                let dest = placement_block(&mut blocks, ty);
+                *variant_palette.entry(*id).or_insert_with(|| {
+                    let slot = dest.palette.len();
+                    dest.palette.push(palette_entry(Some(real(*id))));
+                    slot
+                })
+            } else {
+                palette
             };
             let def = tags::object::OBJECT_TYPES[usize::from(ty)];
             let (_, _, stride) = def.placement.expect("placeable");
@@ -1962,7 +2000,6 @@ fn install_scripts(
     ai_control: &h1ai::control::Control,
     conversations: &[h1ai::conversations::Conversation],
     speaker_scopes: &h1ai::conversations::SpeakerScopes,
-    max_sounds: usize,
     level_data: bool,
     seat_table: bool,
     cutscene_graphs: bool,
@@ -2039,7 +2076,7 @@ fn install_scripts(
     {
         crate::cutscenes::install_video(h1, set, &mut c)?;
     }
-    let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
+    let sounds = install_named_sounds(h1, set, &c)?;
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).
     let graphs = if cutscene_graphs {
@@ -2113,6 +2150,7 @@ fn install_scripts(
             "hud_message" => level_text.message_index(&h.token),
             "hud_corner" => h1scripts::hud::corner(&h.token),
             "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
+            "sound" if h.token.eq_ignore_ascii_case("none") => Some(TagId::NULL.0),
             "sound" => sounds.get(&h.token.to_ascii_lowercase()).map(|id| id.0),
             _ if h.h1_type == "command_voice_tag" => tags_by_name
                 .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
@@ -2224,6 +2262,8 @@ fn install_scripts(
                 missing_character = Some(name.to_owned());
             }
             id
+        } else if source == FourCC(*b"snd!") {
+            sounds.get(&name.to_ascii_lowercase()).copied()
         } else {
             let id = set.converted(dest, name)
                 .or_else(|| aliases.get(source, name));
@@ -2268,7 +2308,6 @@ fn install_scripts(
         resolved_by_level,
         samples,
         sounds: sounds.len(),
-        sounds_dropped,
         missing_calls: c.missing.len(),
         missing_builtins: c.missing,
         missing_globals: c.missing_globals,
@@ -2302,55 +2341,121 @@ fn reference_group(group: h1map::Group) -> FourCC {
     })
 }
 
-/// Converts the `snd!` tags the scripts name (sound hooks and script
-/// references), at most `max` of them, and installs them under their
-/// Halo 1 names with the level's other sounds.
+/// Resolves every non-null sound atom and explicit sound reference before
+/// installing the script. The gestalt and map writers check their format limits.
 fn install_named_sounds(
     h1: &H1Map,
     set: &mut TagSet,
     c: &h1scripts::compile::Compiled,
-    max: usize,
-) -> Result<(HashMap<String, TagId>, usize)> {
-    let snd = h1map::Group::new(b"snd!");
-    let mut names: Vec<String> = Vec::new();
+) -> Result<HashMap<String, TagId>> {
+    let snd = h1sounds::h1::SND;
     let wanted = c
         .hooks
         .iter()
         .filter(|h| h.type_name == "sound")
-        .map(|h| h.token.clone())
+        .map(|h| h.token.as_str())
         .chain(
             c.references
                 .iter()
                 .filter(|(g, _)| *g == snd)
-                .map(|(_, n)| n.clone()),
+                .map(|(_, n)| n.as_str()),
         );
-    for n in wanted {
-        if let Some(tag) = h1.find(snd, &n)
-            && !names.contains(&tag.name)
-        {
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in wanted.filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("none")) {
+        let mut matches = h1
+            .tags()
+            .iter()
+            .filter(|tag| tag.group == snd && tag.name.eq_ignore_ascii_case(name));
+        let error = |why| h1convert::Error::no_rebuild(&h1.header().name, name, why);
+        let tag = matches
+            .next()
+            .ok_or_else(|| error("script sound is missing"))?;
+        if matches.next().is_some() {
+            return Err(error("script sound is ambiguous").into());
+        }
+        if seen.insert(tag.id) {
             names.push(tag.name.clone());
         }
     }
-    let all = names.len();
-    let take = all.min(max);
-    let mut ids = HashMap::new();
-    let mut needed = Vec::new();
-    for name in names.into_iter().take(take) {
-        if let Some(id) = set.converted(FourCC(*b"snd!"), &name)
-        {
-            ids.insert(name.to_ascii_lowercase(), id);
-        } else {
-            needed.push(name);
+    let installed = h1sounds::convert::install_source_sounds(h1, set, names)
+        .map_err(|e| invalid(format!("{}: script sounds: {e}", h1.header().name)))?;
+    Ok(installed
+        .into_iter()
+        .map(|(name, id)| (name.to_ascii_lowercase(), id))
+        .collect())
+}
+
+#[cfg(test)]
+mod script_sound_tests {
+    use super::*;
+    use h1map::testing::{self, Spec};
+    use h1scripts::compile::{Compiled, Hook};
+
+    fn source(sound_names: &[&'static str]) -> H1Map {
+        let mut sound = vec![0; h1sounds::h1::HEADER_LEN];
+        testing::put(&mut sound, 0x7c, u32::MAX);
+        let specs = sound_names.iter().map(|&name| Spec {
+            group: b"snd!",
+            parent: None,
+            name,
+            data: Some(sound.clone()),
+        });
+        H1Map::from_decompressed(
+            testing::build_with_extra_tags(&testing::Opts::default(), specs.collect()).file,
+        )
+        .unwrap()
+    }
+
+    fn atom(token: &str) -> Hook {
+        Hook {
+            slot: 0,
+            h2_type: hs::h1_conversation::SOUND,
+            type_name: "sound".to_owned(),
+            h1_type: "sound".to_owned(),
+            token: token.to_owned(),
         }
     }
-    let installed = h1sounds::convert::install_source_sounds(h1, set, needed)
-        .map_err(|e| invalid(format!("script sounds: {e}")))?;
-    ids.extend(
-        installed
-            .into_iter()
-            .map(|(n, id)| (n.to_ascii_lowercase(), id)),
-    );
-    Ok((ids, all - take))
+
+    #[test]
+    fn atoms_and_explicit_references_install_in_the_same_gestalt() {
+        let h1 = source(&["voice", "door", "alarm"]);
+        let mut set = TagSet::new(map::CacheType::Campaign, "tiny", "tiny");
+        let c = Compiled {
+            hooks: vec![atom("VOICE"), atom("door"), atom("none")],
+            references: vec![
+                (h1sounds::h1::SND, "alarm".to_owned()),
+                (h1sounds::h1::SND, "voice".to_owned()),
+            ],
+            ..Default::default()
+        };
+        let installed = install_named_sounds(&h1, &mut set, &c).unwrap();
+        assert_eq!(installed.len(), 3);
+        for name in ["voice", "door", "alarm"] {
+            assert_eq!(
+                installed.get(name).copied(),
+                set.converted(FourCC(*b"snd!"), name),
+                "{name}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_sound_name_must_resolve_to_exactly_one_source() {
+        for (names, reason) in [(&[][..], "missing"), (&["voice", "Voice"][..], "ambiguous")] {
+            let h1 = source(names);
+            let mut set = TagSet::new(map::CacheType::Campaign, "tiny", "tiny");
+            let c = Compiled {
+                hooks: vec![atom("voice")],
+                ..Default::default()
+            };
+            let error = install_named_sounds(&h1, &mut set, &c)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(h1.header().name.as_str()), "{error}");
+            assert!(error.contains("voice") && error.contains(reason), "{error}");
+        }
+    }
 }
 
 /// The scenario's simulation table (`+0x3d8`, a datum each): the object,

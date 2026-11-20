@@ -29,7 +29,7 @@
 //! the variant leaves the map's default (E `0x0015a4d0`, `0x0015a5b0`).
 
 use std::collections::HashSet;
-use std::io::{Read, Seek};
+use std::io::{Cursor, Read, Seek};
 
 use h1map::H1Map;
 use map::build::{Block, TagPayload, TagSet};
@@ -50,6 +50,13 @@ pub trait Halo1Objects {
     /// among the tags [`ObjectTags::install`] adds. An error says why it
     /// can't be converted.
     fn object(&mut self, group: [u8; 4], name: &str) -> std::result::Result<usize, String>;
+
+    /// A light fixture machine with any authored placement lighting.
+    fn fixture(
+        &mut self,
+        tag: &h1map::Tag,
+        lighting: Option<crate::fixture::Lighting>,
+    ) -> std::result::Result<usize, String>;
 
     /// The converted render model for Halo 1's first-person arms `id`
     /// (its globals' first-person interface), converting it the first
@@ -469,6 +476,7 @@ pub fn prepare_halo1<R: Read + Seek>(
                 .map_err(|e| Error::no_rebuild(&h1.header().name, player_name, e))?,
     ));
     let mut scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
+    p.fixtures = plan_fixtures(h1, objects, first, scenery.placements.len() as u32)?;
     merge_scenery_collision(objects, &mut p, &mut scenery, &mut applied.unresolved)?;
     // The player's first-person arms: Halo 1's, which Halo 1's
     // first-person graphs name node for node (the engine binds them by
@@ -941,6 +949,114 @@ pub fn scenery_placement(h1: &[u8], palette: u16, unique: u32) -> Vec<u8> {
     b
 }
 
+pub(crate) const MACHINE_PLACEMENTS: u32 = 0xa8;
+pub(crate) const MACHINE_PALETTE: u32 = 0xb0;
+const MACHINE_PLACEMENT: usize = 0x48;
+const MACHINE_PALETTE_ENTRY: usize = 0x28;
+
+#[derive(Default)]
+pub(crate) struct Fixtures {
+    pub palette: Vec<TagId>,
+    pub placements: Vec<Vec<u8>>,
+}
+
+impl Fixtures {
+    pub fn palette_block(&self) -> Block {
+        let mut block = Block::zeroed(self.palette.len() * MACHINE_PALETTE_ENTRY);
+        for (i, &id) in self.palette.iter().enumerate() {
+            block.tag_ref((i * MACHINE_PALETTE_ENTRY) as u32, id);
+        }
+        block
+    }
+
+    pub fn patch_pinned(&self, mut map: Map<Cursor<Vec<u8>>>) -> Result<Map<Cursor<Vec<u8>>>> {
+        let address = map
+            .scenario()
+            .and_then(|t| t.location)
+            .ok_or(Error::Invalid("the pinned scenario has no payload"))?
+            .address;
+        let mut palette = Block::zeroed(self.palette.len() * MACHINE_PALETTE_ENTRY);
+        for (i, id) in self.palette.iter().enumerate() {
+            let at = i * MACHINE_PALETTE_ENTRY;
+            palette.put_u32(at, FourCC(*b"mach").as_u32());
+            palette.put_u32(at + 4, id.0);
+        }
+        let mut editor = map.edit();
+        for (field, count, bytes) in [
+            (MACHINE_PALETTE, self.palette.len(), palette.bytes),
+            (
+                MACHINE_PLACEMENTS,
+                self.placements.len(),
+                self.placements.concat(),
+            ),
+        ] {
+            let offset = editor.append_metadata(&bytes, 16)?;
+            let mut descriptor = Block::zeroed(8);
+            descriptor.put_u32(0, count as u32);
+            descriptor.put_u32(4, offset);
+            editor.patch_metadata(address + field, &descriptor.bytes)?;
+        }
+        let mut out = Cursor::new(Vec::new());
+        editor.write_to(&mut out)?;
+        Ok(Map::from_reader(Cursor::new(out.into_inner()))?)
+    }
+}
+
+fn plan_fixtures(
+    h1: &H1Map,
+    objects: &mut dyn Halo1Objects,
+    first: usize,
+    first_unique: u32,
+) -> Result<Fixtures> {
+    use crate::fixture::{Lighting, PALETTE, PLACEMENTS};
+
+    let scnr = h1.tag_data(h1.scenario())?;
+    let space = h1.tag_space();
+    let palette = space.block_at(scnr, PALETTE.0, PALETTE.1)?;
+    let mut out = Fixtures::default();
+    for (index, row) in space
+        .block_at(scnr, PLACEMENTS.0, PLACEMENTS.1)?
+        .into_iter()
+        .enumerate()
+    {
+        let slot = u16::from_le_bytes([row[0], row[1]]) as usize;
+        let failure = |reason: &str| {
+            Error::no_rebuild(&h1.header().name, format!("light fixture {index}"), reason)
+        };
+        let source = palette
+            .get(slot)
+            .and_then(|row| h1map::TagRef::read(row, 0))
+            .filter(|r| !r.id.is_none())
+            .ok_or_else(|| failure("placement has no fixture palette entry"))?;
+        let tag = h1.tag(source.id)?;
+        if row[2..4] != [0xff; 2] || row[0x28..0x2c] != [0xff; 4] {
+            return Err(failure("named or grouped multiplayer light fixture"));
+        }
+        let lighting =
+            Lighting::read(row).map_err(|e| Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+        let variant = objects
+            .fixture(tag, lighting)
+            .map_err(|e| Error::no_rebuild(&h1.header().name, &tag.name, e))?;
+        let id = added_datum(first + variant);
+        let slot = out
+            .palette
+            .iter()
+            .position(|&existing| existing == id)
+            .unwrap_or_else(|| {
+                let slot = out.palette.len();
+                out.palette.push(id);
+                slot
+            });
+        let unique = first_unique + index as u32;
+        let mut placement = scenery_placement(row, slot as u16, unique);
+        placement.truncate(MACHINE_PLACEMENT);
+        placement[0x2e] = 7;
+        placement[0x34..0x3c].copy_from_slice(&row[0x28..0x30]);
+        out.placements.push(placement);
+    }
+    Ok(out)
+}
+
 /// Converts Halo 1's scenery palette through `objects` (whose tags are
 /// added from slot `first`) and plans its placements. Only H1's two
 /// no-object sentinels count as empty placements.
@@ -1106,6 +1222,7 @@ pub fn prepare_halo2<R: Read + Seek>(
     let mut p = prepare_plan(h1, source_sha256, base, plan)?;
     let first = base.index_slots() as usize + p.applied.collections.len();
     let mut scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    p.fixtures = plan_fixtures(h1, objects, first, scenery.placements.len() as u32)?;
     let mut unresolved = std::mem::take(&mut p.applied.unresolved);
     merge_scenery_collision(objects, &mut p, &mut scenery, &mut unresolved)?;
     p.applied.unresolved = unresolved;

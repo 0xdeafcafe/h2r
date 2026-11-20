@@ -87,9 +87,10 @@ pub struct Brought {
     pub donor: String,
     /// Tags copied (the rest of the tree the base had).
     pub tags: usize,
-    /// `snd!` tags merged into the gestalt, and of those the promotions
-    /// and extra infos cut.
-    pub sounds: (usize, usize, usize),
+    /// `snd!` tags merged into the gestalt.
+    pub sounds: usize,
+    /// Moved sounds whose native promotion rules were carried over.
+    pub promotions: usize,
     /// Local raw resources copied (tree and sound chunks), and bytes.
     pub raw: (usize, u64),
 }
@@ -98,13 +99,12 @@ impl std::fmt::Display for Brought {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} from {}: {} tags, {} sounds ({} promotions, {} extra infos cut), {} raw ({:#x} bytes)",
+            "{} from {}: {} tags, {} sounds ({} with promotions), {} raw ({:#x} bytes)",
             self.root,
             self.donor,
             self.tags,
-            self.sounds.0,
-            self.sounds.1,
-            self.sounds.2,
+            self.sounds,
+            self.promotions,
             self.raw.0,
             self.raw.1
         )
@@ -191,7 +191,8 @@ pub fn bring(
                         root: format!("{group} {name}"),
                         donor: donor.clone(),
                         tags: m.tree.added.len(),
-                        sounds: (m.sounds, m.promotions_cut, m.extra_infos_cut),
+                        sounds: m.sounds,
+                        promotions: m.promotions,
                         raw: (m.tree.raw.0 + m.raw.0, m.tree.raw.1 + m.raw.1),
                     });
                     why.clear();

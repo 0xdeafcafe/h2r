@@ -429,10 +429,18 @@ fn converted_sounds_read_back_sample_identical() {
             .collect();
         let mut set = TagSet::from_map(&mut bm).unwrap();
         h1sounds::convert::make_index_room(&mut set);
-        let converted = picked
-            .iter()
-            .map(|(n, s)| (format!("halo1\\{n}"), convert_sound(s, m.bytes()).unwrap()))
-            .collect();
+        let mut converted = h1sounds::convert::read_source_sounds(
+            &m,
+            picked.iter().map(|(name, _)| name.clone()),
+            |_| false,
+        )
+        .unwrap();
+        for (name, sound) in &mut converted {
+            *name = format!("halo1\\{name}");
+            if let Some(target) = sound.promotion.as_mut().and_then(|p| p.target.as_mut()) {
+                *target = format!("halo1\\{target}");
+            }
+        }
         let ids = install_sounds(&mut set, converted).unwrap();
         let (out, _) = set.build().unwrap();
         let mut built = Map::from_reader(Cursor::new(&out[..])).unwrap();
@@ -515,8 +523,8 @@ impl h1sounds::MergeMap for Same {
 /// gestalt, names the same entries there as it did in its own: playback,
 /// scale, each range's name, parameters and runtime flag bits, each
 /// permutation's bytes and chunks, custom playback and extra info. The
-/// merged gestalt still builds. Sounds with promotions are refused and
-/// counted.
+/// merged gestalt still builds, with the sound-relative promotion rules
+/// and their timer blocks carried over.
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC)"]
 fn every_retail_sound_merges() {
@@ -542,14 +550,9 @@ fn every_retail_sound_merges() {
         let mut dst = SoundGestalt::default();
         for id in sounds {
             let h = m.read_tag_bytes(id).unwrap();
-            let out = match h1sounds::merge_sound(&src, &h, &mut dst, owner.0, &mut Same) {
-                Ok(o) => o,
-                Err(h1sounds::Error::Unsupported(_)) if h[snd::PROMOTION] != 0xff => {
-                    promoted += 1;
-                    continue;
-                }
-                Err(e) => panic!("{stem} {id:?}: {e}"),
-            };
+            let out = h1sounds::merge_sound(&src, &h, &mut dst, owner.0, &mut Same)
+                .unwrap_or_else(|e| panic!("{stem} {id:?}: {e}"));
+            promoted += usize::from(out[snd::PROMOTION] != u8::MAX);
             merged += 1;
             assert_eq!(out[snd::MAX_PLAY_TIME..], h[snd::MAX_PLAY_TIME..snd::LEN]);
             assert_eq!(
@@ -602,8 +605,12 @@ fn every_retail_sound_merges() {
                     );
                 }
             }
-            for (i, at) in [(blocks::CUSTOM_PLAYBACKS, snd::CUSTOM_PLAYBACK)] {
-                if h[at] != 0xff {
+            for (i, at) in [
+                (blocks::CUSTOM_PLAYBACKS, snd::CUSTOM_PLAYBACK),
+                (blocks::PROMOTIONS, snd::PROMOTION),
+            ] {
+                assert_eq!(h[at] == u8::MAX, out[at] == u8::MAX);
+                if h[at] != u8::MAX {
                     assert_eq!(
                         src.nested[i][usize::from(h[at])],
                         dst.nested[i][usize::from(out[at])]
@@ -623,8 +630,7 @@ fn every_retail_sound_merges() {
             (0..11).map(|i| dst.count(i)).collect::<Vec<_>>()
         );
     }
-    println!("{merged} sounds merged, {promoted} with promotions refused");
-    assert!(merged > 0);
+    assert_eq!((merged, promoted), (65_309, 231));
 }
 
 /// A character's whole tree moved from one retail map onto another
@@ -663,7 +669,7 @@ fn a_transplanted_tree_takes_its_sounds() {
     let raw = |bytes: &[u8], p: u32, size: u32| -> Option<Vec<u8>> {
         (p >> 30 == 0).then(|| bytes[p as usize..][..size as usize].to_vec())
     };
-    let (mut sounds, mut chunks) = (0, 0);
+    let (mut sounds, mut chunks, mut promotions) = (0, 0, 0);
     for from in &moved.tree.added {
         if src.tag(*from).unwrap().group != FourCC(*b"snd!") {
             continue;
@@ -672,6 +678,16 @@ fn a_transplanted_tree_takes_its_sounds() {
         let h = src.read_tag_bytes(*from).unwrap();
         let o = dst.read_tag_bytes(to).unwrap();
         sounds += 1;
+        assert_eq!(h[snd::PROMOTION] == u8::MAX, o[snd::PROMOTION] == u8::MAX);
+        if h[snd::PROMOTION] != u8::MAX {
+            promotions += 1;
+            assert_eq!(
+                src_g.nested[blocks::PROMOTIONS][usize::from(h[snd::PROMOTION])],
+                dst_g.nested[blocks::PROMOTIONS][usize::from(o[snd::PROMOTION])],
+                "{}",
+                src.tag(*from).unwrap().name.as_deref().unwrap(),
+            );
+        }
         assert_eq!(
             src_g.element(blocks::PLAYBACKS, u16_at(&h, snd::PLAYBACK)),
             dst_g.element(blocks::PLAYBACKS, u16_at(&o, snd::PLAYBACK))
@@ -718,13 +734,12 @@ fn a_transplanted_tree_takes_its_sounds() {
         }
     }
     println!(
-        "{name}: {} tags, {sounds} sounds, {chunks} chunks; {} promotions and {} extra infos cut; {:?} raw copied",
+        "{name}: {} tags, {sounds} sounds, {chunks} chunks, {promotions} promotions, {:?} raw copied",
         moved.tree.added.len(),
-        moved.promotions_cut,
-        moved.extra_infos_cut,
         moved.raw
     );
-    assert_eq!(sounds, moved.sounds);
+    assert_eq!((sounds, promotions), (moved.sounds, moved.promotions));
+    assert_eq!(promotions, 1);
     assert!(sounds > 0 && chunks > 0);
 }
 
@@ -882,4 +897,69 @@ fn a10_dialogue_mouth_curves_reach_the_retail_resource_layout() {
         }
     }
     assert_eq!(count, 4659);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn every_retail_halo1_promotion_round_trips() {
+    use tags::sound::h1_promotion::*;
+
+    let word = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+
+    let mut iso = h1_disc();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let (mut maps, mut redirects, mut rate_limits) = (0, 0, 0);
+    for entry in &disc.maps {
+        let source = H1Map::from_bytes(&iso.read(entry).unwrap()).unwrap();
+        if !matches!(
+            source.header().cache_type,
+            h1map::CacheType::Campaign | h1map::CacheType::Multiplayer
+        ) {
+            continue;
+        }
+        maps += 1;
+        let level = &source.header().name;
+        let rules: Vec<_> = source
+            .tags()
+            .iter()
+            .filter(|tag| tag.group == SND)
+            .filter_map(|tag| {
+                let bytes = source.tag_data(tag).unwrap();
+                let target = h1map::TagId(word(bytes, 0x7c));
+                let count = u16::from_le_bytes([bytes[0x80], bytes[0x81]]);
+                (count != 0 || !target.is_none()).then_some((tag, count, word(bytes, 0x84), target))
+            })
+            .collect();
+        let mut set = TagSet::new(map::CacheType::Multiplayer, level, level);
+        let ids = h1sounds::convert::install_source_sounds(
+            &source,
+            &mut set,
+            rules.iter().map(|(tag, _, _, _)| tag.name.clone()),
+        )
+        .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let (bytes, _) = set.build().unwrap();
+        let mut converted = Map::from_reader(Cursor::new(bytes)).unwrap();
+        let gestalt = tags::sound::Gestalt::read(&mut converted).unwrap();
+        for (tag, count, millis, target) in rules {
+            let id = ids[&tag.name];
+            let bytes = converted.read_tag_bytes(id).unwrap();
+            assert!(present(&bytes), "{level}: {} lost its rule", tag.name);
+            assert_eq!(word(&bytes, COUNT as usize), count as u32);
+            assert_eq!(word(&bytes, MILLIS as usize), millis);
+            let target_out = TagId(word(&bytes, TARGET as usize));
+            if target.is_none() {
+                rate_limits += 1;
+                assert_eq!(target_out, TagId::NULL);
+            } else {
+                redirects += 1;
+                let source_target = source.tag(target).unwrap();
+                let rebuilt = converted.tag(target_out).unwrap();
+                assert_eq!(rebuilt.group, FourCC(*b"snd!"));
+                assert_eq!(rebuilt.name.as_ref(), Some(&source_target.name));
+                let header = tags::sound::read_header(&mut converted, target_out).unwrap();
+                assert!(!gestalt.resolve(&header).unwrap().ranges.is_empty());
+            }
+        }
+    }
+    assert_eq!((maps, redirects, rate_limits), (23, 253, 77));
 }

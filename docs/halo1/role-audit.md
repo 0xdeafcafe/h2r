@@ -94,9 +94,9 @@ integration run. There is no new pass count or play result yet.
   H2-specific. Halo 1 implements camouflage through its globals.
 - The optional Halo 2 side of the paired HUD, HUD drawing shaders,
   particle and material shader templates, default texture inputs, the
-  scope effect's screen vertex shader and the player emblem are native
-  rendering dependencies. The primary HUD and source bitmap slots use
-  converted Halo 1 tags.
+  scope effect's screen vertex shader and the player emblem's draw program
+  and atlas are native rendering dependencies. The primary HUD and source
+  bitmap slots use converted Halo 1 tags.
 
 ## Models that used the marine head shader
 
@@ -357,6 +357,34 @@ The accompanying TSV has 35,510 rows. Each gives the map, group, source path, pa
   authored slots that the Halo 1 retail scheduler never selects remain
   available by their exact source index. A slot with no rule fails
   conversion naming the sound, voice and unit.
+
+### Sounds, fixtures and the emblem
+
+**Built. Script sounds and player emblem.** Every named script sound is
+installed without a converter count budget. The runtime datum lookup in Halo 1
+(`0xf2e53`, `0x2b9f6`) and the 570 authored map/sound pairs are documented
+in [campaign.md](campaign.md#script-sound-capacity). The converter builds a
+player-emblem instance from the Halo 2 `shad` definition. Halo 1's part
+shader selection (`0xa2449..0xa246d`) uses the model's authored slots, and
+the cyborg lacks an emblem slot. The appended part uses Halo 2's named
+emblem inputs at `0x22ace7`. See [models.md](models.md#the-emblem-built).
+
+**Built. Impulse promotion and fixture lighting.** Halo 1's `0x24ea0`
+compares decaying mixer credit against the authored count and duration.
+The converted sound appends that rule and references the rebuilt target
+by datum. The boot hook routes the impulse or applies the source rate
+limit. The fixture constructor at `0x118e00` copies the placement's RGB
+and intensity. Campaign and multiplayer retain the fixture machines and
+marker lights. Each of b30's 42 authored placements binds a light with
+that tuple. See [sounds.md](sounds.md#impulse-promotion-built) and
+[objects.md](objects.md#light-fixture-placements-built).
+
+**Built. Native donor promotions.** Halo 2's `0x218f10` returns the
+rule's pitch range within the donor sound. `0x219070` adds its relocated
+first range. Donor transplantation and gestalt compaction share the merge
+that carries those rules and timers with the rebuilt range order. Invalid
+rules and incompatible reuse identify the source sound and map.
+See [sounds.md](sounds.md#merging-a-moved-sound-h1soundsmerge_sound).
 
 ### Dependencies kept from Halo 2
 

@@ -147,6 +147,24 @@ H1_ISO=disc/halo1.iso cargo test -p h1models --release --lib campaign_biped_slot
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1sounds --release --test real_disc a10_dialogue_mouth_curves_reach_the_retail_resource_layout -- --ignored
 ```
 
+### Script sound capacity
+
+**Built.** A scripted conversion installs every distinct source sound named
+by a sound atom or a script reference, including generated conversation and
+command-script references. The old `Options::sounds` count was a converter
+budget. The Halo 1 XBE passes the sound datum from the evaluated arguments at
+`0xf2e4a..0xf2e53`; playback looks up that datum at `0x2b9e5..0x2b9f6`.
+There is no authoring budget in that path. The converter grows the destination
+sound list for the actual references. Its gestalt and map writers still check
+their encoded index, tag memory and file size limits. A missing or ambiguous
+sound is a conversion error naming the source map and sound.
+
+The retail disc has 570 distinct map/sound pairs in the ten campaign script
+reference tables, including every authored sound atom. The busiest level is a10
+with 175. The thirteen multiplayer scenarios have no authored script sounds.
+`both_sandboxes_rebuild_every_retail_map` checks the serialized reference tables
+and the datums of the compiled sound atoms.
+
 ### Open work (2026-11-19)
 
 Everything the converter still lacks, each on its own branch
@@ -167,7 +185,7 @@ merged, built and tested together, then played.
 | HUD help and objective text, Halo 1's string lists | `hudtext` | |
 | Sentinels, the crewman, firing positions off the floor, squads with no starting locations | `airoster` | |
 | Over-shield, active camouflage, b30's falling box as Halo 2's own powerup objects; health packs on the Halo 2 multiplayer setting; the lifepod as its own vehicle; a10's cryotube, chairs, fighter-bomber and ring as their own object types | `objects` | Today: missing, or built as turrets |
-| Looping sounds past the file size limit; every other sound left out | `sounds` | The lifepod's loops come with its vehicle (`objects`) |
+| Script sound count limit | `sounds` | **Built.** All sound references are installed. See Script sound capacity. |
 | The sniper's scope mask (`wphi +0xac`); the terrain shader's detail blend function and `+0x2c` block | `scopeshader` | |
 | Halo 2 role values where Halo 1 has a value ([role-audit.md](role-audit.md)); the audit over the ten levels | `fullrebuild` | Every tag built from its definition with Halo 1's values |
 | a30's AI behaviour in the game | `h1-a30-ai` | |
@@ -517,10 +535,9 @@ tags.
 **The sound gestalt cut to the kept sounds** (`h1convert::compact`, run by
 the builder from scratch). 05a's `ugh!` holds every 05a sound's entries;
 a new gestalt is built from nothing, each kept `snd!` in index order
-taking its entries across (`h1sounds::merge::merge_sound`) with its
-promotion carried whole (its rules index the sound's own pitch ranges:
-`compact::PROMOTION_EVIDENCE`, V on 05a, Coagulation and 03a), and the raw
-no chunk names any more is emptied. a30: 3,270 sounds kept, 18,053 chunks
+taking its entries across (`h1sounds::merge::merge_sound`). The merge
+carries native promotion rules and timers with their rebuilt pitch ranges.
+Raw that no kept chunk names is emptied. a30: 3,270 sounds kept, 18,053 chunks
 to 14,344, 3,830 raw resources (108.9 MB, 05a's own dialogue and music)
 dropped; on every level each kept sound names the same entries, import
 names and chunk bytes as in the pinned map (`compact::map_entries`,
@@ -860,8 +877,8 @@ a converted volume, between BSPs it has);
 unrunnable cast or builtin on any of the ten, and checks that Halo 1's
 `switch_bsp` translates directly and that every `switch_bsp` in each
 level's scripts names a BSP the converted scenario has (descriptor count
-equal to Halo 1's BSP count). `a30_converts_onto_its_base_and_reads_back` (`H1_LAYERS`,
-`H1_SOUNDS`) reopens a30 with `map::Map` and checks: a valid checksum,
+equal to Halo 1's BSP count). `a30_converts_onto_its_base_and_reads_back`
+(`H1_LAYERS`) reopens a30 with `map::Map` and checks the checksum,
 name and scenario path; every tag reference in the scenario's tree (walked
 with `tags::schema`'s `scnr` layout over the whole metadata) names a tag of
 its group; one descriptor, cluster data element and `+0x388` element

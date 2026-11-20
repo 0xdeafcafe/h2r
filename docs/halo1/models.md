@@ -533,7 +533,7 @@ Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
 blocks the decoder does not interpret (`10`, `28`, `30`, `44`, `54`, `5c`).
 
-### The emblem (**Design**, converter version 84)
+### The emblem (**Built**)
 
 Halo 2 draws a player's emblem as a part of the body's model. The Chief's
 `mc_emblem` (stem `opaque\emblem_overlay_simple`, alpha blended on layer
@@ -543,11 +543,11 @@ emblem. Its 12 animated properties read the inputs
 `emblem_foreground_index`, `emblem_toggle_foreground` and `emblem_active`.
 The function evaluator `0x0022ace7` answers those for the player being
 drawn (`[0x510c4c]+0x1b4` via `0x0014cca0`, or `+0x1c0` via
-`0x0014ccf0`), and the colours are engine constants (E). The shader
-carries everything; the model only gives it a place. The converted
-multiplayer maps keep `mc_emblem`, because the base keeps the Chief.
+`0x0014ccf0`), and the colours are engine constants (E).
 
-Halo 1's cyborg has no such part. The converter adds one to a player
+Halo 1's model draw at `0xa2449..0xa246d` selects the authored shader
+for each geometry part. The source cyborg models have no player-emblem
+part. The converter adds one to a player
 biped's model (`h1models::emblem`, called from `Converter::model` for a
 `bipd` that `health_hud::is_player_biped` names):
 
@@ -566,7 +566,12 @@ biped's model (`h1models::emblem`, called from `Converter::model` for a
 - `add_emblem` puts the square in each detail level's geometry of that
   permutation. It adds a shader entry of group `embl` (not `soso`, so the
   part is drawn as the transparent kind, after the opaque body), whose
-  material the converter names as the base's `mc_emblem`.
+  material is a new `h1\player_emblem` instance built from the `shad`
+  definition. It binds the native Halo 2 emblem program and foreground
+  atlas, which have no Halo 1 equivalent. The bitmap animation maps the
+  foreground input to the atlas's 64 frames; the two pixel-constant
+  animations bind the foreground toggle and active flag. The build
+  requires those draw dependencies by their full paths.
 
 Default placement (`LEFT_SHOULDER`, a choice to confirm): the outside of
 the left shoulder plate. The anchor is `bip01 l upperarm`, the direction
@@ -579,8 +584,11 @@ so every object drawing the cyborg model wears the emblem; on
 multiplayer maps that is the player bipeds alone. Proof: the unit tests
 in `h1models/src/emblem.rs` (an invented arm) and
 `h1objects/tests/model_shaders_disc.rs`
-`bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder`. The
-size, orientation and look need a live check.
+`bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder` hides the
+base's `mc_emblem` instance and checks that the cyborg binds the rebuilt
+material. `rebuilt_emblem_binds_the_player_inputs_at_the_native_pass`
+checks the animation bindings and the foreground frame function. Live
+appearance remains to be checked.
 
 ### Marker names
 

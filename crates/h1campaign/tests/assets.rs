@@ -278,7 +278,6 @@ fn every_level_builds_in_both_assets() {
             let mut base = h2_map(h1campaign::base_for(level));
             let opts = h1campaign::Options {
                 scripts: Some(&s),
-                sounds: usize::MAX,
                 donors: Some(&donors),
                 assets,
                 ..Default::default()

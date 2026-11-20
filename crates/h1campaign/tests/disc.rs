@@ -709,10 +709,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
         objects: layers.contains("objects"),
         ai: layers.contains("ai"),
         scripts: s.as_ref(),
-        sounds: std::env::var("H1_SOUNDS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1000),
         donors: Some(&donors),
         ..Default::default()
     };
@@ -927,26 +923,24 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
-        if opts.sounds >= 1000 {
-            let placed: std::collections::HashSet<&str> = hs_s
-                .references()
+        let placed: std::collections::HashSet<&str> = hs_s
+            .references()
+            .iter()
+            .filter(|r| r.group() == FourCC(*b"snd!"))
+            .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
+            .collect();
+        let scenes = h1ai::conversations::read(&h1).unwrap();
+        for scene in &scenes {
+            for path in scene
+                .lines
                 .iter()
-                .filter(|r| r.group() == FourCC(*b"snd!"))
-                .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
-                .collect();
-            let scenes = h1ai::conversations::read(&h1).unwrap();
-            for scene in &scenes {
-                for path in scene
-                    .lines
-                    .iter()
-                    .flat_map(|line| line.sounds.iter().flatten())
-                {
-                    assert!(
-                        placed.contains(path.as_str()),
-                        "{}: missing converted sound {path}",
-                        scene.name
-                    );
-                }
+                .flat_map(|line| line.sounds.iter().flatten())
+            {
+                assert!(
+                    placed.contains(path.as_str()),
+                    "{}: missing converted sound {path}",
+                    scene.name
+                );
             }
         }
         let original = h1scripts::Tables::read(&h1).unwrap();
@@ -1358,7 +1352,6 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1487,7 +1480,6 @@ fn every_campaign_level_converts() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -1866,7 +1858,6 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
         let opts = Options {
             scripts: Some(&s),
-            sounds: usize::MAX,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -2026,7 +2017,6 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -2190,7 +2180,6 @@ fn a10_opens_and_closes_only_placed_units() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -2322,7 +2311,6 @@ fn a10_scripted_vehicles_can_be_created() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             pinned,
             ..Default::default()
@@ -2404,7 +2392,6 @@ fn every_device_placement_lands_with_its_device_groups() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -2561,7 +2548,6 @@ fn physics_models_load_as_the_engine_reads_them() {
             objects: true,
             ai: true,
             scripts: Some(&s),
-            sounds: 1000,
             donors: Some(&donors),
             ..Default::default()
         };

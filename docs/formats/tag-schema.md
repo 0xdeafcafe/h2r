@@ -485,11 +485,13 @@ fault.
 
 ## Open
 
-- `transplant` does not yet call `merge_sound` for the `snd!` tags it
-  copies. Sounds with promotions are refused by the merge. The rest of
-  `scnr`: blocks grown outside every tag that hold pointers; the last 0.2 % of `coll`, `prt3`, `spas`, `stem`,
-  `jmad`; BSP-region tags (`sbsp`, `ltmp`, which need the builder's BSP
-  sections).
+- Generic schema transplantation needs a caller to merge sound gestalts.
+  The Halo 1 campaign's donor path uses `h1sounds::transplant` for
+  this, including native promotion rules.
+- The remaining layouts include `scnr` blocks grown outside every tag
+  that hold pointers, the last 0.2% of `coll`, `prt3`, `spas`, `stem` and
+  `jmad`, and BSP-region tags (`sbsp`, `ltmp`) which need the builder's
+  BSP sections.
 - Raw sizes: `bitm` level 0 unpaired, noisy pairs in one-instance groups.
 - The 8 maps at the bound move only in place (slot order). Real movement
   there needs a placement that does not fragment the freed space.
