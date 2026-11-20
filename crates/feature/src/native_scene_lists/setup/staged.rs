@@ -80,8 +80,8 @@ impl GuestMemory for Staged<'_> {
                 write: true,
             });
         }
-        // Keep final ranges disjoint. The compare hook can then compare
-        // each range even when a child changed a parent-written byte.
+        // Keep final ranges disjoint, even when a child changed a
+        // parent-written byte.
         if let Some((&start, prior)) = self.edits.range_mut(..addr).next_back() {
             let left = (addr - start) as usize;
             if left < prior.len() {
