@@ -338,6 +338,9 @@ impl<B: Backend> Worker<B> {
 
         self.inner.stamp_present(at);
         if let Some((frame, draw, targets, samples)) = accepted {
+            // The worker owns this scene and all of its original commands.
+            // A locked producer can queue the next scene while this draws.
+            self.shared.display_capacity.release(n);
             let result = self.residency.record(|| draw(&mut self.inner, &targets), Result::is_err)
                 .and_then(|outputs| self.adopt_outputs(&frame, &samples, outputs));
             for cmd in transaction.commands {
@@ -379,10 +382,9 @@ impl<B: Backend> Worker<B> {
                     self.shared.latch(err);
                 }
             }
+            self.shared.display_capacity.release(n);
         }
         self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
-        *self.shared.presented.lock().unwrap() = n;
-        self.shared.presented_cv.notify_all();
         self.run(Self::land_pixel_counts);
     }
 }
