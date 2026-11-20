@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates (the projectile step `f8eb0` stays a callout). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 8 and slice 11 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates (the projectile step `f8eb0` stays a callout). Slice 10's: the vehicle update `efde0` with its gate `f1320` and contact reset `f06c0` (the type physics and the rest of its tree stay callouts). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `vehicle.rs` the slice 10 bodies), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 8 and slice 11 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -145,6 +145,16 @@ How the body keeps the contract is in "Slice 8 body" below.
 
 Slices 6, 7, 9 and 10 (unit, biped, weapon, vehicle) add one block each
 here, in the same shape.
+
+### Slice 10: vehicle
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `efde0` | `VEHICLE_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `vehi`. A `1984`-byte frame made through the stack probe `320560` (`eax` = size) | segment |
+| `f1320` | `VEHICLE_UPDATE_GATE` | `(object: eax) -> al`; `ret` | leaf |
+| `f06c0` | `VEHICLE_CONTACTS_RESET` | `(buffer: eax)`; `ret` | leaf |
+
+How the bodies keep the contract is in "Slice 10 body" below.
 
 ### Callouts that stay guest in this phase
 
@@ -627,6 +637,73 @@ state at callouts first (below).
   is called with `xmm0` zero) are checked only through what they store.
 - Callee `ret` sizes for `1d24a0` and `1c6620` are read from their tails
   (`1c6620` jumps to `1c6560`, `ret 4`); the rest from their first `ret`.
+
+## Slice 10 body
+
+**C** for the control flow and accesses: read at `efde0`, `f1320` and
+`f06c0` with `h2 disasm`, and compared with the lifted original by
+`tests/sim_objects_differential.rs` (root `VEHICLE_UPDATE`, and the type
+update dispatcher over a vehicle), which for these roots also compares
+the XMM registers at every callout. Field names are ours and **L**. The
+body file's header (`engine::sim_objects::vehicle`) records the frame,
+the registers kept across calls and the order of the calls; this
+section records what a caller or a later lane relies on.
+
+**Frame.** The stack probe is a callout, as in `109580`; the body
+resumes at `efdea` with `esp` 1984 bytes down, then pushes `ebx`,
+`ebp`, `esi`, `edi`. All 39 return sites are at that `esp`. The object
+argument is read back from the frame (`[esp+1998]`) where `ebp` was
+reused for the matg record (`[[4e034c]+144]`), so the lifted code and
+the body can take over from each other at any site.
+
+**Flags and floats.** The body reproduces the arithmetic flags at every
+transfer from the last instruction that sets them (rule 3), as the
+slice 11 bodies do, through `sse.rs` and `alu.rs`. The scalar SSE work
+(the component's rate, the mean of the contact records' floats into
+body `+3fc`, the drag and pull toward the structure's point, the timer
+at body `+2c4`) runs on the guest's `xmm` registers, keeping the upper
+lanes and MXCSR as retail does. Three x87 sequences run on the guest's
+x87 state with their last-instruction pointers: the two loads before
+`372d48` (`fld qword [45e610]`, `fld dword [game time +4]`; the callee
+returns in `st(0)`, stored by `fstp` at `f01f2`), `fsqrt` at `f02f5`,
+and the `fabs`/`fcomip` test at `f04e0`..`f04f2`.
+
+**The type physics.** Definition `+1f0` (`i16`) selects, through the
+seven-entry table at `f069c` (read from the image), `f1cd0`
+(`VEHICLE_TREAD_UPDATE`, `ebx` the object), `f1f80`
+(`VEHICLE_WHEEL_UPDATE`), nothing, `f2360`, `f3010` (with `[S+14]`),
+`f4800` or `2056e0` (`VEHICLE_CONTACT_SOLVE`); above 6 none. These stay
+callouts, so the Halo 1 drive model's hooks on them run as before.
+
+**Callees**, every one a callout except the leaves and `bba20`, with the
+bytes `ret` pops: `320560` the probe; `1d2460`, `efc30`, `ef870`,
+`efb60`, `205510`, `1cfb90`, `ba3d0` (a tail jump into `b7360`),
+`f06c0`, `f6010`, `cc380`, `372d48`, `113e40`, `b9ef0` (0); `b9b90`,
+`ba160`, `ba1d0`, `f1cd0`, `f6bd0`, `b77d0`, `d6660`, `e6830` (4);
+`1d24a0`, `ef4f0`, `f6670`, `205be0`, `f1f80`, `f2360`, `f4800`,
+`111650` (8); `f3010` (`c`); `ba7f0` (`10`); `2056e0` (`14`); `d7b80`
+(`18`).
+
+**Not ported.** The rest of the tree stays guest: the type physics
+`f1cd0`, `f1f80`, `f2360`, `f3010` (162 samples on Waterworks),
+`f4800`, `2056e0`; the contact gather `205be0`; `ef4f0`, `ef870`,
+`efb60`, `f6010`, `f6670`, `f6bd0`; and `eec90` (175 samples), which
+`efde0` does not call directly. Each is a later lane's body; the
+segment keeps every frame slot and register they read.
+
+### Not verified for slice 10
+
+- Captures from a match with vehicles (the slice's testable result):
+  registers and RAM at the n-th call of `VEHICLE_UPDATE`, one per
+  vehicle type the table dispatches (tread, wheel, the flier types,
+  turrets), on the ground and woken by an early mover, compared with
+  `impl.sim.native.objects` off. The harness covers synthetic pools,
+  with stubbed callees.
+- The harness does not compare x87 state at callouts. `372d48` takes
+  its two operands on the x87 stack and returns in `st(0)`; the body's
+  x87 sequences are checked only through what they store.
+- Callee `ret` sizes are read from each callee's first `ret` (`ba3d0`
+  from the `ret` of `b7360`, which it tail-jumps to).
 
 ## Register liveness
 

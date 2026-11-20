@@ -35,6 +35,8 @@ mod machine;
 mod projectile;
 mod scenery;
 mod sse;
+// Slice 10: the vehicle update.
+mod vehicle;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -124,6 +126,11 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::CRATE_UPDATE, sites: &bloc::CRATE_SITES, run: bloc::crate_update },
     Body { point: &points::CREATURE_UPDATE, sites: &creature::CREATURE_SITES, run: creature::creature_update },
     Body { point: &points::CREATURE_POST_UPDATE, sites: &creature::CREATURE_POST_SITES, run: creature::creature_post_update },
+    // Slice 10: the vehicle update (the `vehi` descriptor's slot `+40`)
+    // and the two leaves it calls.
+    Body { point: &points::VEHICLE_UPDATE, sites: &vehicle::VEHICLE_SITES, run: vehicle::vehicle_update },
+    Body { point: &points::VEHICLE_UPDATE_GATE, sites: &[], run: vehicle::vehicle_update_gate },
+    Body { point: &points::VEHICLE_CONTACTS_RESET, sites: &[], run: vehicle::vehicle_contacts_reset },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

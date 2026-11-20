@@ -230,6 +230,8 @@ fn object_on_stack(root: u32) -> bool {
         &points::CRATE_UPDATE,
         &points::CREATURE_UPDATE,
         &points::CREATURE_POST_UPDATE,
+        // Slice 10.
+        &points::VEHICLE_UPDATE,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -302,6 +304,7 @@ fn cleanup(target: u32) -> u32 {
             FUNCTION_CALLOUTS.iter().find(|&&(c, _)| c == t).unwrap().1
         }
         t if let Some(&(_, pop)) = SLICE_11_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_10_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -357,6 +360,8 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         0xd5b60 => if (n + case as usize) % 4 == 3 { 0 } else { DAMAGE_INFO },
         0xd9f70 | 0x138880 | 0xd8b50 => (seed >> 3) % 2,
         0x14de90 => if n % 2 == 0 { u32::MAX } else { handle(3) },
+        // Slice 10's callouts that answer in `al`: yes and no by turns.
+        t if SLICE_10_ANSWERS_AL.contains(&t) => (n as u32 + case) % 2,
         _ => 0x006e_1000 | (seed & 0xff),
     };
     cpu.gpr[1] = seed.rotate_left(9);
@@ -1398,4 +1403,178 @@ fn creature_post_update() {
 fn type_update_dispatch_reaches_the_small_types() {
     dressed(&points::OBJECT_TYPE_UPDATE, 13);
     dressed(&points::OBJECT_TYPE_POST_UPDATE, 13);
+}
+
+// Slice 10: the vehicle update `efde0` and its leaves `f1320` and
+// `f06c0` (reached from the root, never entered alone). The root runs
+// over the slice 11 dressing plus the vehicle's fields, and compares the
+// XMM registers at every callout: the body's float work is scalar SSE on
+// the guest registers, and callees read `xmm0` to `xmm7` as it leaves them.
+
+/// Every guest function the slice 10 body calls that no table above
+/// lists, with the bytes its `ret` pops (docs/engine/object-update.md,
+/// "Slice 10 body"). `1d24a0`, `ba1d0` and `d6660` are slice 11's,
+/// `ba7f0` slice 8's; `bba20` is a body.
+const SLICE_10_CALLEES: &[(u32, u32)] = &[
+    (0x1d2460, 0),
+    (0xefc30, 0),
+    (0xb9b90, 4),
+    (0xef4f0, 8),
+    (0xef870, 0),
+    (0xefb60, 0),
+    (0x205510, 0),
+    (0xba160, 4),
+    (0x1cfb90, 0),
+    (0xf6670, 8),
+    (0xba3d0, 0),
+    (0x205be0, 8),
+    (0xf1cd0, 4),
+    (0xf1f80, 8),
+    (0xf2360, 8),
+    (0xf3010, 12),
+    (0xf4800, 8),
+    (0x2056e0, 20),
+    (0xf6010, 0),
+    (0xf6bd0, 4),
+    (0xcc380, 0),
+    (0x372d48, 0),
+    (0xb77d0, 4),
+    (0xd7b80, 24),
+    (0x113e40, 0),
+    (0xe6830, 4),
+    (0x111650, 8),
+    (0xb9ef0, 0),
+];
+
+/// Slice 10's callouts whose `al` the body branches on.
+const SLICE_10_ANSWERS_AL: &[u32] = &[0xef870, 0xefb60, 0x205510, 0x205be0, 0xcc380, 0x113e40, 0xe6830, 0x111650];
+
+/// The matg the vehicle update reads (`[4e034c]`, its record at `+144`),
+/// and the definition's marker array (`+2f4`, `4c` bytes each).
+const VEHICLE_MATG: u32 = 0x0064_7000;
+const VEHICLE_MATG_RECORD: u32 = 0x0064_7100;
+const VEHICLE_MARKERS: u32 = 0x0064_1800;
+
+/// [`dress`], then the fields `efde0` branches on, varied by `case`.
+fn dress_vehicle(g: &mut Guest, case: u32) {
+    dress(g, case);
+    let c = case as usize;
+    // Definition: the vehicle type (0 to 5 the jump table's cases, 6
+    // skips the physics, 7 none of them), the flags `+1ec` and `+2ac`,
+    // the contact count `+2e8` (negative once), and the markers.
+    word(g, DEFINITION + 0x1ec, if case % 3 != 0 { 0x40 } else { 0 });
+    g.set_u16(DEFINITION + 0x1f0, (case % 8) as u16).unwrap();
+    f32w(g, DEFINITION + 0x214, 0.5);
+    g.set_u16(DEFINITION + 0x218, (case % 2) as u16).unwrap();
+    f32w(g, DEFINITION + 0x25c, [0.0, 2.0, 0.5][c % 3]);
+    byte(g, DEFINITION + 0x2ac, u8::from(case == 9));
+    word(g, DEFINITION + 0x2e8, [0, 1, 2, 3, u32::MAX][c % 5]);
+    word(g, DEFINITION + 0x2f0, [0, 2, 3][c % 3]);
+    word(g, DEFINITION + 0x2f4, VEHICLE_MARKERS);
+    for i in 0..3u32 {
+        word(g, VEHICLE_MARKERS + 0x4c * i + 4, if i == 1 { 0 } else { 0x10 });
+        word(g, VEHICLE_MARKERS + 0x4c * i + 0x48, [3, u32::MAX, 33][i as usize]);
+    }
+
+    let slot = object(case) & 0xffff;
+    let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    // A vehicle, in the header and in the body (the dispatchers read the
+    // body's).
+    byte(g, DATA + 12 * slot + 3, 1);
+    byte(g, body + 0xaa, 1);
+    // Parented once; children (slots 9 and 10, both bipeds, the second
+    // flagged at `+10a` bit 7) for two cases in three.
+    word(g, body + 0x14, if case == 7 { handle(2) } else { u32::MAX });
+    word(g, body + 0x10, if case % 3 != 0 { handle(9) } else { u32::MAX });
+    word(g, RECORDS + BODY * 9 + 0x0c, handle(10));
+    word(g, RECORDS + BODY * 10 + 0x0c, u32::MAX);
+    byte(g, RECORDS + BODY * 9 + 0xaa, 0);
+    byte(g, RECORDS + BODY * 10 + 0xaa, 0);
+    let flagged = g.u8(RECORDS + BODY * 10 + 0x10a).unwrap() | 0x80;
+    byte(g, RECORDS + BODY * 10 + 0x10a, flagged);
+    // Body `+c0`: bit 6 (component active), 8 (woken by a mover), 10 and
+    // 12; the wake latch bits from the pool kept.
+    let latch = g.u16(body + 0xc0).unwrap() & 0x0c;
+    let bits = [0x0040, 0x1140, 0x0440, 0x1540, 0x0000, 0x1040, 0x0140, 0x0040, 0x0040, 0x1140, 0x0540][c % 11];
+    g.set_u16(body + 0xc0, latch | bits).unwrap();
+    let damage = g.u16(body + 0x10a).unwrap() & !4;
+    g.set_u16(body + 0x10a, damage | if case == 1 || case == 10 { 4 } else { 0 }).unwrap();
+    word(g, body + 0x148, case % 2 | if case % 4 < 2 { 0x2000 } else { 0 });
+    word(g, body + 0x134, 0x1234_0000);
+    f32w(g, body + 0x25c, if case % 4 == 3 { 0.0 } else { 1.5 });
+    f32w(g, body + 0x2c4, [0.0, 0.5, 1.0, 2.0][c % 4]);
+    byte(g, body + 0x348, [0, 0x20, 0x04, 0x21, 0x22, 0x01, 0x23, 0][c % 8]);
+    byte(g, body + 0x349, (case % 2) as u8);
+    f32w(g, body + 0x354, [-1.0, 0.25, 3.0][c % 3]);
+    for (i, v) in [1.0f32, 2.0, [-2.0, 0.0, 4.0][c % 3]].into_iter().enumerate() {
+        f32w(g, body + 0x64 + 4 * i as u32, v);
+    }
+    // The animation block's name: the one `f0619` compares, read from the
+    // instruction, once.
+    if case == 4 {
+        let name = g.u32(0xf061c).unwrap();
+        word(g, body + 0x180 + 0x7c, name);
+    }
+    // The structure's heights, radius and point; the matg record.
+    f32w(g, STRUCTURE + 0x1c, [0.0, 5.0][c % 2]);
+    f32w(g, STRUCTURE + 0x20, [0.0, -3.0, 1.0][c % 3]);
+    f32w(g, STRUCTURE + 0x1c0, [0.0, 4.0, 0.5][c % 3]);
+    for (i, v) in [3.0f32, -1.0, 2.0].into_iter().enumerate() {
+        f32w(g, STRUCTURE + 0x1c4 + 4 * i as u32, v);
+    }
+    word(g, points::GLOBALS_TAG.base, VEHICLE_MATG);
+    word(g, VEHICLE_MATG + 0x144, VEHICLE_MATG_RECORD);
+    f32w(g, VEHICLE_MATG_RECORD + 0x5c, [-10.0, 10.0][c % 2]);
+    word(g, VEHICLE_MATG_RECORD + 0x28, 0x00e6_0004);
+}
+
+/// [`transcripts`] over a [`dress_vehicle`]d pool, comparing XMM.
+fn dressed_vehicle(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    XMM.with(|x| x.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (cpu, mut g) = start(ram, point.base, case);
+            dress_vehicle(&mut g, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+}
+
+#[test]
+fn vehicle_update() {
+    dressed_vehicle(&points::VEHICLE_UPDATE, 11);
+}
+
+/// The dispatcher reaches the vehicle body by the `vehi` slot over the
+/// vehicle's dressing.
+#[test]
+fn type_update_dispatch_reaches_the_vehicle() {
+    dressed_vehicle(&points::OBJECT_TYPE_UPDATE, 11);
 }
