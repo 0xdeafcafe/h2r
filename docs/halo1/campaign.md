@@ -399,7 +399,18 @@ convert --pinned` skip it):
    own blocks: their datum words are renamed to the new index, their raw
    blobs copied and their BSP sections made anew (`Transfer`), then the
    simulation table is written for the new index. A tag the extractor
-   cannot take whole fails the build. Equal blocks are shared across
+   cannot take whole fails the build. So does a reference to a tag no
+   source holds, from a retail or converted tag or from the scenario's
+   and BSPs' datum words: the error names the map, the naming tag, the
+   field (its offsets from the root, element indices where an array has
+   more than one) and the missing tag. **Built** (version 101): such a
+   reference used to be nulled and counted (`ScratchReport::dangling`).
+   Every count recorded on retail data was 0 (the version 55 table above,
+   Blood Gulch in multiplayer.md, c20 in the version 100 run), so no
+   writer or missing target needed fixing; any that appears is now a
+   named error. Tests: `a_reference_no_source_holds_fails_the_build_naming_the_field`,
+   `a_datum_the_new_set_lacks_is_an_error_naming_the_field`
+   (`h1convert::scratch`). Equal blocks are shared across
    tags, as retail shares arrays across tags in 25 to 28 groups per map
    (05a: 377,044 bytes of `effe` arrays and 245,966 of `shad` lie in
    other tags), except `bitm` (shares only within itself) and `ugh!` (not
@@ -411,17 +422,27 @@ convert --pinned` skip it):
    Three 05a words outside every
    schema field read as pointers and are data (`fresh::DATA_WORDS`, given
    to the base's `MapSource::data_words`).
-3. **Fallback: pruned.** If the build from scratch fails, the level is
-   built the slice-before way (a `dropped` line says why): every tag of
-   the intermediate laid out anew (`h1convert::fresh::unpin_all` with
-   `built_too`), the unreachable base tags dropped (`fresh::prune_with`,
-   `KEEP`), on 05a's index. Built: the pruned set takes the built
-   intermediate's string-ID table, not the set's. The builder appends
-   the strings of converted tags' text fixups (animation, function and
-   region names), and the tags read back keep words that index them.
-   With the set's table those words named no string, and the read-back
-   refused a10's `door blast` machine and `cryotube` model ("unknown
-   string ID"). Test: `the_unpinned_set_takes_the_strings_its_build_interned`.
+3. **No fallback.** A level that cannot be built from scratch fails with
+   the reason (`h1campaign::Error::Scratch`, naming the level and the tags
+   not taken exactly); nothing pruned or pinned is written in its place.
+   Over the tag memory or the native campaign slot it fails the same way
+   (`Error::TagMemory`, `Error::FileSize`). **Built** (version 101). Why
+   levels had fallen back: in the version 100 integration run every one
+   of the 20 campaign variants failed from scratch with
+   `globals\globals.matg (3072 nonzero bytes in 1 ranges no array
+   covers)`, the damage-table arrays the Halo 1 cyborg scales replace
+   (`h1objects::player_damage`), still in the grown globals' bytes with
+   nothing pointing at them. `GrownTag::replaced` now names them and
+   `MapSource::add_replaced` counts them as described, and in the next
+   run `every_level_builds_in_both_assets`, which requires a build from
+   scratch, passed on all 20, as did the multiplayer from-scratch tests on
+   all 26. d40 was written pinned only under the retail campaign slot
+   (`0x11800000`); from scratch it is 258,213,376 bytes (version 55
+   table above) and its old pruned build `0x19494400`, both under the
+   native slot's `0x20800000` (`map::writer::NATIVE_CAMPAIGN_FILE_LIMIT`,
+   the v8 header validator's ceiling at `0x12289b`; `boot::campaign_cache`
+   grows the slots to it). Test: `every_job_builds_from_scratch` (cli,
+   `#[ignore]`, all 46 jobs).
 
 **Built, locale raw extents.** The v90 import hit the map reader's 64 MiB
 limit on one raw read in `Unpinner::copy_raw`. The retail base's ninth
@@ -463,8 +484,8 @@ atom naming an object definition, sound, effect, damage effect or
 animation graph resolves to a tag of that group with data, and the
 scripts' reference block reads back (`hs::Scenario::read`). The reference
 sweep counts only problems the pinned map of the same level does not have
-(none on any level). If the fresh map would pass the file bound the
-pinned one is written instead (`Report::fresh` false, a `dropped` line).
+(none on any level). A fresh map over the file bound is an error
+(`Error::FileSize`); the pinned map is never written in its place.
 
 **Player starting profiles** (`h1campaign::profiles`). Halo 1's block
 `scnr +0x348` (`0x68` each; S, checked on all
