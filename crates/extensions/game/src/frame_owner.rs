@@ -108,9 +108,9 @@ impl Inputs {
         backend: &mut d3d::GfxBackend,
         scale: u32,
         lighting: d3d::Lighting,
-        observed: bool,
+        capture: Option<&PrivateCaptureWrite>,
     ) -> Result<Rgba, String> {
-        let drawn = if observed {
+        let drawn = if let Some(request) = capture {
             let mut probe = crate::render_probe::PrivateFrame::begin(
                 &self.scene,
                 &self.replay,
@@ -125,6 +125,11 @@ impl Inputs {
                 lighting,
                 Some(&mut probe),
             )?;
+            if !request.waiting() {
+                // A replacement can arrive during readback. Dropping the
+                // observer releases its arming for the outstanding capture.
+                return Err("private capture was interrupted".into());
+            }
             probe.completed(&frame);
             frame
         } else {
@@ -260,7 +265,10 @@ struct RenderJob {
 
 impl RenderJob {
     fn run(self, gpu: &mut d3d::GfxBackend, current: u64) {
-        let draw = |gpu: &mut d3d::GfxBackend, frame: &Inputs, lighting, observed| {
+        let draw = |gpu: &mut d3d::GfxBackend,
+                    frame: &Inputs,
+                    lighting,
+                    capture: Option<&PrivateCaptureWrite>| {
             if current != self.generation {
                 return Err("scene timeline changed".to_owned());
             }
@@ -268,7 +276,7 @@ impl RenderJob {
                 gpu,
                 frame.display.scale(frame.replay.colour)?,
                 lighting,
-                observed,
+                capture,
             )
         };
         match self.work {
@@ -278,14 +286,15 @@ impl RenderJob {
                 output,
             } => {
                 if output.waiting() {
-                    output.finish(draw(gpu, &frame, lighting, true));
+                    let image = draw(gpu, &frame, lighting, Some(&output));
+                    output.finish(image);
                 }
             }
             Job::Parity(frame) => {
                 if !crate::frame_parity::wanted(frame.replay.present) {
                     return;
                 }
-                let result = draw(gpu, &frame, d3d::Lighting::Retail, false);
+                let result = draw(gpu, &frame, d3d::Lighting::Retail, None);
                 crate::frame_parity::native(frame.replay.present, result);
             }
         }
