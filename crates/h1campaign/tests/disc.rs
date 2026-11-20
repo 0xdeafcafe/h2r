@@ -957,11 +957,12 @@ fn a30_converts_onto_its_base_and_reads_back() {
         a30_flow::titles(&mut m, &bytes, addr, &h1);
         assert!(r.missing_globals.is_empty(), "{:?}", r.missing_globals);
         if opts.ai {
-            let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
-                !matches!((u.definition.as_str(), u.name.as_str()),
-                    ("objective_cave", "display_scenario_help"))
-            }).collect();
-            assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
+            // The cave's two help calls are checked above on slot 903.
+            assert!(
+                r.missing_builtins.is_empty(),
+                "a30 dropped builtin calls: {:?}",
+                r.missing_builtins
+            );
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
             a30_flow::mission(&hs_s, &ai, &h1);
