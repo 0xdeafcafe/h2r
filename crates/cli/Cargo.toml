@@ -49,6 +49,8 @@ bots = { path = "../bots" }
 sim = { path = "../sim" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
+# `h2 agent frame compare`: render.compare run locally, with no game.
+agent = { path = "../agent", default-features = false }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
 studio-proto = { path = "../studio-proto", optional = true }
 # Our settings (play --set, h2 settings).

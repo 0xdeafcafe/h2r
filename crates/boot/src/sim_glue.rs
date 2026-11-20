@@ -56,6 +56,28 @@ mod state_hash;
 /// word it is (docs/graphics/pipelined-render.md, "random").
 pub const RANDOM_SEED_PTR: u32 = 0x004e_7408;
 
+/// The sim report's `state_hashes_v1` gameplay digest of the tick just
+/// ended, with that tick, as sim mode takes it (`projected`: the
+/// `sim.metrics-projection` switch, default on). `sim.hashes` records it
+/// on any run ([`crate::agent_frames`]).
+pub(crate) fn report_gameplay_hash(guest: &runtime::Guest, projected: bool) -> Option<(u32, u64)> {
+    let snapshot = if projected {
+        telemetry::sim_snapshot(guest)
+    } else {
+        telemetry::snapshot(guest)
+    }
+    .ok()?;
+    let rng = guest
+        .u32(RANDOM_SEED_PTR)
+        .ok()
+        .filter(|p| *p != 0)
+        .and_then(|p| guest.u32(p).ok());
+    Some((
+        (snapshot.tick & 0xffff_ffff) as u32,
+        state_hash::gameplay(&snapshot, rng),
+    ))
+}
+
 /// Film checkpoints use the simulation report's post-tick digest. Campaigns
 /// without a multiplayer statborg can still verify the engine's game-state arena.
 pub(crate) fn film_gameplay_hash(guest: &runtime::Guest) -> Option<u64> {

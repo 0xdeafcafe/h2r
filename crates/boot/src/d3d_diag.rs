@@ -1210,6 +1210,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(ask) = self.probe.present(n) {
             self.probe_snap(ask);
         }
+        // render.capture: the present after the tick asked for is its frame.
+        agent::render::CAPTURE.present(n);
         if !self.probe.armed() {
             self.probe_target = None;
         }

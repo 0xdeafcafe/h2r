@@ -239,6 +239,162 @@ pub struct RenderStats {
     pub counters: Value,
 }
 
+/// `render.compare`: two PNG files compared pixel by pixel
+/// (docs/graphics/framescene.md, section 9.2).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompareParams {
+    pub a: String,
+    pub b: String,
+    /// Where to write the difference image (PNG), if wanted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+/// `render.compare`'s answer (and `render.parity`'s, with its tick).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompareReply {
+    /// `[width, height]`, the same for both.
+    pub size: [u32; 2],
+    /// Pixels with any channel off by more than
+    /// [`CompareReply::NOISE`].
+    pub differing: u64,
+    /// The largest difference of any one channel.
+    pub max_channel: u8,
+    /// The mean absolute difference over every channel of every pixel.
+    pub mean: f64,
+    /// The first differing pixel in row order, `[x, y]`; `null` when none.
+    pub first: Option<[u32; 2]>,
+    /// Within the parity bar: `max_channel <= 8` and `differing` at most
+    /// 0.01% of the pixels.
+    pub within_bar: bool,
+    /// The difference image, when one was asked for and written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+impl CompareReply {
+    /// A channel off by this much or less does not make a pixel differ.
+    pub const NOISE: u8 = 2;
+    /// The bar's largest channel difference.
+    pub const BAR_MAX_CHANNEL: u8 = 8;
+    /// The bar's share of differing pixels: one in this many (0.01%).
+    pub const BAR_DIFFERING_ONE_IN: u64 = 10_000;
+
+    /// Whether `max_channel` and `differing` over `pixels` meet the bar.
+    pub fn meets_bar(max_channel: u8, differing: u64, pixels: u64) -> bool {
+        max_channel <= Self::BAR_MAX_CHANNEL
+            && u128::from(differing) * u128::from(Self::BAR_DIFFERING_ONE_IN)
+                <= u128::from(pixels)
+    }
+}
+
+/// `render.capture`: the frame of a sim tick as a PNG.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureParams {
+    /// The game tick (as `at.tick` counts) whose frame is wanted; default
+    /// the next one. At most [`CaptureParams::MAX_AHEAD`] ticks ahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u64>,
+    /// A pass of that frame (as `render.frame` numbers them) read back
+    /// instead of the presented image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<usize>,
+}
+
+impl CaptureParams {
+    /// How far ahead a tick may be asked for: the answer must come within
+    /// the agent's deferred-answer limit (300 ticks).
+    pub const MAX_AHEAD: u64 = 240;
+}
+
+/// `render.capture`'s answer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CaptureReply {
+    /// The PNG.
+    pub path: String,
+    /// The last tick that ended before the frame's present: the tick asked
+    /// for, or a later one when the game ran two ticks in one frame.
+    pub tick: u64,
+    /// The present that showed it (as `frame-N.png` and `render.frame`
+    /// number presents).
+    pub present: u64,
+    /// The pass read back, when one was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<usize>,
+    /// The sealed scene's summary hash at that present (`render.scene`);
+    /// `null` with no scene source.
+    pub scene_hash: Option<String>,
+}
+
+/// `render.scene`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneParams {
+    /// Also write the whole scene as JSON under the cache directory.
+    #[serde(default)]
+    pub dump: bool,
+}
+
+/// `render.scene`'s answer: the last sealed `FrameScene`
+/// (docs/graphics/framescene.md, section 4).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneReply {
+    /// False until a scene has been sealed.
+    pub sealed: bool,
+    pub map_epoch: u32,
+    pub frame: u64,
+    pub tick: u32,
+    /// The scene's summary hash, hex.
+    pub hash: String,
+    /// Why this scene is a cut (`map`, `bsp`, `revert`, `load`, `views`); empty when none.
+    pub cut: Vec<String>,
+    pub views: Vec<SceneViewRecord>,
+    /// scene_dropped_*, scene_unresident, scene_readback, scene_held_draws, scenes_sealed, ...
+    pub counters: BTreeMap<String, u64>,
+    /// The JSON file written when `dump` was asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dump: Option<String>,
+}
+
+/// One view of a sealed scene.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneViewRecord {
+    /// `game:0:0` (kind:player:view).
+    pub key: String,
+    pub cut: bool,
+    pub clusters: u32,
+    pub instances: u32,
+    pub parts: u32,
+    pub rows: u32,
+    pub lights: u32,
+    pub shadows: u32,
+    /// Instances the guest still draws (refused by extraction).
+    pub remainder: u32,
+    /// Carried ops by slot name, then by CameraUse; empty until slice 6.
+    #[serde(default)]
+    pub carried: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub camera_use: BTreeMap<String, u32>,
+}
+
+/// `render.parity`: arm the in-process two-path comparison for one frame
+/// (a diagnostic, deleted with the D3D backend).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParityParams {
+    pub arm: bool,
+}
+
+/// `render.parity`'s answer: `render.compare`'s, plus the tick compared.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ParityReply {
+    /// The last tick that ended before the frame step that drew both paths.
+    pub tick: Option<u64>,
+    #[serde(flatten)]
+    pub compare: CompareReply,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +449,47 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(p.constants, vec![-96, 95]);
+    }
+
+    #[test]
+    fn the_bar_is_max_channel_8_and_one_pixel_in_ten_thousand() {
+        assert!(CompareReply::meets_bar(8, 1, 10_000));
+        assert!(!CompareReply::meets_bar(9, 0, 10_000));
+        assert!(!CompareReply::meets_bar(8, 2, 10_000));
+        assert!(CompareReply::meets_bar(0, 0, 0));
+        assert!(!CompareReply::meets_bar(0, 1, 9_999));
+    }
+
+    #[test]
+    fn a_comparison_prints_first_as_null_and_parity_adds_the_tick() {
+        let c = CompareReply {
+            size: [4, 2],
+            within_bar: true,
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["first"], Value::Null);
+        assert!(v.get("diff").is_none());
+        let p = ParityReply {
+            tick: Some(90),
+            compare: c.clone(),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["tick"], 90);
+        assert_eq!(v["size"], serde_json::json!([4, 2]));
+        assert_eq!(serde_json::from_value::<ParityReply>(v).unwrap(), p);
+    }
+
+    #[test]
+    fn params_take_their_defaults_and_refuse_strangers() {
+        let s: SceneParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!s.dump);
+        let c: CaptureParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(c, CaptureParams::default());
+        assert!(serde_json::from_value::<CaptureParams>(serde_json::json!({"tik": 3})).is_err());
+        assert!(serde_json::from_value::<CompareParams>(serde_json::json!({"a": "x"})).is_err());
+        let v = serde_json::to_value(CaptureReply::default()).unwrap();
+        assert_eq!(v["scene_hash"], Value::Null, "null, not missing");
+        assert!(v.get("pass").is_none());
     }
 }

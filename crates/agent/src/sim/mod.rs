@@ -21,6 +21,7 @@
 
 pub mod bots;
 pub mod calls;
+pub mod hashes;
 pub mod state;
 
 use std::collections::BTreeMap;

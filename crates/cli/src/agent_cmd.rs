@@ -77,6 +77,12 @@ or a short form:
                          each draw, and implies `draws`; `snap` reads passes
                          N... back as PNGs under the cache directory's
                          frames/ (waits up to 10 s for the frame)
+  frame compare <a.png> <b.png> [--diff D]
+                         render.compare, run here with no game: size,
+                         differing pixels (any channel off by more than 2),
+                         max_channel, mean, first, within_bar (max_channel
+                         <= 8 and at most 0.01% differing); --diff writes the
+                         difference image; exits 1 when outside the bar
   loads [N]              load.timeline: the last N (8) level loads, BSP
                          switches and stalls: stall and settle times, and the
                          bytes read, uploads and compiles in each; a stall
@@ -162,6 +168,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     if first == "raw-diff" {
         return crate::agent_raw::diff_files(&rest[1..]);
+    }
+    if first == "frame" && rest.get(1).is_some_and(|w| w == "compare") {
+        return frame_compare(&rest[2..]);
     }
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -423,6 +432,43 @@ fn frame(c: &mut Client, words: &[String]) -> Result<Value> {
             );
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `frame compare`'s params from its words: two files, `--diff D`.
+fn compare_params(args: &[String]) -> Result<agent_proto::CompareParams> {
+    let mut files = Vec::new();
+    let mut diff = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--diff" => diff = Some(it.next().context("--diff needs a path")?.clone()),
+            _ => files.push(a.clone()),
+        }
+    }
+    let [a, b] = <[String; 2]>::try_from(files).map_err(|_| {
+        anyhow::anyhow!("frame compare needs two PNG files: frame compare A B [--diff D]")
+    })?;
+    Ok(agent_proto::CompareParams { a, b, diff })
+}
+
+/// `h2 agent frame compare A B [--diff D]`: `render.compare` here, with no
+/// socket. Exits 1 when the frames are outside the parity bar, or on an
+/// error (printed as the method's error would be).
+fn frame_compare(args: &[String]) -> Result<()> {
+    let p = compare_params(args)?;
+    match agent::compare::compare_files(&p) {
+        Ok(r) => {
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            if !r.within_bar {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{}", serde_json::to_string_pretty(&e.rpc())?);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -705,6 +751,23 @@ mod tests {
 
     fn words(s: &str) -> Vec<String> {
         split(s).unwrap()
+    }
+
+    #[test]
+    fn frame_compare_takes_two_files_and_a_diff() {
+        let p = compare_params(&words("a.png --diff d.png b.png")).unwrap();
+        assert_eq!(
+            p,
+            agent_proto::CompareParams {
+                a: "a.png".into(),
+                b: "b.png".into(),
+                diff: Some("d.png".into()),
+            }
+        );
+        assert_eq!(compare_params(&words("a.png b.png")).unwrap().diff, None);
+        assert!(compare_params(&words("a.png")).is_err());
+        assert!(compare_params(&words("a.png b.png c.png")).is_err());
+        assert!(compare_params(&words("a.png b.png --diff")).is_err());
     }
 
     #[test]

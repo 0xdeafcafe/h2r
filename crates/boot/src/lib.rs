@@ -13,6 +13,7 @@
 pub use feature::scene_effect_instruction_entries;
 
 pub mod account_screen;
+mod agent_frames;
 pub mod agent_glue;
 pub mod aim_assist;
 mod campaign_cache;
