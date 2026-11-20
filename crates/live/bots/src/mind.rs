@@ -232,11 +232,14 @@ struct Track {
 /// One bot's mind.
 #[derive(Clone, Debug)]
 pub struct Mind {
+    pub(crate) name_profile: Option<crate::name_profile::NameProfile>,
+    pub(crate) profile_weights: Option<crate::name_profile::Weights>,
     pub skill: Skill,
     pub decisions: Decisions,
     pub experience: crate::experience::Experience,
     pub doing: Doing,
     rng: Rng,
+    dual_choices: arms::DualChoices,
     tick: Option<u32>,
     last_pad: HostPadState,
     /// The target and the tick when its reaction finishes.
@@ -251,7 +254,11 @@ pub struct Mind {
     foot_plan: crate::work::PlanSchedule,
     foot_refresh: bool,
     last_seen: Option<(u32, Vec3, u32)>,
-    /// An uncertain search area from hearing or a public kill announcement.
+    /// Last sampled motion tracker dot, held until the next glance.
+    radar: Option<Vec3>,
+    last_glance: Option<u32>,
+    radar_rng: Rng,
+    /// An uncertain search area from the tracker, hearing or the kill feed.
     search: Option<(Vec3, u32)>,
     hand: Hand,
     feet: Feet,
@@ -358,13 +365,21 @@ impl Walk {
 }
 
 impl Mind {
+    /// Cached tendencies for this seat's current style and skill.
+    pub fn profile_weights(&self) -> Option<crate::name_profile::Weights> {
+        self.profile_weights
+    }
+
     pub fn new(skill: Skill, seed: u64) -> Self {
         Mind {
+            name_profile: None,
+            profile_weights: None,
             skill,
             decisions: Decisions::for_skill(seed, skill),
             experience: Default::default(),
             doing: Doing::Idle,
             rng: Rng::new(seed),
+            dual_choices: arms::DualChoices::new(seed),
             tick: None,
             last_pad: HostPadState::default(),
             target: None,
@@ -378,6 +393,9 @@ impl Mind {
             foot_plan: Default::default(),
             foot_refresh: false,
             last_seen: None,
+            radar: None,
+            last_glance: None,
+            radar_rng: Rng::new(seed ^ 0x7261_6461_72),
             search: None,
             hand: Hand::new(seed),
             feet: Feet::new(seed),
@@ -457,6 +475,7 @@ impl Mind {
     }
 
     pub(crate) fn release(&mut self, tick: u32) {
+        self.dual_choices.new_life();
         self.invalidate_routes();
         self.vitality = None;
         self.damage_tick = None;
@@ -473,6 +492,8 @@ impl Mind {
         self.tracks.clear();
         self.last_seen = None;
         self.last_threat = None;
+        self.radar = None;
+        self.last_glance = None;
         self.search = None;
         self.decisions.died(tick);
         self.experience.new_life();
@@ -486,6 +507,20 @@ impl Mind {
         self.stunt = None;
         self.vehicles.reset();
         self.tick = None;
+    }
+
+    fn glance_at_tracker(&mut self, p: &Perception, interval: u32, chance: f32) {
+        let due = self.last_glance.map_or_else(
+            || p.tick % interval == self.slot.unwrap_or(0) % interval,
+            |last| p.tick.wrapping_sub(last) >= interval,
+        );
+        if due {
+            self.last_glance = Some(p.tick);
+            self.radar = p.observations.radar.filter(|_| self.radar_rng.unit() < chance);
+            if let Some(at) = self.radar {
+                self.search = Some((at, p.tick));
+            }
+        }
     }
 
     /// This frame's pad.
@@ -615,6 +650,18 @@ impl Mind {
             _ => None,
         };
         self.experience.visit(me.position, checked);
+        // Glance at the tracker between engagements. A blip can move the
+        // search and the right stick, but cannot enter the sight/lead list.
+        let weights = self.profile_weights();
+        if seen.is_empty() {
+            let chance = weights.map_or_else(
+                || 0.3 + 0.65 * crate::decisions::awareness(self.skill),
+                |w| w.radar_use,
+            );
+            self.glance_at_tracker(p, aim.reaction.max(1), chance);
+        } else {
+            self.radar = None;
+        }
         let (goal, intent) = self.decide(p, me, seen, map);
         // Team knowledge (crate::decisions::radio): a teammate's contact
         // call is where a fight is, at any range. Kept as a roam sighting
@@ -627,9 +674,12 @@ impl Mind {
         if self.target.is_some() && intent.chosen.is_none() {
             self.expedite_vehicle_route();
         }
-        let chosen = intent
-            .chosen
-            .map(|o| (o, self.fight.focus(o.id, p.tick, self.skill)));
+        let reaction = weights
+            .filter(|_| crate::tuning::current().is_none_or(|t| t.reaction.is_none()))
+            .map(|w| w.reaction_jitter);
+        let chosen = intent.chosen.map(|o| {
+            (o, self.fight.focus_with_jitter(o.id, p.tick, self.skill, reaction))
+        });
         self.target = chosen.map(|(o, ready)| (o.id, ready));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
@@ -656,7 +706,10 @@ impl Mind {
                     &Situation {
                         arms: &a,
                         at: me.position,
-                        enemy: enemy_dist,
+                        enemy: chosen.map(|(o, _)| {
+                            let velocity = self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel);
+                            tactics::draw_distance(me.position, o.position, velocity)
+                        }),
                         calm,
                         breather: self
                             .last_threat
@@ -678,6 +731,7 @@ impl Mind {
                                 .is_some_and(|h| !h.contains(pk.position))
                     },
                     Some(behavior.personality),
+                    weights.map(|w| (&mut self.dual_choices, w.dual_wield)),
                 )
             }
             None => Kit::Fine,
@@ -695,11 +749,12 @@ impl Mind {
             self.kit = Kit::Fine;
         }
         // A combo under way chose the gun (crate::weapons): no switch away.
-        if self.combo.busy() && self.kit == Kit::Switch {
+        if self.combo.busy() && matches!(self.kit, Kit::Switch | Kit::Dual(_)) {
             self.kit = Kit::Fine;
         }
         // Shields: down under LOW_SHIELD, up again at SHIELD_BACK.
-        if me.shield < LOW_SHIELD {
+        let retreat_shield = weights.map_or(LOW_SHIELD, |w| LOW_SHIELD + 0.12 * w.retreat);
+        if me.shield < retreat_shield {
             self.recovering = true;
         } else if me.shield >= SHIELD_BACK {
             self.recovering = false;
@@ -795,7 +850,15 @@ impl Mind {
                 // middle, no lead, held until locked.
                 let locking = self.lock_on(&o, held, eye, me.aim, p.tick, aim.fire_cone);
                 let clear = |at| map.is_none_or(|m| m.walls.clear(eye, at));
-                let preferred = up(o.position, shot.height);
+                let shield_down = p
+                    .observations
+                    .contacts
+                    .iter()
+                    .find(|c| c.id == o.id)
+                    .and_then(|c| c.shield)
+                    .is_some_and(|shield| shield <= 0.25);
+                let height = crate::weapons::target_height(held, shield_down, shot.height);
+                let preferred = up(o.position, height);
                 let target = match locking {
                     Some((at, _)) => at,
                     None if clear(preferred) => preferred,
@@ -817,7 +880,18 @@ impl Mind {
                     let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
                     // Fire while near the target: never dry, only in the
                     // weapon's range.
-                    let fired = if shot.in_range(dist) && shot.ready && !melee {
+                    // B is the quick sword slash at arm's length. A target
+                    // beyond that needs the sword's RT lunge.
+                    let sword_lunge = blade
+                        && held.is_some_and(|g| g.ready())
+                        && (MELEE_RANGE..shot.lunge).contains(&dist);
+                    let fired = if sword_lunge {
+                        self.fight.trigger(
+                            p.tick,
+                            tactics::Pull::Tap(crate::weapons::MELEE_EVERY),
+                            off < cone,
+                        )
+                    } else if shot.in_range(dist) && shot.ready && !melee {
                         let locked = locking.is_none_or(|(_, locked)| locked);
                         self.fight.trigger(p.tick, shot.pull, off < cone && locked)
                     } else {
@@ -827,24 +901,22 @@ impl Mind {
                     let risky = behavior.melee_risk()
                         && !carrying
                         && self.decisions.posture != Posture::Withdraw;
-                    let reach = if blade {
-                        if risky || juggernaut || !self.recovering {
-                            shot.lunge
-                        } else {
-                            MELEE_RANGE
-                        }
-                    } else if melee || risky || juggernaut {
-                        MELEE_RANGE * 1.3
-                    } else {
-                        MELEE_RANGE
-                    };
-                    let melee_cone = if blade && !risky && !juggernaut && dist >= MELEE_RANGE {
-                        0.52
-                    } else {
-                        0.85
-                    };
-                    let in_melee =
-                        dist < reach && angle_between(sub(target, eye), me.aim) < melee_cone;
+                    let chest = sub(up(o.position, CHEST), eye);
+                    // Name preference changes the margin at which it attempts
+                    // a beatdown. Every bot strikes within normal arm's reach.
+                    let angle = angle_between(chest, me.aim);
+                    let opportunistic = !blade
+                        && !carrying
+                        && self.decisions.posture != Posture::Withdraw
+                        && angle < 0.85
+                        && weights.is_some_and(|w| len(chest) < MELEE_RANGE * (1.0 + 0.25 * w.melee));
+                    let in_melee = opportunistic || tactics::melee_window(
+                        len(chest),
+                        angle,
+                        held,
+                        shield_down,
+                        melee || risky || juggernaut,
+                    );
                     // Glitches (crate::glitches) only where the fight is not
                     // obviously lost: not low, not withdrawing, nobody else
                     // close; a sword fly never into a group.
@@ -869,6 +941,8 @@ impl Mind {
                             dist,
                             on_target: off < cone,
                             reacted,
+                            shield_down,
+                            combo_chance: weights.map(|w| w.noob_combo),
                             held,
                             other: me.arms.filter(|a| a.left.is_none()).and_then(|a| a.other),
                             firing: fired,
@@ -876,6 +950,9 @@ impl Mind {
                         },
                         self.skill,
                     );
+                    if combo.busy && matches!(self.kit, Kit::Switch | Kit::Reload) {
+                        self.kit = Kit::Fine;
+                    }
                     if combo.trigger.unwrap_or(fired) {
                         pad.right_trigger = 1.0;
                     }
@@ -911,7 +988,7 @@ impl Mind {
                             pad.left_trigger = 1.0;
                         }
                     }
-                    if in_melee && combo.trick.is_none() {
+                    if in_melee && !sword_lunge && combo.trick.is_none() {
                         melee_press = Some(Tap::Melee(o.id));
                     }
                     // A grenade: the thrower rolls for it, more often into a
@@ -956,9 +1033,12 @@ impl Mind {
                         // The combat side's signals (tactics): cover while
                         // reloading or switching in range, and its range band.
                         reloading: self.fight.wants_cover,
-                        range: self.fight.band,
+                        range: weights.map_or(self.fight.band, |w| w.spacing(self.fight.band)),
                     };
-                    let st = crate::moves::Style::with_behavior(self.skill, behavior);
+                    let mut st = crate::moves::Style::with_behavior(self.skill, behavior);
+                    if let Some(w) = weights {
+                        st.apply_weights(w);
+                    }
                     let mv = self.moves.fight_with_style(&fight, map, bodies, st);
                     if mv.jump {
                         pad.buttons.set(JUMP, true);
@@ -993,6 +1073,17 @@ impl Mind {
                 }
             }
             Doing::HoldAngle(at) => {
+                // Holding the corner keeps the last visible position as a
+                // grenade target without revealing the player behind it.
+                if let Some((_, last, tick)) = self.last_seen
+                    && p.tick.wrapping_sub(tick) < COVER_GRENADE_TICKS
+                {
+                    mark = Some(crate::grenades::Mark {
+                        at: last,
+                        vel: [0.0; 3],
+                        seen: false,
+                    });
+                }
                 look = Some(up(at, CHEST));
                 self.follower = None;
             }
@@ -1159,6 +1250,14 @@ impl Mind {
             // In a vehicle `ride` made the pad.
             Doing::Drive(_) | Doing::Ride(_) | Doing::Idle => {}
         }
+        if let Some(at) = self.radar
+            && seen.is_empty() && look.is_none() && traversal.is_none()
+        {
+            let corner = self.follower.as_ref().filter(|f| {
+                f.goal().is_some_and(|goal| dist_xy(goal, at) < 1.5)
+            }).and_then(|f| f.corner(me.position));
+            look = Some(up(corner.unwrap_or(at), CHEST));
+        }
         // Pre-aim (tactics): chasing, it looks where the enemy went.
         if look.is_none()
             && style.pre_aim
@@ -1178,7 +1277,7 @@ impl Mind {
         }
         if !matches!(self.doing, Doing::Fight(_)) {
             self.moves.calm();
-            self.combo.reset();
+            self.combo.leave_fight(p.tick);
         }
         // The grenade hand (crate::grenades): the throw flown against the
         // map's walls (a flat floor without them); never dual wielding or
@@ -1207,6 +1306,7 @@ impl Mind {
         let trade_left = dual.is_some_and(|l| {
             mark.is_some_and(|m| {
                 !m.seen
+                    || m.closing_on(me.position)
                     || len(sub(m.at, me.position)) > l.reach().band.1
                     || seen
                         .iter()
@@ -1231,16 +1331,19 @@ impl Mind {
                     .arms
                     .and_then(|a| crate::grenades::Kind::from_index(a.selected)),
                 busy: carrying
+                    || melee_press.is_some()
                     || taking_objective
                     || (dual.is_some() && !trade_left)
-                    || self.combo.tricking()
+                    || self.combo.busy()
                     || self.stunt.is_some(),
                 pushing,
             },
             world,
             self.skill,
             dual.is_some(),
-            behavior.grenade_rate(),
+            behavior.grenade_rate() * weights
+                .filter(|_| crate::tuning::current().is_none_or(|t| t.grenades_per_minute.is_none()))
+                .map_or(1.0, |w| 0.7 + 0.8 * w.grenades),
         );
         // Aiming a throw: the hand turns to the throw's line instead of the
         // target (tracked still, so the flick and lag are the same hand's).

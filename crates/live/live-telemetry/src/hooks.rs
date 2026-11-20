@@ -27,7 +27,12 @@ const MAX_FIRING_WEAPONS: usize = 256;
 /// Damage reports kept between samples (one tick).
 const MAX_PENDING_HITS: usize = 256;
 
+pub(super) type CombatSource = Box<dyn Fn() -> Vec<live_proto::game::SimCombatSample> + Send + Sync>;
+pub(super) type CombatFeed = Arc<std::sync::OnceLock<CombatSource>>;
+
 pub struct Telemetry {
+    /// Shared only with the transport of an immediate, private simulation.
+    combat: CombatFeed,
     /// Legacy projection and transport run on the worker. During a film the
     /// game thread owns projection and queues only legacy transport work.
     pub(crate) pipeline: Pipeline,
@@ -61,6 +66,7 @@ impl Telemetry {
     pub(crate) fn new(session: Session, sink: impl Sink) -> Self {
         Self {
             pipeline: Pipeline::new(session, sink),
+            combat: Default::default(),
             film: None,
             hooks: live_proto::film::TelemetryHooks::EVENTS,
             disabled: AtomicBool::new(false),
@@ -81,6 +87,11 @@ impl Telemetry {
         self.submit(Work::FinishSim(report))?;
         self.pipeline.settle();
         self.pipeline.worker_error().map_or(Ok(()), Err)
+    }
+
+    /// Sampled on the telemetry worker alongside an immediate simulation's frames.
+    pub fn set_sim_combat(&self, read: impl Fn() -> Vec<live_proto::game::SimCombatSample> + Send + Sync + 'static) {
+        let _ = self.combat.set(Box::new(read));
     }
 
     /// Lets each match look up its map's biped and weapon tag names (frame

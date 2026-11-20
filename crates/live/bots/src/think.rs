@@ -18,8 +18,8 @@
 //!
 //! **Pipelined**, the thinks staged at tick N run while the guest
 //! simulates tick N, and their pads are tick N+1's: a bot acts on what it
-//! saw one tick ago, inside the phantom's modelled network latency (the
-//! uplink takes the tick back off its wire delay, `phantom::action`).
+//! saw one tick ago. The uplink credits this tick toward any configured
+//! transport delay (`phantom::action`).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -256,7 +256,29 @@ pub struct Seat<'a> {
     pub machine: [u8; 6],
 }
 
-type Slot = Arc<Mutex<Option<HostPadState>>>;
+/// The pad and the observation it came from travel together, including
+/// while the next tick's think is running on another thread.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Report {
+    pub(crate) pad: HostPadState,
+    pub(crate) latency: crate::tuning::PhantomLatency,
+    pub(crate) think_ticks: u32,
+    /// A brain report can have no current target. Scripts have no decision.
+    pub(crate) shot_range: Option<Option<f32>>,
+}
+
+impl Report {
+    pub(crate) fn from_source(pad: HostPadState, source: &dyn PadSource) -> Self {
+        Self {
+            pad,
+            latency: source.phantom_latency(),
+            think_ticks: 0,
+            shot_range: source.combat_stats().map(|s| s.range),
+        }
+    }
+}
+
+type Slot = Arc<Mutex<Option<Report>>>;
 
 struct Thought {
     key: u32,
@@ -350,9 +372,9 @@ impl Thinker {
         tick: u32,
         guest: &dyn GuestMemory,
         seats: &[Seat<'_>],
-    ) -> (Vec<HostPadState>, Vec<(usize, Thought)>) {
+    ) -> (Vec<Report>, Vec<(usize, Thought)>) {
         radio::lock(self.radio).begin_batch();
-        let mut pads = vec![HostPadState::default(); seats.len()];
+        let mut pads = vec![Report::default(); seats.len()];
         let mut thoughts = Vec::new();
         for (i, seat) in seats.iter().enumerate() {
             let frame = Frame {
@@ -361,8 +383,9 @@ impl Thinker {
                 machine: seat.machine,
                 guest,
             };
-            match lock_source(seat.source).observe(&frame) {
-                Sampled::Pad(pad) => pads[i] = pad,
+            let mut source = lock_source(seat.source);
+            match source.observe(&frame) {
+                Sampled::Pad(pad) => pads[i] = Report::from_source(pad, &**source),
                 Sampled::Think => thoughts.push((
                     i,
                     Thought {
@@ -379,8 +402,9 @@ impl Thinker {
             .map(|(_, t)| {
                 let (source, pad) = (Arc::clone(&t.source), Arc::clone(&t.pad));
                 Box::new(move || {
-                    let thought = lock_source(&source).think();
-                    *lock(&pad) = Some(thought);
+                    let mut source = lock_source(&source);
+                    let thought = source.think();
+                    *lock(&pad) = Some(Report::from_source(thought, &**source));
                 }) as Job
             })
             .collect();
@@ -395,18 +419,32 @@ impl Thinker {
         guest: &dyn GuestMemory,
         seats: &[Seat<'_>],
     ) -> Vec<HostPadState> {
+        self.sample_reports(tick, guest, seats)
+            .into_iter()
+            .map(|report| report.pad)
+            .collect()
+    }
+
+    pub(crate) fn sample_reports(
+        &mut self,
+        tick: u32,
+        guest: &dyn GuestMemory,
+        seats: &[Seat<'_>],
+    ) -> Vec<Report> {
         match self.mode {
             Mode::Serial => {
                 self.settle();
                 seats
                     .iter()
                     .map(|s| {
-                        lock_source(s.source).pad(&Frame {
+                        let mut source = lock_source(s.source);
+                        let pad = source.pad(&Frame {
                             frame: s.frame,
                             tick,
                             machine: s.machine,
                             guest,
-                        })
+                        });
+                        Report::from_source(pad, &**source)
                     })
                     .collect()
             }
@@ -443,6 +481,10 @@ impl Thinker {
                                 .find(|p| p.key == t.key && p.generation == t.generation)
                         })
                         .and_then(|p| *lock(&p.pad))
+                        .map(|report| Report {
+                            think_ticks: 1,
+                            ..report
+                        })
                         .unwrap_or_default();
                 }
                 self.in_flight = Some(InFlight {

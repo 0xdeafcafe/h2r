@@ -301,8 +301,8 @@ fn by_range_it_switches_to_the_gun_that_suits_the_distance() {
     );
     assert_eq!(
         decide(&a, Some(20.0), false, &[]),
-        Kit::Fine,
-        "Easy keeps it"
+        Kit::Switch,
+        "Easy recognizes a shotgun at rifle range"
     );
     assert_eq!(decide_by_range(&a, Some(2.0), false, false, &[]), Kit::Fine);
     // The rifle in hand and the enemy in its face: the shotgun...
@@ -483,8 +483,8 @@ fn a_blade_is_kept_close_up_and_put_away_for_a_far_enemy() {
     );
     assert_eq!(
         decide(&a, Some(20.0), false, &[]),
-        Kit::Fine,
-        "Easy keeps it"
+        Kit::Switch,
+        "Easy puts the sword away at rifle range"
     );
     assert!(a.held.unwrap().ready());
 }
@@ -966,10 +966,10 @@ fn temperament_loyalty_takes_a_short_favorite_detour_only_when_calm() {
         weapon_loyalty: 0.2,
         ..loyal
     };
-    let plan = |s: &Situation<'_>, p| plan_with_personality(s, |_| false, Some(p));
+    let plan = |s: &Situation<'_>, p| plan_with_personality(s, |_| false, Some(p), None);
     assert_eq!(plan(&s, indifferent), Kit::Fine);
     assert_eq!(plan(&s, loyal), Kit::Seek(favorite));
-    assert_eq!(plan_with_personality(&s, |_| true, Some(loyal)), Kit::Fine);
+    assert_eq!(plan_with_personality(&s, |_| true, Some(loyal), None), Kit::Fine);
     s.enemy = Some(5.0);
     s.calm = false;
     s.breather = false;
@@ -1019,6 +1019,51 @@ fn the_dual_pickup_table_checks_both_hands_and_range() {
             assert_ne!(decide_by_range(&busy, None, true, true, &[p]), Kit::Dual(p));
         }
     }
+}
+
+#[test]
+fn named_dual_preference_rolls_on_each_genuine_pickup_and_keeps_its_answer() {
+    let mut gun = with(SMG, smg(), full());
+    gun.profile.dual = Some(DualGun::Smg);
+    let primary = arms(Some(gun), None);
+    let pickup = Pickup { id: 7, position: [0.2, 0.0, 0.0], gun };
+    let s = Situation {
+        arms: &primary, at: [0.0; 3], enemy: Some(4.0), calm: false,
+        breather: false, by_range: false, pickups: &[],
+    };
+    let decide = |choices: &mut DualChoices, chance, p, range| {
+        let at = [p];
+        plan_with_personality(
+            &Situation { pickups: &at, enemy: Some(range), ..s },
+            |_| false, None, Some((choices, chance)),
+        )
+    };
+
+    let mut low = DualChoices::new(77);
+    let mut high = low.clone();
+    assert_eq!(decide(&mut low, 1.0, pickup, 30.0), Kit::Fine);
+    assert!(low.choices.is_empty());
+    let distant = Pickup { position: [4.0, 0.0, 0.0], ..pickup };
+    assert_eq!(decide(&mut low, 1.0, distant, 4.0), Kit::Fine);
+    assert!(low.choices.is_empty());
+    let mut counts = [0; 2];
+    for salt in 1..=256 {
+        // The item table reuses the same slot for separate weapon spawns.
+        let p = Pickup { id: salt << 16 | pickup.id, ..pickup };
+        let a = decide(&mut low, 0.2, p, 4.0);
+        let b = decide(&mut high, 0.8, p, 4.0);
+        counts[0] += usize::from(a == Kit::Dual(p));
+        counts[1] += usize::from(b == Kit::Dual(p));
+        for _ in 0..8 {
+            assert_eq!(decide(&mut low, 0.2, p, 4.0), a);
+            assert_eq!(decide(&mut high, 0.8, p, 4.0), b);
+        }
+    }
+    assert!(counts[0] > 0 && counts[0] < counts[1] && counts[1] < 256);
+
+    assert_eq!(decide(&mut low, 0.0, pickup, 4.0), Kit::Fine);
+    low.new_life();
+    assert_eq!(decide(&mut low, 1.0, pickup, 4.0), Kit::Dual(pickup));
 }
 
 #[test]
@@ -1134,7 +1179,7 @@ fn temperament_pickup_scoring_favors_a_weapon_inside_the_sandbox_gates() {
     };
     assert_eq!(plan(&s, |_| false), Kit::Seek(sniper));
     assert_eq!(
-        plan_with_personality(&s, |_| false, Some(loyal)),
+        plan_with_personality(&s, |_| false, Some(loyal), None),
         Kit::Seek(sword)
     );
 
@@ -1147,7 +1192,38 @@ fn temperament_pickup_scoring_favors_a_weapon_inside_the_sandbox_gates() {
         ..s
     };
     assert_eq!(
-        plan_with_personality(&fight, |_| false, Some(loyal)),
+        plan_with_personality(&fight, |_| false, Some(loyal), None),
         Kit::Dual(offhand)
     );
+}
+
+#[test]
+fn a_charging_enemy_draws_a_loaded_sword_before_the_smg_loses_its_band() {
+    let smg = with(SMG, smg(), full());
+    let sword = with(SWORD, sword(), Ammo::Battery(0.75));
+    let range = crate::tactics::draw_distance([0.0; 3], [2.8, 0.0, 0.0], [-2.0, 0.0, 0.0]);
+    let pair = arms(Some(smg), Some(sword));
+    assert_eq!(decide_by_range(&pair, Some(range), false, false, &[]), Kit::Switch);
+    assert_eq!(decide(&pair, Some(range), false, &[]), Kit::Switch);
+    assert_eq!(decide(&arms(Some(sword), Some(smg)), Some(range), false, &[]), Kit::Fine);
+    let dead = Gun { ammo: Ammo::Battery(0.0), ..sword };
+    assert_eq!(decide(&arms(Some(smg), Some(dead)), Some(range), false, &[]), Kit::Fine);
+}
+
+#[test]
+fn a_single_smg_takes_a_visible_rifle_for_the_open_slot() {
+    let pair = arms(Some(with(SMG, smg(), full())), None);
+    let pickup = Pickup { id: 2, position: [4.0, 0.0, 0.0], gun: with(BR, rifle(), full()) };
+    assert_eq!(decide(&pair, None, true, &[pickup]), Kit::Seek(pickup));
+}
+
+#[test]
+fn it_draws_the_rifle_as_soon_as_an_smg_cannot_reach() {
+    let mut primary = with(SMG, smg(), full());
+    primary.profile.dual = Some(DualGun::Smg);
+    let pair = arms(Some(primary), Some(with(BR, rifle(), full())));
+    assert_eq!(decide_by_range(&pair, Some(9.1), false, false, &[]), Kit::Switch);
+    assert_eq!(decide_by_range(&pair, Some(7.0), false, false, &[]), Kit::Fine);
+    let long = arms(Some(with(BR, rifle(), full())), Some(with(SNIPER, sniper(), full())));
+    assert_eq!(decide_by_range(&long, Some(25.0), false, false, &[]), Kit::Switch);
 }

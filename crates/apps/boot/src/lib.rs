@@ -633,6 +633,10 @@ fn run_configured(
         }
         f.set_match_sources(k.vfs(), _live.clone(), sim_mode.as_ref().map(|s| s.matched()));
     }
+    if uploading_sim && let (Some(t), Some(sim)) = (&_telemetry, &sim_mode) {
+        let sim = sim.clone();
+        t.set_sim_combat(move || sim.live_combat());
+    }
     if uploading_sim && _telemetry.is_none() {
         anyhow::bail!("sim upload requires the telemetry feature");
     }

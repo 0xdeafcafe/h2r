@@ -668,15 +668,7 @@ mod books {
         let slot = slot_of(&g, mac).unwrap().unwrap();
         g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
-        assert_eq!(g.f32(slot + SLOT_ACTION + 0x14).unwrap(), 0.0);
-
-        // The default uplink takes one or two ticks. Gather consecutive
-        // samples so the action stream stays live while the report arrives.
-        for tick in 101..=102 {
-            g.put_u32(TIME + guest::GAME_TIME_TICK, tick);
-            g = buttons::gather(&ph, g, slot);
-            assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), tick);
-        }
+        // A locally computed report reaches retail in the gather that requested it.
         assert_eq!(g.f32(slot + SLOT_ACTION + 0x14).unwrap(), 1.0);
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "made once");
 

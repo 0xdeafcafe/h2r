@@ -355,6 +355,8 @@ pub struct MemoryUsage {
     pub guest_pages: Option<u64>,
 }
 
+pub use live_proto::game::WeaponAccuracy;
+
 /// One player's line in the report.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlayerReport {
@@ -381,6 +383,11 @@ pub struct PlayerReport {
     /// `hits / shots` (0 with no shots). A shotgun's pellets, a
     /// grenade's splash and melee count as hits too, so it can pass 1.
     pub accuracy: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapon_accuracy: Vec<WeaponAccuracy>,
+    /// Phantom brain diagnostics in the same shape as the bots.stats response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combat: Option<serde_json::Value>,
     pub damage_dealt: f64,
     pub damage_taken: f64,
     pub alive_ticks: u64,
@@ -869,6 +876,8 @@ impl Tally {
                 } else {
                     0.0
                 },
+                weapon_accuracy: Vec::new(),
+                combat: None,
                 damage_dealt: a.damage_dealt,
                 damage_taken: a.damage_taken,
                 alive_ticks: a.alive_ticks,
@@ -1344,6 +1353,7 @@ mod tests {
         });
         let p: PlayerReport = serde_json::from_value(old).unwrap();
         assert_eq!((p.ttk_kills, p.ttk_ticks, p.aim.clone()), (0, 0.0, None));
+        assert!(p.combat.is_none() && p.weapon_accuracy.is_empty());
         // And the new fields round trip.
         let new = PlayerReport {
             ttk_kills: 2,

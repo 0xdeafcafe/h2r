@@ -453,6 +453,14 @@ impl Gun {
     pub fn misfit(&self, d: f32) -> f32 {
         crate::weapons::misfit(self.reach().band, d)
     }
+    fn can_attack_at(&self, d: f32) -> bool {
+        let reach = self.reach();
+        if self.role() == Role::Blade {
+            d < reach.lunge
+        } else {
+            (reach.fire.0..reach.fire.1).contains(&d)
+        }
+    }
     /// Worth going for: its role's rating, nothing when dry. A blade with
     /// no battery read counts as live.
     pub fn rating(&self) -> u8 {
@@ -590,6 +598,33 @@ pub enum Kit {
     Melee,
 }
 
+/// The brain rolls once per compatible (primary definition, ground object)
+/// during a life. A vanished pickup can reappear in view with the same salted
+/// datum; only a fresh weapon instance or a different primary gets a new roll.
+#[derive(Clone, Debug)]
+pub(crate) struct DualChoices {
+    rng: crate::mind::feel::Rng,
+    choices: rustc_hash::FxHashMap<(u32, u32), bool>,
+}
+
+impl DualChoices {
+    pub(crate) fn new(seed: u64) -> Self {
+        Self {
+            rng: crate::mind::feel::Rng::new(seed ^ 0x7a46_911d_b34c_205f),
+            choices: Default::default(),
+        }
+    }
+
+    pub(crate) fn new_life(&mut self) {
+        self.choices.clear();
+    }
+
+    fn accepts(&mut self, primary: u32, pickup: u32, chance: f32) -> bool {
+        *self.choices.entry((primary, pickup))
+            .or_insert_with(|| self.rng.unit() < chance)
+    }
+}
+
 /// What [`plan`] looks at.
 #[derive(Clone, Copy, Debug)]
 pub struct Situation<'a> {
@@ -602,9 +637,8 @@ pub struct Situation<'a> {
     /// No enemy in view for a moment (it went behind cover): time for a
     /// reload of a half-empty magazine.
     pub breather: bool,
-    /// Picks the weapon by range: switches to the other gun when the
-    /// enemy is outside the held one's band and inside the other's, and
-    /// rather than reload under fire (Normal skill and up).
+    /// More sensitive range selection and advanced inventory decisions,
+    /// such as switching instead of reloading under fire (Normal and up).
     pub by_range: bool,
     pub pickups: &'a [Pickup],
 }
@@ -619,8 +653,8 @@ pub const POWER_RANGE: f32 = 25.0;
 pub const MELEE_CHASE: f32 = 2.5;
 /// In a lull, reloads a magazine under this.
 pub const BREATHER_RELOAD: f32 = 0.6;
-/// Switches by range only when the held gun's misfit ([`Role::misfit`]) is
-/// over this and the other's is 0: no flip-flop at a band's edge.
+/// Required improvement in range fit for switching between two usable
+/// weapons on Normal and up. This keeps small range changes stable.
 pub const RANGE_SWITCH_MISFIT: f32 = 0.3;
 /// A better pickup counts this many world units nearer per rating point.
 pub const RATING_PULL: f32 = 3.0;
@@ -639,8 +673,8 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///    [`SEEK_RANGE`] (the best near one); else melee whatever comes;
 /// 3. an empty magazine with rounds to load: reload; by range, with the
 ///    other gun loaded and the enemy in its band, switch instead (faster);
-/// 4. by range: the enemy clearly outside the held gun's band and inside
-///    the other's: switch;
+/// 4. prefer a ready sword or shotgun at close range, a sniper at the
+///    far end of a rifle's band, or a gun that can reach the enemy;
 /// 5. calm with a magazine under [`RELOAD_BELOW`], or a lull with one under
 ///    [`BREATHER_RELOAD`], or the enemy beyond the gun's fire range with
 ///    one under [`RELOAD_BELOW`]: reload;
@@ -653,13 +687,14 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///
 /// `skip` rules out pickups (those the bot could not reach).
 pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
-    plan_with_personality(s, skip, None)
+    plan_with_personality(s, skip, None, None)
 }
 
 pub(crate) fn plan_with_personality(
     s: &Situation<'_>,
     skip: impl Fn(&Pickup) -> bool,
     personality: Option<crate::decisions::Personality>,
+    mut dual: Option<(&mut DualChoices, f32)>,
 ) -> Kit {
     let held_gun = s.arms.held;
     let other_gun = s.arms.other;
@@ -674,12 +709,11 @@ pub(crate) fn plan_with_personality(
     let other_misfit = |d: f32| other_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
     // All pickup choices, including the off hand, apply interest after
     // filtering for reach, safety and weapon compatibility.
-    let nearest = |range: f32, want: &dyn Fn(&Pickup) -> bool| {
+    let nearest = |range: f32, want: &mut dyn FnMut(&Pickup) -> bool| {
         s.pickups
             .iter()
-            .filter(|&p| p.useful() && want(p) && !skip(p))
             .map(|p| (dist(p.position, s.at), *p))
-            .filter(|(d, _)| *d < range)
+            .filter(|(d, p)| *d < range && p.useful() && !skip(p) && want(p))
             .min_by(|a, b| {
                 let cost = |(d, p): &(f32, Pickup)| {
                     d - RATING_PULL * p.gun.rating() as f32
@@ -689,14 +723,27 @@ pub(crate) fn plan_with_personality(
             })
             .map(|(_, p)| p)
     };
-    // Switches to the other gun when the enemy is clearly out of the held
-    // one's band and in the other's.
+    // Draw a ready close-range power weapon even when the current gun
+    // also fits. Otherwise keep the current gun until the mismatch is clear.
     let range_switch = |d: f32| {
-        s.by_range
-            && other_ready
-            && other_role != Role::Unknown
-            && held_misfit(d) > RANGE_SWITCH_MISFIT
-            && other_misfit(d) == 0.0
+        let Some(other) = other_gun.filter(|g| g.ready() && g.role() != Role::Unknown) else {
+            return false;
+        };
+        let other_fit = other.misfit(d);
+        let close_power = matches!(other_role, Role::Blade | Role::Scatter)
+            && other_fit == 0.0
+            && role != Role::Blade
+            && (role != Role::Scatter || other_role == Role::Blade);
+        let sniper_distance = other_role == Role::Sniper
+            && role == Role::Precise
+            && other_fit == 0.0
+            && held_gun.is_some_and(|g| d > 0.8 * g.reach().band.1);
+        let threshold = if s.by_range { RANGE_SWITCH_MISFIT } else { 0.6 };
+        close_power
+            || sniper_distance
+            || (other.can_attack_at(d)
+                && (held_gun.is_some_and(|g| !g.can_attack_at(d))
+                    || held_misfit(d) - other_fit > threshold))
     };
     if role == Role::Blade && held_gun.is_some_and(|g| g.ready()) {
         if let Some(d) = s.enemy
@@ -713,7 +760,7 @@ pub(crate) fn plan_with_personality(
         if s.enemy.is_some_and(|d| d < MELEE_CHASE) {
             return Kit::Melee;
         }
-        if let Some(p) = nearest(SEEK_RANGE, &|_| true) {
+        if let Some(p) = nearest(SEEK_RANGE, &mut |_| true) {
             return Kit::Seek(p);
         }
         return if s.enemy.is_some() {
@@ -755,7 +802,7 @@ pub(crate) fn plan_with_personality(
     };
     if (s.enemy.is_some() || s.calm || s.breather)
         && !has_power
-        && let Some(p) = nearest(power_range, &|p| {
+        && let Some(p) = nearest(power_range, &mut |p| {
             p.gun.role().power() && !s.arms.carries(p.gun.def)
         })
     {
@@ -766,7 +813,7 @@ pub(crate) fn plan_with_personality(
         }
         return Kit::Seek(p);
     }
-    if s.by_range
+    if (dual.is_some() || s.by_range)
         && s.arms.left.is_none()
         && let Some(h) = held_gun.filter(|h| h.ready())
         && let Some(kind) = h.profile.dual
@@ -776,11 +823,14 @@ pub(crate) fn plan_with_personality(
             } else {
                 PAIR_RANGE
             },
-            &|p| {
+            &mut |p| {
                 p.gun.ready()
                     && p.gun.profile.dual.is_some_and(|other| kind.pairs(other))
                     && s.enemy
                         .is_none_or(|d| d <= h.reach().band.1.min(p.gun.reach().band.1))
+                    && dual.as_mut().is_none_or(|(choices, chance)| {
+                        choices.accepts(h.def, p.id, *chance)
+                    })
             },
         )
     {
@@ -788,7 +838,7 @@ pub(crate) fn plan_with_personality(
     }
     if s.calm && held.low() && other.is_none_or(|o| o.low()) {
         // Same kind tops up by walking over it; any useful gun will do.
-        if let Some(p) = nearest(TOP_UP_RANGE, &|_| true) {
+        if let Some(p) = nearest(TOP_UP_RANGE, &mut |_| true) {
             return Kit::Seek(p);
         }
     }
@@ -799,7 +849,7 @@ pub(crate) fn plan_with_personality(
             .into_iter()
             .flatten()
             .any(|g| g.rating() > 0 && g.role() == traits.favorite_weapon)
-        && let Some(p) = nearest(traits.favorite_detour(), &|p| {
+        && let Some(p) = nearest(traits.favorite_detour(), &mut |p| {
             traits.weapon_interest(p.gun.role()) > 0.0 && !s.arms.carries(p.gun.def)
         })
     {
@@ -814,6 +864,16 @@ pub(crate) fn plan_with_personality(
             };
         }
     }
+    // A single short gun leaves the second slot free for a rifle, even
+    // with full ammunition. Walking onto it and holding X is retail input.
+    if s.calm && other_gun.is_none()
+        && let Some(h) = held_gun.filter(|g| g.role() != Role::Unknown)
+        && let Some(p) = nearest(PAIR_RANGE, &mut |p| {
+            !s.arms.carries(p.gun.def) && p.gun.rating() > h.rating()
+        })
+    {
+        return Kit::Seek(p);
+    }
     if s.calm && s.by_range {
         // A long gun and a short one: two of a kind, it takes one of the
         // other kind, dropping the worse of the two.
@@ -821,7 +881,7 @@ pub(crate) fn plan_with_personality(
             let (ch, co) = (crate::weapons::class(&h), crate::weapons::class(&o));
             if ch == co
                 && ch != crate::weapons::Class::Other
-                && let Some(p) = nearest(PAIR_RANGE, &|p| {
+                && let Some(p) = nearest(PAIR_RANGE, &mut |p| {
                     let c = crate::weapons::class(&p.gun);
                     c != ch && c != crate::weapons::Class::Other && !s.arms.carries(p.gun.def)
                 })
@@ -1027,6 +1087,7 @@ pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
 }
 
 pub(crate) struct Ground {
+    pub loose_grenades: Vec<(crate::brain::Vec3, crate::grenades::Kind)>,
     pub held_power: Vec<u32>,
     pub weapons: Vec<Pickup>,
     pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
@@ -1042,6 +1103,7 @@ pub(crate) struct Ground {
 /// close to it (crate::incoming).
 pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R<Ground> {
     let mut out = Ground {
+        loose_grenades: Vec::new(),
         held_power: Vec::new(),
         weapons: Vec::new(),
         supplies: Some(Vec::new()),
@@ -1062,11 +1124,13 @@ pub(crate) fn ground_into(
     out.held_power.clear();
     out.weapons.clear();
     out.grenades.clear();
+    out.loose_grenades.clear();
     let Some(array) = objects::array(m)? else {
         out.supplies = None;
         return Ok(());
     };
     out.supplies.get_or_insert_with(Vec::new).clear();
+    let grenade_equipment = crate::incoming::equipment_defs(m);
     let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
     for record in array.live_iter(m, OBJECT_LIMIT)? {
         let (h, header) = record?;
@@ -1119,9 +1183,26 @@ pub(crate) fn ground_into(
                 }
                 crate::guest::intel::supply(m, h, body, None, gun.role())
             }
-            crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
-                .body(m)
-                .and_then(|addr| crate::guest::intel::equipment(m, h, addr)),
+            crate::guest::intel::EQUIPMENT => header.body(m).and_then(|addr| {
+                if addr != 0 && let Some(defs) = grenade_equipment {
+                    let body = objects::Body::at(addr);
+                    if let Some(def) = body.definition(m)?
+                        && let Some(i) = defs.iter().position(|&d| d == Some(def))
+                    {
+                        if body.parent(m)?.is_none()
+                            && let Some(kind) = crate::grenades::Kind::from_index(i as i8)
+                        {
+                            out.loose_grenades.push((body.position(m)?, kind));
+                        }
+                        return Ok(None);
+                    }
+                }
+                if out.supplies.is_some() {
+                    crate::guest::intel::equipment(m, h, addr)
+                } else {
+                    Ok(None)
+                }
+            }),
             _ => continue,
         };
         match site {

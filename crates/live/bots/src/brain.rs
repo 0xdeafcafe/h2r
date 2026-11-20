@@ -65,6 +65,11 @@ pub struct Observations {
     pub player: Option<(u32, i16)>,
     /// Cues on living players. Enemy cues only inform decisions in view.
     pub contacts: Vec<Contact>,
+    /// Approximate horizontal world position of the nearest hostile motion
+    /// tracker blip, at the observer's own height. Carries no player identity.
+    pub radar: Option<Vec3>,
+    /// Loose frag/plasma equipment that the observer can see.
+    pub ground_grenades: Vec<(Vec3, crate::grenades::Kind)>,
     /// An empty successful pickup scan can indicate that a weapon was taken.
     pub pickups_scanned: bool,
     /// Public simulation ticks per second for estimating placement service.

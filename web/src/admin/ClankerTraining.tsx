@@ -11,7 +11,7 @@ import { applyGameSnapshot, initialState } from "../state/reducer";
 import { StreamClient } from "../state/stream";
 import {
   comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
-  type SimDetail, type SimFilter, type SimPlayer, type SimRun,
+  type SimCombat, type SimDetail, type SimFilter, type SimPlayer, type SimRun,
 } from "./simRuns";
 
 const REFRESH_MS = 5000;
@@ -284,22 +284,96 @@ export function RunReport(props: { detail: SimDetail }) {
   );
 }
 
+type CombatRow = Pick<SimPlayer, "index" | "name" | "combat" | "weapon_accuracy" | "grenades"> & { tick?: number };
+
+function heldWeapon(combat: SimCombat): string {
+  const tag = combat.weapon == null ? "" : `0x${combat.weapon.toString(16)}`;
+  return [combat.weapon_role?.replaceAll("_", " "), tag].filter(Boolean).join(" · ") || "—";
+}
+
+function measured(value: number | null | undefined, places: number, unit: string): string {
+  return value == null ? "—" : `${value.toFixed(places)} ${unit}`;
+}
+
+function CombatFigures(props: { combat: SimCombat; grenades?: number }) {
+  const c = () => props.combat;
+  return (
+    <>
+      <dl class="adm-sim-facts">
+        <div><dt>Held weapon</dt><dd>{heldWeapon(c())}</dd></div>
+        <div><dt>Target range</dt><dd>{measured(c().range, 1, "world units")}</dd></div>
+        <div><dt>Melee presses</dt><dd>{c().melee_presses}</dd></div>
+        <div><dt>Completed switches / Y presses</dt><dd>{c().weapon_switches ?? "—"} / {c().switch_presses}</dd></div>
+        <div><dt>Grenades used / requested</dt><dd>{props.grenades ?? c().grenades_used ?? "—"} / {c().grenade_requests}</dd></div>
+        <div><dt>Mean attack reaction</dt><dd>{c().reactions ? `${(c().total_reaction_ticks / c().reactions).toFixed(1)} ticks` : "—"}</dd></div>
+        <div><dt>Last think time</dt><dd>{measured(c().think_ms, 3, "ms")}</dd></div>
+        <div><dt>Mean think time</dt><dd>{c().think_ticks ? `${(c().total_think_ms / c().think_ticks).toFixed(3)} ms` : "—"}</dd></div>
+      </dl>
+      <Show when={c().last_decisions?.length}>
+        <table class="s-stats">
+          <caption>Recent decisions</caption>
+          <thead><tr><th scope="col">Tick</th><th scope="col">Action</th></tr></thead>
+          <tbody><For each={c().last_decisions?.slice().reverse()}>{(d) => (
+            <tr><td>{d.tick}</td><td>{d.action.replaceAll("_", " ")}</td></tr>
+          )}</For></tbody>
+        </table>
+      </Show>
+    </>
+  );
+}
+
 export function BotStats(props: { detail: SimDetail }) {
-  const players = (): SimPlayer[] => props.detail.report?.players.filter((p) => p.bot) ??
-    props.detail.run.scoreboard.map((score) => ({
-      ...score, bot: true, name: props.detail.game.players.find((p) => p.index === score.index)?.name ?? `Clanker ${score.index + 1}`,
-    }));
+  const name = (index: number) => props.detail.game.players.find((p) => p.index === index)?.name ?? `Clanker ${index + 1}`;
+  const players = createMemo((): SimPlayer[] => props.detail.report?.players.filter((p) => p.bot) ??
+    props.detail.run.scoreboard.map((score) => ({ ...score, bot: true, name: name(score.index) })));
+  const combat = createMemo(() => {
+    const rows = new Map<number, CombatRow>();
+    if (props.detail.report) {
+      for (const p of players()) {
+        if (p.combat || p.weapon_accuracy?.length) rows.set(p.index, p);
+      }
+    } else {
+      for (const sample of props.detail.live_combat ?? []) {
+        rows.set(sample.index, { ...sample, name: name(sample.index) });
+      }
+    }
+    return rows;
+  });
   return (
     <Panel title="Bot stats">
-      <Show when={players().length} fallback={<p>Stats will appear once the bots start scoring.</p>}>
+      <Show when={players().length}>
         <table class="s-stats">
-          <thead><tr><th scope="col">Bot</th><th scope="col">Score</th><th scope="col">Kills</th><th scope="col">Deaths</th><th scope="col">Accuracy</th></tr></thead>
+          <thead><tr><th scope="col">Bot</th><th scope="col">Score</th><th scope="col">Kills</th><th scope="col">Deaths</th><th scope="col">Damage reports / shot</th></tr></thead>
           <tbody><For each={players()}>{(p) => (
             <tr><th scope="row">{p.name}{p.arm ? ` · ${p.arm}` : ""}</th><td>{p.score}</td><td>{p.kills}</td><td>{p.deaths}</td>
               <td>{p.accuracy != null && p.shots !== 0 ? `${(p.accuracy * 100).toFixed(1)}%` : "—"}</td>
             </tr>
           )}</For></tbody>
         </table>
+      </Show>
+      <For each={Array.from(combat().keys())}>{(index) => (
+        <Show when={combat().get(index)}>{(p) => (
+          <details class="adm-hint">
+            <summary>
+              {p().name} · {p().combat?.goal?.replaceAll("_", " ") ?? "combat"}
+              <Show when={(p().tick ?? p().combat?.tick) != null}> · tick {p().tick ?? p().combat?.tick}</Show>
+            </summary>
+            <Show when={p().combat}>{(c) => <CombatFigures combat={c()} grenades={p().grenades} />}</Show>
+            <Show when={p().weapon_accuracy?.length}>
+              <table class="s-stats">
+                <caption>Shots credited with an enemy hit</caption>
+                <thead><tr><th scope="col">Weapon</th><th scope="col">Decision range</th><th scope="col">Hits / shots</th><th scope="col">Accuracy</th></tr></thead>
+                <tbody><For each={p().weapon_accuracy}>{(w) => (
+                  <tr><th scope="row">{w.weapon.replaceAll("_", " ")}</th><td>{w.range}</td>
+                    <td>{w.hits} / {w.shots}</td><td>{(100 * w.accuracy).toFixed(1)}%</td></tr>
+                )}</For></tbody>
+              </table>
+            </Show>
+          </details>
+        )}</Show>
+      )}</For>
+      <Show when={!players().length && !combat().size}>
+        <p>{props.detail.run.status === "running" ? "Waiting for the first score or combat sample." : "No bot stats were recorded."}</p>
       </Show>
     </Panel>
   );

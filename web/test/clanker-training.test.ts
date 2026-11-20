@@ -72,7 +72,10 @@ test("shows the report, per-bot accuracy and comparison summary", () => {
   const detail: SimDetail = {
     run: left, game: left,
     report: { format: "h2-sim-report/1", players: [
-      { index: 0, name: "Bolt", bot: true, score: 2, kills: 2, deaths: 1, shots: 8, accuracy: 0.75 },
+      { index: 0, name: "Bolt", bot: true, score: 2, kills: 2, deaths: 1, shots: 8, accuracy: 0.75,
+        grenades: 1, combat: { melee_presses: 3, grenade_requests: 2, switch_presses: 5, reactions: 4,
+          total_reaction_ticks: 10, think_ticks: 16, total_think_ms: 4 },
+        weapon_accuracy: [{ damage_code: 8, weapon: "smg", range: "close", shots: 8, hits: 3, accuracy: 0.375 }] },
       { index: 1, name: "Chrome", bot: true, score: 0, kills: 0, deaths: 1, shots: 0, accuracy: 0 },
     ] },
   };
@@ -81,13 +84,47 @@ test("shows the report, per-bot accuracy and comparison summary", () => {
   expect(report).toContain("18446744073709551615");
   expect(report).toContain("Determinism");
   const stats = render(() => component(page.BotStats, { detail }));
-  expect(stats).toContain("75.0%");
+  for (const label of ["75.0%", "37.5%", "Decision range", "close", "2.5 ticks", "0.250 ms", "Melee presses"]) {
+    expect(stats).toContain(label);
+  }
   expect(stats).toContain("Chrome");
   expect(stats).not.toContain(">0.0%");
   expect(comparisonRows(left, right)).toContainEqual(["Speed", "2.80×", "1.00×"]);
   const comparison = render(() => component(page.RunComparison, { left, right }));
   expect(comparison).toContain("Compare runs");
   expect(comparison).toContain("Bot parameters");
+});
+
+test("running combat samples resolve the bot by player index before the first score", () => {
+  const running = run("combat", { scoreboard: [], players: [{ index: 4, name: "Chrome", team: 0, bot: true }] });
+  const detail: SimDetail = {
+    game: running, run: running, report: null,
+    live_combat: [{
+      index: 4, tick: 207,
+      combat: {
+        goal: "hold_angle", weapon: 2147483649, weapon_role: "scatter", range: 1.25, think_ms: 0.051,
+        switch_presses: 9, weapon_switches: 2, melee_presses: 3, grenade_requests: 4, grenades_used: 1,
+        reactions: 0, total_reaction_ticks: 0, think_ticks: 200, total_think_ms: 20,
+        last_decisions: [{ tick: 201, action: "reload_or_interact" }],
+      },
+      weapon_accuracy: [{ damage_code: 9, weapon: "shotgun", range: "close", shots: 4, hits: 3, accuracy: 0.75 }],
+    }],
+  };
+  const html = render(() => component(page.BotStats, { detail })).replace(/<!--.*?-->/g, "");
+  for (const expected of ["Chrome", "hold angle", "207", "scatter", "0x80000001", "1.3 world units",
+    "2 / 9", "1 / 4", "201", "reload or interact", "0.051 ms", "75.0%"]) {
+    expect(html).toContain(expected);
+  }
+  expect(html).not.toContain("Waiting for the first score");
+});
+
+test("older running details show scores without combat counters", () => {
+  const running = run("legacy", { players: [{ index: 0, name: "Bolt", team: 0, bot: true }] });
+  const detail: SimDetail = { game: running, run: running, report: null };
+  const html = render(() => component(page.BotStats, { detail }));
+  expect(html).toContain("Bolt");
+  expect(html).toContain("Kills");
+  expect(html).not.toContain("Completed switches");
 });
 
 test("requests a signed stream scoped to the selected game and its log", () => {

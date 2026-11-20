@@ -120,6 +120,8 @@ struct Phantom {
     made: bool,
     buttons: action::GatherState,
     uplink: action::Uplink,
+    /// Latest sampled brain decision. A brain may have no current target.
+    shot_range: Option<Option<f32>>,
     /// Frame-indexed sources advance once per simulation sample, across respawns.
     samples: u64,
     /// Why it waits for hosting, as last logged ([`waiting_line`]).
@@ -130,6 +132,7 @@ impl Phantom {
     fn reset_input(&mut self) {
         self.buttons = Default::default();
         self.uplink.clear();
+        self.shot_range = None;
         self.generation = self.generation.wrapping_add(1);
         lock_source(&self.source).reset_input();
     }
@@ -190,7 +193,7 @@ struct Books {
 struct Batch {
     session: u32,
     tick: u32,
-    pads: Vec<(PhantomHandle, input::host::HostPadState)>,
+    pads: Vec<(PhantomHandle, crate::think::Report)>,
 }
 
 /// Why a Clankermatch's phantom waits outside the match.
@@ -257,6 +260,7 @@ impl Phantoms {
             made: false,
             buttons: Default::default(),
             uplink,
+            shot_range: None,
             samples: 0,
             waiting: None,
         });
@@ -349,12 +353,36 @@ impl Phantoms {
             .and_then(|p| p.info.player)
     }
 
+    // Waiting for a worker to finish must leave the other seats free to gather.
+    fn source(&self, handle: PhantomHandle) -> Option<Source> {
+        let books = self.lock();
+        let seat = books.list.iter().find(|p| p.info.handle == handle)?;
+        Some(Arc::clone(&seat.source))
+    }
+
     pub fn brain_view(&self, handle: PhantomHandle) -> Option<crate::BrainView> {
-        self.lock()
-            .list
-            .iter()
-            .find(|p| p.info.handle == handle)
-            .and_then(|p| lock_source(&p.source).brain_view())
+        lock_source(&self.source(handle)?).brain_view()
+    }
+
+    pub fn combat_stats(&self, handle: PhantomHandle) -> Option<crate::stats::CombatStats> {
+        lock_source(&self.source(handle)?).combat_stats().cloned()
+    }
+
+    /// Read the current combat sample and its difficulty/style together.
+    pub fn combat_state(
+        &self,
+        handle: PhantomHandle,
+    ) -> Option<(crate::stats::CombatStats, crate::BrainView)> {
+        let source = self.source(handle)?;
+        let brain = lock_source(&source);
+        Some((brain.combat_stats()?.clone(), brain.brain_view()?))
+    }
+
+    /// The visible target range at a player's latest combat decision.
+    pub fn shot_context(&self, player: u32) -> Option<(PhantomHandle, Option<f32>)> {
+        let books = self.lock();
+        let seat = books.list.iter().find(|p| p.made && p.info.player == Some(player))?;
+        Some((seat.info.handle, seat.shot_range?))
     }
 
     /// How phantom pads are sampled ([`crate::think::Mode`]): serial by

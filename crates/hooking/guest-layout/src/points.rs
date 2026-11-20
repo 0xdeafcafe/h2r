@@ -500,6 +500,8 @@ points! { ALL;
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Map a packed reporting code to its multiplayer weapon statistics bucket.
+    WEAPON_STAT_BUCKET @ 0x0019_6ef0: [fn(code: ecx) -> eax ret 0], Optional; "docs/runtime/sim.md";
     /// Object deletion before the salted header and body are freed.
     OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.

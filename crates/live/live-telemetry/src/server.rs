@@ -69,6 +69,8 @@ const MAX_DEFERRED_BYTES: usize = 32 * 1024 * 1024;
 const SIM_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct SimCapture {
+    combat: Option<crate::hooks::CombatFeed>,
+    next_combat: Option<Instant>,
     game_id: String,
     deferred: Option<Deferred>,
     pending: Vec<u8>,
@@ -286,8 +288,12 @@ impl ServerSink {
         })
     }
 
-    pub fn with_sim(mut self, sim: &game::SimGame, deferred_lock: Option<PathBuf>) -> Self {
+    pub(crate) fn with_sim(
+        mut self, sim: &game::SimGame, deferred_lock: Option<PathBuf>, combat: crate::hooks::CombatFeed,
+    ) -> Self {
         self.sim = Some(SimCapture {
+            combat: (!sim.deferred && deferred_lock.is_none()).then_some(combat),
+            next_combat: None,
             game_id: game::sim_game_id(&sim.run_id),
             deferred: deferred_lock.map(|lock| Deferred {
                 lock,
@@ -884,6 +890,7 @@ impl ServerSink {
         }
         if self.sim.is_some() {
             self.queue_sim_frame(message)?;
+            self.send_combat()?;
             // Retain a cut across connection failures until its batch is sent.
             if self.machine_cut.is_some() {
                 self.send_pending_sim_frames()?;
@@ -894,6 +901,32 @@ impl ServerSink {
             self.drain()?;
         }
         self.machine_cut = None;
+        Ok(())
+    }
+
+    fn send_combat(&mut self) -> Result<(), Failure> {
+        if !self.discovery().sim_combat {
+            return Ok(());
+        }
+        let sim = self.sim.as_mut().expect("sim capture");
+        let Some(read) = sim.combat.as_ref().and_then(|feed| feed.get()) else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if sim.next_combat.is_some_and(|due| due > now) {
+            return Ok(());
+        }
+        let game_id = sim.game_id.clone();
+        let samples = read();
+        // The first frame can precede binding or spawning the sim roster.
+        sim.next_combat = Some(now + Duration::from_secs(if samples.is_empty() { 1 } else { 5 }));
+        for sample in samples {
+            let message = ClientMessage::SimCombat { game_id: game_id.clone(), sample: Box::new(sample) };
+            let text = serde_json::to_string(&message).expect("finite sim combat sample");
+            if text.len() <= MAX_INGEST_MESSAGE {
+                self.write(Message::Text(text.into()))?;
+            }
+        }
         Ok(())
     }
 
@@ -997,24 +1030,25 @@ impl ServerSink {
         self.send_pending_sim_frames()
             .map_err(|e| format!("final sim frames: {e:?}"))?;
         self.settle_sim_events()?;
-        let result = self.put_report(&id, &report);
+        let result = self.put_report(&id, report);
         drop(guard);
         result
     }
 
     pub(crate) fn report_after_film(
-        mut self, id: &str, report: &serde_json::Value,
+        mut self, id: &str, report: serde_json::Value,
     ) -> Result<(), String> {
         self.discovery = Some(self.discover().map_err(|e| format!("sim report discovery: {e:?}"))?);
         self.put_report(id, report)
     }
 
-    fn put_report(&self, id: &str, report: &serde_json::Value) -> Result<(), String> {
+    fn put_report(&self, id: &str, report: serde_json::Value) -> Result<(), String> {
         let api = resolve_api(&self.base_url, &self.discovery().api);
         let url = format!("{}/admin/sim-runs/{id}/report", api.trim_end_matches('/'));
         if !live_proto::bearer_allowed(&url) {
             return Err("sim report credentials require HTTPS or loopback HTTP".into());
         }
+        let bytes = encode_sim_report(report)?;
         let mut result = Ok(());
         for delay in [0, 1, 2] {
             if delay != 0 {
@@ -1024,7 +1058,8 @@ impl ServerSink {
             let response = Self::agent()
                 .put(&url)
                 .set("Authorization", &format!("Bearer {token}"))
-                .send_json(report);
+                .set("Content-Type", "application/json")
+                .send_bytes(&bytes);
             match response {
                 Ok(_) => {
                     eprintln!("sim: Live recording {id}");
@@ -1038,6 +1073,32 @@ impl ServerSink {
         }
         result
     }
+}
+
+/// Both immediate and deferred sim uploads use the same capped payload.
+fn encode_sim_report(mut report: serde_json::Value) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0; game::MAX_SIM_REPORT_BYTES];
+    let write = |bytes: &mut [u8], value: &serde_json::Value| {
+        let mut out = bytes;
+        serde_json::to_writer(&mut out, value)?;
+        Ok::<_, serde_json::Error>(game::MAX_SIM_REPORT_BYTES - out.len())
+    };
+    let len = match write(&mut bytes, &report) {
+        Ok(n) => n,
+        Err(error) if error.io_error_kind() == Some(ErrorKind::WriteZero) => {
+            let obj = report.as_object_mut().ok_or("expected a sim report object")?;
+            // The runner saves the full per-tick diff locally before upload.
+            obj.remove("state_components_v1");
+            obj.remove("state_hashes_v1");
+            if let Some(notes) = obj.entry("notes").or_insert_with(|| serde_json::json!([])).as_array_mut() {
+                notes.push("The per-tick determinism traces exceed the Live report limit and are omitted.".into());
+            }
+            write(&mut bytes, &report).map_err(|e| format!("sim report exceeds 512 KiB or failed to encode: {e}"))?
+        }
+        Err(e) => return Err(format!("encoding sim report: {e}")),
+    };
+    bytes.truncate(len);
+    Ok(bytes)
 }
 
 /// A close from the server: 4401 is the token refused (or expired), a
@@ -1434,6 +1495,7 @@ mod tests {
             software: "test".into(),
             federation: false,
             url: None,
+            sim_combat: false,
             ingest_frame_versions: vec![],
         };
         assert!(sink.check_host_destination(&discovery).is_ok());

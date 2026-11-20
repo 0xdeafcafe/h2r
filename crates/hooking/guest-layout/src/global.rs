@@ -34,6 +34,8 @@ crate::globals! { GLOBALS;
     KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
     TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
     JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
+    /// Loaded hudg metadata; the motion sensor reads its range at +0x290.
+    HUD_GLOBALS_TAG @ 0x0051_0c94; "docs/halo1/hud.md";
     /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
     GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
     /// Pointer to the game globals ([`crate::game::GameGlobals`]): active

@@ -274,6 +274,8 @@ fn fight(tick: u32, glitch: Gate, held: Gun, other: Option<Gun>, dist: f32) -> C
         dist,
         on_target: true,
         reacted: true,
+        shield_down: false,
+        combo_chance: None,
         held: Some(held),
         other,
         firing: false,

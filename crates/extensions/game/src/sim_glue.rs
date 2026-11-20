@@ -224,6 +224,8 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
         grenades_per_minute: p.grenades_per_minute,
         awareness: p.awareness,
         aggression: p.aggression,
+        push_bias: 0.0,
+        twitchy: false,
         caution: p.caution,
         teamwork: p.teamwork,
         objective_focus: p.objective_focus,
@@ -248,25 +250,7 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
 
 /// What the brain is doing, as the report names it.
 pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
-    use bots::mind::Doing;
-    match d {
-        Doing::Idle => "idle",
-        Doing::Fight(_) => "fight",
-        Doing::Chase(_) => "chase",
-        Doing::HoldAngle(_) => "hold_angle",
-        Doing::Roam => "roam",
-        Doing::Support(_) => "support",
-        Doing::Supply(_) => "supply",
-        Doing::Vantage(_) => "vantage",
-        Doing::Rearm(_) => "rearm",
-        Doing::Recover(_) => "recover",
-        Doing::Carry(_) => "carry",
-        Doing::Keep => "keep",
-        Doing::Play(_) => "play",
-        Doing::Mount(_) => "mount",
-        Doing::Drive(_) => "drive",
-        Doing::Ride(_) => "ride",
-    }
+    bots::stats::goal_name(*d)
 }
 
 /// One tick's telemetry snapshot as the tally takes it.
@@ -463,7 +447,9 @@ impl Sim {
     pub fn add_bots(&self) -> Result<()> {
         bots::phantom::global().set_playerless_host(true);
         for b in &self.0.matched.bots {
-            let brain = bots::Brain::new(skill(b.skill), b.seed).with_tuning(tuning(&b.params));
+            let brain = bots::Brain::new(skill(b.skill), b.seed)
+                .with_name_profile(&b.name)
+                .with_tuning(tuning(&b.params));
             let source = Metered {
                 seat: b.seat,
                 brain,
@@ -544,11 +530,47 @@ impl Sim {
         !inner.stop.load(Ordering::Acquire)
     }
 
+    /// Current bound players, sampled by the private Live training transport.
+    pub fn live_combat(&self) -> Vec<live_proto::game::SimCombatSample> {
+        let seats: Vec<_> = {
+            let s = self.0.lock();
+            if s.phase != Phase::Playing {
+                return Vec::new();
+            }
+            s.bindings.iter().filter_map(|(seat, &index)| {
+                let handle = bots::phantom::handle_of(*s.machines.get(seat)?)?;
+                Some((index, handle))
+            }).collect()
+        };
+        // The worker reads one completed decision per seat. It releases the
+        // tally first, since Metered can hold a brain while updating the tally.
+        seats.into_iter().filter_map(|(index, handle)| {
+            let stats = bots::phantom::global().combat_stats(handle)?;
+            combat_sample(index, &stats, crate::bot_accuracy::rows(handle))
+        }).collect()
+    }
+
     /// The report as it stands (`end`: the match's, else `Aborted`).
     pub fn report(&self) -> Report {
         let inner = &self.0;
-        let s = inner.lock();
-        build_report(inner, &s)
+        // Metered holds the pad source while recording to the sim tally.
+        // Release the tally before locking a source to read its diagnostics.
+        let (mut report, machines) = {
+            let state = inner.lock();
+            (build_report(inner, &state), state.machines.clone())
+        };
+        for player in &mut report.players {
+            let Some(handle) = player.seat
+                .and_then(|seat| machines.get(&seat).copied())
+                .and_then(bots::phantom::handle_of)
+            else {
+                continue;
+            };
+            player.weapon_accuracy = crate::bot_accuracy::rows(handle);
+            player.combat = bots::phantom::global().combat_stats(handle)
+                .map(|stats| json!(stats));
+        }
+        report
     }
 
     /// The guest RAM census at the match's end, for the report's `wall`
@@ -650,6 +672,41 @@ impl Sim {
     }
 }
 
+fn combat_sample(
+    index: u8, stats: &bots::stats::CombatStats, mut accuracy: Vec<live_proto::game::WeaponAccuracy>,
+) -> Option<live_proto::game::SimCombatSample> {
+    use live_proto::game::{MAX_LIVE_ACCURACY_ROWS, SimCombatCounters, SimCombatSample, SimDecision};
+    let tick = stats.tick?;
+    if accuracy.len() > MAX_LIVE_ACCURACY_ROWS {
+        accuracy.sort_by_key(|row| std::cmp::Reverse(row.shots));
+        accuracy.truncate(MAX_LIVE_ACCURACY_ROWS);
+    }
+    Some(SimCombatSample {
+        index,
+        tick,
+        combat: SimCombatCounters {
+            melee_presses: stats.melee_presses,
+            grenade_requests: stats.grenade_requests,
+            grenades_used: stats.grenades_used,
+            switch_presses: stats.switch_presses,
+            weapon_switches: stats.weapon_switches,
+            reactions: stats.reactions,
+            total_reaction_ticks: stats.total_reaction_ticks,
+            think_ticks: stats.think_ticks,
+            total_think_ms: stats.total_think_ms,
+            goal: stats.goal.map(str::to_owned),
+            weapon: stats.weapon,
+            weapon_role: stats.weapon_role.map(str::to_owned),
+            range: stats.range,
+            think_ms: stats.think_ms,
+            last_decisions: stats.last_decisions.back().into_iter().map(|decision| SimDecision {
+                tick: decision.tick, action: decision.action.to_owned(),
+            }).collect(),
+        },
+        weapon_accuracy: accuracy,
+    })
+}
+
 fn build_report(inner: &Inner, s: &State) -> Report {
     let bots: Vec<BotInfo> = inner
         .matched
@@ -736,6 +793,10 @@ pub struct Metered {
 }
 
 impl PadSource for Metered {
+    fn combat_stats(&self) -> Option<&bots::stats::CombatStats> {
+        Some(self.brain.combat_stats())
+    }
+
     fn brain_view(&self) -> Option<bots::BrainView> {
         Some(self.brain.view())
     }
@@ -953,7 +1014,8 @@ impl hooks::Feature for SimMetrics {
                     }
                     s.dispatch_end = o.runtime.dispatch_counts();
                     if s.tally.resets() != resets {
-                        // A tick jump resets the match timer and seed.
+                        // A tick jump resets the match timer, shot IDs and seed.
+                        crate::bot_accuracy::reset();
                         s.first_tick = Some(Instant::now());
                         s.dispatch_start = s.dispatch_end;
                         s.set_up = false;
@@ -1131,6 +1193,32 @@ fn write_seed(g: &mut runtime::Guest, seed: u64) -> std::result::Result<u32, run
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_combat_uses_the_last_completed_decision_and_bounds_the_preview() {
+        use bots::stats::{CombatStats, Decision};
+        use live_proto::game::{MAX_LIVE_ACCURACY_ROWS, WeaponAccuracy};
+        let mut stats = CombatStats::default();
+        assert!(combat_sample(2, &stats, vec![]).is_none());
+        stats.tick = Some(10);
+        stats.weapon_switches = 2;
+        stats.range = Some(6.0);
+        stats.last_decisions.extend([
+            Decision { tick: 8, action: "fight" }, Decision { tick: 10, action: "switch" },
+        ]);
+        let rows = (0..=MAX_LIVE_ACCURACY_ROWS).map(|i| WeaponAccuracy {
+            weapon: "spray".into(), damage_code: (i % 64) as u8, range: "close".into(),
+            hits: 0, shots: 1 + i as u64, accuracy: 0.0,
+        }).collect();
+        let sample = combat_sample(2, &stats, rows).unwrap();
+        assert_eq!((sample.index, sample.tick), (2, 10));
+        assert_eq!(sample.combat.weapon_switches, 2);
+        assert_eq!(sample.combat.last_decisions.len(), 1);
+        assert_eq!(sample.combat.last_decisions[0].action, "switch");
+        assert_eq!(sample.weapon_accuracy.len(), MAX_LIVE_ACCURACY_ROWS);
+        assert!(sample.weapon_accuracy.iter().all(|r| r.shots > 1));
+        assert!(sample.valid());
+    }
 
     #[test]
     fn tunings_carry_every_number() {

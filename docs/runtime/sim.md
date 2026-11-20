@@ -317,12 +317,13 @@ reaction = 5
   `grenades_per_minute`;
 - `awareness` (0..1; the decisions' sense of the fight, per skill now);
 - the personality, each optional (0..1): `aggression`, `caution`,
-  `teamwork`, `objective_focus` (seeded per bot today);
+  `teamwork`, `objective_focus` (otherwise derived from the gamertag);
 - human input timing: `perception_ticks` and `motor_ticks` (0–30 ticks),
   `button_sigma_ms` (0–12 ms), `stick_step` (0.1–0.6 stick radii per
   tick), and `thumb_switch_ticks` (1–6 ticks);
-- phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
-  `phantom_jitter_ms` (0–50 ms bounded one-way variation);
+- phantom transport: `phantom_ping_ms` (0–1000 ms round trip, default 0)
+  and `phantom_jitter_ms` (0–50 ms bounded one-way variation for positive
+  ping, default 4);
 - host work intervals in game ticks (1–30 each): `foot_plan_ticks`
   (default 6), `vehicle_plan_ticks` (8) and `vehicle_lookahead_ticks` (3).
   Older files can still specify `player_los_ticks`. Player sight is
@@ -406,6 +407,23 @@ A hit is a damage report against another player's unit. Damage sums
 the report's body and shield amounts. Each shotgun pellet can count
 as a hit, and melee and splatter can land hits without firing a shot,
 so accuracy can exceed 1.
+
+Each phantom's `weapon_accuracy` rows count shots the multiplayer weapon
+stats register and shots the game credits with a hostile hit. The reporting
+code identifies the fired weapon. The decision range to the bot's visible
+target at fire is close (under 3 world units), mid (3 to under 12), long
+(12 and above) or unknown. A delayed projectile keeps its firing range.
+Pellets and splash from one registered shot can earn one hit.
+
+`crates/extensions/game/src/bot_accuracy.rs` observes `WEAPON_STAT_BUCKET`.
+The shot registration at `0x15cca0` stores a 16-bit shot ID, reporting code
+and tick in one of eight entries per shooter. It looks up the weapon bucket
+at `0x15cd65` before incrementing weapon statistic 4. The hit path at
+`0x15cd90` checks hostility and matches a pending shot ID before its lookup
+at `0x15ce40`, increments statistic 5 and invalidates the entry. The rows
+follow these same slots across weapon switches and report hits divided by
+registered shots. The separate `combat` object holds the decisions and timing
+available during play through `h2 agent bots.stats`.
 
 Each bot row includes its logical `seat`. Readers can continue to load
 earlier `h2-sim-report/1` reports.
@@ -616,8 +634,16 @@ Uploaded players have bot flags and no Live account XUIDs.
 The finished-game viewer switches to the archive when it is published.
 [Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
 
-The CLI still saves the
-local report, including when an upload fails. Training games are private
+During a streamed simulation, the Clanker Training bot stats panel reads
+the latest completed decision per bot roughly every five wall seconds.
+It shows the current goal, weapon and target range, the last action,
+grenade and melee use, weapon switches, mean attack reaction in ticks,
+think time and weapon accuracy by firing range. The preview carries the
+64 most-used weapon/range pairs per bot. The full breakdown and recent
+decision history appear in the uploaded report for streamed and deferred
+runs. The in-game agent exposes the current sample during play. If the
+private upload exceeds 512 KiB, the host omits the per-tick determinism traces from the upload and records that in the notes.
+The CLI saves the full local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.
 
@@ -679,9 +705,9 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render front-end | **skipped**, so it no longer steps the shared seed: deterministic, but a different stream from a rendered run |
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
-| Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
-| Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial; pipelined is a different match (pads a tick later, latency kept) that is equally reproducible ([bots.md §5.5](../game/bots.md)) |
-| The bots' randomness | seeded per bot: SplitMix64 of the match seed and logical seat (`sim::config::bot_seed`) |
+| Input | Each phantom observes guest state on the game thread during the simulation tick’s input gather |
+| Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial. Pipelining is reproducible with pads delivered a tick later, crediting that tick toward any configured wire delay ([bots.md §5.5](../game/bots.md)) |
+| The bots' randomness | SplitMix64 of the match seed and logical seat drives individual choices (`sim::config::bot_seed`). The gamertag fixes the profile |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |

@@ -31,6 +31,78 @@ pub const CLIENT_GAME_EVENTS: [&str; 5] = [
 /// Most players a game holds (Halo 2 allows 16).
 pub const MAX_PLAYERS: usize = 16;
 
+/// Maximum JSON body on the private simulation report endpoint.
+pub const MAX_SIM_REPORT_BYTES: usize = 512 * 1024;
+
+/// Shots registered by the game's weapon stats and credited as hitting an enemy,
+/// grouped by the shooter's decision range at fire time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WeaponAccuracy {
+    pub damage_code: u8,
+    pub weapon: String,
+    pub range: String,
+    pub shots: u64,
+    pub hits: u64,
+    pub accuracy: f64,
+}
+
+/// The private training preview holds the most-used weapon/range buckets.
+pub const MAX_LIVE_ACCURACY_ROWS: usize = 64;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SimCombatSample {
+    pub index: u8,
+    pub tick: u32,
+    pub combat: SimCombatCounters,
+    pub weapon_accuracy: Vec<WeaponAccuracy>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SimCombatCounters {
+    pub melee_presses: u32,
+    pub grenade_requests: u32,
+    pub grenades_used: u32,
+    pub switch_presses: u32,
+    pub weapon_switches: u32,
+    pub reactions: u32,
+    pub total_reaction_ticks: u64,
+    pub think_ticks: u64,
+    pub total_think_ms: f64,
+    pub goal: Option<String>,
+    pub weapon: Option<u32>,
+    pub weapon_role: Option<String>,
+    pub range: Option<f32>,
+    pub think_ms: Option<f64>,
+    pub last_decisions: Vec<SimDecision>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SimDecision {
+    pub tick: u32,
+    pub action: String,
+}
+
+impl SimCombatSample {
+    pub fn valid(&self) -> bool {
+        let c = &self.combat;
+        let label = |name: &str| (1..=32).contains(&name.len())
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+        usize::from(self.index) < MAX_PLAYERS
+            && c.goal.as_deref().is_none_or(label)
+            && c.weapon_role.as_deref().is_none_or(label)
+            && c.range.is_none_or(|d| d.is_finite() && d >= 0.0)
+            && c.think_ms.is_none_or(|t| t.is_finite() && t >= 0.0)
+            && c.total_think_ms.is_finite() && c.total_think_ms >= 0.0
+            && c.last_decisions.len() <= 1
+            && c.last_decisions.iter().all(|d| label(&d.action))
+            && self.weapon_accuracy.len() <= MAX_LIVE_ACCURACY_ROWS
+            && self.weapon_accuracy.iter().all(|r| r.damage_code < 64 && label(&r.weapon)
+                && matches!(r.range.as_str(), "close" | "mid" | "long" | "unknown")
+                && r.shots > 0 && r.hits <= r.shots
+                && (r.accuracy - r.hits as f64 / r.shots as f64).abs() < 1e-12)
+    }
+}
+
 pub fn stream(game_id: &str) -> String {
     format!("game-{game_id}")
 }

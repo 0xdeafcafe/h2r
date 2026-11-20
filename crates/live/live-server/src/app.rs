@@ -1137,6 +1137,7 @@ impl Live {
 
     pub fn discovery(&self) -> Discovery {
         Discovery {
+            sim_combat: true,
             ingest_frame_versions: vec![live_proto::pack::LIVE_VERSION],
             id: self.identity.id.clone(),
             api: "/v1".into(),

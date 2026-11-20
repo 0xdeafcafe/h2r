@@ -63,7 +63,7 @@ pub fn recording_pads(text: &str) -> Result<Vec<HostPadState>, String> {
         .collect())
 }
 
-fn source(s: PadSource, seed: u64) -> Result<Box<dyn pad_source::PadSource>, String> {
+fn source(s: PadSource, id: &bots::phantom::Identity) -> Result<Box<dyn pad_source::PadSource>, String> {
     Ok(match s {
         PadSource::Script(r) => Box::new(ScriptPad(r)),
         PadSource::Recording { name, path } => {
@@ -72,7 +72,9 @@ fn source(s: PadSource, seed: u64) -> Result<Box<dyn pad_source::PadSource>, Str
             let pads = recording_pads(&text).map_err(|e| format!("recording {name}: {e}"))?;
             Box::new(pad_source::Recorded::new(pads))
         }
-        PadSource::Brain => Box::new(bots::Brain::new(bots::mind::Skill::default(), seed)),
+        PadSource::Brain => Box::new(
+            bots::Brain::new(bots::mind::Skill::default(), id.xuid).with_name_profile(&id.gamertag),
+        ),
     })
 }
 
@@ -83,29 +85,49 @@ fn xuid(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("xuid {s:?}: hex, as the local embedded server issues it"))
 }
 
-fn brain_view(view: bots::BrainView) -> BotBrain {
-    use bots::arms::Role;
-    use bots::mind::Skill;
+fn profile_view(view: bots::BrainView) -> Option<agent_proto::sim::BotProfile> {
+    use agent_proto::sim::{BotProfile, BotWeights};
+    let profile = view.profile?;
+    let w = view.weights?;
+    Some(BotProfile {
+        archetype: profile.label().to_owned(),
+        favorite_weapon: bots::stats::role_name(view.personality.favorite_weapon).to_owned(),
+        summary: profile.summary(),
+        try_hard: profile.try_hard,
+        weights: BotWeights {
+            radar_use: w.radar_use,
+            noob_combo: w.noob_combo,
+            dual_wield: w.dual_wield,
+            aggression: w.aggression,
+            grenades: w.grenades,
+            melee: w.melee,
+            weapon_preference: w.weapon_preference,
+            range_preference: w.range_preference,
+            strafe: w.strafe,
+            jump: w.jump,
+            reaction_jitter: w.reaction_jitter,
+            retreat: w.retreat,
+        },
+    })
+}
 
-    let skill = match view.skill {
+fn skill_name(skill: bots::mind::Skill) -> &'static str {
+    use bots::mind::Skill;
+    match skill {
         Skill::Easy => "easy",
         Skill::Normal => "normal",
         Skill::Heroic => "heroic",
         Skill::Legendary => "legendary",
-    };
+    }
+}
+
+fn brain_view(view: bots::BrainView) -> BotBrain {
     let p = view.personality;
-    let favorite_weapon = match p.favorite_weapon {
-        Role::Unknown => "unknown",
-        Role::Blade => "blade",
-        Role::Scatter => "scatter",
-        Role::Spray => "spray",
-        Role::Precise => "precise",
-        Role::Sniper => "sniper",
-        Role::Blast => "blast",
-    };
+    let favorite_weapon = bots::stats::role_name(p.favorite_weapon);
     let m = view.mood;
     BotBrain {
-        skill: skill.into(),
+        skill: skill_name(view.skill).into(),
+        profile: profile_view(view),
         personality: BotPersonality {
             aggression: p.aggression,
             caution: p.caution,
@@ -128,6 +150,36 @@ fn brain_view(view: bots::BrainView) -> BotBrain {
     }
 }
 
+/// Read a snapshot of the brain-driven phantom seats, including those waiting to join.
+pub(crate) fn stats(
+    params: serde_json::Value,
+    phantoms: &bots::phantom::Phantoms,
+) -> Result<serde_json::Value, agent_proto::RpcError> {
+    if !(params.is_null() || params.as_object().is_some_and(|p| p.is_empty())) {
+        return Err(agent_proto::RpcError::new(
+            agent_proto::code::INVALID_PARAMS,
+            "bots.stats takes no parameters",
+        ));
+    }
+    let bots: Vec<_> = phantoms
+        .list()
+        .into_iter()
+        .filter_map(|seat| {
+            let (combat, brain) = phantoms.combat_state(seat.handle)?;
+            Some(serde_json::json!({
+                "name": seat.identity.gamertag,
+                "handle": seat.handle.0,
+                "player": seat.player.map(|id| format!("player.{id}")),
+                "skill": skill_name(brain.skill),
+                "profile": profile_view(brain),
+                "combat": combat,
+                "accuracy": crate::bot_accuracy::rows(seat.handle),
+            }))
+        })
+        .collect();
+    Ok(serde_json::json!({ "bots": bots }))
+}
+
 impl Bots for SimBots {
     fn add_phantom(
         &mut self,
@@ -145,7 +197,7 @@ impl Bots for SimBots {
         let team = team
             .map(|t| u8::try_from(t).map_err(|_| format!("team {t}")))
             .transpose()?;
-        let src = source(src, id.xuid)?;
+        let src = source(src, &id)?;
         bots::phantom::add(id, team, src)
             .map(|h| h.0)
             .map_err(|e| e.to_string())
@@ -198,6 +250,38 @@ impl Bots for SimBots {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_lists_only_brain_seats_and_rejects_unrecognised_params() {
+        use bots::phantom::{Identity, Phantoms};
+        use serde_json::json;
+
+        let seats = Phantoms::default();
+        assert_eq!(stats(json!(null), &seats).unwrap(), json!({"bots": []}));
+        seats.add(
+            Identity { xuid: 1, gamertag: "Brain".into() },
+            None,
+            Box::new(bots::Brain::default().with_name_profile("Brain")),
+        ).unwrap();
+        seats.add(
+            Identity { xuid: 2, gamertag: "Tape".into() },
+            None,
+            Box::new(bots::pad_source::Recorded::new(Vec::new())),
+        ).unwrap();
+        let view = stats(json!({}), &seats).unwrap();
+        assert_eq!(view["bots"].as_array().unwrap().len(), 1);
+        let bot = &view["bots"][0];
+        assert_eq!(bot["name"], "Brain");
+        let p = bots::name_profile::NameProfile::for_name("Brain");
+        assert_eq!(bot["profile"]["summary"], p.summary());
+        assert_eq!(bot["profile"]["weights"], json!(p.weights(bots::mind::Skill::default())));
+        assert!(bot["player"].is_null());
+        assert!(bot["combat"]["think_ms"].is_null());
+        assert_eq!(bot["combat"]["melee_presses"], 0);
+        assert!(bot["accuracy"].is_array());
+        assert_eq!(stats(json!({"name": "Brain"}), &seats).unwrap_err().code,
+                   agent_proto::code::INVALID_PARAMS);
+    }
 
     #[test]
     fn a_phantom_goes_on_the_process_wide_books() {

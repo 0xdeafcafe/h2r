@@ -653,8 +653,22 @@ The native server uses its private blob store. The Worker uses its private
 |---|---|---|
 | `POST /v1/admin/sim-runs` | `games.write` | Admin starts a game with the normal game-start body and a required `sim` object. Returns `201` and `{game_id, position}`. The same host and start body can retry the same run ID. |
 | `GET /v1/admin/sim-runs` | `read` | Lists runs newest first, 50 per page. Accepts `map`, `tuning` (case-insensitive arm or parameter text), `batch` and `before` (the previous page's `next`). |
-| `GET /v1/admin/sim-runs/{game_id}` | `read` | Returns `{run, game, report}`. `game` is the normal game detail and `report` is the original JSON or null while the upload is pending. |
+| `GET /v1/admin/sim-runs/{game_id}` | `read` | Returns `{run, game, live_combat, report}`. `game` is the normal game detail. `live_combat` lists the latest decision and accuracy sample per bot seat in a running live simulation, ordered by player index. `report` is the uploaded sim JSON or null while the upload is pending. |
 | `PUT /v1/admin/sim-runs/{game_id}/report` | `games.write` | The admin who hosted the ended recording stores its `h2-sim-report/1` JSON. Returns `204`. An identical retry succeeds. A different report for that run returns `409`. |
+
+The run host sends `{kind: "sim_combat", game_id, sample}` over its
+authenticated ingest socket. A sample names the bot's player index and
+decision tick, its `combat` counters and its `weapon_accuracy` rows.
+Only seated bots in an active, non-deferred simulation accept samples.
+Duplicate and older ticks leave the existing row in place. The private
+detail reads these rows from memory, so a server restart or Worker wake
+can leave the list empty until the host sends another sample. Ending the
+run clears the list. Frames, recordings and public streams carry no copy.
+
+A completed bot's report row can include `combat` decision counters and
+`weapon_accuracy` by firing range. The simulator retains per-tick
+determinism traces in its local report and includes them in the upload
+when the full JSON fits the 512 KiB limit. [Sim report fields](../runtime/sim.md)
 
 The `sim` object carries `run_id`, optional `batch_id`, `seed` as a decimal
 string (all 64 bits), `gametype`, `pace`, resolved `bots` including tuning,

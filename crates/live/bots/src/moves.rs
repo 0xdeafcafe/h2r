@@ -44,6 +44,8 @@ pub struct Style {
     pub stand: f32,
     /// The chance, on a hit, to reverse the strafe at once.
     pub juke: f32,
+    /// Chance to jump at a fresh strafe on a clear floor.
+    pub jump: f32,
     /// The chance, on a hit beyond [`CROUCH_RANGE`], to crouch a moment.
     pub crouch: f32,
     /// How hard it backs off inside its range (0: it never does).
@@ -65,12 +67,24 @@ impl Style {
         style
     }
 
+    pub(crate) fn apply_weights(&mut self, weights: crate::name_profile::Weights) {
+        let interval = 1.25 - 0.5 * weights.strafe;
+        self.strafe = (
+            (self.strafe.0 as f32 * interval).round() as u32,
+            (self.strafe.1 as f32 * interval).round() as u32,
+        );
+        self.stand *= 1.0 - 0.35 * weights.strafe;
+        self.juke += 0.3 * weights.strafe * (1.0 - self.juke);
+        self.jump = weights.jump * 0.35;
+    }
+
     pub fn of(skill: Skill) -> Style {
         match skill {
             Skill::Easy => Style {
                 strafe: (40, 80),
                 stand: 0.35,
                 juke: 0.0,
+                jump: 0.0,
                 crouch: 0.0,
                 keep: 0.0,
                 cover: false,
@@ -79,6 +93,7 @@ impl Style {
                 strafe: (20, 50),
                 stand: 0.15,
                 juke: 0.2,
+                jump: 0.0,
                 crouch: 0.0,
                 keep: 0.6,
                 cover: true,
@@ -87,6 +102,7 @@ impl Style {
                 strafe: (12, 35),
                 stand: 0.05,
                 juke: 0.5,
+                jump: 0.0,
                 crouch: 0.1,
                 keep: 0.85,
                 cover: true,
@@ -95,6 +111,7 @@ impl Style {
                 strafe: (8, 26),
                 stand: 0.0,
                 juke: 0.7,
+                jump: 0.0,
                 crouch: 0.15,
                 keep: 1.0,
                 cover: true,
@@ -273,11 +290,13 @@ impl Moves {
             return out;
         };
 
+        let mut new_strafe = false;
         let mut d = if i.rush {
             f
         } else {
             // A new strafe now and then: a side, or (for some) standing.
             if reached(t, self.until) {
+                new_strafe = true;
                 let stand = self.uniform() < st.stand;
                 let flip = self.uniform() < 0.5;
                 self.side = if stand {
@@ -351,6 +370,19 @@ impl Moves {
             }
         }
 
+        // A discretionary combat hop uses the same jump recovery as
+        // unsticking. Only try on a moving, clear strafe outside cover.
+        if new_strafe && !i.retreat && !i.reloading && self.side != 0.0
+            && reached(t, self.jump_ready) && st.jump > 0.0 && self.uniform() < st.jump
+            && standable(m, i.at, d)
+            && m.walls.clear(
+                [i.at[0], i.at[1], i.at[2] + EYE],
+                [i.at[0], i.at[1], i.at[2] + EYE + 0.7],
+            )
+        {
+            self.jump_until = t.wrapping_add(JUMP_TICKS);
+            self.jump_ready = t.wrapping_add(JUMP_COOLDOWN);
+        }
         // Stuck in the fight: pushing without moving flips and jumps.
         if norm2(d) > 0.3 {
             let (anchor, since) = *self.anchor.get_or_insert((i.at, t));

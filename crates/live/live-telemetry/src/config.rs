@@ -138,7 +138,7 @@ impl TelemetryConfig {
             return Err("the host report needs a leased simulation".into());
         };
         let sink = crate::server::ServerSink::for_host(base_url.clone(), token.clone())?;
-        sink.report_after_film(&live_proto::game::sim_game_id(&game.run_id), &report)
+        sink.report_after_film(&live_proto::game::sim_game_id(&game.run_id), report)
     }
 
     /// Boot-only configuration boundary. `H2_TELEMETRY_FILE` selects offline

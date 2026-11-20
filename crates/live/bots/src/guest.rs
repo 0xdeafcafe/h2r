@@ -13,6 +13,7 @@ use engine::view::{objects, players};
 use crate::brain::{Me, Perception, Seen};
 pub(crate) mod intel;
 pub mod pickups;
+mod radar;
 
 pub type R<T> = Result<T, MemFault>;
 
@@ -270,6 +271,8 @@ pub(crate) fn perception_into(
     out.observations.ahead = false;
     out.observations.service_rate = None;
     out.observations.pickups_scanned = false;
+    out.observations.radar = None;
+    out.observations.ground_grenades.clear();
     out.observations.contacts.clear();
     out.observations.supply_players.clear();
     out.observations.held_power.clear();
@@ -285,13 +288,17 @@ pub(crate) fn perception_into(
         out.observations.supplies = None;
         return Ok(());
     }
-    out.teams = m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0;
+    let flags = m.u32(globals + OPTIONS + VARIANT_FLAGS)?;
+    out.teams = flags & live_proto::hopper::variant::flag::TEAM_PLAY != 0;
     out.tick = game_tick(m).unwrap_or(0);
     let Some(array) = players::array(m)? else {
         out.observations.supplies = None;
         return Ok(());
     };
     let mut me_index = None;
+    let sensor = radar::Sensor::read(m);
+    let mut unzoomed = false;
+    let mut moving = 0u16;
     let mut scoreboard = [(0, 0); 16];
     let mut listed = 0;
     for player in array.live_iter(m, 16)? {
@@ -339,6 +346,7 @@ pub(crate) fn perception_into(
         }
         if ours {
             me_index = Some(id);
+            unzoomed = m.u8(body.addr + radar::UNIT_ZOOM).is_ok_and(|level| level == u8::MAX);
             // Ammunition is extra: a fault reading it leaves the bot
             // playing without it (section 3.6), not blind.
             out.me = Some(Me {
@@ -350,16 +358,20 @@ pub(crate) fn perception_into(
                 arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
+            let crouching = m.u32(body.addr + BIPED_UNIT_FLAGS)
+                .is_ok_and(|flags| flags & BIPED_CROUCH_REQUEST != 0);
+            if sensor.is_some_and(|s| s.moving(m, body, crouching)) {
+                moving |= crate::perceive::player_bit(id);
+            }
             out.observations.contacts.push(crate::brain::Contact {
                 weapon: intel::held_model(m, body.addr).ok().flatten(),
                 id,
                 aim,
-                // These cues require a visible effect or reload animation.
-                shield: None,
+                // Only a broken shield is a visible cue. Perception removes
+                // this entire contact when the bot cannot see the biped.
+                shield: body.shield(m).ok().filter(|&s| s == 0.0),
                 empty_magazine: false,
-                crouching: m
-                    .u32(body.addr + BIPED_UNIT_FLAGS)
-                    .is_ok_and(|flags| flags & BIPED_CROUCH_REQUEST != 0),
+                crouching,
             });
             out.others.push(Seen { id, position, team });
         }
@@ -369,12 +381,14 @@ pub(crate) fn perception_into(
             intel::ahead(m, me, out.teams, &scoreboard[..listed]).unwrap_or(false);
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
         let mut ground = crate::arms::Ground {
+            loose_grenades: std::mem::take(&mut out.observations.ground_grenades),
             weapons: std::mem::take(&mut out.pickups),
             held_power: std::mem::take(&mut out.observations.held_power),
             supplies: out.observations.supplies.take(),
             grenades: std::mem::take(grenades),
         };
         let scanned = crate::arms::ground_into(m, near, &mut ground, vehicle_headers).is_ok();
+        out.observations.ground_grenades = ground.loose_grenades;
         out.pickups = ground.weapons;
         out.observations.held_power = ground.held_power;
         out.observations.supplies = ground.supplies;
@@ -384,6 +398,7 @@ pub(crate) fn perception_into(
             out.observations.service_rate = intel::service_rate(m);
             out.observations.pickups_scanned = true;
         } else {
+            out.observations.ground_grenades.clear();
             out.pickups.clear();
             out.observations.held_power.clear();
             out.observations.supplies = None;
@@ -392,6 +407,11 @@ pub(crate) fn perception_into(
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();
+        if unzoomed && let Some(sensor) = sensor
+            && radar::enabled(m, globals, flags, out.objective.as_ref())
+        {
+            out.observations.radar = sensor.contact(out, moving);
+        }
     } else {
         out.observations.supplies = None;
     }

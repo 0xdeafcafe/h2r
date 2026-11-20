@@ -52,6 +52,7 @@ connection to hold `session.claim`.
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
+| `bots.stats` | read | [Bot combat](#bot-combat) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -1212,6 +1213,40 @@ the methods it added beside the agent's own are in
 | `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
 | `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
 
+## Bot combat
+
+`h2 agent bots.stats` reads the host's brain-driven phantoms at a tick
+boundary. It takes no parameters. The result contains `at` and a `bots`
+array. Each row has the seat's `handle`, `name`, `player` (null until
+bound to a game player), `skill`, `profile`, `combat` and `accuracy`.
+
+`profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
+`try_hard` score and the `weights` active for that difficulty and style.
+The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
+`aggression`, `grenades`, `melee`, `weapon_preference`, `range_preference`,
+`strafe`, `jump`, `reaction_jitter` and `retreat`. Each value ranges
+from zero to one. Higher reaction jitter favors the later part of the
+difficulty’s reaction window.
+
+| Field in `combat` | Meaning |
+|---|---|
+| `tick`, `observation_tick` | Most recent think tick and the world sample the decision used. The sample can be older because perception takes time. |
+| `goal`, `target`, `range` | Current activity, visible fight target's player index and distance in world units. The target and range are null outside a visible fight. |
+| `weapon`, `weapon_role` | Held weapon's map definition datum and handling class, null before an inventory read. |
+| `last_decisions` | Up to eight goal changes and combat input decisions, oldest first, each with `tick` and `action`. |
+| `melee_presses`, `switch_presses`, `grenade_requests` | Attack or switch inputs chosen by the brain, counted once per press. |
+| `weapon_switches`, `grenades_used` | Observed exchanges of the two carried weapon definitions and decreases in grenade inventory within a life. |
+| `last_reaction_ticks`, `total_reaction_ticks`, `reactions` | Ticks from the selected target's first fight observation to the first attack decision on that target. The mean is the total divided by the sample count. |
+| `think_ms`, `total_think_ms`, `think_ticks` | Wall time for the latest brain decision and controller update, accumulated time and sample count. Guest reads, worker queueing and retail input processing fall outside this interval. |
+
+`accuracy` groups the game's registered shots and credited enemy hits by
+weapon and decision range at fire time. Close is under 3 world units,
+mid is 3 to under 12 and long is 12 or more. An unknown range means
+the shot had no sampled visible target distance. Each row includes
+`damage_code`, `weapon`, `range`, `shots`, `hits` and their ratio
+`accuracy`. One shot can earn one hit credit. An empty list means the
+host has no registered shots to report for that seat.
+
 ## `sim`: simulated players and direct state
 
 `sim.*` lets an agent test co-op, multiplayer and Live flows from one
@@ -1243,6 +1278,7 @@ the backend provides it. The list's `clankers` array includes brain-driven
 phantom bots added by the game, headless matches and sim; each entry has
 `name`, `kind` and `brain`, and once joined `player`. Script and recording
 sources have no brain state. The `brain` object has `skill`,
+`profile` as described under [Bot combat](#bot-combat),
 `personality` (the nine 0 to 1 traits in
 [the Clankers trait table](../game/bots.md#personality-and-temperament) and
 `favorite_weapon`: `spray`, `precise`, `scatter`, `sniper`, `blast` or

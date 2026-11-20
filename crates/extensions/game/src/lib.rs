@@ -143,6 +143,7 @@ pub mod render_thread;
 pub mod retail_rows;
 pub mod run_plan;
 pub mod sampling;
+pub mod bot_accuracy;
 pub mod bot_glue;
 pub mod bot_mark;
 pub mod bots_nav_auto;
