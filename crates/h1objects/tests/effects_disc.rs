@@ -921,6 +921,37 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     assert_eq!(h1.read_u32(0x0004_6c2a).unwrap(), u32::from(slot(map::H1_FREEFALL_LINE)));
     assert_eq!(h1.bytes_at(0x0004_b6b9, 5).unwrap(), &[0xb9, 40, 0, 0, 0]);
     assert_eq!(u16_at(h1.bytes_at(0x001e_f818, 6).unwrap(), 4), slot(map::H1_FREEFALL_LINE));
+    let dormant_scream = h1.bytes_at(0x001e_f9f8, 6).unwrap();
+    assert_eq!(u16_at(dormant_scream, 0), 46);
+    assert_eq!(u16_at(dormant_scream, 4), slot(map::H1_FREEFALL_LINE));
+
+    // The command-list update can forward a queued event alongside an
+    // action. Check the actual event field read and the complete set of
+    // assignments to that field in the retail action switch.
+    assert_eq!(
+        h1.bytes_at(0x0016_c653, 7).unwrap(),
+        &[0x66, 0x8b, 0x8e, 0xfc, 0, 0, 0],
+    );
+    let action_switch = h1.bytes_at(0x0016_ba9a, 0x16bc08 - 0x16ba9a).unwrap();
+    let mut action_events: Vec<_> = action_switch
+        .windows(6)
+        .filter(|bytes| bytes.starts_with(&[0x66, 0xc7, 0x47, 0x34]))
+        .map(|bytes| u16_at(bytes, 4))
+        .collect();
+    action_events.sort_unstable();
+    action_events.dedup();
+    assert_eq!(action_events, [38, 39, 41, 42, 44, u16::MAX]);
+
+    // The other variable event is chosen by the aftermath switch and
+    // passed from EBX to ECX. Its cases only load 48 through 56.
+    assert_eq!(h1.bytes_at(0x0016_d20c, 2).unwrap(), &[0x8b, 0xcb]);
+    let aftermath_cases = h1.bytes_at(0x0016_d172, 0x16d1af - 0x16d172).unwrap();
+    let aftermath_events: Vec<_> = aftermath_cases
+        .windows(5)
+        .filter(|bytes| bytes[0] == 0xbb)
+        .map(|bytes| u32_at(bytes, 1))
+        .collect();
+    assert_eq!(aftermath_events, (48..=56).collect::<Vec<_>>());
     assert_eq!(h1.read_u32(0x0003_dd36).unwrap(), 0x200);
     assert_eq!(h1.read_u32(0x0004_6c77).unwrap(), u32::from(slot(0xd0)));
     assert_eq!(h1.read_u32(0x0004_6c7e).unwrap(), u32::from(slot(0xe0)));

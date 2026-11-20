@@ -859,8 +859,20 @@ during custom animation. The biped branch also respects the converted
 command list's falling-damage exemption. The boot hook uses Halo 2's
 biped and vehicle airborne counters, the animation manager predicate at
 `0x11b930`, and the BSP ray at `0x1697c0`. It queues the original
-scream in the speaker's speech cache. The retail scheduler also lists
-the same slot for stimulus 46 at `0x1ef9f8`. Its emitter remains untraced.
+scream in the speaker's speech cache.
+
+The Xbox retail XBE has a scheduler row for stimulus 46 at
+`0x1ef9f8` that also selects `0xb0`. That row is dormant in this
+executable. The scheduler at `0x145f30` has 43 direct call sites. Only
+the command-list update and the combat-aftermath update pass a
+preselected event ID. The
+command-list update at `0x16c66c` forwards the event at actor `+0xfc`;
+the action switch at `0x16ba93` only writes events 38, 39, 41, 42, 44
+or the no-event sentinel to that field. The aftermath switch feeding
+`0x16d20e` only supplies events 48 through 56. The retail
+`ai_debug_vocalize` evaluator at `0xec990` returns void without
+dispatching an event. Explicit source-slot requests still resolve
+`0xb0` through the unit's converted voice bank.
 
 **Built.** Halo 1's collision damage accumulates applied body damage in
 a byte for each collision region at `0x9512f`. It destroys that region
