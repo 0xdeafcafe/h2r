@@ -341,6 +341,67 @@ mod tests {
     }
 
     #[test]
+    fn ui_attract_reads_the_menu_timer_at_a_slice() {
+        use agent_proto::{Request, code, method};
+        use engine::points::{
+            SCENARIO, UI_ATTRACT_RESET, UI_ATTRACT_TIMEOUT, UI_CLOCK, UI_LAST_INPUT,
+            UI_MUSIC_GATE, UI_MUSIC_STATE,
+        };
+        use serde_json::{Value, json};
+
+        let mut guest = runtime::Guest::new();
+        let scenario = 0x1_0000;
+        for addr in [
+            scenario,
+            SCENARIO.base,
+            UI_CLOCK.base,
+            UI_ATTRACT_RESET.base,
+            UI_MUSIC_GATE.base,
+            UI_MUSIC_STATE.base,
+            bink_hle::addr::ST_BINK,
+        ] {
+            guest
+                .map_zeroed(addr & !0xfff, 0x1000, runtime::guest::Permissions::RW)
+                .unwrap();
+        }
+        guest.set_u32(SCENARIO.base, scenario).unwrap();
+        guest.set_u16(scenario + 0x10, 2).unwrap();
+        guest.set_u32(UI_CLOCK.base, 4_000).unwrap();
+        guest.set_u32(UI_LAST_INPUT.base, 500).unwrap();
+        guest.set_u32(UI_ATTRACT_RESET.base, 1_000).unwrap();
+        guest.set_u32(UI_ATTRACT_TIMEOUT.base, 80_000).unwrap();
+        guest.set_u8(UI_MUSIC_GATE.base, 1).unwrap();
+        let rt = runtime::Runtime::new(guest, runtime::Dispatch::default());
+        let agent = agent::Agent::new();
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+        let attract = crate::attract::Attract::new(
+            bink_hle::BinkHle::skip_only(),
+            AttractAsset::new(AssetStatus::Preparing),
+        );
+        attract.install(&mut registry, Some(&agent)).unwrap();
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let conn = agent.connect(tx);
+        let call = |params| -> Value {
+            let request = Request::new(1, method::UI_ATTRACT, params);
+            agent.submit(conn, &serde_json::to_string(&request).unwrap());
+            agent.between_slices(&mut agent::GuestReader::new(|| rt.memory()), 0);
+            serde_json::from_str(&rx.try_recv().unwrap()).unwrap()
+        };
+        let reply = call(json!({}));
+        let state = &reply["result"];
+        assert_eq!(state["enabled"], true);
+        assert_eq!(state["state"], "idle");
+        assert_eq!(state["asset"], json!({"state": "preparing"}));
+        assert_eq!(state["timer"]["idle_ms"], 3_000);
+        assert_eq!(state["timer"]["music_allowed"], true);
+        assert_eq!(state["timer"]["attract_timeout_ms"], 80_000);
+        assert_eq!(
+            call(json!({"force": true}))["error"]["code"],
+            code::INVALID_PARAMS
+        );
+    }
+
+    #[test]
     fn level_boots_and_headless_runs_skip_unless_a_dir_is_named() {
         let dir = Movies::Dir("/m".into());
         // A windowed menu boot plays what is installed.

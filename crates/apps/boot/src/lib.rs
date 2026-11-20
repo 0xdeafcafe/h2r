@@ -1060,7 +1060,9 @@ fn run_configured(
         } else {
             movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
         };
-        let attract_file = if why_off.is_none() && opts.movies != movies_glue::Movies::Off {
+        // Film recording and playback use the recorded movie policy and hook plan.
+        let allow_attract = why_off.is_none() && film.is_none();
+        let attract_file = if allow_attract && opts.movies != movies_glue::Movies::Off {
             k.vfs().and_then(|vfs| {
                 vfs.lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1074,7 +1076,7 @@ fn run_configured(
             &opts.movies,
             &opts.disc,
             attract_file,
-            film.is_none(),
+            allow_attract,
             why_off.as_deref(),
             #[cfg(feature = "local-io")]
             ds.as_ref()
@@ -1083,7 +1085,9 @@ fn run_configured(
             #[cfg(not(feature = "local-io"))]
             None,
         );
-        attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        if allow_attract && mode == bink_hle::Mode::Playback {
+            attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        }
         if let Some(session) = &film {
             session.record_movies(opts, mode);
         }

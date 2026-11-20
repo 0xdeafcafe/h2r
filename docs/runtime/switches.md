@@ -48,7 +48,7 @@ Compiler flags: part of the dylib stamp, so set them for both build and run.
 | `agent-audio` | with the agent and DirectSound active, records [`audio.loops`](agent-api.md#audioloops) history; switching it off leaves the current-state read available |
 | `h2 live mods import --pack`, `--author`, `--source-url`, `--year`, `--version`, `--description`, `--cheating-pack`, `--not-for-online` | pack identity, credit and release metadata ([Importing a mod](../game/maps.md#importing-a-mod)) |
 | `h2 live mods capture --disc`, `--out`, `--server`, `--as` | owner’s base disc, compiled image directory, Live endpoint and uploader account ([Mods](../live/live-art.md#mods)) |
-| `attract` | with the movie HLE active, validates the idle movie before the music fades and keeps the music playing if unavailable ([Attract timer](../audio/bink-hle.md#attract-timer)) |
+| `attract` | during movie playback outside a film recording or replay, validates the idle movie before the music fades and keeps the music playing if unavailable ([Attract timer](../audio/bink-hle.md#attract-timer)) |
 | `H2_SIM` and the sim tooling (`impl.sim.arena-hash`, `H2_DISPATCH_STATS`, `H2_ENTRY_STATS`) | headless matches ([sim.md](sim.md)) |
 | `impl.sim.submix-fx`, `impl.sim.observer-resources`, `impl.sim.metrics-projection`, `audio.packet-clock` | on; `=off` is the reference the sim budget measures against ([sim-budget.md](../perf/sim-budget.md)) |
 | `H2_BOOT_VERBOSE`, `H2_FEATURE_PLAN`, `H2_NATIVE_VERBOSE` | log verbosity |

@@ -60,8 +60,8 @@ them for this disc. An idle menu plays the attract movie from the same install.
 On a normal windowed boot with the default movie directory, a missing attract
 transcode is prepared from the disc using local ffmpeg when available.
 --movies DIR selects another install. --no-movies skips playback, as does
-a --level boot unless --movies DIR is given. An unavailable attract movie
-leaves the menu music playing.
+a --level boot unless --movies DIR is given. During playback outside film
+sessions, an unavailable attract movie leaves the menu music playing.
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself

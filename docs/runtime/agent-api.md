@@ -1273,8 +1273,8 @@ repository because resolved text can contain profile names and disc strings.
 
 ### `ui.attract`
 
-`h2 agent ui.attract` takes no parameters and is registered when the Bink
-HLE is installed. It reads the menu's UI clock, idle time, music gate and
+`h2 agent ui.attract` takes no parameters. Boot registers it when the Bink
+HLE selects playback outside a film recording or replay. It reads the menu's UI clock, idle time, music gate and
 movie flags at a game boundary (`timer`). The `state` says whether the
 menu is idle, fading, playing the attract movie or keeping its music.
 `asset` reports preparation or unavailability and `blocked_reason` gives

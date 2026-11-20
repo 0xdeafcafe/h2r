@@ -108,7 +108,7 @@ the moves that put every crate in its domain's directory are in
 | `vfs` | runtime | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) † | [storage.md](runtime/storage.md) | done |
 | `assets` | platform | Glue from decoded game tags (bitmaps first) to gfx texture decoding | [bitmaps.md](formats/bitmaps.md) | done |
 | `audio` | platform | DirectSound-level audio model, Xbox ADPCM decoder and software mixer for h2recomp | [audio.md](audio/audio.md) | done |
-| `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | plays installed transcodes through the game's mixer. Windowed menu boots prepare missing attract transcodes from disc when local ffmpeg is available. |
+| `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | Plays installed movies with audio through the game mixer or skips them at the movie wrapper. A windowed menu boot using the default movie directory can prepare the attract clip from disc with local ffmpeg. Film sessions use installed assets. |
 | `d3d` | platform | Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx | [d3d.md](graphics/d3d.md) | in progress: the menu and the first level render |
 | `dsound` | platform | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/platform/audio out | [dsound.md](audio/dsound.md) | done |
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
