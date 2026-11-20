@@ -1017,7 +1017,7 @@ impl GfxBackend {
         let open = self.open.take().map(|(e, _)| e.finish());
         self.current_uploads.take();
         let uploads = std::mem::take(&mut self.submitted_uploads);
-        for batch in &uploads { batch.flush(&self.ctx.queue); }
+        let patches: Vec<_> = uploads.iter().filter_map(|batch| batch.upload_commands(&self.ctx.queue)).collect();
         self.renderer.flush_uploads(&self.ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
@@ -1036,7 +1036,7 @@ impl GfxBackend {
             }
             self.ctx
                 .queue
-                .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
+                .submit(patches.into_iter().chain(copies).chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
         };
         if !uploads.is_empty() {
             self.ctx.queue.on_submitted_work_done(move || drop(uploads));

@@ -61,15 +61,18 @@ pub(super) fn install(b: &mut Builder) {
         Ok(Flow::Continue)
     }).context_only();
 
-    b.raw().before(&points::WORLD_PART_MATERIAL, "native_world_build_section", |c| {
+    let sections = std::sync::Mutex::new(super::section::SectionCache::default());
+    b.raw().before(&points::WORLD_PART_MATERIAL, "native_world_build_section", move |c| {
         if c.cpu.edi != 0 || c.cpu.mxcsr & 0xffc0 != 0x1f80 { return Ok(Flow::Continue); }
-        let parts = super::section::append(&mut *c.ctx.runtime().memory(), c.cpu.esp, c.cpu.ecx);
-        if let Some(parts) = parts {
+        let mut mem = c.ctx.runtime().memory();
+        let parts = sections.lock().unwrap_or_else(|e| e.into_inner()).append_guest(&mut mem, c.cpu.esp, c.cpu.ecx);
+        drop(mem);
+        if let Some((parts, hit)) = parts {
             // The material scratch is only consumed on AL != 0. Resume at
             // the original loop test with all this section's items published.
             c.cpu.edi = parts - 1;
             c.cpu.eax &= !0xff;
-            Stage::World.count(Metric::SectionsPrepared, 1);
+            if !hit { Stage::World.count(Metric::SectionsPrepared, 1); }
             return c.ret(8).map(Flow::Return);
         }
         Ok(Flow::Continue)

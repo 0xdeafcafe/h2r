@@ -145,9 +145,12 @@ struct LayerEntry {
     w_buffered: bool,
 }
 
+static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
+    std::sync::LazyLock::new(gfx::xdk::RenderStateTable::default);
+
 impl LayerEntry {
     fn read<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Self {
-        let table = gfx::xdk::RenderStateTable::default();
+        let table = &*STATE_TABLE;
         let read = crate::native_world_glue::ReadMemory(mem);
         Self {
             states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
@@ -466,7 +469,7 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 }
 
 fn set_resolved_fog(draw: &mut PlannedDraw, original: &d3d::ResolvedDraw) -> Option<()> {
-    let table = gfx::xdk::RenderStateTable::default();
+    let table = &*STATE_TABLE;
     let raw = |state| {
         let slot = table.canonical_to_guest(state)?;
         original.raw.render.get(slot as usize).copied()
@@ -500,7 +503,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         entry.states.0.push((R::StencilEnable, 0));
     }
     let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
-    let table = gfx::xdk::RenderStateTable::default();
+    let table = &*STATE_TABLE;
     let device_state = |slot| device.render_state(&read, slot);
     let raw = |state| table.canonical_to_guest(state).and_then(device_state);
     let specular = raw(SPECULAR_ENABLE);
@@ -1106,6 +1109,7 @@ struct ObjectsPass {
     w_clip: Option<([f32; 2], bool)>,
     fallback: Option<Arc<d3d::ResolvedDraw>>,
     walk: bool,
+    /// Groups adjacent recordings within a swap. The GPU resource caches outlive the run.
     run: u64,
 }
 

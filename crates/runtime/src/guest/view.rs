@@ -72,7 +72,7 @@ impl Guest {
             watch: Default::default(),
             layout: fresh_layout(),
             trap: None,
-            cow_source_layout: 0,
+            cow_source_layout: 0, watch_revision: 0,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {
@@ -96,6 +96,7 @@ impl Guest {
             self.flat_requested = crate::flat::enabled();
         }
         self.ram = ram;
+        self.watch_revision = self.watch_revision.wrapping_add(1);
         if self.cow_source_layout != source.layout {
             self.copy_layout_from(source);
         }
@@ -142,6 +143,7 @@ impl Guest {
         let start = (physical as usize).min(RAM_SIZE);
         let end = (physical as usize + len as usize).min(RAM_SIZE);
         self.ram[start..end].copy_from_slice(&base.bytes()[start..end]);
+        self.watch_revision = self.watch_revision.wrapping_add(1);
     }
 
     /// Merge what a view changed into this (live) Guest, over `written`

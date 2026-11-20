@@ -101,7 +101,7 @@ mod hot;
 
 #[path = "nv2a_draw.rs"]
 mod draw;
-pub use draw::{NativeDrawKey, NativeDrawProgram, NativeDrawShader, UiProgramError};
+pub use draw::{NativeDrawKey, NativeDrawMaterial, NativeDrawProgram, NativeDrawShader, UiProgramError};
 
 /// Shader ids this provider registers start here (the built-in is 0).
 pub const SHADER_ID_BASE: u32 = 0x4E56_0000;
