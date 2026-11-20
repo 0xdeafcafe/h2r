@@ -42,7 +42,7 @@
 //! registers and last-instruction pointers that no instruction in a root
 //! makes, so a body that forgets to update them differs. Stubs for the
 //! callees that answer in a float register answer there: `xmm0` for
-//! `30bf0` and `1e9700`, a pushed `st(0)` for `24590`.
+//! `30bf0`, `1e9700` and `1e20b0`, a pushed `st(0)` for `24590`.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -348,6 +348,7 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_6B_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_6C_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_7A_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_7B_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -459,6 +460,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     slice_6b_answer(cpu, g, target, n, case);
     slice_6c_answer(cpu, g, target, n, case);
     slice_7a_answer(cpu, g, target, n, case);
+    slice_7b_answer(cpu, g, &at_call, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -736,8 +738,9 @@ fn seed_x87(x: &mut ir::interp::X87) {
 /// Callees that answer in a float register (docs/engine/object-update.md,
 /// "Slice 11 bodies"): the length `30bf0` leaves in `xmm0` after
 /// normalising, the engine scale `1e9700` returns in `xmm0`, and the
-/// vector length `24590` pushes on the x87 stack.
-const XMM0_ANSWERS: &[u32] = &[0x30bf0, 0x1e9700];
+/// vector length `24590` pushes on the x87 stack; the actor speed
+/// `1e20b0` the ground probe reads ("Slice 7b bodies") answers in `xmm0`.
+const XMM0_ANSWERS: &[u32] = &[0x30bf0, 0x1e9700, 0x1e20b0];
 const ST0_ANSWERS: &[u32] = &[0x24590];
 
 /// The float answer of a stub, the same in every run: zero, small and
@@ -3765,4 +3768,396 @@ fn type_update_dispatch_reaches_the_biped() {
     BIPED.with(|b| b.set(true));
     dressed_with(&points::OBJECT_TYPE_UPDATE, 12, dress_biped);
     BIPED.with(|b| b.set(false));
+}
+
+// Slice 7b: the biped post-update `dd990` and the part of its tree that
+// is ported: the crouch step `dd7d0`, the crouch height `dd8e0` and its
+// forced test `e0dc0`, the ground probe `e30c0` and its surface test
+// `ddf60`, the jump update `e4680`, the physics input `dd0d0`, the
+// landing update `e4330` and the contact update `e2fa0`. Each root runs
+// over the slice 7a dressing plus the post-update's fields, a physics
+// component with contact records of every kind, the structure's surfaces
+// and the matg record ([`dress_biped_post`]), and compares the float
+// state at every callout like every root.
+
+/// Every guest function a slice 7b body calls that no table above lists,
+/// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 7b
+/// bodies"). `1ec500`, `d6660`, `1c4b00`, `1d1c10`, `1e5a60`, `1e68a0`
+/// and `badc0` are slice 11's, `d7b80`, `b9b90` and `ba160` slice 10's,
+/// `1201a0` slice 6a's, `d66d0` the damage update's; `baf80`, `ba1d0`,
+/// `b7740`, `b9dd0`, `b7360`, `bba20`, `1469f0` and `e4050` are bodies.
+const SLICE_7B_CALLEES: &[(u32, u32)] = &[
+    // The post-update `dd990`.
+    (0x1efb40, 4),
+    (0x1efd80, 8),
+    (0x1cfdf0, 0),
+    // The crouch step `dd7d0`.
+    (0x25aad0, 4),
+    // The jump update `e4680`.
+    (0xe4770, 4),
+    // The contact update `e2fa0`.
+    (0x1c9c00, 0),
+    (0x1fb6f0, 4),
+    // The ground probe `e30c0`: the collision query, the actor's speed
+    // (in `xmm0`, [`XMM0_ANSWERS`]) and the stuck report.
+    (0x1697c0, 24),
+    (0x1e20b0, 0),
+    (0x114b60, 12),
+    // The physics input `dd0d0`.
+    (0x1d0870, 0),
+];
+
+std::thread_local! {
+    /// Whether a slice 7b root is running: its stubs answer as a biped's
+    /// post-update callees.
+    static BIPED_POST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The slice 7b synthetic records: the matg and its `+144` record, the
+/// component's contact records (`48` bytes each), the surface flags (`8`
+/// bytes each) `[4e0340] + 2c` and the shapes point at, the structure's
+/// surface records (`+144`, `58` bytes each) and clusters (`+13c`, `c8`
+/// bytes each) with the chain to the flags, the per-index contact objects
+/// `[51e9cc]`, the contact object's definition and model with its parts
+/// (`+74`, `10` bytes each) and their surfaces, the shape `1efd80`
+/// answers, and the roots' out pointers and input record.
+const POST_MATG: u32 = 0x0069_0000;
+const POST_MATG_RECORD: u32 = 0x0069_0100;
+const POST_CONTACTS: u32 = 0x0069_0200;
+const POST_SURFACES: u32 = 0x0069_0400;
+const POST_SURFACE_FLAGS: u32 = 0x0069_0500;
+const POST_CLUSTER_B4: u32 = 0x0069_0600;
+const POST_CLUSTER_C: u32 = 0x0069_0640;
+const POST_BSP_RECORDS: u32 = 0x0069_0800;
+const POST_BSP_CLUSTERS: u32 = 0x0069_0a00;
+const POST_CONTACT_OBJECTS: u32 = 0x0069_0c00;
+const POST_OBJECT_DEFINITION: u32 = 0x0069_0d00;
+const POST_MODEL: u32 = 0x0069_0d80;
+const POST_PARTS: u32 = 0x0069_0e00;
+const POST_PART_SURFACES: u32 = 0x0069_0f00;
+const POST_SHAPE: u32 = 0x0069_1000;
+const POST_OUT: u32 = 0x0069_1100;
+const POST_RECORD: u32 = 0x0069_1200;
+/// The globals the slice 7b bodies read: the structure's surfaces, the
+/// per-index contact objects.
+const POST_SURFACES_OWNER: u32 = 0x004e_0340;
+const POST_CONTACT_OBJECTS_OWNER: u32 = 0x0051_e9cc;
+/// The contact object (in the world, body `+4` bit 22, in most cases),
+/// and the tag indices of its definition and model.
+const POST_CONTACT_SLOT: u32 = 11;
+const POST_OBJECT_TAG: u32 = 7;
+const POST_MODEL_TAG: u32 = 8;
+/// The component index [`dress_biped`] gives the biped (body `+b4`).
+const POST_COMPONENT: u32 = COMPONENTS + 0x100 + 0xa0 * 5;
+/// The contact records' count (`+8c`); the index may equal it.
+const POST_CONTACT_COUNT: u32 = 3;
+
+/// The slice 7b stubs' effects beyond [`answer`]'s, under a biped
+/// post-update root, through the argument registers as they were at the
+/// call (`at_call`): the tests answer yes and no by turns; the collision
+/// query fills its out record (argument 6) with a hit point; the physics
+/// output `1e5a60` writes its flags, a contact index (none, negative, in
+/// range, at the count, past it) and an object through `ecx`; the
+/// velocity `ba160` and the rigid-body query `1d0870` fill their vectors;
+/// the actor scale `25aad0` its float; the shape `1efd80` answers one
+/// whose surfaces are [`POST_SURFACE_FLAGS`]; `badc0` answers none once in
+/// three.
+fn slice_7b_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, n: usize, case: u32) {
+    if !BIPED_POST.with(std::cell::Cell::get) {
+        return;
+    }
+    let k = n as u32 + case;
+    let sp = at_call[4];
+    match target {
+        0x1ec500 | 0x1d1c10 | 0x1efb40 | 0x1cfdf0 | 0x1fb6f0 | 0xe4770 | 0x1e68a0 => cpu.gpr[0] = k % 2,
+        0xbadc0 => {
+            if k % 3 == 0 {
+                cpu.gpr[0] = 0;
+            }
+        }
+        0x1697c0 => {
+            cpu.gpr[0] = u32::from(k % 3 != 0);
+            let out = g.u32(sp + 0x18).unwrap();
+            vec3(g, out + 8, [0.5 * k as f32, -1.0, [0.0, -0.25, 3.0][k as usize % 3]]);
+        }
+        0x1e5a60 => {
+            let out = at_call[1];
+            byte(g, out + 4, (k % 4) as u8);
+            let index = [NONE, 0, 1, 2, POST_CONTACT_COUNT, 0xffff_fffe, POST_CONTACT_COUNT + 1][k as usize % 7];
+            word(g, out + 8, index);
+            word(g, out + 0xc, [NONE, handle(3), handle(POST_CONTACT_SLOT)][k as usize % 3]);
+        }
+        0xba160 => {
+            let out = g.u32(sp + 4).unwrap();
+            vec3(g, out + 4, [1.0, 0.25 * k as f32, -2.0]);
+        }
+        0x1d0870 => vec3(g, at_call[7], [0.125, -0.5, k as f32]),
+        0x25aad0 => {
+            let out = g.u32(sp + 4).unwrap();
+            f32w(g, out, [0.5, 3.0][k as usize % 2]);
+        }
+        0x1efd80 => cpu.gpr[0] = POST_SHAPE,
+        _ => {}
+    }
+}
+
+/// The fields the slice 7b bodies branch on, varied by `case`, over
+/// [`dress`] and [`dress_biped`]: the state `+3dc` (always one of the six
+/// the physics input's jump table covers: retail has no bounds check
+/// there), the parent (none in most cases), the component and its
+/// contacts, the counters and flags each segment tests, the definition's
+/// rates, heights and landing bands, the matg record, the structure's
+/// surfaces and the contact object's model.
+fn dress_biped_post(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+
+    // The parent: none, but in one case in four the parent [`dress_biped`]
+    // sets up.
+    word(g, body + 0x14, if c % 4 == 3 { handle(BIPED_PARENT) } else { NONE });
+    byte(g, body + 0x3dc, [1, 3, 1, 6, 2, 4, 5, 1, 3, 6, 1, 3][c % 12]);
+    // `+c0` bit 6 (the input when unparented, or the end), bits 1 and 2
+    // (the early mover); `+c1` bit 0 (no `1ec500`, no contact).
+    byte(g, body + 0xc0, [0x40, 0, 0x42, 0x44, 0x40, 0x02][c % 6]);
+    byte(g, body + 0xc1, u8::from(c % 5 == 4));
+    word(g, body + 0xb8, handle(4));
+    // Crouch: `+134` bit 23 (toward 1) or bit 9 (no probe), the fraction.
+    word(g, body + 0x134, [0, 1 << 23, 1 << 9, 1 << 23][c % 4]);
+    f32w(g, body + 0x2c4, [0.0, 0.5, 1.0, 0.25][(c / 2) % 4]);
+    // `+348`: bit 0 (the contact bit), bit 6 (the landing's third band),
+    // bit 7 (no probe), bit 13 (the forced crouch); `+3f8`.
+    g.set_u16(body + 0x348, [0, 0x2000, 0x40, 0x80, 0x2041, 1][c % 6]).unwrap();
+    byte(g, body + 0x3f8, [0, 1][(c / 3) % 2]);
+    // The jump: `+148` bit 1, the counters `+39c`, `+39e`; the target
+    // `+13c`; the landing word `+34c` (from [`dress_biped`]).
+    word(g, body + 0x148, [2, 0, 2][c % 3]);
+    byte(g, body + 0x39c, [0, 0x7f, 20][(c / 2) % 3]);
+    byte(g, body + 0x39e, [0, 0x7f, 3][c % 3]);
+    word(g, body + 0x13c, if c % 3 == 1 { handle(3) } else { NONE });
+    // The probe: the stuck counter `+3ab`, the stamp `+38c`, the surface
+    // `+354` with no contact object (`+35c`, `+360`).
+    byte(g, body + 0x3ab, [0, 0xfe, 3][c % 3]);
+    word(g, body + 0x38c, [0, 1, 0x1000][(c / 3) % 3]);
+    for off in [0x358, 0x35c, 0x360, 0x364] {
+        word(g, body + off, NONE);
+    }
+    word(g, body + 0x354, [NONE, 1, 2, 5][c % 4]);
+    if c % 7 == 5 {
+        word(g, body + 0x35c, handle(3));
+    }
+    // The contact update: its counter `+398` and contact `+394`.
+    byte(g, body + 0x398, [0, 5, 0x80, 0xfe][c % 4]);
+    word(g, body + 0x394, [NONE, handle(3), handle(POST_CONTACT_SLOT)][(c / 2) % 3]);
+    // The physics input: the word at `+33e`'s offset (bits 2 and 4),
+    // state 3's `+404`, state 1's `+408`, the landing speed `+45c`.
+    g.set_u16(body + 0x33e, 0x1e8).unwrap();
+    g.set_u16(body + 0x1e8, [0, 4, 0x14, 0x10][c % 4]).unwrap();
+    word(g, body + 0x404, [NONE, 1][(c / 2) % 2]);
+    word(g, body + 0x408, 0x00ea_0000 | case);
+    f32w(g, body + 0x45c, [2.5, 0.0, 6.0][c % 3]);
+
+    // An actor that scales the crouch rate (record `+858`) in some cases.
+    for i in 0..2 {
+        word(g, ACTOR_ARRAY + 0x100 + 0x888 * i + 0x858, if (c + i as usize) % 2 == 0 { NONE } else { 0 });
+    }
+
+    // Definition: the crouch rate `+250`, the heights `+268`, `+26c`,
+    // `+264` bit 1 (no crouch height), `+1f0` bit 2 (no probe), `+bc` bit
+    // 11 (the input's velocity), the landing times and speeds.
+    f32w(g, DEFINITION + 0x250, 2.0);
+    f32w(g, DEFINITION + 0x268, 1.5);
+    f32w(g, DEFINITION + 0x26c, 0.5);
+    word(g, DEFINITION + 0x264, [0, 2, 8, 0xa][(c / 2) % 4]);
+    let bits = g.u32(DEFINITION + 0x1f0).unwrap();
+    word(g, DEFINITION + 0x1f0, bits | if c % 5 == 3 { 4 } else { 0 });
+    let bits = g.u32(DEFINITION + 0xbc).unwrap();
+    word(g, DEFINITION + 0xbc, bits | (u32::from(c % 2 == 1) << 11));
+    for (off, v) in [(0x1fc, 0.5f32), (0x200, 1.0), (0x204, 1.0), (0x208, 4.0), (0x20c, 8.0)] {
+        f32w(g, DEFINITION + off, v);
+    }
+
+    // The matg: the damage packet's effect (`+28`) and the probe's speed
+    // (`+64`) in its `+144` record; the gravity.
+    word(g, points::GLOBALS_TAG.base, POST_MATG);
+    word(g, POST_MATG + 0x144, POST_MATG_RECORD);
+    word(g, POST_MATG_RECORD + 0x28, 0x00e8_0004);
+    f32w(g, POST_MATG_RECORD + 0x64, [3.0, 0.5][c % 2]);
+    word(g, GRAVITY_OWNER, STEP_GRAVITY);
+    f32w(g, STEP_GRAVITY, 4.5);
+
+    // The surfaces: their flags bit 0 by index, through `[4e0340]`, the
+    // shape and the structure's clusters.
+    word(g, POST_SURFACES_OWNER, POST_SURFACES);
+    word(g, POST_SURFACES + 0x2c, POST_SURFACE_FLAGS);
+    word(g, POST_SHAPE + 0x2c, POST_SURFACE_FLAGS);
+    for i in 0..8u32 {
+        byte(g, POST_SURFACE_FLAGS + 8 * i + 4, u8::from((i + case) % 3 == 0));
+    }
+    word(g, STRUCTURE + 0x144, POST_BSP_RECORDS);
+    word(g, STRUCTURE + 0x13c, POST_BSP_CLUSTERS);
+    for i in 0..4u32 {
+        g.set_u16(POST_BSP_RECORDS + 0x58 * i + 0x34, (i % 2) as u16).unwrap();
+    }
+    for j in 0..2u32 {
+        word(g, POST_BSP_CLUSTERS + 0xc8 * j + 0xb4, POST_CLUSTER_B4);
+    }
+    word(g, POST_CLUSTER_B4 + 0xc, POST_CLUSTER_C);
+    word(g, POST_CLUSTER_C + 0x2c, POST_SURFACE_FLAGS);
+
+    // The contact object: in the world but in one case in three, its
+    // definition's model with two parts of two surfaces each.
+    let other = RECORDS + BODY * POST_CONTACT_SLOT;
+    word(g, other, POST_OBJECT_TAG);
+    word(g, other + 4, if c % 3 == 0 { 0 } else { 1 << 22 });
+    word(g, TAGS + 0x10 * POST_OBJECT_TAG + 8, POST_OBJECT_DEFINITION);
+    word(g, POST_OBJECT_DEFINITION + 0x38, POST_MODEL_TAG);
+    word(g, TAGS + 0x10 * POST_MODEL_TAG + 8, POST_MODEL);
+    word(g, POST_MODEL + 0x74, POST_PARTS);
+    for p in 0..2u32 {
+        byte(g, POST_PARTS + 0x10 * p + 4, (p + 1) as u8);
+        word(g, POST_PARTS + 0x10 * p + 0xc, POST_PART_SURFACES + 0x20 * p);
+        for s in 0..2u32 {
+            byte(g, POST_PART_SURFACES + 0x20 * p + 8 * s + 5, (2 * p + s + case) as u8 % 5);
+        }
+    }
+    word(g, POST_CONTACT_OBJECTS_OWNER, POST_CONTACT_OBJECTS);
+    for (i, h) in [NONE, handle(POST_CONTACT_SLOT), handle(POST_CONTACT_SLOT), handle(3)].into_iter().enumerate() {
+        word(g, POST_CONTACT_OBJECTS + 4 * i as u32, h);
+    }
+
+    // The component: its contacts, the fraction `+14`, the rigid-body
+    // index `+18` (negative once) below the count `+74` or not.
+    word(g, POST_COMPONENT + 0x88, POST_CONTACTS);
+    word(g, POST_COMPONENT + 0x8c, POST_CONTACT_COUNT);
+    word(g, POST_COMPONENT + 0x70, 0x0069_0000 | case);
+    f32w(g, POST_COMPONENT + 0x14, 0.75);
+    byte(g, POST_COMPONENT + 0x18, [0, 2, 0x80, 7][c % 4]);
+    word(g, POST_COMPONENT + 0x74, 3);
+    // Every kind: none, 1 (a surface), 4 (an object's part surface: the
+    // part and its surface in the field's low bits), 5 (a structure
+    // surface), and one the switch does not take.
+    let kinds = [NONE, 1 << 29 | 3 << 16 | 1, 4 << 29 | 0x21 << 16 | 1, 5 << 29 | 2 << 16 | 1, 2 << 29, 4 << 29];
+    for i in 0..=POST_CONTACT_COUNT {
+        let record = POST_CONTACTS + 0x48 * i;
+        word(g, record + 4, kinds[(i as usize + c) % kinds.len()]);
+        word(g, record + 0xc, (i + case) % 8);
+        word(g, record + 0x18, [NONE, handle(POST_CONTACT_SLOT), handle(3)][(i as usize + c) % 3]);
+        vec3(g, record + 0x1c, [0.0, 0.0, 1.0 + i as f32]);
+        vec3(g, record + 0x28, [i as f32, -0.5, 0.25]);
+    }
+}
+
+/// [`dress_biped`] then [`dress_biped_post`], for [`dressed_with`].
+fn dress_biped_both(g: &mut Guest, case: u32) {
+    dress_biped(g, case);
+    dress_biped_post(g, case);
+}
+
+/// The arguments of a slice 7b root: the biped on the stack (`dd990`;
+/// `dd0d0` with the input record and a flag), in `eax` (`dd7d0`, `e0dc0`,
+/// `ddf60`, `e4330` with a speed in `xmm2`, `e2fa0` with the contact
+/// object in `ebx`), `ebx` (`e30c0`) or `edi` (`e4680`; `dd8e0` with its
+/// out pointer on the stack).
+fn biped_post_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let biped = object(case);
+    let c = case as usize;
+    match root {
+        r if r == points::BIPED_POST_UPDATE.base => word(g, STACK + 4, biped),
+        r if r == points::BIPED_PHYSICS_INPUT.base => {
+            word(g, STACK + 4, biped);
+            word(g, STACK + 8, POST_RECORD);
+            word(g, STACK + 12, [0, 1, 0x100][c % 3]);
+        }
+        r if r == points::BIPED_CROUCH_HEIGHT.base => {
+            cpu.gpr[7] = biped;
+            word(g, STACK + 4, POST_OUT);
+        }
+        r if r == points::BIPED_JUMP_UPDATE.base => cpu.gpr[7] = biped,
+        r if r == points::BIPED_GROUND_PROBE.base => cpu.gpr[3] = biped,
+        r if r == points::BIPED_LANDING_UPDATE.base => {
+            cpu.gpr[0] = biped;
+            let speed = [0.5f32, 2.0, 6.0, 10.0, 0.0][c % 5];
+            cpu.xmm[2] = (cpu.xmm[2] & !0xffff_ffff) | u128::from(speed.to_bits());
+        }
+        r if r == points::BIPED_CONTACT_UPDATE.base => {
+            cpu.gpr[0] = biped;
+            cpu.gpr[3] = [NONE, handle(3), handle(POST_CONTACT_SLOT)][c % 3];
+        }
+        _ => cpu.gpr[0] = biped,
+    }
+}
+
+/// [`transcripts`] of a slice 7b root over a [`dress_biped_post`]ed pool.
+fn biped_post_transcripts(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    BIPED_POST.with(|b| b.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            dress(&mut g, case);
+            dress_biped(&mut g, case);
+            dress_biped_post(&mut g, case);
+            biped_post_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+    BIPED_POST.with(|b| b.set(false));
+}
+
+#[test]
+fn biped_post_update() {
+    biped_post_transcripts(&points::BIPED_POST_UPDATE, 42);
+}
+
+#[test]
+fn biped_post_update_leaves() {
+    biped_post_transcripts(&points::BIPED_CROUCH_FORCED, 12);
+    biped_post_transcripts(&points::BIPED_GROUND_FLAG, 12);
+    biped_post_transcripts(&points::BIPED_LANDING_UPDATE, 20);
+}
+
+#[test]
+fn biped_post_update_segments() {
+    biped_post_transcripts(&points::BIPED_CROUCH_STEP, 12);
+    biped_post_transcripts(&points::BIPED_CROUCH_HEIGHT, 16);
+    biped_post_transcripts(&points::BIPED_GROUND_PROBE, 24);
+    biped_post_transcripts(&points::BIPED_JUMP_UPDATE, 12);
+    biped_post_transcripts(&points::BIPED_PHYSICS_INPUT, 12);
+    biped_post_transcripts(&points::BIPED_CONTACT_UPDATE, 12);
+}
+
+/// The dispatcher reaches the post-update body by the `bipd` slot `+44`
+/// over the biped's dressing.
+#[test]
+fn type_post_update_dispatch_reaches_the_biped() {
+    BIPED_POST.with(|b| b.set(true));
+    dressed_with(&points::OBJECT_TYPE_POST_UPDATE, 12, dress_biped_both);
+    BIPED_POST.with(|b| b.set(false));
 }

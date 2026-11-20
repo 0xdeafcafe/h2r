@@ -1370,6 +1370,37 @@ points! { ALL;
     /// clamped to the look limits, and body `+3cc..3d4` stepped toward the
     /// result.
     BIPED_LOOK_UPDATE @ 0x000d_e190: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    // Slice 7b of docs/engine/sim-rewrite-objects.md: the biped
+    // post-physics update.
+    /// Biped post-physics update: slot `+44` of `bipd`.
+    BIPED_POST_UPDATE @ 0x000d_d990: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// The step of the crouch fraction (body `+2c4`) this tick: the
+    /// definition's rate (an actor may scale it) times the tick length,
+    /// toward 1 or 0 by the control bit (body `+134` bit 23).
+    BIPED_CROUCH_STEP @ 0x000d_d7d0: [fn(object: eax) -> xmm0 ret 0], Hot; "docs/engine/object-update.md";
+    /// The height the crouch step moves the biped this tick into `out`,
+    /// `al` 1 when there is one (landing or forced to crouch, the step not
+    /// zero).
+    BIPED_CROUCH_HEIGHT @ 0x000d_d8e0: [fn(object: edi, out: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// `al` 1 in state 6 with body `+3f8` set and `+348` bit 13.
+    BIPED_CROUCH_FORCED @ 0x000e_0dc0: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// A collision query below an airborne biped and the stuck counter at
+    /// body `+3ab`.
+    BIPED_GROUND_PROBE @ 0x000e_30c0: [fn(object: ebx) ret 0], Hot; "docs/engine/object-update.md";
+    /// `al` the flag bit of the surface the biped stands on (body `+354`),
+    /// 0 with a contact object.
+    BIPED_GROUND_FLAG @ 0x000d_df60: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// The ground and jump counters at body `+39c` and `+39e`, and the
+    /// jump `0xe4770` when the control asks for it; `al` 1 when it jumped.
+    BIPED_JUMP_UPDATE @ 0x000e_4680: [fn(object: edi) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Fills the physics step's input record (`0x1e68a0`) and, by the
+    /// state, its fields `+44`, `+48`, `+4c`.
+    BIPED_PHYSICS_INPUT @ 0x000d_d0d0: [fn(object: stack 0, record: stack 1, flag: stack 2) ret 12], Hot; "docs/engine/object-update.md";
+    /// The landing's kind and ticks at body `+34c..34f`, from a speed in
+    /// `xmm2` against the definition's bands.
+    BIPED_LANDING_UPDATE @ 0x000e_4330: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// The contact object at body `+394` and its counter `+398`.
+    BIPED_CONTACT_UPDATE @ 0x000e_2fa0: [fn(object: eax, contact: ebx, unused: stack 0) ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
