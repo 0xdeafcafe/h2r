@@ -1190,3 +1190,66 @@ fn the_gizmo_and_the_text_fields_go_through_the_api_commands() {
     let d = &ui.hoppers.hoppers().unwrap()[2].description;
     assert!(d.len() < 200, "{}", d.len());
 }
+
+#[test]
+fn placement_chain_uses_the_current_tag_document_and_stops_at_cycles() {
+    let t = Temp::new("placement-chain");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    let placement = json!({"block": "weapons", "index": 0});
+    let chain = call(&mut api, &mut app, m::TAG_CHAIN, placement.clone());
+    let object = &chain["root"];
+    assert_eq!(object["group"], "weap");
+    let model = &object["children"][0];
+    assert_eq!(model["group"], "hlmt");
+    assert_eq!(model["via"], "model");
+    let render = &model["children"][0];
+    assert_eq!(render["group"], "mode");
+    assert_eq!(render["via"], "render_model");
+    assert_eq!(render["children"][0]["tag"], object["tag"]);
+    assert_eq!(render["children"][0]["cycle"], true);
+    assert_eq!(render["children"][0]["children"], json!([]));
+    assert_eq!(object["children"][1]["via"], "parts[0].item");
+    assert_eq!(object["children"][1]["label"], Value::Null);
+
+    let shallow = call(&mut api, &mut app, m::TAG_CHAIN, json!({"tag":"weap", "depth":0}));
+    assert_eq!(shallow["root"]["tag"], object["tag"]);
+    assert_eq!(shallow["root"]["children"], json!([]));
+    let spawn = call(&mut api, &mut app, m::TAG_CHAIN, json!({"block":"starting_locations", "index":0}));
+    assert!(spawn["root"].is_null());
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag":"hlmt", "path":"render_model", "value":null}));
+    let edited = call(&mut api, &mut app, m::TAG_CHAIN, placement);
+    assert_eq!(edited["root"]["children"][0]["children"], json!([]));
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHAIN, json!({"block":"weapons", "tag":"weap"}))),
+        code::INVALID_PARAMS
+    );
+}
+
+#[test]
+fn placement_inspector_and_tag_set_make_identical_documents_and_saves() {
+    let window = Temp::new("inspector-tag");
+    let socket = Temp::new("inspector-api");
+    let mut ui = crate::app::tag_tests::placement_app(&window.0);
+    let mut agent = crate::app::tag_tests::placement_app(&socket.0);
+    let mut api = Api::new();
+    ui.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+    let scenario = ui.session.scenario().unwrap();
+    let root = crate::app::tag_api::placement_root(scenario, BlockKind::Weapons, 0).unwrap().0;
+    // The same byte write the speed widget emits at the end of a drag.
+    let t = ui.tags.tag(root).unwrap();
+    let f = &ui.tags.layout(root).unwrap().fields[0];
+    let action = crate::fields::write_action(root, t.address + f.offset, 4.25f32.to_le_bytes().to_vec(), &f.name);
+    ui.dispatch(crate::ui::inspector::tag_action(action));
+    ui.dispatch(crate::ui::inspector::tag_action(Action::Tag(crate::app::TagAction::Seal)));
+    call(&mut api, &mut agent, m::TAG_SET, json!({"tag":"weap", "path":"speed", "value":4.25}));
+
+    assert_eq!(ui.tags.patches(), agent.tags.patches());
+    assert!(!ui.tags.patches().is_empty());
+    assert_eq!(ui.session.scenario().unwrap().changes(), agent.session.scenario().unwrap().changes());
+    let window_save = window.path("edited.map");
+    let socket_save = socket.path("edited.map");
+    ui.perform(Action::SaveMapAs(window_save.clone()), false).unwrap();
+    call(&mut api, &mut agent, m::DOC_SAVE_AS, json!({"doc":"map", "path":socket_save}));
+    assert_eq!(std::fs::read(window_save).unwrap(), std::fs::read(socket_save).unwrap());
+}

@@ -148,6 +148,14 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   whose values differ is marked `*`, and an edit (one component, one bit
   or the whole value) applies to all of them as one undo step
   (`Session::edit_selection`).
+  For one placement with an object or item reference, **Tags** shows the
+  tag chain from that placement. Open a tag node to edit its fields with
+  the Tags tool's panel (`fields::panel`). Named links lead to the object
+  model and other dependencies, with other links under **All references**.
+  The **Show in** button opens a tag whose metadata lives in a shared cache
+  in the Tags tool, read-only. An edit affects every use of the tag. Use
+  **Undo tag edit** and **Redo tag edit** for the tag history. The map
+  save includes the tag edits alongside the placement edits.
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
   open, the camera's fly speed, frame rate.

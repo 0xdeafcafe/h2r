@@ -7,7 +7,7 @@
 //! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
 //! [`Action`]s.
 
-mod inspector;
+pub(crate) mod inspector;
 pub mod map_list;
 pub mod map_pack;
 mod outliner;

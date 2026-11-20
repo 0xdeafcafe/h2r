@@ -77,6 +77,13 @@ impl ToolKind {
     }
 }
 
+/// The primary subject of the scenario inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Placement(BlockKind, usize),
+    Tag(map::TagId),
+}
+
 /// One user command. Everything the menus, toolbar, outliner and keyboard
 /// shortcuts do goes through [`App::dispatch`].
 #[derive(Clone, Debug, PartialEq)]
@@ -236,6 +243,10 @@ pub enum Action {
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
+    /// An inspector edit always targets the open map's tag document.
+    InspectorTag(TagAction),
+    /// Open a tag from a shared cache by group and name.
+    BrowseSharedTag(map::TagId),
     /// Show another map of the source in the Tags tool, read-only (a
     /// shared cache), or (`None`) the open map again.
     BrowseTags(Option<String>),
@@ -889,6 +900,16 @@ impl App {
             }
             Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
+            Action::InspectorTag(TagAction::Select(tag)) => {
+                self.browse_tags(None);
+                self.set_tool(ToolKind::Tags);
+                self.run_map_tag(TagAction::Select(tag));
+            }
+            Action::InspectorTag(action) => {
+                self.sync_tags();
+                self.run_map_tag(action);
+            }
+            Action::BrowseSharedTag(tag) => self.browse_shared_tag(tag),
             Action::BrowseTags(name) => self.browse_tags(name.as_deref()),
             Action::TagPreview(id) => self.preview_tag(id),
             Action::TagExport { tags, out, options } => {
@@ -1025,6 +1046,11 @@ impl App {
         }
     }
 
+    /// The scenario session owns placement selection, including multi-select.
+    pub fn selection(&self) -> Option<Selection> {
+        self.session.selected().map(|(kind, index)| Selection::Placement(kind, index))
+    }
+
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
@@ -1088,6 +1114,10 @@ impl App {
             }
             return;
         }
+        self.run_map_tag(action);
+    }
+
+    fn run_map_tag(&mut self, action: TagAction) {
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {

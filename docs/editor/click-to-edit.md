@@ -1,7 +1,7 @@
 # Click to edit: one editor for placements, tags and Halo 1 tags
 
-Status: Design. Nothing here is built; "What exists" lists the built parts it stands on.
-Code: none yet. It changes `crates/apps/studio/src` (`app.rs`, `app/tag_doc.rs`, `fields.rs`, `ui/inspector.rs`, `ui/tags.rs`, `api`), `crates/tools/editor-core`, `crates/tools/scenario-edit`, `crates/tools/h1map`, `crates/tools/h1objects` and `crates/tools/h1convert`; each slice names its files and tests.
+Status: C1 is implemented. The remaining slices are design.
+Code: C1 lives in studio's `app.rs`, `app/tag_api/chain.rs`, `ui/inspector.rs` and `api/tag_fields.rs`. The full design changes `crates/apps/studio/src` (`app.rs`, `app/tag_doc.rs`, `fields.rs`, `ui/inspector.rs`, `ui/tags.rs`, `api`), `crates/tools/editor-core`, `crates/tools/scenario-edit`, `crates/tools/h1map`, `crates/tools/h1objects` and `crates/tools/h1convert`; each slice names its files and tests.
 Switch: none.
 
 The Scenario and Tags tools become one Map tool. Clicking anything in the

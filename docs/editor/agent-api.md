@@ -163,6 +163,20 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Tag chains.** `tag.chain {"block":"weapons","index":0}` follows a
+  placement's palette or item reference in the open map.
+  `tag.chain {"tag":"weap","depth":2}` starts at a tag in the document
+  shown by the Tags tool. Both read current tag edits. `depth` counts
+  references below the root (default 3, maximum 8). The response is
+  `{root, truncated}`, with a null root for a placement without a tag.
+  Each node has `tag` (ID), `group`, `name`, `via` (the field path),
+  `label` (a named shortcut, or null), `where` (`here` or `shared`),
+  `cache` (the shared cache name, or null), `variant` (model variant
+  name or ID, if known), `cycle` and `children`. A missing target keeps
+  its ID and path with null tag metadata. Cycles stop the current branch.
+  `truncated` means a traversal limit beyond the requested depth cuts
+  the result short. Live handles and usage counts belong to later slices
+  of the [click-to-edit design](click-to-edit.md).
 - **Other maps and tag bundles.** `tag.browse {"map": "shared"}` shows
   another map of the source in the Tags tool, read-only (`shared`,
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes

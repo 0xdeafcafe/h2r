@@ -39,6 +39,49 @@ const SET: MethodDef = MethodDef {
     planned: None,
 };
 
+const CHAIN: MethodDef = MethodDef {
+    name: m::TAG_CHAIN,
+    summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
+    params: r#"{"block?":"string","index?":"integer","tag?":"string|integer","depth?":"integer (default 3, max 8)"}"#,
+    result: r#"{"root":"node|null","truncated":"boolean"}"#,
+    example: r#"{"block":"weapons","index":0}"#,
+    planned: None,
+};
+
+fn chain(app: &mut App, p: &P) -> Reply {
+    let depth = p.opt_u64("depth")?.unwrap_or(tag_api::DEFAULT_DEPTH as u64);
+    if depth > tag_api::MAX_DEPTH as u64 {
+        return Err(err(code::INVALID_PARAMS, format!("depth: at most {}", tag_api::MAX_DEPTH)));
+    }
+    let (doc, root) = match (p.has("block"), p.has("index"), p.get("tag")) {
+        (true, true, None) => {
+            let (kind, index) = p.entry(app)?;
+            sync_open_tags(app)?;
+            let root = tag_api::placement_root(super::scenario::open(app)?, kind, index);
+            (&app.tags, root)
+        }
+        (false, false, Some(want)) => {
+            if app.browsing().is_none() {
+                sync_open_tags(app)?;
+            }
+            let doc = app.shown_tags();
+            let id = tag_api::lookup(doc, want).map_err(|e| err(code::INVALID_PARAMS, e))?;
+            (doc, Some((id, "")))
+        }
+        _ => return Err(err(code::INVALID_PARAMS, "supply block and index, or tag")),
+    };
+    Ok(tag_api::chain(doc, root, depth as usize).json(doc))
+}
+
+pub(super) fn sync_open_tags(app: &mut App) -> Result<(), agent_proto::RpcError> {
+    super::scenario::open(app)?;
+    app.sync_tags();
+    if let Some(e) = &app.tags.error {
+        return Err(err(code::FAILED, format!("the tag editor could not read the map: {e}")));
+    }
+    Ok(())
+}
+
 fn block_def(name: &'static str, summary: &'static str, params: &'static str) -> MethodDef {
     let base = METHODS.iter().find(|d| d.name == name).expect("in the table");
     MethodDef {
@@ -56,6 +99,7 @@ impl Provider for TagFields {
         vec![
             READ,
             SET,
+            CHAIN,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -75,6 +119,9 @@ impl Provider for TagFields {
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &serde_json::Value) -> Option<Reply> {
+        if method == m::TAG_CHAIN {
+            return Some(chain(app, &P(params)));
+        }
         if ![
             m::TAG_READ,
             m::TAG_SET,
@@ -113,11 +160,7 @@ pub(super) fn resolve(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcErr
         let want = p.get("tag").cloned().unwrap_or(Value::Null);
         return tag_api::lookup(app.shown_tags(), &want).map_err(|e| err(code::INVALID_PARAMS, e));
     }
-    super::scenario::open(app)?;
-    app.sync_tags();
-    if let Some(e) = &app.tags.error {
-        return Err(err(code::FAILED, format!("the tag editor could not read the map: {e}")));
-    }
+    sync_open_tags(app)?;
     if let Some(s) = p.get("tag").and_then(Value::as_str)
         && let Some(id) = tag_api::find_tag(&app.tags, s)
     {

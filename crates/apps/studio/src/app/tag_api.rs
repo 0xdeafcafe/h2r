@@ -17,6 +17,9 @@ use tags::registry::{Field, Kind, Layout};
 
 use super::tag_doc::{Access, BlockOp, TagAction, TagDoc, TagWrite};
 
+mod chain;
+pub use chain::{Chain, DEFAULT_DEPTH, MAX_DEPTH, Node, chain, placement_root};
+
 /// Elements of a block [`read_tag`] lists at most.
 pub const ELEMENTS: u32 = 64;
 /// Bytes of a data reference [`read_tag`] shows at most.

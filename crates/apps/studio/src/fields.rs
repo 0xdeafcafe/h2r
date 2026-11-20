@@ -115,6 +115,17 @@ fn key(address: u32) -> u64 {
     0x7461_6700_0000_0000 | u64::from(address)
 }
 
+/// The field panel's byte write, with the drag's merge key.
+pub(crate) fn write_action(tag: TagId, address: u32, bytes: Vec<u8>, label: &str) -> Action {
+    Action::Tag(TagAction::Write(TagWrite {
+        tag,
+        address,
+        bytes,
+        label: label.to_owned(),
+        merge: Some(key(address)),
+    }))
+}
+
 fn le(b: &[u8], at: usize, n: usize) -> u64 {
     let mut v = 0u64;
     for k in (0..n).rev() {
@@ -149,13 +160,7 @@ pub fn guess(v: u32) -> View {
 
 impl Cx<'_> {
     fn write(&mut self, address: u32, bytes: Vec<u8>, label: &str) {
-        self.actions.push(Action::Tag(TagAction::Write(TagWrite {
-            tag: self.tag,
-            address,
-            bytes,
-            label: label.to_owned(),
-            merge: Some(key(address)),
-        })));
+        self.actions.push(write_action(self.tag, address, bytes, label));
     }
 
     /// After a widget: seal the drag when it ends.
