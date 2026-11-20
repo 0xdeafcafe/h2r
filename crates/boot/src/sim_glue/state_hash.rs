@@ -102,6 +102,122 @@ pub(super) fn gameplay(s: &Snapshot, rng: Option<u32>) -> u64 {
     h.0
 }
 
+/// The same state as [`gameplay`], named: one `(component, value)` per
+/// player pose, velocity, facing, health, weapon state and so on, plus the
+/// RNG seed, tick counter and team scores, for `h2 sim diff`. Values are
+/// plain decimal text (floats print so they read back exactly) so a report
+/// shows both sides. The checkpoint arena's blocks are added by the caller.
+pub(super) fn components(s: &Snapshot, rng: Option<u32>) -> Vec<(String, String)> {
+    use std::fmt::Write as _;
+
+    fn v3(v: [f64; 3]) -> String {
+        format!("{},{},{}", v[0], v[1], v[2])
+    }
+    fn opt<T>(v: Option<T>, f: impl FnOnce(T) -> String) -> String {
+        v.map_or_else(|| "none".into(), f)
+    }
+    fn hex(v: u32) -> String {
+        format!("{v:#x}")
+    }
+
+    let mut out: Vec<(String, String)> = Vec::with_capacity(16 + s.players.len() * 14);
+    let mut add = |name: String, value: String| out.push((name, value));
+    add("time.tick".into(), s.tick.to_string());
+    add("rng.seed".into(), opt(rng, hex));
+    add("world.bsp".into(), opt(s.bsp, |b| b.to_string()));
+    add(
+        "world.flags".into(),
+        format!("stats={} cinematic={}", s.has_stats, s.cinematic),
+    );
+    for t in &s.teams {
+        add(format!("team.{:02}.score", t.team), t.score.to_string());
+    }
+    for (slot, p) in s.players.iter().enumerate() {
+        let n = format!("player.{slot:02}");
+        add(
+            format!("{n}.id"),
+            format!(
+                "index={} datum={} unit={} team={}",
+                p.player.index,
+                hex(p.datum),
+                hex(p.unit),
+                p.player.team
+            ),
+        );
+        let st = &p.stats;
+        add(
+            format!("{n}.stats"),
+            format!(
+                "score={} kills={} deaths={} assists={} suicides={}",
+                st.score, st.kills, st.deaths, st.assists, st.suicides
+            ),
+        );
+        let Some(Some(o)) = s.objects.get(slot) else {
+            add(format!("{n}.object"), "none".into());
+            continue;
+        };
+        let m = &o.motion;
+        add(format!("{n}.pos"), v3(o.pos));
+        add(format!("{n}.velocity"), opt(o.velocity, v3));
+        add(format!("{n}.unit_velocity"), v3(m.velocity));
+        add(format!("{n}.facing"), format!("fwd={} up={}", v3(o.forward), v3(o.up)));
+        add(format!("{n}.aim"), opt(o.aim, v3));
+        add(
+            format!("{n}.health"),
+            opt(o.vitality, |(body, shield)| format!("body={body} shield={shield}")),
+        );
+        let mut w = String::new();
+        let _ = write!(w, "held={}", opt(o.weapon.as_ref(), |w| hex(w.datum)));
+        let _ = write!(w, " slots={}", opt(m.weapons, |s| s.map(hex).join(",")));
+        let _ = write!(
+            w,
+            " magazine={}",
+            opt(m.magazine, |(reserve, loaded)| format!("{reserve}/{loaded}"))
+        );
+        let _ = write!(
+            w,
+            " grenade={} grenades={}",
+            opt(m.grenade, |g| g.to_string()),
+            opt(m.grenades, |g| g.to_string())
+        );
+        add(format!("{n}.weapon"), w);
+        add(
+            format!("{n}.vehicle"),
+            format!(
+                "vehicle={} mount={} seat={} def={} vdef={}",
+                opt(o.vehicle, hex),
+                opt(o.mount, hex),
+                opt(o.seat, |s| s.to_string()),
+                opt(o.definition, hex),
+                opt(o.vehicle_definition, hex)
+            ),
+        );
+        add(
+            format!("{n}.anim"),
+            opt(m.animation, |a| {
+                format!(
+                    "graph={} inherited={} index={} frame={}",
+                    hex(a.graph),
+                    a.inherited,
+                    a.index,
+                    a.frame
+                )
+            }),
+        );
+        add(
+            format!("{n}.motion"),
+            format!(
+                "crouch={} physics={} unit_flags={} biped_flags={}",
+                opt(m.crouch, |c| c.to_string()),
+                opt(m.physics_mode, |p| p.to_string()),
+                opt(m.unit_flags, hex),
+                opt(m.biped_flags, |f| hex(f.into()))
+            ),
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +287,19 @@ mod tests {
             gameplay(&snapshot, Some(early_post_tick)),
             gameplay(&snapshot, Some(serial_post_tick))
         );
+    }
+
+    #[test]
+    fn components_name_rng_tick_and_players() {
+        let snapshot = Snapshot {
+            tick: 9,
+            ..Default::default()
+        };
+        let c = components(&snapshot, Some(0x1234));
+        assert!(c.contains(&("time.tick".into(), "9".into())));
+        assert!(c.contains(&("rng.seed".into(), "0x1234".into())));
+        let again = components(&snapshot, Some(0x1235));
+        assert_ne!(c, again);
     }
 
     #[test]
