@@ -745,6 +745,8 @@ h2 agent render.capture '{}'
 h2 agent render.spawn_view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
+h2 agent render.capture '{"lighting":"retail"}' # latest sealed scene, private draw
+h2 agent render.capture '{"lighting":"e3","tick":42}' # use the first reply's tick
 h2 agent render.scene '{"dump": true}'
 h2 agent sim.hashes '{"from_tick": 3000}'
 h2 agent render.parity '{"arm": true}'
@@ -754,7 +756,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
-| `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
+| `render.capture` | read | `{tick?, pass?, lighting?}` | `{path, tick, present, pass?, lighting?, scene_hash}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
@@ -787,7 +789,19 @@ h2 agent render.parity '{"arm": true}'
   gives `UNAVAILABLE`, and a session that draws no world frames times out.
   `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
   playerless world view in `spectator_view.rs`.
-- **`render.capture`.** The frame of game tick `tick` (as `at.tick`
+- **`render.capture`.** With `lighting: "retail" | "e3"`, the native
+  renderer draws a sealed scene into a private target. The default is
+  the latest sealed scene. An explicit `tick` selects that exact scene
+  tick. The answer includes its tick, present, summary hash, lighting
+  and a fresh PNG path. The most recent successful private capture
+  retains its scene for another request with the same tick. Pass both
+  paths to `render.compare` to compare the modes while play continues.
+  A renderer reset releases the retained scene. A missing private
+  renderer or an unreplayable scene gives `UNAVAILABLE`. Combining
+  `lighting` with `pass` gives `INVALID_PARAMS`. The override applies
+  only to the private draw.
+
+  Without `lighting`, the frame is taken for game tick `tick` (as `at.tick`
   counts it; default the next one, at most 240 ahead). On the D3D path
   the frame of a tick is the present that follows it: the first guest
   present after the tick has ended. `tick` in the answer is the last tick

@@ -84,12 +84,21 @@ pub struct GameCtx<'a> {
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
     /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
-    later: Option<(Later, u64, Duration)>,
+    later: Option<DeferredAnswer>,
 }
 
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
 /// the one that asked, `None` until it is ready.
 pub type Later = Box<dyn FnMut(&mut GameCtx<'_>) -> Option<Result<Value, RpcError>> + Send>;
+
+struct DeferredAnswer {
+    poll: Later,
+    ticks: u64,
+    wall: Duration,
+    // A decision made by guest code waits for the next tick. A render
+    // thread can finish an already sealed scene while the guest is paused.
+    needs_next_tick: bool,
+}
 
 /// The longest a deferred answer may wait, in game ticks, and in wall time
 /// whatever the ticks (a game that stopped ticking).
@@ -140,7 +149,20 @@ impl GameCtx<'_> {
 
     /// A deferred operation with its own, shorter wall-clock deadline.
     pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
-        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL)));
+        self.later = Some(DeferredAnswer {
+            poll, ticks: ticks.clamp(1, DEFER_TICKS_MAX), wall: wall.min(DEFER_WALL), needs_next_tick: true,
+        });
+    }
+
+    /// Poll work on another thread at each boundary, including a held
+    /// tick. The poll cannot read or write guest state.
+    pub(crate) fn defer_host(
+        &mut self,
+        mut poll: impl FnMut() -> Option<Result<Value, RpcError>> + Send + 'static,
+    ) {
+        self.later = Some(DeferredAnswer {
+            poll: Box::new(move |_| poll()), ticks: DEFER_TICKS_MAX, wall: DEFER_WALL, needs_next_tick: false,
+        });
     }
 }
 
@@ -151,6 +173,7 @@ struct Deferred {
     poll: Later,
     from_ticks: u64,
     tick_limit: u64,
+    needs_next_tick: bool,
     deadline: Instant,
 }
 
@@ -961,7 +984,7 @@ impl State {
         let now = Instant::now();
         let at = self.at();
         for mut d in std::mem::take(&mut self.deferred) {
-            let fresh = self.ticks == d.from_ticks;
+            let fresh = d.needs_next_tick && self.ticks == d.from_ticks;
             let out = if fresh {
                 None
             } else {
@@ -1126,14 +1149,15 @@ impl State {
             {
                 t.record_lobby(b, m, &p)
             }
-            if let (Ok(_), Some((poll, ticks, wall))) = (&out, ctx.later.take()) {
+            if let (Ok(_), Some(later)) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,
                     id: req.id,
-                    poll,
+                    poll: later.poll,
                     from_ticks: self.ticks,
-                    tick_limit: ticks,
-                    deadline: Instant::now() + wall,
+                    tick_limit: later.ticks,
+                    needs_next_tick: later.needs_next_tick,
+                    deadline: Instant::now() + later.wall,
                 });
                 return None;
             }

@@ -16,6 +16,7 @@ pub mod discover;
 pub mod collision;
 mod endpoint;
 pub mod expect;
+pub mod frame_graph;
 pub mod havok;
 pub mod host_lobby;
 pub mod hot;
@@ -35,7 +36,7 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
+    CaptureLighting, CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
     PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
     SceneCarriedCensus, SceneReadUse, SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord,
