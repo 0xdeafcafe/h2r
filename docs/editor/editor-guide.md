@@ -113,16 +113,14 @@ The window is made of panels that dock together:
   changes shows a `*` after its name. Switching tools never loses
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
-  folder of maps), the path of what is open, and its maps. Below them,
-  **Map Pack** lists the Map Pack's maps, **Packages** lists the map packages you have saved, and **Halo 1** the
-  Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
-  tool. Each map is listed as the game's menus show it: its name
-  (**Containment**, not `containment.map`) with a small picture beside
-  it. Hover a map to see the whole picture, its description and, in grey,
-  which file it is and where it comes from (for example
-  `03a_oldmombasa.map, on the Halo 2 disc`). The maps that are not levels
-  (`mainmenu`, `shared`, `single_player_shared`) keep their file names,
-  and their tooltip says what they are for.
+  folder of maps), the source path, and its **Multiplayer maps** and
+  **Campaign levels**. **Map Pack**, **Packages**, **Halo 1 sandbox
+  variants** and read-only **Halo 1** maps have their own sections. Rows
+  are sorted by display name within each section. A map shows the name
+  and picture from the game's menus when available. Hover for the full
+  picture, description and source file. **Shared and menu** is the
+  final section. It uses a layers icon and keeps the file names of
+  caches such as `mainmenu`, `shared`, `single_player_shared` and `ui`.
 - **Outliner** (bottom left), **Viewport** (middle) and **Inspector**
   (right) show the tool you are in. In Game variants the outliner becomes
   **Variants** and the viewport **Settings**; in Playlists they become
@@ -513,16 +511,16 @@ Save as package...** then offers the same **Directory**, so saving updates
 that package. (The disc that has the package's map must be open.)
 
 
-![The bottom of the Maps list: the disc's last maps, then Packages with ascension edit, then Halo 1 with the Halo 1 disc's path, marked read only, and its maps from a10 to wizard, each with an eye](../images/editor/maps-groups.png)
+![The Maps list showing an Ascension package and the read-only Halo 1 source](../images/editor/maps-groups.png)
 
-*Below the disc's maps: **Packages**, then **Halo 1** with the maps of an open Halo 1 disc.*
+*The **Packages** section and the read-only maps of an open Halo 1 disc.*
 
 ### Map Pack maps
 
 The Multiplayer Map Pack's nine maps have a group of their own, **Map
-Pack**, under the disc's maps. They are listed as the game's **Select
-Map** lists them: the same names, in the same order, each with its
-picture beside it. Hover a map to see its whole picture and description.
+Pack**, below the disc's playable maps. The editor lists them
+alphabetically by their **Select Map** names, with their pictures.
+Hover a map to see its whole picture and description.
 
 The maps come from the Map Pack disc when the editor has it (section 2),
 else from the copy the game installed in your data folder
@@ -552,12 +550,10 @@ Saving never changes the Map Pack's files:
 The editor can show Halo 1 maps too.
 
 **Converted maps.** Once you have imported Halo 1 multiplayer maps
-([multiplayer.md](../halo1/multiplayer.md)), each is listed under
-**Halo 1** twice, once per sandbox: for example **Blood Gulch (H1
-sandbox)** (Halo 1's weapons and vehicles) and **Blood Gulch (H2
-sandbox)** (Halo 2's), with the picture and description Halo 1's menu
-has for it. Click one to open it in the Scenario tool and
-edit it like any map. Saving it with **File > Save as package...** makes a
+([multiplayer.md](../halo1/multiplayer.md)), look under **Halo 1 sandbox
+variants**. Each map's H1 sandbox comes first, followed by its H2
+sandbox. Both show the picture and description from Halo 1's menu.
+Click a variant to edit it in the Scenario tool. Saving it with **File > Save as package...** makes a
 new package (its **Directory** starts as `<map>-edit`), listed under
 **Packages**; the imported map is left as it was.
 
@@ -590,11 +586,11 @@ over the converted one.*
 Halo 1 maps with **Open...** (or start with `--halo1`), and its maps are
 listed under **Halo 1**, by the names Halo 1's own menus give them
 (**Blood Gulch**, **The Pillar of Autumn**) with their pictures, read
-from the disc's `ui.map`. A map those menus don't list (and `ui` itself)
-keeps its file name and an eye. Click one to look at it: its level
-(textured and lit by its own lightmaps, without its sky or scenery) and its multiplayer
-spawn points, flags, weapon spawns and vehicles, which you can select to
-see their details. These maps are read only (the outliner says `Halo 1:
+from the disc's `ui.map`. An unlisted level keeps its file name and eye
+icon. The menu cache appears in **Shared and menu**. Click a level to
+see its geometry, lit by its own lightmaps, and its multiplayer spawn
+points, flags, weapon spawns and vehicles. Select a placement to see
+its details. These maps are read only (the outliner says `Halo 1:
 read only`): nothing can be moved or saved.
 
 
@@ -616,9 +612,9 @@ Halo 2 map from it:
    (`Building h1_bloodgulch (h2 sandbox)...` with the seconds so far)
    and writes the new map into the data folder, as the importer does,
    with the map's picture and description from your Halo 1 disc when
-   it has them. When it is done, the map appears under **Halo 1** in
-   **Maps** (for example **Blood Gulch (H2 sandbox)**) and opens, ready
-   to edit.
+   it has them. When it is done, the map appears under **Halo 1 sandbox
+   variants** in **Maps** (for example **Blood Gulch (H2 sandbox)**)
+   and opens for editing.
 
 
 ![The Inspector for Halo 1's bloodgulch: the read-only banner, then Convert to Halo 2 with the Sandbox choice (Halo 2 selected), Builds a new map, h1_bloodgulch, and the Convert to Halo 2 button](../images/editor/convert-controls.png)
@@ -981,10 +977,10 @@ count spilling out of its box.
 ![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
 
 - **HUDs** (left):
-  - **Map** (the menu at the top): the maps of the disc or folder you
-    opened, then your packages under the data folder, among them the
-    converted Halo 1 maps (a mountain). Pick one to open it in the HUD
-    tool. Type in the filter at the top of the menu to find one.
+  - **Map** (the menu at the top): the source's multiplayer maps and
+    campaign levels, your packages and **Halo 1 sandbox variants**,
+    then **Shared and menu**. Pick a map to open it in the HUD tool.
+    The filter matches source maps by display name and file name.
   - **HUDs**: every HUD of that map, grouped by who uses it: players and
     bipeds, weapons, vehicles, the globals, and the converted Halo 1
     HUDs. Hover one to see who names it. Click one to show it. A `*`
@@ -1057,13 +1053,12 @@ it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
 points at. Open a map in **Maps** first (a disc map, one of your
 packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
 
-- **Which map** (the list at the top left): the map open in the Scenario
-  tool, which you can edit, or any other map of your disc to look at:
-  `shared` and `single_player_shared` (what the multiplayer maps and the
-  campaign levels have in common), `mainmenu`, another level. Another
-  map's tags are read-only; pick the open map again to go back. Picking
-  `shared` or `single_player_shared` in **Maps** shows them here, as
-  they are not levels.
+- **Which map** (the list at the top left) groups the source's maps by
+  type, with caches such as `shared`, `single_player_shared` and
+  `mainmenu` at the bottom under **Shared and menu**. Browse another
+  map's tags read-only or select the row marked **(open map)** to
+  edit the Scenario tool's map. Selecting `shared` or
+  `single_player_shared` in **Maps** opens its tags here.
 - **The tag tree** (left) lists the map's tags by **Groups** (`weap`,
   `proj`, `vehi`, ...) or by **Paths**, a folder tree of their names
   (`objects`, `weapons`, `rifle`, ...). Type words in the search box to

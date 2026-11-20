@@ -4,8 +4,8 @@
 //! picture, the name, the description and a dim line saying where the file
 //! comes from. A map with none keeps its file name and icon, and its
 //! tooltip says what it is. The pictures share one GPU cache, keyed by
-//! row. The Halo 2 source's group is drawn here, the Map Pack's in
-//! [`super::map_pack`], Packages and Halo 1 in `Studio::library_lists`.
+//! row. The source maps are drawn here, the Map Pack in
+//! [`super::map_pack`], and packages in `Studio::library_lists`.
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -13,8 +13,9 @@ use dear_imgui_rs::{TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use editor_core::MapSource;
 use editor_core::halo1::H1Source;
+use editor_core::map_groups::MapGroup;
 
-use crate::app::map_cards::{halo1_note, halo2_note};
+use crate::app::map_cards::{MapEntry, halo1_note, halo2_note};
 use crate::app::map_pack::Picture;
 use crate::app::{Action, App};
 use crate::theme::icon;
@@ -39,7 +40,9 @@ pub enum Group {
     Halo2,
     MapPack,
     Packages,
+    Halo1Sandbox,
     Halo1,
+    SharedAndMenu,
 }
 
 /// What a group drew.
@@ -237,62 +240,99 @@ pub fn halo1_place(source: &H1Source) -> String {
     }
 }
 
-/// The open Halo 2 source's maps, in its order, each named and pictured
-/// by its card once the main menu's lists are read.
-pub fn halo2(ui: &Ui, app: &App, st: &mut MapListUi, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
-    let Some(source) = app.source() else {
+pub fn map_icon(group: MapGroup) -> &'static str {
+    match group {
+        MapGroup::SharedAndMenu => icon::LAYERS,
+        MapGroup::Halo1Sandbox => icon::MOUNTAIN,
+        MapGroup::Packages => icon::PACKAGE,
+        _ => icon::MAP,
+    }
+}
+
+/// Draw a heading when the next visible row starts a section.
+pub fn section(ui: &Ui, last: &mut Option<MapGroup>, group: MapGroup) {
+    if *last == Some(group) {
         return;
-    };
-    let place = halo2_place(source);
-    let loaded = app
+    }
+    *last = Some(group);
+    if group == MapGroup::SharedAndMenu {
+        ui.separator_with_text(format!("{}  {}", map_icon(group), group.label()));
+        ui.text_disabled("Shared resources and menu screens");
+    } else {
+        ui.separator_with_text(group.label());
+    }
+}
+
+pub fn source_rows(
+    ui: &Ui,
+    app: &App,
+    st: &mut MapListUi,
+    gpu: &mut Gpu<'_>,
+    entries: &[MapEntry<'_>],
+    actions: &mut Vec<Action>,
+) {
+    let place_h2 = app.source().map(halo2_place).unwrap_or_default();
+    let place_h1 = app.halo1_source().map(halo1_place).unwrap_or_default();
+    let loaded_h2 = app
         .loaded_map()
         .filter(|_| app.opened_package().is_none() && app.opened_pack_map().is_none());
-    for name in app.maps() {
-        let card = app.halo2_card(name);
-        let note = match card {
-            Some(_) => "",
-            None if app.halo2_cards_loading() => "Reading the main menu's level lists...",
-            None => halo2_note(name),
+    let mut last = None;
+    for entry in entries {
+        let MapEntry {
+            stem, label, group, card, halo1,
+        } = *entry;
+        section(ui, &mut last, group);
+        let (prefix, place, loaded, source_group) = if halo1 {
+            ("h1", &place_h1, app.loaded_halo1(), Group::Halo1)
+        } else {
+            ("map", &place_h2, loaded_h2, Group::Halo2)
         };
-        let from = format!("{name}.map, {place}");
-        let selected = loaded == Some(name.as_str());
+        let from = format!("{stem}.map, {place}");
+        let glyph = if halo1 && group != MapGroup::SharedAndMenu {
+            icon::EYE
+        } else {
+            map_icon(group)
+        };
+        let description = match card {
+            Some(card) => card.description.as_str(),
+            None if group == MapGroup::SharedAndMenu => shared_note(stem, halo1),
+            None if halo1 => halo1_note(stem),
+            None if app.halo2_cards_loading() => "Reading the main menu's level lists...",
+            None => halo2_note(stem),
+        };
         let row = Row {
-            key: format!("map-{name}"),
-            label: card.map_or(name.as_str(), |c| c.name.as_str()),
-            icon: icon::MAP,
-            selected,
+            key: format!("{prefix}-{stem}"),
+            label,
+            icon: glyph,
+            selected: loaded == Some(stem),
             picture: card.and_then(|c| c.picture.as_ref()),
-            description: card.map_or(note, |c| c.description.as_str()),
+            description,
             from: &from,
         };
-        if st.row(ui, gpu, Group::Halo2, &row) {
-            actions.push(Action::SelectMap(name.clone()));
+        let drawn = if group == MapGroup::SharedAndMenu {
+            Group::SharedAndMenu
+        } else {
+            source_group
+        };
+        if st.row(ui, gpu, drawn, &row) {
+            actions.push(if halo1 {
+                Action::SelectHalo1Map(stem.to_owned())
+            } else {
+                Action::SelectMap(stem.to_owned())
+            });
         }
     }
 }
 
-/// The open Halo 1 source's maps, read only, each named and pictured by
-/// `ui.map`'s lists once read.
-pub fn halo1(ui: &Ui, app: &App, st: &mut MapListUi, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
-    let Some(source) = app.halo1_source() else {
-        return;
-    };
-    let place = halo1_place(source);
-    let loaded = app.loaded_halo1();
-    for name in app.halo1_maps() {
-        let card = app.halo1_card(name);
-        let from = format!("{name}.map, {place}");
-        let row = Row {
-            key: format!("h1-{name}"),
-            label: card.map_or(name.as_str(), |c| c.name.as_str()),
-            icon: icon::EYE,
-            selected: loaded == Some(name.as_str()),
-            picture: card.and_then(|c| c.picture.as_ref()),
-            description: card.map_or(halo1_note(name), |c| c.description.as_str()),
-            from: &from,
-        };
-        if st.row(ui, gpu, Group::Halo1, &row) {
-            actions.push(Action::SelectHalo1Map(name.clone()));
-        }
+fn shared_note(stem: &str, halo1: bool) -> &'static str {
+    if halo1 && stem.eq_ignore_ascii_case("ui") {
+        halo1_note(stem)
+    } else if ["shared", "single_player_shared", "mainmenu"]
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(stem))
+    {
+        halo2_note(stem)
+    } else {
+        "Cache for menus or shared resources."
     }
 }

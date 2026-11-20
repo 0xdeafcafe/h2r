@@ -17,6 +17,7 @@ pub mod tags;
 mod ui_screens;
 mod hud;
 mod variants;
+
 use std::path::PathBuf;
 
 use dear_imgui_rs::{
@@ -24,8 +25,10 @@ use dear_imgui_rs::{
     WindowFlags, WindowKey,
 };
 use editor_core::Status;
+use editor_core::map_groups::MapGroup;
 use scenario_edit::BlockKind;
 
+use crate::app::map_cards::MapEntry;
 use crate::app::{Action, Answer, App, ToolKind};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
@@ -701,7 +704,12 @@ impl Studio {
                     ui.text_wrapped("Open a disc image, a .map file or a folder of maps.");
                 }
             }
-            map_list::halo2(ui, app, &mut list, gpu, actions);
+            let mut halo2 = app.halo2_map_entries();
+            let mut halo1 = app.halo1_map_entries();
+            let mut shared = MapEntry::take_shared(&mut halo2);
+            shared.extend(MapEntry::take_shared(&mut halo1));
+            MapEntry::sort(&mut shared);
+            map_list::source_rows(ui, app, &mut list, gpu, &halo2, actions);
             let bold = self.fonts.bold;
             let heading = |ui: &Ui, text: &str| {
                 let f = ui.push_font(bold);
@@ -709,46 +717,44 @@ impl Studio {
                 f.pop();
             };
             map_pack::group(ui, app, &mut list, gpu, heading, actions);
-            self.library_lists(ui, app, &mut list, gpu, actions);
+            self.library_lists(ui, app, &mut list, gpu, &halo1, actions);
+            map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
         });
         self.map_list = list;
     }
 
-    /// The Maps list's other groups after the Map Pack ([`map_pack`]): user
-    /// packages, then Halo 1 (converted packages, and the maps of an open
-    /// Halo 1 source, read-only), each a [`map_list`] row.
+    /// The user packages, converted variants and read-only Halo 1 maps.
     fn library_lists(
         &self,
         ui: &Ui,
         app: &App,
         st: &mut map_list::MapListUi,
         gpu: &mut Gpu<'_>,
+        halo1: &[MapEntry<'_>],
         actions: &mut Vec<Action>,
     ) {
         let opened = app.opened_package();
-        let (h1, own): (Vec<_>, Vec<_>) = app.packages().iter().partition(|e| e.halo1.is_some());
-        if !own.is_empty() {
+        let mut last = None;
+        for e in app.packages() {
+            let group = e.map_group();
+            map_list::section(ui, &mut last, group);
+            let rows = match group {
+                MapGroup::Halo1Sandbox => map_list::Group::Halo1Sandbox,
+                _ => map_list::Group::Packages,
+            };
+            package_row(ui, app, st, gpu, rows, e, opened, actions);
+        }
+        if let Some(src) = app.halo1_source()
+            && !halo1.is_empty()
+        {
             ui.spacing();
-            self.heading(ui, "Packages");
-            for e in own {
-                package_row(ui, app, st, gpu, map_list::Group::Packages, e, opened, actions);
-            }
-        }
-        if h1.is_empty() && app.halo1_source().is_none() {
-            return;
-        }
-        ui.spacing();
-        self.heading(ui, "Halo 1");
-        for e in h1 {
-            package_row(ui, app, st, gpu, map_list::Group::Halo1, e, opened, actions);
-        }
-        if let Some(src) = app.halo1_source() {
+            self.heading(ui, "Halo 1");
             ui.text_disabled(format!(
                 "{} {} (read only)",
                 icon::DISC,
                 src.path().display()
             ));
-            map_list::halo1(ui, app, st, gpu, actions);
+            map_list::source_rows(ui, app, st, gpu, halo1, actions);
         }
     }
 

@@ -119,6 +119,16 @@ and fields it holds (a removal's count word shows as `count`), and the
 blocks that grew; for playlists, which playlists changed and how; for a
 variant, its settings off the defaults.
 
+`source.maps` returns `map_entries` for the open Halo 2 source and
+`halo1_maps` for the read-only Halo 1 source. Each entry has the file
+stem (`map`), display name (`label`) and section (`group`). The groups
+in those arrays are `multiplayer`, `campaign`, `other` and
+`shared_and_menu`, in that order. Each section is sorted by display
+name, using file names while the cards load or when a card is missing.
+`map_pack` and `packages` entries also report `group` (`map_pack`,
+`packages` or `halo1_sandbox`) and use display-name order within each
+group. `maps` remains the array of Halo 2 file stems in source order.
+
 ## Methods
 
 `h2 studio methods` is the full list with shapes and an example per

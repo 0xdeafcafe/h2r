@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use editor_core::map_groups::MapGroup;
 use map::build::{Block, RawRef, TagPayload, TagSet};
 use map::{CacheType, FourCC, TagId};
 use scenario_edit::fixture;
@@ -154,7 +155,11 @@ pub(crate) fn maps_folder(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&maps).unwrap();
     std::fs::write(maps.join("mainmenu.map"), menu()).unwrap();
     for m in ["02_pier", "yard", "shared"] {
-        std::fs::write(maps.join(format!("{m}.map")), fixture::fixture()).unwrap();
+        let mut bytes = fixture::fixture();
+        if m == "02_pier" {
+            bytes[0x140..0x144].copy_from_slice(&0u32.to_le_bytes());
+        }
+        std::fs::write(maps.join(format!("{m}.map")), bytes).unwrap();
     }
     maps
 }
@@ -215,6 +220,44 @@ fn the_main_menu_s_lists_name_and_picture_the_halo_2_maps() {
     assert!(halo2_note("shared").starts_with("Shared by the multiplayer maps"));
     assert!(halo2_note("single_player_shared").starts_with("Shared by the campaign levels"));
     assert!(halo2_note("mainmenu").starts_with("The main menu"));
+}
+
+#[test]
+fn source_rows_sort_by_group_and_display_name_before_shared_maps() {
+    let t = Temp::new("grouped");
+    let maps = maps_folder(&t.0);
+    // "02_pier" comes before this stem, while "The Pier" comes after it.
+    let mut campaign = fixture::fixture();
+    campaign[0x140..0x144].copy_from_slice(&0u32.to_le_bytes());
+    std::fs::write(maps.join("coast.map"), campaign).unwrap();
+    std::fs::write(maps.join("za_arena.map"), fixture::fixture()).unwrap();
+    let renamed_menu = menu();
+    std::fs::write(maps.join("q_frontend.map"), renamed_menu).unwrap();
+    std::fs::write(maps.join("Single_Player_Shared.MAP"), fixture::fixture()).unwrap();
+    let mut app = App::new();
+    app.set_data_root(t.0.join("data"));
+    app.dispatch(Action::OpenSource(maps));
+    app.wait_cards();
+
+    let rows: Vec<_> = app
+        .halo2_map_entries()
+        .into_iter()
+        .map(|entry| (entry.stem, entry.label, entry.group))
+        .collect();
+    use MapGroup::*;
+    assert_eq!(
+        rows,
+        [
+            ("yard", "Yard", Multiplayer),
+            ("za_arena", "za_arena", Multiplayer),
+            ("coast", "coast", Campaign),
+            ("02_pier", "The Pier", Campaign),
+            ("mainmenu", "mainmenu", SharedAndMenu),
+            ("q_frontend", "q_frontend", SharedAndMenu),
+            ("shared", "shared", SharedAndMenu),
+            ("Single_Player_Shared", "Single_Player_Shared", SharedAndMenu),
+        ]
+    );
 }
 
 /// A folder with no main menu map reads nothing and stays plain.

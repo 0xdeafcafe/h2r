@@ -19,7 +19,7 @@ use crate::app::tag_tree::{self, Arrange, Folder};
 use crate::app::{Action, App, TagAction, tag_api};
 use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
-use crate::ui::map_list::MapListUi;
+use crate::ui::map_list::{self, MapListUi};
 use crate::viewport::Gpu;
 
 /// Tags a group or folder lists at most (type to narrow).
@@ -61,34 +61,41 @@ fn home_mark(doc: &TagDoc, t: &TagEntry) -> String {
 /// Which map's tags are shown: the open map, or another of the source.
 fn map_picker(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
     let open = app.loaded_map().filter(|_| app.session.is_open());
-    let shown = match (app.browsing(), open) {
+    let browse = app.browsing();
+    let shown = match (browse, open) {
         (Some(b), _) => format!("{b} (read-only)"),
         (None, Some(m)) => m.to_owned(),
         (None, None) => "no map open".to_owned(),
     };
     ui.set_next_item_width(-1.0);
     if let Some(_c) = ui.begin_combo("##tag-map", &shown) {
+        let entries = app.halo2_map_entries();
+        // A package or a Map Pack map can be open without a source row.
         if let Some(m) = open
+            && !entries.iter().any(|entry| entry.stem.eq_ignore_ascii_case(m))
             && ui
                 .selectable_config(format!("{m} (open map)##tag-map-open"))
-                .selected(app.browsing().is_none())
+                .selected(browse.is_none())
                 .build()
         {
             actions.push(Action::BrowseTags(None));
         }
-        ui.separator();
-        for m in app.maps() {
-            if open.is_some_and(|o| o.eq_ignore_ascii_case(m)) {
-                continue;
-            }
-            let selected = app.browsing().is_some_and(|b| b.eq_ignore_ascii_case(m));
+        let mut last = None;
+        for entry in entries {
+            map_list::section(ui, &mut last, entry.group);
+            let m = entry.stem;
+            let is_open = open.is_some_and(|o| o.eq_ignore_ascii_case(m));
+            let selected = browse.map_or(is_open, |b| b.eq_ignore_ascii_case(m));
+            let glyph = map_list::map_icon(entry.group);
+            let label = entry.label;
+            let suffix = if is_open { " (open map)" } else { "" };
             if ui
-                .selectable_config(format!("{m}##tag-map-{m}"))
+                .selectable_config(format!("{glyph}  {label}{suffix}##tag-map-{m}"))
                 .selected(selected)
                 .build()
                 && !selected
             {
-                actions.push(Action::BrowseTags(Some(m.clone())));
+                actions.push(Action::BrowseTags((!is_open).then(|| m.to_owned())));
             }
         }
     }

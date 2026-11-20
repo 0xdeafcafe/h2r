@@ -392,6 +392,33 @@ fn growth_where_the_map_editor_cannot_grow_safely_is_refused_with_a_reason() {
 }
 
 #[test]
+fn source_maps_reports_the_picker_groups_in_order() {
+    use crate::app::map_cards_tests::{maps_folder, package_with_picture};
+
+    let t = Temp::new("source-maps-groups");
+    let maps = maps_folder(&t.0);
+    package_with_picture(&t.path("data"));
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({ "path": maps }));
+    app.wait_cards();
+
+    let result = call(&mut api, &mut app, m::SOURCE_MAPS, Value::Null);
+    assert_eq!(result["maps"], json!(["02_pier", "mainmenu", "shared", "yard"]));
+    assert_eq!(
+        result["map_entries"],
+        json!([
+            {"map": "yard", "label": "Yard", "group": "multiplayer"},
+            {"map": "02_pier", "label": "The Pier", "group": "campaign"},
+            {"map": "mainmenu", "label": "mainmenu", "group": "shared_and_menu"},
+            {"map": "shared", "label": "shared", "group": "shared_and_menu"},
+        ]),
+    );
+    assert_eq!(result["packages"][0]["group"], "packages");
+}
+
+#[test]
 fn unsaved_edits_are_never_dropped_without_discard() {
     let t = Temp::new("unsaved");
     let mut app = app(&t);
