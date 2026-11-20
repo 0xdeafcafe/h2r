@@ -864,7 +864,11 @@ fn run_configured(
     let lockstep_on = lockstep_config.enabled();
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
     // the debug menu talks to a local one with no socket.
-    let agent_source = match agent_glue::socket_from_env() {
+    // With none set, a game that asks for it opens `<pid>.sock` in the agents
+    // directory for editors to find (`H2_AGENT=off` keeps it closed).
+    let agent_source = match agent_glue::socket_from_env()
+        .or_else(|| host.discoverable_agent.then(agent_glue::discoverable_socket).flatten())
+    {
         Some(path) => registration::AgentSource::Socket(path),
         None if film.is_some() => registration::AgentSource::Recording,
         None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,

@@ -589,12 +589,21 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   panel shows the path); the editor waits up to 20 minutes for the
   socket, since `h2 play` may build its image first.
 
-**Pair** attaches to a running `h2 serve` or `h2 play` started with
-`H2_AGENT`: a path typed (or `tcp://HOST:PORT`), or one of the sockets
-**Find** lists (`$H2_AGENT`, the default socket, and every socket in the
-agent's cache directory, where Play puts its own). An empty path pairs
-with the default socket. The game is then taken to hold the map as the
-editor shows it at that moment.
+**Pair** attaches to a running game: one it found, or a path typed (or
+`tcp://HOST:PORT`). `play::pair::Finder` looks every two seconds on its
+own thread: the agents directory (`agent_proto::discover`, where `h2 play`
+opens `<pid>.sock` unless `H2_AGENT` is set; leftover sockets nothing
+answers on are removed) and the sockets **Find** lists (`$H2_AGENT`, the
+default socket, and every socket in the agent's cache directory, where
+Play puts its own). Each is asked `session.status`. `Play::notice` turns
+one running game into "Halo 2 is running (map)" for the Game panel and
+the status bar, with `MapMatch` saying whether its map is the open one
+(`same`, `different`, or `unknown` when either has none), and the **Pair**
+button pairs with it. With **Auto-pair** (`Bridge::auto_pair`, on by
+default, not kept between runs) the editor pairs by itself with the one
+game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
+empty path pairs with the default socket. The game is then taken to hold
+the map as the editor shows it at that moment.
 
 While paired (`play::Play`, on a link thread that polls `session.status`
 and `world.query` four times a second):

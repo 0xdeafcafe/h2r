@@ -56,12 +56,41 @@ pub struct AgentGlue {
     _listeners: Vec<agent::Server>,
 }
 
-/// The socket path from `H2_AGENT`, when set and not empty.
+/// The socket path from `H2_AGENT`, when set, not empty and not one of the
+/// switching-off values (`off`, `0`, ...; [`agent_proto::discover::is_off`]).
 pub fn socket_from_env() -> Option<PathBuf> {
     std::env::var_os(agent_proto::ENV)
         .filter(|v| !v.is_empty())
+        .filter(|v| !v.to_str().is_some_and(agent_proto::discover::is_off))
         .map(PathBuf::from)
 }
+
+/// The socket a game opens when `H2_AGENT` is unset: `<pid>.sock` in the
+/// agents directory, where editors and `h2 agent --list` find it
+/// ([`agent_proto::discover`]). `None` when `H2_AGENT` switches it off, or
+/// where there are no Unix sockets.
+pub fn discoverable_socket() -> Option<PathBuf> {
+    if !cfg!(unix) || agent_proto::discover::off_from_env() {
+        return None;
+    }
+    let path = agent_proto::discover::process_socket();
+    // A Unix socket path must fit `sun_path` (104 bytes on macOS), and the
+    // directory must be ours to make: a game that only wanted to be found
+    // must not fail to start over it.
+    let dir = path.parent()?;
+    if path.as_os_str().len() > MAX_SOCKET_PATH {
+        eprintln!("agent: {} is too long for a socket; not listening by default", path.display());
+        return None;
+    }
+    if let Err(e) = agent_proto::discover::create_private_dir(dir) {
+        eprintln!("agent: {}: {e}; not listening by default", dir.display());
+        return None;
+    }
+    Some(path)
+}
+
+/// The longest Unix socket path that binds on every platform we run on.
+const MAX_SOCKET_PATH: usize = 100;
 
 impl AgentGlue {
     /// Listens at `path`, adds the feature to `registry`, and puts the input
@@ -91,7 +120,13 @@ impl AgentGlue {
         if let Some(Endpoint::Unix(p)) = &endpoint
             && let Some(dir) = p.parent()
         {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            // The agents directory is for this user alone.
+            let made = if dir == agent_proto::discover::dir() {
+                agent_proto::discover::create_private_dir(dir)
+            } else {
+                std::fs::create_dir_all(dir)
+            };
+            made.with_context(|| format!("creating {}", dir.display()))?;
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);

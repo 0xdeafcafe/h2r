@@ -120,6 +120,12 @@ pub mod method {
     pub const UI_WIDGETS: &str = "ui.widgets";
     pub const UI_RENDER: &str = "ui.render";
 
+    pub const PAIR_LIST: &str = "pair.list";
+    pub const PAIR_STATUS: &str = "pair.status";
+    pub const PAIR_CONNECT: &str = "pair.connect";
+    pub const PAIR_DISCONNECT: &str = "pair.disconnect";
+    pub const PAIR_AUTO: &str = "pair.auto";
+
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
 
