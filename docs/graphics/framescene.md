@@ -991,13 +991,12 @@ to the guest's draws (**Code**):
   `native_render::light_scene::plan` turns a whole group into native
   draws from the scene alone, sorted order and duplicates kept,
   adjacent list ranges joined. A light's layer 12 or 13 whose group is
-  whole and of structure geometry is drawn from the scene with no
-  handler run ([native-lights.md](native-lights.md), "Gathered groups
-  in the scene"). Not built: a light-pass recorder over model streams
-  (the light passes hold none, so a model entry refuses the layer), and
-  a recorder for the shadow layers 10, 11 and 14 from the scene (the
-  shadow stage records from resolved draws), so those layers still run
-  their handlers.
+  whole is drawn from the scene with no handler run, its object entries
+  from model parts the light passes build per map with their node rows
+  ([native-lights.md](native-lights.md), "Gathered groups in the
+  scene"). Not built: a recorder for the shadow layers 10, 11 and 14
+  from the scene (the shadow stage records from resolved draws), so
+  those layers still run their handlers.
 
 The entry census (`render_bridge::entry_census`, built) measures both
 halves of 8.2's first two rules per entry, so the coordinator can tell

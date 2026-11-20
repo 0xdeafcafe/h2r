@@ -758,7 +758,9 @@ h2 agent render.parity '{"arm": true}'
   `scene_decorator_remainder`, `scene_light_groups`, `scene_light_groups_whole` (the
   gathered light and shadow layers in the scene, and those with every
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
-  from the scene with no handler run), `scene_light_entries` and
+  from the scene with no handler run), `scene_light_objects_alone`
+  (their object entries: model parts drawn with no handler),
+  `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
   `callback`, `owner`, `section`, `range`, `state`, `subparts`,
