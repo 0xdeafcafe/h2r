@@ -290,6 +290,64 @@ the nav mesh comes from. A bot sees an enemy only when all three hold:
 - the enemy is inside the bot's view cone;
 - a reaction delay has passed (§3.4).
 
+#### Visibility grid (`bots::vis`)
+
+Most sight rays on a busy host are cast between places that can never see
+each other: two rooms with a floor or a wall between them. The visibility
+grid answers those without a ray. It is built once per map, offline, with
+the nav mesh, and shared read-only by every bot in the process.
+
+- **Cells.** The space a player's feet, body or eye can be in: from 0.3
+  below to 0.9 above every walkable polygon of the nav mesh, cut into
+  boxes 1 x 1 x 0.5 world units (about 3 x 3 x 1.5 m). A big map whose
+  cells would pass `vis::MAX_CELLS` (2048) gets boxes 1.25 times bigger
+  until it fits.
+- **Pairs.** One bit for each pair of cells, packed as the upper triangle
+  of the pair matrix. Set means **never**: no segment from any point of
+  one box to any point of the other is clear. Unset means maybe.
+- **Never is proved, not sampled.** For a pair, the builder looks for one
+  collision triangle that every segment between the two boxes must pass
+  through: the boxes on opposite sides of its plane, and the plane
+  crossings of all 64 corner-to-corner segments well inside the triangle
+  (the crossings of every other segment lie in their convex hull). If no
+  single triangle does, it cuts the bigger box in half and proves each
+  half, up to 24 pieces and 8 cuts deep. A clear ray found on the way
+  ends the pair as maybe. Margins (1 cm from each edge, away from the
+  ends of the segment, not grazing) keep the proof true for the `f32` ray
+  test, and two triangles are never combined, because that test can let a
+  ray slip along a shared edge.
+- **At run time** `los::Walls::clear` looks the two ends up in the grid
+  first. Both in cells, different cells, bit set: blocked, no walk. Any
+  other case walks the collision as before. So every caller of `clear`
+  (perception, aim, decisions, incoming grenades, nav probes) gets the
+  same answer with fewer rays, and a match plays the same with the grid
+  or without it. `Walls::hit` (a grenade's flight) does not use it.
+- **File.** `<data>/bots/<map>.<bsp>.vis` beside the `.bots` file: magic
+  `H2VS`, `vis::VERSION`, the `.bots` file's stamp, a hash of its walls,
+  then the cells and the bits. The nav worker builds it with each nav
+  mesh (on half the machine's threads, at most 8) and writes it before the
+  `.bots` files. A map whose `.bots` is fresh but whose `.vis` is missing,
+  older, damaged or from another build gets only its grid built
+  (`bots: built the visibility grid for lockout (none yet): ...`).
+  Bump `vis::VERSION` when the cells, the proof or the margins change.
+- **Loading.** The glue reads the `.vis` with the `.bots` and attaches it
+  only when its stamp and walls hash match. Otherwise it logs why and
+  every sight ray is cast:
+  `bots: lockout: visibility grid not used (lockout.0.vis: missing); casting every sight ray`.
+  A used grid logs its size:
+  `bots: lockout: visibility grid: 812 cells of 1.00 x 0.50, 41.2% of pairs never visible`.
+  A grid built while its map runs goes into the loaded map's data in
+  place (`autonav::offer_vis`, the walls hold it in a `OnceLock`): the
+  `Arc<MapData>` the bots hold is not replaced, so they keep their routes
+  and memory (`bots: lockout: the new visibility grid is in use`).
+- **Tests** (`vis/tests.rs`): pair numbering, the file round trip and
+  damage, a wall between cells giving never and open space giving maybe,
+  a wall of several triangles, random and cell-boundary point pairs
+  checked against the walk (never must agree), perception asking the
+  grid first and walking without one, the named log lines for a missing,
+  damaged, older, other-build or other-walls file, and a grid built for a
+  fresh `.bots` that had none.
+
 The host gives each bot its own view, teammate HUD markers, audible shots,
 radio calls and public match information. Motion-tracker blips would be
 another legitimate input once a reader for the game's displayed blips exists.
@@ -3720,6 +3778,10 @@ game checks.
      (1 s), jumps once, then asks for a new path.
    - **Walls** (`los::Walls`): every collision surface as triangles on a
      2 m grid, for line of sight (stage 3).
+   - **Visibility grid** (`bots::vis`, `<map>.<bsp>.vis`): which cells of
+     walkable space never see each other, so `Walls::clear` skips the ray
+     (§3.1, "Visibility grid"). Built and written by the same worker,
+     versioned on its own (`vis::VERSION`).
    - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
      version 3, the **stamp** (the generator version
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
