@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use live_proto::hosts::{
-    EndReason, HOST_BOOTING, HOST_ENDED, HOST_PLAYING, HOST_READY, HOST_REQUESTED, HostBooting,
-    HostEnded, HostEndpoint, HostLease, HostPlaying, HostReady, HostRequested, HostState,
-    ProviderKind, STREAM,
+    DEFAULT_IDLE_TIMEOUT_S, DEFAULT_MAX_MATCH_S, EndReason, HOST_BOOTING, HOST_ENDED,
+    HOST_PLAYING, HOST_READY, HOST_REQUESTED, HostBooting, HostClass, HostEnded, HostEndpoint,
+    HostLease, HostPlaying, HostReady, HostRequested, HostState, ProviderKind, STREAM, Transport,
 };
 use live_proto::{Author, ErrorCode, lxm, sign};
 use serde::{Deserialize, Serialize};
@@ -250,6 +250,92 @@ impl Hosts {
             .cloned()
             .ok_or_else(|| unavailable("host provider unavailable"))
     }
+
+    /// Whether a provider start is still expected for this lease: a
+    /// `Requested` lease without one is a manual host an admin started
+    /// without a launch, which registers directly.
+    pub(crate) fn launching(&self, lease_id: &str) -> bool {
+        self.registry
+            .read()
+            .unwrap()
+            .launching
+            .contains_key(lease_id)
+    }
+}
+
+/// The `POST /v1/admin/hosts` body (docs/live/live-api.md): a custom
+/// dedicated host an admin starts by hand, either launched on the
+/// configured provider (`launch`, the default) or reserved for a container
+/// the operator runs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminHostStart {
+    /// The scenario name.
+    pub map: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default = "default_max_players")]
+    pub max_players: u8,
+    #[serde(default = "default_class")]
+    pub class: HostClass,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub transport: Option<Transport>,
+    /// Start the configured provider (the default). `false` records the
+    /// lease as `Requested` and answers its boot token instead.
+    #[serde(default = "default_launch")]
+    pub launch: bool,
+}
+
+fn default_max_players() -> u8 {
+    8
+}
+
+fn default_class() -> HostClass {
+    HostClass::Small
+}
+
+fn default_launch() -> bool {
+    true
+}
+
+impl AdminHostStart {
+    pub(crate) fn validate(&self) -> ApiResult<()> {
+        if self.map.is_empty() || !self.map.is_ascii() || self.map.len() > 64 {
+            return Err(invalid("map must be 1 to 64 ASCII characters"));
+        }
+        if !(1..=16).contains(&self.max_players) {
+            return Err(invalid("max_players must be between 1 and 16"));
+        }
+        Ok(())
+    }
+
+    /// The lease this request describes, with a fresh assignment id. Live
+    /// mints the lease id and creation time.
+    pub(crate) fn lease(&self, provider: ProviderKind) -> HostLease {
+        let transport = self.transport.clone().unwrap_or(match provider {
+            ProviderKind::Cloudflare => Transport::Tunnel,
+            ProviderKind::Fly | ProviderKind::Local => Transport::Udp,
+        });
+        HostLease {
+            id: String::new(),
+            assignment_id: format!("custom-{}", sign::random_id()),
+            provider,
+            region: self.region.clone().filter(|r| !r.is_empty()),
+            class: self.class.clone(),
+            map: self.map.clone(),
+            map_id: None,
+            variant: self.variant.clone().filter(|v| !v.is_empty()),
+            hopper: None,
+            max_players: self.max_players,
+            roster: Vec::new(),
+            bots: Vec::new(),
+            transport,
+            idle_timeout_s: DEFAULT_IDLE_TIMEOUT_S,
+            max_match_s: DEFAULT_MAX_MATCH_S,
+            created_ms: 0,
+        }
+    }
 }
 
 fn unavailable(message: &'static str) -> ApiError {
@@ -309,7 +395,9 @@ impl Subscriber for Hosts {
                 row.started_ms = Some(at);
                 row.state = HostState::Booting;
             }
-            HOST_READY if row.state == HostState::Booting => {
+            // A manual lease (admin-started without a launch) registers
+            // straight out of Requested; it never passes through Booting.
+            HOST_READY if matches!(row.state, HostState::Booting | HostState::Requested) => {
                 let Ok(ready) = HostReady::deserialize(data) else {
                     return;
                 };

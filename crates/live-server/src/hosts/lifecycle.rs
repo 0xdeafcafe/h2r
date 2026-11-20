@@ -1,6 +1,19 @@
 use super::*;
 use live_proto::hosts::Transport;
 
+/// What reserving a lease produced.
+enum Reserved {
+    /// A fresh `Requested` lease, its event recorded and its boot
+    /// credential minted.
+    Fresh {
+        lease: HostLease,
+        provider: Arc<dyn HostProvider>,
+        boot: HostBoot,
+    },
+    /// The assignment already holds this same active lease.
+    Existing(HostLease),
+}
+
 impl Live {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub(crate) fn install_native_host_provider(&self, data_root: &std::path::Path) {
@@ -38,97 +51,118 @@ impl Live {
             .cloned()
     }
 
-    pub async fn request_host(&self, mut lease: HostLease) -> ApiResult<HostLease> {
+    /// Reserve a lease exactly as [`Self::request_host`] does: the retry
+    /// check, budget and slot limits, validation, the `HostRequested` event
+    /// and the boot credential. `launch` reserves the launching slot a
+    /// provider start needs; without it the lease waits for the operator's
+    /// own container to register.
+    async fn reserve_host(&self, mut lease: HostLease, launch: bool) -> ApiResult<Reserved> {
         // Fly hosts use direct UDP. Normalize before comparing retries or
         // writing the lease, so matchmaking and the supervisor agree.
         if lease.provider == ProviderKind::Fly {
             lease.transport = Transport::Udp;
         }
-        let (provider, boot) = {
-            let _write = self.hosts.writes.lock().await;
-            let version = self.hosts.version();
-            if let Some(row) = self.host_for_assignment(&lease.assignment_id) {
-                lease.id.clone_from(&row.lease.id);
-                lease.created_ms = row.lease.created_ms;
-                if !row.active() || row.lease != lease {
-                    return Err(conflict(
-                        "assignment already has a different or finished host",
-                    ));
-                }
-                drop(_write);
-                return self.wait_for_host_start(&lease.id).await;
-            }
-
-            let now = now_ms();
-            if self.hosts.costs.over_budget(now) {
-                return Err(unavailable("monthly dedicated host budget reached"));
-            }
-            let config = self.hosts.config.read().unwrap().clone();
-            let running = self.hosts.registry.read().unwrap().occupied();
-            if running >= config.max_hosts {
-                return Err(ApiError::new(
-                    ErrorCode::RateLimited,
-                    "all dedicated host slots are occupied",
+        let _write = self.hosts.writes.lock().await;
+        let version = self.hosts.version();
+        if let Some(row) = self.host_for_assignment(&lease.assignment_id) {
+            lease.id.clone_from(&row.lease.id);
+            lease.created_ms = row.lease.created_ms;
+            if !row.active() || row.lease != lease {
+                return Err(conflict(
+                    "assignment already has a different or finished host",
                 ));
             }
-            if lease.assignment_id.is_empty()
-                || lease.map.is_empty()
-                || !(1..=16).contains(&lease.max_players)
-                || lease.roster.len() + lease.bots.len() > usize::from(lease.max_players)
-                || lease.max_match_s == 0
-                || lease.idle_timeout_s == 0
-            {
-                return Err(invalid("invalid host assignment, seats or duration"));
-            }
-            let provider = self.hosts.provider_for(&lease)?;
-            let live_url = if config.live_url.is_empty() {
-                self.policy()
-                    .public
-                    .get()
-                    .or_else(|| {
-                        (lease.provider == ProviderKind::Local)
-                            .then(|| format!("http://{}", crate::DEFAULT_LISTEN))
-                    })
-                    .ok_or_else(|| unavailable("dedicated host Live URL is not configured"))?
-            } else {
-                config.live_url
-            };
-            if config.data_url.is_empty()
-                || config.data_sha256.len() != 64
-                || !config.data_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(unavailable("dedicated host data bundle is not configured"));
-            }
-            lease.id = HostLease::new_id();
-            lease.created_ms = now;
-            let boot = HostBoot {
-                live_url,
-                data_url: config.data_url,
-                data_sha256: config.data_sha256,
-                token: self.issue_host_token(&lease),
-            };
-            self.host_event(
-                version,
-                HOST_REQUESTED,
-                HostRequested {
-                    lease: lease.clone(),
-                },
-            )
-            .await?;
-            let accepted = self.matchmaking.lock().unwrap().host_requested(&lease);
-            if !accepted {
-                let row = self.require_host(&lease.id)?;
-                self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms())
-                    .await?;
-                return Err(conflict("the matchmaking assignment has expired"));
-            }
+            drop(_write);
+            return Ok(Reserved::Existing(lease));
+        }
+
+        let now = now_ms();
+        if self.hosts.costs.over_budget(now) {
+            return Err(unavailable("monthly dedicated host budget reached"));
+        }
+        let config = self.hosts.config.read().unwrap().clone();
+        let running = self.hosts.registry.read().unwrap().occupied();
+        if running >= config.max_hosts {
+            return Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "all dedicated host slots are occupied",
+            ));
+        }
+        if lease.assignment_id.is_empty()
+            || lease.map.is_empty()
+            || !(1..=16).contains(&lease.max_players)
+            || lease.roster.len() + lease.bots.len() > usize::from(lease.max_players)
+            || lease.max_match_s == 0
+            || lease.idle_timeout_s == 0
+        {
+            return Err(invalid("invalid host assignment, seats or duration"));
+        }
+        let provider = self.hosts.provider_for(&lease)?;
+        let live_url = if config.live_url.is_empty() {
+            self.policy()
+                .public
+                .get()
+                .or_else(|| {
+                    (lease.provider == ProviderKind::Local)
+                        .then(|| format!("http://{}", crate::DEFAULT_LISTEN))
+                })
+                .ok_or_else(|| unavailable("dedicated host Live URL is not configured"))?
+        } else {
+            config.live_url
+        };
+        if config.data_url.is_empty()
+            || config.data_sha256.len() != 64
+            || !config.data_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(unavailable("dedicated host data bundle is not configured"));
+        }
+        lease.id = HostLease::new_id();
+        lease.created_ms = now;
+        let boot = HostBoot {
+            live_url,
+            data_url: config.data_url,
+            data_sha256: config.data_sha256,
+            token: self.issue_host_token(&lease),
+        };
+        self.host_event(
+            version,
+            HOST_REQUESTED,
+            HostRequested {
+                lease: lease.clone(),
+            },
+        )
+        .await?;
+        let accepted = self.matchmaking.lock().unwrap().host_requested(&lease);
+        if !accepted {
+            let row = self.require_host(&lease.id)?;
+            self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms())
+                .await?;
+            return Err(conflict("the matchmaking assignment has expired"));
+        }
+        if launch {
             self.hosts
                 .registry
                 .write()
                 .unwrap()
                 .launching
                 .insert(lease.id.clone(), None);
-            (provider, boot)
+        }
+        Ok(Reserved::Fresh {
+            lease,
+            provider,
+            boot,
+        })
+    }
+
+    pub async fn request_host(&self, lease: HostLease) -> ApiResult<HostLease> {
+        let (lease, provider, boot) = match self.reserve_host(lease, true).await? {
+            Reserved::Fresh {
+                lease,
+                provider,
+                boot,
+            } => (lease, provider, boot),
+            // The provider is already starting this assignment's host.
+            Reserved::Existing(lease) => return self.wait_for_host_start(&lease.id).await,
         };
 
         // The allocation outlives a dropped HTTP request. A slow start can
@@ -300,7 +334,12 @@ impl Live {
         endpoint: HostEndpoint,
     ) -> ApiResult<HostLease> {
         self.check_host_bearer(bearer, crate::host_identity::HOST_REGISTER, lease_id)?;
-        self.wait_for_host_start(lease_id).await?;
+        // A lease whose provider start is still in flight first waits for
+        // its HostBooting. A manual lease (an admin's `launch: false`) has
+        // no provider: its container registers straight out of Requested.
+        if self.hosts.launching(lease_id) {
+            self.wait_for_host_start(lease_id).await?;
+        }
         let _write = self.hosts.writes.lock().await;
         let version = self.hosts.version();
         let row = self.require_host(lease_id)?;
@@ -309,7 +348,10 @@ impl Live {
         {
             return Ok(row.lease);
         }
-        if row.state != HostState::Booting {
+        if matches!(row.state, HostState::Ended | HostState::Failed) {
+            return Err(conflict("host lease already ended"));
+        }
+        if !matches!(row.state, HostState::Booting | HostState::Requested) {
             return Err(conflict("only a booting host can register its endpoint"));
         }
         let now = now_ms();
@@ -425,6 +467,37 @@ impl Live {
             .and_then(|provider_ref| provider.tunnel_addr(id, provider_ref))
             .ok_or_else(|| unavailable("the host tunnel port is unavailable"))?;
         Ok((xuid, addr))
+    }
+
+    /// `POST /v1/admin/hosts` ([`AdminHostStart`]): an admin starts a custom
+    /// dedicated host by hand. With `launch` it goes through
+    /// [`Self::request_host`], so budget, the host cap, retries and cost rows
+    /// all apply. Without it no provider is started: the lease is recorded
+    /// `Requested` exactly as a launch would record it — register, report,
+    /// the sweep and the inventory treat it like any other — and the boot
+    /// credential is answered instead. This is the only route that ever
+    /// returns a host token.
+    pub async fn admin_start_host(
+        &self,
+        bearer: Option<&str>,
+        request: super::AdminHostStart,
+    ) -> ApiResult<(HostLease, Option<String>)> {
+        let who = crate::invites::admin(self, bearer, crate::admin::LXM_ADMIN_WRITE)?;
+        self.rate_limit(&who, crate::admin::LXM_ADMIN_WRITE)?;
+        request.validate()?;
+        let Some(provider) = self.host_provider_kind() else {
+            return Err(unavailable("no host provider"));
+        };
+        let launch = request.launch;
+        let lease = request.lease(provider);
+        if launch {
+            return self.request_host(lease).await.map(|lease| (lease, None));
+        }
+        match self.reserve_host(lease, false).await? {
+            Reserved::Fresh { lease, boot, .. } => Ok((lease, Some(boot.token))),
+            // A fresh random assignment never collides with an existing one.
+            Reserved::Existing(_) => Err(conflict("assignment already has a host")),
+        }
     }
 
     pub fn admin_hosts(&self, bearer: Option<&str>) -> ApiResult<Value> {
