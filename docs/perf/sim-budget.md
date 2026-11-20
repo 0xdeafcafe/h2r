@@ -92,6 +92,8 @@ All three switches default on only in the light profile. Normal play and a sim w
 
 ## Subsystem boundaries
 
+[sim-attribution.md](sim-attribution.md) supersedes the table below. It gives every sample an owner at any call depth, resolves "Multiple" and "Unreached", and splits the runtime share (6.8 points of it are the bots' Rust code, charged to `handler::execute` by the profiler's category rule).
+
 This static census includes **all 59,690 guest self samples**. Starting at the entries listed, follow up to three direct calls or tail jumps, stopping before entering another group's named root. Also follow the verified unit-update, unit-pose and object-import descriptor edges shown above. Charge each sampled function's own code to the single group that reached it, or to “Multiple” if more than one did. “Unreached” includes deeper chains and unresolved indirect calls. A unique static match is a rewrite lead. It does not establish which caller ran, especially for helpers used by cold or unrecognized paths. Percentages in this table alone use guest self samples as the denominator.
 
 | Static group | Root addresses (hex) | Self samples | % of guest |
