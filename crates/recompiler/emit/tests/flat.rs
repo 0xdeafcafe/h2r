@@ -97,19 +97,20 @@ fn both(g: &Generated, gpr: [u32; 8], init: &[(u32, &[u8])]) -> (Run, Run) {
     (w, n)
 }
 
-/// Loads then stores of 1, 2, 4, 8 and 16 bytes from `[eax]`.
+/// Loads then stores of 1, 2, 4, 8 and 16 bytes from `[eax]`. The 8 and 16
+/// byte moves are SSE1 (`movlps`, `movups`): the lifter lowers no SSE2.
 fn widths(a: &mut CodeAssembler) -> Result<(), IcedError> {
     a.mov(ecx, dword_ptr(eax))?;
     a.movzx(edx, word_ptr(eax + 4))?;
     a.movzx(ebx, byte_ptr(eax + 7))?;
-    a.movq(xmm0, qword_ptr(eax + 8))?;
-    a.movdqu(xmm1, xmmword_ptr(eax + 16))?;
+    a.movlps(xmm0, qword_ptr(eax + 8))?;
+    a.movups(xmm1, xmmword_ptr(eax + 16))?;
     a.add(ecx, 1)?;
     a.mov(dword_ptr(eax + 32), ecx)?;
     a.mov(word_ptr(eax + 36), dx)?;
     a.mov(byte_ptr(eax + 38), bl)?;
-    a.movq(qword_ptr(eax + 40), xmm0)?;
-    a.movdqu(xmmword_ptr(eax + 48), xmm1)?;
+    a.movlps(qword_ptr(eax + 40), xmm0)?;
+    a.movups(xmmword_ptr(eax + 48), xmm1)?;
     a.ret()
 }
 
