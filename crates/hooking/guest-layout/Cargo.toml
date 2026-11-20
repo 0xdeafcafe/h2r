@@ -1,6 +1,6 @@
 [package]
 name = "guest-layout"
-description = "Typed guest layouts: every Halo 2 structure offset and global address, written once (docs/engine/guest-layout.md)"
+description = "Typed guest layouts: every Halo 2 structure offset and global address, written once; the guest-memory boundary, typed views and the named points (docs/engine/guest-layout.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
