@@ -82,6 +82,8 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub(crate) water: Option<Arc<crate::native_water_glue::WaterData>>,
+    /// The model decorators' passes of this load (`native_decorators_glue`).
+    pub(crate) decorators: Option<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` when the world has no native
     /// material).
@@ -487,6 +489,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_transparents_glue::install(device);
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
+    crate::native_decorators_glue::install(device, Arc::clone(&state));
     let gels = crate::native_gels_glue::install(device);
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
@@ -930,6 +933,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // The water edge blend (layer 6), over the world's transparent parts
     // before its draws are kept.
     let water = Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
+    // The model decorators' layer-3 passes, from the map's decorator sets.
+    let decorators = Some(crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder));
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
@@ -953,6 +958,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         parts: Arc::new(parts),
         fog,
         water,
+        decorators,
         lights,
         palettes: decoder.used().clone(),
     }, bsps.len()))

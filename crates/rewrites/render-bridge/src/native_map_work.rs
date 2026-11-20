@@ -141,6 +141,7 @@ pub fn reset() {
     crate::native_world::forget_pending();
     crate::native_fog::forget_pending();
     crate::native_water::forget_pending();
+    crate::native_decorators::forget_pending();
     crate::native_objects::forget_pending();
     MAP.reset();
     BSP_GENERATION.fetch_add(1, Ordering::Release);

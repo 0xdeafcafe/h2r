@@ -384,6 +384,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_light_layers_alone", crate::native_lights::drawn_alone()),
     ]
     .into_iter()
+    .chain(crate::native_decorators::counters())
     .chain(LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(LIGHT_ENTRY_REMAINDER.iter().map(|c| c.load(Ordering::Relaxed))))
     .collect()
 }
