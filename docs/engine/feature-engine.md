@@ -111,7 +111,8 @@ feature's), then by feature id. Two mutating hooks (`before` or `after`) of
 different features in one `Order` class with no `after_feature` between them
 are a conflict, so boot refuses the plan and the game stops at boot
 (`crates/apps/boot/src/registration.rs`). A hook on a `hot` point makes the plan
-warn: an overridden entry leaves the direct-call fast path
+warn: an overridden entry leaves the direct-call fast path; its calls
+run in place through the host-call thunk, one runner step each
 (`crates/runtime/runtime/src/direct.rs`).
 
 **Test:** `crates/hooking/hooks/tests/plan.rs`

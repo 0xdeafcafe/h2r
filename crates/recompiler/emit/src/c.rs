@@ -1205,12 +1205,18 @@ impl Emitter<'_> {
                     ),
                 );
             }
-            // A call through a pointer, back to this handler: H2_ICALL finds
-            // the target's entry index in the module's pcmap and its handler
-            // in the runtime's entry table, and calls it as H2_DCALL would,
+            // A call through a pointer or a kernel import slot, back to this
+            // handler: H2_ICALL finds the target's entry index in the
+            // module's pcmap and its handler in the runtime's entry table,
+            // or for a target outside the module's text (a kernel import's
+            // token) the host-call thunk, and calls it as H2_DCALL would,
             // or leaves for the runner as below.
-            Control::Call { target: Target::Dynamic(v), continuation, kind: CallKind::Indirect, .. }
-                if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
+            Control::Call {
+                target: Target::Dynamic(v),
+                continuation,
+                kind: CallKind::Indirect | CallKind::Kernel { .. },
+                ..
+            } if self.shape.functions.is_some() && self.shape.selectors.contains(continuation) =>
             {
                 self.settle(lazy::ALL, d);
                 let label = if self.shape.loops.headers.contains(continuation) { "P" } else { "L" };

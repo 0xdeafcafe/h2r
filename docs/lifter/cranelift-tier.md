@@ -176,8 +176,10 @@ that lives only until clang finishes.
   goes back to the runner. The module declares no
   `H2GEN_FEATURE_DIRECT_CALLS`, which the runtime already handles. They
   can be added later by porting `h2_direct_enter`/`h2_direct_back` and
-  emitting the entry table (`H2GEN_FEATURE_ENTRY_TABLE`); the `H2Direct`
-  layout is in `h2gen.h`. Its loop polls compare the whole preempt word,
+  emitting the entry table (`H2GEN_FEATURE_ENTRY_TABLE`) and declaring
+  host calls in place (`H2GEN_FEATURE_HOST_CALLS`: call whatever `live`
+  holds, and the block's `thunk` for an indirect target outside the
+  text); the `H2Direct` layout is in `h2gen.h`. Its loop polls compare the whole preempt word,
   so the module must not set the entry-table bit until they mask
   `IRQ_QUEUED` (RUNTIME-CONTRACT.md section 4, "Loop safe points").
 - **Loop safe points**: each loop header polls the context's preempt word

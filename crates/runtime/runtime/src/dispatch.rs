@@ -109,6 +109,11 @@ pub enum RegistrationError {
     /// image built before it. Rebuild the image.
     #[error("generated module makes direct calls but has no entry table: rebuild the image")]
     DirectCallsWithoutEntryTable,
+    /// A direct-call module from before host calls in place
+    /// ([`FEATURE_HOST_CALLS`](crate::generated::FEATURE_HOST_CALLS)): its
+    /// direct-call block has another layout. Rebuild the image.
+    #[error("generated module makes direct calls without host calls in place: rebuild the image")]
+    DirectCallsWithoutHostCalls,
     /// A second module with an entry table; a runtime keeps one.
     #[error("a generated module with an entry table is already registered")]
     SecondEntryTable,

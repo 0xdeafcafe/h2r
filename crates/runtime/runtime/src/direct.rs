@@ -13,9 +13,11 @@
 //!   of the module (index = row + 1). It holds the row's generated handler
 //!   while dispatch resolves the entry to it (no enabled override) and its
 //!   address is lifted code ([`Guest::guard_code`]) with the execute bit,
-//!   and 0 otherwise. [`Runtime::edit_dispatch`] rewrites the overridden
-//!   elements before it returns, so an override registered, enabled or
-//!   disabled stops or allows direct calls to that entry at once. The
+//!   the host-call thunk ([`h2rt_thunk`]) while an enabled override takes
+//!   the entry, and 0 otherwise. [`Runtime::edit_dispatch`] rewrites the
+//!   overridden elements before it returns, so an override registered,
+//!   enabled or disabled sends calls of that entry to the thunk, or back to
+//!   the generated handler, at once. The
 //!   execute bit is read when the table is checked against the guest's
 //!   code identity ([`Guest::code_id`]), which moves only when lifted code
 //!   can have gained or lost it: `map`, `unmap` and `protect_range` refuse
@@ -26,6 +28,8 @@
 //!   - `live`, `pcmap`, `text_lo`, `text_hi`: the entry table and the
 //!     module's map from a byte of its text to the entry index there, for
 //!     indirect calls.
+//!   - `thunk`: [`h2rt_thunk`], which an indirect call or jump outside
+//!     `[text_lo, text_hi)` invokes.
 //!   - `budget`: what the runner's `max_transfers` has left. Every direct
 //!     CALL, JUMP and inline RETURN takes one, as the runner would have.
 //!   - `depth`/`cap`: C nesting, which uses host stack. `frames[..depth]`
@@ -43,11 +47,33 @@
 //! queue is non-empty ([`Runtime::enable_leave_word`], turned on when the
 //! entry table is registered).
 //!
+//! Host calls in place (module feature
+//! [`FEATURE_HOST_CALLS`](crate::generated::FEATURE_HOST_CALLS);
+//! docs/runtime/contract-thin-transfers-flat-ram.md, section 4.2). The
+//! thunk has the handler signature and is called as any direct callee is,
+//! after the caller's quiet test, its transfer taken and its frame
+//! recorded. It does what the runner's loop would do for that transfer
+//! after a safe point that found nothing to do ([`crate::runner::step`]:
+//! continuation and kernel tokens, resolution, the execute check, the
+//! handler, stop recovery) and returns the handler's transfer. The caller
+//! continues inline only on a plain return to its continuation with the
+//! word still zero; anything else (a blocking call's STOP, a callback's
+//! CALL, a raised preemption) it hands up to the runner as before. Rust
+//! code the thunk runs sees what it would under the runner: the live
+//! direct frames are in the shadow stack (replayed on entry), and nesting
+//! under it starts above them (`floor`), so the depth cap still bounds the
+//! host stack. On the way out, if a caller will continue inline (the test
+//! `h2_direct_back` makes) the shadow stack is rewound and the frames stay
+//! in C for a later hand-up to replay; otherwise the result is handed up
+//! past them, the shadow stack stays as the runner would have it, and
+//! `depth` drops to the floor so nothing is replayed twice.
+//!
 //! [`Guest::guard_code`]: crate::Guest::guard_code
 //! [`Guest::code_id`]: crate::Guest::code_id
 //! [`Runtime::edit_dispatch`]: crate::Runtime::edit_dispatch
 //! [`Runtime::enable_leave_word`]: crate::Runtime::enable_leave_word
-use crate::{ExecCtx, GuestFn, abi, dispatch::Dispatch};
+use crate::runner::{Diag, Step, step};
+use crate::{CpuAbi, Event, ExecCtx, ExecCtxOpaque, GuestFn, TransferAbi, abi, dispatch::Dispatch};
 use rustc_hash::FxHashMap as HashMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -75,6 +101,8 @@ pub(crate) struct DirectState {
     live: *const AtomicUsize,
     /// The entry-table module's `pcmap`, covering `[text_lo, text_hi)`.
     pcmap: *const u16,
+    /// [`h2rt_thunk`], set with `live`.
+    thunk: Option<GuestFn>,
     text_lo: u32,
     text_hi: u32,
     budget: u64,
@@ -97,7 +125,7 @@ pub(crate) struct DirectState {
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<Frame>() == 16);
-    assert!(size_of::<DirectState>() == 48 + 16 * 64 + 16);
+    assert!(size_of::<DirectState>() == 56 + 16 * 64 + 16);
 };
 
 /// The rows of the module registered with an entry table
@@ -190,6 +218,10 @@ impl Live {
     pub(crate) fn checked(&self) -> u64 {
         self.checked.load(Ordering::Acquire)
     }
+    /// What element `i` holds while overridden: the host-call thunk.
+    fn overridden_value() -> usize {
+        h2rt_thunk as GuestFn as usize
+    }
     /// What element `i` holds when not overridden.
     fn value(&self, st: &LiveState, i: u32) -> usize {
         let row = i as usize - 1;
@@ -217,7 +249,7 @@ impl Live {
             st.overridden = self.overridden_in(d);
             for i in 1..=self.rows.len() as u32 {
                 let v = if st.overridden.binary_search(&i).is_ok() {
-                    0
+                    Self::overridden_value()
                 } else {
                     self.value(&st, i)
                 };
@@ -237,7 +269,7 @@ impl Live {
             }
         }
         for &i in &now {
-            self.table[i as usize].store(0, Ordering::Release);
+            self.table[i as usize].store(Self::overridden_value(), Ordering::Release);
         }
         st.overridden = now;
     }
@@ -257,6 +289,10 @@ impl Live {
 /// block, or null while disabled).
 pub(crate) struct Direct {
     owned: NonNull<DirectState>,
+    /// The frames below this are a host-call thunk's caller's, already in
+    /// the shadow stack: a runner inside the thunk replays and drops only
+    /// those above it. 0 outside a thunk.
+    floor: u32,
 }
 
 /// `ExecCtx`'s second field: generated code reads
@@ -291,7 +327,7 @@ impl Direct {
         let mut state: Box<DirectState> = unsafe { Box::new_zeroed().assume_init() };
         state.cap = DEFAULT_DEPTH;
         let owned = NonNull::from(Box::leak(state));
-        let mut d = Self { owned };
+        let mut d = Self { owned, floor: 0 };
         if let Some(live) = runtime.live() {
             d.install(live);
         }
@@ -303,11 +339,13 @@ impl Direct {
         let s = self.state();
         s.live = live.table.as_ptr();
         s.pcmap = live.rows.pcmap;
+        s.thunk = Some(h2rt_thunk as GuestFn);
         (s.text_lo, s.text_hi) = live.rows.text;
     }
 
     /// Reset invocation state, keeping the entry table.
     pub(crate) fn restart(&mut self) {
+        self.floor = 0;
         let s = self.state();
         s.budget = 0;
         s.depth = 0;
@@ -326,13 +364,15 @@ impl Direct {
         // with this context, never concurrently with a Rust borrow.
         unsafe { self.owned.as_mut() }
     }
-    /// The direct frames live right now: while generated code runs (an
-    /// event's backtrace), every level of the C nesting; after it handed a
-    /// transfer up, the levels it left.
+    /// The direct frames live right now and not yet in the shadow stack:
+    /// while generated code runs (an event's backtrace), every level of the
+    /// C nesting above the floor; after it handed a transfer up, the levels
+    /// it left.
     fn frames(&self) -> &[Frame] {
         // SAFETY: as `state`.
         let s = unsafe { self.owned.as_ref() };
-        &s.frames[..(s.depth as usize).min(MAX_DEPTH as usize)]
+        let depth = (s.depth as usize).min(MAX_DEPTH as usize);
+        &s.frames[(self.floor as usize).min(depth)..depth]
     }
 }
 
@@ -345,6 +385,99 @@ fn replay(stack: &mut crate::frames::ShadowStack, frames: &[Frame]) {
         }
         stack.enter(f.target);
     }
+}
+
+/// The host-call thunk (`H2Direct.thunk`, h2gen.h; see the module doc):
+/// the handler a direct call invokes for an overridden entry and an
+/// indirect call or jump invokes for a target outside the module's text.
+/// The caller recorded the transfer as its top direct frame (its kind and
+/// continuation) and took its transfer from the budget.
+///
+/// # Safety
+/// Called only by generated code, with the live, exclusive pair it was
+/// invoked with, as it invokes any handler (the handler ABI, ffi.rs), from
+/// `h2_direct_enter`'s side of a direct call.
+pub(crate) unsafe extern "C" fn h2rt_thunk(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    target: u32,
+) -> TransferAbi {
+    // SAFETY: the caller's contract; generated code touches neither until
+    // this returns.
+    let (cpu, ctx) = unsafe { (&mut *cpu, &mut *exec.cast::<ExecCtx>()) };
+    if crate::runner::diagnostics(ctx) {
+        host_call::<true>(cpu, ctx, target)
+    } else {
+        host_call::<false>(cpu, ctx, target)
+    }
+}
+
+fn host_call<const DIAG: bool>(cpu: &mut CpuAbi, ctx: &mut ExecCtx, target: u32) -> TransferAbi {
+    ctx.direct_take_lent();
+    // The runner's checks before its safe point; the caller's quiet test
+    // was the safe point.
+    if let Some(id) = ctx.pending_fault.take() {
+        return TransferAbi::fault(id);
+    }
+    if DIAG && !cpu.valid_abi() {
+        return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
+    }
+    let floor = ctx.direct.floor;
+    let (depth, top) = {
+        let s = ctx.direct.state();
+        let depth = s.depth.min(MAX_DEPTH);
+        (depth, depth.checked_sub(1).map(|i| s.frames[i as usize]))
+    };
+    let transfer = match top {
+        Some(f) if depth > floor && f.target == target && f.kind == abi::CALL => {
+            TransferAbi::call(target, f.resume)
+        }
+        Some(f) if depth > floor && f.target == target && f.kind == abi::JUMP => TransferAbi::jump(target),
+        _ => return TransferAbi::fault(ctx.emit(Event::InvalidTransfer)),
+    };
+    // The shadow stack as the runner would have it when it routed this
+    // transfer: the frames above the floor, this one last.
+    let mark = ctx.frames.mark();
+    replay(&mut ctx.frames, ctx.direct.frames());
+    ctx.direct.floor = depth;
+    // The caller took this transfer's one; step takes it as the runner does.
+    let mut remaining = ctx.direct.state().budget.saturating_add(1);
+    let mut diag = Diag::thunk::<DIAG>(ctx);
+    let out = match step::<false, DIAG, true>(cpu, ctx, transfer, (0, 0), &mut remaining, &mut diag) {
+        Step::Next(t) | Step::Done(t) => t,
+    };
+    // Will a caller above the floor continue inline with `out`? The
+    // generated callers make the same test (h2_direct_back): a JUMP's
+    // caller hands up, a CALL's continues on a plain return to its
+    // continuation, ESP above the slot, the word zero and a transfer left.
+    let caught = remaining != 0
+        && ctx.leave_word() == 0
+        && out.kind == abi::RETURN
+        && out.route == abi::RETURN_TARGET
+        && out.event_id == 0
+        && ctx.direct.state().frames[floor as usize..depth as usize]
+            .iter()
+            .any(|f| f.kind == abi::CALL && f.resume == out.target_pc && cpu.esp > f.slot);
+    let s = ctx.direct.state();
+    s.budget = remaining;
+    // Nothing lent back to the caller.
+    s.view = std::ptr::null_mut();
+    s.gate = 0;
+    s.acc = 0;
+    if caught {
+        // The frames stay live in C and are replayed if a later transfer
+        // is handed up; what this transfer recorded is popped by the
+        // return, as the runner's unwind would have popped it.
+        s.depth = depth;
+        ctx.frames.rewind(mark);
+    } else {
+        // Handed up to whatever runs below the floor: the shadow stack is
+        // already what the runner would have, so nothing is left to
+        // replay.
+        s.depth = floor;
+    }
+    ctx.direct.floor = floor;
+    out
 }
 
 impl ExecCtx {
@@ -388,13 +521,16 @@ impl ExecCtx {
         }
     }
     /// The invocation returned: what is left of `remaining`. Transfers the
-    /// handlers made directly count as routed ones, and frames they left
-    /// live enter the shadow stack as the runner would have recorded them.
+    /// handlers made directly count as routed ones (`count`; not inside the
+    /// host-call thunk, whose caller's runner counts them), and frames they
+    /// left live enter the shadow stack as the runner would have recorded
+    /// them.
     #[inline]
-    pub(crate) fn direct_end(&mut self, remaining: u64) -> u64 {
+    pub(crate) fn direct_end(&mut self, remaining: u64, count: bool) -> u64 {
         let left = self.direct.state().budget.min(remaining);
         let used = remaining - left;
-        if used != 0
+        if count
+            && used != 0
             && let Some(p) = &mut self.profile
         {
             p.transfers += used;
@@ -402,9 +538,31 @@ impl ExecCtx {
         }
         if !self.direct.frames().is_empty() {
             replay(&mut self.frames, self.direct.frames());
-            self.direct.state().depth = 0;
+            let floor = self.direct.floor;
+            self.direct.state().depth = floor;
         }
         left
+    }
+    /// The host-call thunk was entered: what the generated caller lent with
+    /// the call belongs to a generated callee, so settle it here. The view
+    /// is the context's own; its count and a lent count are spent as the
+    /// caller's exit would have spent them before the runner ran this
+    /// transfer, and a lent hold on the RAM gate is released.
+    fn direct_take_lent(&mut self) {
+        let s = self.direct.state();
+        let view = std::mem::replace(&mut s.view, std::ptr::null_mut());
+        let gate = std::mem::take(&mut s.gate);
+        let acc = std::mem::take(&mut s.acc);
+        if gate != 0 {
+            // SAFETY: the view the caller lent with the hold, which it gave
+            // up (h2gen.h H2_LEND_); it takes back only what `gate` holds,
+            // and that is 0 when the thunk returns.
+            unsafe { crate::ffi::release_lent_gate(view) };
+        }
+        crate::ffi::sync_accesses(self);
+        if acc != 0 {
+            self.spend_accesses(acc);
+        }
     }
     /// The shadow stack with the live direct frames on top.
     pub(crate) fn backtrace_with_direct(&self, pc: u32) -> Vec<crate::GuestFrame> {
@@ -441,7 +599,6 @@ impl ExecCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuAbi, ExecCtxOpaque, TransferAbi};
 
     unsafe extern "C" fn a(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
         TransferAbi::stop(0)
@@ -496,21 +653,22 @@ mod tests {
     }
 
     #[test]
-    fn overrides_zero_their_elements_and_give_them_back() {
+    fn overrides_take_the_thunk_and_give_the_handler_back() {
+        let thunk = h2rt_thunk as GuestFn as usize;
         let live = table();
         let mut d = Dispatch::default();
         live.check_code(1, vec![true, true, true], &d);
         d.register_override(0x2000, "o", |_, _, _| Ok(TransferAbi::stop(2)));
         live.sync_overrides(&d);
-        assert_eq!((live.get(1), live.get(3)), (a as usize, 0));
+        assert_eq!((live.get(1), live.get(3)), (a as usize, thunk));
         d.set_enabled(0x2000, false);
         live.sync_overrides(&d);
         assert_eq!(live.get(3), b as usize);
         d.set_enabled(0x2000, true);
         live.sync_overrides(&d);
-        // A re-check keeps an override's element zero.
+        // A re-check keeps an override's element on the thunk.
         live.check_code(2, vec![true, true, true], &d);
-        assert_eq!((live.get(1), live.get(3)), (a as usize, 0));
+        assert_eq!((live.get(1), live.get(3)), (a as usize, thunk));
         // An override off the table touches nothing.
         d.register_override(0x1001, "elsewhere", |_, _, _| Ok(TransferAbi::stop(3)));
         live.sync_overrides(&d);

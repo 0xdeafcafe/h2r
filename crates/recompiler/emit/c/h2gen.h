@@ -80,6 +80,13 @@ typedef struct H2GenResume {
  * [text_lo, text_hi) (0: none), and the module's polls mask H2_IRQ_QUEUED
  * out of the preempt word. Every module this header builds has it. */
 #define H2GEN_FEATURE_ENTRY_TABLE 8u
+/* Host calls in place (RUNTIME-CONTRACT.md §4, "Host calls"): the H2Direct
+ * block below has the runtime's host-call thunk, a direct call invokes
+ * whatever handler the entry table holds (the thunk for an overridden
+ * entry), and an indirect call or jump outside [text_lo, text_hi) calls
+ * the thunk. Every direct-call module this header builds has it. (16 is
+ * kept for flat RAM.) */
+#define H2GEN_FEATURE_HOST_CALLS 32u
 typedef struct H2GenModule {
     uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;
@@ -941,7 +948,11 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
  * transfers are left in the runner's budget, the nesting is under the
  * context's cap, and the runtime's entry table holds the target's handler:
  * the entry resolves to it (no enabled override) and it is lifted code with
- * the execute bit, both checked when the table was filled. The same holds
+ * the execute bit, both checked when the table was filled. Where the entry
+ * is overridden the table holds the runtime's host-call thunk instead, and
+ * an indirect target outside this module's text gets the thunk too: it is
+ * called the same way and does for its target what the runner would (the
+ * override, an HLE function, a kernel import), in place. The same holds
  * again when the callee returns: only a RETURN to exactly the continuation,
  * with ESP above the return slot, continues inline (from the continuation's
  * label, as if entered with it as start). Anything else goes to the runner
@@ -958,7 +969,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #endif
 #define H2GEN_FEATURE_DIRECT_CALLS 2u
 #if H2_DIRECT_CALLS
-#define H2GEN_FEATURE_DIRECT (H2GEN_FEATURE_DIRECT_CALLS | H2GEN_FEATURE_DIRECT_VIEW | H2GEN_FEATURE_ENTRY_TABLE)
+#define H2GEN_FEATURE_DIRECT (H2GEN_FEATURE_DIRECT_CALLS | H2GEN_FEATURE_DIRECT_VIEW | H2GEN_FEATURE_ENTRY_TABLE | H2GEN_FEATURE_HOST_CALLS)
 #else
 #define H2GEN_FEATURE_DIRECT H2GEN_FEATURE_ENTRY_TABLE
 #endif
@@ -976,6 +987,10 @@ typedef struct H2Direct {
     uintptr_t *live;
     /* That module's pcmap (H2GenModule), covering [text_lo, text_hi). */
     const uint16_t *pcmap;
+    /* The runtime's host-call thunk (h2rt_thunk, runtime direct.rs): a
+     * handler that does for its target what the runner would, then returns
+     * that handler's transfer. Set with `live`. */
+    H2Handler thunk;
     uint32_t text_lo, text_hi;
     uint64_t budget;            /* transfers the runner has left */
     /* depth: direct-call nesting; frames[0..depth] are live. A call adds
@@ -996,7 +1011,7 @@ typedef struct H2Direct {
 } H2Direct;
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(H2DirectFrame) == 16, "direct layout");
-_Static_assert(sizeof(H2Direct) == 48 + 16 * 64 + 16, "direct layout");
+_Static_assert(sizeof(H2Direct) == 56 + 16 * 64 + 16, "direct layout");
 #endif
 static inline H2Direct *h2_direct(ExecCtxOpaque *ctx) {
     H2Direct *d;
@@ -1131,19 +1146,22 @@ static inline int h2_direct_quiet(const H2Direct *d, ExecCtxOpaque *ctx) {
 static inline int h2_direct_room(const H2Direct *d) {
     return d && d->live && d->depth < d->cap && d->depth < H2_DIRECT_MAX_DEPTH;
 }
-/* A static call or tail jump to entry index `i`, whose handler is `fn`:
- * `fn` while the entry table holds it, else NULL (the runner then
- * decides). Checked before the access count is flushed. */
-static inline H2Handler h2_direct_static(const H2Direct *d, uint32_t i, H2Handler fn) {
+/* A static call or tail jump to entry index `i`: what the entry table
+ * holds (the entry's own handler, the host-call thunk while it is
+ * overridden), or NULL (the runner then decides). Checked before the
+ * access count is flushed. */
+static inline H2Handler h2_direct_static(const H2Direct *d, uint32_t i) {
     if (!h2_direct_room(d)) return NULL;
-    return __atomic_load_n(&d->live[i], __ATOMIC_RELAXED) == (uintptr_t)fn ? fn : NULL;
+    return (H2Handler)__atomic_load_n(&d->live[i], __ATOMIC_RELAXED);
 }
 /* An indirect call or jump to `pc`: the handler the entry table holds for
- * the entry at exactly `pc`, or NULL (no entry there, or not live). */
+ * the entry at exactly `pc`, the host-call thunk for a target outside the
+ * module's text (a kernel import, another module, anything else the runner
+ * resolves or refuses), or NULL (no entry there, or not live). */
 static inline H2Handler h2_direct_indirect(const H2Direct *d, uint32_t pc) {
     if (!h2_direct_room(d)) return NULL;
     uint32_t off = pc - d->text_lo;
-    if (off >= d->text_hi - d->text_lo) return NULL;
+    if (off >= d->text_hi - d->text_lo) return d->thunk;
     uint32_t i = d->pcmap[off];
     if (!i) return NULL;
     return (H2Handler)__atomic_load_n(&d->live[i], __ATOMIC_RELAXED);
@@ -1191,8 +1209,13 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
         return (r);                                                             \
     } while (0)
 #if H2_DIRECT_CALLS
+/* Invoke `f`, which the entry table gave; when it is the linked handler
+ * `fn` of a static site, through the symbol (a direct branch). */
+#define H2_INVOKE_(f, fn, target)                                                           \
+    ((f) == (H2Handler)(fn) ? (fn)(cpu, ctx, (target)) : (f)(cpu, ctx, (target)))
 /* `found` is the handler the entry table gives (NULL: the runner decides),
- * evaluated with d_ in scope; `invoke` what to call; `label` the
+ * evaluated with d_ in scope; `invoke` the static site's linked handler
+ * (or f_ itself); `label` the
  * continuation's; `spill` and `reload` the x87 pointer locals' (or
  * (void)0); `refresh` re-reads the accounting budget in a handler that
  * polls (or (void)0); `dirty` the homed locals that may differ from CpuAbi
@@ -1211,7 +1234,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
             cpu->eip = (target);                                                            \
             H2_LEND_ACC_(d_);                                                               \
             H2_LEND_(d_);                                                                   \
-            TransferAbi r_ = (invoke)(cpu, ctx, (target));                                  \
+            TransferAbi r_ = H2_INVOKE_(f_, invoke, (target));                              \
             H2_TAKE_BACK_(d_);                                                              \
             H2_TAKE_BACK_ACC_(d_);                                                          \
             if (h2_direct_back(d_, ctx, cpu, &r_, (cont), esp, my_, H2_COUNT_FITS_())) {    \
@@ -1241,7 +1264,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
             cpu->eip = (target);                                                            \
             H2_LEND_ACC_(d_);                                                               \
             H2_LEND_(d_);                                                                   \
-            TransferAbi r_ = (invoke)(cpu, ctx, (target));                                  \
+            TransferAbi r_ = H2_INVOKE_(f_, invoke, (target));                              \
             H2_TAKE_BACK_(d_);                                                              \
             H2_TAKE_BACK_ACC_(d_);                                                          \
             (void)my_;                                                                      \
@@ -1250,18 +1273,19 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
         H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u);                                           \
     } while (0)
 /* Static sites name the target's entry index `idx` and make a direct host
- * call to the linked symbol. */
+ * call to the linked symbol while the table holds it. */
 #define H2_DCALL(fn, idx, target, cont, label, spill, reload, refresh, dirty)               \
-    H2_CALL_SLOT_(h2_direct_static(d_, (idx), fn), fn, target, cont, label, spill, reload, refresh, dirty)
-#define H2_DJUMP(fn, idx, target, spill, dirty) H2_JUMP_SLOT_(h2_direct_static(d_, (idx), fn), fn, target, spill, dirty)
+    H2_CALL_SLOT_(h2_direct_static(d_, (idx)), fn, target, cont, label, spill, reload, refresh, dirty)
+#define H2_DJUMP(fn, idx, target, spill, dirty) H2_JUMP_SLOT_(h2_direct_static(d_, (idx)), fn, target, spill, dirty)
 #else
 #define H2_DCALL(fn, idx, target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
 #define H2_DJUMP(fn, idx, target, spill, dirty) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
 #endif
 /* Indirect transfers find the target's entry index in pcmap and use the
- * same table and safe-point checks as static ones. Evaluate the guest
- * target once before charging, spilling or invoking the target; a miss
- * hands the same PC to the runner. */
+ * same table and safe-point checks as static ones; a target outside the
+ * module's text calls the host-call thunk. Evaluate the guest target once
+ * before charging, spilling or invoking the target; a miss hands the same
+ * PC to the runner. */
 #if H2_DIRECT_CALLS
 #define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)                        \
     do {                                                                                    \

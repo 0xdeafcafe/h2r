@@ -1,7 +1,7 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1 and T2 are built (section 6); none
-has been measured yet. This is the spec for
+Written 2026-11-20. Slices T1, F1, T2 and T3 are built (section 6);
+none has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
 [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
@@ -121,7 +121,7 @@ direct calls and before atomics (RUNTIME-CONTRACT.md lines 365-416).
 
 ### 2.3 A call between generated functions
 
-**Code** (after T2). `H2_CALL_SLOT_` (`crates/recompiler/emit/c/h2gen.h`),
+**Code** (after T3). `H2_CALL_SLOT_` (`crates/recompiler/emit/c/h2gen.h`),
 from `H2_DCALL` and `H2_ICALL` (`crates/recompiler/emit/src/c.rs`,
 `Emitter::control`). In order:
 
@@ -129,12 +129,13 @@ from `H2_DCALL` and `H2_ICALL` (`crates/recompiler/emit/src/c.rs`,
    depth against the cap; load `live[i]` (`h2_direct_static`, `i` the
    callee's entry index, a constant), or for an indirect call test the
    target against `[text_lo, text_hi)` and load `pcmap[pc - text_lo]`
-   first (`h2_direct_indirect`);
+   first, or take the host-call thunk outside it (`h2_direct_indirect`);
 2. drop the gate and flush the access count (`H2_DCALL_GATE_`);
 3. test the transfer budget and the preempt word, `IRQ_QUEUED` included
    (`h2_direct_quiet`, one load);
 4. write a 16-byte frame record at `frames[depth]` and take a transfer;
-5. spill dirty registers, set `eip`, lend the RAM view, call;
+5. spill dirty registers, set `eip`, lend the RAM view, call (the
+   linked symbol when `live[i]` is it, else what `live[i]` holds);
 6. on return (`h2_direct_back`): five tests on the returned `TransferAbi`
    (20 bytes, returned through memory), the quiet test again, the budget
    again;
@@ -143,8 +144,11 @@ from `H2_DCALL` and `H2_ICALL` (`crates/recompiler/emit/src/c.rs`,
 
 `live` is the runtime's entry table (section 4.2), filled without any
 runner dispatch: a call to an entry the runner never saw is direct.
-Hooks, HLE functions and kernel imports have a 0 element and go to the
-runner.
+Hooks and HLE functions at overridden entries have the host-call thunk in
+their element, and kernel imports and other targets outside the module's
+text get it from `h2_direct_indirect`: they run in place (section 4.2).
+Interior entries and code that is not lifted executable code have a 0
+element and go to the runner.
 
 ### 2.4 The runner
 
@@ -426,22 +430,24 @@ range), so a context with direct calls disabled reaches neither.
 - the row's generated handler, when the row is a function entry, no
   enabled override takes its address, and the address is lifted code
   (`Guest::guard_code`) with the execute bit;
-- 0 for an interior entry, an overridden entry, or anything else, which
-  leaves for the runner as before. (T3 puts the host-call thunk in an
-  overridden entry's element.)
+- the host-call thunk for an entry an enabled override takes;
+- 0 for an interior entry or anything else, which leaves for the runner
+  as before.
 
 `Runtime::edit_dispatch` brings the overridden elements in step before it
 returns, under the dispatch write lock: it walks the enabled overrides,
-zeroes their elements and restores those no longer overridden. There is
+points their elements at the thunk and restores those no longer
+overridden. There is
 no generation compare, no hash, no collision and no warm-up. A static
 call is, in effect:
 
 ```c
-if (d_ && d_->live && d_->depth < d_->cap && live_[IDX] == h2fn_target
-    && *h2_pre_ == 0 && d_->budget) { /* spill, frame, call h2fn_target */ }
+if (d_ && d_->live && d_->depth < d_->cap && (f_ = live_[IDX])
+    && *h2_pre_ == 0 && d_->budget) { /* spill, frame, call f_ */ }
 ```
 
-It calls the linked symbol, a direct branch, once the element matches it.
+It calls the linked symbol, a direct branch, when the element is it, and
+the element (the thunk) through a pointer otherwise.
 
 **No execute-bit read per call.** `Guest::map`, `unmap` and
 `protect_range` already refuse to take Execute from a guarded code range
@@ -464,16 +470,21 @@ none, written as designated initialisers of the entries only. About
 all of it once to check it is non-zero exactly at the rows. An indirect
 call is a bounds test, `pcmap[pc - text_lo]`, then `live` at that index.
 A target outside the range (a kernel import token, a continuation token)
-goes to the runner; T3 calls the thunk there.
+calls the thunk. A call through a kernel import slot is an indirect call
+of this kind (`H2_ICALL`), so a kernel import runs in place too.
 
-**The host-call thunk.** `h2rt_thunk` is an `extern "C"` function in the
-runtime with the handler signature. It is one iteration of the runner
-for one transfer, without the safe point: the caller has just seen the
-leave word zero, so the safe point would have done nothing. It does the
-frame record, the continuation-token and kernel-token tests,
-`resolve_cached`, `execute_dispatched` and stop recovery, and returns the
-handler's transfer. `Runner::run_inner` and the thunk share that code as
-one function.
+**The host-call thunk.** `h2rt_thunk` (`crates/runtime/runtime/src/direct.rs`)
+is an `extern "C"` function in the runtime with the handler signature,
+which the `H2Direct` block carries (module feature bit 32,
+`H2GEN_FEATURE_HOST_CALLS`; a direct-call module without it is refused,
+`DirectCallsWithoutHostCalls`). It is one iteration of the runner for one
+transfer, without the safe point: the caller has just seen the leave word
+zero, so the safe point would have done nothing. It reads the transfer's
+kind and continuation from the caller's top frame record, does the
+continuation-token and kernel-token tests, `resolve_cached`, the execute
+check, `execute_dispatched` and stop recovery, and returns the handler's
+transfer. `Runner::run_inner` and the thunk share that code as one
+function (`runner::step`, with `THUNK` set).
 
 The generated caller treats the thunk like any callee. It flushes its
 count, takes a transfer, calls, and continues inline only on a plain
@@ -489,6 +500,22 @@ an inline return, left alone on a hand-up; the runner replays
 (`kind, target, resume, slot`): the replay needs the kind and the target
 to give the shadow stack, and so every event's backtrace, what the runner
 would have recorded.
+
+The thunk replays the frames not yet in the shadow stack as it starts, so
+Rust code under it sees what the runner would have shown it. As it leaves
+it makes the test its callers will make (`h2_direct_back`, from the top
+frame down): if one of them continues inline it rewinds the shadow stack
+and leaves the frames in C for a later hand-up to replay; if the result
+is handed up past them all, the shadow stack is already what the runner
+would have, and `depth` drops to where the replay started.
+While it runs, the context's direct-call floor is its caller's depth: a
+runner or generated handler nested under it (a callback, an override
+running its original) records frames above the caller's and replays and
+drops only those. The depth cap therefore bounds the whole C nesting,
+thunks included. The thunk settles what the caller lent with the call
+(the view's count, a lent count, a lent gate hold) and lends nothing back.
+The transfers it and anything under it take are counted, as direct
+transfers, by the runner around the caller.
 
 **A lean runner.** `run_inner` gets a second const parameter, `DIAG`.
 The lean instance has no entry stats, census, profile counters, coverage,
@@ -577,13 +604,24 @@ different macros and files and can alternate. Slices that change
 ### T3. Host calls in place
 
 - `h2rt_thunk` in `crates/runtime/runtime/src/direct.rs`, built on T1's `step`.
-  `live[i]` holds it for overridden entries; `H2_ICALL`'s miss path calls
-  it for out-of-range targets.
+  `live[i]` holds it for overridden entries; `H2_ICALL` and `H2_IJUMP`
+  call it for targets outside the module's text, and calls through a
+  kernel import slot are emitted as `H2_ICALL` (`c.rs`,
+  `Emitter::control`). `H2Direct` carries it (module feature bit 32;
+  `DirectCallsWithoutHostCalls` refuses a direct-call module without it).
+  `H2_ENTRY_STATS` counts generated handlers the thunk invokes as
+  `thunk`, beside the runner entries.
 - Tests: `thunk_takes_the_runners_transfers`;
   `hle_return_keeps_callers_inline` (a three-deep chain whose leaf is a
-  Rust handler makes zero runner iterations after the first);
+  Rust handler, a call through a register and one through a kernel import
+  slot to a Rust handler outside the text: zero runner iterations after
+  the first);
   `blocking_hle_reaches_the_runner`; `hle_raising_slice_yields_at_same_point`;
-  `override_calling_original_nests`.
+  `override_calling_original_nests` (all in
+  `crates/recompiler/emit/tests/direct.rs`); `direct_calls_need_host_calls`
+  (`crates/runtime/runtime/tests/generated.rs`); `Live` and the shadow
+  stack's mark and rewind (`runtime::direct`, `runtime::frames` unit
+  tests).
 - Exit: hash gate including the co-op film; runner entries per tick under
   a quarter of the baseline; runner and scheduler under 3% of the thread
   (M2).

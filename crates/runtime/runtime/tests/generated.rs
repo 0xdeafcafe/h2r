@@ -996,7 +996,7 @@ fn a_module_names_its_features_and_unknown_ones_are_refused() {
 
 // ---- the entry table (FEATURE_ENTRY_TABLE) -------------------------------
 
-use runtime::generated::{FEATURE_DIRECT_CALLS, FEATURE_ENTRY_TABLE};
+use runtime::generated::{FEATURE_DIRECT_CALLS, FEATURE_ENTRY_TABLE, FEATURE_HOST_CALLS};
 
 /// Register a module with an entry table: `rows` are (address, kind), and
 /// `pcmap` covers `text` (leaked, as a loaded module's table outlives its
@@ -1082,10 +1082,34 @@ fn direct_calls_need_an_entry_table() {
         Err(RegistrationError::DirectCallsWithoutEntryTable)
     );
     assert!(!d.has_generated(0x1000));
-    let both = FEATURE_DIRECT_CALLS | FEATURE_ENTRY_TABLE;
+    let all = FEATURE_DIRECT_CALLS | FEATURE_ENTRY_TABLE | FEATURE_HOST_CALLS;
     assert_eq!(
-        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, both),
-        Ok(RegisteredModule { entries: 3, resumes: 0, features: both })
+        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, all),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: all })
+    );
+}
+
+/// A direct-call module from before host calls in place reads the
+/// direct-call block at other offsets: refused, nothing registered. Without
+/// direct calls the bit changes nothing.
+#[test]
+fn direct_calls_need_host_calls() {
+    let mut d = Dispatch::default();
+    assert_eq!(
+        with_table(
+            &mut d,
+            &TABLE_ROWS,
+            table_pcmap(|_| {}),
+            TABLE_TEXT,
+            FEATURE_DIRECT_CALLS | FEATURE_ENTRY_TABLE
+        ),
+        Err(RegistrationError::DirectCallsWithoutHostCalls)
+    );
+    assert!(!d.has_generated(0x1000));
+    let table_only = FEATURE_ENTRY_TABLE | FEATURE_HOST_CALLS;
+    assert_eq!(
+        with_table(&mut d, &TABLE_ROWS, table_pcmap(|_| {}), TABLE_TEXT, table_only),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: table_only })
     );
 }
 

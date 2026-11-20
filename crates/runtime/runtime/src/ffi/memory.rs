@@ -339,6 +339,27 @@ pub(crate) fn sync_accesses(ctx: &mut ExecCtx) {
     }
 }
 
+/// A hold on the C RAM gate that a direct caller lent with `view`
+/// (h2gen.h `H2_DIRECT_GATE`) to a callee that is not generated code (the
+/// host-call thunk, direct.rs), which gives nothing back: release it as
+/// C's `H2_GATE_RELEASE` does, clearing only the holder's bit.
+///
+/// # Safety
+/// `view` is the context's own view, lent by the generated caller that
+/// holds the gate, and the caller does not use the hold again.
+pub(crate) unsafe fn release_lent_gate(view: *mut FastAccess) {
+    if view.is_null() {
+        return;
+    }
+    // SAFETY: the caller's contract; raw reads keep C's provenance.
+    unsafe {
+        let memory = (&raw const (*view).memory).read();
+        if let Some(m) = memory.as_ref() {
+            m.gate.fetch_and(!GATE_HELD, Ordering::Release);
+        }
+    }
+}
+
 /// Acquire the optional RAM view. This does not hold the gate across calls.
 ///
 /// # Safety

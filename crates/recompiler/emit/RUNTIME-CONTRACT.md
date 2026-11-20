@@ -487,7 +487,9 @@ typedef struct H2GenModule {
 - `features` is a bit set of optional schemes the module's handlers use:
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
   §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
-  section), `H2GEN_FEATURE_ENTRY_TABLE` (8, below), or 0. It was
+  section), `H2GEN_FEATURE_ENTRY_TABLE` (8, below),
+  `H2GEN_FEATURE_HOST_CALLS` (32, host calls in place, §4 "Direct calls";
+  on every direct-call module), or 0. Bit 16 is kept for flat RAM. It was
   `reserved`, always 0.
 - **The entry table** (feature 8, on every module `h2gen.h` builds). The
   entry rows are sorted by address, and row `r` has entry index `r + 1`;
@@ -535,6 +537,9 @@ Its semantics:
    runtime turns `Runtime::enable_leave_word` on. A module with
    `H2GEN_FEATURE_DIRECT_CALLS` and no entry table, an image built before
    it, is refused (`DirectCallsWithoutEntryTable`): rebuild it.
+6. A module with `H2GEN_FEATURE_DIRECT_CALLS` and without
+   `H2GEN_FEATURE_HOST_CALLS` reads the direct-call block at other offsets
+   and is refused (`DirectCallsWithoutHostCalls`): rebuild it.
 
 ## 4. How the runtime drives handlers
 
@@ -645,33 +650,38 @@ Its semantics:
     `runtime::direct`), or null, in which case no call is direct (the test
     host; `ExecCtx::enable_direct_calls(false)`). The block starts with
     the runtime's entry table `live` (null until the runtime has one), the
-    module's `pcmap` and its text range. A runtime without the block
-    refuses the module by its feature bit, and a direct-call module needs
-    the entry table (§2, §3).
+    module's `pcmap`, the runtime's host-call thunk and the module's text
+    range. A runtime without the block refuses the module by its feature
+    bit, and a direct-call module needs the entry table and host calls in
+    place (§2, §3).
   - `live[i]` is the handler a call to entry index `i` may invoke, or 0.
     The runtime keeps it (`runtime::direct::Live`): a function entry's row
     handler while no enabled override takes its address and the address
-    is lifted code (`Guest::guard_code`) with the execute bit; 0 for an
-    interior entry and for everything else. `edit_dispatch` rewrites the
-    overridden elements before it returns, so an override registered,
-    enabled, disabled or replaced (from any thread) stops or allows direct
-    calls to that entry at once; a direct call never bypasses an override,
-    and no call needs a runner dispatch first. The execute bit is read
+    is lifted code (`Guest::guard_code`) with the execute bit; the
+    host-call thunk while an enabled override takes it; 0 for an interior
+    entry and for everything else. `edit_dispatch` rewrites the overridden
+    elements before it returns, so an override registered, enabled,
+    disabled or replaced (from any thread) sends calls of that entry to
+    the thunk, or back to the handler, at once; a direct call never
+    bypasses an override, and no call needs a runner dispatch first. The
+    execute bit is read
     when the table is checked against the guest's code identity
     (`Guest::code_id`, which moves when a guard is added, when a
     whole-mapping `Guest::protect` touches lifted code, and when a
     snapshot or view layout is adopted), at the runner's next handler
     invocation after it moved; `map`, `unmap` and `protect_range` cannot
     take Execute from lifted code, so no call reads the page.
-  - A static `call` or tail `jmp` to a function entry of the module may
-    use its linked symbol (`H2_DCALL`, `H2_DJUMP`, with the callee's entry
-    index). Indirect calls and jumps look the evaluated target PC up in
-    `pcmap` and use the handler `live` holds for that index (`H2_ICALL`,
-    `H2_IJUMP`). Both call forms require a continuation selector in the
-    calling handler. Lazy flags and the access count are settled before
-    entering the target.
-  - It is direct only if, at that moment: `live` holds the target's
-    handler (for a static site, exactly its linked symbol); `depth` is
+  - A static `call` or tail `jmp` to a function entry of the module calls
+    what `live` holds for the callee's entry index (`H2_DCALL`, `H2_DJUMP`),
+    through its linked symbol when that is what it holds. Indirect calls
+    and jumps, and calls through a kernel import slot, look the evaluated
+    target PC up in `pcmap` and use what `live` holds for that index; a
+    target outside `[text_lo, text_hi)` uses the host-call thunk
+    (`H2_ICALL`, `H2_IJUMP`). Both call forms require a continuation
+    selector in the calling handler. Lazy flags and the access count are
+    settled before entering the target.
+  - It is direct only if, at that moment: `live` holds a handler for the
+    target (or the target is outside the text); `depth` is
     under `cap`; the whole preempt word, `IRQ_QUEUED` included, is 0 (so
     the runner's safe point would do nothing); and the block's `budget`
     (the runner's `max_transfers` left) is non-zero. Otherwise the handler
@@ -712,12 +722,36 @@ Its semantics:
     call would match it. `Dispatch::set_stop_recovery` installs a hook the
     runner calls with every STOP a generated handler returns, handed up or
     not, and the CPU as it is; the runner carries on with what it returns.
+  - **Host calls in place** (module feature 32). The host-call thunk
+    (`h2rt_thunk`, `runtime::direct`) has the handler signature and is
+    called like any direct callee: after the quiet test, with its transfer
+    taken and its frame recorded. It does for that transfer what the
+    runner does after a safe point that found nothing to do
+    (`runner::step`: continuation and kernel tokens, resolution, the
+    execute check, the handler, stop recovery) and returns the handler's
+    transfer. The caller treats it as any callee's: inline only on a plain
+    return to its continuation with the word still zero, else a hand-up,
+    so an HLE function that blocks, calls back into the guest with a
+    continuation or raises a preemption reaches the runner as it would
+    have. On entry it settles what the caller lent (the view's count, a
+    lent count, a lent gate hold) and gives nothing back. Rust code under
+    it sees the shadow stack the runner would have shown it: the frames
+    not yet replayed are replayed on entry. On the way out it makes the
+    callers' own test: if one will continue inline, the shadow stack is
+    rewound and the frames stay in C for a later hand-up to replay;
+    otherwise `depth` drops back to where it started replaying, so they
+    are not replayed twice. A runner or handler nested under it
+    (a callback, an override running its original) records direct frames
+    above the caller's and replays and drops only those, so the cap still
+    bounds the host stack. The transfers it and anything under it take
+    are counted by the runner around the caller, as direct transfers.
   - A hand-up leaves `depth` where it is, so `frames[0..depth]` are the
     direct calls and jumps still live. After every invocation the runner
     takes back the budget left (direct transfers count in `transfers` and
     `direct_transfers`) and replays those frames into the shadow stack as
     it would have recorded them (`unwind`, `call`, `enter`), then zeroes
-    `depth`. An event recorded while C is nested
+    `depth` (inside the host-call thunk: back to the thunk caller's
+    depth). An event recorded while C is nested
     takes its backtrace with those frames on top. A call that returns
     inline leaves the shadow stack as it found it; the one difference is
     that the runner's `unwind` at that return is skipped, so a stale record

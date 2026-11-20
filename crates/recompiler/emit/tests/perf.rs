@@ -1456,12 +1456,13 @@ fn image_gate_holds() {
 }
 
 /// The image's transfer sites by what the emitter makes of them: a call or
-/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), or one it leaves
-/// to the runner, and why: through a kernel import, through a pointer
-/// (indirect), to an address that is not a function entry, or (a call)
-/// with a continuation another handler owns. Every return leaves for the
-/// runner unless its handler was invoked directly. Static counts: which
-/// runner entries could become direct or stay in C.
+/// tail jump it invokes directly (`H2_DCALL`/`H2_DJUMP`), one through a
+/// kernel import or a pointer (`H2_ICALL`/`H2_IJUMP`: direct when the entry
+/// table or the host-call thunk takes it), or one it leaves to the runner,
+/// and why: to an address that is not a function entry, or (a call) with a
+/// continuation another handler owns. Every return leaves for the runner
+/// unless its handler was invoked directly. Static counts: which runner
+/// entries could become direct or stay in C.
 /// `cargo test -p emit --release --test perf image_transfer_sites -- --ignored --nocapture`
 #[test]
 #[ignore = "reads the retail XBE (H2_XBE)"]
@@ -1492,7 +1493,13 @@ fn image_transfer_sites() {
                         "call: direct (H2_DCALL)"
                     }
                 }
-                Control::Call { kind: CallKind::Kernel { .. }, .. } => "call: kernel import",
+                Control::Call { kind: CallKind::Kernel { .. }, continuation, .. } => {
+                    if o.selectors.contains(continuation) {
+                        "call: kernel import (H2_ICALL)"
+                    } else {
+                        "call: kernel import, continuation owned elsewhere"
+                    }
+                }
                 Control::Call { .. } => "call: indirect",
                 Control::Jump { target: Target::Direct(t), tail: true, .. } => {
                     if functions.contains(t) { "jump: direct tail (H2_DJUMP)" } else { "jump: static tail, not an entry" }

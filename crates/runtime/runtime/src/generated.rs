@@ -194,9 +194,20 @@ pub const FEATURE_DIRECT_VIEW: u32 = 4;
 /// [`Runtime::enable_leave_word`](crate::Runtime::enable_leave_word).
 /// [`FEATURE_DIRECT_CALLS`] needs it: an image built before it is refused.
 pub const FEATURE_ENTRY_TABLE: u32 = 8;
+/// Module feature (`H2GEN_FEATURE_HOST_CALLS`, every direct-call module):
+/// host calls in place. The direct-call block carries the runtime's
+/// host-call thunk (`h2rt_thunk`, [`crate::direct`]); a direct call invokes
+/// whatever the entry table holds, which is the thunk for an overridden
+/// entry, and an indirect call or jump outside the module's text calls the
+/// thunk. [`FEATURE_DIRECT_CALLS`] needs it: an image built before it reads
+/// the block at the old offsets and is refused. (16 is kept for flat RAM.)
+pub const FEATURE_HOST_CALLS: u32 = 32;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 =
-    FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS | FEATURE_DIRECT_VIEW | FEATURE_ENTRY_TABLE;
+pub const FEATURES: u32 = FEATURE_ACCOUNTING
+    | FEATURE_DIRECT_CALLS
+    | FEATURE_DIRECT_VIEW
+    | FEATURE_ENTRY_TABLE
+    | FEATURE_HOST_CALLS;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +258,8 @@ impl Dispatch {
     /// A module with [`FEATURE_ENTRY_TABLE`] also has its `pcmap` checked
     /// against its rows (every row's byte maps to the row), and becomes
     /// this dispatch's entry table; a second one is refused. A module with
-    /// [`FEATURE_DIRECT_CALLS`] and no entry table is refused.
+    /// [`FEATURE_DIRECT_CALLS`] and no entry table, or without
+    /// [`FEATURE_HOST_CALLS`], is refused.
     ///
     /// # Safety
     /// `module` and its tables (each `count` rows plus a zero row) must be
@@ -276,6 +288,9 @@ impl Dispatch {
         let with_table = module.features & FEATURE_ENTRY_TABLE != 0;
         if module.features & FEATURE_DIRECT_CALLS != 0 && !with_table {
             return Err(RegistrationError::DirectCallsWithoutEntryTable);
+        }
+        if module.features & FEATURE_DIRECT_CALLS != 0 && module.features & FEATURE_HOST_CALLS == 0 {
+            return Err(RegistrationError::DirectCallsWithoutHostCalls);
         }
         if with_table && self.entry_table().is_some() {
             return Err(RegistrationError::SecondEntryTable);
