@@ -527,6 +527,7 @@ impl<'a> Emitter<'a> {
             self.handler(f, &format!("{name}_p{k}"), "static __attribute__((noinline)) ", Some(&parts.cut_ins[k]));
         }
     }
+}
 
 /// C for `reg[slice] = v` (a partial-register merge below `Full`); `v` is
 /// a C expression of the slice's width or wider.
