@@ -210,7 +210,12 @@ queues it.
 
 `native_first_person_glue` and `native_first_person_load` are separate from
 the objects stage's cache, but use its public model, stream and object
-program code. `begin_external_boundary` drains preceding packets before the
+program code. A utility-priority worker opens the map, waits for requested
+record models and uploads each one into private GPU storage. It publishes
+the completed model and adds its parts to the admission set for the next
+swap. The draw hook requests the exact target pipelines before applying
+any masks. A cold pipeline leaves the first-person draw on D3D.
+`begin_external_boundary` drains preceding packets before the
 entry states and first-person view constants are read (the camera itself is
 built by `0x0023c110` upstream), rather than copying the scene camera. The
 pass requires a known W-buffered depth mode and a full-target viewport with
