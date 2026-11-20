@@ -446,6 +446,20 @@ pub struct MatchConfig {
     pub bots: Vec<BotSpec>,
 }
 
+impl MatchConfig {
+    fn force_phantom_seats(&mut self, seat_swap: bool) -> Result<(), String> {
+        if seat_swap || self.seats_swapped.is_some() {
+            return Err(
+                "seat_swap compares local and phantom seats; set H2_BOTS_ALL_PHANTOM=0".into(),
+            );
+        }
+        for bot in &mut self.bots {
+            bot.kind = SeatKind::Phantom;
+        }
+        Ok(())
+    }
+}
+
 /// A bot as a run uses it: everything resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bot {
@@ -476,6 +490,11 @@ pub struct Match {
 }
 
 impl Match {
+    /// The host occupies a peer slot but has no player in the roster.
+    pub fn playerless_host(&self) -> bool {
+        self.bots.iter().all(|b| b.port.is_none())
+    }
+
     pub fn distributed(&self) -> bool {
         self.bots.iter().any(|b| b.kind == SeatKind::Phantom)
     }
@@ -537,7 +556,15 @@ pub fn parse_match(text: &str, json: bool) -> Result<MatchConfig, String> {
 
 /// Reads and checks a match file; tuning files are read relative to it.
 pub fn load_match(path: &Path) -> Result<Match, String> {
-    let config: MatchConfig = parse_file(path)?;
+    load_match_with_seating(path, false)
+}
+
+/// Apply the host seating policy before validating controller and peer limits.
+pub fn load_match_with_seating(path: &Path, all_phantom: bool) -> Result<Match, String> {
+    let mut config: MatchConfig = parse_file(path)?;
+    if all_phantom {
+        config.force_phantom_seats(false)?;
+    }
     let base = path.parent().unwrap_or(Path::new("."));
     resolve(config, &|p: &Path| BotParams::load(&base.join(p)))
 }
@@ -565,8 +592,14 @@ pub fn resolve(
         .iter()
         .filter(|b| b.kind == SeatKind::Local)
         .count();
-    if !(1..=4).contains(&locals) {
-        problems.push(format!("{locals} local bots: a match needs 1 to 4 local bots including the host. Additional seats use System Link phantoms"));
+    if config.bots.is_empty() {
+        problems.push("a match needs at least one bot".into());
+    }
+    if locals > 4 {
+        problems.push(format!("{locals} local bots: at most 4 controller ports. Additional seats use System Link phantoms"));
+    }
+    if config.bots.len() - locals >= MAX_BOTS {
+        problems.push("at most 15 phantoms: the host occupies one of 16 peers".into());
     }
     if config.bots.len() > MAX_BOTS {
         problems.push(format!("a session supports at most {MAX_BOTS} players"));
@@ -798,10 +831,19 @@ pub struct Batch {
 /// Reads a batch file, its match file and its arms' tuning files, and plans
 /// its runs.
 pub fn load_batch(path: &Path) -> Result<Batch, String> {
+    load_batch_with_seating(path, false)
+}
+
+/// Plan the effective transport for each seat before writing child match files.
+pub fn load_batch_with_seating(path: &Path, all_phantom: bool) -> Result<Batch, String> {
     let config: BatchConfig = parse_file(path)?;
     let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let match_path = base.join(&config.match_file);
-    let base_match: MatchConfig = parse_file(&match_path)?;
+    let mut base_match: MatchConfig = parse_file(&match_path)?;
+    if all_phantom {
+        let mode = config.mode.as_deref().map(Mode::parse).transpose()?;
+        base_match.force_phantom_seats(mode == Some(Mode::SeatSwap))?;
+    }
     let match_dir = match_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let read_arm = |p: &Path| BotParams::load(&base.join(p));
     let read_bot = |p: &Path| BotParams::load(&match_dir.join(p));

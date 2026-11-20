@@ -145,12 +145,57 @@ burst_on = 3
 }
 
 #[test]
+fn forcing_phantom_seats_keeps_the_logical_lineup_and_batch_arms() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/sim-examples");
+    let path = dir.join("lockout-2v2.toml");
+    let original = load_match(&path).unwrap();
+    let all = load_match_with_seating(&path, true).unwrap();
+    assert!(all.distributed() && all.playerless_host());
+    assert!(!original.playerless_host());
+    assert_eq!(all.bots.len(), original.bots.len());
+    for (mut expected, actual) in original.bots.into_iter().zip(&all.bots) {
+        expected.port = None;
+        expected.kind = SeatKind::Phantom;
+        assert_eq!(&expected, actual);
+    }
+    let path = dir.join("batch.toml");
+    let batch = load_batch(&path).unwrap();
+    let all = load_batch_with_seating(&path, true).unwrap();
+    assert_eq!(all.runs.len(), batch.runs.len());
+    for (mut expected, actual) in batch.runs.into_iter().zip(all.runs) {
+        for bot in &mut expected.config.bots {
+            bot.kind = SeatKind::Phantom;
+        }
+        assert_eq!(expected, actual);
+    }
+    assert!(
+        load_batch_with_seating(&dir.join("midship-seat-swap.toml"), true)
+            .unwrap_err()
+            .contains("H2_BOTS_ALL_PHANTOM=0")
+    );
+}
+
+#[test]
+fn the_host_peer_leaves_room_for_fifteen_phantoms() {
+    let mut c = parse_match(&format!("map='midship'\n{}", "[[bot]]\n".repeat(15)), false).unwrap();
+    c.force_phantom_seats(false).unwrap();
+    let m = resolve(c.clone(), &no_files).unwrap();
+    assert!(m.bots.iter().all(|b| b.port.is_none()));
+    c.bots.push(c.bots[0].clone());
+    assert!(
+        resolve(c, &no_files)
+            .unwrap_err()
+            .contains("at most 15 phantoms")
+    );
+}
+
+#[test]
 fn bot_counts() {
     let none = parse_match("map = \"lockout\"\n", false).unwrap();
     assert!(
         resolve(none, &no_files)
             .unwrap_err()
-            .contains("1 to 4 local bots")
+            .contains("at least one bot")
     );
     let five = parse_match(
         &format!("map = \"lockout\"\n{}", "[[bot]]\n".repeat(5)),
@@ -741,13 +786,17 @@ fn swapping_seats_preserves_brains_teams_and_allocates_dense_local_ports() {
 }
 
 #[test]
-fn swapped_layout_also_needs_a_host_and_at_most_four_pads() {
+fn swapped_layout_can_be_playerless_but_still_has_at_most_four_pads() {
     let spec = "out='o'\nmatch='m'\nmode='seat_swap'\n[a]\n";
-    for phantoms in [0, 5] {
-        let m = format!(
-            "map='midship'\n[[bot]]\n{}",
-            "[[bot]]\nkind='phantom'\n".repeat(phantoms)
-        );
-        assert!(batch(spec, &m).unwrap_err().contains("1 to 4 local bots"));
-    }
+    let one = "map='midship'\n[[bot]]\n";
+    let runs = batch(spec, one).unwrap().runs;
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].config.bots[0].kind, SeatKind::Local);
+    assert_eq!(runs[1].config.bots[0].kind, SeatKind::Phantom);
+    let five_remotes = format!("{one}{}", "[[bot]]\nkind='phantom'\n".repeat(5));
+    assert!(
+        batch(spec, &five_remotes)
+            .unwrap_err()
+            .contains("at most 4 controller ports")
+    );
 }

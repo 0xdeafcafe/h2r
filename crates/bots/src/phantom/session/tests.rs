@@ -923,6 +923,38 @@ mod lobby {
     }
 
     #[test]
+    fn playerless_host_seats_phantoms_without_a_local_configuration() {
+        let ph = Phantoms::default();
+        let first = ph.add(who(1, "First"), Some(1), idle()).unwrap();
+        let second = ph.add(who(2, "Second"), Some(0), idle()).unwrap();
+        let mut g = lobby();
+        make_team_game(&mut g);
+        g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX)
+            .put_u32(S + PEERS + PEER_PLAYERS, 0)
+            .put_u32(S + PLAYER_MASK, 0)
+            .put_u32(S + PLAYER_COUNT, 0)
+            .put_u32(points::PLAYERS.base, 0);
+        // An ordinary lobby still waits for a real profile.
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 0);
+        ph.set_playerless_host(true);
+        ph.tick(&mut g, 1).unwrap();
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 3);
+        assert_eq!(g.u32(S + PEERS + PEER_PLAYERS).unwrap(), 0);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        for (handle, name, team) in [(first, "First", 1), (second, "Second", 0)] {
+            let peer_idx = find_peer(&g, S, machine_id(handle)).unwrap().unwrap();
+            let slot = g.u32(peer(S, peer_idx) + PEER_SLOTS).unwrap();
+            assert_eq!(team_of(&g, slot), (team, team));
+            let mut look = [0; 8];
+            g.read(player(S, slot) + P_EFFECTIVE + CONFIG_LOOK as u32, &mut look).unwrap();
+            assert_eq!(look, crate::guest::bot_look(name));
+        }
+        assert_eq!(playerless_config("FFA", None)[CONFIG_TEAM], u8::MAX);
+    }
+
+    #[test]
     fn the_configuration_is_the_hosts_session_players() {
         let g = lobby();
         let c = config_in(&g, S, "Rusty Lugnut", None).unwrap().unwrap();

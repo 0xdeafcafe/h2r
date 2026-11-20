@@ -467,10 +467,18 @@ impl HostMatch {
         if m.pace.as_deref().is_some_and(|pace| pace != "unpaced") {
             return Err(invalid("dedicated simulations must be unpaced"));
         }
-        let locals = m.bots.iter().filter(|bot| bot.kind == SeatKind::Local).count();
-        if !(1..=4).contains(&locals) || m.bots.len() > game::MAX_PLAYERS {
+        let locals = m
+            .bots
+            .iter()
+            .filter(|bot| bot.kind == SeatKind::Local)
+            .count();
+        if m.bots.is_empty()
+            || locals > 4
+            || m.bots.len() > game::MAX_PLAYERS
+            || m.bots.len() - locals >= game::MAX_PLAYERS
+        {
             return Err(invalid(
-                "a simulation needs 1 to 4 local bots and at most 16 seats",
+                "a simulation needs 1 to 16 bots, at most 4 local pads and 15 phantom peers",
             ));
         }
         if m.bots.iter().any(|bot| bot.params.is_some()) {
@@ -890,11 +898,12 @@ mod host_tests {
         for matched in [
             serde_json::json!({"map": "lockout", "pace": "realtime", "bot": [{}]}),
             serde_json::json!({"map": "lockout", "bot": [{"params": "local.toml"}]}),
-            serde_json::json!({"map": "lockout", "bot": [{"kind": "phantom"}]}),
+            serde_json::json!({"map": "lockout", "bot": []}),
+            serde_json::json!({"map": "lockout", "bot": vec![serde_json::json!({"kind":"phantom"}); 16]}),
         ] {
             assert!(spec(matched).lease("sim-run-42".into(), ProviderKind::Fly).is_err());
         }
-        let spec = spec(serde_json::json!({"map": "lockout", "bot": [{}]}));
+        let spec = spec(serde_json::json!({"map": "lockout", "bot": [{"kind": "phantom"}]}));
         let lease = spec.lease("sim-run-42".into(), ProviderKind::Fly).unwrap();
         assert_eq!(lease.transport, Transport::Udp);
         assert_eq!(lease.class, HostClass::Small);

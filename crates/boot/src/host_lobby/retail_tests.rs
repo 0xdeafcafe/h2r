@@ -127,6 +127,59 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
 }
 
 #[test]
+fn all_phantom_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let config = sim::config::parse_match(
+                "map='midship'\nscore_limit=17\n[[bot]]\nkind='phantom'\n[[bot]]\nkind='phantom'\n",
+                false,
+            )
+            .unwrap();
+            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            let mut lobby = Machine::default();
+            assert!(
+                !lobby
+                    .open_sim(&cx, MAP, &matched, SCRATCH)
+                    .await
+                    .map_err(rpc)?
+            );
+            assert!(
+                lobby
+                    .open_sim(&cx, MAP, &matched, SCRATCH)
+                    .await
+                    .map_err(rpc)?
+            );
+            assert_eq!(
+                cx.read(|m| m.u32(S + VARIANT + variant::SCORE_TO_WIN as u32))?,
+                17
+            );
+            cx.write(|m| -> Result<(), MemFault> {
+                m.set_u32(S + PEER_COUNT, 2)?;
+                peer(m, 5, 1, "First")?;
+                m.set_u32(S + PEERS + PEER_MAP_STATUS, 3)?;
+                m.set_u32(S + PEERS + PEER_SIZE + PEER_MAP_STATUS, 4)
+            })?;
+            assert!(!lobby.start_sim(&cx, 2).await.map_err(rpc)?);
+            cx.write(|m| -> Result<(), MemFault> {
+                m.set_u32(S + PEER_COUNT, 3)?;
+                peer(m, 9, 2, "Second")?;
+                m.set_u32(S + PEERS + 2 * PEER_SIZE + PEER_MAP_STATUS, 4)
+            })?;
+            assert!(lobby.start_sim(&cx, 2).await.map_err(rpc)?);
+            Ok(Ret::new(1, 0))
+        })
+    };
+    let run = testing::run(&test, menu(), Regs::default(), reply);
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+    assert!(
+        run.calls
+            .iter()
+            .all(|c| c.target != points::PROFILE_SIGN_IN.base)
+    );
+    assert_eq!(run.calls.iter().filter(|c| c.target == 0x5a220).count(), 1);
+}
+
+#[test]
 fn playerless_open_join_start_postgame_and_close_follow_retail() {
     let test = |cx: Cx| -> EntryFuture {
         Box::pin(async move {

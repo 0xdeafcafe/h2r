@@ -630,6 +630,15 @@ pub fn config_in(
     Ok(Some(c))
 }
 
+/// A sim with no local profile starts the requested configuration with its
+/// own marked name and appearance. Team −1 is unaffiliated in free-for-all.
+pub(super) fn playerless_config(name: &str, team: Option<u8>) -> [u8; CONFIG_SIZE] {
+    let mut config = [0; CONFIG_SIZE];
+    set_identity(&mut config, name);
+    config[CONFIG_TEAM] = team.unwrap_or(u8::MAX);
+    config
+}
+
 /// Whether the lobby's variant is a team game (`+0x4db0 + 0x48` bit 0).
 pub fn team_game(m: &dyn GuestMemory, s: u32) -> R<bool> {
     Ok(m.u32(s + VARIANT + VARIANT_FLAGS)? & 1 != 0)

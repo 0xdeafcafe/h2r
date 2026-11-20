@@ -35,7 +35,7 @@ const USAGE: &str = "usage:
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
 
 A match file names the map, the game type, the limits, the seed and up to 16
-bots (one to four local pads, remaining seats phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
+bots (up to four local pads and fifteen phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
 `run` boots headless with no rendering, no keyboard and the match's bots,
 and writes a JSON report (--report, default $TMPDIR/h2sim/<match>.report.json).
 It never builds: build the image first with `h2 build` (same H2_OPT).
@@ -242,8 +242,11 @@ fn run_one(args: Vec<String>) -> Result<()> {
     let file = file.context(USAGE)?;
     let file = std::path::absolute(&file)?;
     // Checked here, with every problem listed, before anything boots.
-    let mut m =
-        sim::config::load_match(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let mut m = sim::config::load_match_with_seating(
+        &file,
+        boot::setting_defs::bots_all_phantom_at(&common.data()),
+    )
+    .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     if let Some(pace) = common.pace {
         m.pace = pace;
         m.config.pace = pace.label();
@@ -749,8 +752,11 @@ fn batch(args: Vec<String>) -> Result<()> {
         }
     }
     let file = std::path::absolute(file.context(USAGE)?)?;
-    let mut b =
-        sim::config::load_batch(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let mut b = sim::config::load_batch_with_seating(
+        &file,
+        boot::setting_defs::bots_all_phantom_at(&common.data()),
+    )
+    .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     let fork = fork || b.config.fork;
     let audit = b.config.audit;
     if fork && boot::sim_glue::use_light_host()? {
