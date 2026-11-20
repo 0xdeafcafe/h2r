@@ -183,6 +183,38 @@ Replication, map loads and the map itself can move either number. RSS counts
 shared pages in each process. Measure the fleet’s incremental RAM separately
 before sizing by game count.
 
+Measured 2026-11-20, one waterworks 2v2 sim process (macOS `vmmap`,
+`/usr/bin/time -l`): peak RSS about **981 MiB**, of which **791 MiB** is
+the resident pages of the whole mmapped disc image (the game copies
+`shared` (183 MiB), `single_player_shared` (429 MiB) and the level map
+from `D:` at load); footprint (dirty) **143 MiB** — Malloc Large 103 MiB
+(guest RAM is 64 MiB of that), Malloc Small 35 MiB — plus shared
+`__TEXT` 414 MiB. On a container host the resident image pages are
+charged per container. Three changes cut that, all behaviour-identical:
+
+- Bulk reads through the disc mapping drop their pages again after the
+  copy out (`msync(MS_KILLPAGES)` on macOS, `madvise(MADV_DONTNEED)` +
+  `posix_fadvise(DONTNEED)` on Linux): the data lands in the title's
+  cache copy or guest RAM, so the image's pages stop accumulating.
+- The nav builder on a light host scans only the booted map at boot
+  (was: every map on the disc, reading each one's BSPs); later maps
+  build on demand as they load.
+- The descriptor-only D3D path creates no vertex or index caches (was:
+  128 + 32 MiB of LRU budget).
+
+**Sim stores** ([Sim stores](../runtime/sim.md#sim-stores-the-map-without-the-map))
+take it further: with `H2_SIM_STORE` naming a directory of built
+stores, the host serves each `maps\<map>.map` from the store — only the
+bytes a recording saw the guest read — and never streams the retail
+map. Two hosts on different maps still share `shared.map`'s store pages
+and the dylib's code; two on the same map can also share guest RAM
+itself, each over a sparse copy-on-write base image
+(`state.load` with `"cow": true`). Measurement plan for the fleet:
+`wall.peak_rss_mib` and `wall.footprint_mib` in each run's report;
+`vmmap`/`smaps` for shared-versus-private per process; the reports'
+`wall.guest_written_pages` over `wall.guest_pages` for how much of the
+shared base a match keeps.
+
 ### Server maps
 
 `h2 server-map strip ORIGINAL.map OUTPUT.map` writes a sparse copy. Use

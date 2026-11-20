@@ -43,6 +43,7 @@ pub mod health;
 pub mod host_audit;
 mod host_lobby;
 mod host_metrics;
+pub mod host_mem;
 pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
@@ -1152,6 +1153,11 @@ fn run_configured(
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
+        // Sim stores: the retail maps' bytes a recording saw the guest
+        // read, served instead of the disc (crates/vfs/src/sim_store.rs).
+        cfg.sim_store = std::env::var_os(vfs::sim_store::STORE_ENV)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
     }
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
@@ -1392,7 +1398,7 @@ fn run_configured(
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
     if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone(), host_light);
     }
     if let Some(s) = &sim_mode {
         if !core.bots_on {
@@ -2088,6 +2094,19 @@ fn run_configured(
     }
     if let Some(f) = &film {
         f.finish(film_slices, true, _telemetry.as_ref())?;
+    }
+    // A shared copy-on-write guest RAM base (`state.load` with
+    // "cow": true): census the pages the match wrote over it, so the
+    // report says how much stayed shared.
+    if let Some(s) = &sim_mode {
+        let cow = snapshot_glue::cow_census(&loaded.runtime).map(|(w, t, runs)| {
+            eprintln!(
+                "sim: {w} of {t} guest pages written over the shared base ({} run(s))",
+                runs.len()
+            );
+            (w, t)
+        });
+        s.note_cow(cow);
     }
     let sim_upload_result = match &sim_mode {
         Some(s) => match s.finish() {

@@ -92,6 +92,9 @@ struct State {
     /// Weapon datums fired since the last tick.
     fired: Vec<u32>,
     notes: Vec<String>,
+    /// A copy-on-write guest RAM base census at the match's end
+    /// (`state.load` with `"cow": true`): pages written over the base.
+    cow: Option<(u64, u64)>,
 }
 
 struct Inner {
@@ -355,6 +358,7 @@ impl Sim {
                 set_up: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
+                cow: None,
             }),
             stop: AtomicBool::new(false),
             created: Instant::now(),
@@ -501,6 +505,13 @@ impl Sim {
         build_report(inner, &s)
     }
 
+    /// The guest RAM census at the match's end, for the report's `wall`
+    /// block: `(written, total)` pages over a shared copy-on-write base.
+    pub fn note_cow(&self, written: Option<(u64, u64)>) {
+        let mut s = self.0.lock();
+        s.cow = written;
+    }
+
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
     /// set, and its summary on stderr.
     pub fn finish(&self) -> Result<Report> {
@@ -531,6 +542,9 @@ impl Sim {
                 .with_context(|| format!("writing the report {}", path.display()))?;
             eprintln!("sim: report {}", path.display());
         }
+        // A read recording (H2_SIM_STORE_RECORD) is written with the
+        // report, merged into what the file already holds.
+        vfs::sim_store::record::flush();
         if self.matched().distributed() && self.0.lock().bindings.len() != self.matched().bots.len()
         {
             bail!(
@@ -641,12 +655,16 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     } else {
         "missing"
     };
+    let mut memory = crate::host_mem::usage();
+    memory.guest_written_pages = s.cow.map(|(w, _)| w);
+    memory.guest_pages = s.cow.map(|(_, t)| t);
     s.tally.report(Finish {
         match_: inner.matched.resolved_json(),
         team_play: inner.matched.team_play,
         bots: &bots,
         end: s.end.unwrap_or(End::Aborted),
         speed: speed(inner, s),
+        memory,
         nav,
         notes,
     })

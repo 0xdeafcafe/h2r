@@ -15,7 +15,7 @@
 //! physical page a write-watch consumer watches is reported dirty, so the
 //! D3D caches and anything else keyed by guest memory re-read it.
 use super::{Guest, Mapping, Permissions, RAM_SIZE};
-use std::sync::atomic::Ordering;
+use std::{path::Path, sync::atomic::Ordering};
 
 /// A [`super::PhysicalReservation`] as plain data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +60,9 @@ pub enum RestoreError {
     /// The RAM image is not `RAM_SIZE` bytes.
     #[error("snapshot RAM is {0} bytes")]
     RamSize(usize),
+    /// A copy-on-write RAM base could not be mapped.
+    #[error("guest RAM base: {0}")]
+    RamBase(String),
 }
 
 impl Permissions {
@@ -141,6 +144,75 @@ impl Guest {
         }
         self.adopt(layout);
         Ok(Ok(()))
+    }
+
+    /// [`Guest::restore`] over a RAM image `file` of exactly [`RAM_SIZE`]
+    /// bytes, mapped private copy-on-write in place of the guest's own
+    /// store: pages the match never writes stay the file's shared pages —
+    /// one set for every process on the same image — and a write gives
+    /// this guest its own page. As `restore`, the layout must match and
+    /// every watched page is reported dirty. The fast-page table holds
+    /// physical numbers, not pointers, so it needs no rebuild.
+    pub fn restore_cow(&mut self, layout: &GuestLayout, file: &Path) -> Result<(), RestoreError> {
+        self.check_fixed(layout)?;
+        Self::check_mappings(&layout.mappings)?;
+        let image = std::fs::File::open(file)
+            .map_err(|e| RestoreError::RamBase(format!("{}: {e}", file.display())))?;
+        let bytes = image
+            .metadata()
+            .map_err(|e| RestoreError::RamBase(e.to_string()))?
+            .len();
+        if bytes != RAM_SIZE as u64 {
+            return Err(RestoreError::RamBase(format!(
+                "{} is {bytes} bytes, guest RAM is {RAM_SIZE}"
+            )));
+        }
+        self.ram
+            .become_private_of(&image)
+            .map_err(RestoreError::RamBase)?;
+        self.adopt(layout);
+        Ok(())
+    }
+
+    /// The guest's RAM pages that differ from the RAM image at `base` (as
+    /// [`restore_cow`] adopted it): `(written, total, runs)` with the
+    /// runs of written pages as `(first page, pages)`. A match-end census
+    /// of how much of a shared base can stay shared.
+    pub fn census_against(&self, base: &Path) -> std::io::Result<(u64, u64, Vec<(u32, u32)>)> {
+        use std::io::Read;
+        let mut image = std::fs::File::open(base)?;
+        let bytes = image.metadata()?.len();
+        if bytes != RAM_SIZE as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{base:?} is {bytes} bytes, guest RAM is {RAM_SIZE}"),
+            ));
+        }
+        let page = super::PAGE_SIZE;
+        let mut chunk = vec![0u8; 1 << 20];
+        let mut written = 0u64;
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        let mut at = 0usize;
+        let ram: &[u8] = &self.ram;
+        while at < RAM_SIZE {
+            let n = chunk.len().min(RAM_SIZE - at);
+            image.read_exact(&mut chunk[..n])?;
+            for (i, theirs) in chunk[..n].chunks(page).enumerate() {
+                let start = at + i * page;
+                let mine = ram.get(start..start + page).expect("RAM covers the census");
+                if mine != theirs {
+                    written += 1;
+                    match runs.last_mut() {
+                        Some((first, pages)) if *first + *pages == (start / page) as u32 => {
+                            *pages += 1;
+                        }
+                        _ => runs.push(((start / page) as u32, 1)),
+                    }
+                }
+            }
+            at += n;
+        }
+        Ok((written, (RAM_SIZE / page) as u64, runs))
     }
 
     fn adopt(&mut self, layout: &GuestLayout) {
@@ -352,6 +424,57 @@ mod tests {
         assert!(!g.has_dirty(id));
         g.restore(&layout, &ram).unwrap();
         assert!(g.has_dirty(id));
+    }
+
+    /// A RAM image on disk, for the copy-on-write base.
+    struct RamImage(std::path::PathBuf);
+    impl RamImage {
+        fn new(tag: &str, bytes: &[u8]) -> Self {
+            let p =
+                std::env::temp_dir().join(format!("h2-ram-base-{tag}-{}.bin", std::process::id()));
+            std::fs::write(&p, bytes).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for RamImage {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_cow_base_serves_the_snapshot_and_keeps_writes_private() {
+        let mut source = booted();
+        played(&mut source);
+        let layout = source.layout();
+        let image = RamImage::new("cow", source.physical_ram());
+        let before = std::fs::read(image.path()).unwrap();
+
+        let mut target = booted();
+        target.prepare_fast_pages();
+        target.restore_cow(&layout, image.path()).unwrap();
+        assert_eq!(target.physical_ram(), source.physical_ram());
+        assert_eq!(target.u32(0x2000_0010).unwrap(), 0xdead_beef);
+        // A write stays in this guest; the file never changes.
+        target.set_u32(0x2000_0010, 7).unwrap();
+        assert_eq!(target.u32(0x2000_0010).unwrap(), 7);
+        assert_eq!(std::fs::read(image.path()).unwrap(), before);
+
+        // The census counts the written pages and their runs.
+        let (written, total, runs) = target.census_against(image.path()).unwrap();
+        assert_eq!(total, (RAM_SIZE / super::PAGE_SIZE) as u64);
+        assert_eq!(written, 1, "{runs:?}");
+        assert_eq!(runs, [(0x2000_0000 / super::PAGE_SIZE as u32, 1)]);
+
+        // A wrong-sized image is a named error, not a mapping.
+        let short = RamImage::new("short", &[0u8; 4096]);
+        assert!(matches!(
+            target.restore_cow(&layout, short.path()),
+            Err(RestoreError::RamBase(_))
+        ));
     }
 
     #[test]

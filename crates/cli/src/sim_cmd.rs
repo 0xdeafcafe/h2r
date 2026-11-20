@@ -25,6 +25,7 @@ const USAGE: &str = "usage:
   h2 sim run <match.toml> [--disc ISO] [--out DIR] [--data DIR] [--report FILE]
                           [--socket PATH] [--tier auto|fast|clang] [--pace PACE]
                           [--upload [--as GAMERTAG] [--server URL]]
+  h2 sim store build <map|all> --disc ISO --out DIR --reads FILE
   h2 sim batch <batch.toml> [--provider local] [--dry-run] [--fork] [--keep-data]
                           [--max-parallel N | --parallel N] [--budget-usd X]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
@@ -65,6 +66,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     match it.next().as_deref() {
         Some("run") => run_one(it.collect()),
         Some("host-run") => run_host_child(it.collect()),
+        Some("store") => crate::sim_store_cmd::run(it.collect()),
         Some("batch") => batch(it.collect()),
         Some("compare") => {
             let dir = it.next().context(USAGE)?;
@@ -651,7 +653,7 @@ fn seed_snapshot(
         wait_playing(&mut c, &mut child, 30, Duration::from_secs(900))?;
         c.call(
             agent_proto::state::method::SAVE,
-            json!({ "name": name, "replace": true, "max_ticks": 300 }),
+            json!({ "name": name, "replace": true, "cow": true, "max_ticks": 300 }),
         )
         .map_err(|e| anyhow::anyhow!("state.save: {e}"))?;
         let _ = c.call(agent_proto::method::MATCH_STOP, Value::Null);
@@ -685,7 +687,7 @@ fn run_child(
             wait_playing(&mut c, &mut child, 1, Duration::from_secs(900))?;
             c.call(
                 agent_proto::state::method::LOAD,
-                json!({ "name": name, "max_ticks": 300 }),
+                json!({ "name": name, "cow": true, "max_ticks": 300 }),
             )
             .map_err(|e| anyhow::anyhow!("state.load: {e}"))?;
             Ok(())

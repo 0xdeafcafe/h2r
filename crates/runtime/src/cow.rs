@@ -32,6 +32,9 @@ enum Backing {
     Heap,
     #[cfg(target_os = "macos")]
     MachCopy,
+    #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
+    /// A whole-file private mapping ([`Ram::become_private_of`]).
+    FilePrivate,
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     Guarded { base: NonNull<u8>, size: usize },
 }
@@ -78,6 +81,79 @@ impl Ram {
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let copy = Self::from_box(self[..].into());
         (copy, CopyKind::Copied)
+    }
+
+    /// Make this block a private copy-on-write view of `file`, which must
+    /// hold exactly this block's bytes: every read comes from the file's
+    /// shared pages until this block writes it, and a write gives this
+    /// block its own page. Several Guests over the same file share the
+    /// pages none of them writes. On failure the block is unchanged.
+    pub(crate) fn become_private_of(&mut self, file: &std::fs::File) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let len = self.len;
+        let bytes = file.metadata()?.len();
+        if bytes != len as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("the RAM image is {bytes} bytes, guest RAM is {len}"),
+            ));
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            // SAFETY: MAP_FIXED over exactly this block's data range
+            // [ptr, ptr + len): the guard pages of the reservation around
+            // it stay, and the fast-memory path keeps its fixed base. A
+            // failure leaves the old mapping in place.
+            let raw = unsafe {
+                libc::mmap(
+                    self.ptr.as_ptr().cast(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            if raw == libc::MAP_FAILED {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
+        {
+            // SAFETY: a whole-file private mapping; a write anywhere in it
+            // gives this process its own page. The old block is dropped by
+            // the assignment, after the new one is in hand.
+            let raw = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            if raw == libc::MAP_FAILED {
+                return Err(std::io::Error::last_os_error());
+            }
+            let ptr = NonNull::new(raw.cast::<u8>()).expect("mmap returned a pointer");
+            let mapped = Self {
+                ptr,
+                len,
+                backing: Backing::FilePrivate,
+            };
+            *self = mapped;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (file, len);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "a copy-on-write RAM base needs mmap",
+            ))
+        }
     }
     /// Whether this block is a copy-on-write mapping.
     pub(crate) fn is_mapped(&self) -> bool {
@@ -146,6 +222,12 @@ impl Drop for Ram {
             Backing::MachCopy => {
                 // SAFETY: remap_copy transferred ownership of this mapping.
                 unsafe { mach::deallocate(self.ptr.as_ptr() as usize, self.len) };
+            }
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            Backing::FilePrivate => {
+                // SAFETY: become_private_of made this whole range one
+                // private mapping this block owns.
+                unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             Backing::Guarded { base, size } => {

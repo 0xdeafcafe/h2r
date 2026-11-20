@@ -113,11 +113,35 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     // A level's Halo 2-assets map, when there is one, is served while the
     // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
     let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc)?;
-    let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned())
-        .with_assets(
-            crate::h1_variants::campaign_choice(),
-            crate::h1_variants::campaign_alternates(campaign_maps),
-        );
+    // Sim stores sit under every other map layer: an editor override or a
+    // verified server copy still wins where one is set, and everything
+    // they do not serve comes from the store before the disc
+    // (crates/vfs/src/sim_store.rs).
+    match cfg.sim_store.clone() {
+        Some(dir) => over_disc(
+            cfg,
+            vfs::SimStoreBackend::new(dvd, dir),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
+    }
+}
+
+/// The disc's own map layers over `dvd`: campaign additions, verified
+/// server copies, explicit editor overrides, then the fonts rewrite.
+fn over_disc<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
+    cfg: vfs::Config,
+    dvd: B,
+    fonts: Option<R>,
+    maps: Option<&Path>,
+    campaign_maps: &[(String, PathBuf)],
+) -> vfs::Result<vfs::Vfs> {
+    let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned()).with_assets(
+        crate::h1_variants::campaign_choice(),
+        crate::h1_variants::campaign_alternates(campaign_maps),
+    );
     if !campaign_maps.is_empty() {
         eprintln!(
             "campaigns: {} map(s) served from <data>/campaigns",

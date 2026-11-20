@@ -14,6 +14,7 @@ mod packages;
 mod path;
 mod rewrite;
 pub mod save_meta;
+pub mod sim_store;
 mod state;
 mod status;
 mod types;
@@ -29,6 +30,7 @@ pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
 pub use packages::{PackageBackend, Scope as PackageScope};
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
+pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use state::{SavedFile, StateError, VfsState};
 pub use status::{Error, Result};
@@ -79,6 +81,10 @@ pub struct Config {
     pub mmap_disc: bool,
     /// Verified server copies, keyed by DVD filename or installed MapId.
     pub server_maps: Option<PathBuf>,
+    /// Sim stores ([`sim_store`]): serve `maps\<map>.map` from this
+    /// directory's `<map>.h2store` files instead of the disc. Maps with no
+    /// store come from the disc as usual.
+    pub sim_store: Option<PathBuf>,
 }
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
@@ -91,6 +97,7 @@ impl Config {
             map_packages: None,
             mmap_disc: false,
             server_maps: None,
+            sim_store: None,
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -817,6 +824,9 @@ impl Vfs {
         let len = self.mounts[mount].backend.read_at(&path, at, buffer)?;
         if len == 0 && !buffer.is_empty() {
             return Err(Error::EndOfFile);
+        }
+        if sim_store::record::enabled() {
+            sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
         }
         self.object_mut(handle)?.position = at + len as u64;
         Ok(len)

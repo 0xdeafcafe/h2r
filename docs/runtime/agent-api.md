@@ -442,8 +442,8 @@ the game; [snapshots.md](snapshots.md#phase-5-what-was-built)):
 
 | Method | Does |
 |---|---|
-| `state.save {name, replace?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick |
-| `state.load {name, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ |
+| `state.save {name, replace?, cow?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick. `cow: true` also writes a sparse raw RAM image `<name>.ram` beside the snapshot |
+| `state.load {name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write in place of decoding RAM in — pages the match never writes stay shared with every process on the same image; refused, naming the file, when the save wrote no image |
 | `state.list`, `state.drop {name}` | this build's snapshots, answered at once |
 | `state.fork {from, name, replace?}` | load `from` and save it again as `name`, for branching experiments |
 

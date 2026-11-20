@@ -1284,9 +1284,12 @@ impl<B: Backend> Device<B> {
             stream_pool: Vec::new(),
             stream_pool_bytes: 0,
             stream_scratch: Vec::new(),
-            vertex_cache: vertex_cache_on()
+            // A descriptor-only backend (the light profile's recorder) has
+            // no drawing to feed resolved streams: the caches would only
+            // hold bytes nothing reads (128 + 32 MiB of budget).
+            vertex_cache: (vertex_cache_on() && !backend.uses_texture_placeholders())
                 .then(|| VertexCache::new(VertexCache::budget_from_env())),
-            index_cache: vertex_cache_on()
+            index_cache: (vertex_cache_on() && !backend.uses_texture_placeholders())
                 .then(|| IndexCache::new(VertexCache::budget_from_env() / 4)),
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
