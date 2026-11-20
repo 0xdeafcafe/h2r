@@ -8,11 +8,9 @@ description = "Hand-written Rust replacements for Halo 2 engine functions, over 
 autotests = false
 
 [dependencies]
-# Guest structure layouts and the globals table (src/points.rs re-exports
-# the globals; src/view.rs takes its offsets).
+# Guest structure layouts, the globals table, the guest boundary and the
+# named points; src/lib.rs re-exports the modules.
 guest-layout = { path = "../../hooking/guest-layout" }
-# Field names for the accessors `record!` generates (src/view.rs).
-paste = "1"
 mopp = { path = "../../formats/mopp", optional = true }
 # For src/light_constants.rs: the original's SSE and x87 arithmetic, bit
 # for bit.
@@ -46,7 +44,7 @@ map = { workspace = true, optional = true }
 xiso = { workspace = true, optional = true }
 
 [features]
-runtime-glue = ["dep:runtime", "dep:mopp"]
+runtime-glue = ["dep:runtime", "dep:mopp", "guest-layout/runtime-glue"]
 # Seeded differential test against the lifted original (tests/differential.rs).
 differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted"]
 

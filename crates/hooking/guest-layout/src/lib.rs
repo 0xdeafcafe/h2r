@@ -19,10 +19,26 @@
 //! No game data here: offsets and addresses are research notes, each with
 //! its evidence. Tests use synthetic memory.
 
+// The moved engine modules say `guest_layout::` (S2, docs/dev/crate-structure.md).
+extern crate self as guest_layout;
+
 #[macro_use]
 mod macros;
 mod field;
 mod mem;
+
+// The guest boundary and the named points, from `engine`, which
+// re-exports them (docs/dev/crate-structure.md, S2).
+pub mod datum;
+pub mod handle;
+pub mod memory;
+pub mod points;
+pub mod tags;
+pub mod testing;
+pub mod view;
+
+pub use handle::DatumHandle;
+pub use memory::{FlatMemory, GuestMemory, MemFault};
 
 pub mod datum_array;
 pub mod game;

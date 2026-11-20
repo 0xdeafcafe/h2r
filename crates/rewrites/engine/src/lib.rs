@@ -37,19 +37,15 @@
 pub mod abi;
 pub mod colour_pass;
 pub mod campaign_squad_pool;
-pub mod datum;
 pub mod entry;
 pub mod function_eval;
 pub mod gel;
 pub mod glow;
-pub mod handle;
 pub mod light_constants;
 pub mod light_passes;
 pub mod locale;
-pub mod memory;
 pub mod objectives;
 pub mod point_shapes;
-pub mod points;
 pub mod render;
 pub mod render_loop;
 pub mod scene_list_math;
@@ -63,12 +59,9 @@ pub mod hs_syntax;
 // Historical fixed-size partition fixture; the runtime reserves campaign_squad_pool.
 #[cfg(test)]
 mod squad_pool;
-pub mod tags;
-pub mod testing;
 pub mod ui_backdrop;
 pub mod ui_model;
 pub mod ui_sprite;
-pub mod view;
 
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;
@@ -83,6 +76,11 @@ pub mod sim_objects;
 
 #[cfg(feature = "runtime-glue")]
 pub mod sim_physics;
+
+// The guest boundary and the named points live in guest-layout
+// (docs/dev/crate-structure.md, S2); these keep `engine::` paths.
+pub use guest_layout::{datum, handle, memory, points, tags, testing, view};
+pub use guest_layout::{point_loc, point_ret, point_sig, record};
 
 pub use handle::DatumHandle;
 pub use memory::{FlatMemory, GuestMemory, MemFault};
