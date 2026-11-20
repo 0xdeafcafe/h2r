@@ -23,6 +23,12 @@ test) can see and drive a running Halo 2. That means: what is on screen,
 what is in the level, where frame time goes, and how to put the game into a
 given state, act in it, and compare variants of a mission to find fps.
 
+A game on another Mac is reached the same way through the lab:
+`h2 lab agent --host H <run id> <call>` runs `h2 agent <call>` there against
+the run's socket and returns its output and exit code, and `h2 lab bench`
+does a wait, capture, `render` and `counters` in one command
+([lab.md](lab.md#driving-a-run-the-agent-api)).
+
 ## Evidence labels
 
 - **Code**: read from this repository at `51a3810c`. File given.
@@ -130,6 +136,11 @@ environment variable read at launch (**Code**: no listener outside
 - **Events.** `session.subscribe(["screen", "phase", "death", "checkpoint",
   "frame_budget_miss", …])` streams notifications, so a client waits on
   "the skulls page opened" instead of polling.
+- **Benchmarks use `h2 play`.** `h2 serve` has no window or GPU view
+  backend, so frame cost measured on it is not what a player sees. A
+  windowed `h2 play` with `H2_AGENT` set serves the same API, which is what
+  `h2 lab run --serve` and `h2 lab bench` launch (every lab run sets
+  `H2_AGENT`).
 - **Headless.** `h2 serve` is `h2 run` with the agent socket on, no window,
   optional GPU rendering and optional real-time pacing (`H2_BOOT_REALTIME=1`).
   `h2 serve --system-link --host-light` always paces to real time. It is the
