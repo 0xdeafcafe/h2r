@@ -94,14 +94,20 @@ fn x87_empty(cpu: &CpuAbi) -> bool {
     cpu.x87.tag == 0xffff
 }
 
-/// The bodies without slice 6b's (`unit_state`), so the shell's first,
-/// second and fourth calls are callouts this test answers.
+/// The bodies without slice 6b's (`unit_state`) and 6c's (`unit_rest`),
+/// so the shell's children other than the movement are callouts this
+/// test answers.
 fn without_slice_6b() -> crate::sim_objects::Table {
     let later = [
         points::UNIT_UPDATE_CONTROL.base,
         points::UNIT_UPDATE_STATE.base,
         points::UNIT_POWERED_SEATS.base,
         points::UNIT_CONTROL_REFRESH.base,
+        points::UNIT_TIMERS.base,
+        points::UNIT_DIALOGUE_UPDATE.base,
+        points::UNIT_TEAM_UPDATE.base,
+        points::UNIT_CAMO_UPDATE.base,
+        points::UNIT_LIGHT_UPDATE.base,
     ];
     crate::sim_objects::Table::new(crate::sim_objects::BODIES.iter().filter(|b| !later.contains(&b.point.base))).unwrap()
 }

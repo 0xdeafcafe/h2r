@@ -173,6 +173,12 @@ fn seats_refresh_the_control_then_move_each_seat_by_a_tick() {
 #[test]
 fn state_counts_down_its_timers_and_sets_the_states_when_one_runs_out() {
     let (mut cpu, mut g) = world();
+    // Slice 7a made the action request `e68c0` a body; without it here,
+    // it stays the callout this test answers.
+    let table = crate::sim_objects::Table::new(
+        crate::sim_objects::BODIES.iter().filter(|b| b.point.base != points::BIPED_ACTION.base),
+    )
+    .unwrap();
     g.set_u32(STACK + 4, UNIT).unwrap();
     // Bit 10: no weapon or seat states; bit 11 clear: the timers and the
     // weapon loop run.
@@ -184,7 +190,7 @@ fn state_counts_down_its_timers_and_sets_the_states_when_one_runs_out() {
 
     let e = STACK - 0x28 - 16;
     for state in [0x13, 9] {
-        let out = drive(&mut cpu, &mut g, &TABLE, if state == 0x13 { points::UNIT_UPDATE_STATE.base } else { 0xc5968 })
+        let out = drive(&mut cpu, &mut g, &table, if state == 0x13 { points::UNIT_UPDATE_STATE.base } else { 0xc5968 })
             .unwrap();
         assert_eq!(out.target_pc, callee::STATE_SET);
         assert_eq!(cpu.ecx, state);
@@ -194,11 +200,11 @@ fn state_counts_down_its_timers_and_sets_the_states_when_one_runs_out() {
         assert_eq!(site, out.resume_pc);
         if state == 9 {
             // Both held weapon slots are empty: straight to `d1540`.
-            let out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
+            let out = drive(&mut cpu, &mut g, &table, site).unwrap();
             assert_eq!(out, TransferAbi::call(callee::D1540, 0xc5ea0));
             assert_eq!(g.u32(cpu.esp + 4).unwrap(), UNIT);
             let site = returned(&mut cpu, &g, 4);
-            let out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
+            let out = drive(&mut cpu, &mut g, &table, site).unwrap();
             assert_eq!(out, TransferAbi::ret(CALLER));
         }
     }

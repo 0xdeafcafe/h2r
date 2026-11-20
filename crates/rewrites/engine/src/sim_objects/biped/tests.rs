@@ -215,8 +215,14 @@ fn an_unparented_update_calls_the_movement_steps_in_order() {
     g.set_u8(BODY + 0x399, 5).unwrap();
     g.set_u8(BODY + 0x39a, 6).unwrap();
 
+    // Slice 6c made the unit animation state `111650` a body; without it
+    // here, it stays the callout this test answers.
+    let table = crate::sim_objects::Table::new(
+        crate::sim_objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_ANIMATION_STATE.base),
+    )
+    .unwrap();
     let s = STACK - FRAME - 16;
-    let mut out = drive(&mut cpu, &mut g, &TABLE, points::BIPED_UPDATE.base).unwrap();
+    let mut out = drive(&mut cpu, &mut g, &table, points::BIPED_UPDATE.base).unwrap();
     let mut called = Vec::new();
     let answers = [(E01D0, 8, 0x02u32), (DC5C0, 8, 0x40), (X1E5AF0, 4, 0x80), (E24F0, 12, 0x04), (E6830, 4, 0x08), (X111650, 8, 0x10)];
     for (target, cleanup, al) in answers {
@@ -258,7 +264,7 @@ fn an_unparented_update_calls_the_movement_steps_in_order() {
         let site = returned(&mut cpu, &g, cleanup);
         assert_eq!(site, out.resume_pc);
         cpu.eax = 0xabcd_0000 | al;
-        out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
+        out = drive(&mut cpu, &mut g, &table, site).unwrap();
     }
     assert_eq!(out, TransferAbi::ret(CALLER));
     // `bl`: 0 from the timer, `e01d0` 2, `e24f0` 4, 1 before `b58c0`'s
