@@ -8,8 +8,7 @@
 //! The guest never reads those bytes on its CPU in between.
 //!
 //! With the mirror ([`Device::set_alias_mirror`], on by default with lazy
-//! render-to-texture on a backend that has one, `H2_D3D_ALIAS_MIRROR=0`
-//! turns it off), the backend keeps a buffer standing for a range of guest
+//! render-to-texture on a backend that has one), the backend keeps a buffer standing for a range of guest
 //! memory ([`Backend::mirror_reserve`]). The overlapping dirty level is
 //! encoded into it as its guest texels ([`Backend::mirror_store`]: the
 //! bytes a write-back would store, pitch padding as zeros) and becomes
@@ -32,8 +31,7 @@
 //!   ([`Backend::mirror_read`]) and stored into guest memory, guest stores
 //!   excepted.
 //! * A `D24S8` depth level is filled from the mirror on the GPU too
-//!   ([`Device::set_alias_mirror_depth`], `H2_D3D_MIRROR_DEPTH=0` turns it
-//!   off): the depth `z / 16777215` with the CPU decode's rounding, the
+//!   ([`Device::set_alias_mirror_depth`], on by default): the depth `z / 16777215` with the CPU decode's rounding, the
 //!   stencil the word's low byte. Before, binding the shadow map after the
 //!   colour levels over it were drawn into read the mirror back (the
 //!   render thread waited), stored it into guest memory and uploaded it
@@ -158,8 +156,7 @@ const PAGE: usize = 0x1000;
 impl<B: Backend> Device<B> {
     /// Overlapping render-to-texture levels move through the backend's
     /// alias mirror instead of guest memory (on by default;
-    /// `H2_D3D_ALIAS_MIRROR=0` turns it off; `docs/graphics/d3d.md`, "Overlapping
-    /// levels on the GPU"). Needs lazy render-to-texture and a backend with
+    /// `docs/graphics/d3d.md`, "Overlapping levels on the GPU"). Needs lazy render-to-texture and a backend with
     /// a mirror ([`Backend::can_mirror`]). Turning it off flushes nothing:
     /// set it before the first draw.
     pub fn set_alias_mirror(&mut self, on: bool) {
@@ -167,7 +164,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// Depth levels over bytes the mirror holds are filled from it on the
-    /// GPU (on by default; `H2_D3D_MIRROR_DEPTH=0` turns it off): binding
+    /// GPU (on by default): binding
     /// the shadow map after the colour levels over it were drawn into no
     /// longer reads the mirror back and uploads it again.
     pub fn set_alias_mirror_depth(&mut self, on: bool) {

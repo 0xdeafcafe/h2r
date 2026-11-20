@@ -468,7 +468,8 @@ every one `overlap` (about 3 a frame over 7,113 presents), and
 `rtt_uploads` 38,459, at 21.75 fps. The alias mirror (docs/graphics/d3d.md,
 "Overlapping levels on the GPU") moves those levels through a GPU buffer
 instead of guest memory: no read-back, no CPU encode or decode, no upload
-from guest bytes. `H2_D3D_ALIAS_MIRROR=0` restores the write-backs.
+from guest bytes. `Device::set_alias_mirror(false)` restores the
+write-backs (tests and benches only).
 
 Headless microbench, `cargo test --release -p d3d --test alias_mirror --
 --ignored --nocapture`, Apple Silicon, load average 20-38 (other lanes),
@@ -480,7 +481,7 @@ no flush either):
 
 | path | round 0 ms/frame | round 1 ms/frame |
 |---|---|---|
-| sync, write-backs (`H2_D3D_ALIAS_MIRROR=0`) | 15.05 | 10.84 |
+| sync, write-backs (mirror off) | 15.05 | 10.84 |
 | sync, mirror | 10.44 | 9.58 |
 | render thread, write-backs | 10.15 | 10.07 |
 | render thread, mirror | **5.24** | **3.82** |

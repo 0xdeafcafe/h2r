@@ -424,7 +424,7 @@ pub struct Stats {
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
     /// Lazy levels left as targets whose guest bytes were not read again:
-    /// the match they held was still those bytes (`H2_D3D_LEAVE_READ`).
+    /// the match they held was still those bytes ([`Device::set_leave_read`]).
     pub rtt_leave_reads_skipped: u64,
     /// Render-to-texture host surfaces filled from guest memory.
     pub rtt_uploads: u64,
@@ -1024,8 +1024,8 @@ pub struct Device<B: Backend> {
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
     /// Snapshots of vertex windows the guest has not written since
-    /// (`docs/graphics/d3d.md`, "Vertex cache"); `None` with `H2_VERTEX_CACHE=0`
-    /// ([`Device::set_vertex_cache`]).
+    /// (`docs/graphics/d3d.md`, "Vertex cache"); `None` after
+    /// [`Device::set_vertex_cache`]`(None)` or with texture placeholders.
     vertex_cache: Option<VertexCache>,
     /// Index lists the same way (on and off with `vertex_cache`).
     index_cache: Option<IndexCache>,
@@ -1040,8 +1040,8 @@ pub struct Device<B: Backend> {
     microcode_seen: Vec<Microcode>,
     /// Draws share what they read the same as before: the pushed state
     /// snapshot ([`Device::draw_state`]) and earlier microcode copies
-    /// ([`Device::microcode`]). Only sharing changes, never a value. On
-    /// unless `H2_D3D_DRAW_SHARING=0` ([`Device::set_draw_sharing`]).
+    /// ([`Device::microcode`]). Only sharing changes, never a value. On by
+    /// default ([`Device::set_draw_sharing`]).
     draw_sharing: bool,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
     constants: Box<[u32; CONSTANTS * 4]>,
@@ -1143,12 +1143,12 @@ pub struct Device<B: Backend> {
     /// into, refilled or dropped.
     depth_level_tex: HashMap<u32, B::Texture>,
     /// Depth levels stay on the host like colour levels (lazy
-    /// render-to-texture and a backend that samples depth surfaces);
-    /// `H2_D3D_LAZY_DEPTH=0` turns it off.
+    /// render-to-texture and a backend that samples depth surfaces); on by
+    /// default ([`Device::set_lazy_depth`]).
     lazy_depth: bool,
     /// A level left as a target is read from guest memory every time, even
-    /// when its match is already those bytes (`H2_D3D_LEAVE_READ=1`;
-    /// `Device::set_leave_read`).
+    /// when its match is already those bytes (off by default;
+    /// [`Device::set_leave_read`]).
     leave_read: bool,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
@@ -1157,11 +1157,10 @@ pub struct Device<B: Backend> {
     /// as (offset, length) in the level ([`Device::note_write`]).
     rtt_stores: HashMap<u32, Vec<(u32, u32)>>,
     /// Overlapping levels moved through the backend's alias mirror
-    /// ([`Device::set_alias_mirror`]; `H2_D3D_ALIAS_MIRROR=0` turns it off).
+    /// ([`Device::set_alias_mirror`]; on by default).
     alias_mirror: bool,
     /// Depth levels filled from the alias mirror on the GPU
-    /// ([`Device::set_alias_mirror_depth`]; `H2_D3D_MIRROR_DEPTH=0` turns
-    /// it off).
+    /// ([`Device::set_alias_mirror_depth`]; on by default).
     mirror_depth: bool,
     /// What the mirror holds newer than guest memory.
     mirror: Option<mirror::AliasMirror>,
@@ -1180,8 +1179,7 @@ pub struct Device<B: Backend> {
     visibility: HashMap<u32, visibility::VisibilityTest>,
     /// `GetVisibilityTestResult` answers `D3DERR_TESTINCOMPLETE` for a
     /// recent test whose count is not back instead of waiting for it
-    /// ([`Device::set_visibility_poll`]; `H2_D3D_VISIBILITY_POLL=0` turns
-    /// it off).
+    /// ([`Device::set_visibility_poll`]; on by default).
     visibility_poll: bool,
     /// Draws note which stages sample the game's glyph cache
     /// ([`Device::set_glyph_smoothing`]; `H2_SMOOTH_TEXT=1` turns it on; off by default).
@@ -1317,7 +1315,7 @@ impl<B: Backend> Device<B> {
         // A descriptor-only backend (the light profile's recorder) has no
         // drawing to feed resolved streams: the caches would only hold
         // bytes nothing reads (128 + 32 MiB of budget).
-        let caches = vertex_cache_on() && !backend.uses_texture_placeholders();
+        let caches = !backend.uses_texture_placeholders();
         Self {
             cfg,
             translator: Translator::new(&RenderStateTable::default()),
@@ -1351,7 +1349,7 @@ impl<B: Backend> Device<B> {
             program_start: 0,
             microcode_memo: None,
             microcode_seen: Vec::new(),
-            draw_sharing: std::env::var_os("H2_D3D_DRAW_SHARING").is_none_or(|v| v != "0"),
+            draw_sharing: true,
             constants: Box::new([0; CONSTANTS * 4]),
             constants_generation: 0,
             draw_constants: None,
@@ -1408,19 +1406,19 @@ impl<B: Backend> Device<B> {
             depth_read_generation: None,
             depth_alias: HashMap::default(),
             depth_level_tex: HashMap::default(),
-            lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
-            leave_read: std::env::var_os("H2_D3D_LEAVE_READ").is_some_and(|v| v == "1"),
+            lazy_depth: true,
+            leave_read: false,
             rtt_synced: HashMap::default(),
             rtt_stores: HashMap::default(),
-            alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
-            mirror_depth: std::env::var_os("H2_D3D_MIRROR_DEPTH").is_none_or(|v| v != "0"),
+            alias_mirror: true,
+            mirror_depth: true,
             mirror: None,
             mirror_stale: HashSet::default(),
             rtt_direct: true,
             active_callback: None,
             undelivered: None,
             visibility: HashMap::default(),
-            visibility_poll: std::env::var_os("H2_D3D_VISIBILITY_POLL").is_none_or(|v| v != "0"),
+            visibility_poll: true,
             glyph_smoothing: crate::glyph::smoothing_from_env(),
             pending_destroys: Vec::new(),
             torn_down: HashSet::default(),
@@ -5358,7 +5356,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// Turns the vertex cache on (with `budget` bytes of snapshots) or off
-    /// (every draw copies its streams: `H2_VERTEX_CACHE=0`). Starts empty.
+    /// (`None`: every draw copies its streams). Starts empty.
     pub fn set_vertex_cache(&mut self, budget: Option<usize>) {
         self.world_vertex_plans = Default::default();
         self.vertex_cache = budget.map(VertexCache::new);
@@ -5777,9 +5775,9 @@ impl<B: Backend> Device<B> {
     }
 
     /// Whether draws share the pushed state snapshot and earlier microcode
-    /// copies when they read the same words (on by default;
-    /// `H2_D3D_DRAW_SHARING=0` turns it off). Changes which allocations
-    /// back a draw, never what it holds or what any backend sees.
+    /// copies when they read the same words (on by default). Changes which
+    /// allocations back a draw, never what it holds or what any backend
+    /// sees.
     pub fn set_draw_sharing(&mut self, on: bool) {
         self.draw_sharing = on;
         self.microcode_seen.clear();
@@ -6584,11 +6582,6 @@ pub(crate) fn sampled_stages(
         on &= state.stages[n].color_op != gfx::state::TextureOp::Disable;
         on
     })
-}
-
-/// The vertex and index caches are on unless `H2_VERTEX_CACHE=0`.
-fn vertex_cache_on() -> bool {
-    std::env::var_os("H2_VERTEX_CACHE").is_none_or(|v| v != "0")
 }
 
 /// Adds `len` to a frame-stats byte counter (when frame stats are on).

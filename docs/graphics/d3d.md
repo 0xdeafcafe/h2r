@@ -757,8 +757,8 @@ and allocations are bounded before anything is read:
     at the write-back.
   - **Lazy depth levels** (the default with lazy render-to-texture on a
     backend that samples depth surfaces, `Backend::can_sample_depth_surfaces`:
-    `GfxBackend` with `DEPTH32FLOAT_STENCIL8`; `Device::set_lazy_depth`,
-    `H2_D3D_LAZY_DEPTH=0` turns it off). A depth level is then written
+    `GfxBackend` with `DEPTH32FLOAT_STENCIL8`; `Device::set_lazy_depth`
+    turns it off for tests). A depth level is then written
     back where a colour level is (a wait or busy check on it, `BlockOnTime`,
     a callback, a sample that cannot use the surface, destroy, teardown),
     not at the binding change. When it stops being the depth target the
@@ -1022,8 +1022,8 @@ same write-tracker contract as textures.
   and compares them with the snapshot; a difference raises
   `Event::MissedInvalidation` (header 0 for an index list), drops the
   snapshot and draws the bytes just read. `UploadPolicy::Always` bypasses
-  both caches. `H2_VERTEX_CACHE=0` (or `Device::set_vertex_cache(None)`)
-  turns them off: every draw copies, as before.
+  both caches. `Device::set_vertex_cache(None)` turns them off for tests
+  and benches: every draw copies, as before.
 - **Counters.** `Stats::vertex_bytes_copied`, `vertex_bytes_reused`,
   `vertex_cache_hits`, `vertex_cache_fills`, `index_cache_hits`; frame
   stats get `vtx_copied` and `vtx_reused` (bytes per frame).
@@ -1688,8 +1688,7 @@ checks these branches.
   Before this, the device waited for every count, and with the render
   thread that meant waiting for everything queued: 8.3% of the game
   thread in Old Mombasa (profile at `183781e`).
-- **Waited results** (`H2_D3D_VISIBILITY_POLL=0`,
-  `Device::set_visibility_poll(false)`): every call waits for the count
+- **Waited results** (`Device::set_visibility_poll(false)`): every call waits for the count
   and `D3DERR_TESTINCOMPLETE` is never returned, so the answers are the
   same whatever the host's timing. That is what the hardware answers once
   caught up.
@@ -1902,14 +1901,13 @@ below). Still wanted:
     in The Heretic that was a read-back, a 1 MiB guest copy and an upload
     every time the shadow map was bound, with the game thread waiting on
     the render thread (about 22% of it in a headless profile of e9be08f).
-    `H2_D3D_MIRROR_DEPTH=0` (`Device::set_alias_mirror_depth`) goes back
-    to that; a level the mirror cannot fill on the GPU still does.
+    `Device::set_alias_mirror_depth(false)` goes back to that (tests); a level the mirror cannot fill on the GPU still does.
   Formats other than the 32-bit word formats and `D24S8`, unaligned
   levels, a bound level that is itself dirty, overlapping dirty levels and
   guest stores waiting to be merged into the moved level take the
   write-back as before. `Stats::mirror_stores`, `mirror_loads` and
-  `mirror_flushes` count it. `H2_D3D_ALIAS_MIRROR=0`
-  (`Device::set_alias_mirror`) turns it off.
+  `mirror_flushes` count it. `Device::set_alias_mirror(false)` turns it
+  off (tests).
   `crates/d3d/tests/alias_mirror.rs` runs a five-level pool (two pitches,
   a partial overlap, a swizzled alias, `X8` with padding, a depth level)
   through draws, in-place and through-memory samples, guest stores before
