@@ -173,7 +173,7 @@ keeping every other key. The window follows the frame rate at its next turn
 (`app::fps::FpsControl`), the view backend makes its targets again at the
 next frame boundary on the render thread (`ScaledBackend::follow_scale`,
 [high-resolution.md](../graphics/high-resolution.md)), and so does the lighting
-(`ScaledBackend::follow_lighting`, [e3-lighting.md](../graphics/e3-lighting.md)),
+(`ScaledBackend::follow_lighting`, [e3-lighting-setting.md](../graphics/e3-lighting-setting.md)),
 and the HID thread gets the mute
 button (`PadHid::mute_switch`). A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is

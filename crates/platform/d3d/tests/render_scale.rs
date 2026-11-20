@@ -1196,7 +1196,7 @@ fn the_reference_gives_the_guest_the_plain_answers() {
     }
 }
 
-// --- E3 lighting, phase 1 (docs/graphics/e3-lighting.md) ----------------
+// --- The Lighting row (docs/graphics/e3-lighting-setting.md) -------------
 //
 // A 32x32 `LIN_D24S8` shadow map (a depth level bound as `pNewZStencil`
 // with a 32x32 colour level) gets a slanted caster triangle; the back

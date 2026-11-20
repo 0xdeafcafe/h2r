@@ -1,6 +1,6 @@
 //! `h2 lights`: the `ligh` tags a map defines, where each comes from, and
 //! their shape, colour and shadow flag (docs/formats/effects.md, "ligh";
-//! docs/graphics/e3-lighting.md, phase 2). Writes nothing.
+//! docs/graphics/e3-lighting.md, "Lights: which, and how many"). Writes nothing.
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
