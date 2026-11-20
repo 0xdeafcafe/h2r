@@ -266,6 +266,74 @@ fn native_bitmap_reads_from_the_rewritten_mainmenu_resource() {
 }
 
 #[test]
+fn cached_rewrite_restores_the_map_and_table_and_recovers_from_damage() {
+    let dir = std::env::temp_dir().join(format!("menu-rewrite-{}", std::process::id()));
+    let cache_path = dir.join("cache/campaign-cards");
+    let original = mainmenu();
+    let cards = vec![card("a10", 2, 2), card("b30", 3, 3)];
+    let key = cache::key(&original, &cards);
+    let expected = add_cards(&original, &cards).unwrap();
+    let rewrite = || {
+        let table = Table::default();
+        let mut r = CardRewrite::new(cards.clone(), table.clone())
+            .unwrap()
+            .with_cache(&dir);
+        let bytes = r.rewrite(MAINMENU, &original).unwrap();
+        assert_eq!(bytes, expected.map);
+        assert_eq!(*table.lock().unwrap(), expected.table);
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    rewrite();
+    let saved = std::fs::read(&cache_path).unwrap();
+    assert!(cache::load(&cache_path, cache::key(&original, &cards[..1])).is_none());
+    assert!(cache::load(&cache_path, cache::key(b"changed menu", &cards)).is_none());
+    let hit = cache::load(&cache_path, key).unwrap();
+    assert_eq!(hit.map, expected.map);
+    assert_eq!(hit.table, expected.table);
+    assert_eq!(hit.framed, expected.framed);
+    rewrite();
+
+    for index in [64, saved.len() - 5] {
+        let mut damaged = saved.clone();
+        damaged[index] ^= 1;
+        std::fs::write(&cache_path, damaged).unwrap();
+        assert!(cache::load(&cache_path, key).is_none());
+        rewrite();
+    }
+    std::fs::write(&cache_path, &saved[..40]).unwrap();
+    assert!(cache::load(&cache_path, key).is_none());
+    rewrite();
+    assert_eq!(std::fs::read(&cache_path).unwrap(), saved);
+    // A read-only or unusable cache must still serve the rebuilt map and IDs.
+    std::fs::remove_file(&cache_path).unwrap();
+    std::fs::create_dir(&cache_path).unwrap();
+    rewrite();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn every_rewrite_input_changes_the_cache_key() {
+    let cards = vec![card("a10", 3, 2), card("b30", 2, 3)];
+    let key = cache::key(b"menu", &cards);
+    assert_ne!(key, cache::key(b"Menu", &cards));
+    assert_ne!(key, cache::key(b"menu", &cards[..1]));
+    let mut changed = cards.clone();
+    changed.reverse();
+    assert_ne!(key, cache::key(b"menu", &changed));
+    for change in 0..5 {
+        let mut changed = cards.clone();
+        match change {
+            0 => changed[0].name.push('z'),
+            1 => changed[0].map.push('z'),
+            2 => changed[0].width += 1,
+            3 => changed[0].height += 1,
+            _ => changed[0].rgba[0] ^= 1,
+        }
+        assert_ne!(key, cache::key(b"menu", &changed));
+    }
+}
+
+#[test]
 fn cards_are_read_from_each_campaign_s_folder() {
     let dir = std::env::temp_dir().join(format!("campaign-cards-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

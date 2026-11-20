@@ -139,7 +139,7 @@ pub fn use_light_host() -> Result<bool> {
 
 /// The match file `H2_SIM` names, read and checked; `None` when unset.
 /// `H2_BOOT_GFX` is refused: sim mode has no GPU.
-pub fn from_env() -> Result<Option<Sim>> {
+pub fn from_env(data: &Path) -> Result<Option<Sim>> {
     let Some(path) = std::env::var_os(sim::ENV).filter(|v| !v.is_empty()) else {
         return Ok(None);
     };
@@ -154,8 +154,9 @@ pub fn from_env() -> Result<Option<Sim>> {
         );
     }
     let path = PathBuf::from(path);
-    let matched = sim::config::load_match(&path)
-        .map_err(|e| anyhow::anyhow!("{}: {}", sim::ENV, e.replace('\n', "; ")))?;
+    let matched =
+        sim::config::load_match_with_seating(&path, crate::setting_defs::bots_all_phantom_at(data))
+            .map_err(|e| anyhow::anyhow!("{}: {}", sim::ENV, e.replace('\n', "; ")))?;
     let report_path = std::env::var_os(sim::REPORT_ENV)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
@@ -410,6 +411,7 @@ impl Sim {
     pub fn add_bots(&self) -> Result<()> {
         let local = bots::local::global();
         local.set_capacity(4);
+        bots::phantom::global().set_playerless_host(self.0.matched.playerless_host());
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed).with_tuning(tuning(&b.params));
             let source = Metered {

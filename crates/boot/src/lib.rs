@@ -962,7 +962,7 @@ fn run_configured(
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env()?, None),
+        None => (sim_glue::from_env(&opts.data_root)?, None),
     };
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
@@ -1211,6 +1211,7 @@ fn run_configured(
             campaign_cards::read_cards(&opts.data_root, &levels),
             s.cards.clone(),
         )
+        .map(|r| r.with_cache(&opts.data_root))
     });
     // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
     // the icon sets.

@@ -100,7 +100,7 @@ const fn choice(value: i64, name: &'static str, label: &'static str) -> Choice {
 pub static ENABLED: Def = def(
     "clankers.enabled",
     "Clankers",
-    "Bots join custom games: the first 3 on this machine's free controller \
+    "Bots join custom games: by default the first 3 use this machine's free controller \
      ports, the rest as players of their own; all show in the pregame lobby \
      (docs/game/bots.md).",
     Kind::Bool,
@@ -109,7 +109,7 @@ pub static ENABLED: Def = def(
 pub static COUNT: Def = def(
     "clankers.count",
     "Count",
-    "How many bots join, up to 15: the first 3 on free controller ports, the \
+    "How many bots join, up to 15: by default the first 3 use free controller ports, the \
      rest as players of their own.",
     Kind::Int {
         valid: 1..=15,
@@ -499,13 +499,17 @@ struct Seating {
 }
 
 impl Seating {
-    fn of(want: Want, fill: Option<&Fill>) -> Seating {
+    fn of(want: Want, fill: Option<&Fill>, all_phantom: bool) -> Seating {
         match fill {
             Some(f) => Seating {
                 count: f.bots,
                 seated: f.seated.min(f.bots),
                 fill: true,
-                local: f.local.min(f.seated),
+                local: if all_phantom {
+                    0
+                } else {
+                    f.local.min(f.seated)
+                },
                 teams: f.teams,
                 skill: None,
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
@@ -514,7 +518,7 @@ impl Seating {
                 count: want.count,
                 seated: want.count,
                 fill: false,
-                local: want.count,
+                local: if all_phantom { 0 } else { want.count },
                 teams: 0,
                 skill: request_skill(want.difficulty),
                 host_team: 0,
@@ -694,6 +698,7 @@ struct Own {
 /// have no account (on Live, the human's guests) and phantoms are
 /// host-made: local xuids, which no game record ever carries.
 pub struct Driver {
+    all_phantom: bool,
     local: Local,
     phantoms: Option<Phantoms>,
     own: Mutex<Vec<Own>>,
@@ -736,6 +741,7 @@ impl Driver {
     /// Local bots only.
     pub fn new(local: Local) -> Self {
         Driver {
+            all_phantom: false,
             local,
             phantoms: None,
             own: Mutex::new(Vec::new()),
@@ -1055,6 +1061,7 @@ impl Driver {
         let seating = Seating::of(
             want,
             self.fill.lock().unwrap_or_else(|e| e.into_inner()).as_ref(),
+            self.all_phantom,
         );
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
@@ -1112,7 +1119,7 @@ impl Driver {
             && if seating.fill {
                 port_count(&own) < seating.local
             } else {
-                own.len() < want.count
+                own.len() < seating.local
             }
         {
             let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
@@ -1561,6 +1568,7 @@ fn build_soon_on(was: bool, now: bool) {
 /// Starts `driver` over `store`: matches it now and on every change.
 pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
     let d = Arc::new_cyclic(|me| Driver {
+        all_phantom: crate::setting_defs::bots_all_phantom(store),
         me: me.clone(),
         ..driver
     });

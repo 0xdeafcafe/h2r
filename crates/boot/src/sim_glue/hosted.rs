@@ -44,12 +44,27 @@ enum Step {
     Loading,
 }
 
+struct LobbyState {
+    step: Step,
+    in_tick: bool,
+    playerless: Option<crate::host_lobby::PlayerlessLobby>,
+}
+
 pub(super) fn install(
     b: &mut feature::Builder,
     sim: Arc<Inner>,
 ) -> Result<(), feature::BuildError> {
     let buffer = b.guest_alloc(0x1000, runtime::guest::Permissions::RW)?;
-    let stage = Arc::new(Mutex::new((Step::Create, false)));
+    let playerless = sim.matched.playerless_host();
+    if playerless {
+        crate::host_lobby::exclude_local_profiles(b);
+    }
+    let lobby = playerless.then(crate::host_lobby::PlayerlessLobby::default);
+    let stage = Arc::new(Mutex::new(LobbyState {
+        step: Step::Create,
+        in_tick: false,
+        playerless: lobby,
+    }));
     b.raw()
         .before(&points::GAME_TICK, "sim: System Link host", move |c| {
             if sim.lock().phase != Phase::Waiting {
@@ -60,7 +75,7 @@ pub(super) fn install(
             };
             let map = req.map;
             let mut state = stage.lock().unwrap_or_else(|e| e.into_inner());
-            if state.1 || state.0 == Step::Loading {
+            if state.in_tick || state.step == Step::Loading {
                 return Ok(Flow::Continue);
             }
             {
@@ -72,14 +87,14 @@ pub(super) fn install(
                 {
                     return Ok(Flow::Continue);
                 }
-                if state.0 != Step::Create {
+                if state.step != Step::Create {
                     let Some(s) = coop_probe::read_session(&*g) else {
                         return Ok(Flow::Continue);
                     };
                     if s.state != 5 || !s.is_host() {
                         return Ok(Flow::Continue);
                     }
-                    if state.0 == Step::Start
+                    if state.step == Step::Start
                         && (s.protocol != 2
                             || s.map != map
                             || s.players != sim.matched.bots.len() as u32
@@ -91,21 +106,26 @@ pub(super) fn install(
                     }
                 }
             }
-            let step = state.0;
-            state.1 = true;
+            let step = state.step;
+            let mut lobby = state.playerless.take();
+            state.in_tick = true;
             drop(state);
             let sim = sim.clone();
             let stage = stage.clone();
             c.answer_async(move |cx| {
                 Box::pin(async move {
-                    let next = advance(&cx, &sim, step, map, buffer).await?;
+                    let next = advance(&cx, &sim, step, map, buffer, lobby.as_mut()).await?;
                     if next != step {
                         eprintln!("sim: System Link host {step:?} -> {next:?}");
                     }
                     // Reenter the tick with the guard set, so the real tick and other
                     // features still run exactly once.
                     let r = cx.call(GuestCall::new(points::GAME_TICK.base)).await?;
-                    *stage.lock().unwrap_or_else(|e| e.into_inner()) = (next, false);
+                    *stage.lock().unwrap_or_else(|e| e.into_inner()) = LobbyState {
+                        step: next,
+                        in_tick: false,
+                        playerless: lobby,
+                    };
                     Ok(Ret::new(r.eax, 0))
                 })
             })
@@ -120,9 +140,17 @@ async fn advance(
     step: Step,
     map: u32,
     buffer: u32,
+    playerless: Option<&mut crate::host_lobby::PlayerlessLobby>,
 ) -> Result<Step, EntryError> {
     match step {
         Step::Create => {
+            if let Some(lobby) = playerless {
+                let open = lobby
+                    .open_sim(cx, map, &sim.matched, buffer)
+                    .await
+                    .map_err(|e| EntryError::IsolatedCall(e.to_string()))?;
+                return Ok(if open { Step::Start } else { step });
+            }
             for bot in &sim.matched.bots {
                 let Some(port) = bot.port.map(u32::from) else {
                     continue;
@@ -173,6 +201,13 @@ async fn advance(
             }
         }
         Step::Start => {
+            if let Some(lobby) = playerless {
+                let started = lobby
+                    .start_sim(cx, sim.matched.bots.len())
+                    .await
+                    .map_err(|e| EntryError::IsolatedCall(e.to_string()))?;
+                return Ok(if started { Step::Loading } else { step });
+            }
             if sim.matched.team_play {
                 cx.write(|m| -> Result<(), engine::MemFault> {
                     use bots::phantom::session::{self, at::*};

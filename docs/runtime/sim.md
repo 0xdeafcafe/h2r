@@ -210,12 +210,28 @@ so **the direct path is four bots**: free-for-all, or 2 v 2 with teams.
 ### More than four
 
 A `[[bot]]` with `kind = "phantom"` selects a distributed System Link
-match for the whole roster. `kind = "local"` is the default. Specify one
-to four local pads and up to sixteen seats in total. File order is the
-logical seat number starting at zero. Local seats receive controller
-ports in order. Each phantom receives its own machine identity.
+match for the whole roster. `kind = "local"` is the file default. A match
+can have up to four local pads, fifteen phantom peers and sixteen players
+in total. File order gives the logical seat numbers starting at zero.
+Local seats receive controller ports in order. Each phantom receives its
+own machine identity.
 
-The headless host signs in the local pads (`0x18fb34`), creates a System
+With `H2_BOTS_ALL_PHANTOM=1` (or `clankers.all_phantom = true` in the
+settings file) the run and batch planners convert every
+configured seat to a phantom before assigning ports. Names, teams, seeds
+and tuning follow the logical seat. A roster of only phantoms uses a
+playerless System Link host. The host occupies one peer slot and signs
+in no controller. The other fifteen peer slots are available for bots.
+Each simulated peer supplies its own marked name, appearance and team
+because the host has no local profile to copy.
+The sim uses the dedicated lobby's readiness checks and machine load
+request (`0x5a220`) when the controller countdown has no signed-in user.
+Playerless sim startup is inferred, needs a run. The lobby waits for one
+host peer plus one peer per bot. Verify that `match.status` reaches
+`playing` with every logical seat in `bound_seats` and that the match
+report lists just those players.
+
+For a mixed roster the headless host signs in the local pads (`0x18fb34`), creates a System
 Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
 variant with retail's lobby setters (`0x19a6f2`, `0x19a728`). It waits
 for the roster and retail start state 9 before requesting the countdown
@@ -467,7 +483,7 @@ and brain seed. The checked-in Legendary Midship example plays ten seed
 pairs, two red against two blue, with normal phantom latency.
 
 ```sh
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+H2_BOTS_ALL_PHANTOM=0 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
 ```
 
 Read `compare.txt` or `compare.json` under
@@ -479,6 +495,15 @@ sample. Its two observations for each logical seat are matched across
 the legs. Only full rosters ending at game over or the tick limit count.
 Incomplete pairs appear in `excluded`; absent reports appear in
 `missing`. These are counts per game, so game length affects the result.
+
+Keep all-phantom mode off for this comparison. The planner refuses a
+seat swap when every seat is forced to use the same transport. Compare
+opposing hits divided by shots for matched seats with shots, and check
+damage dealt across the same seeds. The sim counts positive opposing
+damage events, including melee. To compare directly with the November 19
+bullet-only baseline, filter the replay damage events to bullets.
+The default changes to all-phantom once the paired runs show matching
+local and phantom hit rates.
 
 ### Watching in Uplink
 

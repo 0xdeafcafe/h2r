@@ -7,6 +7,31 @@ use std::path::Path;
 
 use settings::{Apply, Choice, Def, Flag, Kind, Menu, Problem, Scope, Store, Tier, Unit, Value};
 
+/// Which seats automatic bot rosters use. Read when creating the driver or sim plan.
+pub static BOTS_ALL_PHANTOM: Def = Def {
+    key: "clankers.all_phantom",
+    label: "All phantom bots",
+    help: "Seat every bot as a remote peer and keep controller ports free for humans.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: Some("H2_BOTS_ALL_PHANTOM"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Sim,
+    tier: Tier::Advanced,
+    menu: None,
+};
+
+pub fn bots_all_phantom(store: &Store) -> bool {
+    store.get(BOTS_ALL_PHANTOM.key) == Some(Value::Bool(true))
+}
+
+pub fn bots_all_phantom_at(data: &Path) -> bool {
+    bots_all_phantom(&load(data, &[]).0)
+}
+
 /// The retail first-person field of view, in degrees.
 pub const FOV_RETAIL: i64 = 70;
 
@@ -786,6 +811,7 @@ pub static ALL: &[&Def] = &[
     &crate::voice_settings::OUTPUT_VOLUME,
     // The Clankers page of a custom game's Game Setup (crate::clankers,
     // docs/game/bots.md section 7).
+    &BOTS_ALL_PHANTOM,
     &crate::clankers::ENABLED,
     &crate::clankers::COUNT,
     &crate::clankers::DIFFICULTY,
@@ -895,9 +921,11 @@ mod tests {
     #[test]
     fn the_variables_read_as_before() {
         let data = tmp("env");
+        assert!(!bots_all_phantom(&Store::defaults(ALL)));
         let (s, p) = with_env(
             &data,
             &[
+                ("H2_BOTS_ALL_PHANTOM", "1"),
                 ("H2_FOV", "0"),
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
@@ -939,6 +967,7 @@ mod tests {
             assert_eq!((h.input_volume.get(), h.output_volume.get()), (50, 80));
             assert_eq!((h.input_device.get(), h.output_device.get()), (0, 0));
         }
+        assert!(bots_all_phantom(&s));
         assert_eq!(coop_max_players(&s), 4);
         assert!(!coop_join_in_progress(&s));
         assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));

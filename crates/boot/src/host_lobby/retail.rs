@@ -64,7 +64,7 @@ struct Owned {
 }
 
 #[derive(Default)]
-pub(super) struct Machine {
+pub(crate) struct Machine {
     owned: Option<Owned>,
 }
 
@@ -365,10 +365,40 @@ impl Machine {
         machine_start: bool,
     ) -> Result<Progress, RpcError> {
         match cmd {
-            Command::Open(config) => self.open(cx, config, scratch, advertised).await,
+            Command::Open(config) => self.open(cx, config, scratch, advertised, &[]).await,
             Command::Start => self.start(cx, machine_start).await,
             Command::Close => self.close(cx, advertised).await,
         }
+    }
+
+    /// A sim has one player per remote machine and a fixed, resolved variant.
+    pub(crate) async fn open_sim(
+        &mut self,
+        cx: &Cx,
+        map: u32,
+        matched: &sim::config::Match,
+        scratch: u32,
+    ) -> Result<bool, RpcError> {
+        let config = Config {
+            live: false,
+            map,
+            max_players: matched.bots.len() as u8,
+            variant: Variant::Stock(matched.game_type),
+        };
+        Ok(matches!(
+            self.open(cx, &config, scratch, None, &matched.variant)
+                .await?,
+            Progress::Done(_)
+        ))
+    }
+
+    pub(crate) async fn start_sim(&mut self, cx: &Cx, seats: usize) -> Result<bool, RpcError> {
+        let state = self.state(cx).await?;
+        if !state.ready || state.players.len() != seats {
+            return Ok(false);
+        }
+        self.start_ready(cx, true).await?;
+        Ok(true)
     }
 
     async fn open(
@@ -377,6 +407,7 @@ impl Machine {
         config: &Config,
         scratch: u32,
         advertised: Option<&str>,
+        settings: &[(u32, i32)],
     ) -> Result<Progress, RpcError> {
         if let Some(owner) = &self.owned {
             if owner.config != *config || owner.closing {
@@ -491,6 +522,13 @@ impl Machine {
                     .write(|m| m.write(scratch, v.bytes()))
                     .map_err(read_fault)?,
             }
+            if !settings.is_empty() {
+                let mut raw = [0; variant::SIZE];
+                cx.read(|m| m.read(scratch, &mut raw)).map_err(read_fault)?;
+                let v = level_boot::configured_variant(&raw, settings).map_err(unavailable)?;
+                cx.write(|m| m.write(scratch, &v.to_bytes()))
+                    .map_err(read_fault)?;
+            }
             let max = u32::from(config.max_players);
             cx.write(|m| m.set_u32(scratch + variant::MAX_PLAYERS as u32, max))
                 .map_err(read_fault)?;
@@ -565,6 +603,10 @@ impl Machine {
                 "start requires a ready pregame lobby with a remote player",
             ));
         }
+        self.start_ready(cx, machine_start).await
+    }
+
+    async fn start_ready(&mut self, cx: &Cx, machine_start: bool) -> Result<Progress, RpcError> {
         // Preserve the ordinary path for the control run. The pressing
         // controller's local-user index is -1 on a playerless machine.
         if call(
