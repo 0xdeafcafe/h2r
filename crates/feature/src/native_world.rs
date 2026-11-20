@@ -70,6 +70,29 @@ pub const PROGRAMS_SWITCH: &str = "impl.render.native_world_programs";
 /// [`PROGRAMS_SWITCH`]'s value when `H2_FEATURES` does not name it.
 pub const PROGRAMS_DEFAULT: bool = true;
 
+/// Native main-camera BSP gathering and scene preparation.
+pub const SKIP_BUILD_SWITCH: &str = "impl.render.native_world_skip_build";
+
+/// Master and world must both be active to replace front-end work.
+pub fn skip_build_on(switches: &crate::Switches) -> bool {
+    crate::switches::native_render_default(switches) && on(switches)
+        && switches.feature(SKIP_BUILD_SWITCH, true)
+}
+
+mod layer_build;
+mod scene_build;
+mod scene_walk;
+mod section;
+
+fn claimed_entries(layer: u32) -> bool {
+    match layer {
+        3 => has_claim(),
+        6 => crate::native_water::has_claim(),
+        16 => crate::native_fog::has_claim(),
+        _ => false,
+    }
+}
+
 /// Whether [`PROGRAMS_SWITCH`] is on (only with the native world on).
 pub fn programs_on(switches: &crate::Switches) -> bool {
     on(switches) && switches.feature(PROGRAMS_SWITCH, PROGRAMS_DEFAULT)
@@ -233,6 +256,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     }
 }
 
+pub(crate) fn has_claim() -> bool {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().is_some_and(|claim| !claim.cleared.items.is_empty())
+}
+
 /// Sets back the bits the last layer 3 cleared, on the items that still
 /// hold the mask it left: an item list built again since (a new frame
 /// whose render never reached another layer draw) is left alone.
@@ -287,6 +315,9 @@ impl Feature for NativeWorld {
         if !on(b.switches()) {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
+        }
+        if skip_build_on(b.switches()) {
+            scene_walk::install(b);
         }
         b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
             forget_pending();

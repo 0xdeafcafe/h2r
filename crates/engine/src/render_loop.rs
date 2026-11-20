@@ -24,6 +24,7 @@
 use crate::memory::{GuestMemory, MemFault};
 
 pub mod layer;
+pub mod world_walk;
 pub mod occlusion;
 pub mod scene;
 pub mod states;
