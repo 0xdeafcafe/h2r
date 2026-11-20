@@ -451,12 +451,19 @@ speaker and relationship checks. Halo 1 stimulus 25 at `0x15718c`
 greets a newly sighted friendly player. Halo 2 event 163 uses
 `grt_plr` for that actor and player pairing.
 
-Halo 1's search query is a separate periodic stimulus (17,
-`0x16814b`) while the actor is searching. Reply rule 34 at
-`0x1f00a0` chooses an eligible ally after the query. Halo 2's search
-entry calls at `0x1b25de` and `0x1b260a` ask actors to investigate
-or pursue. Those calls answer a different question from the periodic
-query.
+**Built.** The search query is periodic stimulus 17. Halo 1's wait entry
+initializes its timer at `0x167f3a`, and `0x16814b` fires and rearms
+it after 300–599 ticks. The speech update at `0x47073` can trigger
+reply rule 34 (`0x1f00a0`). The reply comes from another allied AI
+actor, within nine world units, in the same encounter when one is set.
+The predicate at `0x1428e0` accepts search mode or uncover mode with
+a target.
+
+The Halo 2 hook at `0x114c60` keeps the query timer in guest memory while
+the actor is waiting in presearch or postsearch. It scales the 10–20
+second interval to the engine tick rate. A completed query can be
+answered by allied actors in search, investigate or targeted uncover,
+using their own voice and the native per-unit speech queue.
 
 Automatic stimuli without a verified route remain conversion errors
 (see [role-audit.md](role-audit.md#retail-gaps-that-stop-conversion)).

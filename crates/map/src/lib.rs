@@ -92,6 +92,10 @@ pub const H1_DAMAGE_CATEGORY: u32 = 0x4831_0000;
 /// Unit death line for the authored Halo 1 damage impulse threshold.
 pub const H1_DEATH_FLYING_LINE: usize = 0x140;
 
+/// The periodic query and its reply in Halo 1's wait behaviour.
+pub const H1_SEARCH_QUERY_LINE: usize = 0x850;
+pub const H1_SEARCH_REPLY_LINE: usize = 0x860;
+
 /// Halo 1 kill stimulus 0's attacker lines for damage categories that
 /// have no distinct Halo 2 vocalization. The second word is a source
 /// udlg byte offset.

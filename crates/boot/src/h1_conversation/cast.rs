@@ -25,9 +25,9 @@ const RANDOM_SEED: u32 = 0x004e_7408;
 pub(super) struct Unit {
     handle: u32,
     parent: u32,
-    team: i16,
-    pos: [f32; 3],
-    cluster: i16,
+    pub(super) team: i16,
+    pub(super) pos: [f32; 3],
+    pub(super) cluster: i16,
     forward: [f32; 3],
 }
 
@@ -97,7 +97,7 @@ fn player_preference(player: Unit, unit: Unit) -> f32 {
     distance_bonus + aim_bonus
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(super) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     a.into_iter()
         .zip(b)
         .map(|(a, b)| (a - b).powi(2))
@@ -165,7 +165,7 @@ pub(super) fn draw_voice(m: &mut dyn GuestMemory, count: usize) -> Result<usize,
     Ok((count * (draw >> 16) as usize) >> 16)
 }
 
-fn allied(m: &dyn GuestMemory, a: i16, b: i16) -> Result<bool, MemFault> {
+pub(super) fn allied(m: &dyn GuestMemory, a: i16, b: i16) -> Result<bool, MemFault> {
     if !(0..16).contains(&a) || !(0..16).contains(&b) {
         return Ok(false);
     }

@@ -799,6 +799,14 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     }
     assert_eq!(h1.bytes_at(0x0004_7293, 5).unwrap(), &[0xb8, 19, 0, 0, 0]);
     assert_eq!(h1.read_u32(0x001f_0b04).unwrap(), 2.0f32.to_bits());
+    let query = h1.bytes_at(0x001e_f4a8, 0x28).unwrap();
+    let reply = h1.bytes_at(0x001f_00a0, 0x24).unwrap();
+    let slot = |offset: usize| (offset / 0x10 - 1) as u16;
+    assert_eq!(u16_at(query, 0), 17);
+    assert_eq!(u16_at(query, 4), slot(map::H1_SEARCH_QUERY_LINE));
+    assert_eq!(u16_at(reply, 0), slot(map::H1_SEARCH_QUERY_LINE));
+    assert_eq!(u16_at(reply, 6), slot(map::H1_SEARCH_REPLY_LINE));
+    assert_eq!(u32_at(reply, 0x20), 0x0014_28e0);
     for actor in 0..16u16 {
         let record = h1.read_u32(0x0025_f2c8 + u32::from(actor) * 4).unwrap();
         let actual = u16_at(h1.bytes_at(record + 4, 2).unwrap(), 0);
@@ -822,6 +830,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
     let h2_bytes = default_xbe("H2_DISC", "halo2.iso");
     let h2 = xbe::Xbe::parse(&h2_bytes).unwrap();
     for (call, target) in [
+        (0x000c_6b62, 0x0011_4c60),
         (0x000c_a45d, 0x0011_47e0),
         (0x0011_4a06, 0x0011_4520),
         (0x000c_a4ed, 0x001c_95d0),

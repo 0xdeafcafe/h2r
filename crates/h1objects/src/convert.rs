@@ -943,7 +943,12 @@ impl<'a> Converter<'a> {
                 let kill_variant = generic_kill
                     && (map::H1_WEAPON_KILL_LINES.iter().any(|&(_, at)| at == *slot)
                         || map::h1_species_kill_line(*slot));
-                !native && !kill_variant && *slot != map::H1_DEATH_FLYING_LINE
+                !native
+                    && !kill_variant
+                    && !matches!(
+                        *slot,
+                        map::H1_DEATH_FLYING_LINE | map::H1_SEARCH_QUERY_LINE | map::H1_SEARCH_REPLY_LINE
+                    )
             }) {
                 let sound = self.h1_tag(id)?;
                 return Err(h1convert::Error::no_rebuild(

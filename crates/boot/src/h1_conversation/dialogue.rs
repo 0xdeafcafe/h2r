@@ -20,7 +20,7 @@ fn tag_address(m: &dyn GuestMemory, id: u32, group: GroupTag) -> Result<Option<u
     Ok(Some(tag.address(m)?).filter(|&address| address != 0))
 }
 
-fn speech(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
+pub(super) fn speech(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault> {
     let Some(body) = object_address(m, unit)? else {
         return Ok(None);
     };
@@ -36,6 +36,14 @@ pub(crate) fn source_sound(m: &dyn GuestMemory, unit: u32, slot: u16) -> Result<
     Ok(source_row(m, unit, slot)?.map_or(NONE, |(_, sound)| sound))
 }
 
+pub(super) fn source_offset_row(
+    m: &dyn GuestMemory,
+    unit: u32,
+    offset: usize,
+) -> Result<Option<u32>, MemFault> {
+    source_row(m, unit, (offset / 0x10 - 1) as u16).map(|row| row.map(|(index, _)| index))
+}
+
 pub(super) fn source_row(
     m: &dyn GuestMemory,
     unit: u32,
@@ -48,9 +56,13 @@ pub(super) fn source_row(
     let count = m.u32(root + 0xc)?;
     let rows = m.u32(root + 0x10)?;
     let wanted = H1_DIALOGUE_SLOT | u32::from(slot);
-    for k in 0..count.min(1024) {
+    for k in (0..count.min(1024)).rev() {
         let row = rows + k * 0x10;
-        if m.u32(row)? == wanted {
+        let marker = m.u32(row)?;
+        if marker & 0xffff_0000 != H1_DIALOGUE_SLOT {
+            break;
+        }
+        if marker == wanted {
             let sound = m.u32(row + 0xc)?;
             if tag_address(m, sound, SND)?.is_some() {
                 return Ok(Some((k, sound)));

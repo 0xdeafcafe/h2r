@@ -4,7 +4,7 @@ use map::H1DialogueClass;
 
 use super::{cast, dialogue, leaders::guest_fault, *};
 
-const UNIT_SPEAK: u32 = 0x0011_4b60;
+pub(super) const UNIT_SPEAK: u32 = 0x0011_4b60;
 const DAMAGE_EFFECT: GroupTag = GroupTag::from_chars(*b"jpt!");
 
 // H2 1.0 call chain from the body-depleted notification to the winning
@@ -81,7 +81,7 @@ fn kill_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault> 
             .iter()
             .find_map(|&(kind, offset)| (kind == category).then_some(offset))
     });
-    let row_for = |offset: usize| dialogue::source_row(m, speaker, (offset / 0x10 - 1) as u16);
+    let row_for = |offset| dialogue::source_offset_row(m, speaker, offset);
     let mut row = weapon.map(row_for).transpose()?.flatten();
     // Keep the existing explicit grenade cheer. Otherwise, a classified
     // victim can select a variant whenever the voice has that line.
@@ -91,7 +91,7 @@ fn kill_line(m: &dyn GuestMemory, stack: u32) -> Result<Option<Line>, MemFault> 
             row = row_for(offset)?;
         }
     }
-    let Some((row, _)) = row else { return Ok(None) };
+    let Some(row) = row else { return Ok(None) };
     let adlg = m.u32(stack + 4)?;
     let vocabulary = m.u32(adlg + 4)?;
     let priority = u32::from(m.u16(vocabulary + u32::from(vocalization) * 0x60 + 0xa)?);
@@ -116,8 +116,7 @@ fn flying_death(m: &dyn GuestMemory, stack: u32, unit: u32) -> Result<Option<u32
     // H1 0x47275 checks falling and burn categories first. For other
     // categories it uses deathflying when jpt! +0x1f4 is at least 2.0.
     if !matches!(category, 1 | 7) && m.f32(root + 0x38)? >= 2.0 {
-        let slot = (map::H1_DEATH_FLYING_LINE / 0x10 - 1) as u16;
-        return Ok(dialogue::source_row(m, unit, slot)?.map(|(row, _)| row));
+        return dialogue::source_offset_row(m, unit, map::H1_DEATH_FLYING_LINE);
     }
     Ok(None)
 }
