@@ -1,46 +1,104 @@
-# The lab: runs on another Mac over SSH
+# The lab: runs on another Mac over the LAN
 
-Status: Built. Everything but real ssh and the real game under the host
-is tested; "Not verified" lists the rest.
+Status: Built. See [Not verified](#not-verified) for live Mac coverage.
 Code: `crates/apps/cli/src/lab/`. Tests: `crates/apps/cli/tests/lab.rs`.
-Switch: none.
+Switch: [Switches](switches.md#tools).
 
-`h2 lab` lets an agent on one Mac start levels on a second Mac (the one
-you play on), replay input recordings there, and bring back frame stats,
-profiles and logs. It is a CLI over SSH: no web page, no MCP. The tests
-use a fake game, a fake cargo and a stand-in for ssh, all on one machine.
+`h2 lab` lets a driving Mac start levels on a second Mac, replay input
+recordings there, and collect frame stats, profiles and logs. The lab host
+runs in the playing Mac's graphical session so games can open a window
+and use Metal.
 
-```
-this Mac (agent)                      the laptop (you play)
-h2 lab run --host laptop ...  --ssh-->  h2 lab pipe  --unix socket-->  h2 lab host
-                                                                         |-- git worktree per commit
-                                                                         |-- cargo build, h2 build (cached)
-                                                                         `-- h2 play --level ... (a window)
-h2 lab fetch <id>  <--ssh: tar of runs/<id>--
-h2 lab agent <id> <call> --ssh--> host runs `h2 agent <call> --socket a/<id>.sock`
+```text
+driving Mac                         playing Mac (logged-in desktop)
+h2 lab run --host laptop ...  --TLS-->  h2 lab host (Aqua LaunchAgent)
+                                          |-- git worktree per commit
+                                          |-- cargo build, h2 build (cached)
+                                          `-- h2 play --level ... (a window)
+h2 lab fetch <id>              <--TLS--  archive of runs/<id>
+h2 lab agent <id> <call>        --TLS-->  h2 agent <call> --socket a/<id>.sock
 ```
 
 ## Setting up the laptop
 
-1. **Remote Login.** System Settings, General, Sharing, Remote Login on,
-   for your user only.
-2. **The agent's key.** Append this Mac's public key to the laptop's
-   `~/.ssh/authorized_keys`. Check from this Mac that `ssh laptop true`
-   works without a prompt: the lab runs ssh in batch mode and never asks
-   for a password.
-3. **A checkout.** Clone the repository on the laptop, put your disc at
-   `disc/halo2.iso` in it, and build `h2` once:
-   `cargo build --release -p cli --bin h2`.
-4. **The host.** In a Terminal window on the laptop, logged in at the
-   desktop, run `target/release/h2 lab host`. Leave it running. It has to
-   be a Terminal in your session, not something started over ssh: a game
-   launched from sshd's session may get no window and no GPU.
+1. Clone the repository on the laptop, put your disc at
+   `disc/halo2.iso` in the checkout, and build `h2` once.
 
-The host keeps everything under its root, by default
-`~/Library/Caches/h2recomp/lab`:
+   ```sh
+   cargo build --release -p cli --bin h2
+   ```
+
+2. From a Terminal on the laptop's logged-in desktop, install the host.
+   When macOS Firewall first prompts for `h2`, allow incoming connections.
+   Both Macs need to be able to reach each other on the LAN.
+
+   ```sh
+   target/release/h2 lab host install --name laptop
+   ```
+
+3. On the driving Mac, pair using the code printed by install. Then check
+   the host status.
+
+   ```sh
+   h2 lab pair laptop 'PASTE_CODE_HERE'
+   h2 lab status --host laptop
+   ```
+
+The host advertises `_h2lab._tcp` over Bonjour. The name defaults to the
+Mac's LocalHostName. The listener defaults to `0.0.0.0:29422`.
+`--listen IP:PORT` selects an address and port. A client can use an IP
+with the default port, or an explicit `IP:PORT`, in place of the Bonjour
+name. Use the same name or address for pairing and subsequent commands.
+
+The code pins the host's TLS public key and authorizes a single pairing
+for ten minutes. Every LAN connection proves possession of the saved
+driver key inside TLS. The host rate-limits failed attempts. To issue
+another code, run `h2 lab host pair-code` on the laptop. A successful
+pairing replaces the previous driver. Run `h2 lab host unpair` on the
+laptop to revoke that key and any unused code. Host credentials live under
+`<root>/auth/` and the driving Mac stores its pinned peer under
+`~/Library/Application Support/h2recomp/lab/peers/`. Key files have mode
+0600. Give a code only to a driver you trust to send and build source code
+on the laptop.
+
+### Running and updating the LaunchAgent
+
+`install` writes
+`~/Library/LaunchAgents/com.0xdeafcafe.h2recomp.lab.plist` and loads it
+into the user's GUI session. The Aqua LaunchAgent starts when the user
+logs in after reboot and launchd restarts it if it exits. Keep the user
+logged in and the laptop awake for remote runs. With the lid open, you
+can run `caffeinate -i` on the laptop to prevent idle sleep while that
+command runs.
+
+`h2 lab host status` reports whether the service is installed, loaded and
+running, with its PID and build version when available. `h2 lab host
+uninstall` unloads the idle job and removes the plist. `h2 lab host` also
+runs in the foreground for a Terminal session. Use `--local-only` for a
+foreground host that only serves the private Unix socket.
+
+The LaunchAgent runs a stable copy at `<root>/bin/h2`. Every 15 seconds
+while idle, it checks `<repo>/target/release/h2` in the installed checkout.
+It validates and atomically adopts a newer compatible build, then exits
+so launchd starts the copy. Ordinary game build jobs use a separate
+target directory. `h2 lab host update` on the laptop and `h2 lab update
+--host laptop` on the driver run `git pull --ff-only` on the checkout's
+tracked branch and `cargo build --release -p cli --bin h2` into
+`<repo>/target`, then swap the stable copy and restart the service with
+launchctl. Both commands require a running, idle LaunchAgent. A build or
+run in progress blocks updates, and maintenance refuses new jobs until
+it finishes.
+
+### Host files and flags
+
+The host keeps its files under `--root`, by default
+`~/Library/Caches/h2recomp/lab`.
 
 | Path | What |
 |---|---|
+| `bin/h2` | stable LaunchAgent executable |
+| `logs/` | LaunchAgent stdout, stderr and explicit update log |
+| `auth/` | TLS identity and pairing state |
 | `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
@@ -49,31 +107,30 @@ The host keeps everything under its root, by default
 | `target/` | the cargo target directory those builds share |
 | `images/<key>/` | a built `h2` and its image (`out/`), per commit and build |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | the data root runs use (not your own saves) |
-| `h2` | a link to the `h2` running the host, which `ssh` calls |
+| `data/` | the data root runs use |
 
-The socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600; next to the
-agent API's `agent.sock`), or `--socket`, or `$H2_LAB_SOCKET`. Host flags:
-`--root`, `--repo` (the checkout builds come from; default the one this
-`h2` was built in), `--disc` (default `$H2_DISC`, else `<repo>/disc/halo2.iso`),
-`--h2` and `--out` (the `h2` and image directory for `--current` runs;
-default this `h2` and `h2 play`'s own), `--data`, `--cargo`.
+Host and install flags take the same paths. `--repo` sets the checkout
+and defaults to the one used to build the CLI. `--disc` defaults to
+`$H2_DISC`, then the checkout's `disc/halo2.iso`. `--h2` and `--out`
+select the binary and image for `--current` runs. They default to the
+host executable and the usual `h2 play` image directory. `--data` sets
+the data root and `--cargo` selects the cargo executable. Install saves
+the Terminal's `PATH` for the LaunchAgent's build tools.
 
-Stopping the host (Ctrl-C) leaves a game it started running; stop the job
-first (`h2 lab stop <id>`). A job a host left unfinished is marked failed
-the next time a host starts on that root.
+The local socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600),
+or a path set by `--socket` or the lab socket environment setting in
+[Switches](switches.md#tools). To stop a foreground host, stop its job
+first (`h2 lab stop <id>`), then press Ctrl-C. A host marks jobs it
+finds unfinished as failed on startup.
 
 ## The agent's side
 
-Every client command takes `--host [user@]HOST` (or `$H2_LAB_HOST`). It
-runs `ssh HOST <remote-h2> lab pipe`, which bridges ssh's stdin and stdout
-to the host's socket, so no socket forwarding is needed. `<remote-h2>` is
-`--remote-h2`, else `$H2_LAB_REMOTE_H2`, else the link the host keeps at
-`Library/Caches/h2recomp/lab/h2` relative to the remote home: it works as
-soon as the host has started once. `--host local` talks to a socket on this
-machine. `$H2_LAB_SSH` replaces the ssh command (the tests use it).
+Every client command takes `--host NAME|IP[:PORT]|local`. LAN commands
+use the paired TCP connection for the lab protocol and file transfers.
+`--host local` uses the private Unix socket on the playing Mac. Follow
+it with `--socket PATH` if the local host uses a custom socket.
 
-```
+```sh
 h2 lab status --host laptop
 h2 lab run --host laptop --level 03a_oldmombasa --difficulty heroic \
     --frames 3000 --stats-from 600 --build-env H2_OPT=2 --wait
@@ -86,17 +143,17 @@ h2 lab fetch --host laptop 0007
 A run (and `h2 lab build`) names what to build:
 
 - **`--branch NAME`**, or nothing: this checkout's current branch. The
-  client first pushes it into the laptop's checkout as `lab/NAME`
-  (`git push --force` over the same ssh; never to GitHub), then asks for
-  that exact commit. Uncommitted changes here are not included; the client
-  says so. `--no-sync` skips the push and uses whatever `lab/NAME` was last.
+  client sends committed objects in a Git bundle and updates the
+  laptop's `lab/NAME` branch. It then asks for that exact commit. The
+  client reports uncommitted changes, which stay on the driving Mac.
+  `--no-sync` uses the existing `lab/NAME` branch.
 - **`--rev REV`**: a commit or branch the laptop's checkout already has.
 - **`--current`**: no build: the host's own `h2` and image as they are.
 
-`h2 lab sync [--branch NAME]...` pushes without running.
+`h2 lab sync [--branch NAME]...` transfers branches without starting a run.
 
-For a commit, the host makes a detached worktree at `src/<commit>` (your
-own checkout is never checked out or touched), builds its `h2` with
+For a commit, the host builds in a detached worktree at `src/<commit>`
+and leaves the laptop's main working tree alone. It builds `h2` with
 `cargo build --release -p cli --bin h2` (plus `--features perf` for
 `--perf` or `--feature perf`), then `h2 build` with the build variables and
 the shared object cache. The image is kept under `images/<key>`, the key
@@ -136,9 +193,8 @@ Anything else is refused: no other variables (paths the game writes are
 the host's to choose), no `h2 play` flags that take paths or reach the
 network, no names with `/` or a leading `.`. The host also drops every
 `H2_*` variable of its own environment from the game's, so a run means the
-same whatever Terminal the host was started in. None of this is a sandbox:
-whoever reaches the socket can already log in as you. It keeps runs
-comparable.
+same regardless of the host's environment. A paired driver can send
+source code for the host to build and run as the logged-in user.
 
 One job runs at a time; another `run` or `build` is refused with the busy
 job's id. `h2 lab wait <id> [--timeout S]` exits 0 when the job finished
@@ -150,7 +206,7 @@ well, 1 when it failed or was stopped, 3 when it is still going.
 and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
-else `./lab`), through `tar` over the same ssh.
+else `./lab`) using an archive streamed over the lab connection.
 
 ## Driving a run: the agent API
 
@@ -199,9 +255,8 @@ renderer's frame cost nor the `render` and `gpu-wait` phases a player sees
 (`H2_BOOT_GFX` there writes PNGs from a headless backend; it is not a
 window). `h2 play` opens the window and the native GPU renderer, and a game
 with `H2_AGENT` set serves the same API ([agent-api.md](agent-api.md)), so
-`--serve` gets the API on a real window and GPU. The consequence is the one
-setup rule already there: the host must run in a Terminal in the logged-in
-session, so the game gets a window.
+`--serve` gets the API on a real window and GPU. The Aqua LaunchAgent
+runs the host in the logged-in user's graphical session.
 
 `h2 lab bench` is the loop for one measurement:
 
@@ -284,17 +339,15 @@ replay starts from a fresh boot of the level.
 
 ## Not verified
 
-Tested here: the protocol and its refusals, the host's job lifecycle, stop,
-the image cache, worktrees, `git push` into the host's checkout, `pipe`
-through a stand-in for ssh, and fetch and put through it; `lab agent` and
-`bench` against a fake `h2` whose `agent` answers when the run's socket
-exists (exit codes, output, scripts on stdin, the refused forms, the
-socket removed after the run, an A/B of two benches). Not tested: real
-ssh to another machine, and the real game under the host (that a game
-started from a Terminal-launched host gets a window and the GPU, that
-`h2 play` exits on its own at `H2_BOOT_STOP_AT_PRESENT`, that `h2 play`
-with `H2_AGENT` opens its socket early and answers `wait`, `capture`,
-`render` and `counters` as `h2 serve` does, and that SIGTERM stops it).
+The test suite exercises the Unix socket and paired TLS on loopback,
+job lifecycle, the image cache, Git bundle sync, artifact transfers, and
+`lab agent` and `bench` against a fake game. Unit tests cover pairing
+expiry, single use, rejected keys and replays, and LaunchAgent generation
+and lifecycle commands through a fake controller.
+
+Live checks remaining include Bonjour across two Macs, macOS Firewall,
+LaunchAgent startup after login, and the game's window, Metal device and
+agent API under the service.
 
 ## Related
 
