@@ -1,9 +1,11 @@
 # Superbounce
 
+Status: Reference. Retail research with traces; nothing here is our code.
+
 What the retail engine does when a player superbounces: what is
-established, what is measured, and what is still open. Research from
-2026-11-18: a static reading of `default.xbe` (`h2 disasm`, no game run),
-then two per-tick traces of a player on Ascension through the agent API.
+established, what is measured, and what is still open. The research is a
+static reading of `default.xbe` (`h2 disasm`, no game run), then per-tick
+traces of a player on Ascension through the agent API.
 
 Evidence labels: **Code** (read from the disassembly at the address
 given), **Trace** (measured in a live game, numbers below), **Open** (not
@@ -139,7 +141,7 @@ no target did not lunge (mode stayed 1, offset 0).
 
 ### The contacts on a bounce tick (Trace)
 
-A fourth trace (2026-11-19) recorded `trace.start player.0` (every tick,
+A fourth trace recorded `trace.start player.0` (every tick,
 taken inside the game) next to `havok.contacts {object: player.0}`. It
 bounced at tick 5846: −5.26 in, 12.5 cm below the floor, +9.39 out,
 standing, 315 ticks after a forced crouch had ended. Havok reported
@@ -176,7 +178,7 @@ that tick only, two points:
 ### Looking for state a forced crouch leaves behind (Trace)
 
 Players report that a bounce only happens after a forced crouch some time
-before the jump (not during it). A fifth trace (2026-11-19) looked for
+before the jump (not during it). A fifth trace looked for
 such a state with `world.raw` (the player object, its physics component
 record, Havok body, motion and shape as bytes) before, during and after
 a forced crouch, and every tick while the player jumped at the patch:
