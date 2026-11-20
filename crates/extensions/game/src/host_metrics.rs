@@ -3,6 +3,7 @@
 //! measurement.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -102,13 +103,41 @@ impl TickIntervals {
 
 #[derive(Default)]
 struct State {
-    ticks: u64,
     intervals: TickIntervals,
     previous: Option<Sample>,
     last: Option<(Instant, Reading)>,
 }
 
-struct Metrics(Arc<Mutex<State>>);
+struct Sampler {
+    ticks: AtomicU64,
+    host_light: bool,
+    state: Mutex<State>,
+}
+
+impl Sampler {
+    fn tick(&self, is_multiplayer: impl FnOnce() -> bool) {
+        let boundary = self.ticks.fetch_add(1, Ordering::Relaxed).is_multiple_of(WINDOW_TICKS);
+        if !self.host_light && !boundary {
+            return;
+        }
+
+        let now = Instant::now();
+        let playing = self.host_light.then(is_multiplayer);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(playing) = playing {
+            state.intervals.tick(now, playing);
+        }
+        if boundary {
+            let sample = Sample::now(now);
+            if let Some(prev) = &state.previous {
+                state.last = Some((now, sample.since(prev)));
+            }
+            state.previous = Some(sample);
+        }
+    }
+}
+
+struct Metrics(Arc<Sampler>);
 
 impl Feature for Metrics {
     fn manifest(&self) -> Manifest {
@@ -120,20 +149,9 @@ impl Feature for Metrics {
         b.snapshot(SnapshotPolicy::Stateless);
         let shared = Arc::clone(&self.0);
         b.frame().on_tick("sample host metrics", move |o| {
-            let now = Instant::now();
-            let playing = crate::level_boot::active_mode(&*o.guest())
-                == Some(crate::level_boot::MODE_MULTIPLAYER);
-            let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-            state.intervals.tick(now, playing);
-            let boundary = state.ticks.is_multiple_of(WINDOW_TICKS);
-            state.ticks = state.ticks.wrapping_add(1);
-            if boundary {
-                let sample = Sample::now(now);
-                if let Some(prev) = &state.previous {
-                    state.last = Some((now, sample.since(prev)));
-                }
-                state.previous = Some(sample);
-            }
+            shared.tick(|| {
+                crate::level_boot::active_mode(&*o.guest()) == Some(crate::level_boot::MODE_MULTIPLAYER)
+            });
         });
         Ok(())
     }
@@ -144,7 +162,11 @@ pub fn install(
     agent: &agent::Agent,
     host_light: bool,
 ) -> anyhow::Result<()> {
-    let shared = Arc::new(Mutex::new(State::default()));
+    let shared = Arc::new(Sampler {
+        ticks: AtomicU64::new(0),
+        host_light,
+        state: Mutex::new(State::default()),
+    });
     if features
         .add(&Metrics(Arc::clone(&shared)))
         .map_err(anyhow::Error::msg)?
@@ -157,7 +179,7 @@ pub fn install(
                     "host.metrics takes no parameters",
                 ));
             }
-            let state = shared.lock().unwrap_or_else(|e| e.into_inner());
+            let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some((at, reading)) = &state.last else {
                 return Err(RpcError::new(
                     code::UNAVAILABLE,
@@ -166,9 +188,9 @@ pub fn install(
             };
             let mut reply = json!(reading);
             let now = Instant::now();
-            let (p99, late) = state.intervals.report(now);
-            reply["wall_ms_per_tick_p99"] = json!(p99);
-            reply["late_ticks"] = json!(late);
+            let timing = host_light.then(|| state.intervals.report(now));
+            reply["wall_ms_per_tick_p99"] = json!(timing.and_then(|(p99, _)| p99));
+            reply["late_ticks"] = json!(timing.map(|(_, late)| late));
             reply["age_ms"] = json!(now.duration_since(*at).as_millis() as u64);
             drop(state);
             let split = crate::host_mem::resident_split();
@@ -224,6 +246,22 @@ fn resident_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn ordinary_players_get_window_metrics_without_a_guest_mode_read() {
+        let sampler = Sampler {
+            ticks: AtomicU64::new(0),
+            host_light: false,
+            state: Mutex::new(State::default()),
+        };
+        for _ in 0..=WINDOW_TICKS {
+            sampler.tick(|| panic!("ordinary player sampled the game's mode"));
+        }
+        let state = sampler.state.lock().unwrap();
+        assert_eq!(state.last.as_ref().unwrap().1.ticks, WINDOW_TICKS);
+        assert!(state.intervals.last_tick.is_none());
+        assert!(state.intervals.intervals.is_empty());
+    }
 
     #[test]
     fn rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s() {

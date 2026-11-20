@@ -926,8 +926,8 @@ answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crat
 | `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
 | `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
 | `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
-| `wall_ms_per_tick_p99` | Nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
-| `late_ticks` | Number of intervals in that same window longer than 36 ms |
+| `wall_ms_per_tick_p99` | On a light host, nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
+| `late_ticks` | Number of intervals in that same window longer than 36 ms. Both interval fields are `null` outside the light profile. |
 | `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
 | `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
 | `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
