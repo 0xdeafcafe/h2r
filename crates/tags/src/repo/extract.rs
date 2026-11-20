@@ -196,6 +196,9 @@ pub struct MapSource<'s, R> {
     /// Which cache this map is to the others (`Local` for a level).
     own_file: ResourceFile,
     kept: Vec<([u8; 32], Vec<u8>)>,
+    /// Arrays an edit replaced in the bytes of a tag it grew, as (address,
+    /// byte length) ([`MapSource::add_replaced`]).
+    replaced: Vec<(u32, u32)>,
 }
 
 impl<'s, R: Read + Seek> MapSource<'s, R> {
@@ -236,6 +239,7 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
             keep_raw: false,
             own_file,
             kept: Vec::new(),
+            replaced: Vec::new(),
         })
     }
 
@@ -251,6 +255,15 @@ impl<'s, R: Read + Seek> MapSource<'s, R> {
     /// [`map::build::PinnedImage::grown`]): read as the tags' own.
     pub fn add_regions(&mut self, regions: impl IntoIterator<Item = (u32, Vec<u8>)>) {
         self.rel.memory_mut().add_regions(regions);
+    }
+
+    /// The arrays an edit replaced in the bytes of a pinned tag it grew, as
+    /// (address, byte length) ([`map::build::GrownTag::replaced`]). Nothing
+    /// points at them any more, so no array of the tag's layout covers
+    /// them; the check that a tag read by field is taken exactly counts
+    /// them as described by the edit, not as bytes the read missed.
+    pub fn add_replaced(&mut self, ranges: impl IntoIterator<Item = (u32, u32)>) {
+        self.replaced.extend(ranges);
     }
 
     /// Raw resources read since the last call (with [`MapSource::keep_raw`]).
@@ -857,6 +870,14 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
             .filter(|k| !k.3 && (own_range.0..own_range.1).contains(&k.0))
             .map(|k| (k.0 - own_range.0, k.1))
             .collect();
+        // The arrays an edit replaced ([`MapSource::add_replaced`]).
+        spans.extend(
+            self.src
+                .replaced
+                .iter()
+                .filter(|r| own_range.0 <= r.0 && r.0.saturating_add(r.1) <= own_range.1)
+                .map(|r| (r.0 - own_range.0, r.1)),
+        );
         spans.push((0, root.size));
         spans.sort_unstable();
         let mem = self.memory.unwrap_or(self.src.rel.memory());

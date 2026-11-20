@@ -375,13 +375,26 @@ pub struct PinnedImage {
     pub metadata_size: u32,
     /// Metadata bytes no tag owns (nonzero gaps between tags), by address.
     pub unowned: Vec<(u32, Vec<u8>)>,
-    /// Pinned tags an edit grew past their own bytes, and where: (tag, the
-    /// address of an [`Self::unowned`] region holding arrays the edit wrote
-    /// for it). The arrays they replaced stay in the tag's bytes with
-    /// nothing pointing at them, so a reader that lays the tag out anew
-    /// reads these regions and leaves the replaced arrays out
-    /// (`tags::schema::Unpinner::add_grown`).
-    pub grown: Vec<(TagId, u32)>,
+    /// Pinned tags an edit grew past their own bytes ([`GrownTag`]). A
+    /// reader that lays such a tag out anew reads the edit's arrays and
+    /// leaves the replaced ones out (`tags::schema::Unpinner::add_grown`);
+    /// a reader that checks which of the tag's bytes its arrays cover
+    /// counts the replaced arrays as described (`tags::repo::MapSource::
+    /// add_replaced`).
+    pub grown: Vec<GrownTag>,
+}
+
+/// A pinned tag an edit grew past its own bytes ([`PinnedImage::grown`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrownTag {
+    /// The tag.
+    pub tag: TagId,
+    /// The address of the [`PinnedImage::unowned`] region holding the
+    /// arrays the edit wrote for it.
+    pub region: u32,
+    /// The arrays the edit replaced, as (address, byte length). They stay
+    /// in the tag's bytes with nothing pointing at them.
+    pub replaced: Vec<(u32, u32)>,
 }
 
 /// Owned tags plus everything else a v8 cache needs. Build with

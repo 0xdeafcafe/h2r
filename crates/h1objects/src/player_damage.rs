@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use map::build::{TagPayload, TagSet};
+use map::build::{GrownTag, TagPayload, TagSet};
 
 use crate::base::{GLOBAL_MATERIAL_SIZE, GLOBAL_MATERIALS};
 use crate::{Error, Result};
@@ -139,13 +139,25 @@ pub(crate) fn install(set: &mut TagSet, profiles: &BTreeSet<Scales>) -> Result<(
         material_slots.push((address, word(material, 0x14)));
     }
     let mut rows = BTreeMap::new();
-    for row in block(set, matrix, 12)?.chunks_exact(12) {
-        let values: BTreeMap<_, _> = block(set, &row[4..], 8)?
+    // The arrays the new ones replace: the rows and each row's values.
+    let mut replaced = Vec::new();
+    let old_rows = block(set, matrix, 12)?;
+    if !old_rows.is_empty() {
+        replaced.push((word(matrix, 4), old_rows.len() as u32));
+    }
+    for row in old_rows.chunks_exact(12) {
+        let old_values = block(set, &row[4..], 8)?;
+        if !old_values.is_empty() {
+            replaced.push((word(row, 8), old_values.len() as u32));
+        }
+        let values: BTreeMap<_, _> = old_values
             .chunks_exact(8)
             .map(|value| (word(value, 0), word(value, 4)))
             .collect();
         rows.insert(word(row, 0), values);
     }
+    replaced.sort_unstable();
+    replaced.dedup();
 
     let keys = [set.intern(MATERIAL_KEYS[0])?, set.intern(MATERIAL_KEYS[1])?];
     for row in rows.values_mut() {
@@ -206,7 +218,11 @@ pub(crate) fn install(set: &mut TagSet, profiles: &BTreeSet<Scales>) -> Result<(
     let pinned = set.pinned.as_mut().expect("pinned metadata");
     pinned.metadata_size = offset + bytes.len() as u32;
     pinned.unowned.push((address, bytes));
-    pinned.grown.push((globals, address));
+    pinned.grown.push(GrownTag {
+        tag: globals,
+        region: address,
+        replaced,
+    });
     Ok(())
 }
 
@@ -285,9 +301,17 @@ mod tests {
 
         let pair = [0.5f32.to_bits(), 2.0f32.to_bits()];
         install(&mut set, &BTreeSet::from([pair])).unwrap();
-        // The new arrays sit past the metadata, recorded as the globals'.
+        // The new arrays sit past the metadata, recorded as the globals',
+        // with the stock rows and their values as the arrays replaced.
         let pinned = set.pinned.as_ref().unwrap();
-        assert_eq!(pinned.grown, [(set.globals, BASE + 0x500)]);
+        assert_eq!(
+            pinned.grown,
+            [GrownTag {
+                tag: set.globals,
+                region: BASE + 0x500,
+                replaced: vec![(BASE + 0x28c, 12), (BASE + 0x2a0, 8)],
+            }]
+        );
         assert!(pinned.unowned.iter().any(|(at, _)| *at == BASE + 0x500));
         let key = set.intern(&damage_key(pair)).unwrap();
         let body = word(read_pinned(&set, body_address + 0x14, 4).unwrap(), 0);

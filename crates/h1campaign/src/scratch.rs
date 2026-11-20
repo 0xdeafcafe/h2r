@@ -41,8 +41,11 @@ pub fn build(
     base_src.data_words(&h1convert::fresh::DATA_WORDS);
     let mut level = MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?;
     // The arrays the conversion wrote for base tags it grew (the globals'
-    // damage table), which no tag's bytes hold.
-    level.add_regions(h1convert::fresh::grown(set).1);
+    // damage table), which no tag's bytes hold, and the arrays they
+    // replaced, which the grown tags' bytes still hold.
+    let grown = h1convert::fresh::grown(set);
+    level.add_regions(grown.arrays);
+    level.add_replaced(grown.replaced);
     let mut src = LevelSource {
         base: base_src,
         level,

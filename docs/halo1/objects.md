@@ -1195,6 +1195,13 @@ uses the node BSPs (`0x001695fb`).
   `h1convert::fresh::grown`). Without that, the globals were refused
   and dropped, and every Halo 1 sandbox build and Halo 1 assets level
   failed with "root tag missing or of the wrong class".
+  Built: the edit also records the stock rows and their value arrays
+  as the arrays it replaced (`map::build::GrownTag::replaced`). The
+  from-scratch read counts them as described
+  (`tags::repo::MapSource::add_replaced`), so the globals are taken
+  exactly. Before, every fresh build failed with "globals\globals.matg
+  (3072 nonzero bytes in 1 ranges no array covers)". Test:
+  `a_grown_tag_unpins_with_its_new_array_and_without_its_old_one`.
   The plasma grenade's free explosion and the needler's super
   explosion list an impulse-only `jpt!` before the vitality damage.
   The damaging part goes in the projectile's native damage slot.

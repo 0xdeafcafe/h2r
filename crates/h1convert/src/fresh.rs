@@ -201,7 +201,9 @@ fn from_scratch<R: Read + Seek>(
     let base_map = Map::from_reader(Cursor::new(&file[..]))?;
     let level_map = Map::from_reader(Cursor::new(bytes))?;
     let mut level = MapSource::new(schema, level_map, &mut shared_level).map_err(repo)?;
-    level.add_regions(grown(pinned).1);
+    let grown = grown(pinned);
+    level.add_regions(grown.arrays);
+    level.add_replaced(grown.replaced);
     let mut src = LevelSource {
         base: MapSource::new(schema, base_map, &mut shared_base).map_err(repo)?,
         level,
@@ -211,22 +213,41 @@ fn from_scratch<R: Read + Seek>(
     build(&mut src, fresh, &MULTIPLAYER, extra, &from_level, low)
 }
 
-/// The pinned tags of `pinned` an edit grew past their own bytes, and the
-/// arrays it wrote for them (metadata no tag owns), from
-/// [`map::build::PinnedImage::grown`]: a reader of the map `pinned` builds
-/// reads those arrays, which no tag's bytes hold.
-pub fn grown(pinned: &TagSet) -> (Vec<TagId>, Vec<(u32, Vec<u8>)>) {
+/// The pinned tags of a set an edit grew past their own bytes, from
+/// [`map::build::PinnedImage::grown`], as a reader of the map the set
+/// builds needs them.
+#[derive(Debug, Default)]
+pub struct Grown {
+    /// The tags.
+    pub tags: Vec<TagId>,
+    /// The arrays the edit wrote for them (metadata no tag owns), which a
+    /// reader reads as theirs.
+    pub arrays: Vec<(u32, Vec<u8>)>,
+    /// The arrays the edit replaced, as (address, byte length): still in
+    /// the tags' bytes with nothing pointing at them, described by the
+    /// edit rather than by any field.
+    pub replaced: Vec<(u32, u32)>,
+}
+
+/// The pinned tags of `pinned` an edit grew ([`Grown`]).
+pub fn grown(pinned: &TagSet) -> Grown {
     let Some(p) = &pinned.pinned else {
-        return (Vec::new(), Vec::new());
+        return Grown::default();
     };
-    let tags = p.grown.iter().map(|&(id, _)| id).collect();
-    let arrays = p
-        .unowned
-        .iter()
-        .filter(|(at, _)| p.grown.iter().any(|&(_, a)| a == *at))
-        .cloned()
-        .collect();
-    (tags, arrays)
+    Grown {
+        tags: p.grown.iter().map(|g| g.tag).collect(),
+        arrays: p
+            .unowned
+            .iter()
+            .filter(|(at, _)| p.grown.iter().any(|g| g.region == *at))
+            .cloned()
+            .collect(),
+        replaced: p
+            .grown
+            .iter()
+            .flat_map(|g| g.replaced.iter().copied())
+            .collect(),
+    }
 }
 
 /// A set with `pinned`'s index, strings, raw resources and BSP sections,
@@ -278,9 +299,9 @@ pub fn unpin_all<R: Read + Seek>(
     // Pinned tags an edit grew (the globals' damage table,
     // `h1objects::player_damage`): their new arrays read, their replaced
     // ones left out.
-    let (grown_tags, grown_arrays) = grown(pinned);
-    if !grown_tags.is_empty() {
-        u.add_grown(src, grown_tags, grown_arrays);
+    let grown = grown(pinned);
+    if !grown.tags.is_empty() {
+        u.add_grown(src, grown.tags, grown.arrays);
     }
     // A campaign intermediate (`built_too`): arrays of base tags live in
     // metadata no tag owns (05a's scenario range and the gaps between

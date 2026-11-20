@@ -496,18 +496,28 @@ fn a_grown_tag_unpins_with_its_new_array_and_without_its_old_one() {
         grown[e * 0x14..e * 0x14 + 4].copy_from_slice(&(0x5678_0000 + e as u32).to_le_bytes());
         grown[e * 0x14 + 0x10..e * 0x14 + 0x14].copy_from_slice(&old_elem[0x10..0x14]);
     }
+    // The arrays the edit replaces: the old element and its data.
+    let replaced = vec![
+        (old, word(&root, 8) * 0x14),
+        (word(&old_elem, 8), word(&old_elem, 4)),
+    ];
     let pinned = set.pinned.as_mut().unwrap();
     let new = pinned.metadata_base + pinned.metadata_size.next_multiple_of(16);
     pinned.metadata_size = new - pinned.metadata_base + grown.len() as u32;
     pinned.unowned.push((new, grown.clone()));
-    pinned.grown.push((id, new));
+    pinned.grown.push(map::build::GrownTag {
+        tag: id,
+        region: new,
+        replaced: replaced.clone(),
+    });
     let TagPayload::Pinned { bytes, .. } = &mut set.tag_mut(id).unwrap().payload else {
         unreachable!()
     };
     bytes[8..0xc].copy_from_slice(&2u32.to_le_bytes());
     bytes[0xc..0x10].copy_from_slice(&new.to_le_bytes());
     assert!((at..at + root.len() as u32).contains(&old), "the old array is the tag's own");
-    let mut built = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    let image = set.build().unwrap().0;
+    let mut built = Map::from_reader(Cursor::new(image.clone())).unwrap();
 
     let mut dst = TagSet::from_map(&mut built).unwrap();
     let mut plain = transplant::Unpinner::new(&schema, &mut built).unwrap();
@@ -532,6 +542,28 @@ fn a_grown_tag_unpins_with_its_new_array_and_without_its_old_one() {
     assert_eq!(block.1.bytes.len(), grown.len());
     assert_eq!(word(&block.1.bytes, 0), 0x5678_0000);
     assert_eq!(word(&block.1.bytes, 0x14), 0x5678_0001);
+
+    // Read by path (the fresh build's from-scratch read), with the new
+    // arrays added: the tag's two elements are read, and it is taken
+    // exactly only when the replaced arrays are named, since no field
+    // points at those bytes any more.
+    use crate::repo::{Body, MapSource, SharedFiles};
+    let read = |replaced: &[(u32, u32)]| {
+        let mut shared = SharedFiles::default();
+        let map = Map::from_reader(Cursor::new(image.clone())).unwrap();
+        let mut source = MapSource::new(&schema, map, &mut shared).unwrap();
+        source.add_regions([(new, grown.clone())]);
+        source.add_replaced(replaced.iter().copied());
+        let Body::Tree(tree) = source.extract(id).unwrap().unwrap().body else {
+            panic!("a tree");
+        };
+        assert_eq!(tree.nodes.iter().filter(|n| n.count == 2).count(), 1);
+        tree.losses
+    };
+    let missed = read(&[]);
+    assert_eq!(missed.len(), 1, "{missed:?}");
+    assert!(missed[0].contains("no array covers"), "{missed:?}");
+    assert_eq!(read(&replaced), Vec::<String>::new());
 }
 
 #[test]
