@@ -43,7 +43,6 @@ copies. Nothing is ever written next to it.
 | `H2_SSE_NATIVE=0` | **On by default.** Generated code runs guarded SSE add, subtract, multiply, divide and square root in native SIMD ([sse-native.md](../lifter/sse-native.md)). `0` uses the integer `h2s_*` helpers for every operation. A compiler flag, like `H2_X87_NATIVE`: set it for both build and run. |
 | `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_EMIT_TARGET=tvos` / `ios` | `h2 build` compiles and links the module for the Apple TV (`arm64-apple-tvos17.0`, against the appletvos SDK) or an iPhone or iPad (`arm64-apple-ios17.0`, the iphoneos SDK) instead of the Mac; its stamp names the target, so only that app accepts it ([tvos.md](tvos.md), [ios.md](ios.md)). Unset, `host` or `macos`: the Mac, unchanged |
-| `H2_BOOT_TRAMPOLINE=1` | register every generated entry through the old fallback trampoline instead of as itself; this also keeps every direct call from matching, as before 2026-11. For A/B comparisons |
 | `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics, each sampled bot join gate, and repeat messages while Mods has no in-game Live session. Also enables `H2_FEATURE_PLAN` detail. |
 | `H2_FEATURE_PLAN=1` | list features, hooks, entries, locale sources, and hot-point warnings. Also log the first time each hook runs and show the skull and health install reports. The default prints a one-line installation summary and any problems. |
 | `H2_FEATURES=impl.render.native=off` | disable the native GPU render stages. An explicit stage switch wins in either order. For example, `impl.render.native=off,impl.render.native_world=on` enables the world and its material programs. The `impl.render` switch still controls the lifted render-loop ports independently. |
@@ -150,8 +149,10 @@ fed on the guest's clock, the callback count, a monotonic clock and
     generated entry and resume as itself, so the module's direct calls
     (`H2_DIRECT_CALLS`) match. Until 2026-11 every entry went through one
     trampoline in `fallback.rs`, which no direct call matched, so every
-    call between generated functions went through the runner;
-    `H2_BOOT_TRAMPOLINE=1` still registers that way, for A/B runs.
+    call between generated functions went through the runner. The
+    trampoline and its `H2_BOOT_TRAMPOLINE` A/B switch were removed in
+    the 2026-11-20 flag cleanup. A slim host module's left-out owners are
+    registered to the interpreter (`fallback::register_cold`).
 - **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
   does all of its arithmetic, conversions and transcendentals in
   crates/x87 (exact ext80).

@@ -231,8 +231,7 @@ Status: landed after this review. `analyze` reads the two tables (and a
 third at `0x22dcd9`) past their runs of nulls (11bfe00d), `boot::trace`
 is buffered (566f6715), and generated handlers are registered as
 themselves, with the trampoline's STOP logic as the runner's stop-recovery
-hook (4ce2258a; `H2_BOOT_TRAMPOLINE=1` restores the trampoline for A/B
-runs). Not re-measured here.
+hook (4ce2258a; the trampoline's A/B switch has since been removed). Not re-measured here.
 
 - Read the two jump tables fully in `analyze` (skip zero entries the
   way `boot::fallback::unread_targets` already does at run time) so

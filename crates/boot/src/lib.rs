@@ -750,61 +750,35 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
             Err(_) => None,
         };
-        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
-        anyhow::ensure!(!trampoline || cold.is_none(), "slim host modules require registry dispatch");
         if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
-            anyhow::ensure!(!trampoline, "host audit requires registry dispatch");
             anyhow::ensure!(cold.is_none(), "host audit requires a full generated module");
             rt.enable_guest_coverage(entries, resumes);
         }
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
-            let (Some(f), Some(v)) = (e.handler, e.abi_version) else {
+            let (Some(_), Some(v)) = (e.handler, e.abi_version) else {
                 bail!("entry {:#x}: null row", e.addr)
             };
             if v() != runtime::cpu::ABI_VERSION {
                 bail!("entry {:#x}: object ABI {}", e.addr, v());
             }
-            rows.push((e.addr, f));
+            rows.push(e.addr);
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
-        let conflicts = fallback::init_with_cold(xbe_bytes, &rows, &res, cold)
-            .map_err(anyhow::Error::msg)?;
-        // Each row is registered as itself, and the runtime hands its STOPs
-        // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
-        // row through the old trampoline instead, for comparison: that also
-        // turns the module's direct calls off in effect, since a direct call
-        // needs the registered handler to be the callee's own.
-        if trampoline {
-            eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
-            // The trampoline finds a resume's handler by selector alone.
-            if conflicts != 0 {
-                eprintln!("warning: {conflicts} selectors map to more than one handler");
-            }
-        }
+        fallback::init_with_cold(xbe_bytes, &rows, &res, cold).map_err(anyhow::Error::msg)?;
+        // Each row is registered as itself, a slim module's left-out owners
+        // go to the interpreter, and the runtime hands every generated STOP
+        // to the fallback (fallback.rs).
         rt.edit_dispatch(|d| -> Result<()> {
-            if !trampoline {
-                d.register_generated_module(m, *version)
-                    .context("registering generated module")?;
-                return Ok(());
-            }
-            for &(addr, _) in &rows {
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
-                    .with_context(|| format!("entry {addr:#x}"))?;
-            }
-            for r in resumes {
-                d.register_resume(r.pc, r.owner, r.start)
-                    .with_context(|| format!("resume {:#x}", r.pc))?;
-            }
+            d.register_generated_module(m, *version)
+                .context("registering generated module")?;
             if let Some(cold) = cold {
                 fallback::register_cold(d, cold, fallback::interpret_cold)
                     .context("registering slim host interpreter routes")?;
             }
             Ok(())
         })?;
-        if !trampoline {
-            fallback::install_stop_recovery(rt);
-        }
+        fallback::install_stop_recovery(rt);
         Ok(Module {
             _lib: lib,
             entries: entries.len(),
@@ -1088,10 +1062,6 @@ fn run_configured(
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
-        anyhow::ensure!(
-            std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
-            "H2_HOST_MODULE requires registry dispatch"
-        );
     }
     if host.host_light {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
