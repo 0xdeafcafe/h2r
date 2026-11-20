@@ -61,6 +61,7 @@ pub(crate) fn prepare(h1: &H1Map, ai: &H1Ai, conv: &mut Converter<'_>) -> Result
             .block(field, 0x20)?
             .chunks_exact(0x20)
             .map(|rgb| h1objects::h1::ChangeColour {
+                function: None,
                 permutations: vec![h1objects::h1::ColourPermutation {
                     weight: 1.0,
                     lower: [0, 4, 8].map(|o| float(rgb, o)),

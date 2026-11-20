@@ -9,6 +9,9 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub mod force_field;
+pub mod model_defaults;
+pub mod model_effects;
 pub mod scope_filters;
 
 const SPAS: FourCC = FourCC(*b"spas");
@@ -158,6 +161,11 @@ fn pass_with_inputs(
     vertex_bindings: &[[u8; 4]],
     scalars: u64,
 ) -> Result<Block> {
+    // Mode 4 reads a vector engine input (the object change colours, for example).
+    let vectors = pixel_bindings
+        .iter()
+        .filter(|b| b[2] & 7 == 4 && b[3] < 64)
+        .fold(0u64, |mask, b| mask | (1u64 << b[3]));
     let d = def(b"spas");
     let pp = d.child("postprocess").expect("spas postprocess");
     let mut body = defs::default_record(pp);
@@ -177,6 +185,10 @@ fn pass_with_inputs(
                 Val::Word(u32::from_le_bytes(bytes[0xd6..0xda].try_into().unwrap())),
             ),
             ("pixel_shader_tail", byte_list(&bytes[0xda..])),
+            (
+                "vector_inputs",
+                Val::List(vec![int(vectors as u32), int((vectors >> 32) as u32)]),
+            ),
             (
                 "scalar_inputs",
                 Val::List(vec![int(scalars as u32), int((scalars >> 32) as u32)]),

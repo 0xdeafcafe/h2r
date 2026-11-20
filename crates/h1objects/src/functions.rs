@@ -238,7 +238,7 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
     if f.function != 0 {
         return Err(format!("function {} is not one", f.function));
     }
-    if f.map_to != 0 || f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
+    if f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
         return Err("a shape past one scaled by an input".into());
     }
     let import = match f.scale_function_by {
@@ -247,12 +247,29 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
             .ok_or_else(|| format!("input {k} has no Halo 2 import"))?,
         k => return Err(format!("scaled by output {}", k - 4)),
     };
+    let data = match f.map_to {
+        0 => bounded(f)?,
+        // The Sentinel's shield glow source: H1 0x8bf9e selects table
+        // 2 (0x173c65, pow(x, 0.25)); H2 transition 2 uses the same curve.
+        2 if f.bounds_mode == 0
+            && f.bounds == [0.0, 1.0]
+            && f.square_threshold == 0.0
+            && (f.result_scale <= 0.0 || f.result_scale == 1.0) => Function {
+            kind: FunctionType::Transition,
+            flags: 0,
+            sub_types: [2; 2],
+            range: [0.0, 1.0],
+            unknown_0c: [0; 8],
+            payload: [0.0f32, 1.0, 0.0, 1.0].into_iter().flat_map(f32::to_le_bytes).collect(),
+        }.to_bytes(),
+        mode => return Err(format!("unsupported map-to {mode} with bounds {:?}", f.bounds)),
+    };
     Ok(FunctionSpec {
         flags: f.flags & 0b101,
         import: import.into(),
         export: String::new(),
         turn_off_with: String::new(),
-        data: bounded(f.bounds_mode, f.bounds)?,
+        data,
     })
 }
 
@@ -260,8 +277,17 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
 /// range, is Halo 1's: clip to `[lo, hi]`, clip and normalise to `[0,
 /// 1]`, or scale `[0, 1]` to fit `[lo, hi]`. The blob's result is
 /// clamped to `[0, 1]` before the range ([`Function::evaluate`]).
-fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
-    if !(hi > lo) {
+fn bounded(source: &h1::Function) -> Result<Vec<u8>, String> {
+    let mode = source.bounds_mode;
+    let [lo, hi] = source.bounds;
+    let gain = if source.result_scale > 0.0 { source.result_scale } else { 1.0 };
+    if ![lo, hi, source.square_threshold, source.result_scale]
+        .into_iter()
+        .all(f32::is_finite)
+    {
+        return Err("non-finite function bounds, threshold or scale".into());
+    }
+    if hi <= lo {
         return Err(format!("bounds {lo} to {hi}"));
     }
     let identity = |range| Function {
@@ -272,10 +298,29 @@ fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
         unknown_0c: [0; 8],
         payload: Vec::new(),
     };
-    // (x - lo) / (hi - lo): words 4 and 5 of a linear blob's first set.
-    let normalise = |range| {
+    // H1 0x8bea4: a nonzero threshold is a strict greater-than comparison.
+    // 0x8bfad then applies a positive scale before bounds. One input ULP
+    // spans the step exactly for the f32 power value evaluated by H2.
+    let threshold = source.square_threshold;
+    if threshold != 0.0 {
+        let bounded_value = |x: f32| match mode {
+            0 => Ok(x.clamp(lo, hi)),
+            1 => Ok(((x - lo) / (hi - lo)).clamp(0.0, 1.0)),
+            2 => Ok(lo + (hi - lo) * x),
+            _ => Err(format!("bounds mode {mode}")),
+        };
+        let mut keys = [0.0f32; 40];
+        keys[9] = threshold;
+        keys[13] = (threshold.next_up() - threshold).recip();
+        keys[17] = 1.0;
+        return Ok(Function {
+            kind: FunctionType::LinearKey,
+            payload: keys.into_iter().flat_map(f32::to_le_bytes).collect(),
+            ..identity([bounded_value(0.0)?, bounded_value(gain)?])
+        }.to_bytes());
+    }
+    let linear = |range, a: f32, b: f32| {
         let mut payload = vec![0u8; 8 * 6];
-        let (a, b) = (1.0 / (hi - lo), -lo / (hi - lo));
         payload[16..20].copy_from_slice(&a.to_le_bytes());
         payload[20..24].copy_from_slice(&b.to_le_bytes());
         Function {
@@ -285,10 +330,10 @@ fn bounded(mode: u16, [lo, hi]: [f32; 2]) -> Result<Vec<u8>, String> {
         }
     };
     let f = match mode {
-        0 if lo == 0.0 && hi == 1.0 => identity([0.0, 1.0]),
-        0 => normalise([lo, hi]),
-        1 => normalise([0.0, 1.0]),
-        2 => identity([lo, hi]),
+        0 if lo == 0.0 && hi == 1.0 && gain == 1.0 => identity([0.0, 1.0]),
+        0 => linear([lo, hi], gain / (hi - lo), -lo / (hi - lo)),
+        1 => linear([0.0, 1.0], gain / (hi - lo), -lo / (hi - lo)),
+        2 => identity([lo, lo + (hi - lo) * gain]),
         m => return Err(format!("bounds mode {m}")),
     };
     Ok(f.to_bytes())

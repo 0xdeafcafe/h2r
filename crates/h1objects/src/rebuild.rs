@@ -2726,8 +2726,8 @@ pub const ATTACHMENT_PRIMARY_SCALE: &str = "string_10";
 /// ([`h1::ChangeColour::halo2_slots`]); none when `colours` is empty.
 /// Each element's first block is its initial permutations (`0x20` each:
 /// `+0` weight, `+4` lower and `+0x10` upper bound RGB, `+0x1c` a variant
-/// name, 0 for any), Halo 1's as they are; the second (functions) stays
-/// empty: Halo 1's darken/scale-by functions are not carried.
+/// name, 0 for any). H2 reads the device's colour functions at 0xbe9a7
+/// (interpolate by +0x24) and 0xbea15 (multiply by +0x20).
 ///
 /// E: `object_new` reserves `0x18` bytes per element (two RGB colours,
 /// the initial and the current); `0x000be240` sets each slot white
@@ -2768,6 +2768,22 @@ pub fn object_change_colors(
             perms.push(y);
         }
         set(&mut x, "block_0", Val::Block(perms))?;
+        if let Some(source) = &c.function {
+            let child = e.child("block_8").ok_or_else(|| Error::Invalid(format!("{field}.block_8")))?;
+            let mut row = defs::default_record(child);
+            set(&mut row, "unknown_4", Val::Bytes(source.flags.to_le_bytes().to_vec()))?;
+            for (k, (lo, hi)) in source.lower.iter().zip(source.upper).enumerate() {
+                set(&mut row, &format!("unknown_{:x}", 8 + 4*k), f(*lo))?;
+                set(&mut row, &format!("unknown_{:x}", 0x14 + 4*k), f(hi))?;
+            }
+            if let Some(input) = source.scale {
+                set(&mut row, "string_24", Val::text(input))?;
+            }
+            if let Some(input) = source.darken {
+                set(&mut row, "darken_by", Val::text(input))?;
+            }
+            set(&mut x, "block_8", Val::Block(vec![row]))?;
+        }
         out.push(x);
     }
     set(r, &field, Val::Block(out))

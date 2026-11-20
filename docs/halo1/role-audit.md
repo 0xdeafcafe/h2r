@@ -76,10 +76,186 @@ integration run. There is no new pass count or play result yet.
   scope effect's screen vertex shader and the player emblem are native
   rendering dependencies. The primary HUD and source bitmap slots use
   converted Halo 1 tags.
-- **Known gap.** A Halo 1 model shader with no base map gets the base's
-  stand-in model shader, a marine's head on 05a_deltaapproach. a10's
-  `light siren` on the alert light names no map at all. The fix needs
-  Halo 1's draw of a null base map.
+
+## Models that used the marine head shader
+
+**Built.** A model with an H1 `soso` whose base, detail and reflection
+datums are null now gets its own H2 `shad`. On the owner's campaign
+discs, 15 of the 21 model records that referenced
+`objects\characters\marine\marine_female\shaders\head_female` on
+05a_deltaapproach meet this condition. Fourteen have all four bitmaps
+null. The shield charger has a multipurpose bitmap.
+
+The H1 Xbox model setup at `0x70433..0x70561` binds these images. The
+null-datum branch at `0x8036a` selects the bitmap for the texture kind
+from the rasterizer globals at `0x803c3..0x8041e`. Its image records
+are 0x30 bytes apart. Reading the named images on a10 gives these values.
+
+| Slot | Reference / datum | Rasterizer bitmap | Image | RGB |
+| --- | --- | --- | ---: | --- |
+| Base | `+0xa4 / +0xb0` | `default 2d` | 1 | white |
+| Detail | `+0xdc / +0xe8` | `default 2d` | 2 | 128, 128, 128 |
+| Multipurpose | `+0xbc / +0xc8` | `default 2d` | 1 | white |
+| Reflection | `+0x164 / +0x170` | `default cube map` | 0 | black |
+
+At `0x705dc..0x7064a` the XBE interpolates the RGB at `+0x78`
+and `+0x84` using the waveform at `+0x72` and time divided by the
+period at `+0x74`. Bit 0 at `+0x6c` synchronizes the phase. Otherwise
+the draw uses an object-seeded phase. Function 0 returns one
+(`0x173f20`). All affected shaders either select a constant endpoint
+or have identical endpoints, so their emission is independent of time
+and phase. In particular, the rocks have a nonconstant waveform but
+both endpoints are black. A custom map with two different endpoints
+and a varying wave currently returns a conversion error.
+
+H1 multiplies the resulting emission by the object colour at `+0x70`
+and independently selects diffuse object colour at `+0x4c`
+(`0x7064f..0x7068e`). In the model combiner at `0x6f4df..0x6f58f`,
+multipurpose green masks the addition of emission to the lit surface.
+Blue interpolates from white to the diffuse object colour and multiplies
+the saturated result. The null cube contributes black. The charger uses
+green from its actual `levels\a10\bitmaps\light` bitmap.
+
+`h1convert::shad::program::model_defaults` builds the instance, template
+and additional passes through the H2 definitions. The opaque lighting
+inputs are a white base, flat normal and neutral detail. H2 scene layer
+7 adds emission. Layer 2 multiplies the destination after the dynamic
+lights (`0x2c034..0x2c05b`). The native four-change-colour pass supplies
+the object vector selectors. The alert light emits fixed red, the door
+lock uses object colour A for emission and diffuse, and the signal light
+uses A for emission and B for diffuse. The waterfall emitter and rocks
+require only the white lit surface.
+
+Each level in a row below contains a separate affected `mode` tag. Slots
+are zero-based. The inventory compares the material datums of all ten
+previously converted campaign maps against the shader references in
+the matching H1 disc maps.
+
+| Levels | Render model tag | Slot | Source shader |
+| --- | --- | ---: | --- |
+| a10, d40 | `levels\a10\devices\alert_light\alert_light` | 1 | `soso light siren` |
+| a10, d40 | `levels\a10\devices\doors\door blast closed\door blast closed` | 2 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door blast half\door blast half` | 2 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door blast\door blast` | 6 | `soso obj-light lock` |
+| a10, d40 | `levels\a10\devices\doors\door jeff tube\door jeff tube` | 3 | `soso obj-light lock` |
+| a10 | `levels\a10\devices\shield charge\shield charge` | 4 | `soso obj-shield charge` |
+| d40 | `levels\a10\devices\signal light\signal light` | 0 | `soso light signal` |
+| a30 | `scenery\waterfalls\waterfall_emitter\waterfall_emitter` | 0 | `soso invisible` |
+| b30, d20 | `scenery\debris\rocks_smoldering\rocks_smoldering` | 0 | `soso rocks_smoldering` |
+| a50, d20 | `levels\a50\devices\small door\small door` | 1 | `schi door lock symbols` |
+| c10, c20, c40, d40 | `characters\sentinel\sentinel` | 1 | `spla sentinel_shield` |
+
+**a10 shield charging station.** The machine has two luminous materials. Slot 4
+(`obj-shield charge`, above) uses the green channel of its 16×16 DXT1
+`light` bitmap. The illumination waveform is constant one and selects the
+upper RGB (255, 255, 183). Its UV functions are constant, and neither
+the diffuse nor the emission term selects an object colour.
+
+Slot 5 is `shield charge force`, an additive generic transparent shader.
+Its four maps all reference the same 128×128 DXT3 bitmap. For each draw
+the H1 XBE at `0x56ff0..0x57057` adds a phase in seconds before dividing
+by the signed period. The entries below give the offsets in texture repeats.
+
+| Sample | U offset | V offset |
+| --- | --- | --- |
+| 0 | fixed | (t + 1) / 3 |
+| 1 | fixed | (t + 1) / −4.78 |
+| 2 | t / −0.5 | (t + 1) / 3 |
+| 3 | t / −1 | (t + 1) / −4.78 |
+
+The stage decoder (`0x62d14`, input table `0x1e0b68`) builds the first
+sum from samples 0 and 1 weighted by alpha from samples 2 and 3. Stage
+1 adds the product of samples 0 and 1. The next stages multiply the RGB
+by object change colours A and B (`0x6796e..0x679d2`). The model vertex
+program at `0x1e5ac0` uses the absolute normal–camera-forward dot product
+and fog visibility. The final combiner scales RGB by that interpolated
+factor. The draw adds RGB on both faces, with depth writes disabled.
+
+The H2 rebuild defines its own vertex program, four-stage pixel program,
+pass, template and instance. Each texture stage gets its own UV pair and
+the original bitmap. The H2 scroll is continuous between repeats. H1
+interpolates byte-valued slide samples (`0x173f20`), so the intermediate
+coordinates can differ slightly. Fog visibility and device power follow
+H2's current scene and machine state.
+
+Both colour inputs come from the machine. H1 output A is power times ten,
+clamped to one. Output B switches on strictly above half power. Output C
+is power itself, used by audio. The machine interpolates black to white
+by A and white to (1, 0.443137, 0.443137) by B. H1 applies the threshold
+and gain at `0x8bea4` and `0x8bfad`, and updates colours at `0x8c142`.
+H2 reads the corresponding named colour functions at `0xbe9a7` and
+`0xbea15`. The disc regression
+`a10_shield_charger_keeps_its_lamp_four_scrolls_and_power_colours`
+follows the two material slots, texture payloads, scrolls and power curves.
+
+**Built, small door.** Both caches name the same `schi` in material 1.
+Neither uses `scex`. The block at `+0x54` has one 0xdc-byte stage. Its
+colour and alpha functions both select the current map (0), its scale is
+(1, 1), its U, V and rotation functions are constant (0), and its bitmap
+datum is null. There are no extra layers. The framebuffer blend is
+additive (3). At `0x67c43..0x67cd8` the draw requests a 2D texture and
+image zero. The null branch at `0x803c3` reads the rasterizer bitmap at
+`+0xb8`. In both maps that is `globals\globals` block `+0x134`, reference
+`+0xac`, naming `rasterizer\default 2d`. Image zero is 4×4 opaque black.
+The new instance binds that converted H1 bitmap to H2's additive
+`one_add_illum` template. The stage adds zero RGB and leaves depth intact. The adjacent floor-symbol
+material in d20 has four source images. Its cutout bump now preserves the
+alpha mask for every image and mip.
+
+**Built, Sentinel.** All four caches bind the same H1 bitmap to both noise
+inputs at `+0xd4` and `+0x11c`. The image is a swizzled 32×32×32 A8Y8
+volume with five lower mip levels. H1 binds both stages with linear
+filtering and U/V/W wrap at `0x6d546..0x6d628`. The following rows give
+the transform of the position before each lookup. Time is in seconds.
+
+| Stage | Scale | Translation |
+| --- | ---: | --- |
+| 0 | 2 | (2, 0, −0.3) × time / 2.1 |
+| 1 | 1 | (0, 2, 0.5) × time / 3.2 |
+
+The XBE writes the rows at `0x6d73f..0x6d867`. The H2 instance writes
+their XYZ coefficients and animates the W components at the same rates,
+modulo one texture repeat. The H1 combiner at `0x6d8ed..0x6d99f`
+takes two differences biased by one half, Y0−Y1 and A1−A0. The first
+selects which difference to square and multiply by four. Calling that
+saturated result `s`, the bright core is `max(2s−1, 0)²`. The output RGB
+is `s² × saturate(s × tint + core/2)`. Source alpha is fog visibility
+times the angle-interpolated brightness times object output A. H1 sets
+source-alpha/one blend, RGB writes and read-only depth at `0x6d633..0x6d6e5`.
+
+The authored perpendicular RGBA is approximately (0.17647, 1, 0.98039, 1)
+and the parallel RGBA is (0.06275, 0, 0.31765, 1). At `0x6d867..0x6d8da`
+the XBE uploads perpendicular minus parallel in c[−83] and parallel
+in c[−82]. Instructions 37–38 of the plasma vertex program compute
+`c[−83] + dot(normal, eye) × c[−82]`. The effective facing endpoint
+is perpendicular. The effective grazing endpoint is approximately
+(0.11373, 1, 0.66274, **0**). H2's two vertex attributes receive those
+effective endpoints. Displacement is zero.
+The Sentinel's `shield glow source` maps recent shield damage through
+a fourth root (H1 `0x8bf9e`, table 2 at `0x173c65`). The converted biped
+exports the same curve as `a_out` from H2's `current_shield_damage`.
+
+The layer-15 `stem`, `spas` and `shad` are authored from the definitions.
+H2's retail plasma shield on 05a_deltaapproach establishes the two native
+3D stages and `transparent_generic_offset` vertex program. The rebuilt
+pass uses the H1 noise channels, colour equation and blend. The H2 vertex
+program supplies the model vertex format, skinning, view direction and fog.
+H1 projects the volume coordinates from the input position before skinning.
+H2's rigid and skinned model variants project the posed position. Animation
+can therefore move the noise over a deforming surface. H2 also clamps
+negative normal–eye dot products to zero. The H1 plasma vertex
+program at `0x1e2c70` normalizes the normal and uses the signed dot before
+output clamping. Back-facing normals can therefore produce different tints.
+Fog and the underlying recent-damage value follow the H2 engine.
+
+**Built, conversion errors.** Model materials require a rebuilt shader.
+An unsupported source fails with its map, group and tag path. A missing
+datum identifies the referring object, material slot and datum. The
+object tree keeps its first material error so a caller that collects
+placement errors cannot install an incomplete map. The campaign lean
+ladder keeps model materials at every step. The audit accepts the native
+player emblem added by the converter only in an appended slot. Each original slot must name its
+converted H1 shader or a permutation-specific numeric shader in the same tree.
 
 ## Running the audit
 
@@ -95,4 +271,14 @@ all supported object roots and their rebuilt dependencies on
 
 ```sh
 H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
+```
+
+The shader regressions cover the combiner equations, named conversion errors,
+all 21 affected material slots, and the a10 charger's scrolls and power colours. Run from the
+integrated checkout with `disc/` present.
+
+```sh
+cargo test --release -p h1bitmaps -p h1convert -p h1objects --lib
+cargo test --release -p h1objects --test weapon_counter
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test model_shaders_disc -- --ignored
 ```

@@ -100,11 +100,12 @@ const ALLOWED: &[Rule] = &[
         "bitm",
         "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
     ),
+    ("stem", "postprocess[].passes[].pass", "spas", "(a) native opaque lighting, shadow and fog passes used by the rebuilt model template"),
     (
         "spas",
         "postprocess[].implementations[].vertex_shader",
         "vrtx",
-        "(a) the scope effect's passes draw with Halo 2's screen-effect vertex shader (program::SCOPE_VERTEX): Halo 1 has no vertex shader tags (hud.md, Scope mask)",
+        "(a) the scope and model passes require native screen-effect and model vertex shaders; Halo 1 has no vertex shader tags",
     ),
 ];
 
@@ -117,12 +118,6 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    (
-        "mode",
-        "materials[].shader",
-        "shad",
-        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
-    ),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
     ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
     ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
@@ -209,6 +204,7 @@ impl Halo1Objects for Audit<'_> {
 
     fn take(&mut self) -> ObjectTags {
         let t = self.inner.tree();
+        assert!(t.model_shader_error.is_none(), "{:?}", t.model_shader_error);
         let first = self.snap.tags.len();
         self.snap.tags.extend(t.tags.iter().cloned());
         self.snap
@@ -387,8 +383,37 @@ fn meaning<'d>(d: &'d StructDef, path: &str) -> Option<&'d str> {
     }
 }
 
+/// Each original slot must point into this tree, to the shader it was
+/// built from. Only the extra slot appended to a player can be an emblem.
+fn campaign_materials(h1: &H1Map, base: &Base, snap: &Snapshot, name: &str, mode: &Record) {
+    let map = &h1.header().name;
+    let model = h1.find(h1map::Group::new(b"mode"), name).expect("source render model");
+    let source = h1map::Block::read(h1.tag_data(model).unwrap(), 0xdc).unwrap();
+    let rows = h1.block(source, 0x20).unwrap();
+    let materials = values_at(mode, "materials[*].shader");
+    let n = source.count as usize;
+    assert!((n..=n+1).contains(&materials.len()), "{map} {name}: shader count");
+    for (k, shader) in materials.into_iter().enumerate() {
+        let Val::Ref { target: Target::Id(id), .. } = shader else {
+            panic!("{map} {name} slot {k}: unresolved shader {shader:?}");
+        };
+        if k == n {
+            assert_eq!(base.name(*id), Some((FourCC(*b"shad"), h1objects::convert::EMBLEM_SHADER)));
+            continue;
+        }
+        let source = h1.tag(h1map::TagRef::read(rows, k * 0x20).unwrap().id).unwrap();
+        let built = h1objects::convert::local_index(*id).and_then(|i| snap.tags.get(i))
+            .unwrap_or_else(|| panic!("{map} {name} slot {k}: {} is not rebuilt", source.name));
+        assert_eq!(built.1.group, FourCC(*b"shad"));
+        assert!(built.0 == source.name ||
+            (built.0.strip_prefix(source.name.as_str()).is_some_and(|s| s.starts_with('_'))
+                && h1convert::shad::chicago_numeric(h1, source).is_some()),
+            "{map} {name} slot {k}: expected {}, got {}", source.name, built.0);
+    }
+}
+
 /// The leaks of one map's sandbox.
-fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
+fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
     let mut out = Vec::new();
     for (k, (tag, conv)) in snap.tags.iter().enumerate() {
         let group = conv.group.to_string();
@@ -402,6 +427,9 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
         };
         let d = Defs::builtin().group(conv.group);
         let record = d.and_then(|d| defs::from_built(d, &conv.root).ok());
+        if conv.group == FourCC(*b"mode") && h1map::disc::CAMPAIGN_LEVELS.contains(&map) {
+            campaign_materials(h1, base, snap, tag, record.as_ref().expect("read campaign model"));
+        }
         // Retail references.
         let mut refs = Vec::new();
         match (d, &record) {
@@ -541,6 +569,7 @@ fn campaign_objects(h1: &H1Map, base: &Base) -> Snapshot {
             _ => continue,
         }.unwrap_or_else(|e| panic!("{} {}: {e}", tag.group, tag.name));
     }
+    assert!(conv.tree.model_shader_error.is_none(), "{:?}", conv.tree.model_shader_error);
     Snapshot { tags: conv.tree.tags, roles: conv.tree.role_fields }
 }
 
@@ -585,7 +614,7 @@ fn every_role_leak_is_classified() {
         };
         assert!(!snap.tags.is_empty(), "{name}: no objects converted");
         let noted: usize = snap.roles.iter().map(|e| e.1.len()).sum();
-        let got = audit(name, &base, &snap);
+        let got = audit(name, &h1, &base, &snap);
         println!(
             "{name} on {base_name}: {} tags, {noted} role values noted, {} leaks",
             snap.tags.len(),
@@ -647,6 +676,14 @@ fn paths_normalise_and_rules_match_by_prefix() {
     };
     assert!(rule(KNOWN, &l).is_none());
     assert!(rule(ALLOWED, &l).is_none());
+    let model_shader = Leak {
+        group: "mode".into(),
+        path: "materials[].shader".into(),
+        what: "shad".into(),
+        ..l
+    };
+    assert!(rule(KNOWN, &model_shader).is_none());
+    assert!(rule(ALLOWED, &model_shader).is_none());
     assert!(matches("unknown_*", "unknown_1c"));
     assert!(!matches("unknown_1", "unknown_1c"));
 }

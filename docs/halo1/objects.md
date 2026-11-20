@@ -1032,8 +1032,10 @@ The converter (**Design**):
 - Every object with a Halo 1 change colour, or whose model reads C, gets
   four elements (`rebuild::object_change_colors`): the player writer
   needs slots 0 to 3. Each holds the Halo 1 permutations as initial
-  permutations (weight, lower, upper; variant 0). Halo 1's darken-by and
-  scale-by functions are not carried.
+  permutations (weight, lower, upper; variant 0). Devices also carry the
+  darken-by and scale-by imports or converted object outputs in the second
+  block. On a10 the shield station's two colour ranges follow its two
+  power-derived outputs. See [the model material audit](role-audit.md).
 
 So the cyborg's armour plates take the player's primary colour, or the
 team's in a team game. Halo 1's cyborg has one mask, so the secondary

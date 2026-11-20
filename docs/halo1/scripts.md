@@ -484,13 +484,9 @@ build. [Loop conversion and disc audit](sounds.md#campaign-loops-and-cache-slots
 starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;
 `h1campaign`'s `squad_flag_bits` survey), so `h1ai` now keeps them, with no
 locations, no actors and no order, and `h1campaign` keeps only those the
-scripts name. A level that then overflows tag memory is converted again
-without them, and if still over, without the level data and seat table
-above too, and if still over, without Halo 1's textures on the objects'
-models (`h1objects`' shader copies and bitmaps; `h1campaign::convert`).
-b40, which sat at the bound, takes the third step since the models gained
-those textures (tag memory `0xc23000` of `0xc24000`), so its hooks are as
-before and its objects draw with the base's model shader.
+scripts name. The historical b40 build reached `0xc23000` of `0xc24000`
+by dropping model textures. The current campaign retry ladder preserves
+model materials at every step (campaign.md).
 Each referenced platoon becomes a child squad group of its encounter.
 A placement or actor list receives the encoded group index. Migration
 into a platoon uses the compatible destination squads chosen by

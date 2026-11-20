@@ -1619,7 +1619,9 @@ framebuffer blend and stage count): additive with 0 stages 18, 1 stage
 24, 2 stages 15, 3 stages 12, 4 stages 4 (chillout's hilltop, b40's holo
 halo ring, a10's shield charge, Cortana); alpha-blended (blend 0) with
 0 to 3 stages 22, 4, 5 and 1; blends 1, 6 and 7 with 0 to 2 stages 1,
-6 and 1. They keep their single-map rebuild. Lost on a plasma: the energy mask
+6 and 1. The a10 shield charger's four-stage rebuild and its device colours
+are described in [the role audit](role-audit.md). The other non-plasma
+programs in this inventory keep their single-map rebuild. Lost on a plasma: the energy mask
 (map 2), Halo 1's stage constants (the teleporter's teal base glow,
 added under the bands), and the first noise's own scroll (retail's
 teleporter animates both pairs; that tree isn't verified here). Proof:
@@ -1677,8 +1679,9 @@ glow an object's A output animates (the jackal's shield) holds at its
 lower bound; a plasma whose last stage is another sum (the jackal's and
 the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
 
-A material with no Halo 1 base map to read names the
-base's model shader itself; Blood Gulch has none. The sky model's
+A model material with a null base uses the matching H1 shader rebuild
+(role-audit.md). An unsupported material fails conversion with the map
+and source shader name. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert
