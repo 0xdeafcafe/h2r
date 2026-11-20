@@ -292,10 +292,9 @@ Taking the point as the bitmap's top (as screen-level bitmaps are) would
 give 49 for the Controls skin, which the screenshot rules out. Skin 0
 (the skulls page) gives 22 by the same rule.
 
-**Side by side.** With `H2_UI_COMPARE=<png>` (a 640 by 480 frame of the game)
-and `H2_UI_PREVIEW_DIR`, the disc test also writes `coop-vs-game.png`: the
-co-op screen focused on row 4 beside the frame. Rows, bars, frame and
-header line up. What differs:
+**Side by side.** The co-op screen focused on row 4, drawn beside a 640 by
+480 frame of the game (2026-11-16; the one-off compare was removed after),
+lined up in rows, bars, frame and header. What differed:
 
 - the game fills above and below `framing_center` with dark blue (we
   leave it black), and the track lines scroll;
