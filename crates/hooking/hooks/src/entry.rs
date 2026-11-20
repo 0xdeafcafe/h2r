@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub const ASYNC_ENTRY: &str = "feature: async entry";
 /// Owned render entries use the memory of the context executing each poll.
 /// The pipeline can move these callbacks with the suspended render stack.
-pub(crate) const RENDER_ENTRY: &str = "feature: portable render entry";
+pub const RENDER_ENTRY: &str = "feature: portable render entry";
 
 use engine::entry::{self, Cx, EntryError, EntryFn, EntryFuture, Mem, Regs, Step};
 use engine::memory::GuestMemory;
