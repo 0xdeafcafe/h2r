@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use h1convert::shad::program::force_field::{self, ForceField};
 use h1convert::shad::program::model_effects::{self, Plasma};
 use h1convert::shad::{Bound, Library, ONE_ADD_ILLUM, Role, h1_lod_offset, h1_texture_kind};
 use h1map::{Group, Tag, bitmap::ImageKind};
@@ -27,6 +28,23 @@ impl Converter<'_> {
         let root = if let Some(default) = model_effects::chicago_default(self.h1, tag)? {
             let maps = HashMap::from([(Role::Base, bound(self, default)?)]);
             library.build(&ONE_ADD_ILLUM, &maps)?
+        } else if let Some(source) = ForceField::read(self.h1, tag)? {
+            let image = bound(self, source.bitmap)?;
+            let first = self.tree.tags.len();
+            let vertex = force_field::vertex_shader()?;
+            let pass = force_field::pass(local(first))?;
+            let stem = force_field::stem(local(first + 1))?;
+            let root = source.instance(local(first + 2), image)?;
+            self.tree.push(
+                &tag.name,
+                Converted {
+                    group: FourCC(*b"vrtx"),
+                    root: vertex,
+                    raw: Vec::new(),
+                },
+            );
+            self.install_model_program(tag, pass, stem);
+            root
         } else if tag.group == Group::new(b"spla") {
             let source = Plasma::read(self.h1.tag_data(tag)?)?;
             let [first, second] = source.noise.map(|n| n.bitmap);
@@ -45,16 +63,7 @@ impl Converter<'_> {
             let pass = model_effects::plasma_pass(vertex)?;
             let stem = model_effects::plasma_stem(pass_id)?;
             let root = source.instance(stem_id, bitmaps)?;
-            for (group, tree) in [(b"spas", pass), (b"stem", stem)] {
-                self.tree.push(
-                    &tag.name,
-                    Converted {
-                        group: FourCC(*group),
-                        root: tree,
-                        raw: Vec::new(),
-                    },
-                );
-            }
+            self.install_model_program(tag, pass, stem);
             root
         } else {
             return Ok(None);
@@ -68,5 +77,23 @@ impl Converter<'_> {
             },
         )
         .map(Some)
+    }
+
+    fn install_model_program(
+        &mut self,
+        tag: &Tag,
+        pass: map::build::Block,
+        stem: map::build::Block,
+    ) {
+        for (group, tree) in [(b"spas", pass), (b"stem", stem)] {
+            self.tree.push(
+                &tag.name,
+                Converted {
+                    group: FourCC(*group),
+                    root: tree,
+                    raw: Vec::new(),
+                },
+            );
+        }
     }
 }

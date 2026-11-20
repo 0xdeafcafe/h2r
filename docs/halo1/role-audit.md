@@ -145,6 +145,49 @@ the matching H1 disc maps.
 | a50, d20 | `levels\a50\devices\small door\small door` | 1 | `schi door lock symbols` |
 | c10, c20, c40, d40 | `characters\sentinel\sentinel` | 1 | `spla sentinel_shield` |
 
+**a10 shield charging station.** The machine has two luminous materials. Slot 4
+(`obj-shield charge`, above) uses the green channel of its 16×16 DXT1
+`light` bitmap. The illumination waveform is constant one and selects the
+upper RGB (255, 255, 183). Its UV functions are constant, and neither
+the diffuse nor the emission term selects an object colour.
+
+Slot 5 is `shield charge force`, an additive generic transparent shader.
+Its four maps all reference the same 128×128 DXT3 bitmap. For each draw
+the H1 XBE at `0x56ff0..0x57057` adds a phase in seconds before dividing
+by the signed period. The entries below give the offsets in texture repeats.
+
+| Sample | U offset | V offset |
+| --- | --- | --- |
+| 0 | fixed | (t + 1) / 3 |
+| 1 | fixed | (t + 1) / −4.78 |
+| 2 | t / −0.5 | (t + 1) / 3 |
+| 3 | t / −1 | (t + 1) / −4.78 |
+
+The stage decoder (`0x62d14`, input table `0x1e0b68`) builds the first
+sum from samples 0 and 1 weighted by alpha from samples 2 and 3. Stage
+1 adds the product of samples 0 and 1. The next stages multiply the RGB
+by object change colours A and B (`0x6796e..0x679d2`). The model vertex
+program at `0x1e5ac0` uses the absolute normal–camera-forward dot product
+and fog visibility. The final combiner scales RGB by that interpolated
+factor. The draw adds RGB on both faces, with depth writes disabled.
+
+The H2 rebuild defines its own vertex program, four-stage pixel program,
+pass, template and instance. Each texture stage gets its own UV pair and
+the original bitmap. The H2 scroll is continuous between repeats. H1
+interpolates byte-valued slide samples (`0x173f20`), so the intermediate
+coordinates can differ slightly. Fog visibility and device power follow
+H2's current scene and machine state.
+
+Both colour inputs come from the machine. H1 output A is power times ten,
+clamped to one. Output B switches on strictly above half power. Output C
+is power itself, used by audio. The machine interpolates black to white
+by A and white to (1, 0.443137, 0.443137) by B. H1 applies the threshold
+and gain at `0x8bea4` and `0x8bfad`, and updates colours at `0x8c142`.
+H2 reads the corresponding named colour functions at `0xbe9a7` and
+`0xbea15`. The disc regression
+`a10_shield_charger_keeps_its_lamp_four_scrolls_and_power_colours`
+follows the two material slots, texture payloads, scrolls and power curves.
+
 **Built, small door.** Both caches name the same `schi` in material 1.
 Neither uses `scex`. The block at `+0x54` has one 0xdc-byte stage. Its
 colour and alpha functions both select the current map (0), its scale is
@@ -231,7 +274,7 @@ H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo tes
 ```
 
 The shader regressions cover the combiner equations, named conversion errors,
-and all 21 affected material slots on the owner's discs. Run from the
+all 21 affected material slots, and the a10 charger's scrolls and power colours. Run from the
 integrated checkout with `disc/` present.
 
 ```sh

@@ -913,3 +913,6 @@ mod model_defaults;
 
 #[path = "model_shaders_disc/model_effects.rs"]
 mod model_effects;
+
+#[path = "model_shaders_disc/shield_charger.rs"]
+mod shield_charger;

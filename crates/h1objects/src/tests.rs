@@ -593,6 +593,7 @@ fn rebuilt_scenery_has_only_definition_bytes() {
 fn change_colours_go_to_halo2_slots_with_c_first_when_read() {
     use crate::h1::{ChangeColour, ColourPermutation};
     let one = |v: f32| ChangeColour {
+        function: None,
         permutations: vec![ColourPermutation {
             weight: 1.0,
             lower: [v; 3],
@@ -629,6 +630,7 @@ fn rebuilt_scenery_carries_its_change_colours() {
     use crate::h1::{ChangeColour, ColourPermutation};
     use tags::defs::{self, Defs, Val};
     let tree = ChangeColour {
+        function: None,
         permutations: vec![
             ColourPermutation {
                 weight: 0.333,
@@ -2008,6 +2010,8 @@ fn h1_function(k: u16, bounds_mode: u16, bounds: [f32; 2]) -> crate::h1::Functio
         flags: 0,
         function: 0,
         scale_function_by: k,
+        square_threshold: 0.0,
+        result_scale: 0.0,
         scale_period_by: 0,
         map_to: 0,
         add: 0,
@@ -2080,6 +2084,27 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
     assert_eq!(primary_scale(3, &got), "c_out");
     assert_eq!(primary_scale(4, &got), "");
     assert_eq!(primary_scale(0, &got), "");
+}
+
+#[test]
+fn device_power_gain_follows_threshold_and_precedes_bounds() {
+    let inputs = crate::h1::FunctionInputs { device: [1, 0, 0, 0], ..Default::default() };
+    let mut ramp = h1_function(1, 0, [0.0, 1.0]);
+    ramp.result_scale = 10.0;
+    let mut switch = ramp.clone();
+    switch.square_threshold = 0.5;
+    let mut notes = Vec::new();
+    let specs = crate::functions::convert(&[ramp, switch], &inputs, &mut notes);
+    assert!(notes.is_empty(), "{notes:?}");
+    for (i, spec) in specs.iter().enumerate() {
+        let spec = spec.as_ref().unwrap();
+        assert_eq!(spec.import, "power");
+        let f = tags::effects::function::Function::parse(&spec.data).unwrap();
+        for (power, expected) in [(0.05, [0.5, 0.0]), (0.5, [1.0, 0.0]), (0.5f32.next_up(), [1.0, 1.0])] {
+            let actual = f.range[0] + (f.range[1] - f.range[0]) * f.evaluate(power, 0.0);
+            assert_eq!(actual, expected[i]);
+        }
+    }
 }
 
 #[test]

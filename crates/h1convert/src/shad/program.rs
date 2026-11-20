@@ -9,6 +9,7 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub mod force_field;
 pub mod model_defaults;
 pub mod model_effects;
 pub mod scope_filters;

@@ -212,7 +212,7 @@ impl Plasma {
     }
 }
 
-fn property(
+pub(super) fn property(
     input: Option<&'static str>,
     period: f32,
     kind: FunctionType,
@@ -257,26 +257,26 @@ const ANIMATION: AnimTree = AnimTree {
 };
 
 pub fn plasma_stem(pass: TagId) -> Result<Block> {
+    transparent_stem(
+        pass,
+        2,
+        &[0x1b0, 0x1b1, 0x1b2, 0x1b3, 0x1b4, 0x1b5, 0x1aa, 0x1ab, 0x78],
+    )
+}
+
+/// A layer-15 material binding consecutive local sampler and vector parameters.
+pub(super) fn transparent_stem(pass: TagId, samplers: u8, vectors: &[u16]) -> Result<Block> {
     let range = |start, count| IndexRange { start, count };
     let mut layers = vec![IndexRange::default(); 25];
     layers[15] = range(0, 1);
-    let mut bindings = vec![
-        ParameterBinding {
-            word: 0,
+    let mut bindings: Vec<_> = (0..samplers)
+        .map(|source| ParameterBinding {
+            word: u16::from(source),
             b2: 0,
-            source: 0,
-        },
-        ParameterBinding {
-            word: 1,
-            b2: 0,
-            source: 1,
-        },
-    ];
-    // Full XYZW copies to matrix rows and colour attributes, then c[26].w.
-    for (source, word) in [0x1b0, 0x1b1, 0x1b2, 0x1b3, 0x1b4, 0x1b5, 0x1aa, 0x1ab, 0x78]
-        .into_iter()
-        .enumerate()
-    {
+            source,
+        })
+        .collect();
+    for (source, &word) in vectors.iter().enumerate() {
         bindings.push(ParameterBinding {
             word,
             b2: 0,
@@ -299,8 +299,8 @@ pub fn plasma_stem(pass: TagId) -> Result<Block> {
                 implementations: range(0, 1),
             }],
             implementations: vec![ImplementationBindings {
-                bitmaps: range(0, 2),
-                vertex_constants: range(2, 9),
+                bitmaps: range(0, u16::from(samplers)),
+                vertex_constants: range(u16::from(samplers), vectors.len() as u16),
                 ..Default::default()
             }],
             bindings,

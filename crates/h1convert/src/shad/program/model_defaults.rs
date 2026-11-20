@@ -52,6 +52,31 @@ impl ModelDefaults {
         }
         let multipurpose = map(shad::SOSO_MULTIPURPOSE)?.id;
         let word = |at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
+        if !multipurpose.is_none() {
+            let scalar = |at: usize| f32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+            // The emission pass binds the identity UV transform. H1 one
+            // may translate by complete repeats or rotate by complete turns.
+            let identity =
+                [(0xfc, 1.0), (0x10c, 1.0), (0x11c, 360.0)]
+                    .into_iter()
+                    .all(|(at, wrap)| {
+                        word(at) == 0
+                            && match word(at + 2) {
+                                0 => scalar(at + 12) % wrap == 0.0,
+                                1 => true,
+                                _ => false,
+                            }
+                    });
+            if !identity
+                || [0x9c, 0xa0]
+                    .into_iter()
+                    .any(|at| !matches!(scalar(at), 0.0 | 1.0))
+            {
+                return Err(Error::Invalid(
+                    "unsupported model illumination mask transform",
+                ));
+            }
+        }
         let slot = |at| shad::halo2_change_colour_slot(word(at));
         let rgb = |at: usize| -> [f32; 3] {
             std::array::from_fn(|k| {
@@ -331,6 +356,8 @@ mod tests {
         let mut masked = bytes;
         masked[0xc8..0xcc].copy_from_slice(&123u32.to_le_bytes());
         assert_eq!(read(&masked).multipurpose, Some(h1map::TagId(123)));
+        masked[0x10e] = 6;
+        assert!(ModelDefaults::read(soso, &masked).is_err());
     }
 
     #[test]

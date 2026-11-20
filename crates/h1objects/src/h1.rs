@@ -108,14 +108,25 @@ pub struct Object {
 /// darken by and `+2` scale by (i16 function sources), `+4` flags, `+8`
 /// and `+0x14` the lower and upper bound (RGB) a function scales
 /// between, `+0x20` its permutations (`0x1c` each). Only the
-/// permutations are kept: they are the colour an object starts with.
+/// permutations set the initial colour. Devices also update it from their function sources.
 /// V (docs/halo1/objects.md "Change colours"): the boulders' and trees'
 /// one permutation or three, the campaign cyborg's C (the Chief's green,
 /// lower and upper bound equal); the multiplayer cyborg's A and B have a
 /// function and no permutation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChangeColour {
+    pub function: Option<ColourFunction>,
     pub permutations: Vec<ColourPermutation>,
+}
+
+/// The device colour evaluator interpolates its two RGB bounds, then darkens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourFunction {
+    pub darken: Option<&'static str>,
+    pub scale: Option<&'static str>,
+    pub flags: u32,
+    pub lower: [f32; 3],
+    pub upper: [f32; 3],
 }
 
 /// A change colour's permutation (`0x1c`): `+0` weight, `+4` lower and
@@ -134,7 +145,7 @@ impl ChangeColour {
     /// Stride of its permutations (`+0x20`).
     pub const PERMUTATION_SIZE: usize = 0x1c;
 
-    fn read(map: &H1Map, e: &[u8]) -> Result<Self> {
+    fn read(map: &H1Map, e: &[u8], device: Option<&FunctionInputs>) -> Result<Self> {
         let permutations = elements(map, e, 0x20, Self::PERMUTATION_SIZE)?
             .into_iter()
             .map(|p| ColourPermutation {
@@ -143,7 +154,35 @@ impl ChangeColour {
                 upper: vec3(p, 0x10),
             })
             .collect();
-        Ok(Self { permutations })
+        let function = if let Some(inputs) = device.filter(|_| u32_at(e, 0) != 0) {
+            let name = |selector: u16| match selector {
+                0 => Ok(None),
+                1..=4 => {
+                    let slot = usize::from(selector - 1);
+                    // d20's small end door explicitly selects an unassigned input.
+                    // This input slot starts at zero in H1.
+                    if inputs.object[slot] == 0 && inputs.device[slot] == 0 {
+                        Ok(Some("zero"))
+                    } else {
+                        crate::functions::input_import(inputs, slot).map(Some).ok_or_else(|| {
+                            Error::Invalid(format!("unmapped device colour input {selector}"))
+                        })
+                    }
+                }
+                5..=8 => Ok(Some(crate::functions::OUTPUT_NAMES[usize::from(selector - 5)])),
+                _ => Err(Error::Invalid(format!("invalid device colour source {selector}"))),
+            };
+            Some(ColourFunction {
+                darken: name(u16_at(e, 0))?,
+                scale: name(u16_at(e, 2))?,
+                flags: u32_at(e, 4),
+                lower: vec3(e, 8),
+                upper: vec3(e, 0x14),
+            })
+        } else {
+            None
+        };
+        Ok(Self { permutations, function })
     }
 
     /// `h1` (A to D, as read) in Halo 2's four slots: slot `k` holds the
@@ -181,8 +220,10 @@ impl Object {
                 .map(|e| reference(map, e, 0))
                 .collect())
         };
+        let object_type = u16_at(b, 0);
+        let device_inputs = matches!(object_type, 7..=9).then(|| FunctionInputs::read(b, object_type));
         Ok(Self {
-            object_type: u16_at(b, 0),
+            object_type,
             flags: u16_at(b, 2),
             bounding_radius: f32_at(b, 4),
             acceleration_scale: f32_at(b, 0x20),
@@ -197,7 +238,7 @@ impl Object {
             widgets: refs(0x14c, 0x20)?,
             change_colours: elements(map, b, 0x164, ChangeColour::SIZE)?
                 .into_iter()
-                .map(|e| ChangeColour::read(map, e))
+                .map(|e| ChangeColour::read(map, e, device_inputs.as_ref()))
                 .collect::<Result<_>>()?,
         })
     }
@@ -1238,6 +1279,9 @@ pub struct Function {
     pub function: u16,
     /// `+0xc`: 0 none, 1 to 4 A to D in, 5 to 8 A to D out.
     pub scale_function_by: u16,
+    /// +0x18 thresholds the signal before mapping, +0x38 scales the mapped result before bounds.
+    pub square_threshold: f32,
+    pub result_scale: f32,
     /// `+0x8` scale period by, `+0x1e` map to (0 linear), `+0x22` add,
     /// `+0x24` scale result by: any nonzero one is a shape this
     /// conversion doesn't carry.
@@ -1265,6 +1309,8 @@ pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
             scale_period_by: u16_at(f, 8),
             function: u16_at(f, 0xa),
             scale_function_by: u16_at(f, 0xc),
+            square_threshold: f32_at(f, 0x18),
+            result_scale: f32_at(f, 0x38),
             step_count: i16_at(f, 0x1c),
             map_to: u16_at(f, 0x1e),
             sawtooth_count: i16_at(f, 0x20),

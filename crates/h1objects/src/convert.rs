@@ -2478,10 +2478,24 @@ impl<'a> Converter<'a> {
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(hlmt);
+        // The shader may consume a device function even when it has no attachments.
+        let (attachments, creation, functions) =
+            self.object_attachments(self.h1.tag_data(tag)?, &dev.object, &mut rep)?;
+        for (slot, colour) in dev.object.change_colours.iter_mut().enumerate() {
+            let Some(binding) = &colour.function else { continue };
+            let missing = [binding.darken, binding.scale].into_iter().flatten().find(|name| {
+                crate::functions::OUTPUT_NAMES.contains(name)
+                    && !functions.iter().any(|f| f.export == *name)
+            });
+            if let Some(name) = missing {
+                rep.no_home.push(format!("change colour {slot}: output {name} has no converted function"));
+                colour.function = None;
+            }
+        }
         let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
-        let bytes = self.h1.tag_data(tag)?;
-        let root =
-            self.with_object_attachments(*group, "devi.obje", root, bytes, &dev.object, &mut rep)?;
+        let root = attachments_conv::with_attachments(
+            *group, "devi.obje", root, &attachments, creation, &functions, &dev.object.change_colours,
+        )?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
         );
