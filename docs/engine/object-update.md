@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
 Status: Partly built. The dispatcher, the body table and the installer exist with no bodies; slices 1 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add them.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original, feature `differential`), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original, feature `differential`), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,

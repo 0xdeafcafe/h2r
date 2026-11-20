@@ -1,5 +1,5 @@
 //! Shared by interactive play, headless simulation and dedicated hosts.
-use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::sim_physics::PORTS;
 use runtime::{CpuAbi, Guest};
 

@@ -2,7 +2,7 @@
 //! (design: docs/engine/sim-rewrite-objects.md section 5; contracts:
 //! docs/engine/object-update.md). Everything here runs under
 //! `impl.sim.native.objects` (default off), installed by
-//! `hooks::sim_objects`.
+//! `sim_bridge::sim_objects`.
 //!
 //! A ported function is a [`Body`]: retail-site arms over the retail stack
 //! frame. At every guest call it makes, `esp`, the frame slots it reads

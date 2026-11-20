@@ -62,13 +62,13 @@ mod tests {
 
     #[test]
     fn a_plan_registers_every_port_installed_or_not() {
-        let switches = crate::Switches::defaults().with("impl.sim.native_unit_pose", true);
-        let mut registry = crate::Registry::new(switches);
+        let switches = hooks::Switches::defaults().with("impl.sim.native_unit_pose", true);
+        let mut registry = hooks::Registry::new(switches);
         registry
             .add(&crate::sim_native::SimNative::for_tests())
             .unwrap();
         registry.add(&crate::sim_physics::NativePhysics).unwrap();
-        registry.build(&crate::Base).unwrap();
+        registry.build(&hooks::Base).unwrap();
         let status = SHADOW.status();
         for name in every_switch() {
             let port = status.ports.iter().find(|p| p.name == name);

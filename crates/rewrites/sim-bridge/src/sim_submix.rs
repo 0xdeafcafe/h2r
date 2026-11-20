@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy, points};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy, points};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 const SOUND_GLOBALS: u32 = 0x0051_ebe4;
@@ -91,7 +91,7 @@ fn submix(cpu: &mut CpuAbi, ctx: &mut ExecCtx, _: u32) -> Result<TransferAbi, Gu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Base, Plan, Registry, Switches};
+    use hooks::{Base, Plan, Registry, Switches};
     use runtime::exec::HARNESS_EXIT;
     use runtime::guest::Permissions;
     use runtime::{Dispatch, Event, Guest, Runner, Runtime};

@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+sim-bridge = { path = "../../rewrites/sim-bridge" }
 film = { path = "../../live/film" }
 rustc-hash = "2"
 xbe.workspace = true
