@@ -573,6 +573,37 @@ impl Live {
         }))
     }
 
+    /// Withdraw a matchmaking allocation whose cohort lost eligibility.
+    pub(crate) async fn withdraw_pending_match_host(&self, lease_id: &str) -> ApiResult<()> {
+        let _write = self.hosts.writes.lock().await;
+        let version = self.hosts.version();
+        let row = self.require_host(lease_id)?;
+        let at = now_ms();
+        match row.state {
+            // The start task owns any reference that arrives after this event.
+            // Its existing late-start path disposes of that resource.
+            HostState::Requested => {
+                self.record_host_end(version, &row, EndReason::Stopped, row.players, at).await
+            }
+            HostState::Booting | HostState::Joinable => {
+                if let Err(error) = self
+                    .stop_host_locked(version, &row, EndReason::Stopped, row.players, at)
+                    .await
+                {
+                    // Keep the rejected host closed and let terminal cleanup retry.
+                    eprintln!("live: deferring stop of rejected host {lease_id}: {error}");
+                    let row = self.require_host(lease_id)?;
+                    if row.active() {
+                        self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, row.players, at)
+                            .await?;
+                    }
+                }
+                Ok(())
+            }
+            HostState::Playing | HostState::Ended | HostState::Failed => Ok(()),
+        }
+    }
+
     pub async fn admin_stop_host(
         &self,
         bearer: Option<&str>,

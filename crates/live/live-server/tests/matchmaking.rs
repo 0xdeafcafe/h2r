@@ -19,7 +19,7 @@ use live_server::{
     store::MemoryStore,
 };
 use serde_json::{Value, json};
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use tokio::sync::Notify;
 use tower::ServiceExt;
 
@@ -73,6 +73,7 @@ fn candidates(resp: Resp) -> Vec<Candidate> {
 struct GatedProvider {
     started: Notify,
     release: Notify,
+    stops: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -88,6 +89,7 @@ impl HostProvider for GatedProvider {
     }
 
     async fn stop(&self, _lease_id: &str, _provider_ref: &str) -> Result<(), HostError> {
+        self.stops.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -394,31 +396,45 @@ async fn pack_ticket(h: &Harness, player: &User, port: u16, has_map_pack: bool, 
     }), None).await
 }
 
-async fn pack_cohort(h: &Harness) -> ([User; 4], Assignment) {
-    let players = [
+async fn cohort_players(h: &Harness) -> [User; 4] {
+    [
         h.create("Pack First").await,
         h.create("Pack Second").await,
         h.create("Pack Third").await,
         h.create("Pack Fourth").await,
-    ];
-    for (player, port) in players.iter().zip(COHORT_PORTS) {
-        candidates(pack_ticket(h, player, port, true, json!([])).await);
-    }
-    let mut assignment = None;
+    ]
+}
+
+async fn cohort_probes(
+    h: &Harness,
+    players: &[User; 4],
+    owns_pack: [bool; 4],
+    rtt: impl Fn(&Candidate) -> u16,
+) -> Value {
     for (i, (player, port)) in players.iter().zip(COHORT_PORTS).enumerate() {
-        let targets = candidates(pack_ticket(h, player, port, true, json!([])).await);
+        candidates(pack_ticket(h, player, port, owns_pack[i], json!([])).await);
+    }
+    let mut last = Value::Null;
+    for (i, (player, port)) in players.iter().zip(COHORT_PORTS).enumerate() {
+        let targets = candidates(pack_ticket(h, player, port, owns_pack[i], json!([])).await);
         let samples = targets.iter().map(|target| json!({
-            "target": target.xuid, "generation": target.generation, "rtt_ms": 40,
+            "target": target.xuid, "generation": target.generation, "rtt_ms": rtt(target),
         })).collect::<Vec<_>>();
-        let result = pack_ticket(h, player, port, true, json!(samples)).await;
-        assert_eq!(result.status, StatusCode::OK, "{}", result.error());
         if i == players.len() - 1 {
-            assignment = Some(serde_json::from_value::<Assignment>(result.json()["assignment"].clone()).unwrap());
+            last = json!(samples);
         } else {
-            assert_eq!(result.json()["state"], "probing");
+            candidates(pack_ticket(h, player, port, owns_pack[i], json!(samples)).await);
         }
     }
-    let assignment = assignment.expect("all four players formed an assignment");
+    last
+}
+
+async fn pack_cohort(h: &Harness) -> ([User; 4], Assignment) {
+    let players = cohort_players(h).await;
+    let last = cohort_probes(h, &players, [true; 4], |_| 40).await;
+    let result = pack_ticket(h, &players[3], COHORT_PORTS[3], true, last).await;
+    assert_eq!(result.status, StatusCode::OK, "{}", result.error());
+    let assignment: Assignment = serde_json::from_value(result.json()["assignment"].clone()).unwrap();
     assert!(assignment.has_map_pack);
     (players, assignment)
 }
@@ -498,4 +514,101 @@ async fn pack_assignment_keeps_join_addresses_and_invites_within_its_roster() {
         ).await;
         assert_eq!(response.status, expected);
     }
+}
+
+#[tokio::test]
+async fn mixed_cohort_uses_a_peer_when_the_registered_host_is_configured_for_pack() {
+    let h = start_driven(Arc::new(MemoryStore::new()), Policy {
+        admins: vec![live_proto::Gamertag::new("QueueAdmin").unwrap()],
+        ..Default::default()
+    }).await;
+    h.live.configure_dedicated_matchmaking(|name| match name {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(r#"{"2":{"map":"turf"}}"#.into()),
+        _ => None,
+    }).unwrap();
+    let admin = h.create("QueueAdmin").await;
+    let registered = h.create("Pack Hosted").await;
+    let path = format!("/v1/matchmaking/dedicated/{}", registered.xuid);
+    assert_eq!(write(&h, &admin, Method::PUT, &path, json!(null), None).await.status, StatusCode::NO_CONTENT);
+    candidates(write(&h, &registered, Method::PUT, "/v1/matchmaking/queue", json!({
+        "hopper": HOPPER, "port": 31040, "dedicated": true, "has_map_pack": true,
+    }), None).await);
+
+    let players = cohort_players(&h).await;
+    let last = cohort_probes(&h, &players, [true, false, true, false], |target| {
+        if target.xuid == registered.xuid { 15 } else { 50 }
+    }).await;
+    let result = pack_ticket(&h, &players[3], COHORT_PORTS[3], false, last).await;
+    assert_eq!(result.status, StatusCode::OK, "{}", result.error());
+    let body = result.json();
+    assert_eq!(body["assignment"]["has_map_pack"], false);
+    let assignment: Assignment = serde_json::from_value(body["assignment"].clone()).unwrap();
+    assert!(!assignment.dedicated);
+    assert_ne!(assignment.host, registered.xuid);
+    assert_eq!(assignment.members.len(), players.len());
+}
+
+#[tokio::test]
+async fn legacy_pack_only_hopper_rejects_missing_or_false_capability() {
+    let h = common::harness().await;
+    let user = h.create("Future Host").await;
+    let mut file = live_proto::hopper::HopperFile::default_set();
+    let mut pack = file.entry(HOPPER as usize, 0).unwrap();
+    pack.map_id = u32::MAX - 1;
+    file.set_entries(HOPPER as usize, &[pack]).unwrap();
+    // Seed a file published before the disc fallback became mandatory.
+    live_server::admin::publish(
+        &h.live, live_proto::HALO_2_TITLE_ID, live_proto::hopper::HALO_2_HOPPER_FILE,
+        &file.build(),
+    ).await.unwrap();
+
+    assert_eq!(ticket(&h, &user, 31000, false, json!([])).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(pack_ticket(&h, &user, 31000, false, json!([])).await.status, StatusCode::FORBIDDEN);
+    assert!(candidates(pack_ticket(&h, &user, 31000, true, json!([])).await).is_empty());
+}
+
+#[tokio::test]
+async fn pack_capability_loss_withdraws_the_boot_and_stops_a_late_provider() {
+    use live_proto::hosts::{EndReason, HostState};
+
+    let h = start_driven(Arc::new(MemoryStore::new()), Policy::default()).await;
+    h.live.configure_dedicated_matchmaking(|name| match name {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(r#"{"2":{"map":"turf"}}"#.into()),
+        _ => None,
+    }).unwrap();
+    h.live.set_host_config(HostConfig {
+        live_url: "https://live.test".into(),
+        data_url: "https://private.test/bundle".into(),
+        data_sha256: "ab".repeat(32),
+        archive: "dual".into(),
+        max_hosts: 4,
+    });
+    let provider = Arc::new(GatedProvider::default());
+    h.live.set_host_provider(provider.clone());
+    let players = cohort_players(&h).await;
+    let last = cohort_probes(&h, &players, [true; 4], |_| 40).await;
+    let forming = pack_ticket(&h, &players[3], COHORT_PORTS[3], true, last);
+    tokio::pin!(forming);
+    tokio::select! {
+        biased;
+        response = &mut forming => panic!("matched before the provider started: {}", response.json()),
+        _ = provider.started.notified() => {}
+    }
+    let waiting = pack_ticket(&h, &players[0], COHORT_PORTS[0], true, json!([])).await;
+    assert_eq!(waiting.status, StatusCode::OK, "{}", waiting.error());
+    let assignment: Assignment = serde_json::from_value(waiting.json()["assignment"].clone()).unwrap();
+    let id = assignment.host_lease.unwrap();
+    assert_eq!(h.live.host_view(&id).unwrap().state, HostState::Requested);
+
+    let changed = pack_ticket(&h, &players[0], COHORT_PORTS[0], false, json!([])).await;
+    assert_eq!(changed.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.live.host_view(&id).unwrap().reason, Some(EndReason::Stopped));
+    provider.release.notify_one();
+    assert!(candidates(forming.await).is_empty());
+    assert_eq!(provider.stops.load(Ordering::Relaxed), 1);
+    let host = h.live.host_view(&id).unwrap();
+    assert!(matches!(host.state, HostState::Ended | HostState::Failed));
+    assert_eq!(host.reason, Some(EndReason::Stopped));
 }

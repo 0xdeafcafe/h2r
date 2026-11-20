@@ -65,17 +65,20 @@ struct Waiting {
 }
 
 impl Waiting {
-    fn host(&self) -> Host {
-        Host {
+    fn host(&self, dedicated_uses_pack: bool) -> Option<Host> {
+        let requires_map_pack = self.dedicated && dedicated_uses_pack;
+        (!requires_map_pack || self.has_map_pack).then_some(Host {
             xuid: self.candidate.xuid,
             dedicated: self.dedicated,
             connectivity: self.connectivity,
-        }
+            requires_map_pack,
+        })
     }
     fn entrant(&self) -> Entrant<'_> {
         Entrant {
             xuid: self.candidate.xuid,
             level: self.level,
+            has_map_pack: self.has_map_pack,
             since: self.since,
             samples: &self.samples,
         }
@@ -224,16 +227,7 @@ struct Lineup {
     map_pack_only: [bool; HOPPERS],
 }
 
-/// Session map names can be scenario paths, file stems, or display names.
-pub(crate) fn map_pack_map(map: &str) -> bool {
-    let name = map.trim().rsplit(['/', '\\']).next().unwrap_or_default();
-    let stem = name
-        .rsplit_once('.')
-        .filter(|(_, ext)| ext.eq_ignore_ascii_case("map"))
-        .map_or(name, |(stem, _)| stem);
-    content::map_pack::is_map(stem)
-        || content::map_pack::MAPS.iter().any(|(_, title)| title.eq_ignore_ascii_case(stem))
-}
+pub(crate) use content::map_pack::is_map_name as map_pack_map;
 
 fn pack_only(file: &HopperFile, index: usize) -> bool {
     file.entries(index).is_ok_and(|entries| {
@@ -250,6 +244,11 @@ pub(crate) fn reported_map_pack(json: &[u8]) -> Option<bool> {
         has_map_pack: Option<bool>,
     }
     serde_json::from_slice::<Report>(json).ok()?.has_map_pack
+}
+
+enum Submission {
+    Reply(Queue, Option<HostLease>),
+    MapPackLost(Option<String>),
 }
 
 impl Matchmaker {
@@ -317,11 +316,13 @@ impl Matchmaker {
         true
     }
 
-    fn booting_host(&self, xuid: Xuid, hopper: u32) -> Option<(String, String)> {
+    fn booting_host(&self, xuid: Xuid, ticket: &Ticket) -> Option<(String, String)> {
         self.leases.values().find_map(|lease| {
             let assignment = &lease.assignment;
             if matches!(lease.placement, Placement::Booting { .. })
-                && assignment.hopper == hopper
+                && assignment.hopper == ticket.hopper
+                // Keep the bound host ID for submit to withdraw on capability loss.
+                && (!assignment.has_map_pack || ticket.has_map_pack)
                 && assignment.members.contains(&xuid)
             {
                 return Some((assignment.id.clone(), assignment.host_lease.clone()?));
@@ -344,7 +345,7 @@ impl Matchmaker {
         clock: i64,
         provider: Option<ProviderKind>,
         live: &Live,
-    ) -> Result<(Queue, Option<HostLease>), ApiError> {
+    ) -> Result<Submission, ApiError> {
         self.expire(clock);
         if ticket.dedicated && !self.dedicated.contains_key(&xuid) {
             return Err(forbidden("a dedicated host must be registered by an operator"));
@@ -358,10 +359,11 @@ impl Matchmaker {
             }
             if lease.assignment.has_map_pack && !ticket.has_map_pack {
                 let id = id.clone();
+                let host = lease.assignment.host_lease.clone();
                 self.leases.remove(&id);
-                return Err(forbidden("the assignment requires the Multiplayer Map Pack"));
+                return Ok(Submission::MapPackLost(host));
             }
-            return Ok((lease.queue(xuid, &live.model), None));
+            return Ok(Submission::Reply(lease.queue(xuid, &live.model), None));
         }
 
         let index = ticket.hopper as usize;
@@ -407,7 +409,7 @@ impl Matchmaker {
             self.leases.insert(lease.assignment.id.clone(), lease);
             request = host_request;
             if let Some(reply) = reply {
-                return Ok((reply, request));
+                return Ok(Submission::Reply(reply, request));
             }
         }
         let reply = Queue::Probing {
@@ -419,7 +421,7 @@ impl Matchmaker {
                 .cloned()
                 .collect(),
         };
-        Ok((reply, request))
+        Ok(Submission::Reply(reply, request))
     }
 }
 
@@ -492,10 +494,6 @@ impl Bucket {
         Ok(())
     }
 
-    fn group_owns_map_pack(&self, group: &[Entrant<'_>]) -> bool {
-        group.iter().all(|player| self.waiting[&player.xuid].has_map_pack)
-    }
-
     fn assign(
         &mut self,
         hopper: u32,
@@ -506,16 +504,19 @@ impl Bucket {
     ) -> Result<Option<(Lease, Option<HostLease>)>, ApiError> {
         let players: Vec<_> = self.waiting.values().filter(|p| !p.dedicated)
             .map(Waiting::entrant).collect();
-        let hosts: Vec<_> = self.waiting.values().map(Waiting::host).collect();
+        let playlist = config.playlist(hopper);
+        let dedicated_uses_pack = playlist.is_some_and(|playlist| map_pack_map(&playlist.map));
+        let hosts: Vec<_> = self.waiting.values()
+            .filter_map(|w| w.host(dedicated_uses_pack))
+            .collect();
         // Reserve a fallback that satisfies the normal peer QoS window. A
         // cohort that can only reach a registered host keeps the legacy path.
         let peers: Vec<_> = hosts.iter().copied().filter(|h| !h.dedicated).collect();
-        let eligible = provider.zip(config.playlist(hopper));
-        let peer_group = eligible.as_ref()
-            .and_then(|(_, playlist)| {
-                let group = selection::group(&players, &peers, rules.size, clock)?;
-                (!map_pack_map(&playlist.map) || self.group_owns_map_pack(&group)).then_some(group)
-            });
+        let eligible = provider.zip(playlist);
+        let peer_group = eligible.as_ref().and_then(|_| {
+            let group = selection::group(&players, &peers, rules.size, clock)?;
+            (!dedicated_uses_pack || selection::owns_map_pack(&group)).then_some(group)
+        });
         let (group, candidates, ad_hoc) = match peer_group {
             Some(group) => (Some(group), peers.as_slice(), eligible),
             None => (selection::group(&players, &hosts, rules.size, clock), hosts.as_slice(), None),
@@ -539,7 +540,7 @@ impl Bucket {
             teams,
             rtt_ms: selected.rtt_ms,
             host_lease: None,
-            has_map_pack: self.waiting[&host].has_map_pack && self.group_owns_map_pack(&group),
+            has_map_pack: self.waiting[&host].has_map_pack && selection::owns_map_pack(&group),
         };
         let mut placement = Placement::PeerOrRegistered;
         let mut until = clock + ASSIGNMENT_SECONDS;
@@ -704,12 +705,12 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
     let endpoint = SocketAddrV4::new(addr, ticket.port);
     let clock = now();
     let provider = live.host_provider_kind();
-    let (mut result, request) = {
+    let submission = {
         let mut matcher = live.matchmaking.lock().unwrap();
         if let Some(report) = map_pack_report {
             matcher.report_map_pack(xuid, report, clock);
         }
-        if let Some((assignment, lease_id)) = matcher.booting_host(xuid, ticket.hopper) {
+        if let Some((assignment, lease_id)) = matcher.booting_host(xuid, &ticket) {
             // Provider callbacks also take the matcher lock.
             drop(matcher);
             let progress = BootProgress::from_view(live.host_view(&lease_id));
@@ -719,6 +720,17 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
             }
         }
         matcher.submit(ticket, endpoint, xuid, clock, provider, &live)?
+    };
+    let (mut result, request) = match submission {
+        Submission::Reply(queue, request) => (queue, request),
+        Submission::MapPackLost(host) => {
+            if let Some(id) = host
+                && let Err(error) = live.withdraw_pending_match_host(&id).await
+            {
+                eprintln!("live: withdrawing Map Pack host {id}: {error}");
+            }
+            return Err(forbidden("the assignment requires the Multiplayer Map Pack"));
+        }
     };
     if let Some(request) = request {
         // LiveHub schedules its next sweep after this response. Wait for the

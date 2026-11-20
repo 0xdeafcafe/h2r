@@ -67,7 +67,7 @@ pub struct Assignment {
     pub dedicated: bool,
     pub members: Vec<Xuid>,
     /// All seats, and the selected host, can play the Map Pack rotation.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub has_map_pack: bool,
     /// Omitted for free-for-all. Team IDs are zero-based.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -127,6 +127,7 @@ mod tests {
         let assignment: Assignment = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(assignment.host_lease, None);
         assert!(!assignment.has_map_pack);
+        wire["has_map_pack"] = json!(false);
         assert_eq!(serde_json::to_value(&assignment).unwrap(), wire);
 
         wire["host_lease"] = json!("hl-AAAAAAAAAAAAAAAAAAAAAA");

@@ -1247,7 +1247,8 @@ Each write uses a fresh `sessions.write` token.
   are transient, so a restart starts a fresh search. Published sessions
   retain `matchmaking` in their signed `SessionCreated` event and session
   detail. It includes the host, whether it was dedicated, the roster,
-  planned teams and the per-member RTT table. A peer host has zero RTT
+  planned teams, the per-member RTT table and the boolean
+  `has_map_pack` for the whole assignment. A peer host has zero RTT
   to itself. The public debug record omits network addresses.
 
 ### Map Pack rotations
@@ -1260,9 +1261,14 @@ console without the pack. Solo searches on those hoppers enter the QoS
 queue. At the peer host's weighted pick, the block contains Map Pack
 entries only for a current all-owner assignment. Unverified host
 lobbies, including legacy and party searches, use the disc rotation.
-A downgrade while the assignment is pending invalidates it. A configured
-Map Pack map on an ad-hoc dedicated host requires the pack on every
-assigned console and in the host's data bundle.
+A downgrade invalidates the pending assignment and withdraws any
+dedicated host still starting it (`matchmaking::Matchmaker::submit` and
+`Live::withdraw_pending_match_host`). A configured Map Pack map on an
+ad-hoc dedicated host requires the pack on every assigned console and in
+the host's data bundle. A registered dedicated candidate on a configured
+Map Pack map reports its own capability and can serve an all-owner
+cohort. Mixed cohorts can still match on eligible peers
+(`matchmaking::selection`).
 
 `live_proto::hopper::retain_block_maps` compacts full entry records so
 their weights, variants and opaque fields stay intact. The native hook

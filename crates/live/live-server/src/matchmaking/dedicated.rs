@@ -260,8 +260,8 @@ mod tests {
         let a = BTreeMap::from([(ams, Some(10)), (lhr, Some(55))]);
         let b = BTreeMap::from([(ams, Some(85)), (lhr, Some(60))]);
         let members = [
-            Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &a },
-            Entrant { xuid: Xuid(2), level: 1, since: 0, samples: &b },
+            Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &a },
+            Entrant { xuid: Xuid(2), level: 1, has_map_pack: false, since: 0, samples: &b },
         ];
 
         let selected = regions.pick(&members).unwrap();
@@ -278,8 +278,8 @@ mod tests {
         let a = BTreeMap::from([(ams, Some(30)), (lhr, Some(60))]);
         let b = BTreeMap::from([(lhr, None)]);
         let members = [
-            Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &a },
-            Entrant { xuid: Xuid(2), level: 1, since: 0, samples: &b },
+            Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &a },
+            Entrant { xuid: Xuid(2), level: 1, has_map_pack: false, since: 0, samples: &b },
         ];
         let selected = regions.pick(&members).unwrap();
         assert_eq!(selected.region, "lhr");
@@ -302,7 +302,7 @@ mod tests {
     fn ties_prefer_the_default_if_it_has_complete_measurements() {
         let regions = configured_regions("lhr");
         let samples = regions.candidates().map(|probe| (probe.xuid, Some(15))).collect();
-        let members = [Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &samples }];
+        let members = [Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &samples }];
         assert_eq!(regions.pick(&members).unwrap().region, "lhr");
     }
 

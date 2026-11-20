@@ -1334,9 +1334,17 @@ impl Worker {
     /// printed with its reason and the session is dropped.
     fn map_ready(&self, s: &live_proto::session::Session, join: bool) -> bool {
         if s.advertisement.hopper_id.is_some()
-            && s.advertisement.map.as_deref().is_some_and(content::map_pack::is_map)
-            && self.maps.as_ref().is_some_and(|gate| !gate.has_map_pack())
+            && self.maps.as_ref().is_none_or(|gate| !gate.has_map_pack())
+            && let Some(map) = s
+                .advertisement
+                .map
+                .as_deref()
+                .filter(|map| content::map_pack::is_map_name(map))
         {
+            eprintln!(
+                "live: not joining {}'s game: {map:?} requires the Multiplayer Map Pack (h2 import-mappack)",
+                s.host_gamertag,
+            );
             return false;
         }
         let (Some(gate), Some(c)) = (&self.maps, &self.connection) else {
