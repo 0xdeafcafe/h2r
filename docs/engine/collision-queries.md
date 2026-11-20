@@ -185,7 +185,7 @@ cargo test -p sim-core
 cargo test -p sim-collision
 cargo test -p hooks sim_native
 cargo test -p agent collision
-H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test sim_collision_differential
+H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::
 ```
 
 The differential test runs each entry three ways from the same synthetic

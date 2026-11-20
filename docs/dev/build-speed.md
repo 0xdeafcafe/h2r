@@ -4,7 +4,7 @@ How long `cargo check` and `cargo test` take on this workspace, what was
 changed to shorten them, how to measure it, and what is left. The game
 image's clang build is a separate pipeline with its own notes:
 [BUILD-CACHE.md](../lifter/BUILD-CACHE.md),
-[build-perf.md](../lifter/build-perf.md) and the unmerged `build-speed-2`
+[build-perf.md](../lifter/notes/build-perf.md) and the unmerged `build-speed-2`
 branch (optimisation tiers for the generated C).
 
 Status: the changes below are committed but **not measured**. They were
@@ -52,7 +52,7 @@ relinks 50 executables of 30 MiB.
 appears as `["default", "gpu", "local-io", "movie-playback"]` (from
 `cargo test -p boot`) and as `["gpu", "local-io", "movie-playback"]` (from
 `cargo test -p cli`, which turns the three on one by one). `input`,
-`agent`, `bink-hle`, `feature` and `dsound` show the same pair. Cargo
+`agent`, `bink-hle`, `hooks` and `dsound` show the same pair. Cargo
 resolves features over the packages named on the command line, so every
 separate `cargo test -p X` can build its own copy of everything `X`
 shares with the others. `syn` has 7 copies and `tokio` 4.
@@ -152,9 +152,9 @@ itself. If one turns up, give that file a `[[test]]`; nothing else
 changes. Under nextest there is no difference: every test already gets
 its own process.
 
-**Why the other large crates were not merged.** `feature`, `boot`,
+**Why the other large crates were not merged.** `hooks`, `boot`,
 `kernel`, `runtime`, `emit` and `xapi` have process-wide state that
-tests in different files set: `feature`'s installed hosts and draw
+tests in different files set: `hooks`'s installed hosts and draw
 counters, `boot::fallback::set_recovery`, `kernel/tests/files.rs`'s
 global allocator, `emit/tests/pgo.rs` and `boot/tests/headless_interp.rs`
 setting environment variables, the runtime's signal handler and its 16
@@ -539,7 +539,7 @@ These are estimates from the counts above.
   typically a tenth to a fifth of an unoptimised rlib) and shorter
   links. Modest.
 - **One command for a full sweep.** Removes the duplicate compiles of
-  `boot`, `feature`, `input`, `agent`, `dsound` and `bink-hle`, and of
+  `boot`, `hooks`, `input`, `agent`, `dsound` and `bink-hle`, and of
   the 79 third-party crates with several feature sets. Likely the
   largest saving in a cold sweep of everything, and it costs nothing to
   try.
@@ -561,7 +561,7 @@ These are estimates from the counts above.
    63 MiB per build, more than any other crate). Its owner can use the
    same `tests/it.rs` and `scripts/it_guard.rs`. Files that bind fixed
    ports or set process-wide state keep a `[[test]]`.
-2. **Merge `boot`, `kernel`, `runtime`, `emit`, `xapi` and `feature`**
+2. **Merge `boot`, `kernel`, `runtime`, `emit`, `xapi` and `hooks`**
    (105 files). Needs test runs: merge everything, run the `it` binary
    repeatedly, and move each file that fails in company to a
    `[[test]]`. `boot` first: its executables are the largest.
