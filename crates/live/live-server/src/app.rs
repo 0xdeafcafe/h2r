@@ -824,15 +824,18 @@ impl Live {
     }
 
     pub(crate) fn server_event(&self, stream: String, kind: &str, data: Value) -> NewEvent {
+        self.server_event_at(stream, kind, data, time::OffsetDateTime::now_utc())
+    }
+
+    pub(crate) fn server_event_at(
+        &self,
+        stream: String,
+        kind: &str,
+        data: Value,
+        at: time::OffsetDateTime,
+    ) -> NewEvent {
         let key = &self.identity.key;
-        let body = EventBody::new(
-            key,
-            &self.identity.author(),
-            &stream,
-            kind,
-            data,
-            time::OffsetDateTime::now_utc(),
-        );
+        let body = EventBody::new(key, &self.identity.author(), &stream, kind, data, at);
         NewEvent {
             jws: body.sign(key).into(),
             jws_index: None,

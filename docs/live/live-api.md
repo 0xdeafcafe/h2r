@@ -298,8 +298,7 @@ clock went back. Recordings from older senders run backwards there; a
 reader takes their frames and events in log order and starts each run
 after the one before (the web viewer's `GameClock`).
 
-A game start (`POST /v1/games`, `GameStarted`) may also say what kind of
-game it is; all five fields are optional and old senders leave them out:
+A `POST /v1/games` request can include these optional fields:
 
 | field | values | rules |
 |---|---|---|
@@ -310,10 +309,11 @@ game it is; all five fields are optional and old senders leave them out:
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
 Game summaries and `GET /v1/games/{id}` carry `kind` (inferred for old
-games) and the reported playlist and campaign fields. The game report omits
-the session ID. On a non-operator event stream or snapshot, a `GameStarted`
-session ID is redacted unless its session is publicly listable both at the
-game's start and at the time of the read. Redaction clears the signature.
+games) and the reported playlist and campaign fields. When a start names a
+session, the server records `GameSessionLinked {game_id, session_id}` on the
+operator-only `lobby-links` stream and appends `GameStarted` without the ID
+in the same transaction. Lobby visibility changes leave the signed game
+event intact. Readers obtain a joinable session from `GET /v1/games/{id}/join`.
 
 Live frames go out on the stream at up to 15 Hz, and every frame sent is
 recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`

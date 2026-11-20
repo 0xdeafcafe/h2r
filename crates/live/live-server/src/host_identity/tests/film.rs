@@ -245,6 +245,7 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
             })
             .await
             .unwrap();
+        assert!(events[0].body.data.get("session_id").is_none());
         assert_eq!(
             events
                 .iter()

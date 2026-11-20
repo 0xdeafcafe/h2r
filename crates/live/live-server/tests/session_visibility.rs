@@ -293,6 +293,27 @@ async fn game_join_uses_the_recorded_lobby_and_the_current_reader() {
         assert_eq!(r.json()["session_id"], expected);
     }
 
+    let log_url = format!("/v1/events?stream=game-{game_id}");
+    let log = h.get(&log_url).await.json();
+    let start = &log["items"][0];
+    assert_eq!(start["type"], "GameStarted");
+    let signed = live_proto::sign::SignedEvent::open(start["jws"].as_str().unwrap()).unwrap();
+    signed.verify(&h.operator.public()).unwrap();
+    assert_eq!(start["data"], signed.body.data);
+    assert!(signed.body.data.get("session_id").is_none());
+    let links = "/v1/events?stream=lobby-links";
+    assert_eq!(h.get(links).await.json()["items"], json!([]));
+    let operator = h.token(&h.operator, "server:live.test", lxm::READ);
+    let stored = h
+        .call(Method::GET, links, &[("authorization", format!("Bearer {operator}"))], Body::empty())
+        .await
+        .json();
+    assert_eq!(stored["items"][0]["type"], "GameSessionLinked");
+    assert_eq!(stored["items"][0]["data"], json!({"game_id": game_id, "session_id": session}));
+    let snapshot = h.get("/v1/snapshot").await.json();
+    assert!(snapshot["tail"].as_array().unwrap().iter().any(|row| row == start));
+    assert!(!snapshot.to_string().contains(&session));
+
     let make_public = EventBody::at_unix(
         &host.key, &host.author, &session::stream(&session), session::UPDATED,
         json!({"visibility": "public"}), now(),
@@ -303,15 +324,13 @@ async fn game_join_uses_the_recorded_lobby_and_the_current_reader() {
     ).await;
     assert_eq!(r.status, StatusCode::CREATED);
     assert_eq!(h.get(&lookup).await.json()["session_id"], session);
-    let log = h.get(&format!("/v1/events?stream=game-{game_id}")).await.json();
-    let start = &log["items"][0];
-    assert!(start["data"].get("session_id").is_none());
-    assert_eq!(start["data"]["redacted"], true);
-    assert_eq!(start["jws"], "");
+    assert_eq!(&h.get(&log_url).await.json()["items"][0], start);
+    assert_eq!(h.get(links).await.json()["items"], json!([]));
 
     let end = h.batch(&host, &game_id, &[("GameEnded", json!({"tick": 30, "reason": "quit"}))]);
     assert_eq!(h.post_batch(&host, &game_id, end).await.status, StatusCode::CREATED);
     assert_eq!(h.get(&lookup).await.json()["session_id"], Value::Null);
+    assert_eq!(&h.get(&log_url).await.json()["items"][0], start);
 }
 
 #[tokio::test]

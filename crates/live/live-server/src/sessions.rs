@@ -508,6 +508,9 @@ impl Live {
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
 /// in it counts). Only admins and the operator read host lifecycle and Theater events.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
+    if stream == crate::games::SESSION_LINKS {
+        return viewer == Viewer::Operator;
+    }
     if viewer.is_admin() {
         return true;
     }
@@ -703,20 +706,6 @@ pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_pro
     let mut w = e.to_wire();
     if viewer == Viewer::Operator {
         return Some(w);
-    }
-    // The game report can be public while the lobby ID is an invitation
-    // capability. Both the original and current lobby must be public to
-    // publish this field in the log. Join links use a separate reader check.
-    if e.body.kind == live_proto::game::GAME_STARTED
-        && let Some(session_id) = w.data["session_id"].as_str()
-    {
-        let game = e.body.stream.strip_prefix("game-").and_then(|id| s.games.get(id));
-        let public = game.is_some_and(|g| g.public_session_at_start)
-            && s.sessions.get(session_id).is_some_and(|session| session.listed_for(None, |_, _| false));
-        if !public && let Some(data) = w.data.as_object_mut() {
-            data.remove("session_id");
-            mark_redacted(&mut w);
-        }
     }
     if strip_addresses(&mut w.data) {
         mark_redacted(&mut w);
