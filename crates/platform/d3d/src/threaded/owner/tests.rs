@@ -205,3 +205,15 @@ fn two_logical_names_cannot_alias_one_physical_target_during_admission() {
     let same = [Cmd::<Pixels>::Render(RenderOp::Copy { src: 1, dst: 1 })];
     assert!(target_map(&replay, &same, 1).is_none());
 }
+
+
+#[test]
+fn a_fresh_allocation_after_a_draw_preserves_that_frames_admission() {
+    let (mut gpu, accepted, target) = device(true);
+    gpu.clear(target, None, clear(1)).unwrap();
+    let spare = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+    gpu.present(target, 0).unwrap();
+    assert_eq!(value(&mut gpu, target), 1);
+    assert_eq!(value(&mut gpu, spare), 0);
+    assert_eq!(accepted.load(Ordering::Relaxed), 1);
+}
