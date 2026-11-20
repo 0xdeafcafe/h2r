@@ -34,6 +34,7 @@ every page here and the plan to bring them to those rules.
 ## Runtime: booting and running the game (`runtime/`)
 
 - [BOOT.md](runtime/BOOT.md) (**start here**): `h2 build` and `h2 run`, the boot runner's flags and environment, stopgaps, current state
+- [boot-log.md](runtime/notes/boot-log.md): the boot milestone log and the retired stopgaps, dated
 - [switches.md](runtime/switches.md): every env var and `H2_FEATURES` switch left, one line each, and the experiments still waiting for a measurement
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
