@@ -96,6 +96,8 @@ enum Stage {
     Waiting(Arming),
     Recording(Box<Recording>),
     Graph(Arming),
+    /// The original draw report, pending the worker's choice for this device Swap.
+    Routing { swap: u64, arming: Arming, original: Box<FrameRecord> },
 }
 
 #[derive(Clone)]
@@ -256,6 +258,13 @@ impl FrameProbe {
     /// the last pass when it wants a snapshot: read it back before the
     /// present goes on.
     pub fn present(&self, n: u64) -> Option<SnapAsk> {
+        self.present_routed(n, None)
+    }
+
+    /// On an owned device the renderer selects the displayed graph or original
+    /// commands on its own thread. Keep the original report until that decision.
+    /// `swap` is device-local, while `n` numbers the run's presents on the wire.
+    pub fn present_routed(&self, n: u64, swap: Option<u64>) -> Option<SnapAsk> {
         let mut s = self.lock();
         s.presents = n;
         if !self.armed() {
@@ -263,8 +272,8 @@ impl FrameProbe {
         }
         match std::mem::replace(&mut s.stage, Stage::Idle) {
             Stage::Idle => None,
-            Stage::Graph(arming) => {
-                s.stage = Stage::Graph(arming);
+            pending @ (Stage::Graph(_) | Stage::Routing { .. }) => {
+                s.stage = pending;
                 None
             }
             Stage::Waiting(arming) => {
@@ -290,9 +299,13 @@ impl FrameProbe {
                 r.rec.ms = (r.began.elapsed().as_secs_f64() * 1e5).round() / 100.0;
                 r.rec.totals.passes = r.rec.passes.len();
                 r.rec.totals.targets = r.targets.len();
-                s.last = Some(r.rec);
-                if ask.is_none() {
-                    self.armed.store(false, Ordering::Relaxed);
+                if let Some(swap) = swap {
+                    s.stage = Stage::Routing { swap, arming: r.arming, original: Box::new(r.rec) };
+                } else {
+                    s.last = Some(r.rec);
+                    if ask.is_none() {
+                        self.armed.store(false, Ordering::Relaxed);
+                    }
                 }
                 ask
             }
@@ -302,7 +315,18 @@ impl FrameProbe {
     /// Where a snapshot the probe asked for went, or why it failed. The
     /// frame may be done already (a snapshot asked for at its present).
     pub fn snapped(&self, pass: usize, result: Result<String, String>) {
+        self.note_snap(None, pass, result);
+    }
+
+    /// A callback can arrive after a second arming. Only the request which
+    /// paid for this readback may consume it.
+    pub fn snapped_for(&self, ask: SnapAsk, result: Result<String, String>) {
+        self.note_snap(Some(ask.seq), ask.pass, result);
+    }
+
+    fn note_snap(&self, seq: Option<u64>, pass: usize, result: Result<String, String>) {
         let mut s = self.lock();
+        let belongs = |actual| seq.is_none_or(|wanted| wanted == actual);
         let snap = match result {
             Ok(file) => SnapRecord {
                 pass,
@@ -316,15 +340,15 @@ impl FrameProbe {
             },
         };
         match &mut s.stage {
-            Stage::Recording(r) => r.rec.snaps.push(snap),
-            _ => {
-                if let Some(last) = &mut s.last {
+            Stage::Recording(r) if belongs(r.arming.seq) => r.rec.snaps.push(snap),
+            Stage::Routing { original, .. } if belongs(original.seq) => original.snaps.push(snap),
+            Stage::Idle => {
+                if let Some(last) = &mut s.last && belongs(last.seq) {
                     last.snaps.push(snap);
-                }
-                if matches!(s.stage, Stage::Idle) {
                     self.armed.store(false, Ordering::Relaxed);
                 }
             }
+            _ => {}
         }
     }
 }
@@ -416,7 +440,7 @@ impl Recording {
 fn reply(s: &ProbeState) -> FrameReply {
     let arming = match &s.stage {
         Stage::Idle => None,
-        Stage::Waiting(a) | Stage::Graph(a) => Some(a),
+        Stage::Waiting(a) | Stage::Graph(a) | Stage::Routing { arming: a, .. } => Some(a),
         Stage::Recording(r) => Some(&r.arming),
     };
     FrameReply {
@@ -552,6 +576,7 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
             ));
         }
         let s = RenderStats {
+            display_frame: private_graph::display_stats(),
             private_frame: private_graph::last_stats(),
             interp: (sources.interp)().unwrap_or(Value::Null),
             pipeline: (sources.pipeline)().unwrap_or(Value::Null),

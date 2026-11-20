@@ -73,9 +73,12 @@ pub struct FrameReply {
 /// between two presents.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameRecord {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// Identifies the sealed scene and the draw mode for a private-target recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_frame: Option<crate::frame_graph::PrivateFrameStats>,
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// The arming that asked for it.
     pub seq: u64,
     /// The present that began it and the one that ended it.
@@ -242,9 +245,12 @@ pub struct SnapRecord {
 /// each `null` where that piece isn't running.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RenderStats {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
     /// The latest completed private-target draw while its renderer is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_frame: Option<crate::frame_graph::PrivateFrameStats>,
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// In-between frames (`impl.render.interpolate`, `.reproject`):
     /// `d3d::interp::InterpStats`, every field, including the hold reasons
     /// (`unsure_*`, `mismatch_*`, `dropped`).
@@ -372,9 +378,12 @@ pub struct SceneParams {
 /// (docs/graphics/framescene.md, section 4).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneReply {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
     /// The last private-target draw if it used exactly this sealed scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_frame: Option<crate::frame_graph::PrivateFrameStats>,
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// False until a scene has been sealed.
     pub sealed: bool,
     pub map_epoch: u32,

@@ -628,9 +628,13 @@ arms the recorder; the next present starts the frame and the one after
 ends it, then it disarms. `render.frame {}` reads the state and the last
 frame (`frame.seq` is the arming's number). `h2 agent frame` does both and
 waits up to 10 s; a paused or loading game presents nothing. Unarmed, the
-cost is one relaxed load per draw, clear and present in the draw wrapper
-(`boot::d3d_diag`), which sits in front of the backend, so the frame is
-the guest's as the D3D layer handed it over.
+draw diagnostics use one relaxed load per draw or clear in the D3D
+wrapper. On a device with a native frame owner, the recorder waits for
+the worker's presentation decision. An original presentation supplies
+the D3D report. A native presentation supplies the executed graph's
+attachment runs, slots, typed stages, snapshots and `display_frame`
+counters. A readback required for a guest-pass snapshot can make the
+worker present the original commands for that frame.
 
 - **The frame.** `totals` (passes, draws by outcome, vertices, clears,
   copies, reads, distinct targets); `passes`: runs of work on one colour
@@ -701,8 +705,14 @@ snapshot coverage, and times in ms including `overlap_ms` for the worker's
 execution before the game-thread join); `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
 
+`display_frame` gives the identity, lighting and backend counter deltas
+when the worker's latest presentation used the native graph. An
+original presentation clears it. The frame recorder can stay unarmed
+for these counters. `render.scene` includes them when the map epoch,
+frame and tick match its sealed scene.
+
 `private_frame` reports the counts and identity of the most recent
-successful private capture. It is absent before the first capture and
+completed private target draw. It is absent before the first capture and
 after a renderer reset. `render.scene` includes the same field when its
 sealed scene matches the private capture's map epoch, frame, tick and
 summary hash.

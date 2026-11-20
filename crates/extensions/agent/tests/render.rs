@@ -80,6 +80,15 @@ fn render_frame_and_stats_through_the_socket() {
         Err(agent_proto::CallError::Rpc(e)) => assert_eq!(e.code, code::INVALID_PARAMS),
         other => panic!("{other:?}"),
     }
+    match c.call(method::RENDER_FRAME, json!({"source": "private", "arm": true})) {
+        Err(agent_proto::CallError::Rpc(e)) => assert_eq!(e.code, code::UNAVAILABLE),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        c.call(method::RENDER_FRAME, json!({"source": "display"})).unwrap(),
+        r,
+        "requesting an unavailable private recorder preserves the displayed frame"
+    );
     let methods = c.call(method::METHODS, Value::Null).unwrap();
     assert!(methods.to_string().contains("render.frame"), "{methods}");
 

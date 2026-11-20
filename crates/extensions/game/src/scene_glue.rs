@@ -179,7 +179,11 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
     let private_frame = agent::render::private_graph::last_stats().filter(|p| {
         p.map_epoch == scene.id.map_epoch && p.frame == scene.id.frame && p.tick == scene.id.tick && p.scene_hash == hash
     });
+    let display_frame = agent::render::private_graph::display_stats().filter(|p| {
+        p.map_epoch == scene.id.map_epoch && p.frame == scene.id.frame && p.tick == scene.id.tick
+    });
     SceneReply {
+        display_frame,
         private_frame,
         sealed: true,
         map_epoch: scene.id.map_epoch as u32,

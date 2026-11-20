@@ -238,6 +238,7 @@ pub struct DiagBackend<B: Backend> {
     /// The agent's `render.frame` recorder (`agent::render::PROBE`; a
     /// test's own in tests).
     probe: &'static agent::render::FrameProbe,
+    owner_probe: bool,
     /// The current pass's colour target and size, while a frame is being
     /// recorded, so a pass asked for can be read back when it ends.
     probe_target: Option<(B::Surface, u32, u32)>,
@@ -348,6 +349,7 @@ impl<B: Backend> DiagBackend<B> {
             DiagBackend {
                 inner,
                 probe: &agent::render::PROBE,
+                owner_probe: false,
                 probe_target: None,
                 stats: Arc::clone(&stats),
                 log,
@@ -360,6 +362,12 @@ impl<B: Backend> DiagBackend<B> {
             },
             stats,
         )
+    }
+
+    /// The renderer reports a final routing decision for every Swap of this device.
+    pub fn with_owner_probe(mut self, enabled: bool) -> Self {
+        self.owner_probe = enabled;
+        self
     }
 
     /// The same, recording frames for `render.frame` into `probe`.
@@ -469,7 +477,7 @@ impl<B: Backend> DiagBackend<B> {
                     })
             }
         };
-        self.probe.snapped(ask.pass, result);
+        self.probe.snapped_for(ask, result);
     }
 }
 
@@ -1198,7 +1206,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         crate::host_perf::on_present(n);
         // render.frame: the frame's last pass is read back before the
         // present when it was asked for.
-        if let Some(ask) = self.probe.present(n) {
+        if let Some(ask) = self.probe.present_routed(n, self.owner_probe.then_some(self.in_frame)) {
             self.probe_snap(ask);
         }
         // render.capture: the present after the tick asked for is its frame.
@@ -1210,7 +1218,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(l) = &mut self.log {
             let _ = l.flush();
         }
-        self.inner.present_with_gamma(surface, flags, gamma)
+        let presented = self.inner.present_with_gamma(surface, flags, gamma);
+        if presented.is_err() && self.owner_probe {
+            agent::render::private_graph::discard_display(self.in_frame - 1);
+        }
+        presented
     }
     fn clear_rects(
         &mut self,
