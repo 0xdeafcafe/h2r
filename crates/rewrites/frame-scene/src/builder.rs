@@ -164,6 +164,7 @@ impl SceneBuilder {
         let (c, i, o) = (scene.clusters.len() as u32, scene.instances.len() as u32, scene.order.len() as u32);
         let l = scene.lights.len() as u32;
         let p = scene.layer_passes.len() as u32;
+        let d = scene.decorators.len() as u32;
         scene.views.push(View {
             key,
             cut,
@@ -176,12 +177,14 @@ impl SceneBuilder {
             aux_depth: None,
             lights: l..l,
             layers: p..p,
+            decorators: d..d,
+            decorator_remainder: 0,
         });
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
     }
 
-    fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
+    pub(crate) fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
         let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
         let open = self.open.ok_or(BuildError::NoView)?;
         Ok((scene, open))

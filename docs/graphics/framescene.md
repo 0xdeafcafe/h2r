@@ -203,6 +203,7 @@ hundred kilobytes at most (**Estimate**).
 | Object instances, parts, palette rows, lighting | the Rust object setup and render records (`native_scene_lists::setup`, `objects::record_rows`, `object_lighting`) | typed | 1 |
 | First person | the layer-3 caller in `0x0003fdf0` (return `0x00040136`): its items, each record's mode at `+4`, the owner's lighting | typed | 3 |
 | World layers 1, 3, 5, 7, 8, 20 state | each layer draw's material inputs at its begin (`scene_extract::layout::layer_inputs`: the render time, the view-wide engine inputs, the defaults) and each object item's lighting, which carries the lightmap cycle | typed | 1 (layer 3), 3 and 4 (rest) |
+| Model decorators | the layer-3 list's items of build `0x0004de20`, each instance's `v11..v15` as the draw `0x0004e260` sets them ([native-decorators.md](native-decorators.md)) | typed | 4 |
 | Lights and their geometry | the Rust light order and gathered light geometry (`native_scene_lists::lights`, `native_lights::walk`) | typed | 3 |
 | Shadow maps | the shadow layers' casters and projections (`native_shadows`) | typed | 3 |
 | Fog (layer 16), water (layer 6) | the device-resolved fog words; the water gate and items | typed | 5 |
@@ -924,10 +925,14 @@ to the guest's draws (**Code**):
     `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
     `constant_animations_take_their_values_and_other_kinds_are_named`
     and `a_scene_layer_plans_its_items_in_order_and_names_the_rest`.
-- **Layer 3.** The decorators (build `0x0004de20`) have no native stage
-  ([native-objects.md](native-objects.md), "Other builds in layer 3"),
-  the world keeps the draws of materials it does not translate, and the
-  object walk the parts it refuses (`walk_unsupported`).
+- **Layer 3.** The decorators (build `0x0004de20`) are in the scene
+  (`View::decorators`, each placement's draw with its instances'
+  `v11..v15`) and their stage's plan and instanced recording are built,
+  but no loader gives the stage the sets' geometry and programs, so the
+  guest still draws them ([native-decorators.md](native-decorators.md)).
+  The world keeps the draws of materials it does not translate and of
+  parts that lack an input of their program ([native-world.md](native-world.md)),
+  and the object walk the parts it refuses (`walk_unsupported`).
 - **The light passes and the shadow layers.** Models and rigid
   placements keep their D3D handlers ([native-lights.md](native-lights.md),
   "What a native light draws"), every layer keeps its handlers with the

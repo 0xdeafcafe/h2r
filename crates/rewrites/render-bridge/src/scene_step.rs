@@ -3,8 +3,9 @@
 //! layer 3 with its camera, visible clusters and world state, its objects
 //! extracted at the object walk, its lights at each light passes' entry
 //! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
-//! each one's draw, and a first-person view with the items of its layers
-//! at the first-person draw `0x0003fdf0`, sealed and published after
+//! each one's draw, its model decorators at its layer 3
+//! (`scene_extract::decorators`), and a first-person view with the items
+//! of its layers at the first-person draw `0x0003fdf0`, sealed and published after
 //! `render_frame_and_present`.
 //!
 //! Still game-thread, still packets, still masks: the world and object
@@ -63,6 +64,9 @@ static LAYERS: AtomicU64 = AtomicU64::new(0);
 static LAYER_ITEMS: AtomicU64 = AtomicU64::new(0);
 static LAYER_REMAINDER: AtomicU64 = AtomicU64::new(0);
 static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
+static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
 
 fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
     let mut step = STEP.lock().unwrap_or_else(|e| e.into_inner());
@@ -188,6 +192,23 @@ pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
     });
 }
 
+/// The model decorators of the base layer 3 into the open view
+/// (docs/graphics/native-decorators.md).
+fn decorators(mem: &dyn GuestMemory) {
+    let m = Ro(mem);
+    with_step(|step| match scene_extract::decorators::extract(&m, LIGHTMAP_LAYER as u8, &mut step.builder) {
+        Ok(Some(got)) => {
+            DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
+            DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
+            DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
 /// A light of the open view at its passes' entry, with its steps.
 /// Opens the view first when none is.
 pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
@@ -249,6 +270,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_layer_items", LAYER_ITEMS.load(Ordering::Relaxed)),
         ("scene_layer_remainder", LAYER_REMAINDER.load(Ordering::Relaxed)),
         ("scene_layers_unread", LAYER_UNREAD.load(Ordering::Relaxed)),
+        ("scene_decorator_draws", DECORATOR_DRAWS.load(Ordering::Relaxed)),
+        ("scene_decorator_instances", DECORATOR_INSTANCES.load(Ordering::Relaxed)),
+        ("scene_decorator_remainder", DECORATOR_REMAINDER.load(Ordering::Relaxed)),
     ]
 }
 
@@ -259,7 +283,9 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
     match (layer_site(layer, ret), layer) {
         (Site::Scene, LIGHTMAP_LAYER) => {
-            view(mem);
+            if view(mem).is_some() {
+                decorators(mem);
+            }
         }
         (Site::Scene, 1 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
         (Site::FirstPerson, _) => layer_items(mem, ViewKind::FirstPerson, layer),

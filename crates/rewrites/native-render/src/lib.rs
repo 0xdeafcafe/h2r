@@ -34,6 +34,9 @@ pub mod cull;
 pub mod decal;
 #[cfg(feature = "gpu")]
 pub mod decal_gpu;
+pub mod decorators;
+#[cfg(feature = "gpu")]
+pub mod decorators_gpu;
 pub mod effect_geometry;
 pub mod effect_immediate;
 pub mod fog;

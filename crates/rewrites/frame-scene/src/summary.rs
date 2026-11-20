@@ -6,7 +6,7 @@
 //! parts (slot, key, layer, flags, subparts, rows), lights (handle,
 //! definition, flags, additional casters, steps) and layer draws (layer,
 //! flags, remainder, material inputs, items with their owner, model, rows
-//! and lighting).
+//! and lighting) and decorator draws (`crate::decorator::summary_words`).
 //! Floats by their
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
@@ -170,6 +170,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 lighting(&mut h, i.lighting.as_ref());
             }
         }
+        crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
     }
     h.0
 }

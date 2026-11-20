@@ -15,6 +15,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::camera::Camera;
+use crate::decorator::{DecoratorDraw, DecoratorInstance};
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{LightStep, SceneLight};
 use crate::node::NodeMatrix;
@@ -168,6 +169,10 @@ pub struct View {
     pub lights: Range<u32>,
     /// Into [`FrameScene::layer_passes`], in the guest's draw order.
     pub layers: Range<u32>,
+    /// Into [`FrameScene::decorators`], in the list's order.
+    pub decorators: Range<u32>,
+    /// Decorator draws extraction refused: the guest still draws them.
+    pub decorator_remainder: u32,
 }
 
 /// An object's identity across scenes: its datum handle with its salt.
@@ -324,6 +329,10 @@ pub struct FrameScene {
     pub layer_passes: Vec<LayerPass>,
     /// Each layer pass's items; passes index ranges of it.
     pub layer_items: Vec<LayerItem>,
+    /// The views' decorator draws; views index ranges of it.
+    pub decorators: Vec<DecoratorDraw>,
+    /// Each decorator draw's instances; draws index ranges of it.
+    pub decorator_instances: Vec<DecoratorInstance>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -347,6 +356,8 @@ impl FrameScene {
         self.light_steps.clear();
         self.layer_passes.clear();
         self.layer_items.clear();
+        self.decorators.clear();
+        self.decorator_instances.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -499,6 +510,7 @@ impl FrameScene {
                 within(&i.rows, self.rows.len(), &format!("layer pass {n} item {k} rows"))?;
             }
         }
+        crate::decorator::check(self)?;
         Ok(())
     }
 }
