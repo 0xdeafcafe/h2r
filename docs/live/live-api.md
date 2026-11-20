@@ -1290,7 +1290,8 @@ and uncached.
 
 `GET /v1/titles/4D530064/files/multiplayer_hopper.dat` serves a disc-only
 rotation to legacy clients. A client with runtime rotation filtering
-requests `?map_pack=1` for the full file. `GET /v1/titles/4D530064/hopper`
+requests `?map_pack=1` for the full file. Each response's ETag identifies
+the bytes served for that variant. `GET /v1/titles/4D530064/hopper`
 always describes the published file. A hopper with Map Pack entries
 includes `has_map_pack_maps: true` in this JSON. A rotation with add-on
 entries needs at least one Halo 2 disc map when published or imported.

@@ -10,7 +10,7 @@
 //! or any other publish replaces them, and from then on the published file
 //! is served as before.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use live_proto::hopper::{HALO_2_HOPPER_FILE, HopperError, HopperFile};
 use live_proto::{HALO_2_TITLE_ID, PublishedFile, TitleId, sign};
@@ -46,25 +46,34 @@ struct CompatibilityFile {
 /// A title-file client without the rotation hook gets a disc-only copy.
 /// The canonical file remains available to the editor and capable clients.
 pub fn compatibility_download(hash: String, bytes: Vec<u8>) -> Result<(String, Vec<u8>), HopperError> {
-    static CACHE: Mutex<Option<CompatibilityFile>> = Mutex::new(None);
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(chosen) = cache.as_ref().filter(|cached| cached.source == hash) {
+    static CACHE: Mutex<Option<Arc<CompatibilityFile>>> = Mutex::new(None);
+    let cached = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|cached| cached.source == hash)
+        .cloned();
+    if let Some(chosen) = cached {
         return Ok(chosen.projected.clone().unwrap_or((hash, bytes)));
     }
-    // An unrecognised payload already falls back to the game's defaults.
-    // Leave raw title-file reads for those payloads backward compatible.
-    let mut hopper = match HopperFile::parse_legacy(&bytes) {
-        Ok(file) => file,
-        Err(_) => return Ok((hash, bytes)),
-    };
-    let projected = if hopper.retain_base_maps()? {
-        let bytes = hopper.build_checked()?;
-        Some((sign::hex(&Sha256::digest(&bytes)), bytes))
-    } else {
-        None
+
+    // Inflation and rebuild happen outside the lock. Cache a negative
+    // result too: an unrecognised payload passes through to the game,
+    // which already falls back to its defaults.
+    let projected = match HopperFile::parse_legacy(&bytes) {
+        Ok(mut hopper) => {
+            if hopper.retain_base_maps()? {
+                let bytes = hopper.build_checked()?;
+                Some((sign::hex(&Sha256::digest(&bytes)), bytes))
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
     let reply = projected.clone().unwrap_or((hash.clone(), bytes));
-    *cache = Some(CompatibilityFile { source: hash, projected });
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(Arc::new(CompatibilityFile { source: hash, projected }));
     Ok(reply)
 }
 

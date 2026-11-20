@@ -850,8 +850,17 @@ async fn get_file(
         && name == live_proto::hopper::HALO_2_HOPPER_FILE
         && !full_rotation
     {
-        crate::default_hopper::compatibility_download(meta.sha256, bytes)
-            .map_err(|e| invalid(format!("hopper file: {e}")))?
+        match crate::default_hopper::compatibility_download(meta.sha256, bytes) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("live: could not project the hopper file: {error}");
+                return Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(ErrorBody::new(ErrorCode::Unavailable, "hopper rotation unavailable")),
+                )
+                    .into_response());
+            }
+        }
     } else {
         (meta.sha256, bytes)
     };
