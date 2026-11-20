@@ -465,12 +465,9 @@ pub fn placement(env: impl Fn(&str) -> Option<String>) -> (ListLayout, PictureSp
     (layout, picture, lines)
 }
 
-/// Whether the menu is on (`H2_NO_SKULLS` or `H2_NO_SKULLS_MENU` take it
-/// out) for a store that has the skull settings.
+/// Whether the menu is on: for a store that has the skull settings.
 pub fn enabled(store: &Store) -> bool {
-    std::env::var_os("H2_NO_SKULLS").is_none()
-        && std::env::var_os("H2_NO_SKULLS_MENU").is_none()
-        && store.def(SKULLS[0].key).is_some()
+    store.def(SKULLS[0].key).is_some()
 }
 
 /// The local player index of a list callback (`[[esp+4]]+4`), as

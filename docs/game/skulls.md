@@ -137,8 +137,8 @@ refuses the plan at boot instead of one hook silently replacing another.
   to the queue): for options with mode 1, write the array as exactly the
   union of the signed-in profiles' "on" skulls (the `default` profile's
   with no named profile), then queue the options. A skull the game turned
-  on earlier in the boot but not chosen is turned off. `H2_NO_SKULLS=1`, or
-  `H2_FEATURES` switching `skulls` off, leaves both out. Headless runs (no
+  on earlier in the boot but not chosen is turned off. `H2_FEATURES`
+  switching `skulls` off leaves both out. Headless runs (no
   settings store) have neither.
 
 ### What it logs
@@ -148,7 +148,7 @@ Every line starts `skulls:`. At boot, after the feature plan installs:
 - `skulls: hooks installed via feature plan at 0x1df3e0 (pickup),
   0x18e790 (campaign start), 0x137fe0 (tick watch); saving to <path>/settings.toml`
 - or `skulls: NOT installed: <why>; pickups are not kept`, or
-  `skulls: off: <why>` (no store, `H2_NO_SKULLS`, `H2_FEATURES`).
+  `skulls: off: <why>` (no store, `H2_FEATURES`).
 
 Each pickup:
 
@@ -368,8 +368,8 @@ measures every skull name and state in the retail row font.
   clear of the `0x20fff0xx` ids the other rows and the `ui` model take.
   The row names are the game's (IWHBYD shortened; its description gives
   the full name).
-- `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty
-  screen as retail; `H2_FEATURES=skulls-screen=off` does too (the page
+- `H2_FEATURES=skulls-screen=off` leaves the difficulty screen as retail
+  (the page
   has no class, so the difficulty starts at once);
   `H2_FEATURES=skulls-page=off` removes the hook.
 - **Co-op.** The page is for the pressing player's profile. The
@@ -627,7 +627,6 @@ Limits:
 - `H2_FEATURES=skulls-mp-row=off`: no Skulls row in the variant editor.
 - `H2_FEATURES=skulls-mp-screen=off`: the row stays, and says the screen
   is off when pressed.
-- `H2_NO_SKULLS=1`: neither, nor the campaign skulls.
 - As with every plan hook, a clash at one of the points refuses the plan
   at boot rather than replacing a hook.
 
@@ -817,7 +816,7 @@ only.
 
 ### Switching it off
 
-`H2_NO_SKULLS=1` (with the rest) or `H2_FEATURES=skulls-custom=off`. When
+`H2_FEATURES=skulls-custom=off`. When
 the plan cannot place its tick hooks (another feature holding an address
 it needs), boot says `skulls-custom: NOT installed: <why>` and nothing of
 ours is placed or applied; retail's skulls are untouched either way.
@@ -948,7 +947,8 @@ The page (step numbers kept for the multiplayer steps below):
 14. Co-op (two named profiles): each player's difficulty press opens the
     page for their own profile. Note which difficulty screen co-op shows;
     if it has no page, it is the lobby one (screen 1).
-15. `H2_NO_SKULLS_MENU=1`: the difficulty starts the level as retail.
+15. `H2_FEATURES=skulls-screen=off`: the difficulty starts the level as
+    retail.
 
 Multiplayer (a Live server running; two machines for 20 to 22):
 
