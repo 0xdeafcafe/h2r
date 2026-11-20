@@ -12,6 +12,8 @@ xbe.workspace = true
 xiso.workspace = true
 analyze.workspace = true
 lift.workspace = true
+# The lifted original for shadow checks (fallback.rs, docs/engine/shadow-exec.md).
+lifted = { path = "../lifted" }
 emit.workspace = true
 # The Cranelift fast tier (tier.rs, docs/lifter/cranelift-tier.md).
 clif = { workspace = true, optional = true }
@@ -49,6 +51,8 @@ wgpu = { version = "30", optional = true }
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
 native-render = { path = "../native-render", optional = true }
+# The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
+frame-scene = { path = "../frame-scene" }
 shaders = { path = "../shaders", optional = true }
 serde.workspace = true
 x87 = { path = "../x87" }

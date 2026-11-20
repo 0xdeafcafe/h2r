@@ -12,7 +12,7 @@ use engine::memory::GuestMemory;
 use feature::native_map_work;
 use feature::native_objects::{Host, NativeSet, SetPart};
 use map::TagId;
-use native_render::camera::RenderCamera;
+use frame_scene::{FrameScene, InstanceKey, View};
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
@@ -216,7 +216,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_walk(
-        &self, mem: &mut dyn GuestMemory, run: &[Entry],
+        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
@@ -236,9 +236,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !model_palettes_hold(&models, &device, mem) {
             return Err(ObjectWalk::Inputs);
         }
-        // The view needs a render camera that reads, as the layer's draws do.
-        RenderCamera::read(&Ro(mem), native_render::camera::RENDER_CAMERA)
-            .ok_or(ObjectWalk::Inputs)?;
+        // The view needs a render camera that reads, as the layer's draws
+        // do: the frame step opened it with one (feature::scene_step).
+        let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
         let read = crate::native_world_glue::ReadMemory(mem);
         let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
         let (width, height) = request.surface_size;
@@ -246,7 +246,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !rects.is_empty() || !clip.is_whole(width, height) || request.rect != (0, 0, width, height) {
             return Err(ObjectWalk::State);
         }
-        let draws = plan_walk(&models, &device, mem, run)?;
+        let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
         let ranges = draws.len();
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
@@ -304,8 +304,15 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 /// Commit only state-preserving runs. A later guest handler inherits the
 /// same render states it would inherit if the skipped programs had run.
 /// The guest's own shader/binding cache tracks the last real guest call.
+///
+/// Plans a run of the walk: the state checks against the device and
+/// the guest's handler, and each part's draw from the frame step's view
+/// (`scene`, `view`): its object's frame and its rows as extraction read
+/// them. `first` is the run's first slot.
+#[allow(clippy::too_many_arguments)]
 fn plan_walk<B: d3d::backend::Backend>(
-    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory, run: &[Entry],
+    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
+    scene: &FrameScene, view: &View, first: usize, run: &[Entry],
 ) -> Result<Vec<(u32, PlannedDraw)>, ObjectWalk> {
     use gfx::state::RenderStateType as R;
     let mut entry = LayerEntry::read(device, mem);
@@ -342,27 +349,26 @@ fn plan_walk<B: d3d::backend::Backend>(
     let lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
     let lit = lit.as_ref().ok_or(ObjectWalk::Model)?;
     let guest = Ro(mem);
-    let mut objects = HashMap::new();
     let mut draws = Vec::with_capacity(run.len());
-    for &item in run {
+    for (slot, &item) in (first..).zip(run) {
         let (handle, part) = match item {
             Entry::Excluded => continue,
             Entry::Object { handle, part: Some(part) } => (handle, part),
             _ => return Err(ObjectWalk::Unsupported),
         };
-        let frame = objects.entry(handle)
-            .or_insert_with(|| native_render::objects::read_object(&guest, handle))
-            .as_ref().ok_or(ObjectWalk::Inputs)?;
-        let model = *index.get(&(frame.definition as u16)).ok_or(ObjectWalk::Model)?;
+        let instance = scene.instance(view, InstanceKey(handle)).ok_or(ObjectWalk::Inputs)?;
+        let model = *index.get(&(instance.definition as u16)).ok_or(ObjectWalk::Model)?;
         let cover = coverage.get(&TagId(model)).ok_or(ObjectWalk::Model)?;
-        if model != part.mode || frame.nodes.len() != cover.nodes || !lit.has(model) {
+        if model != part.mode || instance.nodes.len() != cover.nodes || !lit.has(model) {
             return Err(ObjectWalk::Model);
         }
         if !cover.ranges.get(&(part.key.section, part.key.part)).is_some_and(|range| range.matches(part)) {
             return Err(ObjectWalk::Unsupported);
         }
-        let rows = part.rows(&guest).ok_or(ObjectWalk::Inputs)?;
-        let mut draw = lit.plan_scene(model, frame, &part.key, &rows, &entry.states).map_err(|why| {
+        let (_, scene_part) = scene.part_at(view, slot as u32)
+            .filter(|(owner, p)| owner.key == instance.key && p.key == part.key)
+            .ok_or(ObjectWalk::Inputs)?;
+        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states).map_err(|why| {
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;

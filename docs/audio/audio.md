@@ -1,5 +1,8 @@
 # Audio
 
+Status: Built. Code: `crates/audio/src` (`mixer.rs`, `dsound.rs`, `output.rs`). Tests: `crates/audio/tests`.
+Switch: none.
+
 `crates/audio` replaces the Xbox SDK's DirectSound at the API level. The
 MCPX APU behind it is not emulated: there are no voice slots, no DSP
 programs, no scatter-gather DMA. A game call like `SetVolume` becomes a field
@@ -19,7 +22,7 @@ write on a Rust struct, and a software mixer renders the result.
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
 | `devices` | Picks an output device by name (the DualSense speaker); no device access. |
 | `fx`, `reverb` | Per-voice effects and the mixer's I3DL2 reverb; see "Voice effects". |
-| `output` | The only platform code: cpal streams (`device` feature, on by default). `DeviceSink` is the ring-fed one; the older `Output` (mixer behind a `try_lock`) remains for the tone example. |
+| `output` | The only platform code: cpal streams (`device` feature, on by default). `DeviceSink` is the ring-fed one; `Output` (mixer behind a `try_lock`) is used by the tone example. |
 
 `cargo run --release --example tone -p audio` plays a PCM tone and a
 synthesised ADPCM clip. Port to tvOS or another host by disabling `device`
@@ -324,15 +327,13 @@ For this project the API-level path is Cxbx's, so the stubs above are
 expected; xemu is the reference for what the effects should sound like and
 is the trace source for validating the mixer later.
 
-## Next steps
+## Not implemented
 
-1. Notifications and play regions (Halo 2 has no call sites for them; see
-   [dsound.md](dsound.md)).
-2. Replace linear resampling with a windowed-sinc or polyphase path for big
-   downsamples.
+- Notifications and play regions: Halo 2 has no call sites for them (see
+  [dsound.md](dsound.md)).
+- Resampling is linear. A windowed-sinc or polyphase path would be better for
+  big downsamples.
 
-Done: the 64-sample ADPCM block ([sound.md](../formats/sound.md)), the guest
-mapping in `crates/dsound`, the I3DL2 reverb (an FDN), and the ring-fed
-`DeviceSink`, with `dsound::Hle::spawn_output` as the one consumer that
-renders into it ([dsound.md](dsound.md), "Consumers and the output
-thread").
+The guest mapping is in `crates/dsound`; `dsound::Hle::spawn_output` is the
+one consumer that renders into the ring-fed `DeviceSink` ([dsound.md](dsound.md),
+"Consumers and the output thread").

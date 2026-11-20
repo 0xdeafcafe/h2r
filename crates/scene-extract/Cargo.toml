@@ -1,0 +1,10 @@
+[package]
+name = "scene-extract"
+description = "Guest memory to FrameScene: the only render code with guest offsets (docs/graphics/framescene.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-scene = { path = "../frame-scene" }
+bytemuck = { version = "1", features = ["derive"] }

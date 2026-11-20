@@ -1,4 +1,4 @@
-//! The `native-post` feature (docs/graphics/native-renderer.md, stage 5):
+//! The `native-post` feature (docs/graphics/native-post-hud.md, stage 5):
 //! Its entry and exit hooks and the call identity reported to the host.
 
 use std::sync::{Arc, Mutex};

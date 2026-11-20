@@ -58,11 +58,15 @@ pub mod native_world;
 pub mod native_world_layers;
 pub mod occlusion;
 pub mod plan;
+mod verify;
 pub mod pipeline_render;
 pub mod render_census;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;
+pub mod shadow;
+#[cfg(feature = "native-render")]
+pub mod scene_step;
 pub mod sim_frame;
 pub mod sim_native;
 pub mod sim_physics;

@@ -1,5 +1,7 @@
 # Shader instances, templates and passes
 
+Status: Built. Code: `crates/tags/src/shader.rs`. Tests: `crates/tags/src/shader_tests.rs`. Switch: none.
+
 `crates/tags` decodes the three tag groups that make up a Halo 2 material:
 
 - **`shad`** (shader instance) holds the parameters: bitmaps, colours, vectors

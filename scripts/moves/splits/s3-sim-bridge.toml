@@ -1,0 +1,6 @@
+from = "hooks"
+to = "sim-bridge"
+direction = "up"
+description = "The guest side of the native simulation: adapters from hook entries to the sim crates, the installs under impl.sim.native, the tick driver (docs/engine/sim-rewrite.md)"
+modules = ["sim_frame", "sim_native", "sim_observer", "sim_physics", "sim_static_light", "sim_submix"]
+tests = ["sim_physics"]

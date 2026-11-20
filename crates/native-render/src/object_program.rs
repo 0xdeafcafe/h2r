@@ -2,7 +2,7 @@
 //! [`crate::program`] path draws a world pass: the pass's vertex program
 //! and pixel shader translated once per material, and per drawn object a
 //! vertex constant block holding what the game's upload would hold
-//! (docs/graphics/native-renderer.md, "Object programs"):
+//! (docs/graphics/native-objects.md, "Object programs"):
 //!
 //! - `c[0..18]`, the view's, from the device each frame
 //!   ([`crate::program::frame_vertex`]);
@@ -483,7 +483,7 @@ fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32)
 pub(crate) mod tests {
     use super::*;
     use crate::look::Stage;
-    use crate::object_nodes::tests::rows_of;
+    use scene_extract::testing::rows_of;
     use shaders::vsh::encode::{Inst, Operand as O, program};
     use shaders::vsh::{MacOp, OutReg};
     use tags::material::{InputReads, Register, VectorBinding};

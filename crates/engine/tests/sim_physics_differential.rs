@@ -2,15 +2,16 @@
 //! segment with it. A child sees all registers, flags and the *original*
 //! return address. Seeded child answers exercise callback clobbers and
 //! changes to the live set before the next bitmap read.
+//! The lifted original, the image and the register conversion are
+//! `lifted`'s (docs/engine/shadow-exec.md).
 #![cfg(feature = "differential")]
 
-mod common;
-
 use engine::points;
-use engine::sim_physics::{PORTS, Port};
-use ir::interp::{self, Cpu, FlatMemory, Flow};
-use runtime::{CpuAbi, Guest, TransferAbi, abi, guest::Permissions};
-use std::collections::BTreeMap;
+use engine::sim_physics::{ORACLES, PORTS, Port};
+use ir::interp::{Cpu, FlatMemory, Flow};
+use lifted::Code;
+use lifted::cpu::from_interp as abi_cpu;
+use runtime::{Guest, TransferAbi, abi, guest::Permissions};
 
 const RAM: usize = 8 << 20;
 const STACK: u32 = 0x007f_0000;
@@ -615,23 +616,6 @@ fn evaluator_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
     }
 }
 
-fn abi_cpu(c: &Cpu) -> CpuAbi {
-    let [eax, ecx, edx, ebx, esp, ebp, esi, edi] = c.gpr;
-    let x = &c.x87;
-    CpuAbi {
-        eax, ecx, edx, ebx, esp, ebp, esi, edi,
-        eip: c.eip, fs_base: c.fs_base, mxcsr: c.mxcsr,
-        eflags: c.eflags, eflags_defined: c.flags_valid,
-        xmm: c.xmm.map(u128::to_le_bytes),
-        x87: runtime::cpu::X87Abi {
-            st: x.st, control: x.control, status: x.status, tag: x.tag, opcode: x.opcode,
-            instruction_pointer: x.instruction_pointer, data_pointer: x.data_pointer,
-            instruction_selector: x.instruction_selector, data_selector: x.data_selector,
-        },
-        ..Default::default()
-    }
-}
-
 /// Guest leaves a port runs in Rust. The guest side steps through them, so
 /// the next boundary is the port's own next call or return.
 const INLINED: &[(u32, &[u32])] = &[
@@ -643,13 +627,10 @@ fn inlined(point: u32) -> &'static [u32] {
     INLINED.iter().find(|(p, _)| *p == point).map_or(&[], |(_, leaves)| leaves)
 }
 
-fn segment(insns: &BTreeMap<u32, ir::IrInsn>, inline: &[u32], cpu: &mut Cpu, mem: &mut FlatMemory) -> TransferAbi {
+fn segment(code: &mut lifted::Original, inline: &[u32], cpu: &mut Cpu, mem: &mut FlatMemory) -> TransferAbi {
     let mut depth = 0u32;
     for _ in 0..500_000 {
-        let pc = cpu.eip;
-        let i = insns.get(&pc).unwrap_or_else(|| panic!("missing instruction at {pc:#x}"));
-        let flow = interp::step(cpu, mem, i).unwrap_or_else(|e| panic!("{pc:#x}: {e:?}"));
-        cpu.eip = flow.target();
+        let flow = lifted::code::step(code, cpu, mem).unwrap_or_else(|e| panic!("{e}"));
         match flow {
             Flow::Return { .. } if depth > 0 => depth -= 1,
             Flow::Call { target, .. } if inline.contains(&target) => depth += 1,
@@ -661,7 +642,7 @@ fn segment(insns: &BTreeMap<u32, ir::IrInsn>, inline: &[u32], cpu: &mut Cpu, mem
     panic!("did not reach a call or return");
 }
 
-fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, mut cpu: Cpu, case: u32) {
+fn compare(port: &Port, code: &mut lifted::Original, mut mem: FlatMemory, mut cpu: Cpu, case: u32) {
     let mut native = Guest::new();
     native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
     native.write_bytes(0, &mem.bytes, 1).unwrap();
@@ -672,7 +653,7 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
         assert!(engine::sim_physics::supported(port, &regs, &native), "fixture takes fallback at {at:#x}");
         let actual = port.invoke(&mut regs, &mut native, at).unwrap();
         assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
-        let expected = segment(insns, inlined(port.point.base), &mut cpu, &mut mem);
+        let expected = segment(code, inlined(port.point.base), &mut cpu, &mut mem);
         let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
         assert_eq!(actual, expected, "{}", why());
         regs.eip = actual.target_pc;
@@ -824,59 +805,44 @@ fn compare(port: &Port, insns: &BTreeMap<u32, ir::IrInsn>, mut mem: FlatMemory, 
     panic!("unbounded callback loop");
 }
 
-struct Oracle {
-    image: FlatMemory,
-    functions: BTreeMap<u32,BTreeMap<u32,ir::IrInsn>>,
+/// The image's sections from zero, cut to the fixtures' RAM.
+fn image() -> Option<(&'static lifted::image::Image, &'static FlatMemory)> {
+    static RAM_IMAGE: std::sync::OnceLock<Option<FlatMemory>> = std::sync::OnceLock::new();
+    let image = lifted::image::Image::get()?;
+    let ram = RAM_IMAGE.get_or_init(|| {
+        let mut ram = image.ram.clone();
+        ram.bytes.truncate(RAM);
+        Some(ram)
+    });
+    Some((image, ram.as_ref()?))
 }
 
-fn oracle() -> Option<&'static Oracle> {
-    static ORACLE: std::sync::OnceLock<Option<Oracle>> = std::sync::OnceLock::new();
-    ORACLE.get_or_init(|| {
-        let Some(path) = common::xbe_path() else {
-            assert!(std::env::var_os("H2_XBE").is_none(), "H2_XBE does not name a readable file");
-            eprintln!("SKIPPED native simulation differential tests: set H2_XBE");
-            return None;
-        };
-        let bytes = std::fs::read(path).unwrap();
-        assert_eq!(common::sha256(&bytes), common::IMAGE_SHA256);
-        let xbe = xbe::Xbe::parse(&bytes).unwrap();
-        let analysis = analyze::analyze(&xbe).unwrap();
-        let lifter = lift::Lifter::new(&analysis, &xbe).unwrap();
-        let mut image = lift::harness::load_image(&xbe).unwrap();
-        image.bytes.truncate(RAM);
-        let functions = PORTS.iter().map(|port| {
-            let function = lifter.lift(port.point.base).expect(port.point.name);
-            let mut insns: BTreeMap<_,_> = function.blocks.into_values().flat_map(|b| b.insns)
-                .map(|i| (i.pc,i)).collect();
-            if port.point.base == points::HAVOK_WELD_CONTACTS.base {
-                // Discovery gives the shared contact tail its own entry.
-                // Follow it as the guest would between external calls.
-                const CONTACT_TAIL: u32 = 0x002f_a64e;
-                let tail = lifter.lift(CONTACT_TAIL).expect("contact tail");
-                for i in tail.blocks.into_values().flat_map(|b| b.insns) {
-                    insns.entry(i.pc).or_insert(i);
-                }
-            }
-            for &leaf in inlined(port.point.base) {
-                let leaf = lifter.lift(leaf).expect("inlined leaf");
-                for i in leaf.blocks.into_values().flat_map(|b| b.insns) {
-                    insns.entry(i.pc).or_insert(i);
-                }
-            }
-            (port.point.base,insns)
-        }).collect();
-        Some(Oracle {image,functions})
-    }).as_ref()
+/// The lifted original for one port's test, its function lifted first so
+/// its instructions take that function's edges.
+fn original(image: &lifted::image::Image, point: &points::Point) -> lifted::Original {
+    let mut code = image.original();
+    code.prime(point.base);
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    if point.base == points::HAVOK_WELD_CONTACTS.base {
+        // Discovery gives the shared contact tail its own entry.
+        // Follow it as the guest would between external calls.
+        const CONTACT_TAIL: u32 = 0x002f_a64e;
+        code.prime(CONTACT_TAIL);
+    }
+    for &leaf in inlined(point.base) {
+        code.prime(leaf);
+    }
+    code
 }
 
 type Fixture = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare: Fixture) {
-    let Some(oracle) = oracle() else { return };
-    let port = PORTS.iter().find(|p| p.point.base == point.base).unwrap();
-    let insns = &oracle.functions[&point.base];
+    let Some((image, ram)) = image() else { return };
+    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
+    let mut code = original(image, point);
     for case in 0..cases {
-        let mut memory = oracle.image.clone();
+        let mut memory = ram.clone();
         word(&mut memory, STACK, EXIT);
         if uses_objects { fixture(&mut memory, case); }
         let mut cpu = Cpu {
@@ -893,7 +859,7 @@ fn matches_guest(point: &points::Point, uses_objects: bool, cases: u32, prepare:
         cpu.x87.control = [0x007f,0x027f,0x037f][case as usize % 3];
         cpu.mxcsr |= (case % 4) << 13;
         prepare(&mut memory, &mut cpu, case);
-        compare(port, insns, memory, cpu, case);
+        compare(port, &mut code, memory, cpu, case);
     }
 }
 

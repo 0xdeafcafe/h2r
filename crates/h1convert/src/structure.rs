@@ -116,7 +116,7 @@ pub const AUDIBILITY: usize = 0x34;
 pub const SECTION_MAX: usize = 0xffff;
 
 /// Vertex stream types written, with their strides
-/// (docs/formats/structure-bsp.md, "Stream types").
+/// (docs/formats/structure-bsp.md, "Section struct and its blocks").
 /// Every retail multiplayer structure section has these five (0x30 in all
 /// but the unlit ones).
 pub const STREAMS: [(u8, u8); 5] = [(0x01, 12), (0x18, 8), (0x1b, 12), (0x1f, 4), (0x30, 4)];
@@ -230,7 +230,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// Puts triangles in Halo 2's winding: counter-clockwise about the first
-/// vertex's normal (docs/formats/structure-bsp.md, "Triangle lists"). The
+/// vertex's normal (docs/formats/structure-bsp.md, "Section struct and its blocks"). The
 /// order is decided once for the whole level, by majority, and every
 /// triangle is flipped if most disagree. Returns whether it flipped.
 pub fn fix_winding(meshes: &mut [Mesh]) -> bool {

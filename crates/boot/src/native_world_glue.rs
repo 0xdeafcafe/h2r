@@ -1,4 +1,4 @@
-//! The native world's host (docs/graphics/native-renderer.md, stage 1):
+//! The native world's host (docs/graphics/native-world.md, stage 1):
 //! loads the active BSP's world from the loaded map's file when the BSP
 //! changes, on a worker, and asks the D3D device for the native pass at
 //! each view's layer 3 (`feature::native_world`). Inert with
@@ -251,7 +251,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+        let camera = &scene_view.camera;
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)

@@ -1,5 +1,12 @@
 //! Native GPU renderer (docs/graphics/native-renderer.md).
 //!
+//! It draws from [`frame_scene::FrameScene`] (docs/graphics/framescene.md).
+//! The guest offsets the world and object stages read moved to
+//! `scene_extract::layout` in slice 1; they are re-exported below at
+//! their old paths for the hooks in `feature` and `boot`, and for the
+//! stages here that still read guest memory at their hooks (slices 3 to
+//! 6 move them).
+//!
 //! Stage 1, the static world: the structure BSP's opaque geometry is read
 //! from the map's tags once ([`load`], [`world`]), uploaded once
 //! ([`gpu`]), and drawn each frame from the game's render camera
@@ -62,8 +69,6 @@ pub mod model;
 pub mod model_gpu;
 #[cfg(feature = "gpu")]
 pub mod model_load;
-pub mod object_lighting;
-pub mod object_nodes;
 #[cfg(feature = "gpu")]
 pub mod object_program;
 #[cfg(feature = "gpu")]
@@ -71,8 +76,6 @@ pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
-pub mod object_walk;
-pub mod objects;
 pub mod particles;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
@@ -84,14 +87,13 @@ pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
 pub mod shadows;
-pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;
 #[cfg(feature = "gpu")]
 pub mod water_gpu;
 pub mod world;
-pub mod world_layers;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;
-pub mod world_ranges;
+
+pub use scene_extract::layout::{object_lighting, object_nodes, object_walk, objects, skip, world_layers, world_ranges};

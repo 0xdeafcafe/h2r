@@ -1,25 +1,40 @@
 # Performance
 
+Status: Built. The tools and the design pages below are current; the budgets are dated notes.
+
 The target is the retail game running correctly at 30 presented frames
 per wall second (33.3 ms a frame) in menus and in levels, with margin
-under that line. The docs here are measurement logs: every number has a
-date and a commit next to it, and later work has moved most of them.
-Re-measure before acting on any row.
+under that line, and a headless sim tick under the budget in
+[sim-budget.md](sim-budget.md). The design pages here state how the code
+works now; every measurement is a dated entry under [notes/](notes/), with
+its commit and method. Re-measure before acting on one.
 
-## Which doc answers what
+## Baseline
 
-| Question | Doc |
+| Area | Where the number is | What it is |
+|---|---|---|
+| Waterworks sim tick, four local bots | [sim-budget.md](sim-budget.md) | 14.12 ms/tick against a 7.48 ms target, with the guest functions that consume it |
+| Who owns each sample of that sim | [sim-attribution.md](sim-attribution.md) | the owner of every main-thread sample and what each rewrite phase saves |
+| An in-level frame | [notes/gameplay-budget.md](notes/gameplay-budget.md) | where the time of a frame went, and the worst frames, at the dates recorded there |
+| A main-menu frame | [notes/menu-budget.md](notes/menu-budget.md) | the same for the main menu |
+
+## Which page answers what
+
+| Question | Page |
 |---|---|
 | How do I profile, trace or bench something? | [profiling.md](profiling.md): `h2 profile`, `h2 bench`, the timeline, test and bench knobs |
-| Where does an in-level frame's time go, and what are the worst frames? | [gameplay-budget.md](gameplay-budget.md) |
+| How do generated code and the runtime touch guest memory, call and exit? | [guest-memory.md](guest-memory.md): the inline RAM path, direct calls, the exit call, register homes, runner transfers |
+| What did each of those cost or save? | [notes/guest-memory.md](notes/guest-memory.md) |
 | Which guest functions consume CPU in an unrendered Waterworks sim, and who calls them? | [sim-budget.md](sim-budget.md) |
-| Which subsystem owns each sample of that sim, what does the runtime share consist of, and what does each rewrite phase save? | [sim-attribution.md](sim-attribution.md) |
-| Where does a main-menu frame's time go? | [menu-budget.md](menu-budget.md) |
-| What structural changes would close the gameplay gap, and which landed? | [architecture-review.md](architecture-review.md): ranked changes, each with its status |
-| How do generated code and the runtime touch guest memory, call and exit? | [guest-memory.md](guest-memory.md): the inline RAM path (`H2_FASTMEM`), direct calls, the exit call, register homes, runner transfers |
+| Which subsystem owns each sample of that sim, and what does each rewrite phase save? | [sim-attribution.md](sim-attribution.md) |
+| Where does an in-level frame's time go? | [notes/gameplay-budget.md](notes/gameplay-budget.md) |
+| Where does a main-menu frame's time go? | [notes/menu-budget.md](notes/menu-budget.md) |
+| What does the D3D device cost per draw? | [notes/device-cost.md](notes/device-cost.md) |
+| What structural changes would close the gameplay gap? | [2026-11-16-frame-time.md](../reviews/2026-11-16-frame-time.md): ranked changes (a frozen review; the design pages hold what was done) |
+| What did we try and drop? | [notes/not-adopted.md](notes/not-adopted.md) |
 
-Read profiling.md first, then the budget for the scene you care about,
-then the architecture review for what is planned.
+Read profiling.md first, then the budget for the scene you care about.
+What is planned is in [../reviews/2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md).
 
 ## From `h2 play` to the main menu
 
@@ -54,16 +69,16 @@ include the earlier host setup. [Load timeline](../runtime/agent-api.md#load-tim
 
 ## Experiments not adopted
 
-- [fastmem-4k.md](fastmem-4k.md): 4 KiB guest translation (branch only;
-  slower than the inline path)
-- [fastmem-proto.md](fastmem-proto.md): Mach exception write watch
-  (`crates/fastmem-proto`)
+[notes/not-adopted.md](notes/not-adopted.md) lists the experiments that
+lost, with the result of each. The Mach exception write-watch prototype
+(`crates/fastmem-proto`) is written up in
+[notes/fastmem-proto.md](notes/fastmem-proto.md).
 
 ## Elsewhere
 
 Performance work that lives with its area:
 
-- [build-perf.md](../lifter/build-perf.md): build times and the caches
+- [build-perf.md](../lifter/notes/build-perf.md): build times and the caches
 - [x87-native.md](../lifter/x87-native.md), [sse-native.md](../lifter/sse-native.md),
   [x87-transcendentals.md](../lifter/x87-transcendentals.md): floating point
 - [render-thread.md](../graphics/render-thread.md),

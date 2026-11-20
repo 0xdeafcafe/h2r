@@ -1,34 +1,34 @@
 //! Guest addresses and offsets from `docs/live/live-gamestate.md`.
 //!
-//! Keep validation-sensitive layout changes here rather than in readers.
-//! Players, object headers and the shared object body are `engine::view`
-//! records; their offsets are aliased here.
+//! The structure offsets and global addresses are `guest_layout`'s
+//! (docs/engine/guest-layout.md); the names here alias them for the
+//! readers that add by hand. A layout fix goes there, once.
 
 use engine::view::objects::{Body, Header as ObjectHeader};
 use engine::view::players::Player;
 
 pub const GAME_GLOBALS_PTR: u32 = engine::points::GAME_GLOBALS.base;
 pub const GAME_TIME_PTR: u32 = engine::points::GAME_TIME.base;
-pub const ENGINE_GLOBALS_PTR: u32 = 0x004e_9ae8;
+pub const ENGINE_GLOBALS_PTR: u32 = guest_layout::global::GAME_ENGINE.base;
 pub const PLAYERS_PTR: u32 = engine::points::PLAYERS.base;
 pub const OBJECTS_PTR: u32 = engine::points::OBJECTS.base;
-pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
+pub const CACHE_MAP_NAME: u32 = guest_layout::global::CACHE_MAP_NAME.base;
 
 // The hooked functions (match start, tick, end, kill, weapon fire) are
 // named in `engine::points`.
 
-pub const OPTIONS: u32 = 0x8;
-pub const OPTIONS_TYPE: u32 = 0x0;
-pub const OPTIONS_TICK_RATE: u32 = 0x6;
+pub const OPTIONS: u32 = guest_layout::game::OPTIONS;
+pub const OPTIONS_TYPE: u32 = guest_layout::GameOptions::MODE.offset;
+pub const OPTIONS_TICK_RATE: u32 = guest_layout::GameOptions::TICK_RATE.offset;
 /// Campaign difficulty, `i16`: 0 easy, 1 normal, 2 heroic, 3 legendary.
 /// Confirmed: `0x00138110` defaults it to 1 and the menu's campaign start
 /// (`0x0023643f`) sets it from the selection; level boot writes it the same
 /// way (docs/runtime/level-boot.md).
-pub const OPTIONS_DIFFICULTY: u32 = 0x12a;
+pub const OPTIONS_DIFFICULTY: u32 = guest_layout::GameOptions::DIFFICULTY.offset;
 /// The skull array (docs/game/skulls.md): one byte per skull, 1 = on. Written
 /// only by the pickup (`0x1df3e0`) and our campaign start; every reader
 /// gates on a campaign (confirmed).
-pub const SKULLS: u32 = 0x004f_55dc;
+pub const SKULLS: u32 = guest_layout::global::SKULLS.base;
 pub const SKULL_COUNT: usize = 15;
 
 /// The campaign difficulty's name, `None` outside 0..=3.
@@ -37,13 +37,13 @@ pub fn difficulty_name(value: i16) -> Option<&'static str> {
         .ok()
         .and_then(|i| live_proto::game::DIFFICULTIES.get(i).copied())
 }
-pub const VARIANT: u32 = 0x134;
-pub const VARIANT_ENGINE: u32 = 0x44;
-pub const VARIANT_FLAGS: u32 = 0x48;
-pub const VARIANT_SCORE_LIMIT: u32 = 0x50;
-pub const VARIANT_TIME_LIMIT: u32 = 0x54;
-pub const GAME_ENDED: u32 = 0x1128;
-pub const TIME_TICK: u32 = 0x8;
+pub const VARIANT: u32 = guest_layout::game::VARIANT;
+pub const VARIANT_ENGINE: u32 = guest_layout::GameVariant::ENGINE.offset;
+pub const VARIANT_FLAGS: u32 = guest_layout::GameVariant::FLAGS.offset;
+pub const VARIANT_SCORE_LIMIT: u32 = guest_layout::GameVariant::SCORE_LIMIT.offset;
+pub const VARIANT_TIME_LIMIT: u32 = guest_layout::GameVariant::TIME_LIMIT.offset;
+pub const GAME_ENDED: u32 = guest_layout::GameGlobals::GAME_ENDED.offset;
+pub const TIME_TICK: u32 = guest_layout::GameTime::TICK.offset;
 
 // Datum arrays, players and object headers are read through
 // `engine::view`; these names alias its offsets for the readers that still
@@ -60,7 +60,7 @@ pub const PLAYER_FLAGS: u32 = Player::FLAGS;
 pub const PLAYER_LOCAL_USER: u32 = Player::LOCAL_USER;
 /// The local controller index (`i32`, `-1` for a remote player;
 /// docs/live/live-gamestate.md, Players).
-pub const PLAYER_CONTROLLER: u32 = 0x24;
+pub const PLAYER_CONTROLLER: u32 = guest_layout::Player::CONTROLLER.offset;
 #[allow(dead_code)]
 pub const PLAYER_UNIT: u32 = Player::UNIT;
 #[allow(dead_code)]
@@ -80,7 +80,7 @@ pub const PLAYER_NAME_CODE_UNITS: usize = engine::view::players::NAME_UNITS;
 // value and drops what fails. Remote players' profiles never pass through
 // the local slots: their appearance reads as empty until the in-record
 // location is validated.
-pub const PLAYER_SLOTS: u32 = 0x0054_e8e0; // likely: 4 slots, one per controller
+pub const PLAYER_SLOTS: u32 = guest_layout::global::PLAYER_SLOTS.base; // likely: 4 slots, one per controller
 pub const PLAYER_SLOT_COUNT: u32 = 4;
 pub const PLAYER_SLOT_SIZE: u32 = 0xc70; // likely
 pub const PLAYER_SLOT_FLAGS: u32 = 0x0; // likely
@@ -104,16 +104,16 @@ pub const PALETTE_COLOURS: u32 = 18;
 pub const EMBLEM_FOREGROUNDS: u32 = 64;
 pub const EMBLEM_BACKGROUNDS: u32 = 32;
 
-pub const ENGINE_STATBORG: u32 = 0x304;
-pub const ENGINE_PLAYER_STATS: u32 = 0x308;
-pub const ENGINE_TEAM_STATS: u32 = 0x4c8;
-pub const PLAYER_STAT_SIZE: u32 = 0x1c;
-pub const TEAM_STAT_SIZE: u32 = 0x12;
-pub const STAT_SCORE: u32 = 0x0;
-pub const STAT_KILLS: u32 = 0x4;
-pub const STAT_DEATHS: u32 = 0x6;
-pub const STAT_SUICIDES: u32 = 0x8;
-pub const STAT_ASSISTS: u32 = 0xc;
+pub const ENGINE_STATBORG: u32 = guest_layout::game::STATBORG;
+pub const ENGINE_PLAYER_STATS: u32 = guest_layout::game::PLAYER_STATS;
+pub const ENGINE_TEAM_STATS: u32 = guest_layout::game::TEAM_STATS;
+pub const PLAYER_STAT_SIZE: u32 = guest_layout::game::PLAYER_STATS_STRIDE;
+pub const TEAM_STAT_SIZE: u32 = guest_layout::game::TEAM_STATS_STRIDE;
+pub const STAT_SCORE: u32 = guest_layout::game::PlayerStats::SCORE.offset;
+pub const STAT_KILLS: u32 = guest_layout::game::PlayerStats::KILLS.offset;
+pub const STAT_DEATHS: u32 = guest_layout::game::PlayerStats::DEATHS.offset;
+pub const STAT_SUICIDES: u32 = guest_layout::game::PlayerStats::SUICIDES.offset;
+pub const STAT_ASSISTS: u32 = guest_layout::game::PlayerStats::ASSISTS.offset;
 
 pub const OBJECT_HEADER_SIZE: u32 = ObjectHeader::SIZE;
 #[allow(dead_code)]
@@ -126,12 +126,12 @@ pub const BODY_FORWARD: u32 = Body::FORWARD;
 pub const BODY_UP: u32 = Body::UP;
 /// Damage flags (`u16`); bit 2 is body depleted (`0x000d6800`).
 pub const BODY_DAMAGE_FLAGS: u32 = Body::DAMAGE_FLAGS;
-pub const BODY_DEPLETED: u16 = 1 << 2;
-pub const OBJECT_TYPE_BIPED: u8 = 0;
-pub const OBJECT_TYPE_VEHICLE: u8 = 1;
+pub const BODY_DEPLETED: u16 = guest_layout::object::DEPLETED;
+pub const OBJECT_TYPE_BIPED: u8 = guest_layout::ObjectType::Biped as u8;
+pub const OBJECT_TYPE_VEHICLE: u8 = guest_layout::ObjectType::Vehicle as u8;
 /// Object body `+0`: the definition tag's full salted datum.
 pub const BODY_DEFINITION: u32 = Body::DEFINITION;
-pub const OBJECT_TYPE_WEAPON: u8 = 2;
+pub const OBJECT_TYPE_WEAPON: u8 = guest_layout::ObjectType::Weapon as u8;
 
 // Tag index (docs/engine/tag_get_checked.md). The cache loader `0x00122a52`
 // publishes the index header and reads the scenario datum from `+0x0c`
@@ -150,23 +150,23 @@ pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 /// `unit_new` sets it to none; `0x000c6810` indexes the actor datum array
 /// (`[0x004f55f0]`, stride `0x888`) with it and copies the actor's team
 /// (`actor+0x24`) into the unit.
-pub const UNIT_ACTOR: u32 = 0x12c;
+pub const UNIT_ACTOR: u32 = guest_layout::Unit::ACTOR.offset;
 /// The unit's player datum, or none (docs/live/live-gamestate.md, confirmed).
-pub const UNIT_PLAYER: u32 = 0x13c;
+pub const UNIT_PLAYER: u32 = guest_layout::Unit::PLAYER.offset;
 /// The unit's team, `i16`. Confirmed: `unit_new` takes it from the placement
 /// (and in campaign, when that is 0 or -1, from the unit definition `+0xc0`);
 /// `0x0014bfc0` copies the player's team, `0x000c6810` the actor's, and
 /// `0x000b7930` hands it on to objects the unit spawns.
-pub const UNIT_TEAM: u32 = 0x138;
-pub const UNIT_WEAPON_INDEX: u32 = 0x212; // i8; -1 none
-pub const UNIT_WEAPONS: u32 = 0x218; // u32[4] weapon object datums
-pub const UNIT_WEAPON_SLOTS: i8 = 4;
+pub const UNIT_TEAM: u32 = guest_layout::Unit::TEAM.offset;
+pub const UNIT_WEAPON_INDEX: u32 = guest_layout::Unit::WEAPON_INDEX.offset; // i8; -1 none
+pub const UNIT_WEAPONS: u32 = guest_layout::Unit::WEAPONS.offset; // u32[4] weapon object datums
+pub const UNIT_WEAPON_SLOTS: i8 = guest_layout::unit::WEAPON_SLOTS as i8;
 /// likely: the aiming vector. `0x000cf3d0` casts the held weapon's
 /// targeting ray from the unit origin along it (scaled by the weapon's
 /// range), so it is world space; whether it is the smoothed vector or the
 /// desired one (`+0x15c`, the one networked by `0x0009d450`) is not
 /// established. Readers drop it unless finite and near unit length.
-pub const UNIT_AIM: u32 = 0x168;
+pub const UNIT_AIM: u32 = guest_layout::Unit::AIM.offset;
 
 /// Weapon barrel fire, `0x00104150`: stdcall (weapon object datum, `i16`
 /// barrel index), `ret 8`. Its one caller, `0x000fd980`, runs it for each
@@ -180,7 +180,7 @@ pub const WEAPON_FIRE: u32 = engine::points::WEAPON_FIRE.base;
 /// They are not needed for the initial event contract. Runtime validation can
 /// update this one table before enabling any of them.
 pub const LIKELY_FIELDS: &[(&str, u32)] = &[
-    ("game_engine.round_start_tick", 0x70),
+    ("game_engine.round_start_tick", guest_layout::GameEngine::ROUND_START_TICK.offset),
     ("statborg.ninth_networked_stat", 0x10),
     ("statborg.multiple_kill_counter", 0x14),
     ("object_header.flags", 0x2),
@@ -206,7 +206,7 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
 /// drive (confirmed, docs/live/live-gamestate.md, "Cinematics"). Allocated
 /// in the game state by `0x0013bf00` (size `0x24` at `0x0013bf27`, stored
 /// at `0x0013bf4e`), so a checkpoint saves and restores it with the rest.
-pub const CINEMATIC_GLOBALS_PTR: u32 = 0x0051_0c50;
+pub const CINEMATIC_GLOBALS_PTR: u32 = guest_layout::global::CINEMATIC_GLOBALS.base;
 /// Its "a cinematic is playing" byte (confirmed): `cinematic_start`
 /// (`0x002a9740` → `0x0013bff0`) sets `+4` and `+5` to 1 (`0x0013c01b`,
 /// `0x0013c01e`); `cinematic_stop` (`0x002a9760` → `0x0013ca80`) clears
@@ -219,7 +219,7 @@ pub const CINEMATIC_IN_PROGRESS: u32 = 0x5;
 
 /// Active structure-BSP index in the game globals (`i16`, confirmed:
 /// `0x0011c1b0` / `0x00137d40` index the scenario's BSP block with it).
-pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
+pub const GLOBALS_ACTIVE_BSP: u32 = guest_layout::GameGlobals::ACTIVE_BSP.offset;
 
 /// Translational velocity (`f32[3]`, confirmed, docs/live/live-gamestate.md),
 /// in world units a **second**, not a tick. Confirmed on the projectile
@@ -233,14 +233,14 @@ pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
 /// field is the object's, so units and vehicles hold the same unit. Frames
 /// send it as `vel` unscaled; `motion` also uses its sign (a jump goes up),
 /// and `speed` still comes from positions.
-pub const BODY_VELOCITY: u32 = 0x88;
+pub const BODY_VELOCITY: u32 = guest_layout::Object::VELOCITY.offset;
 /// Body and shield vitality (`f32`, 1.0 full; an overshield charges the
 /// shield past 1). Confirmed: `object_get_health` (`0x002a1a20`) returns
 /// `+0xec` and `object_get_shield` (`0x002a1a90`) `+0xf0`, each 0 instead
 /// while the damage flags' body-depleted bit ([`BODY_DEPLETED`]) is set
 /// (`0x002a1a5e`, `0x002a1ace`); `boot::health` reads the same two.
-pub const BODY_VITALITY: u32 = 0xec;
-pub const BODY_SHIELD_VITALITY: u32 = 0xf0;
+pub const BODY_VITALITY: u32 = guest_layout::Object::HEALTH.offset;
+pub const BODY_SHIELD_VITALITY: u32 = guest_layout::Object::SHIELD.offset;
 /// The unit's seat in the vehicle it rides (`i16`, -1 none), the index in
 /// the vehicle definition's seats block. Confirmed: `unit_new` (`0x000c44c1`)
 /// sets it to -1; the enter-vehicle routine (`0x000ea1f0`, the unit in
@@ -248,7 +248,7 @@ pub const BODY_SHIELD_VITALITY: u32 = 0xf0;
 /// parent) indexes the seats block with the seat (`imul edi,0xb0`,
 /// `0x000ea330`) and stores it here (`0x000ea405`); leaving the vehicle
 /// stores -1 (`0x000ea995`).
-pub const UNIT_SEAT: u32 = 0x1fc;
+pub const UNIT_SEAT: u32 = guest_layout::Unit::SEAT.offset;
 /// The scenario placement index (`i16`, -1 for objects the scenario did not
 /// place): the index in the scenario block of the object's type.
 /// Confirmed: `object_create` by name (`0x000bb670`) passes a name's type
@@ -259,29 +259,29 @@ pub const UNIT_SEAT: u32 = 0x1fc;
 /// `object_new` copies that to `+0x1a` (`0x000b7c87`). Objects not from a
 /// placement get -1 (`0x000b7c63`; the placement data default `0x000b7a31`),
 /// and an object a script recreates loses it (`0x000bb6cc`).
-pub const BODY_PLACEMENT_INDEX: u32 = 0x1a;
+pub const BODY_PLACEMENT_INDEX: u32 = guest_layout::Object::PLACEMENT_INDEX.offset;
 /// The netgame equipment entry that spawned the object (`i8`, -1 none).
 /// Confirmed: the spawner `0x0015aad0` writes the entry index (its first
 /// argument) after `object_new` (`0x0015ac15`); `object_new` sets -1
 /// (`0x000b7db1`); deleting the object hands it back to its entry
 /// (`0x000b85c3` calls `0x0015b220`, which clears it).
-pub const BODY_NETGAME_EQUIPMENT: u32 = 0xaf;
+pub const BODY_NETGAME_EQUIPMENT: u32 = guest_layout::Object::NETGAME_EQUIPMENT.offset;
 /// Object type 7 is a machine. Confirmed: the type table at `0x00468630`
 /// is bipd, vehi, weap, eqip, garb, proj, scen, mach, ctrl, lifi, ssce,
 /// bloc, crea (docs/formats/objects.md); the scarab of `03a`/`03b` is a `mach` tag.
-pub const OBJECT_TYPE_MACHINE: u8 = 7;
+pub const OBJECT_TYPE_MACHINE: u8 = guest_layout::ObjectType::Machine as u8;
 /// Object type 3 is equipment and 5 a projectile (the same type table at
 /// `0x00468630`). A projectile's position (`+0x64`) and velocity (`+0x88`)
 /// are the ones the projectile update moves ([`BODY_VELOCITY`]); a stuck
 /// one (a plasma grenade on a unit) has a parent and a parent-relative
 /// transform, as every attached object.
-pub const OBJECT_TYPE_EQUIPMENT: u8 = 3;
-pub const OBJECT_TYPE_PROJECTILE: u8 = 5;
+pub const OBJECT_TYPE_EQUIPMENT: u8 = guest_layout::ObjectType::Equipment as u8;
+pub const OBJECT_TYPE_PROJECTILE: u8 = guest_layout::ObjectType::Projectile as u8;
 
 /// The loaded scenario tag (`scnr` root), confirmed (cache loader
 /// publication; `0x000bb702` and `0x0015aad6` read placement blocks
 /// through it).
-pub const SCENARIO_PTR: u32 = 0x004e_0350;
+pub const SCENARIO_PTR: u32 = guest_layout::global::SCENARIO.base;
 /// Scenario placement blocks whose objects frames track: the object type
 /// (header `+3`), the block's `(count, address)` offset in `scnr` and the
 /// record stride, from the type table's descriptors (`+0xa`, `+0xe`;
@@ -315,27 +315,27 @@ pub const MAX_PLACEMENTS: u32 = 0x8000;
 /// The device's normalized position. The updater at `0x0011546d` adds
 /// the tick's travel to it. `0x00106930` passes it to the position
 /// animation channel's normalized-frame setter (`0x001c6620`).
-pub const DEVICE_POSITION: u32 = 0x140;
+pub const DEVICE_POSITION: u32 = guest_layout::Device::POSITION.offset;
 /// This device's position animation channel: `0x00106930` uses it as
 /// the channel, and `0x001086e0` starts the position action here.
-pub const DEVICE_POSITION_CHANNEL: u32 = 0x18c;
+pub const DEVICE_POSITION_CHANNEL: u32 = guest_layout::unit::DEVICE_POSITION_CHANNEL;
 
 /// Crouch amount, `f32` 0 (standing) to 1 (crouched); confirmed: the crouch
 /// update at `0x000dd83f` moves it toward 1 while unit flags (`+0x134`) bit
 /// 23 is set and toward 0 otherwise, by a rate times the tick length.
-pub const UNIT_CROUCH: u32 = 0x2c4;
+pub const UNIT_CROUCH: u32 = guest_layout::Unit::CROUCH.offset;
 /// The selected grenade type (`i8`, -1 none); confirmed: `0x000cdff0` and
 /// the HUD at `0x002759cf` index `UNIT_GRENADE_COUNTS` with it. likely: 0
 /// frag, 1 plasma.
-pub const UNIT_GRENADE_INDEX: u32 = 0x23c;
+pub const UNIT_GRENADE_INDEX: u32 = guest_layout::Unit::GRENADE_INDEX.offset;
 /// Grenades carried by type, `i8[2]`; confirmed as above.
-pub const UNIT_GRENADE_COUNTS: u32 = 0x23e;
+pub const UNIT_GRENADE_COUNTS: u32 = guest_layout::Unit::GRENADE_COUNTS.offset;
 /// likely: the biped's physics mode byte: 1 ground, 2 flying (airborne), 3
 /// dead, 4 posture, 5 climbing, 6 melee. `biped_new` (`0x000de5f6`) clears
 /// it; the crouch update tests it against 6 (`0x000dd897`) and other biped
 /// code against 1, 2, 3 and 5. Names from Project Cartographer's
 /// `e_biped_physics_mode`.
-pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
+pub const BIPED_PHYSICS_MODE: u32 = guest_layout::Biped::PHYSICS_MODE.offset;
 
 // The animation state (docs/live/replay-fidelity.md, "Animation state").
 /// Where the object's animation manager is, `i16`: an offset from the
@@ -344,7 +344,7 @@ pub const BIPED_PHYSICS_MODE: u32 = 0x3dc;
 /// `0x001cafc0`) and gives it the model's graph (`0x001cb0d0`); the custom
 /// animation start (`0x001101e0`) checks it against -1 and works on
 /// `object + offset`. Read by 113 sites.
-pub const OBJECT_ANIMATION_MANAGER: u32 = 0x12a;
+pub const OBJECT_ANIMATION_MANAGER: u32 = guest_layout::Object::ANIMATION_MANAGER.offset;
 /// The manager's animation graph, a `jmad` tag datum (-1 none). Confirmed:
 /// `0x001ccae0` and `0x001cb410` refuse a manager whose `+0x68` is -1 and
 /// pass it on as the channel's graph.
@@ -374,15 +374,15 @@ pub const MANAGER_OFFSETS: std::ops::Range<i16> = 0x12c..0x2000;
 /// `0x000e291b` while crouch is held and clears it at `0x000e2928` only
 /// when the character physics reports room to stand (`0x001e59d8`), which
 /// is why a biped under a low ceiling stays crouched with the button up.
-pub const UNIT_FLAGS: u32 = 0x134;
-pub const UNIT_FLAG_CROUCH: u32 = 1 << 23;
+pub const UNIT_FLAGS: u32 = guest_layout::Unit::FLAGS.offset;
+pub const UNIT_FLAG_CROUCH: u32 = guest_layout::unit::CROUCH_REQUEST;
 /// Biped flags (`u16`). Bit 0 counts airborne ticks into
 /// `BIPED_AIRBORNE_TICKS` (`0x000dd608`); `0x000e4050` (the airborne test
 /// the crouch-to-velocity terms use) wants it set. likely: bit 0 airborne.
-pub const BIPED_FLAGS: u32 = 0x348;
+pub const BIPED_FLAGS: u32 = guest_layout::Biped::FLAGS.offset;
 /// Ticks bit 0 of `BIPED_FLAGS` has been set (`i8`, capped at 127;
 /// `0x000dd611`).
-pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
+pub const BIPED_AIRBORNE_TICKS: u32 = guest_layout::Biped::AIRBORNE_TICKS.offset;
 /// Hitbox offset counter (`i8`). A melee lunge started standing sets it
 /// to minus (standing − crouching height) / (tick length ×
 /// `HITBOX_OFFSET_RATE`) (`0x000e29b4`) and shrinks the capsule to
@@ -390,7 +390,7 @@ pub const BIPED_AIRBORNE_TICKS: u32 = 0x399;
 /// (`0x000e2890`). While it is not 0 the Havok body is placed
 /// at the object's origin minus `counter × tick length ×
 /// HITBOX_OFFSET_RATE` in z (`0x000e0d70`, used at `0x001d405b`).
-pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
+pub const BIPED_HITBOX_OFFSET: u32 = guest_layout::Biped::HITBOX_OFFSET.offset;
 /// The ground support the biped physics update (`0x000dd990`) keeps from
 /// the character's contacts. Each update clears bit 4 (`0x10`) of the byte
 /// at `+0x349`, the high byte of `BIPED_FLAGS` (so their bit 12),
@@ -401,16 +401,16 @@ pub const BIPED_HITBOX_OFFSET: u32 = 0x3aa;
 /// -1 throughout when nothing does, `0x000ddbb4..0x000ddbcc`). The support
 /// contact's point (contact `+0x1c`) goes to `+0x380` and `+0x368`, its
 /// normal (contact `+0x28`) to `+0x374` (`0x000dde99..0x000ddef5`).
-pub const BIPED_SUPPORT_FLAGS: u32 = 0x349;
-pub const BIPED_SUPPORT_COPIED: u8 = 0x10;
-pub const BIPED_SUPPORT_WORDS: u32 = 0x354;
-pub const BIPED_SUPPORT_POINT: u32 = 0x368;
-pub const BIPED_SUPPORT_NORMAL: u32 = 0x374;
-pub const BIPED_SUPPORT_CONTACT_POINT: u32 = 0x380;
+pub const BIPED_SUPPORT_FLAGS: u32 = guest_layout::unit::SUPPORT_FLAGS;
+pub const BIPED_SUPPORT_COPIED: u8 = guest_layout::unit::SUPPORT_COPIED;
+pub const BIPED_SUPPORT_WORDS: u32 = guest_layout::unit::SUPPORT_WORDS;
+pub const BIPED_SUPPORT_POINT: u32 = guest_layout::Biped::SUPPORT_POINT.offset;
+pub const BIPED_SUPPORT_NORMAL: u32 = guest_layout::Biped::SUPPORT_NORMAL.offset;
+pub const BIPED_SUPPORT_CONTACT_POINT: u32 = guest_layout::Biped::SUPPORT_CONTACT_POINT.offset;
 /// The ground mode's state: `0x001e5a60` hands the physics-mode block
 /// (`BIPED_PHYSICS_MODE`) `+0x10` to the ground test `0x001f19c0`, which
 /// first takes the length of its first three floats (`0x001f19ff..0x001f1a35`).
-pub const BIPED_GROUND_STATE: u32 = 0x3ec;
+pub const BIPED_GROUND_STATE: u32 = guest_layout::Biped::GROUND_STATE.offset;
 /// The character contacts the ground test walks, on the physics component
 /// (`PHYSICS_COMPONENTS_PTR`, indexed by `BODY_PHYSICS` as in
 /// `0x001e68a0`'s `+0x40`): pointer `+0x88`, count `+0x8c`, `0x48` each
@@ -440,8 +440,8 @@ pub const CHARACTER_CONTACTS_MAX: u32 = 32;
 /// at `+0x40`); a rigid body's motion is at `+0x3c`, its linear velocity at
 /// motion `+0x40` (`0x000dc67d`) and its world transform at motion `+0x80`
 /// with the position at `+0xb0`.
-pub const BODY_PHYSICS: u32 = 0xb4;
-pub const PHYSICS_COMPONENTS_PTR: u32 = 0x0051_e9b8;
+pub const BODY_PHYSICS: u32 = guest_layout::Object::PHYSICS.offset;
+pub const PHYSICS_COMPONENTS_PTR: u32 = guest_layout::global::PHYSICS_COMPONENTS.base;
 pub const PHYSICS_COMPONENT_SIZE: u32 = 0xa0;
 pub const COMPONENT_BODIES: u32 = 0x70;
 pub const COMPONENT_BODY_RIGID: u32 = 0x40;
@@ -452,7 +452,7 @@ pub const MOTION_POSITION: u32 = 0xb0;
 // (docs/engine/havok-runtime.md; addresses there). Arrays are Havok's
 // (pointer, count, capacity with bit 31 "not owned").
 /// The world pointer (`0x001c2f07` stores it after `0x003101c0`).
-pub const HAVOK_WORLD_PTR: u32 = 0x0051_e9a4;
+pub const HAVOK_WORLD_PTR: u32 = guest_layout::global::HAVOK_WORLD.base;
 /// Active simulation islands (`0x0030ccd0` moves one here from the
 /// inactive array).
 pub const WORLD_ACTIVE_ISLANDS: u32 = 0x08;
@@ -495,7 +495,7 @@ pub const PROPERTY_FRICTION: u32 = 0x08;
 pub const PROPERTY_RESTITUTION: u32 = 0x0c;
 /// An object header's body size (`u16`): the allocator `0x000bc2c6` stores
 /// the type descriptor's runtime body size (`+8`, `0x000b7bd6`) here.
-pub const OBJECT_BODY_SIZE: u32 = 0x06;
+pub const OBJECT_BODY_SIZE: u32 = guest_layout::ObjectHeader::BODY_SIZE.offset;
 /// A physics component's rigid body count, next to `COMPONENT_BODIES`
 /// (the release loop at `0x001d022a`); entries `0x60` apart (`0x001d08ec`).
 pub const COMPONENT_BODY_COUNT: u32 = 0x74;
@@ -524,13 +524,13 @@ pub const TRANSFORM_CHILD: u32 = 0x0c;
 pub const TRANSFORM_TRANSLATION: u32 = 0x40;
 /// Units per second the hitbox offset decays by (`0x004407b8`).
 pub const HITBOX_OFFSET_RATE: f32 = 0.15;
-pub const BIPED_MODE_GROUND: u8 = 1;
-pub const BIPED_MODE_FLYING: u8 = 2;
-pub const BIPED_MODE_MELEE: u8 = 6;
+pub const BIPED_MODE_GROUND: u8 = guest_layout::unit::MODE_GROUND;
+pub const BIPED_MODE_FLYING: u8 = guest_layout::unit::MODE_FLYING;
+pub const BIPED_MODE_MELEE: u8 = guest_layout::unit::MODE_MELEE;
 /// The first magazine's reserve and loaded rounds (`i16`), weapon body;
 /// confirmed (docs/live/live-gamestate.md, `0x00101a10`).
-pub const WEAPON_MAGAZINE_RESERVE: u32 = 0x22a;
-pub const WEAPON_MAGAZINE_LOADED: u32 = 0x22c;
+pub const WEAPON_MAGAZINE_RESERVE: u32 = guest_layout::Weapon::MAGAZINE_RESERVE.offset;
+pub const WEAPON_MAGAZINE_LOADED: u32 = guest_layout::Weapon::MAGAZINE_LOADED.offset;
 
 // The damage report (`engine::points::DAMAGE_REPORT`, `0x000d9640`): custom
 // ABI, `EDI` = the report, one stack argument (the victim object datum),

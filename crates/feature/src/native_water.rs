@@ -1,5 +1,5 @@
 //! `native-water`: the water edge blend, layer 6, drawn by the native
-//! renderer instead of the game's items (docs/graphics/native-renderer.md,
+//! renderer instead of the game's items (docs/graphics/native-water-fog.md,
 //! "Stage 4b: water and the rest"). On with the native renderer
 //! (`impl.render.native`, on by default).
 //!

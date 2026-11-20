@@ -1,0 +1,15 @@
+from = "game"
+to = "render-bridge"
+# Down: `rewrites` may not use `extensions`, so the render glue cannot name
+# a module of `game`; `game` depends on render-bridge and re-exports it.
+direction = "down"
+description = "The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions and D3D glue (docs/graphics/framescene.md)"
+modules = [
+    "d3d_diag", "d3d_glue", "native_decals_glue", "native_first_person_glue", "native_first_person_load",
+    "native_fog_glue", "native_gels_glue", "native_gels_replace", "native_hud_glue", "native_lights_glue",
+    "native_map", "native_objects_glue", "native_particles_admission", "native_particles_glue",
+    "native_post_glue", "native_post_load", "native_residual_glue", "native_shadows_draw",
+    "native_shadows_glue", "native_shadows_scope", "native_shadows_tests", "native_transparents_glue",
+    "native_water_glue", "native_world_glue", "native_world_layers_glue", "native_world_materials",
+    "opaque_streams", "render_probe", "render_thread",
+]

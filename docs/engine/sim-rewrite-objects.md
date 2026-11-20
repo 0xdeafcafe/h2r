@@ -513,7 +513,7 @@ For the bodies read so far (the contract page extends this per slice):
 
 | State | Readers |
 |---|---|
-| Header flags, type, body pointer | everything (1,387 functions); replication `682e0`; HaloScript; AI; the agent API and telemetry raw readers; `native-render/src/objects.rs` |
+| Header flags, type, body pointer | everything (1,387 functions); replication `682e0`; HaloScript; AI; the agent API and telemetry raw readers; `scene-extract/src/layout/objects.rs` |
 | Position, basis, velocity, scale | Havok sync, AI, weapons, camera, sound, replication, render |
 | Node matrices | Havok rigid-body fetch `1ef070`, markers `b8d30`, bounds `bdf90`, attachments `bef30`, render (`OBJECT_RENDER_SETUP` `133790`), first person |
 | Spheres `+30..+5c` and the partition lists | `bb050`, the collision datum walk `b89b0`, `109580`, render culling, AI perception, lights |

@@ -1,0 +1,10 @@
+# The Live owner's. Review the module list before the window.
+from = "game"
+to = "net-glue"
+direction = "up"
+glob_in = ["boot"]
+description = "Live and co-op in the game process: the co-op session, join in progress, the lobby, sign-in and account screens (docs/live/live-coop.md)"
+modules = [
+    "account_screen", "community_variants", "coop_jip", "coop_latency", "coop_live", "coop_look",
+    "coop_players", "coop_probe", "host_lobby", "live_glue", "live_notice", "signin_keyboard", "signin_screen",
+]

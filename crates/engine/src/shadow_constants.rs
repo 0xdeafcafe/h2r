@@ -1,5 +1,5 @@
 //! The shadow pass's constants: `0x00048ee0`, as one function that
-//! returns what it stores (docs/graphics/native-renderer.md, "Stage 4",
+//! returns what it stores (docs/graphics/native-lights.md, "Stage 4",
 //! slice 2).
 //!
 //! `render_light_passes` (`0x00031170`, for a light that casts a shadow)

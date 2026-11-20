@@ -1,5 +1,7 @@
 # Halo 2 effects family (`effe`, `prt3`, `pmov`, `jpt!`, `cont`, `deca`, `ligh`, `lens`)
 
+Status: Built. Code: `crates/tags/src/effects/`. Switch: none.
+
 Implementation: `crates/tags/src/effects/` (hand-written fixed codecs, not in
 `schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
 `crates/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
@@ -486,7 +488,7 @@ parts at render (`0x00179d23`; the part creation switch skips `lens`,
 `0x0017a8bd`). The submission reads `+0x18`/`+0x1c` (no flare past the
 far distance; equal values switch the test off), `+0x28` bits 2/3 and
 `+0x2a` bit 0, and `+0x16` (nonzero: a second record). Reflection
-fields are named from Halo 1 pairs ([tag-definitions.md](tag-definitions.md),
+fields are named from Halo 1 pairs ([rebuild.md](../halo1/rebuild.md),
 "Lens flares, debris and light fixtures").
 
 ### garb (garbage)

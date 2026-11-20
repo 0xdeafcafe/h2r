@@ -831,3 +831,203 @@ fn stop_recovery_sees_generated_stops_only_and_its_transfer_runs() {
     assert_eq!(cpu.eip, WRAPPER + 3);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+/// What a fixture's runs leave behind: every run's transfer, the final CPU,
+/// every event and one guest word a callback wrote.
+type Outcome = (Vec<TransferAbi>, CpuAbi, Vec<(u32, Event)>, u32);
+const MARK: u32 = THUNK + 0x800;
+
+fn outcome(ts: Vec<TransferAbi>, cpu: CpuAbi, ctx: &mut runtime::ExecCtx) -> Outcome {
+    let mark = ctx.memory().u32(MARK).unwrap();
+    (ts, cpu, ctx.take_events(), mark)
+}
+
+/// The lean runner (`DIAG` off, as a release build without stats takes)
+/// gives the same transfers, events and final CPU as the diagnostic one, on
+/// this file's fixtures plus a preemption and an interrupt.
+#[test]
+fn lean_and_diag_runners_agree() {
+    let fixtures: [(&str, fn(bool) -> Outcome); 9] = [
+        ("kernel thunk", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                register(d, ENTRY, entry_to_thunk);
+                register(d, WRAPPER, entry_to_thunk);
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+        ("resumes and overrides", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                register(d, ENTRY, resumable);
+                register(d, WRAPPER, resumable);
+                d.register_resume(ENTRY + 5, ENTRY, ENTRY + 5).unwrap();
+                let _ = d.register_override(ENTRY + 5, "entry at continuation", |cpu, _, _| {
+                    cpu.eax = 999;
+                    Ok(TransferAbi::stop(0))
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let runner = Runner::default();
+            let mut ts = vec![runner.run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag)];
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, TransferAbi::ret(ENTRY + 5), diag));
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY + 5), diag));
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(0x22222), diag));
+            outcome(ts, cpu, &mut ctx)
+        }),
+        ("changed returns and tail jumps", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                let _ = d.register_override(ENTRY, "changed return", |cpu, ctx, _| {
+                    ctx.memory().set_u32(cpu.esp, WRAPPER)?;
+                    ctx.memory().ret(cpu, 40)
+                });
+                let _ = d.register_override(WRAPPER, "entry after ret", |cpu, _, _| {
+                    cpu.eax = 37;
+                    Ok(TransferAbi::jump(0x11040))
+                });
+                let _ = d.register_override(0x11040, "tail target", |cpu, _, _| {
+                    cpu.eax += 1;
+                    Ok(TransferAbi::stop(0))
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+        ("transfer limit", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                let _ = d.register_override(ENTRY, "spin", |cpu, _, _| {
+                    cpu.ebx += 1;
+                    Ok(TransferAbi::jump(ENTRY))
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner { max_transfers: 7 }.run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+        ("latched native fault", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| register(d, ENTRY, ignores_fault));
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+        ("guest call stopped and resumed", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                let _ = d.register_override(WRAPPER, "stopped guest callback", |cpu, _, _| {
+                    cpu.eax = 7;
+                    Ok(TransferAbi::stop(0))
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let runtime = std::sync::Arc::clone(ctx.runtime());
+            let initial = ctx
+                .call_guest(&mut cpu, &mut runtime.memory(), WRAPPER, |cpu, _| {
+                    cpu.eax += 8;
+                    Ok(TransferAbi::stop(0))
+                })
+                .unwrap();
+            let runner = Runner::default();
+            let mut ts = vec![runner.run_from_instance(&mut cpu, &mut ctx, initial, diag)];
+            let returning = ctx.memory().ret(&mut cpu, 0).unwrap();
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, returning, diag));
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, returning, diag));
+            outcome(ts, cpu, &mut ctx)
+        }),
+        ("stop recovery", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                register(d, ENTRY, stops_midway);
+                let _ = d.register_override(WRAPPER, "rust stop", |cpu, _, _| {
+                    cpu.eax = 7;
+                    Ok(TransferAbi::stop(0))
+                });
+                d.set_stop_recovery(|_: &mut CpuAbi, _: &mut runtime::ExecCtx, _: TransferAbi| {
+                    TransferAbi::jump(WRAPPER)
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+        ("slice and request preemption", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                let _ = d.register_override(ENTRY, "charge", |cpu, ctx, _| {
+                    cpu.ebx += 1;
+                    ctx.charge_accesses(1);
+                    Ok(TransferAbi::jump(ENTRY))
+                });
+            });
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let runner = Runner::default();
+            ctx.arm_preemption(3);
+            let mut ts = vec![runner.run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag)];
+            let resume = ctx.take_preempted().unwrap();
+            ctx.arm_preemption(0);
+            image.runtime.request_preempt(runtime::preempt::REQUEST);
+            ts.push(runner.run_from_instance(&mut cpu, &mut ctx, resume, diag));
+            ts.push(ctx.take_preempted().unwrap());
+            outcome(ts, cpu, &mut ctx)
+        }),
+        ("interrupt delivered at a safe point", |diag| {
+            let image = load_xbe(&synthetic_xbe()).unwrap();
+            image.runtime.edit_dispatch(|d| {
+                let _ = d.register_override(ENTRY, "loop", |cpu, _, _| {
+                    cpu.ebx += 1;
+                    Ok(if cpu.ebx == 4 { TransferAbi::stop(0) } else { TransferAbi::jump(ENTRY) })
+                });
+                let _ = d.register_override(WRAPPER, "callback", |cpu, ctx, _| {
+                    let arg = ctx.memory().u32(cpu.esp.wrapping_add(4))?;
+                    ctx.memory().set_u32(MARK, arg + 1)?;
+                    ctx.memory().ret(cpu, 4)
+                });
+            });
+            let raised = image.runtime.raise_interrupt(runtime::GuestInterrupt {
+                target: WRAPPER,
+                args: vec![0x41],
+                convention: runtime::CallConvention::Stdcall,
+                thread: None,
+                coalesce: false,
+                name: "fixture",
+            });
+            assert_eq!(raised, runtime::Raise::Queued);
+            let (mut ctx, mut cpu) = (image.context(), image.cpu);
+            let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+            outcome(vec![t], cpu, &mut ctx)
+        }),
+    ];
+    for (name, fixture) in fixtures {
+        let diag = fixture(true);
+        assert!(!diag.0.is_empty(), "{name}");
+        assert_eq!(fixture(false), diag, "{name}: lean against diagnostic");
+    }
+    // The interrupt really ran, and the preemption really stopped.
+    assert_eq!((fixtures[8].1)(false).3, 0x42);
+    assert_eq!((fixtures[7].1)(false).0[0], TransferAbi::stop(0));
+}
+
+/// Both instances refuse a CPU whose ABI header is broken when the run
+/// starts; the lean one checks it there only, not after every handler.
+#[test]
+fn lean_and_diag_runners_refuse_a_broken_cpu_header() {
+    for diag in [true, false] {
+        let image = load_xbe(&synthetic_xbe()).unwrap();
+        image.runtime.edit_dispatch(|d| {
+            let _ = d.register_override(ENTRY, "never runs", |cpu, _, _| {
+                cpu.eax = 1;
+                Ok(TransferAbi::stop(0))
+            });
+        });
+        let (mut ctx, mut cpu) = (image.context(), image.cpu);
+        cpu.abi_version = 99;
+        let t = Runner::default().run_from_instance(&mut cpu, &mut ctx, TransferAbi::jump(ENTRY), diag);
+        assert_eq!(ctx.event(t.event_id), Some(&Event::InvalidAbi), "diag={diag}");
+        assert_eq!(cpu.eax, image.cpu.eax, "diag={diag}: no handler ran");
+    }
+}

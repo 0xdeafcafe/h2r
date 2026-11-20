@@ -1,7 +1,7 @@
 //! `render-timing`: how much of the game thread's guest time is the game's
 //! render front-end, which stage of it, and which call in the scene pass
 //! sequence (docs/engine/feature-engine.md, "7. Rasterizer front-end", and
-//! docs/perf/gameplay-budget.md).
+//! docs/perf/notes/gameplay-budget.md).
 //!
 //! Read-only observers before and after `render_frame_and_present` and its
 //! main sub-stages. The outer pair opens and closes the frame stats' guest
@@ -765,7 +765,7 @@ impl Feature for RenderTiming {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Render front-end timing")
             .off_by_default()
-            .doc("docs/perf/gameplay-budget.md")
+            .doc("docs/perf/notes/gameplay-budget.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {

@@ -4,7 +4,7 @@
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
 //! view changed vertex and pixel constants staged in the submission upload ring,
 //! then ordered packets appended to the D3D render pass already open on the
-//! game's targets (docs/graphics/native-renderer.md, "Object programs").
+//! game's targets (docs/graphics/native-objects.md, "Object programs").
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -30,6 +30,7 @@ use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemKey, ObjectFrame};
+use frame_scene::{Defaults, FrameScene, Instance, Lighting, PartDraw};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
@@ -391,13 +392,29 @@ impl LitObjects {
         self.plan_with_scene_state(index, frame, key, rows, entry, true)
     }
 
+    /// [`Self::plan_scene`] for a part of a view of the scene: the
+    /// instance's lighting and defaults, the part's key and its rows, all
+    /// as extraction copied them.
+    pub fn plan_part_of(
+        &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
+    ) -> Result<PlannedDraw, String> {
+        let inputs = PartInputs { lighting: instance.lighting.as_ref(), defaults: instance.defaults };
+        self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
+    }
+
     fn plan_with_scene_state(
         &self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates,
         scene: bool,
     ) -> Result<PlannedDraw, String> {
+        self.plan_inputs(index, PartInputs::of(frame), key, rows, entry, scene)
+    }
+
+    fn plan_inputs(
+        &self, index: u32, inputs: PartInputs<'_>, key: &ItemKey, rows: &[Row], entry: &EntryStates, scene: bool,
+    ) -> Result<PlannedDraw, String> {
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
         let part = m.part_index.get(&(key.section, key.part)).copied();
-        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| (&p.pass, Some(&p.inherited))), frame, key, rows, entry, scene)
+        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| (&p.pass, Some(&p.inherited))), inputs, key, rows, entry, scene)
     }
 
     pub fn planned_pass(&self, index: u32, draw: &PlannedDraw) -> Option<&ObjectPass> {
@@ -623,7 +640,21 @@ pub fn plan_part<'a>(
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
-    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), frame, key, rows, entry, false)
+    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), PartInputs::of(frame), key, rows, entry, false)
+}
+
+/// What a part's per-object constants are made from: its object's
+/// lighting copy and the inputs' defaults.
+#[derive(Clone, Copy)]
+struct PartInputs<'a> {
+    lighting: Option<&'a Lighting>,
+    defaults: Option<Defaults>,
+}
+
+impl<'a> PartInputs<'a> {
+    fn of(frame: &'a ObjectFrame) -> Self {
+        Self { lighting: frame.lighting.as_ref(), defaults: frame.defaults }
+    }
 }
 
 fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
@@ -637,7 +668,7 @@ fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
 fn plan_indexed_part<'a>(
     parts: &[LitPart], part: Option<usize>,
     pass_of: &dyn Fn(usize) -> Option<(&'a ObjectPass, Option<&'a InheritedState>)>,
-    frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates, scene: bool,
+    frame: PartInputs<'_>, key: &ItemKey, rows: &[Row], entry: &EntryStates, scene: bool,
 ) -> Result<PlannedDraw, String> {
     let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
     let p = &parts[part];
@@ -652,7 +683,7 @@ fn plan_indexed_part<'a>(
         .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
-    let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+    let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
     let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;

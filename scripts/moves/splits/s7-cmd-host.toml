@@ -1,0 +1,8 @@
+from = "cli"
+to = "cmd-host"
+direction = "down"
+description = "h2 serve, sim, host, theater and agent: every command the host-only build has"
+modules = [
+    "agent_cmd", "agent_flight", "agent_hot_cmd", "agent_raw", "agent_run", "agent_sim", "boot_cmd",
+    "host_cmd", "sim_cmd", "sim_store_cmd", "theater_cmd",
+]

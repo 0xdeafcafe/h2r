@@ -1,5 +1,7 @@
 # HaloScript in the retail Xbox cache
 
+Status: Built. Code: `crates/hs`. The VM (`hs::vm`) is not wired into the game. Switch: none.
+
 `crates/hs` reads the compiled scenario tables, recovers the executable's type
 and builtin descriptors, and renders Lisp-like source. `h2 hs` prints source to
 the terminal; no game scripts, extracted tables, or binary fixtures are build

@@ -2064,7 +2064,7 @@ impl<B: Backend> Device<B> {
 
     /// The device side of Halo's `render_light_passes` tail
     /// (`0x000314e3`..`0x000314f2`), for a light whose passes the native
-    /// renderer draws in their place (docs/graphics/native-renderer.md,
+    /// renderer draws in their place (docs/graphics/native-lights.md,
     /// stage 4), so a skipped light leaves the device as a drawn one does.
     /// What is queued drains first, as before any entry (a pending external
     /// pass is issued); then the tail's calls, through the code their
@@ -4216,7 +4216,7 @@ impl<B: Backend> Device<B> {
     /// height`, then `min_z` and `max_z` as bits). Equal words, the same
     /// target: what a caller compares when it skips work that would have
     /// set the target back (Halo's light passes,
-    /// docs/graphics/native-renderer.md, stage 4).
+    /// docs/graphics/native-lights.md, stage 4).
     pub fn bound_target(&self) -> [u32; 8] {
         let v = self.viewport;
         [

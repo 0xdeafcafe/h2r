@@ -1,10 +1,14 @@
 # The lab: runs on another Mac over SSH
 
+Status: Built. Everything but real ssh and the real game under the host
+is tested; "Not verified" lists the rest.
+Code: `crates/cli/src/lab/`. Tests: `crates/cli/tests/lab.rs`.
+Switch: none.
+
 `h2 lab` lets an agent on one Mac start levels on a second Mac (the one
 you play on), replay input recordings there, and bring back frame stats,
-profiles and logs. It is a CLI over SSH: no web page, no MCP. Code:
-`crates/cli/src/lab/`. Tests: `crates/cli/tests/lab.rs` (a fake game, a
-fake cargo and a stand-in for ssh, all on one machine).
+profiles and logs. It is a CLI over SSH: no web page, no MCP. The tests
+use a fake game, a fake cargo and a stand-in for ssh, all on one machine.
 
 ```
 this Mac (agent)                      the laptop (you play)
@@ -273,13 +277,12 @@ replay starts from a fresh boot of the level.
 - A different build of the game may read input a different number of
   times, which moves every later answer. Replays across commits are
   approximate by nature.
-- **Planned: replay from a snapshot.** The `snapshot` field is for a full
-  machine snapshot taken mid-level (agent API phase 5), which does not
-  exist. When it does, a recording will carry one and replay will start
-  from it, without changes to these commands. A host refuses to replay a
-  recording whose `snapshot` is set.
+- **Replay from a snapshot is not supported.** The recording's `snapshot`
+  field (`crates/cli/src/lab/proto.rs`) is reserved for a machine
+  snapshot; a host refuses to replay a recording whose `snapshot` is set
+  (`crates/cli/src/lab/host.rs`).
 
-## Not verified without a second Mac
+## Not verified
 
 Tested here: the protocol and its refusals, the host's job lifecycle, stop,
 the image cache, worktrees, `git push` into the host's checkout, `pipe`
@@ -296,10 +299,10 @@ with `H2_AGENT` opens its socket early and answers `wait`, `capture`,
 ## Related
 
 - [agent-api.md](agent-api.md): the running game's own API (`h2 serve`,
-  `h2 agent`); snapshots are its phase 5
+  `h2 agent`)
 - [level-boot.md](level-boot.md): `--level`, `H2_PERF_FROM=level`
 - [BOOT.md](BOOT.md): the environment variables
-- [gameplay-budget.md](../perf/gameplay-budget.md): reading frame stats
+- [gameplay-budget.md](../perf/notes/gameplay-budget.md): reading frame stats
 - [profiling.md](../perf/profiling.md): the profiler (`--features perf`)
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
 - [BUILD-CACHE.md](../lifter/BUILD-CACHE.md): `H2_OBJ_CACHE`

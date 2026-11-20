@@ -1,4 +1,4 @@
-//! The `native-post` host (docs/graphics/native-renderer.md, stage 5):
+//! The `native-post` host (docs/graphics/native-post-hud.md, stage 5):
 //! the colour pass of `render_screen_effects` (`0x000214f0`) as the game
 //! runs it, with its quads dropped on the device and the native glow
 //! drawn in place of the last.

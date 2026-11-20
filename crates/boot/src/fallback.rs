@@ -189,8 +189,23 @@ pub(crate) fn init_with_cold(
     // CLAIMED guarantees these are unset.
     let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
     assert!(set, "fallback tables set outside init");
+    feature::shadow::SHADOW.set_source(Box::new(shadow_original));
     *STATS.lock().unwrap() = Some(Stats::default());
     Ok(())
+}
+
+/// The lifted original for the shadow checks (`shadow.enable`,
+/// docs/engine/shadow-exec.md): this image's own analysis, from the cache
+/// the build left, without the interpreter's unread jump-table targets.
+/// Built when checks are first turned on.
+fn shadow_original() -> Result<Box<dyn lifted::Code>, String> {
+    let bytes = *XBE.get().ok_or("no image loaded")?;
+    let x: &'static xbe::Xbe<'static> =
+        Box::leak(Box::new(xbe::Xbe::parse(bytes).map_err(|e| e.to_string())?));
+    let (analysis, _) = crate::analyze_cached(x, crate::analysis_cache(bytes).as_deref())
+        .map_err(|e| format!("analysis: {e}"))?;
+    let analysis: &'static analyze::Analysis = Box::leak(Box::new(analysis));
+    Ok(Box::new(lifted::Original::new(analysis, x)?))
 }
 
 fn state() -> &'static Mutex<State> {

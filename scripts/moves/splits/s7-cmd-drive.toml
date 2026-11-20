@@ -1,0 +1,9 @@
+# The Live owner's. Review the module list before the window.
+from = "cli"
+to = "cmd-drive"
+direction = "down"
+description = "The bot and co-op test drivers and their verdicts"
+modules = [
+    "bots_drive", "bots_nav", "bots_progress", "bots_test_cmd", "bots_verdict", "coop_drive",
+    "coop_probe_cmd", "coop_test_cmd", "coop_verdict", "lockstep_cmd",
+]

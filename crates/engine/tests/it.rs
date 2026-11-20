@@ -23,6 +23,8 @@ mod light_constants_differential;
 mod light_passes;
 #[path = "light_passes_differential.rs"]
 mod light_passes_differential;
+#[path = "point_shapes.rs"]
+mod point_shapes;
 #[path = "screen_effects_differential.rs"]
 mod screen_effects_differential;
 #[path = "screen_grid_differential.rs"]
@@ -31,10 +33,16 @@ mod screen_grid_differential;
 mod shadow_constants;
 #[path = "shadow_constants_differential.rs"]
 mod shadow_constants_differential;
+#[path = "sim_anim_differential.rs"]
+mod sim_anim_differential;
+#[path = "sim_collision_differential.rs"]
+mod sim_collision_differential;
 #[path = "sim_native_differential.rs"]
 mod sim_native_differential;
 #[path = "sim_physics_differential.rs"]
 mod sim_physics_differential;
+#[path = "sim_tier_differential.rs"]
+mod sim_tier_differential;
 #[path = "states_differential.rs"]
 mod states_differential;
 #[path = "views.rs"]

@@ -1,6 +1,6 @@
 //! Interpolated replay: in-between frames at the display rate while the
 //! game keeps its 30 Hz tick (docs/game/high-framerate.md, "Design D" and
-//! "Phase 2: what was built").
+//! "Phase 2: the interpolated replay").
 //!
 //! - [`model`]: finds the matrices in each draw's vertex constants (the
 //!   view's camera, objects drawn with it, draws with a projection of

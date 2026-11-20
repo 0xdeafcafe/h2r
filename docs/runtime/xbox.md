@@ -1,5 +1,15 @@
 # Xbox (Dev Mode, UWP)
 
+Status: Partly built. The app runs on an Xbox Series X in Dev Mode: it
+finds the console's GPU through DX12, loads the module through
+`LoadPackagedLibrary`, mounts the disc and the hard disk, opens audio
+(WASAPI, 48 kHz) and presents frames while the title boots. Pads and levels
+are not verified ("Known gaps"). In App mode the process has about 1.7 GB
+of memory, little of it free once booted. **Switch it to Game in Dev Home**
+(see "Installing and launching") before loading a level.
+Code: `crates/uwp-host`, `platform/xbox`. Tests: `platform/xbox/tests/portal_test.sh`.
+Switch: `H2_XBOX`, `H2_XBOX_PROFILE_DIR` and the build variables, see [switches.md](switches.md).
+
 The game runs on an Xbox Series X|S in Developer Mode as a UWP app,
 built entirely on a Mac. It is the Windows port
 ([windows.md](windows.md)) packaged as an app: the same runtime and
@@ -8,16 +18,6 @@ tvOS and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md)), it carries a
 trimmed disc by default (the menu, The Heretic and Zanzibar); `--maps all`
 packs every map, and the Multiplayer Map Pack with `--mappack`
 ("Building").
-
-**Status (2026-11-16):** it runs on an Xbox Series X in Dev Mode, in App
-mode (not yet switched to Game). It finds the console's GPU (`SraKmd_arden`,
-DX12, 1920x1080 Bgra8, BC textures), loads the module through
-`LoadPackagedLibrary`, mounts the disc and the hard disk, opens audio
-(WASAPI, 48 kHz) and presents frames at 5 to 8 fps while the title boots.
-Pads and levels are not checked yet. In App mode the process has about
-1.7 GB of memory, and only about 130 MB was free once booted, with 512 MB
-of dedicated GPU memory. **Switch it to Game in Dev Home** (see
-"Installing and launching") before loading a level.
 
 ## How it is put together
 
@@ -131,7 +131,7 @@ CRT statically:
 
 - the executable through `-C target-feature=+crt-static`;
 - the module through `-fms-runtime-lib=static` (`emit::compile::windows_target_args`,
-  for every Windows build now).
+  for every Windows build).
 
 The module carries its own copy. The generated C calls only the memory and
 math functions and passes no CRT state across the boundary. Neither binary

@@ -27,6 +27,9 @@ lift = { path = "crates/lift" }
 emit = { path = "crates/emit" }
 clif = { path = "crates/clif" }
 simd = { path = "crates/simd" }
+sim-core = { path = "crates/sim-core" }
+sim-anim = { path = "crates/sim-anim" }
+sim-collision = { path = "crates/sim-collision" }
 x87 = { path = "crates/x87" }
 kernel = { path = "crates/kernel" }
 voice = { path = "crates/voice" }

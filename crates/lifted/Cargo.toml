@@ -1,0 +1,18 @@
+[package]
+name = "lifted"
+description = "The lifted original on the IR interpreter: the oracle for port differential tests and for runtime shadow checks (docs/engine/shadow-exec.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+analyze.workspace = true
+ir.workspace = true
+lift.workspace = true
+runtime.workspace = true
+xbe.workspace = true
+serde.workspace = true
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+
+[dev-dependencies]
+serde_json.workspace = true

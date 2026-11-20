@@ -1,0 +1,14 @@
+[package]
+name = "sim-collision"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The native collision world: BSPs decoded once, queries as single Rust calls (docs/engine/sim-rewrite-collision.md)"
+
+[dependencies]
+sim-core.workspace = true
+
+[features]
+# `synth`: synthetic collision BSPs laid out in guest form, for the unit
+# tests here and the engine's differential test. No game data.
+synth = []

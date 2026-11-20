@@ -329,7 +329,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                 let hr = read_back(tree, hc, &name);
 
                 // No physics model: the engine gives scenery no Havok
-                // body (docs/halo1/objects.md, "Collision for Havok").
+                // body (docs/halo1/objects.md, "Building Halo 2 tags").
                 assert!(reference(&hr, "physics_model").is_none(), "{name}: phmo");
                 let mode = reference(&hr, "render_model").expect("a render model");
                 let mc = local(tree, mode).unwrap();

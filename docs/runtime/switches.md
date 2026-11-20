@@ -1,11 +1,10 @@
 # Switches
 
-What is left after the 2026-11-20 flag cleanup: the settings, the tools
-still in use, and the experiments still waiting for a measurement. Each
-remaining code path has one behaviour unless a row here names the other.
-The tables give the variable and what it does; the linked docs have the
-details. Removed switches, and why, are in
-[render-switches.md](../graphics/render-switches.md) and in each removal's
+The settings, the tools in use, and the experiments waiting for a
+measurement. Each code path has one behaviour unless a row here names the
+other. The tables give the variable and what it does; the linked docs have
+the details. Removed render switches, and why, are in
+[not-adopted.md](../graphics/notes/not-adopted.md) and in each removal's
 commit message.
 
 `H2_FEATURES` takes a comma-separated list: `id`, `-id` or `id=on|off`.
@@ -40,11 +39,12 @@ Compiler flags: part of the dylib stamp, so set them for both build and run.
 | Switch | What |
 |---|---|
 | `H2_AGENT` | the agent API socket ([agent-api.md](agent-api.md)) |
-| `H2_SIM` and the sim tooling (`sim.arena-hash`, `H2_DISPATCH_STATS`, `H2_ENTRY_STATS`) | headless matches ([sim.md](sim.md)) |
-| `sim.static-light`, `sim.submix-fx`, `sim.observer-resources`, `sim.metrics-projection`, `audio.packet-clock` | on; `=off` is the reference the sim budget measures against ([sim-budget.md](../perf/sim-budget.md)) |
+| `H2_SIM` and the sim tooling (`impl.sim.arena-hash`, `H2_DISPATCH_STATS`, `H2_ENTRY_STATS`) | headless matches ([sim.md](sim.md)) |
+| `impl.sim.static-light`, `impl.sim.submix-fx`, `impl.sim.observer-resources`, `impl.sim.metrics-projection`, `audio.packet-clock` | on; `=off` is the reference the sim budget measures against ([sim-budget.md](../perf/sim-budget.md)) |
 | `H2_BOOT_VERBOSE`, `H2_FEATURE_PLAN`, `H2_NATIVE_VERBOSE` | log verbosity |
 | `H2_PERF_FROM`, `H2_PROFILE*`, `H2_TIMELINE*`, `H2_FRAME_STATS*`, `H2_HOST_PERF`, `H2_AUDIO_STATS`, `H2_SAMPLE_*`, `render-timing`, `render-census` | perf capture ([profiling.md](../perf/profiling.md)) |
 | `H2_BOOT_GFX*`, `H2_BOOT_CAPTURE*`, `H2_BOOT_DRAWLOG*`, `H2_BOOT_UPLOAD_ALWAYS`, `H2_SWEEP_DIAG`, `H2_BOOT_STOP_AT_PRESENT`, `H2_BOOT_INPUT*` | headless rendering, captures and input |
+| `H2_BOOT_GFX_BETWEEN=N` | with in-between frames on in a headless `H2_BOOT_GFX` run (`crates/boot/src/d3d_glue.rs`, `BetweenShots`): write the first N in-between frames as `frame-NNNNN-between-KK.png`, and the guest frames shown meanwhile as `frame-NNNNN.png`; ignored without in-between frames ([high-framerate.md](../game/high-framerate.md)) |
 | `H2_GFX_MERGE_CHECK`, `H2_D3D_WRITEBACK_TRACE`, `H2_RENDER_THREAD_STATS`, `H2_RENDER_THREAD=0` | render diagnostics; `H2_RENDER_THREAD=0` is the synchronous reference |
 | `H2_PIPELINE_CACHE`, `H2_GFX_COMPILE_THREADS`, `H2_VERTEX_CACHE_MB`, `H2_SMOOTH_TEXT`, `H2_RENDER_OVERRIDES` | pipeline cache, compile workers, cache budget, glyph smoothing, hot render overrides |
 | `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY` | lockstep and input recordings |
@@ -57,17 +57,17 @@ Off by default. Each is the owner's call once the A/B named is run.
 
 | Switch | What | Waiting for |
 |---|---|---|
-| `H2_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | guest RAM as one flat host mapping, and its write watch | today's full-image A/B |
-| `H2_RAM_PAGE_CACHE` | reuses RAM pages within one gate hold | the same |
-| `H2_X87_TOP` | checked x87 TOP specialisation | the same |
+| `H2_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | guest RAM as one flat host mapping, and its write watch | a full-image A/B |
+| `H2_RAM_PAGE_CACHE` | reuses RAM pages within one gate hold | a full-image A/B |
+| `H2_X87_TOP` | checked x87 TOP specialisation | a full-image A/B |
 | `H2_ENTRY_GATE` | takes the RAM gate at handler entry; 11% off a runner entry in benches | an in-game profile ([guest-memory.md](../perf/guest-memory.md)) |
 | `H2_DIRTY_INLINE` | tests the dirty bit at store sites; 0.4 ns a store under a watch | an in-game profile |
 | `H2_DIRECT_GATE`, `H2_DIRECT_COUNT` | gate and count on the direct-call path; proven equivalent, untimed | a timing (they touch the `H2Direct` layout) |
-| `H2_VIEW_CHARGE=0` | the per-call charge path; view charging became the default on 2026-11-20 with no recorded measurement | an in-game profile of the new default |
+| `H2_VIEW_CHARGE=0` | the per-call charge path; view charging is the default (`crates/emit/src/compile.rs`), with no recorded measurement | an in-game profile of the new default |
 | `impl.render.pipelined_frame` (+ `H2_PIPELINE_*` knobs) | render front-end one frame behind the sim on a worker ([pipelined-render.md](../graphics/pipelined-render.md)) | its documented next step |
 | `impl.render.interpolate`, `impl.render.reproject_ahead` | in-between frames by replay; reprojection carried past N | E1 played at 60 ([high-framerate.md](../game/high-framerate.md)) |
 | `impl.render.occlusion` | Hi-Z occlusion culling of object setups | a first in-game check ([occlusion-culling.md](../graphics/occlusion-culling.md)) |
-| `impl.sim.physics`, `impl.sim.native_*` | native simulation ports | today's sim A/B |
+| `impl.sim.native_*` (`impl.sim` sets them all; the ports are `crates/engine/src/sim_physics`) | native simulation ports | a sim A/B |
 | `impl.engine.datums`, `impl.engine.tags` | Rust datum and tag leaves (`impl.engine.locale` is on) | a play-test |
 | `H2_SIGNIN_DIALOG` | the sign-in dialog window | a game run ([ui-builder.md](../game/ui-builder.md)) |
 | `H2_NO_COOP_ROW` | hides the co-op row | the co-op lane (read in files this cleanup could not touch) |

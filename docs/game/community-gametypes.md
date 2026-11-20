@@ -1,5 +1,8 @@
 # Community game variants
 
+Status: Built. 13 community variants (`community_variants::VARIANTS`) are added after the retail built-ins; the unit tests prove the entries land in the `goof` block, and what the game then does with them is in "Not done and risks".
+Switch: none.
+
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
 hand in custom games, as extra built-ins. In the variant list they carry a
@@ -239,8 +242,8 @@ being left out, and a failed read leaving the tag alone.
 
 ## Not done and risks
 
-- **Not seen in the game yet.** The work is proven by the unit tests and the
-  disassembly above; no game run was made. To check by hand: Settings, Game
+- **Not verified in a game run.** The unit tests and the disassembly above
+  prove the work. A run would check: Settings, Game
   Variants should list the thirteen after the retail ones, each ending in the
   two-players icon, with its description; Edit on one should ask for a name
   and save a copy; a custom game on one should play with its settings. The

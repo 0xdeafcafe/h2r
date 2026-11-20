@@ -1,4 +1,4 @@
-//! Planar fog, layer 16 (docs/graphics/native-renderer.md, "Stage 4b"):
+//! Planar fog, layer 16 (docs/graphics/native-water-fog.md, "Stage 4b"):
 //! the world's materials drawn again with their own layer-16 passes
 //! (`crate::fog_gpu`, with the `gpu` feature), blended over the finished
 //! scene by the fog the device holds. This module is the skip: what the

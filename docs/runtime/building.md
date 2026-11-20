@@ -1,12 +1,16 @@
 # Building every target with `just`
 
+Status: Built. A guide to the root `justfile`.
+Code: `justfile`, `scripts/doctor.sh`. Tests: `scripts/tests/just_test.sh`.
+Switch: `H2_ISO`, `H2_DISC`, `H2_MAPPACK`, `H2_OPT` and the toolchain variables, see [switches.md](switches.md).
+
 The root `justfile` is one front door for building each target from your own
 disc. It is a thin layer: each recipe resolves the disc image and the
 arguments, then calls the command the platform's own doc describes
 (`cargo h2`, `platform/*/build.sh`, `xcodebuild`, `devicectl`). Those docs
 stay the reference for what each piece is: [app.md](app.md) for the Mac,
-[tvos.md](tvos.md), [ios.md](ios.md), [windows.md](windows.md) and, once it
-is merged, xbox.md.
+[tvos.md](tvos.md), [ios.md](ios.md), [windows.md](windows.md) and
+[xbox.md](xbox.md).
 
 ```sh
 brew install just
@@ -47,10 +51,7 @@ recipe and lists the keys it takes.
 | `test [cargo args]` | `cargo test --workspace` | Rust |
 | `check [--fix \| --crate NAME]` | `scripts/check.sh`: fmt, clippy, tests | Rust |
 | `check-windows` | `cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace` under `env.sh` | as `windows-dll` |
-| `clean-device-builds` | removes `platform/{tvos,ios}/build`, their `DerivedData` and `platform/xbox/build` | |
-
-The `xbox` recipes stop with "not on this checkout yet" until `platform/xbox`
-is merged, and work unchanged once it is.
+| `clean-device-builds` | removes the `build` directories under `platform/tvos`, `platform/ios` and `platform/xbox`, and the `DerivedData` of tvOS and iOS | |
 
 ### Arguments
 
@@ -96,7 +97,7 @@ back from the bundle at the next launch (saves in Caches are not restored).
 On iOS it is in Documents, so it counts towards device backups.
 
 Going back to `maps=demo` removes what `all` added: the packer deletes the
-disc files it no longer wants (`h2host::maps::prune`) and `build.sh` removes
+disc files it does not want (`h2host::maps::prune`) and `build.sh` removes
 the seed. A device that already has the map pack in its data root keeps it.
 
 ## Prerequisites by target

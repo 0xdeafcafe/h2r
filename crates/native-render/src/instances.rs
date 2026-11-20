@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::cull::Frustum;
 use crate::model::{Model, NodeMatrix};
 use crate::world::Aabb;
+use frame_scene::{FrameScene, Instance, View};
 
 /// What the vertex shader reads per object.
 #[repr(C)]
@@ -99,6 +100,21 @@ pub fn pack<'a>(
     out
 }
 
+/// A view's instances as [`pack`] takes them, in the view's order:
+/// `model` resolves an instance to the caller's model index (`None`
+/// leaves it out, as [`pack`] does a model it cannot find).
+pub fn view_objects<'a>(
+    scene: &'a FrameScene,
+    view: &View,
+    model: &dyn Fn(&Instance) -> Option<u32>,
+) -> Vec<ObjectInput<'a>> {
+    scene
+        .instances_of(view)
+        .iter()
+        .filter_map(|i| Some(ObjectInput { model: model(i)?, nodes: scene.nodes_of(i), sphere: i.sphere }))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +182,54 @@ mod tests {
         assert_eq!(pack(&get, &behind, None).instances.len(), 1);
         let nan = [ObjectInput { model: 0, nodes: &one, sphere: ([-10.0, 0.0, 0.0], f32::NAN) }];
         assert_eq!(pack(&get, &nan, Some(&frustum())).instances.len(), 1);
+    }
+
+    #[test]
+    fn a_scene_view_packs_as_its_objects_do() {
+        use frame_scene::{InstanceInput, InstanceKey, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
+        let models = [model(2, &[(1, 0), (0, 3)]), model(1, &[(0, 0)])];
+        let get = |i: u32| models.get(i as usize);
+        let two = [NodeMatrix::IDENTITY; 2];
+        let one = [NodeMatrix::IDENTITY; 1];
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 90f32.to_radians(),
+            viewport: [0, 0, 100, 100],
+            near: 0.1,
+            far: 100.0,
+        };
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).unwrap();
+        // Definitions 11 and 10 draw models 1 and 0; 12 has none.
+        for (handle, definition, nodes, centre) in
+            [(1, 11, &one[..], [10.0, 0.0, 0.0]), (2, 10, &two[..], [10.0, 1.0, 0.0]), (3, 10, &two[..], [-10.0, 0.0, 0.0]), (4, 12, &one[..], [10.0, 0.0, 0.0])]
+        {
+            b.push_instance(InstanceInput {
+                key: InstanceKey(handle),
+                definition,
+                model: 0,
+                nodes,
+                sphere: (centre, 1.0),
+                lighting: None,
+                defaults: None,
+            })
+            .unwrap();
+        }
+        let scene = b.seal(Stamp::default()).unwrap();
+        let view = &scene.views[0];
+        let objects = view_objects(&scene, view, &|i| match i.definition {
+            10 => Some(0),
+            11 => Some(1),
+            _ => None,
+        });
+        assert_eq!(objects.len(), 3);
+        let frustum = Frustum::from_view_projection(&view.camera.view_projection());
+        let f = pack(&get, &objects, Some(&frustum));
+        assert_eq!((f.culled, f.mismatched), (1, 0));
+        let d: Vec<_> = f.draws.iter().map(|d| (d.model, d.material, d.instance, d.first_index)).collect();
+        assert_eq!(d, vec![(0, 0, 1, 3), (0, 1, 1, 0), (1, 0, 0, 0)]);
     }
 }

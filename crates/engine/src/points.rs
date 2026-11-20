@@ -206,13 +206,10 @@ pub mod ui_render {
     pub const FADE_FAN_TAIL: u32 = 0x0004_0db8;
 }
 
-/// A named guest global (a word or a structure at a fixed address).
-#[derive(Debug, PartialEq, Eq)]
-pub struct Global {
-    pub name: &'static str,
-    pub base: u32,
-    pub doc: &'static str,
-}
+/// The named guest globals live in `guest_layout::global` with the
+/// structure layouts; they are re-exported here, so `points::GAME_GLOBALS`
+/// and `points::GLOBALS` are unchanged.
+pub use guest_layout::global::*;
 
 #[doc(hidden)]
 #[macro_export]
@@ -292,23 +289,6 @@ macro_rules! points {
     };
 }
 
-/// Declares named [`Global`]s: `NAME @ 0x...; "doc";`.
-#[macro_export]
-macro_rules! globals {
-    ($all:ident; $( $(#[doc = $d:literal])* $name:ident @ $addr:literal ; $doc:literal ; )*) => {
-        $(
-            $(#[doc = $d])*
-            pub static $name: $crate::points::Global = $crate::points::Global {
-                name: stringify!($name),
-                base: $addr,
-                doc: $doc,
-            };
-        )*
-        /// Every global declared in this table.
-        pub static $all: &[&$crate::points::Global] = &[$(&$name),*];
-    };
-}
-
 points! { ALL;
     /// Length of the vector at EAX. The original returns the float in x87 ST(0).
     VECTOR_LENGTH_3D @ 0x0002_4590: [fn(vector: eax) ret 0], Hot; "docs/halo1/objects.md";
@@ -319,6 +299,10 @@ points! { ALL;
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
     COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
+    /// BSP vector test: one segment through a collision BSP into the result record.
+    COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// Location of a point in the structure BSP: leaf, cluster, BSP index.
+    COLLISION_LOCATION @ 0x0011_bed0: [fn(point: edx, out: esi) ret 0], Hot; "docs/engine/collision-queries.md";
     SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";
@@ -1042,12 +1026,14 @@ points! { ALL;
     GAME_STATE_SAVE @ 0x0012_3e20: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Revert the game state to a saved slot.
     GAME_STATE_REVERT @ 0x0012_3f60: [opaque], Optional; "docs/runtime/checkpoints.md";
+    /// Restore the whole game state from a saved image (header checked).
+    GAME_STATE_RESTORE @ 0x0012_4380: [opaque], Optional; "docs/runtime/checkpoints.md";
     /// Switch the structure BSP (prepare, dispose, load, publish).
-    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-preflight.md";
+    BSP_SWITCH @ 0x0011_c1b0: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_start`.
-    CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-preflight.md";
+    CINEMATIC_START @ 0x002a_9740: [opaque], Optional; "docs/runtime/level-boot.md";
     /// HaloScript `cinematic_stop`.
-    CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-preflight.md";
+    CINEMATIC_STOP @ 0x002a_9760: [opaque], Optional; "docs/runtime/level-boot.md";
     /// The level select's list: one campaign's map ids from the start-level
     /// list, sorted, into the data array (stdcall `(array, campaign id)`).
     /// 1.0 asks for campaign 1 only (`0x19c190`).
@@ -1181,54 +1167,6 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
-}
-
-globals! { GLOBALS;
-    /// Multiplayer engine state and its per-variant views (§3.7).
-    GAME_ENGINE @ 0x004e_9ae8; "docs/game/bots.md";
-    CTF_ASSAULT_GLOBALS @ 0x0051_ec80; "docs/game/bots.md";
-    ODDBALL_GLOBALS @ 0x0051_ecc4; "docs/game/bots.md";
-    KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
-    TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
-    JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
-    /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
-    GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
-    /// Pointer to the game globals: active options at `+8`, "map active" at
-    /// `+0x1120`, the end latch at `+0x1128`.
-    GAME_GLOBALS @ 0x004e_6948; "docs/runtime/level-boot.md";
-    /// Pointer to the game-time record; `+8` is the tick count.
-    GAME_TIME @ 0x0051_0c54; "docs/game/high-framerate.md";
-    /// Pointer to the players datum array (`0x21c`-byte players).
-    PLAYERS @ 0x004e_8c24; "docs/live/live-gamestate.md";
-    /// Pointer to the objects datum array (`0xc`-byte headers).
-    OBJECTS @ 0x004e_0300; "docs/formats/objects.md";
-    /// Pointer to the loaded scenario tag (`scnr`): player starting
-    /// locations at `+0x100` (count) and `+0x104`, `0x34` each.
-    SCENARIO @ 0x004e_0350; "docs/editor/scenario-editor.md";
-    /// Holds the guest address of the tag-index header.
-    TAG_INDEX @ 0x0054_7f00; "docs/engine/tag_get_checked.md";
-    /// Holds the guest address of the 16-byte tag-entry table.
-    TAG_ENTRIES @ 0x004e_3b44; "docs/engine/tag_get_checked.md";
-    /// The Controls screen's vtable (28 slots).
-    CONTROLS_SCREEN_VTABLE @ 0x0045_be30; "docs/formats/ui.md";
-    /// The Controls list handler's vtable (22 slots).
-    CONTROLS_LIST_VTABLE @ 0x0045_d240; "docs/formats/ui.md";
-    /// Pointer to the simulation globals: the world's mode at `+8` (0
-    /// none, 1 local, 2 sync-server, 3 sync-client, 4 dist-server, 5
-    /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
-    /// byte at `+0x2c`.
-    SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
-    /// The simulation's "ended" latch byte.
-    SIM_ENDED @ 0x004c_f772; "docs/live/live-coop.md";
-    /// The network life cycle's ready byte.
-    NETWORK_READY @ 0x0052_7330; "docs/live/live-custom-games.md";
-    /// Pointer to the squad (lobby) network session.
-    SQUAD_SESSION @ 0x0052_7364; "docs/live/live-custom-games.md";
-    /// The base address of the game-state block (`0x3fe000` bytes).
-    GAME_STATE_BASE @ 0x004e_6080; "docs/runtime/checkpoints.md";
-    /// Pointer to the players globals: the local player count (`i16`) at
-    /// `+8`, the four local users' player datums at `+0xc` (-1 for none).
-    PLAYER_GLOBALS @ 0x004e_8c20; "docs/game/bots.md";
 }
 
 /// The point at `base`, if the table names one.

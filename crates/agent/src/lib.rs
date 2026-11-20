@@ -15,13 +15,17 @@
 //!   on the game's thread, at a tick boundary when the game is ticking.
 //! * [`render`] records one frame's passes and draws for `render.frame`
 //!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
-//!   `render.stats` from what the host registers.
+//!   `render.stats` from what the host registers; `render.capture`
+//!   ([`render::CAPTURE`]), `render.scene` and `render.parity` over what
+//!   the host registers, and `render.compare` ([`compare`]).
 //! * [`hostpads`] answers `input.host`: the host controllers as the input
 //!   layer and the debug menu's gate see them.
 //! * [`menu`] connects the debug menu as an in-process client, and adds
 //!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
+//! * [`collision`] answers `collision.stats`: the native collision
+//!   world's call, bail and decode counters.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
@@ -35,6 +39,8 @@
 //! * `trace` answers `trace.*` and `flight.*`: rows of chosen objects
 //!   taken at every tick, streamed to a file or kept in a ring with the
 //!   tick's controller reads.
+//! * [`shadow`] answers `shadow.*`: shadow checks of the native ports
+//!   against the lifted original (docs/engine/shadow-exec.md).
 //! * `state.*` saves and loads machine snapshots: the tick observer ends
 //!   the slice when one is due, and the boot loop runs it between slices
 //!   through a [`SnapshotMachine`] ([`Agent::run_snapshots`]).
@@ -44,6 +50,8 @@
 
 pub mod ai;
 mod capture;
+pub mod collision;
+pub mod compare;
 mod exec;
 pub mod havok;
 pub mod hostpads;
@@ -55,6 +63,7 @@ mod reader;
 pub mod render;
 mod server;
 pub mod hs_state;
+pub mod shadow;
 pub mod sim;
 mod tap;
 mod trace;

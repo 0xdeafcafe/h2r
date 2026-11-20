@@ -1,10 +1,16 @@
 # Windows (and the road to Xbox Dev Mode)
 
-The goal is an Xbox Series X in Developer Mode, which runs UWP apps. This
-first step makes the runtime and the generated game module build for
-`x86_64-pc-windows-msvc`, cross-compiled from a Mac. The UWP app and its
-package for the Xbox are in [xbox.md](xbox.md). Nothing here has run on
-Windows. It is all compile- and link-checked on a Mac.
+Status: Built. The runtime and the generated game module build for
+`x86_64-pc-windows-msvc`, cross-compiled from a Mac, and run inside the UWP
+app on an Xbox Series X in Developer Mode ([xbox.md](xbox.md)). The Windows
+desktop path (`h2 play` on a Windows PC) has not been run.
+Code: `crates/emit/src/compile.rs` (`Arch::X86_64Windows`), `platform/windows/env.sh`.
+Switch: `H2_EMIT_TARGET=windows`, `H2_XWIN`, `H2_LLD`, `H2_LLVM`, `H2_WINDOWS_TARGET_DIR`, see [switches.md](switches.md).
+
+The module and the runtime are the Xbox app's: the UWP app
+(`crates/uwp-host`, `platform/xbox`) is documented in [xbox.md](xbox.md).
+This page covers the cross-toolchain, the module's target and what the
+runtime does on Windows.
 
 ## Toolchain (on the Mac)
 
@@ -72,8 +78,7 @@ The retail image has about 18,700 handlers, and they are reached through the
 `h2gen_module` table anyway. `h2abi.h` defines
 `H2_EXPORT` as `__declspec(dllexport)` on `_WIN32` and as nothing elsewhere.
 It marks `h2gen_module`, `h2gen_module_abi_version`, `h2boot_install_v3`,
-`h2x87bridge_install` and the test bridge's `h2bridge_*`. Mac objects come
-out the same as before.
+`h2x87bridge_install` and the test bridge's `h2bridge_*`. Mac objects have no `H2_EXPORT` effect.
 
 **What was checked in the emitted C**:
 
@@ -87,7 +92,7 @@ out the same as before.
   inline asm, and the native x87 and SSE paths all compile for
   x86_64-windows-msvc.
 
-**Calling convention.** The host ABI is now Microsoft x64 on both sides.
+**Calling convention.** The host ABI is Microsoft x64 on both sides.
 The Rust side declares every bridge and handler type `extern "C"`. Clang
 compiles the C for the same triple. So both follow the platform C ABI. A
 `TransferAbi` (28 bytes) is returned through a hidden pointer in RCX, and
@@ -121,10 +126,10 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 | Live sockets (Live on) | BSD sockets | stand-in: every socket fails with WSASYSNOTREADY (Winsock port to do) |
 | movies (Bink, AVFoundation) | AVFoundation | compiled out: movies are skipped |
 | `h2 emit` output lock | flock | std `File::lock` (LockFileEx) |
-| perf sampler, fastmem-proto, HID | Mach and IOKit | compiled out (they were already gated) |
-| Ctrl-C in `h2 play` | signal watcher | none yet |
+| perf sampler, fastmem-proto, HID | Mach and IOKit | compiled out |
+| Ctrl-C in `h2 play` | signal watcher | none |
 | live-server identity files | mode 0600 | the profile directory's ACL |
 
-## Next: the UWP app on Xbox
+## Related
 
-Built: see [xbox.md](xbox.md) (`crates/uwp-host`, `platform/xbox`).
+[xbox.md](xbox.md) (the UWP app that runs this module), [building.md](building.md) (the `just` recipes), [linux.md](linux.md) (the other x86-64 target).

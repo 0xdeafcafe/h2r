@@ -13,6 +13,7 @@
 pub use feature::scene_effect_instruction_entries;
 
 pub mod account_screen;
+mod agent_frames;
 pub mod agent_glue;
 pub mod aim_assist;
 mod campaign_cache;
@@ -127,6 +128,8 @@ pub mod native_world_glue;
 mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 mod opaque_streams;
+#[cfg(feature = "gpu")]
+mod scene_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
@@ -1339,7 +1342,7 @@ fn run_configured(
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });
-    // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
+    // Every font gets the bot mark's gear (docs/game/bots.md, "Clanker appearance and Live player options"), after
     // the icon sets.
     #[cfg(feature = "desktop-runtime")]
     let fonts = vfs::Chain(
@@ -2020,7 +2023,7 @@ fn run_configured(
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
-    // (docs/runtime/xapi.md "Input pump"); no guard is held here.
+    // (docs/runtime/xapi.md "Input behavior and sources"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut host_stop = false;
     let mut input_errors = 0u64;
@@ -2072,7 +2075,7 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let threaded = false;
     let host_perf = host_perf::start_from_env(threaded);
-    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/gameplay-budget.md).
+    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/notes/gameplay-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     let gpu = cfg!(feature = "gpu")

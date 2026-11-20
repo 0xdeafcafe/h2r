@@ -1,0 +1,5 @@
+from = "hooks"
+to = "h1-runtime"
+direction = "up"
+description = "Halo 1 in the running game: AI control, conversations, HUD text, script builtins, cinematics, and the hooks only converted maps need (docs/halo1/README.md)"
+modules = ["h1_projectiles", "h1_scope_zoom"]

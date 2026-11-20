@@ -233,7 +233,7 @@ fn players_into(
         let local_user = player.local_user(guest).map_err(fault)?;
         let len = player.name_units(guest, &mut units).map_err(fault)?;
         // A bot's name as the record names it: without the mark the game
-        // draws before it (docs/game/bots.md §8.2.2).
+        // draws before it (docs/game/bots.md, "Clanker appearance and Live player options").
         let units = live_proto::bots::unmarked_units(&units[..len]);
         let name = previous
             .iter_mut()

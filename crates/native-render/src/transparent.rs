@@ -1,6 +1,6 @@
 //! Stage 3, the transparents: which sorted transparent entries are
 //! geometry the native renderer can draw, and the runs it draws them in
-//! (docs/graphics/native-renderer.md, "Stage 3: transparents").
+//! (docs/graphics/native-transparents.md, "Stage 3: transparents").
 //!
 //! Research points (Code, `h2 disasm`):
 //!
@@ -126,7 +126,7 @@ mod tests {
         for (i, v) in [1.0f32, 2.0, 3.0].into_iter().enumerate() {
             m.w(ENTRY + 0x64 + 4 * i as u32, v.to_bits());
         }
-        crate::objects::tests::record(m, record, lighting);
+        scene_extract::testing::record(m, record, lighting);
         m.w(RENDER_RECORDS + 0x20 * record + 0xc, packed);
     }
 
@@ -155,8 +155,8 @@ mod tests {
         assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET).unwrap().source, Source::Placement(140));
         // An object's: named by its lighting pointer's cache record owner,
         // not by the record's model datum.
-        let h = crate::objects::tests::object(&mut m, 4, 0xe000_0100, 1);
-        entry(&mut m, 3, 0, Some(crate::objects::tests::lighting(4 + 7)), 0);
+        let h = scene_extract::testing::object(&mut m, 4, 0xe000_0100, 1);
+        entry(&mut m, 3, 0, Some(scene_extract::testing::lighting(4 + 7)), 0);
         assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET).unwrap().source, Source::Object(h));
         // An object's whose owner does not resolve: not read (D3D draws it).
         entry(&mut m, 3, 0, Some(0), 0);

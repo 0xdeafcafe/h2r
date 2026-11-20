@@ -1,13 +1,16 @@
 # The UI builder: native Halo 2 screens built, seen and proven offline
 
+Status: Built. The preview, sheet, checks and page tables are tested offline; the in-game items are under "Not verified". The fidelity loop (`h2 ui compare`, `ui.screenshot`) is design.
+Code: `crates/boot/src/ui_kit/` (`view.rs`, `preview.rs`, `layout.rs`, `dialog.rs`, `dialog_tag.rs`, `picker.rs`, `page/`), `crates/cli/src/ui.rs`. Tests: `ui_kit::screens::tests`, `ui_kit::page::tests`.
+Switch: `H2_SIGNIN_DIALOG`, `H2_UI_SHEET_DIR`, listed in [switches.md](../runtime/switches.md).
+
 A native screen is one we write in Rust and the game draws with its own
 widgets ([ui-screens.md](ui-screens.md) is the kit it grows from). The
 builder's job: an agent writes a screen, sees it in every state, and proves
 how it looks and behaves, all without starting the game. A game run then
 only confirms what offline work can't reach (the last section).
 
-The sign-in prompt is the first screen built on it. The account, co-op and
-skulls screens follow.
+The sign-in prompt, the account, co-op and skulls screens are built on it.
 
 ## The model
 
@@ -57,7 +60,7 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 
 | Kind | Built from | Header | Use |
 |---|---|---|---|
-| `List` | the Controls tag (today's `KitScreen`) | header layout 0 | settings-style lists over the game shell |
+| `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (Clankers, Halo 1 options), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
@@ -67,7 +70,7 @@ beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
 
-**Decision (2026-11-18, the user): sign-in is a modal.** The sign-in
+**Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,
 not full screens. They sit over whatever is beneath (the title screen, the
 main menu, in game) the way the game's own dialogs do, in the large dialog
@@ -79,8 +82,7 @@ them rather than assumed. A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
 area. The preview draws a modal over the screen that opened it (its
-`Opener`, below), so the sheet shows it in place. This replaces the
-earlier plan of an `Own` sign-in screen on the shell backing.
+`Opener`, below), so the sheet shows it in place.
 
 **The runtime tag recipe.** Our screens are still made by the Controls
 constructor and adopted by `list_class`. The screen-tag function
@@ -131,15 +133,15 @@ h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
 h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
-`preview` writes to `$TMPDIR` by default, and `sheet` to
-`$RUSH_KEEP/ui-builder/`. `--synthetic` draws without a disc.
+`preview` writes to the temp directory by default, and `sheet` to
+`$RUSH_KEEP` when `--out` is not given. `--synthetic` draws without a disc.
 
-**Built (slice 2).**
+**The pieces.**
 
 - `ui_kit::view` holds `View`, `Widget`, `Art`, `Metrics` and `Synthetic`,
   plus `Geometry` and its disc-free `Geometry::fallback`. The disc test
   checks the fallback against the disc, field for field.
-- `view_of` turns today's `ScreenSpec`s into views.
+- `view_of` turns a `ScreenSpec` into views.
 - `preview::Source` has two implementations: `Disc` and `SyntheticSource`.
   `render_view` draws a view from either; `write_states` and `write_sheet`
   write the files.
@@ -149,9 +151,8 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
   readable too. `cargo test` draws the synthetic sheet; the disc test with
   `H2_UI_SHEET_DIR=<dir>` draws the real one.
 
-Today's screens come in as `ScreenSpec`s, from their `Page` (slice 4,
-below). A spec with `ScreenSpec::dialog` set is drawn as a modal
-(slice 6, "The modal dialog" below).
+Screens come in as `ScreenSpec`s, from their `Page` ("Behaviour"). A spec
+with `ScreenSpec::dialog` set is drawn as a modal ("The modal dialog").
 
 ## The checks
 
@@ -181,8 +182,8 @@ The art checks need the images' pixels, so the synthetic source skips
 them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
-**Built (slice 3)**: `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints it per state. The tests:
+The checks are `ui_kit::layout::check(view, source, rules)`, and
+`h2 ui preview` prints them per state. The tests:
 
 - unit tests with synthetic metrics, plus one with a solid-image source
   for the two pixel checks;
@@ -190,32 +191,16 @@ disc for the screens our art comes from (Controls 39, level select 11).
 - every screen in every state passes against the disc with nothing
   skipped (the disc test).
 
-No finding is left on purpose. Sign-in's missing legend was the last,
-and slice 6 gave it one.
+No finding is left on purpose.
 
-The checks' first findings, fixed:
+What the checks hold the screens to:
 
-- **Unfocused rows nearly invisible.** The preview dimmed row text to 55%
-  of the skin's blue. The game draws row text white, and unfocused rows
-  at about 40% alpha: the 2026-11-16 screenshot peaks at (229, 230, 231)
-  focused and (103, 109, 118) unfocused over a (27, 37, 56) bar. Rows now
-  measure a contrast of 2.9 to 3.1 on the real bars, and the old model
-  about 1.5. `view::UNFOCUSED_ALPHA` is observed, not traced.
-- **The skulls page's frame.** It kept the Controls bracket (`ul_03`)
-  under a list moved 39 units right on another skin. The bracket framed an
-  empty box, and the first row's end cap cut its arm off. The frame
-  provenance check names it. The page now keeps none of the Controls art
-  and copies the level select's own bracket (`ul_02`) at run time
-  (`ListClass::frame`). Its view also draws the skull picture now
-  (`ScreenSpec::art`), untinted.
-- **The account menu's legend** was in the description block, on top of
-  rows 1 and 2. It is in the footer now.
-- **The co-op screens had no legend.** They now have footers (`A SELECT`,
-  `START START GAME` or `READY`, `B BACK`), set in game from the co-op
-  text table (`coop_live::prompts`).
+- **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
+- **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
+- **Legends sit in the footer**, not in the description block: the account menu's, and the co-op screens' (`A SELECT`, `START START GAME` or `READY`, `B BACK`, set in game from the co-op text table by `coop_live::prompts`).
 
-**The full-height Game Options list (master's 13 rows).** The skulls
-page became the Game Options page, and its list now lays out 13 rows
+**The full-height Game Options list.** The Game Options page lays out
+13 rows
 (`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
 (`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
 the bottom of its image, and its visible art ends sooner, about the fourth
@@ -225,8 +210,7 @@ same anchor under the same bracket (its list block's visible count), so
 rows running past it are retail's own composition. A "list longer than
 its frame" check would flag the game's screen, so there is none.
 `ListPlace::Moved` carries the layout's visible count, and both
-geometries (synthetic and disc) draw that many rows. The bracket now also
-plays its own animation from the level select (2, read off the disc,
+geometries (synthetic and disc) draw that many rows. The bracket plays its own animation from the level select (2, read off the disc,
 `skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
 left drawn over the screen coming back on B. The sheet's files are named
 by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
@@ -240,7 +224,7 @@ Calibrations the checks needed, each against the game's own screens:
 - synthetic text is 6 units per character (about the disc fonts' mean),
   so the CI checks don't flag text that fits on the disc.
 
-## The modal dialog (slice 6)
+## The modal dialog
 
 **What the retail dialogs are.** Read off every dialog tag in
 `mainmenu.map` (`h2 ui mainmenu <tag>`): `error_dialog_ok` (8),
@@ -293,15 +277,14 @@ title, body, cells, status and glyph legend:
 - the account pages and the end pages: A Make it, Try again or Done, or B
   Back.
 
-`spec_for` keeps the one-row list the game shows today and adds the
+`spec_for` keeps the one-row list the game shows and adds the
 dialog, which the preview, the sheet and the editor draw. The 11 states
 are over the main menu; two more (`code-over-live-menu`,
 `code-wrong-over-live-menu`) are over the Xbox Live menu. All 13 pass
-every check, synthetic and on the disc. X no longer submits: only A
-and Start do, matching the legend (`signin_screen::ACTION_BUTTONS`).
+every check, synthetic and on the disc. Only A
+and Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
-**A dialog is an overlay on its opener (the user, 2026-11-18, from a
-retail screenshot).** A retail dialog sits over whatever was open when
+**A dialog is an overlay on its opener.** A retail dialog sits over whatever was open when
 it opened, drawn as it was: not always the main menu, and with nothing
 hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
 opener's screen tag, the pane shown, its list's rows (the game's code
@@ -309,7 +292,7 @@ fills them) and the focused row. `Disc::opener_view` makes it a `View`:
 the game shell, the pane's bitmaps and texts in the screen's own
 strings, its header, and its rows on its own list skin with the focused
 row lit (`view_of`'s list). The preview draws that under the dialog. The
-openers so far:
+openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
   `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
@@ -323,7 +306,7 @@ over its rows, and the last cell's digit over "Latest news:". Those are
 notes (`over the opener` above), not failures: retail's dialogs overlap
 their opener in the same way.
 
-Not settled: on the main menu path, the Xbox Live row opens the game's
+Not verified: on the main menu path, the Xbox Live row opens the game's
 own account picker, `dialog_live_signin` (screen 20, loader `0x24b4a9`),
 and the logon is the picker's. So when our prompt opens, the picker may
 still be up over the main menu, and then it is the real opener. The
@@ -343,7 +326,7 @@ over the logo's lower half, and ours sit at the same height. So our
 cells are already where retail's are. The body is the one part that
 could do better.
 
-**The tweak, built.** The body starts at 72, as retail's text blocks
+**Text placement.** The body starts at 72, as retail's text blocks
 do. A code page's body stays in the band from 72 down to 45, the strip
 above the logo. When the body is one line and two lines of its font fit
 in the band, the status line goes under it there (`dialog::status_place`).
@@ -363,23 +346,22 @@ placed over the logo, and neither is retail's. The `placement` check
 Longer bodies (the gamertag page, the recovery page) still run over the
 logo, as retail's own dialogs do.
 
-## The modal dialog in game
+### The modal dialog in game
 
-In game the prompt is still the one-row list on the Controls layout.
-What can be made without a run is built and tested; serving it waits on
-the run below.
+In game the prompt is the one-row list on the Controls layout. The dialog
+tag is built and tested; serving it waits on a game run.
 
-**How the game opens its dialogs** (read from the XBE, 2026-11-18).
+**How the game opens its dialogs** (E).
 `0x19b527` and `0x19b5af` fill a 0x20-byte request with `0x149f49`, as
 `0x149f1e` does, and call the loader themselves. The only difference is
 the window kind at `+4`: 1 for a dialog, 5 for `0x149f1e`. The push
 (`0x147f6d`) picks the screen stack by that kind (kind 5 at `0x54d62c`,
-kind 1 at `0x54d884`, per user), so a dialog goes on a stack of its own
+kind 1 at `0x54d884`), so a dialog goes on a stack of its own
 and the screen that opened it is left as it is. Our class loader already
 hands `+4` and `+8` to the Controls constructor and the request to the
 push, as the retail loaders do.
 
-**Built: the pieces** (`ui_kit::dialog_tag`).
+**The pieces** (`ui_kit::dialog_tag`).
 
 - `pieces(view)` turns a dialog's `View` into what its tag carries:
   header layout 2 in the root flags (`LAYOUT_2`), the four panel blocks
@@ -395,9 +377,9 @@ push, as the retail loaders do.
 - `request(window, mask, loader)` writes the request as `0x149f49` does.
 - `H2_SIGNIN_DIALOG=1` opens the sign-in prompt in the dialogs' window
   with that request, handed to our loader directly. It's off by
-  default: the prompt opens as before through `0x149f1e`.
+  default: the prompt opens through `0x149f1e`.
 
-**Not built: serving the tag.** Two things are left for after the run.
+**Serving the tag is not built.** Two things are needed.
 The sign-in class's tag function has to return the `write_tag` copy
 (the panel and cell blocks resolved by screen id before the open). Its
 text blocks need string ids from the sign-in family, served from its
@@ -420,7 +402,7 @@ line on stderr and on screen:
    nothing hidden, the way a retail error dialog sits over it. Note what
    that is: the main menu, or the game's account picker
    (`dialog_live_signin`) over it; the preview's opener follows. With
-   kind 5 the main menu is replaced, as today.
+   kind 5 the main menu is replaced.
 3. The d-pad edits the code and A submits (`signin prompt: event ...`
    lines as in docs/live/live.md). The dialogs' stack takes the input
    while the prompt is up; the menu beneath doesn't move.
@@ -428,15 +410,14 @@ line on stderr and on screen:
    its own input works again straight away.
 5. A wrong code shows the error and the next edit clears it; a right code
    ends on Done and A closes.
-6. Note anything drawn differently from the sheet
-   (`$RUSH_KEEP/slice6/sheet.png`): the screen is still the list layout
-   in this run, so only the backdrop and the input are expected to
-   match.
+6. Note anything drawn differently from the sheet (`h2 ui sheet`): the
+   screen is the list layout in this run, so only the backdrop and the
+   input are expected to match.
 
-What this run settles: whether our screen can go on the dialogs' stack,
-what is drawn beneath it, and input and closing there. The tag (layout 2
-header, panel, cells) and the text questions in "What stays unverifiable
-offline" need the next run, once serving the tag is built.
+This run settles whether our screen can go on the dialogs' stack, what
+is drawn beneath it, and input and closing there. The tag (layout 2
+header, panel, cells) and the text questions in "Not verified" need a run
+once serving the tag is built.
 
 ## Panel texts: information that isn't a row
 
@@ -466,10 +447,9 @@ way (for a mod's page, the pregame lobby, screen 14):
 
 ## The Dialog kind
 
-Built 2026-11-18: `KitScreen::dialog(base, opener)` (and
+`KitScreen::dialog(base, opener)` (and
 `ListClass::dialog(base)` under it) makes a kit screen a dialog of its
-rows, the way the game's own settings dialogs are. Target look (the
-user): the lobby's **Quick Options** (Game Setup, then Quick Options).
+rows, the way the game's own settings dialogs are. The target look is the lobby's **Quick Options** (Game Setup, then Quick Options).
 
 **Bases** (`ui_kit::dialog::DialogBase`), each a retail dialog tag:
 
@@ -486,12 +466,9 @@ the label on the large dialog (`DialogBase::style`). The disc test holds
 `DialogGeometry::fallback_for` to the disc for both.
 
 **Quick Options inside** (read off `mainmenu.map`'s `quick_options` tag
-and its strings, 2026-11-19). The Clankers and Halo 1 Options pages had
-Quick Options' look as the target but were still built on the Controls
-tag with the skulls page's inside: the level select's one-text list
-(skin 0, 22 high, at (-215, 130), five rows and a scroll), values in the
-label (`Count: < 4 >`) and the five-line description pane on the right.
-Quick Options itself is:
+and its strings). It is not the Controls tag's list with the skulls
+page's inside (the level select's one-text list, values in the label, a
+five-line description pane). It is:
 
 | Part | `quick_options` (screen 222, flags `0x10`: header layout 1) |
 |---|---|
@@ -509,7 +486,7 @@ No value is drawn with arrows: the executable has no `< %s >` format
 keyboard. A settings row there is its name and its value, `Score to Win
 Round  50`.
 
-So a page on `DialogBase::QuickOptions` now takes all of it:
+So a page on `DialogBase::QuickOptions` takes all of it:
 `write_base_tag` copies Quick Options' root (header layout 1), pane
 (animation 31), `fs_dialog` and list block (skin, anchor, flags,
 animation); the rows show `ValueStyle::Setting` (the value alone in the
@@ -555,16 +532,16 @@ the sheet.
   window-1 screen send it the close message (`0x22e957`, kind 2) unless
   it is closing already (state bit 1), and so does `KitScreen`'s close.
 
-**The blank pause screens.** The Controls tag (screen 39) is only in
-`mainmenu`, so a Controls-built screen opened in a game had no tag. The
-game-ui-fixes lane builds those on the in-game Controller Settings
-(screen 200) instead. A `Large` dialog would work there too, since screen
-240 is in `shared` and `single_player_shared`; `QuickOptions` would not.
+**Pause screens.** The Controls tag (screen 39) is only in `mainmenu`, so
+a Controls-built screen opened in a game has no tag; such screens build on
+the in-game Controller Settings (screen 200) instead. A `Large` dialog
+works there too, since screen 240 is in `shared` and
+`single_player_shared`; `QuickOptions` does not.
 
 ### The Dialog kind's game run
 
 With a dialog screen on `QuickOptions` opened from the lobby (Clankers
-or Halo 1 Options, both on it since 2026-11-19; they open on the Game
+or Halo 1 Options, both on it; they open on the Game
 Setup dialog's own window and slot, as before, not the dialogs' window):
 
 1. stderr: `<name>: a dialog on screen 222's tag (copy at ...)`. If it
@@ -586,11 +563,10 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
 
 ## The value picker
 
-The user (2026-11-19): a setting with a range of values opens a list of
+A setting with a range of values opens a list of
 them, as retail's Game Options do, rather than stepping on A.
 
-**Retail's dialog** (read off `mainmenu.map` with a scratch reader,
-2026-11-19). The variant editor and Quick Options open
+**Retail's dialog** (read off `mainmenu.map`). The variant editor and Quick Options open
 `low_level_settings` (screen 223,
 `ui\screens\game_shell\settings_screen\variant_settings\editing_format_screens\low_level_settings`)
 for a setting row:
@@ -608,7 +584,7 @@ Off), and they open the same dialog. So our two-value rows open it too.
 The tag is in `mainmenu.map` only (not in `shared.map` or
 `single_player_shared.map`); skin 22 is in every interface's `wigl`.
 
-**Built** (`ui_kit::picker`). `DialogBase::ValuePicker` is the dialog
+**The picker** (`ui_kit::picker`). `DialogBase::ValuePicker` is the dialog
 (`DialogGeometry::fallback_for`, `PICKER_LIST`, `PICKER_HELP_TEXT`,
 held to the disc by the disc test). Two classes show it: `kit.picker`
 on `low_level_settings` and `kit.picker.game` on the large dialog with
@@ -625,44 +601,33 @@ saved, its change callbacks run) and closes; B closes and changes
 nothing; X, Start, left and right do nothing there. Left and right on
 the row itself still step. A row with one value, or more than
 `picker::MAX_CHOICES` (61, its string-id family), keeps stepping on A.
-The legend is `(A) SELECT (B) CANCEL`; the pages' own legends gained
+The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
-Not on the picker yet: the Video and Voice screens (`ui::Model` rows,
+Not on the picker: the Video and Voice screens (`ui::Model` rows,
 `Model::press`), the skulls (toggles, not settings) and the variant
 editor's More Options page (`variant_page`, its own rows). They step
-on A as before.
+on A.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
 
-**It opened blank in the game** (the user, 2026-11-19: no title, no
-values, no description on the Clankers and Halo 1 Options pages; the
-preview was right). `TEXT_SET` (`0x253b1a`) copies the string as it
-sets it: it resolves the id into a buffer of its own (`0x230134`) and
-hands the widget that, so a slot of ours must hold its text before the
-call names it. Two things broke that:
-
-- `ListClass::build` takes the title's string id once, at boot, before
-  any pick. The picker's title slot was filled only then (empty), and
-  nothing filled it as a pick opened.
-- Row text set the description's slot after it had written the texts
-  for that pass, then named it, so `TEXT_SET` read the slot as it was
-  before (empty on a first open, the last pick's after).
-
-Now the picker fills every slot of the pick (title, description, each
-value) in `Rows::count`, which the loader asks first and follows with
-`Rows::write_texts`, so all of it is in guest memory before the screen
-is built; and row text writes the texts again after the description
-and panel texts are named, before their `TEXT_SET`. That second fix is
-in `list_class` itself, so every class's description and panel texts
-get it. `list_class::tests::the_value_picker_opens_with_its_pick_on_the_games_path`
+**Strings are in guest memory before the screen is built.** `TEXT_SET`
+(`0x253b1a`) copies the string as it sets it: it resolves the id into a
+buffer of its own (`0x230134`) and hands the widget that, so a slot of
+ours must hold its text before the call names it. The picker fills every
+slot of the pick (title, description, each value) in `Rows::count`, which
+the loader asks first and follows with `Rows::write_texts`; and row text
+writes the texts again after the description and panel texts are named,
+before their `TEXT_SET`. That second step is in `list_class` itself, so
+every class's description and panel texts get it.
+`list_class::tests::the_value_picker_opens_with_its_pick_on_the_games_path`
 runs the game's path (the class taken at build, a row's A, the loader,
 the pane set-up, row text for each item) on the runner, and reads each
-`TEXT_SET`'s string from the slot at the moment of the call, as the
-game does.
+`TEXT_SET`'s string from the slot at the moment of the call, as the game
+does.
 
-**Not settled without a run.** The list's first focus: the class can't
+**Not verified.** The list's first focus: the class can't
 set it yet (no focus setter is traced), so the game likely opens on the
 first value, not the held one; the preview draws the held one focused.
 The rest to check: the picker opening over the Clankers or Halo 1
@@ -689,7 +654,7 @@ From a custom game lobby, Game Setup, Clanker Options:
 
 ## A page's header
 
-The user (2026-11-19): the Clanker Options and Halo 1 Options pages
+The Clanker Options and Halo 1 Options pages
 have Quick Options' header at their top, its picture and its one line
 of help, rather than (only) a picture and description on their Game
 Setup rows.
@@ -702,7 +667,7 @@ variant's name in white `[163 -224 143 0]`; text block 0, the help line
 constructor (`0x2b01eb`) zeroes its image index (`+0x88`) whatever its
 block holds; code sets it after (`0x2b0a14`).
 
-**Built.** `KitScreen::header(help, icon)` (the Clankers page) and the
+`KitScreen::header(help, icon)` (the Clankers page) and the
 Halo 1 Options class do the same:
 
 - the help line (`QUICK_HELP_TEXT`, already the pages' description
@@ -729,7 +694,7 @@ variant-name line stays empty: the title bar already names the page.
 
 The spec carries the line as `ScreenSpec::help` (the description block
 shows it in place of the focused row's) and the icon as an `art` entry
-(`dialog::quick_icon`), which `dialog_view` now draws. The disc test
+(`dialog::quick_icon`), which `dialog_view` draws. The disc test
 holds `QUICK_PICTURE` to the tag's block, checks `mp_games2`'s eleven
 icons are 40 high and 40 or 41 wide, and measures both lines in the
 help line's font; `our_settings_dialogs_are_quick_options_inside`
@@ -745,10 +710,10 @@ banner icon and its line. Open Quick Options to compare the places.
 
 ## Game Setup's picture and description
 
-The user (2026-11-19): Clanker Options and Halo 1 Options get a picture
+Clanker Options and Halo 1 Options get a picture
 and a description, as Quick Options has.
 
-**Retail's** (read from the XBE, 2026-11-19). The Game Setup dialog's
+**Retail's** (E). The Game Setup dialog's
 update (`SQUAD_SETTINGS_UPDATE`, `0x2bbbf6`, vtable `0x45c524`) asks the
 focused row's action (`0x2bbaad`, EAX the list at screen `+0x610`), gets
 its text widgets 2, 3, 4 and bitmap widget 4 (`0x22edb8`), and by the
@@ -763,7 +728,7 @@ Switch To: Custom Game 6, Switch To: Co-Op 7; images 3 and 5 are 4x4
 blanks, and 1 (a Spartan over a roster of players) no row uses. Our
 actions (10 and up) fall to the default: no texts, image 0.
 
-**Built** (`boot::game_setup_help`). A before hook on the update runs
+**Ours** (`boot::game_setup_help`). A before hook on the update runs
 retail's (passing its own call through once), then for one of our
 actions sets text 2 to our description and the picture to our image:
 
@@ -799,7 +764,7 @@ sign-in that covers:
 The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
 (`engine::entry::testing::run`).
 
-**Built (slice 4)**: `ui_kit::page`.
+`ui_kit::page`:
 
 - **`Page`**: `step(&mut State, Event) -> Effect`, `spec(&State)` (the
   `ScreenSpec` the preview turns into a `View`), `states()` and a
@@ -813,7 +778,7 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   multiplayer skulls, the three co-op screens, the kit's example) is its
   real `ListClass` stepped offline. An event goes through the class's own
   hook, then `list_class::route` (the same pure function the runtime's
-  `event_with` now uses: action buttons, then sideways steps), then the
+  `event_with` uses: action buttons, then sideways steps), then the
   Controls handler: up and down move the focus, A presses the row
   (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
   `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
@@ -834,7 +799,7 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   with typed text and server answers as events.
 - **`SigninPage`** (`signin_screen`): the prompt plus the code being
   typed. A press goes through `CodeEntry::press` as on the screen; what the
-  HLE then does follows `live_hle::signin`'s own transitions, now pure
+  HLE then does follows `live_hle::signin`'s own transitions, pure
   functions the HLE uses too: `typed` (keyboard text on a page), `refused`
   (a code that isn't six digits) and `settled` (the page after a server
   call ends). Typed text and server answers are events.
@@ -846,18 +811,11 @@ locked), the co-op screens (Start starts or readies, Invite a Friend opens
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
 
-Behaviour the tables changed:
+Rules the tables hold:
 
-- **An error clears on the next edit** (`CodeEntry::error`): the code page
-  hid nothing before, so "Wrong code" stayed up while a new code was typed.
-  It shows again with the next answer, the same error included.
-- **Back cancels sign-in.** Back closed the screen through the Controls
-  handler without telling the HLE, so the logon stayed pending. The hook
-  now takes Back as B.
-- **X no longer checks the code.** X and Start were both the class's
-  action buttons, so a stray X sent a half-typed code. Now only A and
-  Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`,
-  Start alone), and X does nothing.
+- **An error clears on the next edit** (`CodeEntry::error`), and shows again with the next answer, the same error included.
+- **Back cancels sign-in.** The hook takes Back as B, so the HLE's logon does not stay pending.
+- **Only A and Start submit the code**, matching the legend (`signin_screen::ACTION_BUTTONS`, Start alone); X does nothing.
 
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as
@@ -865,7 +823,7 @@ prints each effect and the summary, and draws where it ends as
 
 ## In the editor
 
-**Built (editor slice)**: the editor's fourth tool, **UI Screens**
+The editor's fourth tool is **UI Screens**
 (docs/editor/editor.md "UI Screens", editor-guide.md §7). It shows every
 native screen in every state and the disc's retail screens, drawn from the
 editor's disc (synthetic without one) with zoom; widget rectangles with
@@ -878,39 +836,27 @@ for it: the pages step the screens' real classes, which can't leave
 
 ## The fidelity loop
 
-The preview is only worth trusting once it has been measured against the
-game:
+Status: Design. `h2 ui compare` and the agent API's `ui.screenshot` are not built.
 
-1. Pick retail screens the preview can draw from tags alone: Controls, the
-   main menu, `error_dialog_ok_cancel`, `dialog_live_password`. Render
-   them with the same renderer as our screens.
-2. Capture the same screens in game with `ui.screenshot` (agent API phase
-   2; it writes the presented frame and the native screens' widget rects).
-   The user runs one command against the game they have up. Agents never
-   start the game or `h2 serve`.
-3. `h2 ui compare <capture.png> <screen> [--state NAME]` reports, per
-   widget, the rect error in units (where the capture has rects) and the
-   pixel difference inside each rect, and writes a diff image.
-4. Fix the renderer until those numbers are small. Then our own screens'
-   previews are trusted to the same margin.
+The preview is only worth trusting once it has been measured against the game:
 
-References, captures and diffs live under `$RUSH_KEEP/ui-builder/`, never
-in git.
+1. Pick retail screens the preview can draw from tags alone: Controls, the main menu, `error_dialog_ok_cancel`, `dialog_live_password`. Render them with the same renderer as our screens.
+2. Capture the same screens in game with `ui.screenshot` (it writes the presented frame and the native screens' widget rects). The user runs one command against the game they have up. Agents never start the game or `h2 serve`.
+3. `h2 ui compare <capture.png> <screen> [--state NAME]` reports, per widget, the rect error in units (where the capture has rects) and the pixel difference inside each rect, and writes a diff image.
+4. Fix the renderer until those numbers are small. Then our own screens' previews are trusted to the same margin.
 
-## What stays unverifiable offline
+References, captures and diffs live outside the repository, never in git.
+
+## Not verified
 
 A game run has to show:
 
-- draw order: our dialog on top of the screen beneath, and the footer
-  widget keeping our legend (`0x2300cf` may refill it from the tag);
-- alpha 0 hiding a widget, and tint changes taking effect while the
-  screen is up;
-- the backing's blend: whether `framing_center` and `dialog1`/`dialog2`
-  draw as opaque as the preview shows;
+- draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
+- alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
+- the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
 - transitions and animations (the preview draws everything at rest);
-- input timing: key repeat, the opener-press guard, and the keyboard's
-  return;
-- that the Controls constructor accepts a tag recipe whose list holds one
-  item and whose pane has more text blocks than the Controls tag.
+- input timing: key repeat, the opener-press guard, and the keyboard's return;
+- that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
+- the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
 
 Each new screen's run checklist lists exactly these for it.

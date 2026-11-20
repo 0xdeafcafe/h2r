@@ -1,0 +1,20 @@
+[package]
+name = "sim-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Shared math, exact SSE-order lanes and float rules for the native simulation subsystems"
+
+[dependencies]
+# The Pentium III reciprocal and reciprocal square root estimates.
+simd.workspace = true
+
+[features]
+# `lanes::with`: force host lanes on or off on one thread, for tests that
+# compare both paths. Off in shipping builds, so `lanes::enabled` reads one
+# atomic and no thread-local.
+override = []
+
+[dev-dependencies]
+# The reference for `det::x87_neg_quotient`.
+x87.workspace = true

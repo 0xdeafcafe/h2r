@@ -35,7 +35,7 @@ use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 use native_render::camera::GuestRead;
 use native_render::object_lighting::{
-    self as ol, CURRENT_LIGHTING, DEFAULT_COLOUR, DEFAULT_VECTOR, Defaults, LIGHTING_BYTES, Lighting, OBJECT_ARRAY,
+    self as ol, CURRENT_LIGHTING, DEFAULT_COLOUR, DEFAULT_VECTOR, Defaults, DefaultsRead, LIGHTING_BYTES, Lighting, LightingRead, OBJECT_ARRAY,
     OBJECT_ATTACHED, OBJECT_PARENT, OBJECT_ROOT_VALUE, SCALAR_INPUTS, SHADER_SCALAR_21, SHADER_VECTOR_24, ShaderValues,
     VECTOR_INPUTS,
 };

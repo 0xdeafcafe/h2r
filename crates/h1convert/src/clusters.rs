@@ -320,7 +320,7 @@ pub struct Portal {
     /// (`+0x02`): the flood crosses from the first when the camera is
     /// behind the plane (E `0x001738e5`, `0x00172953`). Halo 1 orders them
     /// the same way (V, by cluster centres on both discs:
-    /// docs/halo1/multiplayer.md, "Clusters and portals").
+    /// docs/halo1/multiplayer.md, "The converted structure BSP").
     pub clusters: [u16; 2],
     /// The collision BSP plane it lies in (`+0x04`); the converted
     /// collision BSP keeps Halo 1's planes in order.

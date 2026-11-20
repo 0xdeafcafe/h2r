@@ -1,5 +1,9 @@
 # Input
 
+Status: Built. A reference for `crates/input`.
+Code: `crates/input/src/lib.rs` (`InputManager`), `crates/input/src/backend/mod.rs` (`HostBackend`). Tests: `crates/input/tests/mouse_look.rs`, `crates/xapi/tests/`.
+Switch: see the sections below; each is in [switches.md](../runtime/switches.md).
+
 `crates/input` replaces Xbox XInput (XAPI) at the API level. The recompiled
 game calls `XInitDevices`, `XGetDevices`, `XGetDeviceChanges`, `XInputOpen`,
 `XInputPoll`, `XInputGetState`, `XInputSetState`; the guest adapters in
@@ -276,17 +280,15 @@ state carrying it (`state_read`), however many syncs pass first. The
 deflection is the mouse's speed over the game's read interval:
 `delta * sensitivity * (1/60 s) / interval`, with the interval counted as
 at least 1/60 s, then scaled back onto the unit circle if it is longer than
-1 (direction is kept). At a 60 Hz read rate that is the old
-`delta * sensitivity`, so existing `sensitivity` values mean the same thing:
-deflection per mouse count moved per 1/60 s. Halo treats the stick as a turn
-rate, so turning per mouse count no longer depends on the game's frame rate
-or on how often the host syncs. Motion the game leaves unread for more than
+1 (direction is kept). At a 60 Hz read rate that is
+`delta * sensitivity`: deflection per mouse count moved per 1/60 s. Halo
+treats the stick as a turn rate, so turning per mouse count does not depend
+on the game's frame rate or on how often the host syncs. Motion the game leaves unread for more than
 a second (`STALE_MOTION`) is dropped rather than delivered late as a flick.
 
-Before this, motion was spent by every `sync`. `h2 play` syncs after every
-guest slice, far more often than the game polls (about 5 fps), so almost
-every `XInputGetState` saw a centred right stick and the reticle did not
-move. `crates/input/tests/mouse_look.rs` and `crates/xapi/tests/mouse_look.rs`
+Motion is not spent by `sync`: `h2 play` syncs after every guest slice,
+far more often than the game polls, and a per-sync spend would leave almost
+every `XInputGetState` a centred right stick. `crates/input/tests/mouse_look.rs` and `crates/xapi/tests/mouse_look.rs`
 cover this at slice-rate syncs and game-rate reads.
 
 The virtual pad applies no deadzone, but Halo applies its own after reading
@@ -471,8 +473,4 @@ validation; app tests load both checked-in TOML examples without a GPU.
 
 ## Host text in the game's virtual keyboard
 
-The boot screen hook temporarily routes committed host text to the focused
-virtual keyboard's native insert/delete/Done/Cancel handlers. Arrows retain pad
-navigation, and normal keyboard pad mapping resumes when the screen closes.
-Layouts, Shift/dead keys and IME commits use the platform text path. See
-[host-keyboard.md](host-keyboard.md) for the limits, retail trace and tests.
+While the game's virtual keyboard is focused, host typing edits it directly: see [host-keyboard.md](host-keyboard.md).

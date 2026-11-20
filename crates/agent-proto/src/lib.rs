@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 mod client;
+pub mod collision;
 mod endpoint;
 pub mod expect;
 pub mod havok;
@@ -21,6 +22,7 @@ mod load;
 mod pad;
 pub mod raw;
 mod render;
+pub mod shadow;
 pub mod sim;
 pub mod state;
 pub mod theater;
@@ -30,8 +32,9 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    DepthRecord, DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord,
-    PassRecord, RenderStats, SnapRecord,
+    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
+    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
+    PassRecord, RenderStats, SceneParams, SceneReply, SceneViewRecord, SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};
@@ -171,6 +174,16 @@ pub mod method {
     /// reasons, the pipelined render, the frame-stats counters
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
+    pub const RENDER_COMPARE: &str = "render.compare";
+    /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
+    pub const RENDER_CAPTURE: &str = "render.capture";
+    /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
+    pub const RENDER_SCENE: &str = "render.scene";
+    /// Arm the in-process two-path comparison for one frame
+    /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
+    /// backend.
+    pub const RENDER_PARITY: &str = "render.parity";
     pub const COOP_LOOK: &str = "render.coop_look";
     /// Active mixer voices, bin gains and distance-dependent path parameters.
     pub const AUDIO_VOICES: &str = "audio.voices";
@@ -916,7 +929,7 @@ pub struct ObjectResult {
 
 // ---- profile ----
 
-/// The frame-stats rolling window (docs/perf/gameplay-budget.md).
+/// The frame-stats rolling window (docs/perf/notes/gameplay-budget.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Counters {
     pub at: At,

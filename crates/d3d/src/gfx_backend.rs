@@ -46,7 +46,7 @@
 //! same operations in the same order as one pass per draw would give it.
 //! (Batching the passes of several targets into one submission was slower
 //! in game, 30.2 against 33.5 fps on Old Mombasa at 4x, and was removed;
-//! docs/graphics/render-switches.md.) GPU-only
+//! docs/graphics/notes/not-adopted.md.) GPU-only
 //! side work (the alias mirror's stores and loads, depth-alias and
 //! depth-level textures, pixel-counter clears) goes into the open encoder
 //! after the pending pass and waits for the next submission

@@ -46,7 +46,7 @@ plus the four-byte return PC. Counts are decimal bytes. Results use EAX (or AL
 for BOOLEAN); void results are unspecified. Internal register conventions are
 explicit. `tests/routing.rs::VERIFIED_RET_SIZES` pins the **32 reviewed hook
 address/ret-size pairs**, including the init thunk, independently of the adapter's
-`stack_words()` calculation. It includes routines now routed to generated code.
+`stack_words()` calculation. It includes routines routed to generated code.
 
 ## Override decisions
 
@@ -70,7 +70,7 @@ XGetDevices and XInputPoll remain unbound adapters until an address is verified.
 By default no save or config replacement is retained (the opt-in native save
 games below are the exception). This removes SaveRecord,
 Disposition, DiskSpace, save cursors, Rust metadata packing, and the duplicate
-incoming LaunchInfo store. The Storage contract now contains only utility
+incoming LaunchInfo store. The Storage contract contains only utility
 mount/format. XFindClose therefore always remains generated: there is no token
 range heuristic (the opt-in save games keep a small host table keyed by the
 search's kernel handle, below). Error 18 and name termination belong
@@ -185,7 +185,7 @@ XCreateSaveGame at `00330df2` retains the original UTF-16 name hash and ordinary
 file operations. Metadata emission at `00330f8f` writes UTF-16LE: code unit FEFF
 (bytes FF FE), then `Name=<name>\r\n`, followed by `NoCopy=1\r\n` when bit 0 is
 set. The relevant strings are at `00416fb8`, `00417020`, `00417070`, `00417078`.
-No Rust Storage contract duplicates this format now that saves are generated.
+No Rust Storage contract duplicates this format; saves are generated.
 
 The scanner at `00330c15`, first/next at `00331125` / `0033122f`, and shared
 close at `00331276` own save metadata, search lifetime and buffer packing.
@@ -206,7 +206,7 @@ HalBootSMCVideoMode; XGetGameRegion at `00331385` queries index 0x104 and
 XGetParentalControlSetting at `002d5813` queries index 10. These derivations
 remain in the generated originals; Config has no competing locale/video fields.
 
-### Profile creation errors (read 2026-11-19, static)
+### Profile creation errors
 
 The saved-game files code leaves an error in `[0x55c154]` and `0x148ca8`
 shows it as a ui error (the `wigl` error table): 1 → `0x4a` (OUT OF BLOCKS,
@@ -248,9 +248,6 @@ to `<data root>/damaged-saves/<unix ms>-<dir>`, so the profile can be made
 again. Each repair is a `vfs:` line on stderr. Cloud saves never upload a
 damaged meta file nor write one downloaded
 (docs/live/live-cloud-saves.md, rule 6).
-
-A trace of every file call on `U:` (8a39b114a, `H2_SAVE_TRACE`) found
-this cause; it was removed once the repair was in.
 
 ## Opt-in native save games
 
@@ -451,30 +448,6 @@ cannot empty N:. `HostBackend::format` walks from directory handles opened
 when the volume was created, with O_NOFOLLOW openat/unlinkat. A root or
 ancestor path swapped for a symlink later, or a symlink inside the volume,
 cannot redirect its deletions.
-
-## Kernel API requests
-
-This is the exact integration surface requested from crates/kernel. Existing
-NT file/event/clock wrappers remain dependencies, not additional XAPI overrides.
-
-| Kernel surface | Required contract and guest consumer |
-| --- | --- |
-| RtlNtStatusToDosError, ordinal 301 | Correct NTSTATUS→Win32 mapping for generated file/save/disk wrappers and XapiSetLastNTError (`002d1d94`). No success fallback for unmapped errors. |
-| ExQueryNonVolatileSetting, ordinal 24 | Typed DWORD settings (type 4, length 4, checked optional result length): indices 7/language, 8/video flags, 10/parental control, 0x103/video standard and 0x104/game region. Match generated derivations above and renderer/certificate settings. |
-| HalBootSMCVideoMode, ordinal 356 data | Coherent guest value used by generated XGetAVPack (`003321bd`), consistent with video settings. |
-| LaunchDataPage, ordinal 164 data; MmFreeContiguousMemory, ordinal 171 | Export a guest pointer cell to the shared persistent launch page, null when absent. Honor the original `002d0915` consume/free behavior exactly once; loader/runner must seed this same page. |
-| HalReturnToFirmware, ordinal 49 | Stop/relaunch transfer and preserve launch state for private reboot paths (`002d111e`, `002d0979`), without returning to a dead guest. |
-| Shared VFS access | A safe borrow/callback or shared synchronized handle to the kernel's one Vfs, never a second instance over the same roots. Needed to implement only Storage::mount_utility / format_utility for `002d5b77` / `002d5c7c`; explicit utility formatting must enforce open-object and share ownership. |
-| Event handle reference/signal | Resolve and retain an event object by guest handle at feedback submission (`00409bdf`), then signal that retained object at completion even after handle close. Return typed guest failures; no guest execution/reentrant memory locking while signalling. The wrapper releases its reference after successful completion or cancellation. |
-
-Generated save/disk acceptance also depends on the existing NtCreateFile,
-NtOpenFile, NtReadFile, NtWriteFile, NtClose, NtQueryDirectoryFile,
-NtQuery/SetInformationFile and NtQueryVolumeInformationFile paths being complete
-on shared VFS. See [kernel-imports.md](kernel-imports.md) for their Xbox ABIs.
-A failure in one of these is a kernel/VFS fix, not a reason to restore the
-removed save/config overrides. GetLastError/SetLastError at `002d1d3e` /
-`002d1d66` use guest FS:[4], `_tls_index`, then +8: the native adapter's per-thread
-ThreadState only mirrors that guest cell for native BOOL/handle failures.
 
 ## Runtime registration
 
@@ -845,19 +818,9 @@ H2_XBE="$PWD/disc/default.xbe" \
 Run `cargo clippy -p xapi --no-deps --all-targets -- -D warnings` and
 `cargo fmt -p xapi --check`.
 
-## References
-
-Behavioral addresses above refer to the user's supplied image and inspected
-callers. Packed layout cross-checks use the pinned
-[Cxbx XAPI declarations](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/585c49a50af1255ab155099e06f24505f9c5a800/src/core/hle/XAPI/Xapi.h).
-See [input.md](../input/input.md), [storage.md](storage.md),
-[architecture](../ARCHITECTURE.md) and [kernel-imports.md](kernel-imports.md) for
-host and kernel contracts. External signatures and game disassembly stay out
-of the repository.
-
 ## Campaign input acceptance and scripted runners
 
-`input` now supplies externally clocked timelines and `app::AppConfig` can
+`input` supplies externally clocked timelines and `app::AppConfig` can
 replace live input with one. [input.md](../input/input.md#deterministic-timelines-for-boot-and-headless-runners)
 documents the integration: retain a `ScriptedInput` clone, call
 `advance_to(relative_guest_ticks)` before `service_input`/`pump_input`, and
@@ -880,3 +843,13 @@ The existing retry, disconnected snapshot, event pinning and memory-fault
 tests remain applicable. These tests prove service semantics; observing
 0x124c36's consumer and 0x2a9470..0x2a9550's Armory pitch gates during a retail
 boot is left to the boot runner's integration checks.
+
+## References
+
+Behavioral addresses above refer to the user's supplied image and inspected
+callers. Packed layout cross-checks use the pinned
+[Cxbx XAPI declarations](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/585c49a50af1255ab155099e06f24505f9c5a800/src/core/hle/XAPI/Xapi.h).
+See [input.md](../input/input.md), [storage.md](storage.md),
+[architecture](../ARCHITECTURE.md) and [kernel-imports.md](kernel-imports.md) for
+host and kernel contracts. External signatures and game disassembly stay out
+of the repository.

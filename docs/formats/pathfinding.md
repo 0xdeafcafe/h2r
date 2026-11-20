@@ -1,5 +1,7 @@
 # AI pathfinding data (`sbsp` +0xc4) and generating it
 
+Status: Built. Code: `crates/tags/src/pathfinding.rs` (layout), `crates/pathfind` (generator). Tests: `crates/tags/src/pathfinding_tests.rs`. Switch: none.
+
 Halo 2's AI walks on *sectors*: convex polygons joined by *links*. A
 structure BSP carries them. Halo 1 maps don't, so a Halo 1 converter has to
 generate them from collision. `h2 h1 convert` writes generated

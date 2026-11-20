@@ -1,0 +1,7 @@
+# The Live owner's. Review the module list before the window.
+from = "game"
+to = "bot-glue"
+direction = "up"
+glob_in = ["boot"]
+description = "Bots in the game process: phantom input, nav builds, the Clankers pages, sim mode (docs/game/bots.md)"
+modules = ["bot_glue", "bot_mark", "bots_nav_auto", "clanker_card", "clankermatch", "clankers", "sim_bots", "sim_glue"]

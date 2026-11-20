@@ -192,7 +192,7 @@ pub fn parse_override(v: Option<&str>) -> Result<Option<HealthModel>, String> {
     }
 }
 
-// ---- the guest layout (docs/halo1/health.md "Layouts") ----
+// ---- the guest layout (docs/halo1/health.md "What we do") ----
 
 /// Object body: health (body vitality) and shield, fractions (1.0 full),
 /// as `object_get_health` (`0x2a1a20`) and `object_get_shield`

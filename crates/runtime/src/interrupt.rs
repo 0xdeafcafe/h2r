@@ -11,7 +11,7 @@
 use crate::{CpuAbi, Event, ExecCtx, Runtime, TransferAbi, abi, runner::HARNESS_EXIT};
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// At most this many interrupts wait at once; [`Runtime::raise_interrupt`]
 /// refuses more.
@@ -59,11 +59,20 @@ pub enum Raise {
 #[derive(Default)]
 pub(crate) struct InterruptQueue {
     pending: AtomicUsize,
+    /// Keep [`IRQ_QUEUED`](crate::preempt::IRQ_QUEUED) on every context's
+    /// word in step with the queue ([`Runtime::enable_leave_word`]). Read
+    /// and written only under the queue's lock.
+    leave_word: AtomicBool,
     queue: Mutex<VecDeque<GuestInterrupt>>,
 }
 impl InterruptQueue {
-    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<GuestInterrupt>> {
+    /// The queue. Lock order: this lock, then the runtime's word list.
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<GuestInterrupt>> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Whether words carry `IRQ_QUEUED`; call with the queue's lock held.
+    pub(crate) fn leave_word(&self) -> bool {
+        self.leave_word.load(Ordering::Relaxed)
     }
     /// The queued count, for generated code's direct calls (`direct.rs`).
     pub(crate) fn pending_ptr(&self) -> *const AtomicUsize {
@@ -74,21 +83,41 @@ impl InterruptQueue {
     pub(crate) fn any_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire) != 0
     }
-    fn take_for(&self, thread: u32) -> Option<GuestInterrupt> {
-        if self.pending.load(Ordering::Acquire) == 0 {
+}
+
+impl Runtime {
+    /// Keep [`IRQ_QUEUED`](crate::preempt::IRQ_QUEUED) on every context's
+    /// preempt word, from now on, set exactly while the interrupt queue is
+    /// not empty, so that the word alone answers "would the runner's safe
+    /// point do anything". Only for generated code whose loop polls ignore
+    /// that bit (preempt.rs, "The leave word"); there is no way back.
+    pub fn enable_leave_word(&self) {
+        let queue = self.interrupts.lock();
+        self.interrupts.leave_word.store(true, Ordering::Relaxed);
+        self.words.set_queued(!queue.is_empty());
+    }
+    /// After the queue changed, with its lock still held: bring
+    /// `IRQ_QUEUED` in step.
+    fn queue_changed(&self, queue: &VecDeque<GuestInterrupt>) {
+        self.interrupts
+            .pending
+            .store(queue.len(), Ordering::Release);
+        if self.interrupts.leave_word() {
+            self.words.set_queued(!queue.is_empty());
+        }
+    }
+    fn take_interrupt_for(&self, thread: u32) -> Option<GuestInterrupt> {
+        if self.interrupts.pending.load(Ordering::Acquire) == 0 {
             return None;
         }
-        let mut queue = self.lock();
+        let mut queue = self.interrupts.lock();
         let index = queue
             .iter()
             .position(|i| i.thread.is_none_or(|t| t == thread))?;
         let interrupt = queue.remove(index);
-        self.pending.store(queue.len(), Ordering::Release);
+        self.queue_changed(&queue);
         interrupt
     }
-}
-
-impl Runtime {
     /// Queue `interrupt` for the next safe point of a matching runner. Safe
     /// to call from any thread, including while a runner is executing.
     pub fn raise_interrupt(&self, interrupt: GuestInterrupt) -> Raise {
@@ -108,9 +137,7 @@ impl Runtime {
             return Raise::Full;
         }
         queue.push_back(interrupt);
-        self.interrupts
-            .pending
-            .store(queue.len(), Ordering::Release);
+        self.queue_changed(&queue);
         drop(queue);
         // Bring a generated loop that calls nothing back to the runner's
         // safe point, where `deliver` runs (preempt.rs). Set after queueing,
@@ -128,7 +155,7 @@ impl Runtime {
         let mut queue = self.interrupts.lock();
         let n = queue.len();
         queue.clear();
-        self.interrupts.pending.store(0, Ordering::Release);
+        self.queue_changed(&queue);
         n
     }
 }
@@ -189,7 +216,7 @@ fn deliver_queued(
         return None;
     }
     let runtime = ctx.runtime().clone();
-    let interrupt = runtime.interrupts.take_for(ctx.thread_id)?;
+    let interrupt = runtime.take_interrupt_for(ctx.thread_id)?;
     let saved = *cpu;
     let mut memory = runtime.memory();
     for &arg in interrupt.args.iter().rev() {
@@ -241,6 +268,147 @@ fn deliver_queued(
         Err(fault) => {
             *cpu = saved;
             Some(ctx.fault(saved.eip, fault))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preempt::{INTERRUPT, IRQ_QUEUED, REQUEST, SLICE};
+    use crate::{Dispatch, Guest};
+
+    /// Two runtimes fed the same queue, mask and raise sequence, one with
+    /// the leave word and one without. At every step, on every context: the
+    /// leave word is non-zero exactly when the old two-load test
+    /// (`h2_direct_quiet`: word zero and nothing queued) fails, the wake
+    /// bits are the old word's, and taking them gives the same reasons.
+    #[test]
+    fn leave_word_matches_old_quiet() {
+        const CONTEXTS: usize = 3;
+        for seed in 1..=64u64 {
+            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let mut next = move |n: u64| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng % n
+            };
+            let old = Runtime::new(Guest::new(), Dispatch::default());
+            let new = Runtime::new(Guest::new(), Dispatch::default());
+            let mut olds: Vec<ExecCtx> = (0..CONTEXTS as u32)
+                .map(|t| ExecCtx::new(old.clone(), t))
+                .collect();
+            let mut news: Vec<ExecCtx> = (0..CONTEXTS as u32)
+                .map(|t| ExecCtx::new(new.clone(), t))
+                .collect();
+            // Enabled part-way through, sometimes with a queue already
+            // waiting, as a module registered after boot would.
+            let enable_at = next(40);
+            for step in 0..600u64 {
+                if step == enable_at {
+                    new.enable_leave_word();
+                }
+                let i = next(CONTEXTS as u64) as usize;
+                match next(9) {
+                    0 | 1 => {
+                        let interrupt = GuestInterrupt {
+                            target: 0x1000 + 0x10 * next(3) as u32,
+                            args: Vec::new(),
+                            convention: CallConvention::Cdecl,
+                            thread: [None, Some(0), Some(1), Some(2)][next(4) as usize],
+                            coalesce: next(2) == 0,
+                            name: "fixture",
+                        };
+                        assert_eq!(
+                            old.raise_interrupt(interrupt.clone()),
+                            new.raise_interrupt(interrupt)
+                        );
+                    }
+                    2 | 3 => {
+                        // The queue side of `deliver_queued`.
+                        let (o, n) = (&olds[i], &news[i]);
+                        if !o.interrupts_masked() {
+                            assert_eq!(
+                                old.take_interrupt_for(o.thread_id),
+                                new.take_interrupt_for(n.thread_id)
+                            );
+                        }
+                    }
+                    4 => {
+                        let masked = next(2) == 0;
+                        olds[i].set_interrupts_masked(masked);
+                        news[i].set_interrupts_masked(masked);
+                    }
+                    5 => assert_eq!(olds[i].take_preempt(), news[i].take_preempt()),
+                    6 => {
+                        let reasons = [SLICE, REQUEST, INTERRUPT | REQUEST][next(3) as usize];
+                        olds[i].defer_preempt(reasons);
+                        news[i].defer_preempt(reasons);
+                        old.request_preempt(reasons & REQUEST);
+                        new.request_preempt(reasons & REQUEST);
+                    }
+                    7 => {
+                        if next(8) == 0 {
+                            assert_eq!(old.clear_interrupts(), new.clear_interrupts());
+                        } else {
+                            // A fresh context's word starts in step.
+                            let (o, n) = (olds.swap_remove(i), news.swap_remove(i));
+                            olds.push(o.restart());
+                            news.push(n.restart());
+                        }
+                    }
+                    _ => {
+                        // Fill to the limit sometimes, so Full is reached.
+                        for _ in 0..next(MAX_PENDING as u64 + 2) {
+                            let interrupt = GuestInterrupt {
+                                target: 0x2000,
+                                args: Vec::new(),
+                                convention: CallConvention::Stdcall,
+                                thread: Some(next(CONTEXTS as u64) as u32),
+                                coalesce: false,
+                                name: "burst",
+                            };
+                            assert_eq!(
+                                old.raise_interrupt(interrupt.clone()),
+                                new.raise_interrupt(interrupt)
+                            );
+                        }
+                    }
+                }
+                assert_eq!(old.pending_interrupts(), new.pending_interrupts());
+                for (o, n) in olds.iter().zip(&news) {
+                    let old_word = o.leave_word();
+                    let word = n.leave_word();
+                    let old_quiet = old_word == 0 && old.pending_interrupts() == 0;
+                    assert_eq!(
+                        old_word & IRQ_QUEUED,
+                        0,
+                        "seed {seed} step {step}: never set without the leave word"
+                    );
+                    assert_eq!(
+                        word & !IRQ_QUEUED,
+                        old_word,
+                        "seed {seed} step {step}: wake bits"
+                    );
+                    assert_eq!(o.preempt_pending(), n.preempt_pending());
+                    if step >= enable_at {
+                        assert_eq!(
+                            word != 0,
+                            !old_quiet,
+                            "seed {seed} step {step}: leave word against old test"
+                        );
+                        assert_eq!(word & IRQ_QUEUED != 0, new.pending_interrupts() != 0);
+                    } else {
+                        assert_eq!(
+                            word & IRQ_QUEUED,
+                            0,
+                            "seed {seed} step {step}: not yet enabled"
+                        );
+                    }
+                }
+                assert_eq!(old.preempt_pending(), new.preempt_pending());
+            }
         }
     }
 }
