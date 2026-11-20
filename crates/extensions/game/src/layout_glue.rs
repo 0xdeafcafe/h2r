@@ -577,13 +577,13 @@ pub fn install(
     // The Halo 1 options' texts (crate::h1_options): the campaign page's
     // option rows and the Game Setup row and screen, wherever settings are.
     let with_h1_options = model.is_some();
+    let with_aim_assist = has(List::Controls, RowKind::Setting(crate::setting_defs::AIM_ASSIST.key));
     let model = model.unwrap_or_else(|| {
         let store = Arc::new(settings::Store::defaults(&[]));
         Arc::new(Model::new(store, Vec::new(), Vec::new(), 0..0).expect("an empty model"))
     });
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
-    let with_aim_assist = has(List::Controls, RowKind::Setting(crate::setting_defs::AIM_ASSIST.key));
     let small_values = speaker_row::small_values(with_speaker, with_aim_assist);
     let small_extra = small_values.len() as u32;
     let with_small = small_extra > 0;
