@@ -1508,7 +1508,13 @@ retail's weapon bases are (V: the battle rifle's and sniper rifle's on
 Coagulation, 0x203), the base's colours re-encoded from its decoded
 blocks (exact where a DXT1 block's endpoints are among its texels) and
 its whole mip chain kept, the mask sampled at each level's size (nearest).
-A base or mask that does not decode keeps the plain base. Proof: h1bitmaps
+Every image of a multi-image base is masked, by the mask's image of the
+same index, or by a single-image mask's only image
+(`h1bitmaps::mask::convert_reflection_mask`; D: b30's `light fixtures`
+and the grunt's maps come in two-image pairs with their `multi` maps). A
+base or mask that does not decode, or images that do not pair, fail the
+conversion (converter version 100; they kept the plain base before).
+Proof: h1bitmaps
 `a_base_takes_its_masks_red_as_alpha` and the block round trips;
 `tests/model_shaders_disc.rs`, `bloodgulch_sniper_metal_reflects_its_cube_map`
 (the sniper's converted base against its multipurpose red). **Detail

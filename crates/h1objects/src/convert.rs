@@ -2215,11 +2215,10 @@ impl<'a> Converter<'a> {
     }
 
     /// The Halo 1 base map `base` with the red channel of `mask` (a
-    /// `soso`'s multipurpose map) as its alpha, DXT5
-    /// (`h1bitmaps::mask::red_into_alpha`), `<base name>_reflection_<mask
-    /// leaf>`, built once per pair. `None` when either does not read or
-    /// decode, or for a base of
-    /// more than one image.
+    /// `soso`'s multipurpose map) as its alpha, DXT5, on every image
+    /// (`h1bitmaps::mask::convert_reflection_mask`), `<base
+    /// name>_reflection_<mask leaf>`, built once per pair. `None` when
+    /// either does not read or decode, or their images do not pair.
     fn masked_bitmap(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let key = (base.0, mask.0);
         if let Some(t) = self.masked_bitmaps.get(&key) {
@@ -2233,7 +2232,7 @@ impl<'a> Converter<'a> {
     /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
     /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
     /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
-    /// it does not read or decode, or has more than one image.
+    /// it does not read or decode.
     fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
         let key = (id.0, gain.to_bits());
         if let Some(t) = self.brightest_bitmaps.get(&key) {
@@ -2272,25 +2271,7 @@ impl<'a> Converter<'a> {
     fn bake_mask(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let tag = self.h1.tag(base).ok()?.clone();
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
-        let mm = h1map::bitmap::Bitmap::read(self.h1, &mtag).ok()?;
-        if bm.images.len() != 1 || mm.images.is_empty() {
-            return None;
-        }
-        let (img, px) = h1bitmaps::mask::red_into_alpha(
-            &bm.images[0],
-            bm.pixels(self.h1, 0).ok()?,
-            &mm.images[0],
-            mm.pixels(self.h1, 0).ok()?,
-        )
-        .ok()?;
-        let mut baked = bm.clone();
-        baked.images[0] = img;
-        // Halo 1's format word: compressed with interpolated alpha (DXT5).
-        baked.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
-        let mut px = Some(px);
-        let (conv, _) =
-            h1bitmaps::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default())).ok()?;
+        let conv = h1bitmaps::mask::convert_reflection_mask(self.h1, &tag, &mtag).ok()?;
         let leaf = mtag.name.rsplit('\\').next().unwrap_or(&mtag.name);
         Some(self.tree.push(&format!("{}_reflection_{leaf}", tag.name), conv))
     }
@@ -2336,8 +2317,9 @@ impl<'a> Converter<'a> {
     /// slot `slot` (`h1convert::shad::halo2_change_colour_slot`): its
     /// multipurpose map `mask`'s blue (`SOSO_CHANGE_COLOUR_CHANNEL`) in
     /// channel `slot`, every other channel 0
-    /// (`h1bitmaps::mask::channel_into`), `<mask name>_change_color_<slot>`,
-    /// built once per pair. `None` when the mask does not read or decode.
+    /// on every image (`h1bitmaps::mask::convert_change_colour`), `<mask
+    /// name>_change_color_<slot>`, built once per pair. `None` when the
+    /// mask does not read or decode.
     fn change_colour_bitmap(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
         let key = (mask.0, slot);
         if let Some(t) = self.change_colour_bitmaps.get(&key) {
@@ -2350,23 +2332,13 @@ impl<'a> Converter<'a> {
 
     fn bake_change_colour(&mut self, mask: h1map::TagId, slot: usize) -> Option<TagId> {
         let mtag = self.h1.tag(mask).ok()?.clone();
-        let mm = h1map::bitmap::Bitmap::read(self.h1, &mtag).ok()?;
-        if mm.images.len() != 1 {
-            return None;
-        }
-        let (img, px) = h1bitmaps::mask::channel_into(
-            &mm.images[0],
-            mm.pixels(self.h1, 0).ok()?,
+        let conv = h1bitmaps::mask::convert_change_colour(
+            self.h1,
+            &mtag,
             h1convert::shad::SOSO_CHANGE_COLOUR_CHANNEL,
             slot,
         )
         .ok()?;
-        let mut baked = mm.clone();
-        baked.images[0] = img;
-        baked.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
-        let mut px = Some(px);
-        let (conv, _) =
-            h1bitmaps::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default())).ok()?;
         Some(
             self.tree
                 .push(&format!("{}_change_color_{slot}", mtag.name), conv),

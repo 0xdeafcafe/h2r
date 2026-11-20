@@ -961,8 +961,9 @@ block within a step of `default_vector`'s 128, 128, 255), its alpha 0
 where the base's level is below 128 and 255 elsewhere. A binary alpha
 keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
 half and agrees with retail's leaf bump above. Its tiling and LOD offset
-are the base's. A base that doesn't decode, or has more than one image,
-keeps the default bump, uncut, as before. Proof:
+are the base's. Every image of a multi-image base is cut the same way.
+A base that doesn't decode fails the conversion (converter version 100;
+it kept the default bump, uncut, before). Proof:
 `h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
 `tests/model_shaders_disc.rs`,
 `bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
