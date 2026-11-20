@@ -15,7 +15,7 @@ cargo h2 fpstats [disc] [--root 0x12190]
 ```
 
 `--root` adds start points for the reachability split. `0x12190` is
-`game_main` in [engine-map.md](../engine/engine-map.md).
+`game_main` in [engine-map.md](../../engine/engine-map.md).
 
 #### Mix (measured)
 
