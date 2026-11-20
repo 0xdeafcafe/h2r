@@ -14,16 +14,20 @@
 //!   reader, so sharing it shows no one anything they could not fetch.
 //! - **Everything else under `/v1/`**: `private, no-store`. That covers
 //!   every request with a token (the answer may hold friends-only games
-//!   and presence; the web app also puts `auth=1` on such reads so a CDN
-//!   keyed on the URL never hands a reader the anonymous copy), every
-//!   error, and every other route.
+//!   and presence), every error, and every other route.
+//!
+//! Every tagged `/v1/` answer also carries `Vary: Authorization`, so a
+//! shared cache keyed on the URL never answers a request that bears a
+//! token from the anonymous entry. A stray `auth` query mark (an older
+//! web client added `auth=1` to its signed-in reads) changes nothing: the
+//! `Authorization` header alone says who reads.
 //!
 //! A handler that sets its own `Cache-Control` (title files, art, cloud
 //! saves) keeps it.
 
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
@@ -80,12 +84,12 @@ pub fn policy(
 }
 
 /// The middleware: sets [`policy`] on GET and HEAD responses that have no
-/// `Cache-Control` of their own, and an `ETag` on public reads.
+/// `Cache-Control` of their own, an `ETag` on public reads, and
+/// `Vary: Authorization` on every tagged `/v1/` answer.
 pub async fn layer(req: Request, next: Next) -> Response {
     let read = matches!(*req.method(), Method::GET | Method::HEAD);
     let path = req.uri().path().to_owned();
-    let authorized =
-        req.headers().contains_key(header::AUTHORIZATION) || has_auth_param(req.uri().query());
+    let authorized = req.headers().contains_key(header::AUTHORIZATION);
     let if_none_match = req.headers().get(header::IF_NONE_MATCH).cloned();
     let mut resp = next.run(req).await;
     if !read || resp.headers().contains_key(header::CACHE_CONTROL) {
@@ -100,6 +104,9 @@ pub async fn layer(req: Request, next: Next) -> Response {
     };
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    if policy == PUBLIC || policy == PRIVATE {
+        vary_authorization(resp.headers_mut());
+    }
     if policy != PUBLIC || resp.status() != StatusCode::OK {
         return resp;
     }
@@ -116,21 +123,30 @@ pub async fn layer(req: Request, next: Next) -> Response {
         r.headers_mut().insert(header::ETAG, tag);
         r.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static(PUBLIC));
+        vary_authorization(r.headers_mut());
         return r;
     }
     parts.headers.insert(header::ETAG, tag);
     Response::from_parts(parts, Body::from(bytes))
 }
 
-/// `auth=1` (or any value but `0`) in a query: the web app's mark on a read
-/// it sends with a token.
-pub(crate) fn has_auth_param(query: Option<&str>) -> bool {
-    query.is_some_and(|q| {
-        q.split('&').any(|kv| {
-            kv.split_once('=')
-                .map_or(kv == "auth", |(k, v)| k == "auth" && v != "0")
-        })
-    })
+/// A tagged `/v1/` answer may depend on who reads, so it varies on the
+/// `Authorization` header: a shared cache keeps the anonymous entry apart
+/// from any request that bears a token.
+fn vary_authorization(h: &mut HeaderMap) {
+    let Some(v) = h.get(header::VARY).and_then(|v| v.to_str().ok()) else {
+        h.insert(header::VARY, HeaderValue::from_static("Authorization"));
+        return;
+    };
+    if v.split(',')
+        .map(str::trim)
+        .any(|p| p.eq_ignore_ascii_case("authorization") || p == "*")
+    {
+        return;
+    }
+    if let Ok(joined) = HeaderValue::from_str(&format!("{v}, Authorization")) {
+        h.insert(header::VARY, joined);
+    }
 }
 
 fn hex16(digest: &[u8]) -> String {
@@ -200,12 +216,24 @@ mod tests {
     }
 
     #[test]
-    fn the_auth_mark_is_read_from_the_query() {
-        assert!(has_auth_param(Some("auth=1")));
-        assert!(has_auth_param(Some("limit=5&auth=1")));
-        assert!(has_auth_param(Some("auth")));
-        assert!(!has_auth_param(Some("auth=0")));
-        assert!(!has_auth_param(Some("author=1")));
-        assert!(!has_auth_param(None));
+    fn vary_gains_authorization_without_losing_what_was_there() {
+        let mut h = HeaderMap::new();
+        vary_authorization(&mut h);
+        assert_eq!(h[header::VARY], "Authorization");
+        // Not twice.
+        vary_authorization(&mut h);
+        assert_eq!(h[header::VARY], "Authorization");
+        let mut h = HeaderMap::new();
+        h.insert(header::VARY, HeaderValue::from_static("Range"));
+        vary_authorization(&mut h);
+        assert_eq!(h[header::VARY], "Range, Authorization");
+        let mut h = HeaderMap::new();
+        h.insert(header::VARY, HeaderValue::from_static("authorization"));
+        vary_authorization(&mut h);
+        assert_eq!(h[header::VARY], "authorization");
+        let mut h = HeaderMap::new();
+        h.insert(header::VARY, HeaderValue::from_static("*"));
+        vary_authorization(&mut h);
+        assert_eq!(h[header::VARY], "*");
     }
 }

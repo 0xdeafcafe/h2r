@@ -650,14 +650,15 @@ directory and the PNG renderer version. On a cache hit the Worker serves
 the PNG directly. On a miss it reads the manifest and two mask PNGs from
 `H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
 renderer. The Worker caches successful PNGs under their full revisioned
-URL, per data center, with `public, max-age=31536000, immutable`. Changing
-the published directory changes the revision. The stable redirect
-revalidates and errors are uncached.
+URL, per data center, with `public, max-age=31536000, immutable`; a
+request that bears `Authorization` never reads from or fills that cache,
+so a cache key holds no auth. Changing the published directory changes the
+revision. The stable redirect revalidates and errors are uncached.
 [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
-The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
-anonymous reads, `private, no-store` for the rest) are the router's, so
-they hold on the Worker too.
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` and `Vary:
+Authorization` for anonymous reads, `private, no-store` for the rest) are
+the router's, so they hold on the Worker too.
 
 The Worker's source art is the published copy. Extracting everything the
 viewer and the stats site use
