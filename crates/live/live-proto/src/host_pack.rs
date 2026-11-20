@@ -31,8 +31,8 @@ pub const MAX_PACK_MATCHES: usize = 10;
 /// Share of each vCPU's tick the summed matches may use.
 pub const DEFAULT_CPU_BUDGET: f64 = 0.70;
 /// Admission estimates before the pack has measured the lease's map.
-pub const DEFAULT_MS_PER_TICK: f64 = 5.0;
-pub const DEFAULT_RSS_MIB: u64 = 170;
+pub const DEFAULT_MS_PER_TICK: f64 = 10.0;
+pub const DEFAULT_RSS_MIB: u64 = 340;
 /// Kept free for the supervisor, the kernel and short spikes.
 pub const DEFAULT_RESERVE_MIB: u64 = 256;
 

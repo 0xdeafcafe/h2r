@@ -29,22 +29,23 @@ fn empty_pack_admits_its_first_match() {
 }
 
 #[test]
-fn three_five_ms_matches_leave_room_for_a_fourth() {
+fn a_measured_five_ms_map_leaves_room_for_a_fourth_match() {
     // Three measured matches plus one new one cost 20 ms of the 23.3 ms budget.
     let running = [measured(5.0, 170); 3];
-    assert_eq!(admit(&small(), &running, Some(800)), Ok(()));
+    let estimate = Limits { new_ms_per_tick: 5.0, new_rss_mib: 170, ..small() };
+    assert_eq!(admit(&estimate, &running, Some(800)), Ok(()));
 }
 
 #[test]
 fn refuses_when_summed_tick_cost_passes_the_budget() {
-    // 10 + 10 + 5 = 25 ms > 23.3 ms.
+    // 10 + 10 + 10 = 30 ms > 23.3 ms.
     let running = [measured(10.0, 170); 2];
     match admit(&small(), &running, Some(800)) {
         Err(Refusal::Cpu {
             projected_ms,
             budget_ms,
         }) => {
-            assert!((projected_ms - 25.0).abs() < 1e-9);
+            assert!((projected_ms - 30.0).abs() < 1e-9);
             assert!((budget_ms - 23.333).abs() < 0.01);
         }
         other => panic!("{other:?}"),
@@ -65,10 +66,10 @@ fn wall_p99_refuses_a_late_pack_before_cpu_and_memory() {
 
 #[test]
 fn unmeasured_matches_count_at_the_default_cost() {
-    // Five just-started matches cost 25 ms of the 23.3 ms budget.
-    let running = [MatchLoad::default(); 4];
+    assert_eq!((small().new_ms_per_tick, small().new_rss_mib), (10.0, 340));
+    // Two vCPUs can admit a fourth cold match. One vCPU cannot.
+    let running = [MatchLoad::default(); 3];
     assert!(matches!(admit(&small(), &running, None), Err(Refusal::Cpu { .. })));
-    // Two vCPUs take five unmeasured matches.
     let large = class_limits(&crate::hosts::HostClass::Large, None);
     assert_eq!(admit(&large, &running, None), Ok(()));
 }
@@ -85,11 +86,11 @@ fn refuses_past_the_match_cap_even_with_cpu_to_spare() {
 #[test]
 fn refuses_when_memory_would_pass_the_container_limit() {
     let running = [measured(5.0, 340)];
-    // 2600 measured + 340 assumed > 1536 - 256.
+    // 1200 measured + 340 assumed > 1536 - 256.
     assert_eq!(
         admit(&small(), &running, Some(1200)),
         Err(Refusal::Memory {
-            projected_mib: 1370,
+            projected_mib: 1540,
             budget_mib: 1280
         })
     );
@@ -97,7 +98,7 @@ fn refuses_when_memory_would_pass_the_container_limit() {
     let tight = Limits::new(3, 4.0, 1024);
     assert!(matches!(
         admit(&tight, &[measured(1.0, 650)], None),
-        Err(Refusal::Memory { projected_mib: 820, budget_mib: 768 })
+        Err(Refusal::Memory { projected_mib: 990, budget_mib: 768 })
     ));
     assert_eq!(admit(&tight, &[measured(1.0, 400)], None), Ok(()));
 }

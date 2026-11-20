@@ -207,10 +207,10 @@ fn measured_cpu_refuses_a_match_that_would_pass_the_budget() {
         pack.add(&add("hl-c")),
         Err(AddError::Refused(Refusal::Cpu { .. }))
     ));
-    // No history for fixture-b: the cold estimate of 5 ms fits the remaining margin.
+    // No history for fixture-b: the 10 ms cold estimate also exceeds the margin.
     let mut other = add("hl-c");
     other.lease_json = json!({ "id": other.lease, "map": "fixture-b" }).to_string();
-    assert!(pack.add(&other).is_ok());
+    assert!(matches!(pack.add(&other), Err(AddError::Refused(Refusal::Cpu { .. }))));
     pack.shutdown();
 }
 
@@ -219,13 +219,14 @@ fn three_five_ms_matches_leave_room_for_a_fourth() {
     let (mut pack, _) = pack(host_pack::class_limits(&live_proto::hosts::HostClass::Small, None));
     pack.add(&add("hl-a")).unwrap();
     pack.add(&add("hl-b")).unwrap();
-    pack.add(&add("hl-c")).unwrap();
     gameplay_sample(&mut pack, 33.4);
     let start = Instant::now();
     for i in 0..=4u32 {
         let at = start + Duration::from_secs(u64::from(i));
-        pack.tick(at, &|_| Some(usage(150.0 * f64::from(i))), Some(900));
+        pack.tick(at, &|_| Some(usage(150.0 * f64::from(i))), Some(650));
     }
+    // Both additional leases inherit the observed map cost.
+    pack.add(&add("hl-c")).unwrap();
     assert!(pack.add(&add("hl-d")).is_ok());
     pack.shutdown();
 }
@@ -245,12 +246,12 @@ fn container_memory_refuses_a_match_that_would_not_fit() {
 #[test]
 fn rapid_adds_reserve_memory_until_the_children_fault_it() {
     let (mut pack, _) = pack(Limits::new(5, 2.0, 1024));
-    pack.tick(Instant::now(), &|_| None, Some(400));
+    pack.tick(Instant::now(), &|_| None, Some(60));
     pack.add(&add("hl-a")).unwrap();
     pack.add(&add("hl-b")).unwrap();
     assert!(matches!(
         pack.add(&add("hl-c")),
-        Err(AddError::Refused(Refusal::Memory { projected_mib: 910, budget_mib: 768 }))
+        Err(AddError::Refused(Refusal::Memory { projected_mib: 1080, budget_mib: 768 }))
     ));
     pack.shutdown();
 }

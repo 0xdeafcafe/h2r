@@ -205,7 +205,7 @@ deadline. Unused supervisors exit after `H2_PACK_LINGER_S` (default 60 s).
 seconds on Linux. The game agent supplies gameplay tick p99 on both homes.
 On other platforms the pack uses the game process’s CPU and resident memory.
 The pack estimates cold matches from the median of recent measured loads
-on that map. Without history it reserves 5 ms per tick and 170 MiB per match.
+on that map. Without history it reserves 10 ms per tick and 340 MiB per match.
 Admission keeps 30% of each vCPU and 256 MiB of memory free. It accounts
 for boot reservations even before resident memory grows. A rolling
 30-second gameplay p99 over 36 ms also closes admission.

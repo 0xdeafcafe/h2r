@@ -39,8 +39,8 @@ collision 5%, the bots' Rust brain up to 8%, runner and scheduler 10%
 **Memory.** One sim process on macOS has a 143 MiB dirty footprint: 64 MiB
 of guest RAM, 39 MiB of other large allocations and 35 MiB of small ones.
 Its 414 MiB of module text is shared
-([notes/sim.md](../runtime/notes/sim.md)). The pack's 340 MiB default is
-resident size, which counts shared pages in every process.
+([notes/sim.md](../runtime/notes/sim.md)). The pack reserves 340 MiB for a match on an unmeasured map. This
+resident-size estimate counts shared pages in each process.
 
 **Start.** A lease waits for the container (1–3 s on Cloudflare), the
 bundle fetch on a new container, the title's boot to its main menu (about
@@ -236,7 +236,7 @@ The supervisor refuses a match above the slot limit, when any running
 match has a gameplay tick p99 above 36 ms, when projected CPU exceeds 70%
 of 33.3 ms per vCPU, or when projected memory leaves less than 256 MiB
 free. It estimates new loads from recent measured gameplay on the same map,
-using 5 ms and 170 MiB in the absence of observations. Newly allocated slots
+using 10 ms and 340 MiB in the absence of observations. Newly allocated slots
 reserve memory during boot, before their pages appear in the cgroup.
 
 | Pack class | vCPUs | Supervisor memory limit | Slots | Provisioned Cloudflare memory |
