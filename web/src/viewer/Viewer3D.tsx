@@ -3,6 +3,7 @@
 
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
+import type { DamageMode } from "../map/vitals";
 import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
 import { gameArt, gameArtReady } from "../state/gameart";
@@ -37,6 +38,9 @@ export interface Viewer3DProps {
   mapName: string;
   backdrop?: string | null;
   on2D: () => void;
+  damage: DamageMode;
+  onDamage: (mode: DamageMode) => void;
+  full: boolean;
   start?: (frame: MapFrame, player?: string) => CameraStart;
   priorityPlayers?: () => readonly (number | null)[];
   /** Camera requests from the replay (a killcam): each new one is taken. */
@@ -54,6 +58,7 @@ const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(pre
 export default function Viewer3D(props: Viewer3DProps) {
   let host!: HTMLDivElement;
   let scene: ViewerScene | null = null;
+  const [kills, setKills] = createSignal<Array<{ id: number; killer: string; victim: string; weapon: string; expires: number }>>([]);
   const [failed, setFailed] = createSignal<string | null>(null);
   // A cutscene: the frames hold no one; the view says so.
   const [cutscene, setCutscene] = createSignal(false);
@@ -269,6 +274,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     // `?perf` in the address: the scene on window for the perf harness
     // (web/bench/viewer.bench.ts) to read its renderer's counts.
     if (perf) (window as unknown as { h2Viewer?: ViewerScene }).h2Viewer = s;
+    s.onKillConfirm = entry => setKills(rows => [entry, ...rows].slice(0, 3));
     s.onAoDropped = () => setAo(false);
     s.onFlyChange = setFlying;
     s.onFlySpeed = setFlySpeed;
@@ -307,6 +313,8 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (!visible || document.hidden) return;
       const frame = props.frame(now);
       const sought = props.soughtAt?.() ?? 0;
+      if (sought !== seen) setKills([]);
+      else if (kills().some(k => k.expires <= now)) setKills(kills().filter(k => k.expires > now));
       if (adopted === null && !props.glb() && (gameArtReady() || late())) adopted = now;
       const automatic = () => props.start?.(frame, props.player) ?? { kind: "bounds" } as const;
       if (!opening && (frame.players.length > 0 || (adopted !== null && now - adopted >= 1500))) {
@@ -350,6 +358,11 @@ export default function Viewer3D(props: Viewer3DProps) {
     const art = gameArt();
     scene?.setModels(art?.root ?? null, art?.manifest.models);
   });
+
+  createEffect(on([sceneReady, () => props.damage], ([ready, damage]) => {
+    if (ready) scene?.setDamage(damage);
+    if (damage === "off") setKills([]);
+  }));
 
   // Each retry starts its own byte, decode and first-draw sequence.
   createEffect(on([sceneReady, props.glb, retry], ([ready, url]) => {
@@ -408,6 +421,7 @@ export default function Viewer3D(props: Viewer3DProps) {
   const selectRow = (title: string, value: string | undefined, rows: readonly ViewRow[], show = true): ViewRow =>
     ({ label: title, value, panel: { title, rows }, show });
 
+  const damageLabels = { off: "Off", bars: "Bars", numbers: "Bars and numbers" } as const;
   const seeLabels = { off: "Off", auto: "In focus", always: "Everyone" } as const;
   const pickZone = (p: ZonePick) => { setZonePick(p); scene?.setZonePick(p); };
   const layerRows = () => [
@@ -430,6 +444,8 @@ export default function Viewer3D(props: Viewer3DProps) {
       toggleRow("Height cut", cut(), toggleCut),
       toggleRow("Textures", textures(), flipTextures, hasTextures()),
       toggleRow("Lifts & teleporters", features(), () => { setFeatures(!features()); scene?.setFeatures(features()); }, hasFeatures()),
+      selectRow("Damage", damageLabels[props.damage], (["off", "bars", "numbers"] as const).map(
+        m => choice(damageLabels[m], props.damage === m, () => props.onDamage(m)))),
       toggleRow("AI names", actorNames(), () => { setActorNames(!actorNames()); scene?.setActorNames(actorNames()); }, hasActors()),
       selectRow("Zone", zonePick() === "auto" ? zoneInPlay(level()) : zonePick() === "all" ? "All zones"
         : level()?.zones.find(z => z.bsp === zonePick())?.label, [
@@ -460,6 +476,11 @@ export default function Viewer3D(props: Viewer3DProps) {
     return (
       <>
         <div>{props.mapName}{detail ? ` · ${detail}` : ""}</div>
+        <Show when={props.full && props.damage !== "off"}>
+          <div aria-live="polite">
+            <For each={kills()}>{k => <div class="vo-kill">{k.killer}{" › "}{k.weapon}{" › "}{k.victim}</div>}</For>
+          </div>
+        </Show>
         <Show when={flyHint()}><div class="vo-note">{flyHint()}</div></Show>
         <Show when={staleModels()}>
           <div class="vo-note vo-note--warn">This server's player models can't animate. Extract the art again with{" "}<code>h2 live assets extract</code>.</div>

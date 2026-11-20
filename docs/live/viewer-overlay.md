@@ -2,7 +2,7 @@
 
 Status: Built. The opening camera, loading overlay, name-tag layout and progressive reveal are part of the 3D viewer.
 Code: `web/src/viewer/Viewer3D.tsx` (the 3D view), `web/src/viewer/scene.ts` (`ViewerScene`), `web/src/viewer/camera.ts`, `web/src/viewer/GameViewer.tsx`. Tests: `web/test/`.
-Switch: none. Address parameters `player`, `dmg` and `fx`, and three `localStorage` keys, are listed under [Interfaces](#interfaces).
+Switch: none. Address parameters `player`, `dmg` and `fx`, and the viewer's `localStorage` keys, are listed under [Interfaces](#interfaces).
 
 How the game page's 3D view opens: where its camera starts, what is on
 screen while the map's geometry loads, how the geometry appears, how the
@@ -40,13 +40,13 @@ is adopted, whichever is first. It returns `{ kind: "player", index }` or
   nobody falls through to rule 2.
 - Player pages link to a game with their player in the address:
   `gameHref(id, { player })` in `web/src/routes.ts`, used by the game
-  links in `web/src/stats/Player.tsx` and the history, career and
-  campaign record pages.
+  links on the service record, game history and campaign record
+  (`web/src/stats/Player.tsx` and `web/src/stats/Side.tsx`).
 - An embedding page passes `focus` (the bot under training in
   `web/src/admin/ClankerTraining.tsx`). The game page passes none.
-- A player rule needs that player in the frame it is applied to, alive or
-  not. A player who is absent (left, not yet spawned) falls through to the
-  next rule.
+- A player rule needs that player in the frame it is applied to. Either
+  life state qualifies. If the player is absent when the geometry opens,
+  the remaining rules use that frame.
 - A player result opens in `follow` on that index. A bounds result opens
   in `orbit`.
 
@@ -267,10 +267,11 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
   following; **Reset**; **View**. With a `director` the tabs, chip and
   **Eyes** are the director's and are not drawn, as in `Viewer3D`.
 - **Moves to the View menu:** ambient occlusion, see-through, height cut,
-  textures, lifts and teleporters, damage, combat effects, AI names, the
-  zone picker, and everything in the **Show** menu (cutscene zones,
-  backdrop, decals, effects, sky, fog, weather, objects and their kinds).
-  A row appears under the same condition its button has in `Viewer3D`.
+  textures, lifts and teleporters, damage, AI names, and the zone picker.
+  **Level layers** contains cutscene zones, backdrop, decals, effects,
+  sky, fog, weather, objects and their kinds. `Viewer3D` supplies the rows
+  for the loaded level. The [combat-effects design](viewer-effects.md#the-effects)
+  defines a separate **Combat effects** row.
 - **Becomes a key hint:** `F` fly, `V` eyes, `C` cut, `X` see-through,
   `R` reset, `T` top-down, `M` menu, `H` hide the overlay. `R`, `T`, `M`
   and `H` are added to `Viewer3D`'s `onKey`; none is a replay key
@@ -301,7 +302,6 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
                                     |  Textures              ON |
                                     |  Lifts & teleporters   ON |
                                     |  Damage              BARS |
-                                    |  Combat effects      HIGH |
                                     |  Level layers           > |
                                     '--------------------------/
 ```
@@ -492,8 +492,10 @@ pure), which returns `{ holo, radius, objectsRadius, sky, shadows, done }`:
   `k`; the haze density and the game fog's cap are scaled by `k`; decals,
   effects layers, plasma, weather and the spawner marks are hidden until
   `done`.
-- `sun.shadow.intensity = shadows`, so geometry that is still a lattice
-  casts no shadow on what is solid.
+- `sun.shadow.intensity = shadows` brings shadows in during the last
+  40% of the shell sweep. `CutawayMaterials.attachShadow` applies the
+  sweep to the existing shadow pass, which only uses solid geometry
+  inside the band.
 - A player, vehicle, body or projectile is hidden until its distance from
   the origin is under `radius - band`; its tag then fades in (`opacity 0
   → 1`, 160 ms linear).
@@ -520,14 +522,11 @@ scene is complete in its first frame, and the veil cross-fades over it in
 
 ### Damage and combat effects
 
-The floating damage numbers go. A hit reads on the victim's tag (a shield
-bar and a body bar with a chip for each burst), as a direction tick at
-the victim, and as a kill confirm; shield flares, explosions, impacts,
-melee, teleporter use and deaths are drawn from one particle pool. Both
-are specified in [viewer-effects.md](viewer-effects.md): what a hit's
-`amount` holds, what each effect is derived from, which need new
-telemetry, the budget and the switches. They use this page's tags, View
-menu and status strip.
+A hit reads on the victim's tag as bars and chips, at their feet as a
+direction tick, and at their chest as a kill confirm. The **Damage** row
+controls this display in 3D and on the tactical map. The [damage and
+combat effects page](viewer-effects.md) specifies how the viewer draws
+damage and describes the design for the shared combat-effects pool.
 
 ## Build order
 
@@ -537,10 +536,11 @@ in [viewer-effects.md](viewer-effects.md#build-order).
 ## Interfaces
 
 - **Address:** `?player=<gamertag|xuid>` (opening camera), `?dmg=off|bars|numbers`,
-  `?fx=off|low|high` ([viewer-effects.md](viewer-effects.md)). `cam`,
+  and the planned `?fx=off|low|high` ([viewer-effects.md](viewer-effects.md)). `cam`,
   `cut`, `see`, `ao`, `view`, `map` and `t` are unchanged.
-- **Storage:** `h2.viewer.damage`, `h2.viewer.fx`, beside
-  `h2.viewer.textures` (`TEXTURES_KEY`, `textures3d.ts`).
+- **Storage:** `h2.viewer.damage` (`map/vitals.ts`) and
+  `h2.viewer.textures` (`textures3d.ts`). The combat-effects design uses
+  `h2.viewer.fx`.
 - **`GameViewer` props:** `focus?: () => number | null`. It passes
   `title`, `backdrop` and the resolved start to `Viewer3D`.
 - **`ViewerScene`:** `loadMap(url, onProgress?): Promise<"ok" |
@@ -589,8 +589,7 @@ in [viewer-effects.md](viewer-effects.md#build-order).
 - The reveal's frame time on the largest campaign level, and that no
   shader recompiles when it ends (`bun run bench:viewer`, the
   `h2-viewer:revealed` mark).
-- That `sun.shadow.intensity` at 0 leaves no shadow of lattice geometry on
-  every GPU the AO fallback path covers.
+- How the sweep's shadow fade reads on the viewer's supported GPUs.
 - That 24px rail controls and the tags read on a phone in full
   screen.
 

@@ -15,6 +15,7 @@ import { gameMapTitle } from "../state/maps";
 import { Overlay } from "./Overlay.tsx";
 import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
 import { mapGlb } from "../map/geometry";
+import { damagePref, saveDamagePref, type DamageMode } from "../map/vitals";
 import type { RosterEntry } from "../map/render";
 import { geometryChanged } from "../state/maps";
 import { identity } from "../state/identity";
@@ -75,7 +76,14 @@ export default function GameViewer(props: {
   children?: JSX.Element;
 }) {
   let box!: HTMLElement;
-  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string; player?: string }>();
+  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string; player?: string; dmg?: string }>();
+  const [storedDamage, setStoredDamage] = createSignal(damagePref());
+  const damage = () => damagePref(params.dmg, { getItem: storedDamage });
+  const setDamage = (mode: DamageMode) => {
+    setStoredDamage(mode);
+    saveDamagePref(mode);
+    if (params.dmg !== undefined) setParams({ dmg: mode }, { replace: true });
+  };
   const backdrop = mapPicture(() => props.game.map, () => props.game.map_id);
   const mode = () => viewerMode(
     props.director ? (props.director.selection().mode === "top-down" ? undefined : "3d") : params.view,
@@ -242,11 +250,17 @@ export default function GameViewer(props: {
       >
         <Show
           when={mode() === "3d"}
-          fallback={<TacticalMap game={props.game} frame={props.frame} roster={props.roster} highlight={props.highlight} label={props.label} />}
+          fallback={
+            <TacticalMap game={props.game} frame={props.frame} roster={props.roster} highlight={props.highlight} label={props.label}
+              follow={() => props.director?.selection().follow ?? null} damage={damage()} onDamage={setDamage} soughtAt={props.soughtAt} />
+          }
         >
           <div class="v3-body">
             <Suspense fallback={<Overlay state="boot" title={props.title} backdrop={backdrop()} />}>
-              <Viewer3D title={props.title} mapName={gameMapTitle(props.game)} backdrop={backdrop()} on2D={open2D} frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.director ? undefined : props.camera} director={props.director} {...view3d()} />
+              <Viewer3D title={props.title} mapName={gameMapTitle(props.game)} backdrop={backdrop()} on2D={open2D}
+                frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt}
+                camera={props.director ? undefined : props.camera} director={props.director}
+                damage={damage()} onDamage={setDamage} full={full() !== null} {...view3d()} />
             </Suspense>
           </div>
         </Show>

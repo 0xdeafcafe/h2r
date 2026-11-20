@@ -8,6 +8,7 @@ import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type Ros
 import { readPalette, type MapPalette } from "../map/palette";
 import { ShotQueue } from "../map/shots";
 import { EventFeed } from "../map/events";
+import { damagePref, VitalsTrack, type DamageMode } from "../map/vitals";
 
 export interface MapFrame {
   players: SampledPlayer[];
@@ -44,6 +45,9 @@ export default function MapCanvas(props: {
   /** A picture that rarely changes (a finished game): redraw twice a second. */
   still?: boolean;
   highlight?: () => number | null;
+  follow?: () => number | null;
+  soughtAt?: () => number;
+  damage?: DamageMode;
   /** The map's teleporters and lifts, to draw under the players. */
   features?: () => MapFeatures | null;
   class?: string;
@@ -63,6 +67,7 @@ export default function MapCanvas(props: {
   let hover: number | null = null;
   const shots = new ShotQueue();
   const feed = new EventFeed();
+  const vitals = new VitalsTrack();
   // A cutscene: the frames hold no one, and the map says why.
   const [cutscene, setCutscene] = createSignal(false);
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -73,6 +78,7 @@ export default function MapCanvas(props: {
   onMount(() => {
     pal = readPalette(wrap);
     flat = !!wrap.closest(".stats");
+    const defaultDamage = damagePref(new URLSearchParams(window.location.search).get("dmg"));
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const resize = () => {
@@ -99,6 +105,7 @@ export default function MapCanvas(props: {
     const leave = () => { mx = null; my = null; };
     wrap.addEventListener("pointermove", move);
     wrap.addEventListener("pointerleave", leave);
+    let lastSeek = 0;
     const stop = onAnimationFrame((now) => {
       // Off screen: draw once so there is a picture, then wait to be seen.
       if ((!visible && view.ready && drawnAt > 0) || document.hidden) return;
@@ -123,11 +130,24 @@ export default function MapCanvas(props: {
         hover = found;
         canvas.style.cursor = found === null ? "default" : "pointer";
       }
-      if (!props.mini) { shots.observe(f.players, now); if (f.actors?.length) shots.observe(f.actors, now); feed.observe(f, now); }
+      const soughtAt = props.soughtAt?.() ?? 0;
+      const quiet = soughtAt !== lastSeek;
+      lastSeek = soughtAt;
+      const mode = props.mini ? "off" : props.damage ?? defaultDamage;
+      if (!props.mini) {
+        shots.observe(f.players, now);
+        if (f.actors?.length) shots.observe(f.actors, now);
+        if (quiet) feed.hits.clear();
+        feed.observe(f, now, { quiet });
+      }
+      const currentVitals = props.mini ? undefined : vitals.observe(f, now, { quiet, reducedMotion: still });
+      const hits = props.mini ? [] : feed.liveHits(now);
       const scene = {
         shots: props.mini || still ? undefined : shots.live(now),
         firing: props.mini || !still ? undefined : shots.firingNow(now),
-        hits: props.mini ? undefined : feed.liveHits(now),
+        damage: mode !== "off" && currentVitals ? {
+          hits, vitals: currentVitals, numbers: mode === "numbers", followed: props.follow?.() ?? null,
+        } : undefined,
         projectileTrails: props.mini || still ? undefined : f.projectileTrails,
         still,
         features: props.mini ? null : props.features?.() ?? null,

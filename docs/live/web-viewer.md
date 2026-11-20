@@ -221,11 +221,13 @@ optional; a frame without them draws as before.
   for a minute, at most 24 of them, all cleared on a seek. AI bodies come
   in the frames as actors with the `dead` stance and lie until the game
   clears them away.
-- *Damage* (`map/events.ts`). A hit draws a line from attacker to victim
-  that fades in a quarter of a second and a marker that shows damage as
-  a percent of the victim's vitality. Sustained fire on a victim adds to
-  the same marker. A finishing hit gets a larger red ring that stays
-  longer. With reduced motion, the numbers stay put and the line holds.
+- *Damage* ([viewer-effects.md](viewer-effects.md#damage)). The 3D tags
+  and tactical map show shield and body from the sampled frame. A hit with
+  a known attacker draws a direction tick. A focused exchange or a kill
+  draws the attacker-to-victim line, and a kill adds a confirm. The
+  **Damage** control defaults to **Bars**. **Bars and numbers** prints the
+  loss from this burst beside the victim's name. `?dmg=` overrides the
+  stored preference.
 - *Projectile trails* (`state/projectile-trails.ts`). The 2D and 3D viewers
   use consecutive `Frame.projectiles` positions for each projectile ID. The
   projectile's recorded type sets its colour. Interpolation stays between

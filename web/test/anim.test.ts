@@ -4,7 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame } from "../src/api/types";
 import { FrameBuffer, sampleBsp, sampleFrames, sampleHits, sampleVehicles, type SampledHit, type SampledPlayer } from "../src/state/frames";
 import { ACTOR_MAX_PITCH, ACTOR_MAX_TWIST, BipedAnim, HELD, ONE_SHOT_MS, actorAim, RUN_SPEED, SpeedMeter, WALK_SPEED, actionShot, clipFor, locomotion, paceScale, weaponClass } from "../src/viewer/anim";
-import { ActionWatch, EventFeed, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_MARK_MS, entityIndex, hitColour, hitText, locator, mergeHits } from "../src/map/events";
+import { ActionWatch, EventFeed, HIT_FOLD_MS, HIT_LINE_MS, HIT_MARK_MS, HitQueue, KILL_LINE_MS, KILL_MARK_MS, entityIndex, hitColour, locator, mergeHits } from "../src/map/events";
 import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "../src/viewer/zones";
 import { parseModels } from "../src/viewer/models";
 import { BipedAnimator, ModelLibrary, prepareBiped, upperBody } from "../src/viewer/players3d";
@@ -265,44 +265,50 @@ describe("damage as a view draws it", () => {
     expect(q.live(1000, people())).toHaveLength(0);
   });
 
-  test("a hit draws a line from attacker to victim that fades fast, and a marker with the number that lingers", () => {
+  test("a hit gives a short line and a fading direction tick without floating text", () => {
     const q = new HitQueue(), where = people();
     q.observe({ tick: 30, hits: [hit()] }, 1000, where);
     // The same frame sampled again adds nothing.
     q.observe({ tick: 30, hits: [hit()] }, 1016, where);
     let live = q.live(1000, where);
     expect(live).toHaveLength(1);
-    expect(live[0]).toMatchObject({ fromId: "p0", toId: "p1", from: { x: 0, y: 0, z: 0 }, x: 5, kill: false, line: 1, mark: 1, rise: 0, text: "10" });
+    expect(live[0]).toMatchObject({ fromId: "p0", toId: "p1", from: { x: 0, y: 0, z: 0 }, x: 5, kill: false, line: 1, mark: 1, direction: 1 });
+    expect(live[0]).not.toHaveProperty("text");
     live = q.live(1000 + HIT_LINE_MS / 2, where);
     expect(live[0]!.line).toBeCloseTo(0.25, 6);
     live = q.live(1000 + HIT_LINE_MS, where);
     expect(live[0]!.line).toBe(0);
-    expect(live[0]!.mark).toBe(1);
+    expect(live[0]!.direction).toBeCloseTo(1 - HIT_LINE_MS / HIT_MARK_MS);
     expect(q.live(1000 + HIT_MARK_MS - 20, where)[0]!.mark).toBeLessThan(0.1);
     expect(q.live(1000 + HIT_MARK_MS, where)).toEqual([]);
     expect(q.busy).toBe(false);
   });
 
-  test("sustained fire on one victim is one marker with a rising number; a new one after a pause", () => {
+  test("sustained fire refreshes a direction tick and a later hit starts its own", () => {
     const q = new HitQueue(), where = people();
     q.observe({ tick: 30, hits: [hit({ amount: 0.06 })] }, 1000, where);
     q.observe({ tick: 31, hits: [hit({ amount: 0.07, x: 6 })] }, 1033, where);
     q.observe({ tick: 32, hits: [hit({ amount: 0.05, to: "e1000" })] }, 1066, where);
-    expect(q.live(1070, where).map((h) => [h.toId, h.text, h.x])).toEqual([["p1", "13", 6], ["e1000", "5", 5]]);
-    q.observe({ tick: 50, hits: [hit({ amount: 0.004 })] }, 1000 + HIT_FOLD_MS + 1, where);
-    expect(q.live(1000 + HIT_FOLD_MS + 2, where).map((h) => h.text)).toEqual(["13", "5", "<1"]);
+    expect(q.live(1070, where).map(h => [h.toId, h.born, h.x])).toEqual([["p1", 1033, 6], ["e1000", 1066, 5]]);
+    const after = 1033 + HIT_FOLD_MS + 1;
+    q.observe({ tick: 50, hits: [hit({ amount: 0.004 })] }, after, where);
+    expect(q.live(after + 1, where).map(h => h.born)).toEqual([1033, 1066, after]);
   });
 
   test("a kill is marked as one, when the hit lands or when the victim is found dead after, and stays longer", () => {
     const q = new HitQueue();
     q.observe({ tick: 30, hits: [hit()] }, 1000, people(false));
     expect(q.live(1001)[0]!.kill).toBe(true);
-    expect(q.live(1000 + HIT_MARK_MS + 100)).toHaveLength(1);
+    expect(q.live(1000 + KILL_LINE_MS - 1)[0]!.line).toBeGreaterThan(0);
+    expect(q.live(1000 + KILL_LINE_MS)[0]!.line).toBe(0);
+    expect(q.live(1000 + KILL_MARK_MS - 1)).toHaveLength(1);
     expect(q.live(1000 + KILL_MARK_MS)).toEqual([]);
     // Alive when hit, down a moment later.
     q.observe({ tick: 60, hits: [hit()] }, 5000, people());
     expect(q.live(5100, people())[0]!.kill).toBe(false);
-    expect(q.live(5300, people(false))[0]!.kill).toBe(true);
+    expect(q.live(5300, people(false))[0]).toMatchObject({ kill: true, age: 0, line: 1 });
+    expect(q.live(5300 + KILL_MARK_MS - 1)[0]!.kill).toBe(true);
+    expect(q.live(5300 + KILL_MARK_MS)).toHaveLength(0);
     expect(hitColour({ kill: true, kind: "bullet" })).not.toBe(hitColour({ kill: false, kind: "bullet" }));
     // Three people hit them as they went down: one kill, the last hit's.
     const three = new HitQueue();
@@ -323,12 +329,7 @@ describe("damage as a view draws it", () => {
     q.observe({ tick: 60, hits: [hit()] }, 2016, where);
     expect(q.live(2017, where)).toEqual([]);
     q.observe(null, 2100, where);
-    expect(hitText(null)).toBe("");
-    // Amounts are shares of the victim's vitality: shown in percent.
-    expect(hitText(0.54)).toBe("54");
-    expect(hitText(1.2)).toBe("120");
-    expect(hitText(0.004)).toBe("<1");
-    expect(hitText(0)).toBe("0");
+    expect(q.live(2100, where)).toHaveLength(0);
   });
 
   test("one feed for a view: actions animate players and hits find their people", () => {

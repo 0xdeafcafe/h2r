@@ -36,6 +36,8 @@ import { GroundCache, type Floor } from "./ground";
 import { FloorGrid, type FloorSource } from "./floorgrid";
 import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed, entityIndex } from "../map/events";
+import { VitalsTrack, type DamageMode } from "../map/vitals";
+import { TagDamage } from "./vitals3d";
 import { Effects3D } from "./effects3d";
 import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
 import { dressWater } from "./water3d";
@@ -95,6 +97,7 @@ interface PlayerObj {
   tag: HTMLDivElement;
   plate: HTMLDivElement;
   tagSize: { w: number; h: number } | null;
+  damage: TagDamage | null;
   /** The weapon's name in the label. */
   gun: HTMLElement;
   colour: string;
@@ -202,6 +205,10 @@ export class ViewerScene {
   private projectiles: Projectiles;
   private raycaster = new THREE.Raycaster();
   private feed = new EventFeed();
+  private vitals = new VitalsTrack();
+  private damage: DamageMode = "bars";
+  private confirmed = new Set<number>();
+  onKillConfirm?: (entry: { id: number; killer: string; victim: string; weapon: string; expires: number }) => void;
   private effects: Effects3D;
   // What of the level is shown (zones, far scenery, decals, effects) and
   // the sky and fog around it.
@@ -1342,7 +1349,7 @@ export class ViewerScene {
     group.add(turn, ring, ray, label);
     this.scene.add(group);
     if (actor) el.classList.add("v3-label--ai");
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, tag, plate, tagSize: null, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, tag, plate, tagSize: null, damage: null, gun, colour, name, bot, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor, anim: new BipedAnim(), meter: new SpeedMeter(), legs: 0, shotId: 0, wasAlive: null, lastAlive: null };
     this.players.set(index, p);
     return p;
   }
@@ -1694,6 +1701,8 @@ export class ViewerScene {
     return m;
   }
 
+  setDamage(mode: DamageMode) { this.damage = mode; this.dirty = true; }
+
   private layoutTags(now: number) {
     if (this.opts.bare) return;
     const tags: TagIn[] = [];
@@ -1774,7 +1783,7 @@ export class ViewerScene {
     if (!seeking) for (const h of hits) for (const id of [h.fromId, h.toId]) {
       if (id === null) continue;
       const index = entityIndex(id);
-      const born = now - h.age;
+      const born = h.born;
       if (born > (this.tagActivity.get(index) ?? -Infinity)) this.tagActivity.set(index, born);
     }
     for (const [index, at] of this.tagActivity) if (now - at >= 2000) {
@@ -1787,6 +1796,7 @@ export class ViewerScene {
     if (this.initialMode?.mode === "eyes") this.beginOpening();
     const S = this.scale;
     const still = this.opts.reducedMotion;
+    const vitals = this.vitals.observe(frame, now, { quiet: seeking, reducedMotion: still });
 
     this.updateMachines(frame.machines ?? [], dt, snap);
     const livingMachines = frame.filmWorld ? new Set((frame.machines ?? []).flatMap(m =>
@@ -1854,6 +1864,9 @@ export class ViewerScene {
     for (const [index, s] of this.shown) {
       const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
       const p = this.player(index, info, !!s.actor);
+      const v = vitals.get(index);
+      if (!this.opts.bare && this.damage !== "off" && v) p.damage ??= new TagDamage(p.tag, p.plate);
+      if (p.damage?.update(this.damage, v)) { p.tagSize = null; this.dirty = true; }
       const hull = s.vehicle ? hullOf(s.vehicle)! : null;
       const ride = hull ? this.vehicles.get(hull) : undefined;
       if (ride && s.alive) {
@@ -1888,10 +1901,11 @@ export class ViewerScene {
       // as it lies; a player's is left behind as a body of its own, made
       // from the model they had alive (the dead have no species or weapon).
       const dead = !s.alive || s.stance === "dead";
+      const casualtyTag = dead && !this.opts.bare && this.damage !== "off" && v?.chipFrom != null;
       if (!p.actor) this.playerBody(index, p, s, now, seeking);
       this.dress(p, s);
       const show = s.alive || (p.actor && dead);
-      p.turn.visible = true;
+      p.turn.visible = show;
       p.ring.visible = !dead && !this.opts.bare;
       p.ray.visible = !dead && !p.actor && !this.opts.bare;
       // On their feet, on the floor (ground.ts); in the air or dead, where the frames have them.
@@ -1905,10 +1919,12 @@ export class ViewerScene {
         ? MODEL_SCALE
         : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
-      if (g.visible !== show || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
+      const wasVisible = g.visible;
+      if (g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.position.set(x, y, z);
-      g.visible = show && !this.isEyes(index) && this.insideReveal(g.position);
-      p.label.visible = !dead && !this.opts.bare && (!p.actor || this.actorNames);
+      g.visible = (show || casualtyTag) && !this.isEyes(index) && this.insideReveal(g.position);
+      if (wasVisible !== g.visible) this.dirty = true;
+      p.label.visible = (!dead || casualtyTag) && !this.opts.bare && (!p.actor || this.actorNames);
       this.revealLabel(p);
       // Level again after a seat that leaned with its vehicle.
       turn.rotation.set(0, yaw, 0);
@@ -1949,7 +1965,31 @@ export class ViewerScene {
     this.drawShots(now, frame);
     if (this.effects.film(frame.filmEffects ?? [], still, this.insideReveal)) this.dirty = true;
     if (this.projectiles.update(now, this.insideReveal)) this.dirty = true;
-    if (this.effects.update(hits, still ? [] : frame.projectileTrails ?? [], S, still, this.insideReveal)) this.dirty = true;
+    const damage = this.damage === "off" ? [] : hits;
+    const confirmed = new Set<number>();
+    for (const hit of damage) {
+      if (!hit.kill) continue;
+      confirmed.add(hit.id);
+      if (this.confirmed.has(hit.id)) continue;
+      const name = (id: string | null, fallback: string) => {
+        const index = id === null ? null : entityIndex(id);
+        return index === null ? fallback : this.players.get(index)?.name ?? roster.get(index)?.name ?? fallback;
+      };
+      this.onKillConfirm?.({
+        id: hit.id, killer: name(hit.fromId, "Guardians"), victim: name(hit.toId, "Unknown player"),
+        weapon: weaponLabel(hit.weapon) || weaponLabel(hit.kind) || "Damage", expires: now + 3000,
+      });
+    }
+    this.confirmed = confirmed;
+    if (this.effects.update(damage, still ? [] : frame.projectileTrails ?? [], S, {
+      visible: this.insideReveal,
+      focused: index => index === this.followIndex || index === highlight,
+      colour: index => this.players.get(index)?.colour ?? roster.get(index)?.colour,
+      ring: index => {
+        const p = this.players.get(index);
+        return p?.group.visible && p.ring.visible ? { position: p.group.position, scale: p.ring.scale.x } : undefined;
+      },
+    })) this.dirty = true;
     frame.markers.forEach((m, i) => {
       const o = this.mark(i);
       const a = Math.max(0, Math.min(1, m.alpha));

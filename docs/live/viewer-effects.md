@@ -1,6 +1,6 @@
 # Damage and combat effects in the game viewer
 
-Status: Design. Nothing on this page is built; [web-viewer.md](web-viewer.md) states the damage numbers, muzzle flashes, tracers, hit lines and film sparks the viewer draws until it is.
+Status: Partly built. Damage bars, ticks and kill confirms are available. The shared combat-effects pool and derived effects are designs.
 Code: `web/src/viewer/effects3d.ts` (`Effects3D`), `web/src/viewer/projectiles.ts`, `web/src/map/events.ts` (`HitQueue`), `web/src/map/render.ts` (`drawHit`), `web/src/api/film-fx.ts`. Tests: `web/test/`.
 Switch: none. The address parameters `dmg` and `fx` and the `localStorage` keys `h2.viewer.damage` and `h2.viewer.fx` are listed in [viewer-overlay.md](viewer-overlay.md#interfaces).
 
@@ -26,20 +26,15 @@ victim's shield and body, on their tag, read from the frames' `body` and
 amount plus its shield amount ([live-telemetry.md](live-telemetry.md),
 "hits"; the report's layout is in [live-gamestate.md](live-gamestate.md),
 "Damage-aware alternative"). It is sent in 1/256 steps with no upper
-bound (`AMOUNT_SCALE`, `crates/live/live-proto/src/pack.rs`), and
-`hitText` (`web/src/map/events.ts`) multiplies it by 100 and prints it as
-a percentage of the victim's vitality. The report's two fields are marked
-"likely" vitality fractions, not confirmed, and recordings carry values in
-the tens (see [Evidence](#evidence)), which no fraction of one body can
-be. `amount` is therefore an unscaled weight to the viewer. The right
-scale is the share of the victim's vitality actually lost, and the frames
-already carry it exactly: `body` (0 to 1) and `shield` (0 to 4, above 1
+bound (`AMOUNT_SCALE`, `crates/live/live-proto/src/pack.rs`). The report's
+two fields have no confirmed unit. Recordings carry values in the tens
+(see [Evidence](#evidence)). The viewer sizes damage from the vitality
+change in the frame's `body` (0 to 1) and `shield` (0 to 4, above 1
 an overshield), read through the game's own health and shield getters
 ([live-telemetry.md](live-telemetry.md), "`body` and `shield`").
 
-**Vitals.** `SampledPlayer` (`web/src/state/frames.ts`) gains `body` and
-`shield`, held from the frame at or before the sampled tick (not
-interpolated: a hit is a step). `VitalsTrack` (`web/src/map/vitals.ts`,
+**Vitals.** `SampledPlayer` (`web/src/state/frames.ts`) holds `body` and
+`shield` from the frame at or before the sampled tick. A hit is a step. `VitalsTrack` (`web/src/map/vitals.ts`,
 pure, one per view like `EventFeed`) watches them per player and actor and
 returns, each frame:
 
@@ -62,7 +57,7 @@ interface Vitals {
 - `broken`: the shield reached 0 with the player alive. `recharging`: the
   shield is rising. `over`: the shield is above 1.
 
-**On the tag** (3D), under the name, the tag's width (44px at least):
+**On the tag** (`viewer/vitals3d.ts`), under the name, the tag's width (44px at least):
 
 ```
  [o Mendoza  BR]          [o Mendoza  BR]  62       [o Mendoza  BR]
@@ -90,13 +85,13 @@ interface Vitals {
 
 - **Direction tick.** A hit with a known attacker draws a 60° arc on the
   victim's ground ring, on the attacker's side, in `hitColour`'s colour,
-  fading over 450 ms. It replaces the hit marker sprite.
+  fading over 450 ms (`Effects3D`, `viewer/effects3d.ts`).
 - **Line.** The attacker-to-victim line (`HIT_LINE_MS`) is drawn only when
   the attacker or the victim is in focus (followed, or pointed at in the
   scoreboard), and for a kill.
 - **Kill confirm.** `HitQueue.markKills` decides it (a victim found dead while their marks are up). A kill
   draws the line in the killer's colour for 400 ms and a ringed cross at
-  the victim's chest for 900 ms (`KILL_MARK_MS` becomes 900). In full
+  the victim's chest for 900 ms (`KILL_MARK_MS`). In full
   screen, where the page's field report is hidden, the status strip gains
   a line per kill, `KILLER › weapon › VICTIM`, for 3 s, three at most.
 
@@ -121,9 +116,8 @@ reads the same value.
   The attacker-to-victim line follows the 3D rule (focus and kills).
 - A kill keeps the legend's knockout cross.
 - With numbers on, the burst's number sits after the dot's label.
-- `drawHit`'s floating text is removed. Mini maps draw no damage, as
-  `MapCanvas` has it (`props.mini`).
-- The tools row (`.s-map-tools`, `TacticalMap.tsx`) gains a **Damage**
+- Mini maps draw no damage (`MapCanvas`, `props.mini`).
+- The tools row (`.s-map-tools`, `TacticalMap.tsx`) has a **Damage**
   select with the three values.
 
 **Without vitals.** A recording whose frames carry no `body` or `shield`
@@ -131,10 +125,6 @@ reads the same value.
 draw the direction tick, the line under the focus rule, and the kill
 confirm. Vehicles have no vitality in the frames: a hit on one draws the
 tick only.
-
-`hitText`, `LiveHit.text`, `LiveHit.rise`, the `.v3-hit` label and
-`Effects3D`'s hit sprite are removed with their assertions in
-`web/test/anim.test.ts`.
 
 ### What a recording has
 
@@ -333,8 +323,8 @@ them.
   note under `docs/live/notes/` from `bun run bench:viewer`, and this
   table then links to it.
 
-**The switch.** The View menu's **Combat effects** row
-([viewer-overlay.md](viewer-overlay.md#the-overlay)): `OFF`, `LOW`,
+**The switch.** The effects pool design adds a **Combat effects** row
+to the [View menu](viewer-overlay.md#the-overlay): `OFF`, `LOW`,
 `HIGH`. `HIGH` is the default, `LOW` under `pointer: coarse`. It is
 `?fx=` in the address and `h2.viewer.fx` in `localStorage`. It is not the
 **Show** menu's **Effects** row, which is the level's own glows and lift
@@ -365,13 +355,11 @@ lines already there say as much. Mini maps draw none.
 
 ## Build order
 
-Damage first, then the derived effects; the two that need the game last. Each is one
-branch, with the pure module and its `bun test` file first. Slice numbers
-continue [viewer-overlay.md](viewer-overlay.md#build-order)'s.
+The shared pool supports the derived effects. Vehicle destruction and
+camouflage also depend on new telemetry.
 
 | # | Slice | Files | Tests that prove it |
 |---|---|---|---|
-| 5 | Damage | new `map/vitals.ts`; `state/frames.ts` (`body`, `shield`); `map/events.ts`, `map/render.ts`; `viewer/effects3d.ts`, `viewer/scene.ts` (tag bars); `components/MapCanvas.tsx`, `map/ViewMap.tsx`, `viewer/TacticalMap.tsx`; `viewer/viewer.css` | `vitals.test.ts`: drops 500 ms apart are one burst and 700 ms apart two; `lost` is 100 for a kill from full; break, recharge and overshield states; a drop with no hit has no direction; frames without vitals give no bars; the pref reads the address before storage. `frames.test.ts`: `body` and `shield` are held, not interpolated. `anim.test.ts`: the kill mark's life, and no `text` on a live hit |
 | 6 | The pool and the switch | new `viewer/fx.ts` (types, the pref), `viewer/fx3d.ts`; `viewer/scene.ts` (update section: one `FxPool`, the auto-drop); `Viewer3D.tsx` (the menu row, `?fx=`) | `fx.test.ts`: the pref reads the address before storage and defaults by pointer; the ring buffer reuses its oldest; the flash limiter passes three a second; a JS mirror of the vertex shader's placement gives `pos + vel × age` and ends at `life` |
 | 7 | Shields | `viewer/fx.ts` (shield events from `VitalsTrack`), `viewer/fx3d.ts` (the shell), `viewer/scene.ts` | `fx.test.ts`: a drop gives one flare with the attacker's direction and re-arms no sooner than 90 ms; reaching 0 gives one break; rising gives a recharge that ends at full; above 1 an overshield; frames without vitals give nothing |
 | 8 | Muzzle, tracer ends, film effects | `viewer/fx3d.ts`, `viewer/effects3d.ts` (`film` through the pool), `viewer/scene.ts` (shots) | `fx.test.ts`: a `fire` mask gives a flash per set tick; a film `blast`, `impact` and `terminal` each map to their look; `film-poses.test.ts` stays green |
@@ -382,8 +370,8 @@ continue [viewer-overlay.md](viewer-overlay.md#build-order)'s.
 | 13 | Vehicle `destroyed` | `crates/live/live-telemetry/src/hooks.rs` and `event.rs`, `crates/live/live-proto/src/game.rs` and `pack.rs`, `web/src/api/pack.ts` and `types.ts`, `viewer/fx.ts`; [live-telemetry.md](live-telemetry.md) | `live-proto` pack round-trip and frame-size tests with an `fx` list; `pack.test.ts` reads it and an older reader skips it; `fx.test.ts`: a `destroyed` event is an explosion at the vehicle, 1.8 times a grenade's |
 | 14 | `camo` | the research point first; then the same files as 13, `viewer/players3d.ts` (the material) | the same pack tests for the field; `fx.test.ts`: a biped with `camo` is drawn at its opacity and its tag reads `CAMO` |
 
-Slice 5 stands alone and ships first. Slices 7 to 11 need slice 6 and
-slice 5's `VitalsTrack`. Slices 13 and 14 are the only ones that touch the game.
+Shield effects read `VitalsTrack`. Vehicle destruction and camouflage
+are the only effects that require changes in the game.
 
 ## Interfaces
 
@@ -418,13 +406,14 @@ slice 5's `VitalsTrack`. Slices 13 and 14 are the only ones that touch the game.
 
 ## Evidence
 
-- **Code** `web/src/api/types.ts` `FramePlayer.body`, `.shield`; no field
-  of `SampledPlayer` carries them.
-- **S** A hit's `amount` is not a fraction of one vitality: a Lockout
-  recording printed 2222, 3888 and 4721 over three victims, which
-  `hitText` makes from amounts of 22 to 47. What would verify the scale:
-  on one recording, compare each hit's `amount` with the victim's `body +
-  shield` drop across the frames either side of it.
+- **Code** `web/src/state/frames.ts` holds `body` and `shield` in each sampled
+  player and AI biped.
+- **Test** `web/test/vitals.test.ts` covers bursts and preferences,
+  `web/test/frames.test.ts` covers held samples, and
+  `web/test/anim.test.ts` covers hit and kill lifetimes.
+- **S** A recording carries hit amounts in the tens. To establish their
+  unit, compare `amount` with the actual vitality drop in the frames
+  on either side of each hit.
 - **Code** `web/src/api/film-fx.ts` `applyFilmEffects`: the film's
   `WeaponFire`, `Impact` and `ProjectileEnded` become `barrel`, `impact`
   or `blast`, and `terminal`.

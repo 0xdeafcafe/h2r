@@ -74,8 +74,6 @@ html.gv-locked, html.gv-locked body { overflow: hidden; }
 .v3-tag[data-lod="pip"] .v3-tag-plate { visibility: hidden; pointer-events: none; }
 .v3-tag[data-lod="pip"] .v3-pip { display: grid; }
 @media (prefers-reduced-motion: reduce) { .v3-tag { transition: none; } .v3-label--revealed { animation: none; } }
-.v3-hit { font: 700 12px/1 var(--font-ui, system-ui, sans-serif); white-space: nowrap; text-shadow: 0 0 2px #000, 0 1px 2px #000, 0 0 4px rgba(0, 0, 0, .8); pointer-events: none; user-select: none; }
-.v3-hit--kill { font-size: 16px; }
 .v3:focus { outline: none; }
 .v3:focus-visible { outline: 1px solid #56aacd; outline-offset: -1px; }
 
@@ -94,3 +92,18 @@ html.gv-locked, html.gv-locked body { overflow: hidden; }
   .vo-menu { top: 44px; max-height: calc(100% - 52px); }
   .vo-menu-title, .vo-row { min-height: 32px; }
 }
+
+
+.v3-tag:has(.v3-vitals:not([hidden])) { min-width: 44px; }
+.v3-tag[data-lod="pip"] .v3-vitals { visibility: hidden; }
+.v3-vitals { pointer-events: none; background: rgba(0, 0, 0, .6); }
+.v3-vitals > div { position: relative; height: 2px; }
+.v3-vitals .v3-vitals-shield { height: 3px; }
+.v3-tag .v3-vitals i { position: absolute; top: 0; height: 100%; border: 0; border-radius: 0; background: #8fd4ff; }
+.v3-tag .v3-vitals-over i { background: #9dffb0; }
+.v3-tag .v3-vitals i + i { background: rgba(223, 243, 255, .8); }
+.v3-vitals-break { background: #f2452e; }
+.v3-tag .v3-tag-plate.v3-vitals-flare { border-color: #dff3ff; }
+.v3-vitals-number { margin-left: auto; color: #dff3ff; font-variant-numeric: tabular-nums; }
+.v3-vitals-number:empty { display: none; }
+.vo-kill { overflow-wrap: anywhere; }
