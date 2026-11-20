@@ -21,6 +21,9 @@ const HIT_TIME: u32 = 0x0c;
 const FOCUS_HANDLE: u32 = 0x10;
 const FOCUS_TIME: u32 = 0x14;
 const APPLIED_BODY_DAMAGE: u32 = 0x28;
+/// The muzzle-report latch `reports` owns within the same 24-byte row
+/// (`campaign_squad_pool::ACTOR_STATE_SIZE`).
+const REPORT_LATCH: u32 = 0x18;
 const DAMAGE_GRACE: u32 = 60;
 const DAMAGE_DECAY: f32 = 1.0 / 60.0;
 const NO_HIT: u32 = u32::MAX;
@@ -81,11 +84,11 @@ fn ordinary([seconds, damage]: [f32; 2], focused: contact::Contact, now: u32, re
     time_ok && (!(damage > 0.0) || !(recent < damage))
 }
 
-fn actor_row(m: &dyn GuestMemory, actor: actors::Actor) -> R<Option<u32>> {
+pub(super) fn actor_row(m: &dyn GuestMemory, actor: actors::Actor) -> R<Option<u32>> {
     campaign_squad_pool::actor_state(m, DatumHandle(actor.handle).index())
 }
 
-fn reset_row(m: &mut dyn GuestMemory, row: u32, actor: actors::Actor) -> R<()> {
+pub(super) fn reset_row(m: &mut dyn GuestMemory, row: u32, actor: actors::Actor) -> R<()> {
     if m.u32(row)? != actor.handle {
         m.set_u32(row, actor.handle)?;
         m.set_u32(row + FLAG_ALERT, 0)?;
@@ -93,6 +96,9 @@ fn reset_row(m: &mut dyn GuestMemory, row: u32, actor: actors::Actor) -> R<()> {
         m.set_u32(row + HIT_TIME, NO_HIT)?;
         m.set_u32(row + FOCUS_HANDLE, NONE)?;
         m.set_u32(row + FOCUS_TIME, NONE)?;
+        // The report latch at +0x18 belongs to this actor's unit, like the
+        // alert bits Halo 1 keeps on the unit object.
+        m.set_u32(row + REPORT_LATCH, 0)?;
     }
     Ok(())
 }

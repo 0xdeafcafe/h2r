@@ -15,6 +15,7 @@ mod follow_geometry;
 mod platoons;
 mod playfight;
 mod preference;
+mod reports;
 mod speech;
 #[path = "h1_ai_control/squads.rs"]
 mod squad_control;
@@ -115,6 +116,7 @@ impl feature::Feature for AiControl {
         uncover::register_playfight_hook(b);
         uncover_limits::register(b);
         uncover_targetless::register(b);
+        reports::register(b);
         teleport::register_spawn_hook(b);
         b.raw().before(
             &points::AI_SUBMIT_UNIT_CONTROL,
