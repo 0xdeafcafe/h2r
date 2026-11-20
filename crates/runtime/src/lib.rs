@@ -8,6 +8,9 @@ pub mod atomic;
 mod continuation;
 #[allow(unsafe_code)]
 mod cow;
+#[allow(unsafe_code)]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+mod flat;
 pub mod cpu;
 #[allow(unsafe_code)]
 pub mod direct;

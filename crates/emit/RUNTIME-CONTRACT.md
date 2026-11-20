@@ -125,6 +125,63 @@ mock host returns null; generated/runtime tests install the real view and
 cover mapping changes, permissions, aliases, every width, fault transactions,
 access budgets, host concurrency and replacement of the backing Guest.
 
+#### Opt-in flat RAM and first-write faults
+
+Set `H2_FLAT_RAM=1` for both the image build and execution on macOS or
+x86-64 Linux. The generated image needs a rebuild. Run the same image with
+`H2_FLAT_RAM=0` for the ordinary page-table path. With flat RAM enabled,
+`H2_FLAT_WRITE_WATCH=0` keeps the software dirty barrier on watched stores.
+
+Each Guest reserves a 4 GiB virtual window with a guard page at either end.
+The OS picks a stable base per live RAM backing. macOS maps shared aliases
+of that backing with Mach VM. Linux uses a memfd for the opted-in physical
+allocation. Bit 31 of the legacy `watching` word advertises a view appended
+after the 2080-byte v1 prefix on 64-bit hosts. Bit 0 retains its meaning.
+A full 4 KiB page with a matching flat alias has bit 3 in its page-table
+permissions. The low three permission bits retain their ABI meaning.
+An image first checks the capability under the gate before reading the suffix.
+
+For eligible reads and unwatched writes, the byte address is
+`flat_base + guest_va`. A 16 KiB host maps one physical host page per guest
+host-page-sized group. Only 4 KiB entries that match that physical mapping
+can use it. The emitter can check one span for multiple accesses derived
+from the same unchanged register and constant displacements. That span must
+fit in one guest page with all requested permissions. Each access executes
+and charges in IR order. Selectors, changes to the base, calls, atomics,
+conditionals, REP and faulting intrinsics end a group. A rejected group
+executes each original access, including any MMIO and precise faults.
+Compiler memory barriers order accesses through different aliases.
+
+While a write watch is active, eligible generated stores use a protected
+shared alias of **physical** RAM. On a 4 KiB host this takes one 64 MiB
+virtual window. On a 16 KiB host it takes four. Physical page `p` is
+written through window `p % 4`, so opening a 16 KiB host page admits
+writes to exactly one guest subpage through that window. All guest VAs for
+that physical page choose the same window. Only watched pages awaiting a
+write need protection. Their first store faults, opens
+the host page with `mprotect`, records the physical page, and retries.
+Same-value writes count. Repeated stores have no software dirty mark.
+
+The opt-in runtime installs a process-wide SIGBUS handler on macOS or
+SIGSEGV handler on Linux when it first creates a protected store view.
+It inspects the saved data-write exception and the fault address, and
+forwards unowned faults to the prior disposition. Darwin supplies the fault
+address in SIGBUS signal info. [XNU signal delivery on arm64](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/dev/arm/unix_signal.c).
+The handler stays
+installed for the process lifetime. Hosts that manage these signals
+can select the software dirty barrier. Mapping or watch setup failure
+retains the existing generated accessors for affected accesses.
+
+The next Rust memory guard publishes first writes before exposing Guest.
+After a drain or a subscription change it re-protects open pages for
+which an interested subscriber still needs a mark. Contiguous pages of
+the same window share a protection call. Host writes, REP chunks and
+atomics keep their existing physical write notifications. Installing a
+census trap suspends flat accesses. Mapping changes refresh affected host
+pages under the same gate. Guest replacement and COW refresh retire the
+old window. Snapshot restore rebuilds the translations and reports
+restored pages through the existing watch.
+
 ### 1.2 Atomics: `h2abi_v1_atomic_rmw`, `h2abi_v1_xchg`, `h2abi_v1_cmpxchg` (existing)
 
 Every supported LOCK-prefixed instruction (all but `lock adc`/`lock sbb`,
