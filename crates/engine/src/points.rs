@@ -319,6 +319,10 @@ points! { ALL;
     SIM_GRAPH_RESOLVE @ 0x001d_d9d0: [fn(graph: edx, clip: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     SIM_MARKER_TRANSFORMS @ 0x000b_8d30: [fn(out: ebx, object: stack 0, name: stack 1, capacity: stack 2) -> eax ret 12], Hot; "docs/perf/sim-budget.md";
     COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
+    /// BSP vector test: one segment through a collision BSP into the result record.
+    COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// Location of a point in the structure BSP: leaf, cluster, BSP index.
+    COLLISION_LOCATION @ 0x0011_bed0: [fn(point: edx, out: esi) ret 0], Hot; "docs/engine/collision-queries.md";
     SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";
     BASE_OBJECT_IMPORT @ 0x000b_cc20: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     SIM_MOPP_BOX @ 0x002f_f8b0: [fn(query: ecx, state: stack 0, program: stack 1) ret 8], Hot; "docs/perf/sim-budget.md";

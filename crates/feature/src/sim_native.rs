@@ -118,7 +118,13 @@ impl Feature for SimNative {
         let query_on = b
             .switches()
             .implementation("sim.native_collision_query", false);
+        let collision = collision_on(b.switches());
         for &(point, name, body) in ENTRIES {
+            // The subsystem switch owns its entries; their per-function
+            // ports stay as test oracles.
+            if collision && COLLISION_ENTRIES.iter().any(|(p, _)| p.base == point.base) {
+                continue;
+            }
             let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
             let completes_descriptor =
                 descriptor_on && point.base == points::BASE_OBJECT_IMPORT.base;
@@ -158,11 +164,20 @@ impl Feature for SimNative {
         if anim {
             install_anim(b);
         }
-        // The clip store is derived from guest memory and holds no state of
-        // its own; a load only has to invalidate it.
-        b.snapshot(if anim {
-            SnapshotPolicy::section(Vec::new, |_, _| {
-                engine::sim_anim::invalidate();
+        if collision {
+            install_collision(b);
+        }
+        // The clip store and the collision world are derived from guest
+        // memory and hold no state of their own; a load only has to
+        // invalidate them.
+        b.snapshot(if anim || collision {
+            SnapshotPolicy::section(Vec::new, move |_, _| {
+                if anim {
+                    engine::sim_anim::invalidate();
+                }
+                if collision {
+                    engine::sim_collision::invalidate();
+                }
                 Ok(())
             })
         } else {
@@ -226,6 +241,69 @@ fn install_anim(b: &mut Builder) {
     }
 }
 
+/// `impl.sim.native.collision`: the collision world, phase 2 of the
+/// simulation rewrite (docs/engine/collision-queries.md). It takes over
+/// point to leaf, the structure location, and the BSP vector test with
+/// everything under it, so the per-function `native_point_to_leaf` and
+/// `native_bsp_segment` ports are test oracles while it is on.
+pub const COLLISION: &str = "sim.native.collision";
+
+fn collision_on(switches: &crate::Switches) -> bool {
+    switches.implementation(COLLISION, false)
+}
+
+type CollisionBody = fn(
+    &mut CpuAbi,
+    &mut Guest,
+    &engine::sim_collision::CollisionWorld,
+) -> Result<Option<TransferAbi>, GuestFault>;
+
+const COLLISION_ENTRIES: [(&points::Point, CollisionBody); 4] = [
+    (
+        &points::COLLISION_POINT_TO_LEAF,
+        engine::sim_collision::point_to_leaf,
+    ),
+    (&points::COLLISION_LOCATION, engine::sim_collision::location),
+    (
+        &points::COLLISION_VECTOR_TEST,
+        engine::sim_collision::vector_test,
+    ),
+    (
+        &points::COLLISION_BSP_SEGMENT,
+        engine::sim_collision::vector_context,
+    ),
+];
+
+/// Points after which the collision BSPs in guest memory may differ from
+/// the decoded ones: map load and structure switch (snapshot load is the
+/// section's `load`). Checkpoint revert and restore leave tag data alone.
+const COLLISION_INVALIDATE: [(&points::Point, &str); 2] = [
+    (&points::CACHE_TAGS_LOAD, "collision-invalidate-map"),
+    (&points::BSP_SWITCH, "collision-invalidate-bsp"),
+];
+
+fn install_collision(b: &mut Builder) {
+    for (point, body) in COLLISION_ENTRIES {
+        b.raw()
+            .implement(point, COLLISION, move |cpu, ctx, addr| {
+                if addr == point.base && sim::supported(cpu) {
+                    let mut mem = ctx.memory();
+                    if let Some(transfer) =
+                        body(cpu, &mut *mem, &engine::sim_collision::WORLD)?
+                    {
+                        return Ok(transfer);
+                    }
+                }
+                original(cpu, ctx, addr)
+            })
+            .context_only();
+    }
+    for (point, label) in COLLISION_INVALIDATE {
+        b.raw()
+            .observe_before(point, label, |_| engine::sim_collision::invalidate());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +357,53 @@ mod tests {
             assert!(plan.chains.is_empty(), "{key}");
             assert!(plan.save_sections().is_empty());
         }
+    }
+
+    #[test]
+    fn collision_takes_its_entries_and_invalidates_on_reload() {
+        let key = format!("impl.{COLLISION}");
+        let mut registry = Registry::new(Switches::defaults().with(&key, true));
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for (point, _) in COLLISION_ENTRIES {
+            let chain = &plan.chains[&point.base];
+            assert_eq!(chain.implement.as_ref().unwrap().label, COLLISION);
+        }
+        for (point, label) in COLLISION_INVALIDATE {
+            let chain = &plan.chains[&point.base];
+            assert!(chain.implement.is_none());
+            assert_eq!(chain.observe_before.len(), 1, "{label}");
+        }
+        assert_eq!(
+            plan.chains.len(),
+            COLLISION_ENTRIES.len() + COLLISION_INVALIDATE.len()
+        );
+        assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
+
+        // With the per-function ports also on, the subsystem owns the
+        // shared points and the other ports still install.
+        let switches = Switches::defaults()
+            .with(&key, true)
+            .with("impl.sim.native_point_to_leaf", true)
+            .with("impl.sim.native_bsp_segment", true)
+            .with("impl.sim.native_geometry_test", true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for point in [&points::COLLISION_POINT_TO_LEAF, &points::COLLISION_BSP_SEGMENT] {
+            let chain = &plan.chains[&point.base];
+            assert_eq!(chain.implement.as_ref().unwrap().label, COLLISION);
+        }
+        let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
+        assert_eq!(
+            geometry.implement.as_ref().unwrap().label,
+            "sim.native_geometry_test"
+        );
+
+        // Off by default.
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative { ray_dispatch: true }).unwrap();
+        assert!(registry.build(&Base).unwrap().chains.is_empty());
     }
 
     #[test]
