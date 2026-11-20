@@ -367,13 +367,12 @@ for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
 references (HUD, effects, sounds, melee damage) fill the slots Halo 1
 has nothing converted for.
 
-**Vehicles have no template since converter version 49**: every Halo 1
-vehicle is built from the `vehi` definition, with its friction and hover
-points from Halo 1's powered mass points and its gears from its type's
-role ([tag-definitions.md](../formats/tag-definitions.md), "Every vehicle from
-definitions"). The vehicle rows described below (warthog, ghost,
-scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
-the lifepods' quiet stand-in are history, kept for the record.
+**Built. Vehicle drive.** Each vehicle comes from the `vehi` definition.
+H1 powered mass points supply ordered friction or hover contacts. Wheeled
+and tracked vehicles drive those contacts directly. H1 physics and globals
+supply tire drag and material response. The aircraft controller follows the
+source type and physics. The vehicle template rows below describe earlier
+converter versions. [Drive laws and XBE evidence](role-audit.md#native-engine-fields).
 
 **Lifepod engine audio. Built.** The a30 entry pod attaches the Halo 1
 `sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
@@ -417,8 +416,8 @@ body. Halo 1 supplies mass, center of mass and inertia.
 **Built** for the lifepods. The flying pods use Halo 1's type 5, model,
 collision, seats and flight rates. Where Halo 1 supplies `phys` (the
 plain pod and a30 entry pod), the collision-derived rigid body keeps its
-mass, center of mass and inertia tensor. The axis limits and accelerations
-feed the native vehicle functions at `0x000f32f5` and `0x000f3562` (E).
+mass, center of mass and inertia tensor. The flight hook applies H1's positive-radius lifepod controller at
+`0x37760` when the source supplies two powered groups.
 The docked pod keeps its stationary body and source lights. a30's entry pod
 attaches its own `lifeboat` loop, including the source track samples,
 through `h1sounds::looping`, and its reentry fire through the native
@@ -1088,9 +1087,9 @@ speed (Halo 1's are slower than the Halo 2 templates').
 - **Vitality:** Halo 1 `coll` body and shield vitality
   and its damage modifiers; Halo 2 keeps damage in the `hlmt`, whose
   layout is not reviewed. The template's damage info stays.
-- **Unit and vehicle tuning:** speeds, acceleration, seats, cameras,
-  boarding; `bipd`/`vehi` keep the template's. Halo 1 `phys` (mass points)
-  is read but not used: the template's `phmo` is.
+- **Unit and vehicle tuning.** The original template gap is closed for
+  driving. The rebuilt vehicle uses H1 speeds, seat data, mass points and
+  inertia. [Current mappings](role-audit.md#native-engine-fields).
 - **Weapon:** ready time, chamber time, charging (plasma pistol), firing
   effects and sounds. The [HUD conversion](hud.md#weapon-huds) covers
   the weapon panel and crosshairs. Scope masks need the screen effect

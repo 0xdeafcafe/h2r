@@ -371,7 +371,7 @@ pub const DENSITY: f32 = 28_317.0;
 pub enum PhysicsKind {
     /// One body from the collision hulls or source mass points. Its wheels and
     /// treads are held in the body above the hull's lowest point
-    /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
+    /// ([`held_wheels`]),
     /// else left out.
     Vehicle { wheels: bool },
     /// A scripted flyer, built from its collision or its own mass
@@ -666,34 +666,6 @@ struct PoweredPoint {
     point: crate::rebuild::Point,
     node: i16,
     position: [f32; 3],
-    /// The point's object-space position (x forward, y left).
-    object: [f32; 3],
-}
-
-/// The order to write a vehicle's friction points in: point `i` of the
-/// result corresponds to target position `i`.
-/// Each sphere in turn takes the nearest point not yet taken (object
-/// space); points past the last sphere follow in their own order. V: the
-/// engine reads friction point `i`'s suspension from the phantom's sphere
-/// `i` (the per-point loop at `0x2067dd` takes its compression from
-/// contact slot `i`, `0x207ab0`), so a point paired with a sphere at the
-/// other end of the vehicle pushes up where the other end sinks. Halo 1's
-/// warthog lists its back tires first and the retail spheres run front
-/// first; so paired, the converted warthog pitched onto its nose at spawn
-/// (forward z -0.93) and stood level once paired by position (forward z
-/// 0.08 and 0.14 on Blood Gulch's slopes, both warthogs).
-pub fn sphere_order(points: &[[f32; 3]], spheres: &[[f32; 3]]) -> Vec<usize> {
-    let mut left: Vec<usize> = (0..points.len()).collect();
-    let mut out = Vec::with_capacity(points.len());
-    for s in spheres {
-        let d = |i: &usize| (0..3).map(|a| (points[*i][a] - s[a]).powi(2)).sum::<f32>();
-        let Some(k) = (0..left.len()).min_by(|a, b| d(&left[*a]).total_cmp(&d(&left[*b]))) else {
-            break;
-        };
-        out.push(left.remove(k));
-    }
-    out.extend(left);
-    out
 }
 
 /// Adds a marker per powered point to a Halo 1 model before conversion:
@@ -805,9 +777,6 @@ pub struct Converter<'a> {
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
     /// `schi`, permutation, loaded maximum).
     counter_shaders: HashMap<(u32, i16, Option<i16>), Option<TagId>>,
-    /// Vehicle role words, per vehicle type and powered point count
-    /// ([`Self::vehicle_role`]).
-    vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
     /// Converted sounds and looping sounds by Halo 1 tag, as indices
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
     sound_index: HashMap<u32, usize>,
@@ -850,7 +819,6 @@ impl<'a> Converter<'a> {
             cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             counter_shaders: HashMap::new(),
-            vehicle_roles: HashMap::new(),
             sound_index: HashMap::new(),
             loop_index: HashMap::new(),
             particle_shaders: None,
@@ -2234,11 +2202,7 @@ impl<'a> Converter<'a> {
             None => Vec::new(),
         };
         let scripted = scripted_props::ScriptedVehicle::of(&tag.name);
-        let role = self.vehicle_role(vehicle_type, powered.len())?;
-        if role.is_none()
-            && scripted.is_none()
-            && u32::from(vehicle_type) != crate::rebuild::ROLE_VEHICLE_TYPE
-        {
+        if !matches!(vehicle_type, 0 | 1 | 3 | 4 | 5 | 6) {
             return Err(h1convert::Error::no_rebuild(
                 &self.h1.header().name,
                 &tag.name,
@@ -2246,20 +2210,24 @@ impl<'a> Converter<'a> {
             )
             .into());
         }
+        let hover = powered
+            .iter()
+            .filter(|p| p.point.antigravity.is_some())
+            .count();
+        if hover != 0 && hover != powered.len() {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                "mixed antigravity and friction powered points",
+            )
+            .into());
+        }
+        let wheels = vehicle_type == 0;
         let mut rep = Self::report(
             tag,
-            &match &role {
-                Some(r) => format!(
-                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, native controller {})",
-                    r.member
-                ),
-                None => format!(
-                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}; the base has none of the type: turret role)"
-                ),
-            },
+            "none: rebuilt from source vehicle type and powered mass points",
         );
         let hlmt = self.model(&mut rep, &u.object, &tag.name, None)?;
-        let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
         let kind = match scripted {
             Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
             Some(scripted_props::ScriptedVehicle::Flyer) => PhysicsKind::ScriptedFlyer,
@@ -2311,24 +2279,7 @@ impl<'a> Converter<'a> {
             names.camera_track = Some(self.camera_track(self.h1_tag(t)?)?);
             tracks += 1;
         }
-        let points: Vec<crate::rebuild::Point> = {
-            // Keep wheels in H1 order for both friction points and spheres.
-            // Hover controls with a coefficient set per marker use the
-            // closest source point to each native marker.
-            let spheres = match &role {
-                Some(r)
-                    if r.friction.is_none()
-                        && r.hover.is_some()
-                        && r.hover_at.len() == powered.len() =>
-                {
-                    r.hover_at.clone()
-                }
-                _ => Vec::new(),
-            };
-            let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
-            let order = sphere_order(&at, &spheres);
-            order.into_iter().map(|i| powered[i].point.clone()).collect()
-        };
+        let points: Vec<_> = powered.into_iter().map(|p| p.point).collect();
         let weapons = self.unit_weapons(b, &mut rep)?;
         let mut references = Vec::new();
         for (path, at) in [("snd_ref_284", 0x3b0), ("ref_28c", 0x3c0),
@@ -2351,6 +2302,20 @@ impl<'a> Converter<'a> {
         let physics = u.object.physics.map(|id| {
             h1::tag_bytes(self.h1, self.h1_tag(id)?, b"phys", h1::PHYS_SIZE)
         }).transpose()?;
+        let fail = |e| h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e);
+        let contacts = if !points.is_empty() && hover == 0 {
+            Some(
+                h1::GroundContacts::read(
+                    self.h1,
+                    physics.ok_or(Error::Truncated("wheel physics"))?,
+                    &self.base.materials,
+                )
+                .map_err(fail)?,
+            )
+        } else {
+            None
+        };
+        let power = h1::powered_seats(self.h1, b).map_err(fail)?;
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 source: b,
@@ -2368,13 +2333,14 @@ impl<'a> Converter<'a> {
                 vehicle_type,
                 flags,
                 weapons: &weapons,
-                role: role.as_ref(),
+                contacts: contacts.as_ref(),
+                seat_power: &power,
                 points: &points,
             }, scripted.and_then(|kind| kind.flight_tuning(b)))
         });
-        let root = root?;
+        let root = root.map_err(fail)?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the native contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; source contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -2413,27 +2379,6 @@ impl<'a> Converter<'a> {
         );
         self.done.insert(tag.id.0, id);
         Ok(id)
-    }
-
-    /// The vehicle type's role over the base's vehicles of that type
-    /// whose friction and hover points are nearest `points`, Halo 1's
-    /// powered mass points ([`crate::rebuild::vehicle_role`]), computed
-    /// once per type and count. The turret type keeps the disc-wide
-    /// seat entry thresholds and an empty phantom: `None`.
-    pub fn vehicle_role(
-        &mut self,
-        vehicle_type: u16,
-        points: usize,
-    ) -> Result<Option<crate::rebuild::VehicleRole>> {
-        if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
-            return Ok(None);
-        }
-        if let Some(w) = self.vehicle_roles.get(&(vehicle_type, points)) {
-            return Ok(w.clone());
-        }
-        let w = crate::rebuild::vehicle_role(self.base, vehicle_type, Some(points))?;
-        self.vehicle_roles.insert((vehicle_type, points), w.clone());
-        Ok(w)
     }
 
     /// Halo 1's powered mass points (`phys` mass points with a powered
@@ -2484,6 +2429,21 @@ impl<'a> Converter<'a> {
         );
         let mut out: Vec<PoweredPoint> = Vec::new();
         for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            let flags = phys
+                .powered_flags
+                .get(m.powered_mass_point as usize)
+                .copied();
+            if !matches!(flags, Some(1 | 0x40)) {
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &self.h1_tag(p)?.name,
+                    format!(
+                        "mass point {} has unsupported powered group flags {flags:?}",
+                        m.name
+                    ),
+                )
+                .into());
+            }
             // Every point rides the root node, not its own. A wheel's or
             // tread's node turns and rises with the spin and suspension
             // animations, and a contact point that moves with it pushes
@@ -2500,10 +2460,7 @@ impl<'a> Converter<'a> {
             // The region is unchanged by that: a gripping point's is the
             // root node's collision region (as through version 92), any
             // other point's its own node's.
-            let grips = phys
-                .powered_flags
-                .get(m.powered_mass_point as usize)
-                .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0);
+            let grips = flags == Some(h1::POWERED_GROUND_FRICTION);
             let own = if grips {
                 0
             } else if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
@@ -2537,7 +2494,12 @@ impl<'a> Converter<'a> {
                 .unwrap_or_default();
             let marker = crate::coll::sid_name(&m.name);
             if out.iter().any(|p| p.point.marker == marker) {
-                continue;
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &self.h1_tag(p)?.name,
+                    format!("duplicate powered mass point marker {marker}"),
+                )
+                .into());
             }
             let region_index = model
                 .regions
@@ -2557,7 +2519,6 @@ impl<'a> Converter<'a> {
                 },
                 node,
                 position: local,
-                object: m.position,
             });
         }
         Ok(out)
@@ -2845,7 +2806,13 @@ impl<'a> Converter<'a> {
         if has {
             return Ok(true);
         }
-        let (phmo, how) = match self.built_physics(obj, kind)? {
+        let physics = self.built_physics(obj, kind).map_err(|e| match kind {
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer => {
+                h1convert::Error::no_rebuild(&self.h1.header().name, name, e).into()
+            }
+            _ => e,
+        })?;
+        let (phmo, how) = match physics {
             Some((block, how)) => (block, how),
             None if matches!(kind, PhysicsKind::Vehicle { .. }) => {
                 return Err(h1convert::Error::no_rebuild(
@@ -2905,7 +2872,10 @@ impl<'a> Converter<'a> {
         let Some(m) = obj.model else {
             return Ok(None);
         };
-        let source = if kind == PhysicsKind::ScriptedFlyer {
+        let source = if matches!(
+            kind,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer
+        ) {
             obj.physics
                 .map(|p| self.h1_tag(p))
                 .transpose()?
@@ -2923,12 +2893,11 @@ impl<'a> Converter<'a> {
             ) {
                 return Ok(None);
             }
-            let Some(id) = obj.physics else {
+            let Some((physics, mass)) = &source else {
                 return Ok(None);
             };
-            let (physics, mass) = scripted_props::mass_properties(self.h1, self.h1_tag(id)?)?;
             Ok(Some((
-                scripted_props::mass_point_physics(&model, &physics, &mass)?,
+                scripted_props::mass_point_physics(&model, physics, mass)?,
                 "built from Halo 1's phys: one body with source mass point spheres".into(),
             )))
         };
@@ -2984,7 +2953,7 @@ impl<'a> Converter<'a> {
                         .transpose()?,
                 };
                 // Wheels and treads are held above the hull's lowest
-                // point where the role's physics models have them (the
+                // point for the tracked chassis (the
                 // scorpion's treads), else left out (the warthog's tires):
                 // Halo 2 holds a vehicle up on its friction points
                 // (springs at the wheel markers) and its body rides clear
@@ -3020,7 +2989,7 @@ impl<'a> Converter<'a> {
                 }
                 if !hold && !wheel_parts.is_empty() {
                     wheels_note = format!(
-                        " ({} wheel and tread nodes left out: the role's physics models have no wheel shapes)",
+                        " ({} wheel and tread nodes carried by suspension contacts)",
                         wheel_parts.len()
                     );
                 }
@@ -3553,9 +3522,8 @@ pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16>
         .collect()
 }
 
-/// A vehicle's wheels and treads in its body, where its role's physics
-/// models have wheel shapes ([`crate::rebuild::VehicleRole::wheel_shapes`];
-/// object space, `wheels` one list of convex pieces per wheel node): each node's pieces cut at `floor`,
+/// Solid pieces of the tracked chassis, cut at the hull floor. The input
+/// holds one list of object-space convex pieces per wheel node. At `floor`,
 /// the lowest point of the rest of the body, and what is left enclosed in
 /// one piece; a node with nothing above `floor` gives none.
 ///

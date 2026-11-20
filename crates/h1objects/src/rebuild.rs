@@ -654,22 +654,6 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     }
 }
 
-/// Native contact and flight parameters selected by type and point count.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct VehicleRole {
-    pub member: String,
-    pub controller: Vec<(String, u32)>,
-    /// Native tire/tread coefficients, separated by steering.
-    pub friction: Option<Vec<(String, u32)>>,
-    pub friction_steered: Option<Vec<(String, u32)>>,
-    pub hover: Option<Vec<(String, u32)>>,
-    /// Per-point lift controller coefficients and rest-pose marker positions.
-    pub hover_each: Vec<Vec<(String, u32)>>,
-    pub hover_at: Vec<[f32; 3]>,
-    /// Whether the H2 wheel/tread controller carries solid wheel shapes.
-    pub wheel_shapes: bool,
-}
-
 /// `vehi +0x1f2`, the 16 bits after `vehicle_type`: how the driver's
 /// stick drives the vehicle, selected by source type. V,
 /// every `vehi` on the retail disc: 2 on the scorpion (the one type 0) and
@@ -737,97 +721,6 @@ pub struct Point {
     pub steered: bool,
 }
 
-/// Candidate controllers with the closest contact count to the H1 vehicle.
-/// The caller chooses by tag path when counts tie.
-pub fn nearest_members(counts: &[usize], points: usize) -> Vec<usize> {
-    let Some(best) = counts.iter().map(|c| c.abs_diff(points)).min() else {
-        return Vec::new();
-    };
-    (0..counts.len())
-        .filter(|&i| counts[i].abs_diff(points) == best)
-        .collect()
-}
-
-/// [`VehicleRole`] over the base map's vehicles whose `vehicle_type` is
-/// `vehicle_type`; `None` when the base has none of the type. With
-/// `points` (the Halo 1 vehicle's powered mass points), over only the
-/// members whose friction and hover points are nearest that count
-/// ([`nearest_members`]); `None` takes every member of the type.
-pub fn vehicle_role(
-    base: &crate::base::Base,
-    vehicle_type: u16,
-    points: Option<usize>,
-) -> Result<Option<VehicleRole>> {
-    let d = def(b"vehi")?;
-    let ty = field_offset(d, "vehicle_type")? as usize;
-    let mut members = Vec::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
-        let bytes = base.root(t.0)?;
-        if u16::from_le_bytes([bytes[ty], bytes[ty + 1]]) == vehicle_type {
-            members.push((t.2.clone(), bytes));
-        }
-    }
-    if members.is_empty() {
-        return Ok(None);
-    }
-    if let Some(points) = points {
-        let counts: Vec<usize> = members
-            .iter()
-            .map(|(_, bytes)| member_points(bytes, d))
-            .collect::<Result<_>>()?;
-        let keep = nearest_members(&counts, points);
-        members = members
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| keep.contains(i))
-            .map(|(_, m)| m)
-            .collect();
-    }
-    // Use one contact configuration for the chosen geometry.
-    members.sort_by(|a, b| a.0.cmp(&b.0));
-    let (name, root) = &members[0];
-    // +244 compares vehicle priority at 0x1ab48a, +25c slews the unit
-    // control fraction at 0xf045b. +274/+278 scale the two impulses at
-    // 0xe538c, and +2b0/+2bc are the high/low slip friction law. The H1
-    // contact solver uses directional drag instead (0x80f80, 0x83e30).
-    let mut root_fields = named_words(root, &[0x244, 0x25c, 0x274, 0x278, 0x2b0, 0x2bc]);
-    if matches!(vehicle_type, 3 | 5) {
-        // Only these types enter the aircraft controllers at 0xf2360 and
-        // 0xf4800 (dispatch table 0xf069c). Preserve their flight tuning.
-        root_fields.extend(named_words(root, &[0x218, 0x270, 0x27c, 0x280]));
-    }
-    let (fat, hat) = (field_offset(d, VEHI_FRICTION)? as usize,
-        field_offset(d, VEHI_HOVER)? as usize);
-    let fdef = d.child(VEHI_FRICTION).expect("friction points");
-    let hdef = d.child(VEHI_HOVER).expect("hover points");
-    let mut friction = None;
-    let mut friction_steered = None;
-    let mut i = 0;
-    while let Some(x) = base.element(root, fat, fdef.size as usize, i)? {
-        let steers = crate::base::u32_at(&x, 4) & FRICTION_STEERS != 0;
-        let target = if steers { &mut friction_steered } else { &mut friction };
-        target.get_or_insert_with(|| named_words(&x, &[4, 8, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38]));
-        i += 1;
-    }
-    let (hover_each, hover_at) = member_hover(base, root, d, hat, hdef)?;
-    Ok(Some(VehicleRole {
-        member: name.clone(),
-        controller: root_fields,
-        friction: friction.or_else(|| friction_steered.clone()),
-        friction_steered,
-        hover: hover_each.first().cloned(),
-        hover_each, hover_at,
-        wheel_shapes: member_wheel_shapes(base, root, d, fat, fdef)?.unwrap_or(false),
-    }))
-}
-
-fn named_words(bytes: &[u8], offsets: &[usize]) -> Vec<(String, u32)> {
-    offsets.iter().filter_map(|&at| {
-        let word = crate::base::u32_at(bytes, at);
-        (word != 0).then(|| (format!("unknown_{at:x}"), word))
-    }).collect()
-}
-
 /// `phmo +0xc0`: the physics model's regions, `0xc` each, the name a
 /// string ID at `+0`.
 pub const PHMO_REGIONS: usize = 0xc0;
@@ -884,120 +777,9 @@ pub fn member_wheel_shapes(
     Ok(Some(2 * carried > regions.len()))
 }
 
-/// A base vehicle's hover points ([`VEHI_HOVER`], element `e` at `at` of
-/// its root): each one's words (its nonzero 4-byte words) and where its
-/// marker sits ([`marker_positions`]; empty when a marker is not found).
-fn member_hover(
-    base: &crate::base::Base,
-    root: &[u8],
-    d: &StructDef,
-    at: usize,
-    e: &StructDef,
-) -> Result<(Vec<Vec<(String, u32)>>, Vec<[f32; 3]>)> {
-    let marker_at = field_offset(e, HOVER_MARKER)? as usize;
-    let mut words = Vec::new();
-    let mut names = Vec::new();
-    while let Some(x) = base.element(root, at, e.size as usize, words.len())? {
-        words.push(named_words(&x, &[4, 8, 0xc, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c]));
-        names.push(crate::base::u32_at(&x, marker_at));
-    }
-    let positions = marker_positions(base, root, d, &names)?.unwrap_or_default();
-    Ok((words, positions))
-}
-
-/// Where the markers named `names` (string IDs of the base) sit in the
-/// space of the base vehicle whose root is `root`: each name's first
-/// marker in its render model (`hlmt +0` of `unit.obje.model`), its
-/// translation (`+0x4`) carried through its node (`+0x2`) at the model's
-/// rest pose (node translation `+0xc`, orientation `+0x18`, composed from
-/// the root as `h1models::mode::world_transforms` does). `None` when the
-/// model or any marker is missing.
-pub fn marker_positions(
-    base: &crate::base::Base,
-    root: &[u8],
-    d: &StructDef,
-    names: &[u32],
-) -> Result<Option<Vec<[f32; 3]>>> {
-    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
-        return Ok(None);
-    };
-    let h = base.root(hlmt)?;
-    let Some(mode) = base.reference(&h, field_offset(def(b"hlmt")?, "render_model")? as usize)
-    else {
-        return Ok(None);
-    };
-    let m = base.root(mode)?;
-    let md = def(b"mode")?;
-    let child = |name: &str| -> Result<(usize, &'static StructDef)> {
-        Ok((
-            field_offset(md, name)? as usize,
-            md.child(name)
-                .ok_or_else(|| Error::Invalid(format!("mode {name}")))?,
-        ))
-    };
-    let floats = |b: &[u8], at: usize, n: usize| -> Vec<f32> {
-        (0..n)
-            .map(|k| f32::from_le_bytes(b[at + 4 * k..at + 4 * k + 4].try_into().expect("4")))
-            .collect()
-    };
-    let (nodes_at, nd) = child("nodes")?;
-    let (parent, translation, orientation) = (
-        field_offset(nd, "parent_index")? as usize,
-        field_offset(nd, "translation")? as usize,
-        field_offset(nd, "orientation")? as usize,
-    );
-    let mut nodes = Vec::new();
-    while let Some(x) = base.element(&m, nodes_at, nd.size as usize, nodes.len())? {
-        let q = floats(&x, orientation, 4);
-        let t = floats(&x, translation, 3);
-        nodes.push((
-            i16::from_le_bytes([x[parent], x[parent + 1]]),
-            [q[0], q[1], q[2], q[3]],
-            [t[0], t[1], t[2]],
-        ));
-    }
-    let world = h1models::mode::world_transforms(&nodes);
-    let (groups_at, gd) = child("marker_groups")?;
-    let markers_def = gd
-        .child("markers")
-        .ok_or_else(|| Error::Invalid("mode markers".into()))?;
-    let (group_name, markers_at) = (
-        field_offset(gd, "name")? as usize,
-        field_offset(gd, "markers")? as usize,
-    );
-    let (marker_node, marker_translation) = (
-        field_offset(markers_def, "node")? as usize,
-        field_offset(markers_def, "translation")? as usize,
-    );
-    let mut groups = Vec::new();
-    while let Some(g) = base.element(&m, groups_at, gd.size as usize, groups.len())? {
-        groups.push(g);
-    }
-    let mut out = Vec::new();
-    for name in names {
-        let Some(g) = groups
-            .iter()
-            .find(|g| crate::base::u32_at(g, group_name) == *name)
-        else {
-            return Ok(None);
-        };
-        let Some(x) = base.element(g, markers_at, markers_def.size as usize, 0)? else {
-            return Ok(None);
-        };
-        let Some((r, p)) = world.get(x[marker_node] as usize) else {
-            return Ok(None);
-        };
-        let t = floats(&x, marker_translation, 3);
-        out.push(std::array::from_fn(|a| {
-            p[a] + (0..3).map(|k| r[a][k] * t[k]).sum::<f32>()
-        }));
-    }
-    Ok(Some(out))
-}
-
 /// The node (`+0x2`) of every marker of each marker group named in
 /// `names` (string IDs of the base), in the render model of the base
-/// vehicle whose root is `root` (as [`marker_positions`] finds it): one
+/// vehicle whose root is `root`: one
 /// list per name, empty when the model has no such group. `None` when the
 /// vehicle has no render model.
 pub fn marker_nodes(
@@ -1065,17 +847,6 @@ fn path_offset(d: &StructDef, path: &str) -> Result<u32> {
         (Some(r), defs::Kind::Struct(s)) => Ok(f.offset + path_offset(s, r)?),
         _ => Err(Error::Invalid(format!("{}: {path}", d.name))),
     }
-}
-
-/// A base vehicle's friction and hover points together ([`VEHI_FRICTION`],
-/// [`VEHI_HOVER`] element counts), from its root.
-fn member_points(root: &[u8], d: &StructDef) -> Result<usize> {
-    let mut n = 0;
-    for block in [VEHI_FRICTION, VEHI_HOVER] {
-        let at = field_offset(d, block)? as usize;
-        n += crate::base::u32_at(root, at) as usize;
-    }
-    Ok(n)
 }
 
 fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
@@ -1150,11 +921,9 @@ pub struct VehicleSpec<'a> {
     /// The converted weapons of Halo 1's unit weapons, in order (`unit
     /// weapons`, `+0x1c0`).
     pub weapons: &'a [TagId],
-    /// The type's role over the base's vehicles; `None` takes the turret
-    /// tables (definition defaults), as for a type the base has none of.
-    pub role: Option<&'a VehicleRole>,
-    /// Halo 1's powered mass points: friction points where the role has
-    /// them, else hover points where it has those, else none.
+    pub contacts: Option<&'a h1::GroundContacts>,
+    pub seat_power: &'a [[f32; 2]],
+    /// Source powered mass points, in source order.
     pub points: &'a [Point],
     /// Halo 1's attachments that convert ([`object_effects`]).
     pub attachments: &'a [AttachmentSpec],
@@ -1197,9 +966,98 @@ fn write_vehicle_phantom(record: &mut Record, points: &[Point]) -> Result<()> {
     Ok(())
 }
 
+fn write_ground_contacts(
+    record: &mut Record,
+    contacts: &h1::GroundContacts,
+    points: &[Point],
+) -> Result<()> {
+    use tags::object::direct_drive::*;
+    if contacts.wheels.len() != points.len() {
+        return Err(Error::Invalid(
+            "powered mass points and friction markers differ".into(),
+        ));
+    }
+    let required = CONTACT_DATA as usize
+        + CONTACT_HEADER as usize
+        + points.len() * WHEEL_BYTES as usize
+        + contacts.surfaces.len() * SURFACE_BYTES as usize;
+    if required > CONTACT_END as usize {
+        return Err(Error::Invalid(format!(
+            "wheel and material data exceed the vehicle phantom by {} bytes",
+            required - CONTACT_END as usize
+        )));
+    }
+    let mut at = CONTACT_DATA;
+    let mut word = |value: u32| {
+        let field = format!("unknown_{at:x}");
+        at += 4;
+        set(record, &field, Val::Bytes(value.to_le_bytes().to_vec()))
+    };
+    word(CONTACT_MAGIC)?;
+    word(
+        points.len() as u32
+            | ((contacts.surfaces.len() as u32) << 8)
+            | (u32::from(contacts.equal_slopes) << 16),
+    )?;
+    for ((marker, w), point) in contacts.wheels.iter().zip(points) {
+        if marker != &point.marker {
+            return Err(Error::Invalid(format!(
+                "wheel {marker} does not match friction marker {}",
+                point.marker
+            )));
+        }
+        for bits in [
+            w.mode,
+            w.rate.to_bits(),
+            w.parallel.to_bits(),
+            w.perpendicular.to_bits(),
+        ] {
+            word(bits)?;
+        }
+    }
+    for &(index, factors) in &contacts.surfaces {
+        word(u32::from(index))?;
+        for value in factors {
+            word(value.to_bits())?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod phantom_tests {
     use super::*;
+
+    #[test]
+    fn excess_ground_material_rows_report_an_error_before_encoding() {
+        use tags::object::direct_drive::WheelDrag;
+        let d = def(b"vehi").unwrap().child(VEHI_PHYSICS).unwrap();
+        let mut record = defs::default_record(d);
+        let point = Point {
+            sphere: [0.0; 4],
+            antigravity: None,
+            marker: "tire".into(),
+            region: String::new(),
+            region_index: -1,
+            steered: false,
+        };
+        let contacts = h1::GroundContacts {
+            wheels: vec![(
+                point.marker.clone(),
+                WheelDrag {
+                    mode: 1,
+                    rate: 1.0,
+                    parallel: 0.5,
+                    perpendicular: 0.5,
+                },
+            )],
+            surfaces: (0..11).map(|i| (i, [0.5; 5])).collect(),
+            equal_slopes: false,
+        };
+        let before = record.clone();
+        assert!(write_ground_contacts(&mut record, &contacts, &[point]).is_err());
+        assert_eq!(record, before);
+    }
 
     #[test]
     fn wheel_spheres_span_inline_shapes_in_source_order() {
@@ -1237,9 +1095,33 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
 pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
-    if let Some(role) = v.role {
-        role_words(&mut r, "", &role.controller)?;
+    use tags::object::direct_drive::GRAVITY_RATIO;
+    let contacts = v.contacts;
+    let power = v.seat_power;
+    if v.points
+        .iter()
+        .any(|p| p.antigravity.is_none() != contacts.is_some())
+    {
+        return Err(Error::Invalid(
+            "powered point lacks its source ground or antigravity law".into(),
+        ));
     }
+    // The H2 AI compares both vehicle ranks (+244, 0x1ab48a). The
+    // source drive decisions use distances (+384/+388, 0x16f954 and
+    // 0x16fbc1), with no ordering of vehicle definitions in that test.
+    // Equal ranks avoid introducing a vehicle-class preference.
+    // H1 0x394a1 stops attached vehicles. H2 0xe538c can instead push
+    // a parented vehicle via its rider. Disable both additional impulses.
+    for field in ["unknown_244", "unknown_274", "unknown_278"] {
+        set(&mut r, field, Val::Bytes(0u32.to_le_bytes().to_vec()))?;
+    }
+    // H1 0x394be writes the crouch bit in the same tick; H2 0xf045b
+    // turns +25c into a per-tick step by multiplying by tick length.
+    set(
+        &mut r,
+        "unknown_25c",
+        Val::Bytes(30f32.to_le_bytes().to_vec()),
+    )?;
     let powered_groups = if let Some(physics) = v.physics {
         if physics.len() < h1::PHYS_SIZE {
             return Err(Error::Truncated("vehicle physics"));
@@ -1248,9 +1130,10 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         // depth minus damping * normal velocity. H1 integrates per tick.
         // Both slope responses interpolate on the contact normal's z
         // component (0x83ea2, 0x206f96). Gravity is a dimensionless
-        // multiplier at 0x8399d and 0xf51b4.
+        // multiplier at 0x8399d. Scale depth so g/depth agrees.
         for (field, source, factor) in [
-            ("unknown_2b4", 0x24, 1.0), ("unknown_2b8", 0x28, 30.0),
+            ("unknown_2b4", 0x24, 1.0 / GRAVITY_RATIO),
+            ("unknown_2b8", 0x28, 30.0),
             ("unknown_2c0", 0x2c, 1.0),
             ("unknown_2e0", 0x1c, 1.0),
         ] {
@@ -1269,13 +1152,101 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         0
     };
     let mut phantom = defs::default_record(d.child(VEHI_PHYSICS).expect("vehicle phantom"));
-    if v.role.is_some_and(|role| role.friction.is_some()) && !v.points.is_empty() {
+    if let Some(contacts) = contacts {
         if v.points.len() > 16 {
-            return Err(Error::Invalid("vehicle exceeds the 16 friction contacts at 0x20678d".into()));
+            return Err(Error::Invalid(
+                "vehicle exceeds the 16 friction contacts at 0x20678d".into(),
+            ));
         }
         write_vehicle_phantom(&mut phantom, v.points)?;
+        write_ground_contacts(&mut phantom, contacts, v.points)?;
     } else {
-        role(&mut phantom, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
+        role(
+            &mut phantom,
+            &format!("{VEHI_PHYSICS}[0]."),
+            TURRET_PHYSICS_ROLE,
+        )?;
+    }
+    if matches!(v.vehicle_type, 3 | 5)
+        && let Some(physics) = v.physics
+    {
+        use tags::object::h1_flight::*;
+        let source = |at| f32::from_bits(crate::base::u32_at(physics, at));
+        let vehicle = |at: usize| -> Result<f32> {
+            let b = v
+                .source
+                .get(at..at + 4)
+                .ok_or(Error::Truncated("aircraft controller"))?;
+            Ok(f32::from_le_bytes(b.try_into().unwrap()))
+        };
+        let radius = source(0);
+        let kind = if v.vehicle_type == 3 {
+            DROPSHIP
+        } else if powered_groups != 2 {
+            PASSIVE
+        } else if radius > 0.0 {
+            LIFEPOD
+        } else {
+            BANSHEE
+        };
+        if contacts.is_some() || !(source(8).is_finite() && source(8) > 0.0) {
+            return Err(Error::Invalid(
+                "unsupported aircraft contact layout or mass".into(),
+            ));
+        }
+        let inertia = (source(0x50) + source(0x54) + source(0x58)) / (3.0 * source(8));
+        let params = [
+            MAGIC,
+            kind,
+            radius.to_bits(),
+            inertia.to_bits(),
+            vehicle(0x364)?.to_bits(),
+            vehicle(0x308)?.to_bits(),
+            vehicle(0x314)?.to_bits(),
+        ];
+        for (i, word) in params.into_iter().enumerate() {
+            set(
+                &mut phantom,
+                &format!("unknown_{:x}", DATA + i as u32 * 4),
+                Val::Bytes(word.to_le_bytes().to_vec()),
+            )?;
+        }
+    }
+    if matches!(v.vehicle_type, 3 | 5) && v.physics.is_none() {
+        // H1 0x398df..0x398ea skips the flight dispatch for a null phys.
+        use tags::object::h1_flight::{DATA, MAGIC, PASSIVE};
+        for (offset, value) in [(DATA, MAGIC), (DATA + 4, PASSIVE)] {
+            set(
+                &mut phantom,
+                &format!("unknown_{offset:x}"),
+                Val::Bytes(value.to_le_bytes().to_vec()),
+            )?;
+        }
+    }
+    if !power.is_empty() || v.physics.is_some() {
+        use tags::object::direct_drive::{HAS_SOURCE_GRAVITY, POWER_DATA, POWER_MAGIC};
+        if power.len() > 2 {
+            return Err(Error::Invalid(format!(
+                "{} powered seats exceed the two unit power channels",
+                power.len()
+            )));
+        }
+        let flags = if v.physics.is_some() {
+            HAS_SOURCE_GRAVITY
+        } else {
+            0
+        };
+        for (i, word) in [POWER_MAGIC, power.len() as u32 | flags]
+            .into_iter()
+            .chain(power.iter().flatten().map(|v| v.to_bits()))
+            .enumerate()
+        {
+            set(
+                &mut phantom,
+                &format!("unknown_{:x}", POWER_DATA + 4 * i as u32),
+                Val::Bytes(word.to_le_bytes().to_vec()),
+            )?;
+        }
     }
     set(&mut r, VEHI_PHYSICS, Val::Block(vec![phantom]))?;
     for &(path, at) in UNIT_WORDS {
@@ -1433,81 +1404,77 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         out.push(e);
     }
     set(&mut r, VEHI_SEATS, Val::Block(out))?;
-    if let Some(role) = v.role {
-        let kinds = [
-            (VEHI_FRICTION, &role.friction, FRICTION_MARKER, FRICTION_REGION),
-            (VEHI_HOVER, &role.hover, HOVER_MARKER, HOVER_REGION),
-        ];
-        if let Some((block, Some(words), marker, region)) =
-            kinds.into_iter().find(|k| k.1.is_some())
-        {
-            let e = d.child(block).expect("vehi points");
-            let mut out = Vec::new();
-            for (i, p) in v.points.iter().enumerate() {
-                let mut x = defs::default_record(e);
-                let words = match (block, p.steered, &role.friction_steered) {
-                    (VEHI_FRICTION, true, Some(w)) => w,
-                    // Point i is paired with the member's hover point i
-                    // (the caller orders the points by `hover_at`).
-                    (VEHI_HOVER, _, _)
-                        if role.hover_each.len() == v.points.len()
-                            && role.hover_at.len() == v.points.len() =>
-                    {
-                        &role.hover_each[i]
-                    }
-                    _ => words,
-                };
-                role_words(&mut x, &format!("{block}[{i}]."), words)?;
-                if block == VEHI_HOVER && let Some(lift) = p.antigravity {
-                    // 0x84376/0x20634c measure height above the point radius.
-                    // Both lift laws subtract damping * normal velocity and
-                    // interpolate on the same two slope cosines (0x84418,
-                    // 0x84477, 0x206420, 0x206550). H1 has fixed lift height;
-                    // the H2 bank modifiers +0x2d8/+0x2dc stay zero.
-                    let [strength, offset, height, damping, full, cutoff] = lift;
-                    for (field, value) in [
-                        ("unknown_8", strength), ("unknown_c", offset), ("unknown_10", height),
-                        ("unknown_14", damping * 30.0), ("unknown_18", full),
-                        ("unknown_1c", cutoff), ("unknown_20", p.sphere[3]),
-                    ] {
-                        set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
-                    }
+    if !v.points.is_empty() {
+        let (block, marker, region) = if contacts.is_some() {
+            (VEHI_FRICTION, FRICTION_MARKER, FRICTION_REGION)
+        } else {
+            (VEHI_HOVER, HOVER_MARKER, HOVER_REGION)
+        };
+        let e = d.child(block).expect("vehicle points");
+        let mut out = Vec::new();
+        for p in v.points {
+            let mut x = defs::default_record(e);
+            if block == VEHI_HOVER
+                && let Some(lift) = p.antigravity
+            {
+                // 0x84376/0x20634c measure height above the point radius.
+                // Both lift laws subtract damping * normal velocity and
+                // interpolate on the same two slope cosines (0x84418,
+                // 0x84477, 0x206420, 0x206550). H1 has fixed lift height;
+                // the H2 bank modifiers +0x2d8/+0x2dc stay zero.
+                // The H2 solver multiplies both spring and damping by
+                // strength at 0x20655e. Preserve their independent gains.
+                let [strength, offset, height, damping, full, cutoff] = lift;
+                for (field, value) in [
+                    ("unknown_8", strength * GRAVITY_RATIO),
+                    ("unknown_c", offset),
+                    ("unknown_10", height),
+                    ("unknown_14", damping * 30.0 / GRAVITY_RATIO),
+                    ("unknown_18", full),
+                    ("unknown_1c", cutoff),
+                    ("unknown_20", p.sphere[3]),
+                ] {
+                    set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
                 }
-                set(&mut x, marker, Val::text(&p.marker))?;
-                set(&mut x, region, Val::text(&p.region))?;
-                if block == VEHI_FRICTION {
-                    if matches!(v.vehicle_type, 0 | 1) {
-                        let mut flags = words.iter().find(|(name, _)| name == FRICTION_FLAGS)
-                            .map_or(0, |(_, bits)| *bits);
-                        if v.vehicle_type == 1 {
-                            // H1 0x3925c..0x392af gives the two powered
-                            // groups opposite wheel quaternions. H2 tests
-                            // bits 2 and 3 at 0xf20f7/0xf2178.
-                            flags = (flags & !0xc) | if p.steered { 4 } else { 8 };
-                        } else {
-                            flags &= !tags::object::direct_drive::H1_SECOND_TRACK;
-                            if !p.steered {
-                                flags |= tags::object::direct_drive::H1_SECOND_TRACK;
-                            }
-                        }
-                        set(&mut x, FRICTION_FLAGS, Val::Bytes(flags.to_le_bytes().to_vec()))?;
+            }
+            set(&mut x, marker, Val::text(&p.marker))?;
+            set(&mut x, region, Val::text(&p.region))?;
+            if block == VEHI_FRICTION {
+                if matches!(v.vehicle_type, 0 | 1) {
+                    let mut flags = 2u32;
+                    if v.vehicle_type == 1 {
+                        // H1 0x3925c..0x392af gives the two powered
+                        // groups opposite wheel quaternions. H2 tests
+                        // bits 2 and 3 at 0xf20f7/0xf2178.
+                        flags |= if p.steered { FRICTION_STEERS } else { 8 };
+                    } else if !p.steered {
+                        flags |= tags::object::direct_drive::H1_SECOND_TRACK;
                     }
-                    set(&mut x, "unknown_c", Val::Bytes(p.sphere[3].to_le_bytes().to_vec()))?;
-                    let index: u32 = if p.region_index >= 0 {
-                        p.region_index as u32
-                    } else {
-                        u32::MAX
-                    };
                     set(
                         &mut x,
-                        FRICTION_REGION_INDEX,
-                        Val::Bytes(index.to_le_bytes().to_vec()),
+                        FRICTION_FLAGS,
+                        Val::Bytes(flags.to_le_bytes().to_vec()),
                     )?;
                 }
-                out.push(x);
+                set(
+                    &mut x,
+                    "unknown_c",
+                    Val::Bytes(p.sphere[3].to_le_bytes().to_vec()),
+                )?;
+                let index: u32 = if p.region_index >= 0 {
+                    p.region_index as u32
+                } else {
+                    u32::MAX
+                };
+                set(
+                    &mut x,
+                    FRICTION_REGION_INDEX,
+                    Val::Bytes(index.to_le_bytes().to_vec()),
+                )?;
             }
-            set(&mut r, block, Val::Block(out))?;
+            out.push(x);
         }
+        set(&mut r, block, Val::Block(out))?;
     }
     // H1 passes drive commands to the solver only for two powered groups
     // (jeep 0x39256, tank 0x393dc). Other layouts coast passively.
@@ -2285,16 +2252,6 @@ pub const BIPED_RATES: &[(&str, usize)] = &[
     ("unknown_1f8", 0x3b4), ("unknown_250", 0x4cc), ("unknown_2e4", 0x33c),
     ("unknown_2e8", 0x340), ("unknown_2f0", 0x348),
 ];
-
-/// Writes role words into `r`, noting them under `scope`, `r`'s path in
-/// the tag ([`crate::provenance`]).
-fn role_words(r: &mut Record, scope: &str, words: &[(String, u32)]) -> Result<()> {
-    crate::provenance::note_words(scope, words);
-    for (path, word) in words {
-        set(r, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
-    }
-    Ok(())
-}
 
 /// `bipd +0x268`, `+0x26c`, `+0x270`: the standing and crouching
 /// collision heights and the collision radius ([`h1::BIPED_SIZE`] holds
