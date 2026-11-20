@@ -686,8 +686,8 @@ impl Room {
 
     async fn save_pool(&self, pool: &Pool) -> Result<()> {
         let storage = self.state.storage();
-        // Retain the name sequence even after the last pack exits. A delayed
-        // request to its room must never reach a new container.
+        // Keep the serial and spent warm grants when the last pack exits.
+        // A delayed request cannot reuse a name or replenish warm capacity.
         storage.put(POOL_KEY, pool).await?;
         if let Some(next) = pool.next_deadline() {
             storage.set_alarm(next.saturating_sub(now_ms()).max(1)).await?;
@@ -763,7 +763,9 @@ impl Room {
         // Other searches or placements can advance the pool between the quote
         // and the grant. Only apply the intersection, including startup intent.
         let plan = pack_state::funded(plan, &grant.plan);
-        if expired || plan.start.is_some() {
+        let reserved = pool.reserve_warm(&plan, until);
+        if expired || reserved {
+            // Persist the attempt before an eviction or a lost container reply.
             self.save_pool(&pool).await?;
         }
         let refresh = plan.refresh.into_iter().map(|name| (name, false));
@@ -807,6 +809,9 @@ impl Room {
                 self.namespace(),
                 &room,
                 pool_hint(&self.name()),
+        if !reserved {
+            return Response::from_json(&pool.free_slots(self.max_matches));
+        }
                 Method::Post,
                 "/pack/add",
                 Some(body.clone()),

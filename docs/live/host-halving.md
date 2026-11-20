@@ -263,6 +263,11 @@ The pool estimates spare slots as twice the observed five-minute lease
 arrival rate times its median cold start duration. Its minimum is one slot
 for the first searcher. It subtracts free slots in occupied packs, renews
 only the required empty packs, and starts at most one more per reconciliation.
+Each regional class allows three speculative starts or renewal rounds between
+newly admitted leases. A failed attempt consumes a round. A duplicate pulse,
+an empty plan or a retried lease leaves the counter unchanged. The counter
+survives pack expiry and Worker room eviction. A native service restart
+resets the in-memory pool.
 A supervisor can start before a cohort forms. Its game child and data
 provisioning start with the lease. The under-two-second join gate still
 depends on the proposed template.

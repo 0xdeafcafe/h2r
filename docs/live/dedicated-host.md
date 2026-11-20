@@ -226,8 +226,10 @@ ends, and the pool tries the next pack, up to three new packs per lease.
 The pack room passes its resource settings and configured feature switches to the container and waits up to 30 seconds for the control port. The lease
 room forwards each tunnel upgrade to its pack room, which connects it to
 the match's tunnel port. When Live stops a lease, the pool removes the
-match from its pack. The final lease starts a 60-second idle hold. Fresh search demand can
-renew it. Durable alarms expire leases and empty holds across eviction.
+match from its pack. The final lease starts a 60-second idle hold. Each regional class allows
+three speculative warm grants between new lease admissions, including
+the first start and any renewals. Durable alarms expire leases and empty
+holds across eviction.
 The pool assigns a new name to every new pack.
 `LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
 (five for small, ten for large, or a lower configured limit).

@@ -315,17 +315,33 @@ impl LocalPacks {
         class: &HostClass,
         demand: WarmDemand,
     ) -> Result<usize, HostError> {
+        self.warm_at(bin, region, class, demand, now_ms).await
+    }
+
+    async fn warm_at(
+        &self,
+        bin: PathBuf,
+        region: Option<&str>,
+        class: &HostClass,
+        demand: WarmDemand,
+        clock: impl Fn() -> i64 + Send,
+    ) -> Result<usize, HostError> {
         let group = (region.map(str::to_owned), class.clone());
         let limits = host_pack::class_limits(class, Some(self.max_matches));
         let mut state = self.state.lock().await;
         self.reap(&mut state)?;
-        let plan = state.pool(&group).warm_plan(demand, limits.max_matches, now_ms());
+        let now = clock();
+        let pool = state.pool(&group);
+        let plan = pool.warm_plan(demand, limits.max_matches, now);
+        if !pool.reserve_warm(&plan, now.saturating_add(host_pack::LINGER_MS)) {
+            return Ok(pool.free_slots(limits.max_matches));
+        }
         for name in plan.refresh.into_iter().chain(plan.start) {
             let key = (group.clone(), name);
             let (control, elapsed) = self.ensure_pack(&mut state, &key, &bin, limits).await?;
             match exchange(control, "POST", host_pack::WARM_PATH, Vec::new()).await {
                 Ok((204, _)) => {
-                    state.pool(&group).warmed(&key.1, now_ms(), elapsed);
+                    state.pool(&group).warmed(&key.1, clock(), elapsed);
                     self.linger(&mut state, &key);
                 }
                 failed => {

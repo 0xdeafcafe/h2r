@@ -280,3 +280,45 @@ fn a_stale_quote_cannot_start_a_replacement_or_extend_the_paid_interval() {
     assert_eq!(grant_deadline(until - 1, until), Some(until));
     assert_eq!(grant_deadline(until, until), None);
 }
+
+#[test]
+fn a_search_cannot_restart_expired_packs_until_another_match_arrives() {
+    use live_proto::host_pack::{LINGER_MS, Pool, WarmDemand, WarmPlan};
+
+    let mut pool = Pool::default();
+    let mut now = 1_000;
+    let end = now + 3 * LINGER_MS;
+    // One real match fills a one-slot pack throughout three funded intervals.
+    pool.admitted_at("pack-0", "first-match", end, now);
+    let search = WarmDemand { searchers: 1, leases: 1, available: 1 };
+
+    for _ in 0..3 {
+        let plan = pool.warm_plan(search, 1, now);
+        let name = plan.start.as_deref().expect("a fresh pack for this interval");
+        let until = now + LINGER_MS;
+        assert!(pool.reserve_warm(&plan, until));
+        assert!(!pool.reserve_warm(&plan, until));
+        assert!(!pool.reserve_warm(&plan, until - 1));
+        pool.warmed(name, now, Some(10));
+
+        // A retried placement of the same lease is not another arrival.
+        pool.admitted_at("pack-0", "first-match", end, now);
+        now = until;
+        assert!(pool.expire(now).iter().any(|removed| removed == name));
+        // The room can be evicted even after every pack is gone.
+        pool = serde_json::from_value(serde_json::to_value(&pool).unwrap()).unwrap();
+    }
+
+    assert!(pool.is_empty());
+    let quiet_search = WarmDemand { leases: 0, ..search };
+    let quote = pool.warm_plan(quiet_search, 1, now);
+    assert!(quote.start.is_none() && quote.refresh.is_empty());
+    let stale = WarmPlan { start: Some("pack-4".into()), ..WarmPlan::default() };
+    assert!(!pool.reserve_warm(&stale, now + LINGER_MS));
+
+    let name = pool.place("second-match", 1).pack().to_owned();
+    pool.admitted_at(&name, "second-match", now + 2 * LINGER_MS, now);
+    let quote = pool.warm_plan(search, 1, now);
+    assert!(quote.start.is_some());
+    assert!(pool.reserve_warm(&quote, now + LINGER_MS));
+}

@@ -50,6 +50,8 @@ pub const STATUS_PATH: &str = "/v1/pack";
 /// Refresh the idle deadline of an empty supervisor.
 pub const WARM_PATH: &str = "/v1/pack/warm";
 pub const LINGER_MS: i64 = 60_000;
+/// One speculative start and two more warm grants before a new match arrives.
+const MAX_WARM_GRANTS_WITHOUT_ARRIVAL: u8 = 3;
 pub const MATCHES_PATH: &str = "/v1/pack/matches";
 
 /// What one pack may run.
@@ -284,6 +286,12 @@ pub struct Pool {
     /// Pack names are never reused, so a late call to a stopped pack
     /// cannot land on a new one.
     next: u64,
+    /// Pool-wide so that retiring the last empty pack cannot restore credit.
+    #[serde(default)]
+    grants_without_arrival: u8,
+    /// Replayed or out-of-order grants cannot purchase a later deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_warm_until_ms: Option<i64>,
     /// Lease arrivals grouped by second, covering the last five minutes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     arrivals: BTreeMap<i64, usize>,
@@ -338,7 +346,9 @@ impl Pool {
     /// packs. Plan at most one cold start per reconciliation, then remeasure.
     pub fn warm_plan(&mut self, demand: WarmDemand, max_matches: usize, now_ms: i64) -> WarmPlan {
         let mut plan = WarmPlan::default();
-        if max_matches == 0 || demand.available == 0 || (demand.searchers == 0 && demand.leases == 0) {
+        if max_matches == 0 || demand.available == 0 || (demand.searchers == 0 && demand.leases == 0)
+            || self.grants_without_arrival >= MAX_WARM_GRANTS_WITHOUT_ARRIVAL
+        {
             return plan;
         }
         let second = now_ms.div_euclid(1000);
@@ -374,6 +384,21 @@ impl Pool {
         plan
     }
 
+    /// Claim a single pulse before acting on it. Every funded pack in the
+    /// same pulse shares its deadline. An unknown result still spends the
+    /// attempt, so failed starts or lost replies cannot keep a pool alive.
+    pub fn reserve_warm(&mut self, plan: &WarmPlan, until_ms: i64) -> bool {
+        if (plan.start.is_none() && plan.refresh.is_empty())
+            || self.grants_without_arrival >= MAX_WARM_GRANTS_WITHOUT_ARRIVAL
+            || self.last_warm_until_ms.is_some_and(|last| until_ms <= last)
+        {
+            return false;
+        }
+        self.grants_without_arrival += 1;
+        self.last_warm_until_ms = Some(until_ms);
+        true
+    }
+
     pub fn warmed(&mut self, pack: &str, now_ms: i64, cold_start_ms: Option<u64>) {
         let entry = self.packs.entry(pack.to_owned()).or_default();
         if entry.leases.is_empty() {
@@ -389,6 +414,7 @@ impl Pool {
 
     pub fn admitted_at(&mut self, pack: &str, lease: &str, deadline_ms: i64, now_ms: i64) {
         if self.pack_of(lease).is_none() {
+            self.grants_without_arrival = 0;
             let second = now_ms.div_euclid(1000);
             self.arrivals.retain(|&t, _| t <= second && second.saturating_sub(t) < 300);
             *self.arrivals.entry(second).or_default() += 1;

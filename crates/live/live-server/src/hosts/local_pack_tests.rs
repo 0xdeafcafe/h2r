@@ -84,15 +84,18 @@ fn fake_pack(cap: usize) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
                 ("POST", None) => {
                     let add: AddMatch = serde_json::from_slice(&req.body).unwrap();
                     assert_eq!(add.archive, live_proto::hosts::HostArchive::Film);
-                    if leases.len() >= cap {
+                    let existing = leases.iter().position(|lease| *lease == add.lease);
+                    if existing.is_none() && leases.len() >= cap {
                         let refusal = Refusal::Full {
                             running: leases.len(),
                             max: cap,
                         };
                         (409, serde_json::to_vec(&refusal).unwrap())
                     } else {
-                        let slot = leases.len() as u16;
-                        leases.push(add.lease);
+                        let slot = existing.unwrap_or_else(|| {
+                            leases.push(add.lease);
+                            leases.len() - 1
+                        }) as u16;
                         let added = Added {
                             slot,
                             ports: SlotPorts::for_slot(31000, 31100, 14720, slot).unwrap(),
@@ -289,5 +292,82 @@ async fn search_starts_the_right_class_and_silence_reaps_it_after_sixty_seconds(
     assert_eq!(packs.state.lock().await.packs.len(), 1);
     tokio::time::advance(Duration::from_millis(1001)).await;
     tokio::task::yield_now().await;
+    assert!(packs.state.lock().await.packs.is_empty());
+}
+
+#[tokio::test]
+async fn warm_allowance_survives_empty_pack_expiry_until_a_new_lease_is_admitted() {
+    let mut packs = LocalPacks::new(1, std::env::temp_dir());
+    let launches = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&launches);
+    packs.launch = Box::new(move |_bin, limits, used| {
+        let (window, _) = next_window(31000, 31100, 32000, used)?;
+        let (control, log) = fake_pack(limits.max_matches);
+        recorded.lock().unwrap().push(log);
+        Ok(LocalPack { window, control, child: sleeper(), idle_task: None })
+    });
+    let bin = PathBuf::from("/nonexistent/h2");
+    let demand = WarmDemand { searchers: 1, leases: 0, available: 1 };
+    let start = now_ms();
+    let pulse = |at| packs.warm_at(bin.clone(), None, &HostClass::Small, demand, move || at);
+    let warm_posts = |index: usize| {
+        let rows = launches.lock().unwrap();
+        let requests = rows[index].lock().unwrap();
+        requests.iter().filter(|line| line.as_str() == "POST /v1/pack/warm").count()
+    };
+
+    // Cold start and two advancing refreshes. Replaying any of these queue
+    // reports must neither consume a grant nor extend the hold again.
+    for delta in [0, 0, 21_000, 21_000, 42_000, 42_000] {
+        assert_eq!(pulse(start + delta).await.unwrap(), 1);
+    }
+    assert_eq!(warm_posts(0), 3);
+
+    // Expire the native supervisor and remove its routing entry, then let
+    // the same region ask for another cold start.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(180)).await;
+    tokio::task::yield_now().await;
+    assert!(packs.state.lock().await.packs.is_empty());
+    assert_eq!(pulse(start + 180_000).await.unwrap(), 0);
+    assert_eq!(launches.lock().unwrap().len(), 1);
+    tokio::time::resume();
+
+    let active = lease("hl-converted");
+    let reference = packs.start(bin.clone(), &active, &boot()).await.unwrap();
+    let reset = start + 181_000;
+    // One slot per pack: the real lease occupies its pack, so the next
+    // search needs a new empty supervisor.
+    assert_eq!(pulse(reset).await.unwrap(), 1);
+    assert_eq!(packs.start(bin.clone(), &active, &boot()).await.unwrap(), reference);
+    for delta in [21_000, 42_000, 63_000] {
+        let _ = pulse(reset + delta).await.unwrap();
+    }
+    assert_eq!(launches.lock().unwrap().len(), 3);
+    assert_eq!(warm_posts(2), 3, "replaying the admitted lease cannot refill the allowance");
+}
+
+#[tokio::test]
+async fn unsuccessful_cold_starts_consume_the_native_warm_allowance() {
+    let mut packs = LocalPacks::new(1, std::env::temp_dir());
+    let attempts = Arc::new(Mutex::new(0));
+    let recorded = Arc::clone(&attempts);
+    packs.launch = Box::new(move |_, _, _| {
+        *recorded.lock().unwrap() += 1;
+        Err(HostError::new("fixture could not start the supervisor"))
+    });
+    let bin = PathBuf::from("/nonexistent/h2");
+    let demand = WarmDemand { searchers: 1, leases: 0, available: 1 };
+    let start = now_ms();
+    for i in 0..6 {
+        let at = start + i * 61_000;
+        let result = packs.warm_at(bin.clone(), None, &HostClass::Small, demand, || at).await;
+        if i < 3 {
+            assert!(result.is_err(), "fixture rejects each allowed spawn");
+        } else {
+            assert_eq!(result.unwrap(), 0);
+        }
+    }
+    assert_eq!(*attempts.lock().unwrap(), 3);
     assert!(packs.state.lock().await.packs.is_empty());
 }
