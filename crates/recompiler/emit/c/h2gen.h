@@ -80,12 +80,22 @@ typedef struct H2GenResume {
  * [text_lo, text_hi) (0: none), and the module's polls mask H2_IRQ_QUEUED
  * out of the preempt word. Every module this header builds has it. */
 #define H2GEN_FEATURE_ENTRY_TABLE 8u
+/* The flat memory model (h2fastmem.h H2_FLAT_, RUNTIME-CONTRACT.md §1.1,
+ * "Flat RAM"): every access goes through the runtime's flat RAM window
+ * from the flat block at the context's third word, and the module table
+ * carries the fixup table. A runtime that takes it runs the module with
+ * no gate. Every module built with H2_FLAT_RAM=1 has it. */
+#define H2GEN_FEATURE_FLAT_RAM 16u
+#if H2_FLAT_
+#define H2GEN_FEATURE_FLAT H2GEN_FEATURE_FLAT_RAM
+#else
+#define H2GEN_FEATURE_FLAT 0u
+#endif
 /* Host calls in place (RUNTIME-CONTRACT.md §4, "Host calls"): the H2Direct
  * block below has the runtime's host-call thunk, a direct call invokes
  * whatever handler the entry table holds (the thunk for an overridden
  * entry), and an indirect call or jump outside [text_lo, text_hi) calls
- * the thunk. Every direct-call module this header builds has it. (16 is
- * kept for flat RAM.) */
+ * the thunk. Every direct-call module this header builds has it. */
 #define H2GEN_FEATURE_HOST_CALLS 32u
 /* The block clock (below, "Block clock"). */
 #define H2GEN_FEATURE_BLOCK_CLOCK 64u
@@ -99,6 +109,11 @@ typedef struct H2GenModule {
     /* H2GEN_FEATURE_ENTRY_TABLE: text_hi - text_lo indices, or NULL. */
     const uint16_t *pcmap;
     uint32_t text_lo, text_hi;
+    /* H2GEN_FEATURE_FLAT_RAM: the fixup rows in [fix_start, fix_end), in
+     * format fix_format (0: two 32-bit self-relative words), or none
+     * (H2_FIX_BOUNDS, h2fastmem.h). */
+    const void *fix_start, *fix_end;
+    uint32_t fix_format, fix_pad;
 } H2GenModule;
 extern const H2GenModule h2gen_module;
 
@@ -532,7 +547,9 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #ifndef H2_DIRECT_VIEW
 #define H2_DIRECT_VIEW 1
 #endif
-#if H2_DIRECT_CALLS && H2_FASTMEM && H2_DIRECT_VIEW
+/* The flat model has no view to lend: every handler reads the context's
+ * one flat block itself. */
+#if H2_DIRECT_CALLS && H2_FASTMEM && H2_DIRECT_VIEW && !H2_FLAT_
 #define H2_LEND_VIEW_ 1
 #define H2GEN_FEATURE_DIRECT_VIEW 4u
 #else
@@ -682,17 +699,63 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_FAULT_EVENT(pc, st) H2_EXIT_(H2_FAULT, H2_ENTRY, 0u, 0u, (st), (pc))
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
-/* Distinct host virtual addresses can name the same physical bytes, even
- * when clang proves their C pointer ranges disjoint. Bracket every inline
- * store so reads through any VA see stores in guest order. Two RAM loads
- * under one gate need no fence between them. Cold helpers and bulk copies
- * cross a gate boundary. The clobber emits no host instruction. */
-#if H2_FLAT_RAM && H2_FASTMEM
+/* The opt-in span image (H2_FLAT_SPAN): distinct host virtual addresses
+ * can name the same physical bytes, even when clang proves their C pointer
+ * ranges disjoint. Bracket every inline store so reads through any VA see
+ * stores in guest order. Two RAM loads under one gate need no fence
+ * between them. Cold helpers and bulk copies cross a gate boundary. The
+ * clobber emits no host instruction. */
+#if H2_FLAT_SPAN && H2_FASTMEM
 #define H2_ALIAS_FENCE() __asm__ __volatile__("" ::: "memory")
 #else
 #define H2_ALIAS_FENCE() ((void)0)
 #endif
 
+#if H2_FLAT_
+/* A load or store, flat (h2fastmem.h, H2_FLAT_LD_n and H2_FLAT_ST_n): one
+ * host instruction at the window base plus the guest address, then for a
+ * store its card. A fault on it lands at slow_ (its fixup row), which
+ * runs the ordinary helper staged through b_; a failure leaves through
+ * the fault exit. Either way the handler's count (H2_ACC_ONE) takes the
+ * attempt, and without accounting the inline access charges the block as
+ * the paged view's does. `n` is the literal width every emitted site
+ * passes. */
+#define H2_LD_(T, n, dst, pc, addr, restore)                                    \
+    T dst = 0;                                                                  \
+    do {                                                                        \
+        __label__ slow_, done_;                                                 \
+        uint32_t a_ = (addr);                                                   \
+        uint8_t b_[16];                                                         \
+        uint32_t s_;                                                            \
+        H2_ACC_ONE();                                                           \
+        H2_FLAT_LD_##n(dst, h2_base_, a_);                                      \
+        H2_FAST_CHARGE(h2_mem_);                                                \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        s_ = H2_MEM_READ_SLOW(ctx, (pc), a_, (n), 1u, b_);                      \
+        if (s_) { restore; H2_FAULT_EVENT(pc, s_); }                            \
+        memcpy(&dst, b_, (n));                                                  \
+    done_:;                                                                     \
+    } while (0)
+#define H2_ST_(T, n, pc, addr, value, restore)                                  \
+    do {                                                                        \
+        __label__ slow_, done_;                                                 \
+        T v_ = (value);                                                         \
+        uint32_t a_ = (addr);                                                   \
+        uint8_t b_[16];                                                         \
+        uint32_t s_;                                                            \
+        H2_ACC_ONE();                                                           \
+        H2_FLAT_ST_##n(v_, h2_base_, a_);                                       \
+        H2_FLAT_CARD(h2_cards_, a_);                                            \
+        H2_FAST_CHARGE(h2_mem_);                                                \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        memcpy(b_, &v_, (n));                                                   \
+        s_ = H2_MEM_WRITE_SLOW(ctx, (pc), a_, (n), 1u, b_);                     \
+        if (s_) { restore; H2_FAULT_EVENT(pc, s_); }                            \
+    done_:;                                                                     \
+    } while (0)
+#else
 /* A load or store: under the held gate the inline path (h2fastmem.h,
  * H2_HELD_TRY) gives a host address and the access is one memcpy of the
  * constant width, a single load or store. Otherwise one cold call
@@ -722,6 +785,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         memcpy(&dst, b_, (n));                                                  \
     done_:;                                                                     \
     } while (0)
+#endif
 #define H2_LD(T, n, dst, pc, addr) H2_LD_(T, n, dst, pc, addr, (void)0)
 /* Inside a REP body: a fault reports the EFLAGS the instruction began with
  * (rfl_/rfd_, saved before the loop). */
@@ -741,6 +805,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         H2_STOP_EVENT(pc, e_);                                                  \
     } while (0)
 
+#if !H2_FLAT_
 #define H2_ST_(T, n, pc, addr, value, restore)                                  \
     do {                                                                        \
         __label__ slow_, done_;                                                 \
@@ -763,14 +828,17 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
     done_:;                                                                     \
     } while (0)
+#endif
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)
 #define H2_STR(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (fl = rfl_, fd = rfd_))
 
 /* The emitter proved each member uses the same base plus its literal
  * displacement. No selector, gate drop or host call occurs inside a
  * successful group. On rejection, each site runs in order with its own
- * PC, MMIO and fault semantics. Taking the gate alone has no guest effect. */
-#if H2_FLAT_RAM && H2_FASTMEM
+ * PC, MMIO and fault semantics. Taking the gate alone has no guest effect.
+ * Only the opt-in span image groups; the paged and flat models run each
+ * site as it is. */
+#if H2_FLAT_SPAN && H2_FASTMEM
 #define H2_SPAN(name, addr, n, rw)                                              \
     uint8_t *const name = h2_begin_span(h2_mem_, &h2g_, (addr), (n), (rw))
 #define H2_SPAN_LD(span, off, T, n, dst, pc, addr)                              \

@@ -168,6 +168,14 @@ impl Guest {
             self.flat = None;
             self.flat_requested = false;
         }
+        // A flat-RAM runtime aliases the restored RAM into its window
+        // (docs/runtime/contract-thin-transfers-flat-ram.md, slice F5). On
+        // macOS the window aliases the private file mapping itself, and
+        // the clean pages stay shared with every guest over the image. On
+        // Linux two mappings cannot share a private mapping's pages, so
+        // the image is copied into a memfd and its clean pages are no
+        // longer shared (Q1). `adopt` rebuilds the page table and window.
+        self.ensure_aliasable_ram();
         self.adopt(layout);
         Ok(())
     }
@@ -231,6 +239,7 @@ impl Guest {
     }
 
     fn adopt(&mut self, layout: &GuestLayout) {
+        self.fold_cards();
         self.code_moved();
         self.mappings = layout.mappings.clone();
         self.next_physical = layout.next_physical;

@@ -373,6 +373,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 /// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
 /// that wrapper on both resource preparation and submission. A shader call
 /// in between can stream a new bitmap or rewrite a vertex/index buffer.
+/// The drain is the barrier's (`Guest::take_dirty`), so a flat-RAM image's
+/// card marks are folded here too.
 fn drain_opaque_writes<B: d3d::Backend>(
     mem: &mut dyn GuestMemory, device: &mut d3d::Device<B>, watch: runtime::WatchId,
 ) -> Result<(), &'static str> {

@@ -500,3 +500,19 @@ callee neither acquires nor releases one. The block grows by a pointer;
 modules built before ignore it, and a runtime without it refuses a module
 with the bit. The runtime clears `view` before it invokes a native handler.
 Access counts, charges and slice expiry are the same as before.
+
+## Flat RAM modules
+
+`generated::FEATURE_FLAT_RAM` (16) marks a module built with
+`H2_FLAT_RAM=1`: its accesses are single instructions at the runtime's flat
+RAM window base, with a fixup table that `generated::H2GenFlatModule` (the
+entry-table layout plus `fix_start`, `fix_end`, `fix_format`) points at.
+Registration needs the entry table and a host with a window
+(`window::supported`), and checks the table sorted; the new errors are
+`RegistrationError::FlatRamWithoutEntryTable`, `FlatRamUnsupported` and
+`FixupTable`. `Dispatch::flat_ram` and `Runtime::flat_ram` say whether
+one is registered. A runtime with one turns parking on, sends window
+faults to the fixups and keeps guest RAM aliasable, copying it once.
+`ExecCtx` gains a third C-visible word, the flat block (`ffi::H2Mem`),
+which the runtime fills before each handler call. Modules without the bit
+run as before; a runtime without it refuses them as unknown.
