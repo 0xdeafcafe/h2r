@@ -37,9 +37,35 @@ String ids come from one registry, `ui_kit::ids::FAMILIES`, checked at compile t
 
 Anything that must run on the screen underneath (a retail press, a level start) waits for the destructor: `lifecycle::AfterClose`, which `Then::CloseThen` uses for every kit screen. Running it while the page is still closing lets the closing page's teardown undo it (the skulls page's difficulty press stored the difficulty and the teardown reset it, so Start seemed stuck).
 
+## Back navigation
+
+The generic B and Back event handler closes by window and slot. In the
+game-shell channel (window 5), opening a screen can save the old screen's
+reopen request and its focus. Back pops one saved request. The lobby
+dialog channel (window 3) has one active screen and one pending screen.
+When the pending screen takes over, the channel sends the old screen a
+close message and frees it after the out transition.
+
+`ui_back::RetailBack` remembers Game Setup only when an eligible selector
+replaces the active Game Setup in the same lobby channel. B or Back
+queues Game Setup with a return request, so the window initializes the
+replacement and sends the outgoing selector its normal Back message.
+The supported selectors are **Change Map**, **Change Game Type**, the
+lobby's **Select Level**, and the lobby's **Difficulty**. The feature uses
+the selector's normal confirmation path for A. Profile and sign-in
+flows, variant editors, controller settings, and other dialogs with
+their own commit or navigation paths use retail behavior. The game-shell
+channel uses its own reopen history.
+
+The [map picker](map-select.md) also restores the folder list when Back
+dismisses a category's maps, independent of the lobby Back switch. Use
+[`ui.stack`](../runtime/agent-api.md#ui-what-the-menus-show) to inspect
+the active screen, its Back target, and map picker focus. The lobby Back
+switch is listed in [Switches](../runtime/switches.md#settings).
+
 ## Describe
 
-A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen shows and what each row does, and the `Describe` trait (`fn spec(&self) -> ScreenSpec`) is what an existing screen that keeps its own `Rows` implements to get the checks and the preview. The static checks, the offline preview, the open-screen log line and the agent API's UI stack all read the same spec.
+A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen shows and what each row does, and the `Describe` trait (`fn spec(&self) -> ScreenSpec`) is what an existing screen that keeps its own `Rows` implements to get the checks and the preview. The static checks, offline preview and open-screen log line read the same spec.
 
 ## Adding a screen
 

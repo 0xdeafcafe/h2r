@@ -403,9 +403,11 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         )),
     ))
     .unwrap();
+    let navigation = Arc::new(Navigation::default());
+    r.add(&ui_back::RetailBack(Arc::clone(&navigation))).unwrap();
     r.add(&MapSelect {
         sel: Arc::new(Selection::new(sample())),
-        flow: Arc::default(),
+        navigation,
         slots: Arc::default(),
         live: None,
     })
@@ -431,7 +433,8 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
         "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
-        "0x002bb384 MAP_SCREEN_FREE: before [map-select:the categories close after a map] -> original",
+        "0x002bb384 MAP_SCREEN_FREE: observe_before [map-select:forget the freed map list] -> original",
+        "0x002300ea SCREEN_BACK_EVENT: before [map-select:return from maps to their folders",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
@@ -454,7 +457,7 @@ fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
     registry
         .add(&MapSelect {
             sel: Arc::new(Selection::new(sample())),
-            flow: Arc::default(),
+            navigation: Arc::default(),
             slots: Arc::default(),
             live: None,
         })
@@ -557,37 +560,49 @@ fn categories_report_overflow_even_when_no_mod_fits() {
 }
 
 #[test]
-fn the_flow_lists_categories_then_the_picked_maps_and_closes_after_a_map() {
+fn a_folder_return_arms_categories_even_after_the_original_is_freed() {
     let f = Flow::default();
-    // A Select Map opened another way: retail.
-    assert_eq!(f.building(0x100), None);
-    f.change_map();
-    assert_eq!(f.building(0x1614), Some(Mode::Categories));
-    assert_eq!(f.building(0x9999), None, "taken once");
-    assert_eq!(f.mode_of(0x1614), Some(Mode::Categories));
+    assert_eq!(f.opening(), None);
+    f.categories(None);
+    let categories = f.opening().unwrap();
+    assert_eq!(categories.mode, Mode::Categories);
+    assert_eq!(categories.focus, None);
+    f.built(0x1614, categories.mode, None);
+
     f.pick(Category::Halo1);
-    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo1)));
-    // B on the maps: freed with nothing to close; the categories stay ours.
-    assert_eq!(f.freed(0x2000), None);
-    assert_eq!(f.mode_of(0x2614), None);
-    assert_eq!(f.mode_of(0x1614), Some(Mode::Categories));
-    // Another category, then a map: the categories close once it's freed.
-    f.pick(Category::Halo2);
-    assert_eq!(f.building(0x3614), Some(Mode::Maps(Category::Halo2)));
-    assert_eq!(f.picked(0x3614), Some(0x1000), "the categories' screen");
-    assert_eq!(f.freed(0x3000), Some(0x1000));
-    assert_eq!(f.freed(0x3000), None, "once");
-    assert_eq!(f.freed(0x1000), None, "the categories: nothing after");
+    let maps = f.opening().unwrap();
+    assert_eq!(maps.mode, Mode::Maps(Category::Halo1));
+    f.built(0x2614, maps.mode, None);
+    f.freed(0x1000);
     assert_eq!(f.mode_of(0x1614), None);
+    let Some(Mode::Maps(folder)) = f.mode_of(0x2614) else {
+        panic!("map list lost its category");
+    };
+    f.categories(Some(folder));
+    let restored = f.opening().unwrap();
+    assert_eq!(restored.mode, Mode::Categories);
+    assert_eq!(restored.focus, Some(Category::Halo1));
+    assert_eq!(f.opening(), None, "taken once");
 }
 
 #[test]
-fn a_map_pressed_with_no_categories_under_it_closes_nothing() {
-    let f = Flow::default();
-    f.pick(Category::Halo1);
-    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo1)));
-    assert_eq!(f.picked(0x2614), None);
-    assert_eq!(f.freed(0x2000), None);
+fn folder_focus_uses_the_restored_order_and_live_datum_salt() {
+    let mut g = engine::testing::FakeGuest::new();
+    let array = 0x5000_0000;
+    g.map(array, 0x1000);
+    let entries = [(0x0a, 0), (0x14, 0), (0x2_0001, 0)];
+    write_list(&mut g, array, array + 0x800, &entries).unwrap();
+    let before = focus_handle(&g, array, 0x2_0001).unwrap();
+    assert_eq!(before as u16, 2);
+
+    // A category is absent in the rebuilt list. The opened category's ID
+    // stays the same and its position changes.
+    write_list(&mut g, array, array + 0x800, &entries[1..]).unwrap();
+    let data = engine::datum::DatumArray::at(array);
+    let entry = data.get_absolute(&g, 1).unwrap().unwrap();
+    g.set_u16(entry, 0x9002).unwrap();
+    assert_eq!(focus_handle(&g, array, 0x2_0001), Some(0x9002_0001));
+    assert_eq!(focus_handle(&g, array, 0x0a), None, "fall back to default focus");
 }
 
 #[test]
@@ -602,17 +617,12 @@ fn a_maps_short_name_is_its_file_without_the_ending() {
 fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
     let f = Flow::default();
     assert_eq!(f.snapshot_live(), None);
-    f.change_map();
+    f.categories(None);
     assert!(f.snapshot_live().unwrap().contains("to be built"));
-    assert_eq!(f.building(0x1614), Some(Mode::Categories));
+    let open = f.opening().unwrap();
+    f.built(0x1614, open.mode, None);
     assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
-    f.pick(Category::Halo2);
-    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo2)));
-    assert_eq!(f.picked(0x2614), Some(0x1000));
-    assert!(f.snapshot_live().is_some());
-    assert_eq!(f.freed(0x2000), Some(0x1000));
-    assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
-    assert_eq!(f.freed(0x1000), None);
+    f.freed(0x1000);
     assert_eq!(f.snapshot_live(), None, "every screen of ours freed");
 }
 

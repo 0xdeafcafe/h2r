@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::{PREPARED, Picker, SCREEN, State, options};
 use crate::layout_glue::ReadGm;
-use crate::ui_kit::lifecycle::window_object;
+use crate::ui_kit::lifecycle::{focused_row_handle, window_object};
 
 pub fn inspect(m: &dyn GuestMemory) -> Value {
     let Some(s) = PREPARED
@@ -53,30 +53,13 @@ fn inspect_menu(m: &dyn GuestMemory, s: &State, channel: u32, screen: u32, picke
     let focus = if rows.is_empty() {
         None
     } else {
-        focused(m, channel, list)
+        focused_row_handle(m, channel, list).map(|row| usize::from(row as u16))
     }
     .filter(|&r| r < rows.len());
     let selected =
         matches!(page, "options" | "levels" | "difficulty").then(|| key(s.selection.campaign()));
     json!({"installed": true, "page": page, "game": selected, "rows": rows,
         "focused_row": focus, "focused": focus.and_then(|i| rows.get(i))})
-}
-
-// 0x24c447 returns the datum at focused item +0x70. 0x22ed7a
-// walks the channel's focused leaf (+0x34) up its parents (+0x10).
-fn focused(m: &dyn GuestMemory, channel: u32, list: u32) -> Option<usize> {
-    let mut child = m.u32(channel + 0x34).ok()?;
-    for _ in 0..32 {
-        if child == 0 {
-            return None;
-        }
-        let parent = m.u32(child.checked_add(0x10)?).ok()?;
-        if parent == list {
-            return Some(usize::from(m.u16(child.checked_add(0x70)?).ok()?));
-        }
-        child = parent;
-    }
-    None
 }
 
 #[cfg(test)]

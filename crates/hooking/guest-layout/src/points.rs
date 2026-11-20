@@ -871,6 +871,13 @@ points! { ALL;
     /// The Select Map list's row chosen (list handler in ECX, at its
     /// screen's `+0x614`): the map, then message 3 to its own screen.
     MAP_LIST_ROW_CHOSEN @ 0x002c_9b17: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/map-select.md";
+    /// Open the lobby's Select Map dialog from a screen request.
+    SELECT_MAP_LOAD @ 0x002b_b2db: [fn(request: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// Open the lobby's Game Setup dialog from a screen request.
+    GAME_SETUP_LOAD @ 0x002b_bacb: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_VARIANT_LIST_LOAD @ 0x002b_1b85: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_LEVEL_LIST_LOAD @ 0x002b_136d: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
+    LOBBY_DIFFICULTY_LOAD @ 0x002b_b432: [fn(request: stack 0) -> eax ret 4]; "docs/game/ui-screens.md";
     /// The Select Map screen's destructor (screen vtable `0x45c650` slot 0).
     MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
@@ -917,10 +924,16 @@ points! { ALL;
     /// The Controls screen constructor: the screen in EDI, the request's
     /// `+4`, `+8` and `+2` (word) on the stack; the screen in EAX.
     CONTROLS_SCREEN_CTOR @ 0x002b_7752: [fn(screen: edi, a: stack 0, b: stack 1, player: stack 2) -> eax ret 12]; "docs/formats/ui.md";
-    /// Push a constructed screen (EDI) opened by the request in EBX; it
-    /// calls screen slot 21. Who pops what is not read: entries restore
-    /// the stack themselves.
+    /// Queue a constructed screen on the channel named by the request.
     SCREEN_PUSH @ 0x0014_7f6d: [opaque]; "docs/formats/ui.md";
+    /// The generic screen event handler; B and Back close by channel.
+    SCREEN_BACK_EVENT @ 0x0023_00ea: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/ui-screens.md";
+    /// Game Setup handles X and delegates other events to SCREEN_BACK_EVENT.
+    GAME_SETUP_EVENT @ 0x002b_bed0: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/ui-screens.md";
+    /// Unlink and free a screen on a UI channel.
+    UI_CHANNEL_FREE @ 0x0023_51ea: [fn(channel: ecx, screen: stack 0) ret 4]; "docs/game/ui-screens.md";
+    /// Play the UI sound by index (Back is 4).
+    UI_SOUND @ 0x0023_6299: [fn(sound: eax) ret 0]; "docs/game/ui-screens.md";
     /// Screen vtable slot 18 of the Controls class: set up the current pane
     /// (header, then the pane's widgets).
     SCREEN_SETUP_PANE @ 0x0023_047e: [fn(screen: ecx, arg: stack 0) ret 4]; "docs/formats/ui.md";

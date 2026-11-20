@@ -46,7 +46,7 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -999,6 +999,20 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   can identify other screens too. Dialogs read as `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
+- **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
+  read of the occupied channels, their active, pending and outgoing
+  screen instances, and the game-shell channel's saved screen IDs
+  (`history`, nearest parent first). Each screen has `id`, `instance`
+  (a guest address valid for that screen's lifetime), and `parent` where
+  a return is known. The two map picker stages share an ID and have
+  distinct `mode` values (`folders`, `maps`), with the open `folder`
+  named on the maps stage and the active picker row in `focused_row`
+  (zero-based). `input` identifies the screen taking player one's menu
+  input. `back` gives the instance that closes and its parent where
+  known, with action `close`, `reopen` (recreate a parent), or `wait`
+  (consume Back during a replacement). It is null when there is no menu
+  input target or when Back depends on a screen's custom handler.
+  `ui.stack` is available without UI watch.
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI
   watch (`crates/extensions/game/src/campaign_menu.rs`). With no installed Halo 1

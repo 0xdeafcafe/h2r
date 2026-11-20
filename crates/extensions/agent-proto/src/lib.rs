@@ -194,6 +194,8 @@ pub mod method {
     pub const UI_AUDIT: &str = "ui.audit";
     /// Deliver one menu action guarded by the input owner and focus from `ui.audit`.
     pub const UI_PRESS: &str = "ui.press";
+    /// Live screen channels and the generic Back target, read at a game boundary.
+    pub const UI_STACK: &str = "ui.stack";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";
