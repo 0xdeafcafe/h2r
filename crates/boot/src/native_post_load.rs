@@ -1,5 +1,5 @@
 //! The screen effects' part of a map load (`native-post`,
-//! docs/graphics/native-renderer.md, stage 5, "The screen effects"):
+//! docs/graphics/native-post-hud.md, stage 5, "The screen effects"):
 //! every `egor` tag's shader resolved, each implementation of each of its
 //! layer-15 template passes looked at (`native_render::screen_look`) and
 //! translated with its vertex shader's first program (`0x00016610` loads

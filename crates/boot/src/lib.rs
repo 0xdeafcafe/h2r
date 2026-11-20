@@ -2072,7 +2072,7 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let threaded = false;
     let host_perf = host_perf::start_from_env(threaded);
-    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/gameplay-budget.md).
+    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/notes/gameplay-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     let gpu = cfg!(feature = "gpu")

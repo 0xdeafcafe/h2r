@@ -1,5 +1,5 @@
 //! `native-world`: the static world drawn by the native renderer instead
-//! of the game's layer-3 entries (docs/graphics/native-renderer.md, stage
+//! of the game's layer-3 entries (docs/graphics/native-world.md, stage
 //! 1). On with the native renderer (`impl.render.native`, on by default;
 //! `=off` returns the world to the D3D path with every other native
 //! stage).
@@ -29,7 +29,7 @@
 //! context sees (on the pipelined render thread, the render's view), and
 //! the host's pass request goes to the D3D device in render order, as the
 //! render's own D3D calls do. So the pipelined render runs it on its own
-//! thread (docs/graphics/pipelined-render.md, "Render-safe hooks").
+//! thread (docs/graphics/notes/pipelined-render.md, "The prototype").
 //!
 //! It sits inside `render-timing`'s observers at the point
 //! (`after_feature`), so its layer stage holds it.

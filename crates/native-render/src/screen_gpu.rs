@@ -1,4 +1,4 @@
-//! Stage 5's screen-effect pass on the GPU (docs/graphics/native-renderer.md,
+//! Stage 5's screen-effect pass on the GPU (docs/graphics/native-post-hud.md,
 //! "Stage 5", "The screen effects"): a translated layer-15 template pass
 //! ([`crate::screen_look::compile_screen`]) drawing the strips
 //! `0x0002d140` pushes by hand, into the target bound for the call or into

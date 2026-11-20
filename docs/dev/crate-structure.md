@@ -7,7 +7,7 @@ Measured at: `21ca66709` (master `100f13cef` plus docs), 2026-11-20, with
 `scripts/crate-graph.py`. Nothing was compiled or run.
 
 This page carries out section 2 and item 8 of
-[architecture-review-2026-11.md](../architecture-review-2026-11.md): where
+[2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md): where
 every crate ends up, why, and the order of moves that gets there while
 about eight lanes keep merging. It has three rules. A move is mechanical
 (`git mv`, path fixes, no logic). A move is a script, so a lane replays it
@@ -254,7 +254,7 @@ purpose and place; ARCHITECTURE.md has their rows.
 | `cmd` | formats | `Command { name, about, run }`, the registry, the usage text built from it, the disc and output helpers every command shares | `cli/src/main.rs`, `safe_out.rs` |
 | `sim-bench` | formats | Sim mode's pure parts: match and batch files, pacing, metrics, the A/B comparison | `sim`, renamed |
 | `h1-contract` | formats | The names and ids the Halo 1 converters write and the game's Halo 1 hooks read | about twenty items in `h1convert`, `h1scripts`, `h1text`, `h1objects` |
-| `sim-tier` | recompiler | The tick's call closure compiled under the relaxed contract ([sim-review.md](../engine/sim-review.md) 4.2): signature recovery, the tier emitter, the bisect manifest | the `sim-tier` lane |
+| `sim-tier` | recompiler | The tick's call closure compiled under the relaxed contract ([2026-11-20-sim.md](../reviews/2026-11-20-sim.md) 4.2): signature recovery, the tier emitter, the bisect manifest | the `sim-tier` lane |
 | `recomp` | runtime | An XBE to a loaded module: build stamps, the analysis cache, lift, emit, compile, `Module`, the fallback interpreter, the Cranelift tier, the bridge C | `boot/src/lib.rs` lines 196 to 822, `fallback`, `shim`, `sse`, `x87`, `tier`, `host_coverage`, `boot/c`, `boot/build.rs` |
 | `lifted` | runtime (dev) | The lifted original of a guest function as a test oracle, and the shadow-execution comparison | the `shadow-exec` lane (`crates/lifted`) |
 | `guest-layout` | hooks | One definition per guest structure, generic over the memory type; globals; the points several crates share; per-point verification | the `guest-layout` lane; `engine/src/{points, memory, handle, datum, view, tags, testing}.rs` |

@@ -219,7 +219,7 @@ game thread, so their sum can exceed the frame's wall time. `render-wait_us`
 is the game thread's own wait, including queue backlog, CPU encoding and
 GPU work needed for a reply. The CSV's `read_bytes` is file I/O, not GPU
 readback bytes. An incomplete render-thread tail at shutdown is omitted
-and counted in the exit report. See [gameplay-budget.md](../perf/gameplay-budget.md).
+and counted in the exit report. See [gameplay-budget.md](../perf/notes/gameplay-budget.md).
 
 Cost: one clock read per phase switch, about six per draw. At 300 draws
 that is under 0.1 ms of a 75 ms level frame. Add one short lock per frame. Off, each hook is a relaxed

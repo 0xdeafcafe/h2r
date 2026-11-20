@@ -409,7 +409,7 @@ features in `crates/feature/src/native_*`; its one switch is
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
-([gameplay-budget.md](../perf/gameplay-budget.md)).
+([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `scene_effect_instruction_entries` lists the retail instruction boundaries the
 emitter must route through entry dispatch for those stages.
 

@@ -1,5 +1,5 @@
 //! The grid `0x00034d90` draws for each step of `0x00021360`
-//! ([`crate::glow::wide`]; docs/graphics/native-renderer.md, stage 5, "The
+//! ([`crate::glow::wide`]; docs/graphics/native-post-hud.md, stage 5, "The
 //! screen effects"), as the exact vertices it pushes, for the native
 //! renderer to draw them in the game's place.
 //!

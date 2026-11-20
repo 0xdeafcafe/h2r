@@ -1,6 +1,6 @@
 //! The per-light constants: `0x0004a1e0` and its callee `0x000497a0`, as
 //! one function that returns the globals block they write
-//! (docs/graphics/native-renderer.md, "Stage 4", slice 2).
+//! (docs/graphics/native-lights.md, "Stage 4", slice 2).
 //!
 //! `render_light_passes` (`0x00031170`) calls `0x0004a1e0` once per light,
 //! before its layer passes. The call fills a block of globals the light

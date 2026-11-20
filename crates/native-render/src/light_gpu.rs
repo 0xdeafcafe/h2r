@@ -1,7 +1,7 @@
 //! Stage 4's GPU side: a compiled light pass ([`crate::light_look`]) with
 //! its stage textures, the engine's light textures (the normalization cube
 //! and the attenuation volume), and dynamic uniform offsets for the lights
-//! in each ordered run (docs/graphics/native-renderer.md, "Stage 4").
+//! in each ordered run (docs/graphics/native-lights.md, "Stage 4").
 
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 

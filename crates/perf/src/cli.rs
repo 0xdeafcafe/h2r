@@ -74,7 +74,7 @@ pub const BUDGET_USAGE: &str = "usage: h2 profile budget <trace.json> [--json]
 Split each frame of a timeline trace (H2_TIMELINE, or --timeline) into
 the self time of the game thread's spans, with logical time, idle
 advances, slices, accesses and vblanks per frame and the contended guest
-memory lock waits (docs/perf/menu-budget.md). Record it with the default
+memory lock waits (docs/perf/notes/menu-budget.md). Record it with the default
 categories (all but hle) or `all` to split HLE calls out of guest slices.";
 
 /// `h2 profile budget`.

@@ -1,5 +1,5 @@
 //! The glow of `render_screen_effects`' colour pass (`0x000214f0`) drawn
-//! natively (docs/graphics/native-renderer.md, stage 5): the down-sample
+//! natively (docs/graphics/native-post-hud.md, stage 5): the down-sample
 //! into target 7, the blur ping-ponging 7 and 8, and the composite back
 //! over the view's colour, each a screen quad through the stage 3
 //! combiner compiler (`shaders::psh`) with the game's own 60-word blocks

@@ -1,8 +1,8 @@
 # FrameScene: a native renderer that owns the frame (design)
 
-Change 7 of the [architecture review](../architecture-review-2026-11.md)
+Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 (section 4.3 and section 5 item 7), and lane 7 of the
-[sim review](../engine/sim-review.md) (the presentation snapshot). This
+[sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Nothing here is built. Lanes write code and tests; the coordinator builds,

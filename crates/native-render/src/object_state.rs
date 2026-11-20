@@ -1,5 +1,5 @@
 //! The render state an object's layer-3 draw takes, field by field
-//! (docs/graphics/native-renderer.md, "Object programs"): what its
+//! (docs/graphics/native-objects.md, "Object programs"): what its
 //! implementation sets on entry (`0x00018900`), and for every other field
 //! the value the device holds when layer 3 is drawn, read from the guest's
 //! render-state array at the layer-3 call ([`EntryStates`]). A field the

@@ -1,7 +1,7 @@
 //! Stage 4b's GPU side: the world's layer-16 passes, each compiled with
 //! its own programs ([`crate::program::compile_pass`]) and drawn with its
 //! own blend, depth and cull state ([`crate::pass_state`]), over the
-//! loaded depth (docs/graphics/native-renderer.md, "Stage 4b: planar
+//! loaded depth (docs/graphics/native-water-fog.md, "Stage 4b: planar
 //! fog").
 //!
 //! The look is layer 3's ([`crate::look::implementation_look`]) plus the

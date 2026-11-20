@@ -255,7 +255,7 @@ width. Clang inlined them only in small handlers; in a handler with many
 access sites (every image shard) it kept one out-of-line copy per shard,
 so each access was a call, about 30 instructions, a `memcpy` with a
 run-time width and a 16-byte staging buffer on each side
-(`docs/perf/architecture-review.md`, finding 1).
+(`docs/reviews/2026-11-16-frame-time.md`, finding 1).
 
 Now the check is a macro (`H2_HELD_TRY`, `h2fastmem.h`) that is always
 inline: with the gate held, a span inside one page, the permission bit

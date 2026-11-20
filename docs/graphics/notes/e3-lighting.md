@@ -88,7 +88,7 @@ each view's image is the 1x reference's, every pixel repeated 2x2
 (against a nearest upscale of `frame-N-1x.png` the mean difference is
 below 0.2 of 255). The frame is covered, opaque, by a pass upsampling a
 small pool level, which keeps its guest size in both views
-([high-resolution.md](high-resolution.md), fixed-size targets), so the
+([high-resolution.md](../high-resolution.md), fixed-size targets), so the
 shadows under it never reach the screen in either.
 `a_frame_covered_by_a_small_level_shows_no_lighting_difference`
 (render_scale.rs) reproduces that: the 2x map drawn and sampled every
@@ -228,6 +228,6 @@ more at every scale measured, Halo 2's casters are mostly open meshes (37% of
 caster triangles closed, the level's clusters none), and the two agree on all
 but a fraction of a percent of lit pixels. A study note that recommended
 depth-fail volumes, and why it is not followed, is in
-[pstencil.md](pstencil.md) ("The technique: why shadow maps"). Volumes for
+[pstencil.md](../pstencil.md) ("The technique: why shadow maps"). Volumes for
 closed object casters stay the fallback if phase 4's pictures show a case a
 map cannot meet.
