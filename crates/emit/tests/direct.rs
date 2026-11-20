@@ -1082,7 +1082,14 @@ fn a_callee_writes_registers_its_caller_only_reads() {
 fn xmm_homes_spill_and_reload_at_direct_calls() {
     let caller = funcs().into_iter().find(|f| f.entry == VEC_CALLER).unwrap();
     // XMM7 is written; XMM2 only read after the callee has changed it.
-    assert_eq!(emit::c::homes(&caller) >> 9, 1 << 7);
+    let home = emit::c::homes(&caller);
+    assert_eq!(home >> 9, 1 << 7);
+    let call = caller.insns().find(|i| matches!(
+        i.control,
+        ir::Control::Call { target: ir::Target::Direct(VEC_CALLEE), .. }
+    )).expect("fixture must call VEC_CALLEE directly");
+    let spills = emit::c::dirty_at_exits(&caller, home);
+    assert_eq!(spills[&call.pc] >> 9, 1 << 7, "spill XMM7 before the callee reads it");
     agree("xmm homes", |m| {
         let out = run_twice(VEC_CALLER)(m);
         for o in &out {
