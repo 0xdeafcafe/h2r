@@ -351,6 +351,7 @@ pub struct Memory {
     pub going: Option<Going>,
     pub lock: lock::Lock,
     pub route: Option<drive::Route>,
+    pub(crate) paths: crate::nav::VehiclePaths,
     pub unstick: drive::Unstick,
     pub flight: flight::Flight,
     /// Getting out, and why.

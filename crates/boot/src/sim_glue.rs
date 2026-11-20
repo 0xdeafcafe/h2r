@@ -795,15 +795,15 @@ impl feature::Feature for SimMetrics {
                         s.tally.start(sample.tick);
                     }
                     let resets = s.tally.resets();
-                    s.tally.tick(&sample);
+                    let tick = sample.tick;
+                    s.tally.tick_owned(sample);
                     if s.tally.resets() != resets {
                         // A snapshot load (a forked run): the match is
                         // timed, seeded and teamed from here.
                         s.first_tick = Some(Instant::now());
                         s.set_up = false;
                         eprintln!(
-                            "sim: the tick jumped to {} (a snapshot load); counting from here",
-                            sample.tick
+                            "sim: the tick jumped to {tick} (a snapshot load); counting from here"
                         );
                     }
                     for p in shooters(&snap, &fired) {

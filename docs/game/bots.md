@@ -1563,6 +1563,18 @@ fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
 a bot with it waits a second at a vehicle and then fires: slower, not
 wrong.
 
+**Ground-route performance.** On 2026-11-20, ground-vehicle A* accounted
+for 2,917 of 5,201 game-thread samples in a Waterworks 2v2 sim. Only a
+ground driver asks for this path. A failed plan leaves it free to choose
+again next think, including picking a new roam goal. An exhausted search
+now remembers which polygons it reached from that start. Further goals
+outside that set fail immediately. A successful search can reuse its
+corridor for the same start and goal polygons and append the current
+snapped endpoint. Each driver caches portal clearance for its loaded map,
+vehicle datum and exact hull dimensions. Steering still checks the next
+leg from the vehicle's current position. A blocked leg drops the cached
+corridor for the next plan and keeps the normal steering retry.
+
 **Which vehicles.** By class (`vehicle::Class::spec`).
 
 | Class | Seat taken | Controller behavior |

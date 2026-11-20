@@ -241,7 +241,7 @@ pub struct Mind {
     last_pad: HostPadState,
     /// The target and the tick when its reaction finishes.
     target: Option<(u32, u32)>,
-    tracks: std::collections::HashMap<u32, Track>,
+    tracks: rustc_hash::FxHashMap<u32, Track>,
     last_seen: Option<(u32, Vec3, u32)>,
     /// An uncertain search area from hearing or a public kill announcement.
     search: Option<(Vec3, u32)>,

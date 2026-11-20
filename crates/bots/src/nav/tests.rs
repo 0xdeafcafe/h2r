@@ -126,6 +126,26 @@ fn floors_sharing_an_edge_are_walked_both_ways() {
 }
 
 #[test]
+fn nested_corridor_filters_and_smaller_meshes_reuse_search_safely() {
+    let m = floors(&[
+        (0., 0., 2., 2., 0.),
+        (2., 0., 4., 2., 0.),
+        (4., 0., 6., 2., 0.),
+    ]);
+    let small = floors(&[(0., 0., 2., 2., 0.)]);
+    let forward = m.corridor(0, 2).unwrap();
+    assert_eq!(forward.len(), 2);
+    for block in [true, false] {
+        let path = m.corridor_avoiding(0, 2, &|e| {
+            assert_eq!(small.corridor(0, 0), Some(vec![]));
+            block && e.to == 2
+        });
+        assert_eq!(path.as_ref(), (!block).then_some(&forward));
+        assert_eq!(small.corridor(0, 0), Some(vec![]));
+    }
+}
+
+#[test]
 fn locate_finds_the_floor_under_a_biped() {
     let m = floors(&[(0.0, 0.0, 2.0, 2.0, 0.0), (0.0, 0.0, 2.0, 2.0, 3.0)]);
     let lower = m.locate([1.0, 1.0, 0.3], 1.0).unwrap();
@@ -813,9 +833,8 @@ fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
         walls: Walls::default(),
     };
     let spec = crate::vehicle::Class::Jeep.spec();
-    let path = m
-        .nav
-        .vehicle_path(start, end, spec.half_width, spec.height, &m.walls)
+    let path = VehiclePaths::default()
+        .vehicle_path(&m, 1, start, end, spec.half_width, spec.height)
         .unwrap();
     assert_eq!(path, [[2.0, 4.0, 0.0], [8.0, 4.0, 0.0], end]);
     assert!(!crate::vehicle::drive::clear(&m, spec, start, end));

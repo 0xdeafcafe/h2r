@@ -535,6 +535,12 @@ impl Tally {
     /// one, or more than [`JUMP_TICKS`] after it, means the machine was
     /// loaded from a snapshot: the tally starts again from there.
     pub fn tick(&mut self, s: &TickSample) {
+        self.tick_owned(s.clone());
+    }
+
+    /// Record the sample and retain its player names and vectors for the
+    /// next tick's comparisons.
+    pub fn tick_owned(&mut self, s: TickSample) {
         if let Some(last) = self.last_tick
             && (s.tick < last || s.tick > last.saturating_add(JUMP_TICKS))
         {
@@ -547,7 +553,7 @@ impl Tally {
         if self.last_tick == Some(s.tick) {
             // The same tick again (an observer called twice): the latest
             // view, counted once.
-            self.last = Some(s.clone());
+            self.last = Some(s);
             return;
         }
         self.ticks += 1;
@@ -576,7 +582,7 @@ impl Tally {
                 _ => a.held = None,
             }
         }
-        self.last = Some(s.clone());
+        self.last = Some(s);
     }
 
     /// The player on this port, from the snapshots so far.

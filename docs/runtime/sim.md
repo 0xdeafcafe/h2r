@@ -682,6 +682,25 @@ incremental RAM. With eight effective cores and 12 GiB available, start
 sizing from at most eight workers before allowing for headroom. Use
 `wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
 
+### Bot navigation performance
+
+On 2026-11-20, a five-minute all-local Lockout match took about 10 ms/tick.
+Across 12 retail maps the baseline was 10.4–19.5 ms/tick, including
+Zanzibar at 19.5, Colossus at 17.9, Headlong at 17.4 and Foundation at 17.1.
+A 15-second macOS sample of unpaced, light-profile Waterworks 2v2 (two
+local bots and two phantoms) put 3,241 of 5,201 game-thread samples in
+bot glue and 2,917 in ground-vehicle pathfinding. Wall checks accounted
+for 1,866 top-of-stack samples across threads. The hash-table growth
+under those checks came from the temporary set of triangle IDs per ray.
+
+Drivers now reuse corridors, unreachable results and portal clearance.
+Wall probes within one grid cell test its triangles directly. Longer
+probes use reusable visit marks. A* reuses its heap and polygon records,
+and the tally takes ownership of each tick sample. The 2× target still
+needs a matched before/after run. Compare ms/tick and per-tick hashes
+with the same build profile, map, seed, seats and tick limit, including
+an all-local Lockout control.
+
 ## Host audit corpus
 
 Build the full clang image with the usual optimization setting. Prepare

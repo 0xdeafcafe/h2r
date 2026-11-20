@@ -214,14 +214,16 @@ impl Mind {
                     .is_none_or(|r| len(sub(r.goal, dest)) > ROUTE_STALE);
                 if stale {
                     self.vehicles.route = match map {
-                        Some(m) => m
-                            .nav
+                        Some(m) => self
+                            .vehicles
+                            .paths
                             .vehicle_path(
+                                m,
+                                root.id,
                                 root.position,
                                 dest,
                                 spec.half_width,
                                 spec.height,
-                                &m.walls,
                             )
                             .map(|path| drive::Route::new(path, dest)),
                         None => Some(drive::Route::straight(dest)),
@@ -249,6 +251,9 @@ impl Mind {
                         }
                     }
                     None => {
+                        if self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
+                            self.vehicles.paths.discard_corridor();
+                        }
                         // There: a roam goal is done; anything else, park.
                         if self.last_seen.is_none() && goal.is_none() {
                             self.goal = None;
