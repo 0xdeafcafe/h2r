@@ -777,9 +777,8 @@ pub struct Converter<'a> {
     flag_panels: HashMap<u32, [TagId; 2]>,
     /// Widgets per converted `unhi` ([`Self::unit_hud`]).
     unit_hud_widgets: HashMap<u32, usize>,
-    /// Per converted `wphi`, its entries with no widget
-    /// ([`Self::weapon_hud`]).
-    weapon_hud_skips: HashMap<u32, Vec<String>>,
+    /// Direct-image sequences for crosshair overlays with source flag 1 set.
+    direct_hud_bitmaps: HashMap<u32, TagId>,
     /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
     hud_bitmaps: HashMap<(u32, u8), TagId>,
     /// Copies of a bitmap whose sequence starts at a later sprite, by
@@ -843,7 +842,7 @@ impl<'a> Converter<'a> {
             health_huds: HashMap::new(),
             unit_hud_widgets: HashMap::new(),
             flag_panels: HashMap::new(),
-            weapon_hud_skips: HashMap::new(),
+            direct_hud_bitmaps: HashMap::new(),
             hud_bitmaps: HashMap::new(),
             sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
@@ -2183,8 +2182,8 @@ impl<'a> Converter<'a> {
 
     /// A copy of bitmap `id` whose sequence `seq` starts at its sprite
     /// `first`, for a Halo 2 widget, which draws its sequence's first
-    /// sprite, to draw a later one (`h1hud::zoom_widget`). Sprite 0 is the
-    /// bitmap itself; `<name>_seq<seq>_sprite<first>`, built once.
+    /// sprite. Isolate even sprite 0: the native target-colour branch can
+    /// otherwise substitute sprite 1. Cache by source, sequence and frame.
     /// `Ok(None)` only past the sequence's sprites (the weapon has no such
     /// zoom level); a bitmap that does not read, decode or convert is an
     /// error naming it.
@@ -2194,9 +2193,6 @@ impl<'a> Converter<'a> {
         let fail = |why: String| -> Error {
             h1convert::Error::no_rebuild(&source.header().name, &tag.name, format!("zoom sprite {first}: {why}")).into()
         };
-        if first == 0 {
-            return self.bitmap(id).map(Some).ok_or_else(|| fail("bitmap conversion".into()));
-        }
         let key = (id.0, seq, first);
         if let Some(t) = self.sprite_bitmaps.get(&key) {
             return Ok(Some(*t));
@@ -2211,7 +2207,8 @@ impl<'a> Converter<'a> {
         if first >= sprites.len() {
             return Ok(None);
         }
-        sprites.drain(..first);
+        let selected = sprites[first].clone();
+        *sprites = vec![selected];
         let mut pixels = (0..bm.images.len())
             .map(|i| bm.pixels(source, i).map(|p| p.to_vec()))
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -3513,111 +3510,138 @@ impl Converter<'_> {
         Ok((id, n))
     }
 
-    /// Halo 1's weapon HUD `wphi` (and its children) as an `nhdt` written
-    /// from scratch ([`crate::h1hud::weapon_widget`]), built once per
-    /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
-    /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
-    /// widget, why.
-    ///
-    /// A chain with no element at all draws nothing in Halo 1 and gets an
-    /// `nhdt` with no widget (V: the flamethrower's on the multiplayer
-    /// maps, `weapons\flamethrower\flame thrower` and its child `ui\hud\master
-    /// fuel`, list no static, meter, number, crosshair or overlay). Until
-    /// converter version 87 it was refused, and the converted flamethrower
-    /// kept the shotgun's Halo 2 HUD (`ui\hud\shotgun`, `role_audit_disc`).
-    /// A chain whose elements all fail to convert is still refused.
-    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
-        use crate::h1hud;
-        let tag = self.h1.tag(wphi)?.clone();
-        if let Some(id) = self.done.get(&tag.id.0) {
-            let skipped = self.weapon_hud_skips.get(&tag.id.0).cloned().unwrap_or_default();
-            return Ok((*id, skipped));
+    /// Build all entries before publishing the interface, including those
+    /// inherited from child HUDs. Empty retail chains produce an empty nhdt.
+    pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<TagId> {
+        let tag = self
+            .h1
+            .tag(wphi)
+            .map_err(|err| {
+                h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    format!("wphi {:#010x}", wphi.0),
+                    err,
+                )
+            })?
+            .clone();
+        if tag.group != h1map::Group::new(b"wphi") {
+            return Err(h1convert::Error::no_rebuild(
+                &self.h1.header().name,
+                &tag.name,
+                format!("expected wphi, found {}", tag.group),
+            )
+            .into());
         }
-        let entries = h1hud::weapon_entries(self.h1, wphi)?;
-        let find = |group: &[u8; 4], name: &str| {
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
+        }
+        let result = self.rebuild_weapon_hud(&tag);
+        result.map_err(|err| {
+            h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, err).into()
+        })
+    }
+
+    fn rebuild_weapon_hud(&mut self, tag: &h1map::Tag) -> Result<TagId> {
+        use crate::h1hud::{self, WeaponEntryKind as Kind, weapon::Interface};
+        let entries = h1hud::weapon_entries(self.h1, tag.id)?;
+        let shader = |name: &str| {
             self.base
-                .find(group, name)
+                .find(b"shad", name)
                 .ok_or_else(|| Error::NoTemplate(name.into()))
         };
-        let meter = find(b"shad", h1hud::METER_SHADER)?;
-        let plain = find(b"shad", h1hud::STATIC_SHADER)?;
-        let text_shader = find(b"shad", h1hud::TEXT_SHADER)?;
-        let mut widgets = Vec::new();
-        let mut texts = Vec::new();
-        let mut skipped = Vec::new();
-        for e in &entries {
-            // Numbers: Halo 2 text, placed as the grenade count is.
-            if matches!(e.kind, h1hud::WeaponEntryKind::Number(..)) {
-                let w = h1hud::digit_width(self.h1)?;
-                let h = h1hud::digit_height(self.h1)?;
-                match h1hud::weapon_number(e, w, h, text_shader) {
-                    Ok(t) => texts.push(t),
-                    Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
+        let (meter, plain, text) = (
+            shader(h1hud::METER_SHADER)?,
+            shader(h1hud::STATIC_SHADER)?,
+            shader(h1hud::TEXT_SHADER)?,
+        );
+        let mut hud = Interface::new();
+        for (index, e) in entries.iter().enumerate() {
+            let source = self.h1.tag(e.wphi)?.name.clone();
+            let failure =
+                |why: String| Error::Invalid(format!("{source} entry {index} {:?}: {why}", e.kind));
+            if matches!(e.kind, Kind::Number(..)) {
+                let widget = h1hud::weapon_number_with_spacing(
+                    e,
+                    h1hud::digit_width(self.h1)?,
+                    h1hud::digit_height(self.h1)?,
+                    h1hud::decimal_spacing(self.h1)?,
+                    text,
+                )
+                .map_err(|err| failure(format!("{err:?}")))?;
+                hud.text(e, widget)?;
+                continue;
+            }
+            let id = e.bitmap.ok_or_else(|| failure("missing bitmap".into()))?;
+            let bt = self.h1.tag(id)?.clone();
+            let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
+            if let Kind::Crosshair(h1hud::crosshair_type::ZOOM_LEVEL, flags) = e.kind {
+                let seq = usize::try_from(e.sequence)
+                    .ok()
+                    .and_then(|seq| bm.sequences.get(seq))
+                    .ok_or_else(|| {
+                        failure(format!("missing sequence {} of {}", e.sequence, bt.name))
+                    })?;
+                let count = seq.sprites.len();
+                let first_zoomed = flags & h1hud::OVERLAY_WHEN_ZOOMED != 0;
+                let single_frame = flags & (h1hud::OVERLAY_WHEN_UNZOOMED | 0x20) != 0;
+                let levels = if single_frame {
+                    1
+                } else {
+                    h1hud::ZOOM_LEVELS + usize::from(!first_zoomed)
+                };
+                if count == 0 {
+                    return Err(failure(format!(
+                        "empty zoom sequence {} of {}",
+                        e.sequence, bt.name
+                    )));
+                }
+                for level in 0..count.min(levels) {
+                    let image = self.sprite_bitmap(id, e.sequence, level)?;
+                    let widget = h1hud::zoom_widget(e, level, image, plain)
+                        .map_err(|err| failure(format!("{err:?}")))?;
+                    hud.bitmap(e, widget)?;
                 }
                 continue;
             }
-            let drawn = match e.bitmap {
-                Some(b) => {
-                    let bt = self.h1.tag(b)?.clone();
-                    let bm = h1map::bitmap::Bitmap::read(self.h1, &bt)?;
-                    let visible = h1hud::sprite(&bm, e.sequence).is_some();
-                    let alpha = match e.kind {
-                        h1hud::WeaponEntryKind::Static(_) | h1hud::WeaponEntryKind::Overlay(..) => {
-                            h1hud::static_alpha(e.colour)
-                        }
-                        _ => Some(255),
-                    };
-                    if let Some(alpha) = alpha.filter(|_| visible) {
-                        let image = match e.kind {
-                            h1hud::WeaponEntryKind::Meter(..) => self.meter_bitmap(b),
-                            h1hud::WeaponEntryKind::Static(_)
-                            | h1hud::WeaponEntryKind::Overlay(..) => self.hud_bitmap(b, alpha),
-                            _ => self.bitmap(b),
-                        };
-                        Some(image.ok_or_else(|| {
-                            h1convert::Error::no_rebuild(
-                                &self.h1.header().name,
-                                &bt.name,
-                                format!("HUD image used by {}", tag.name),
-                            )
-                        })?)
-                    } else {
-                        None
-                    }
+            let direct =
+                matches!(e.kind, Kind::Crosshair(_, f) | Kind::Warning(_, f, _) if f & 2 != 0);
+            let image = if direct {
+                if usize::try_from(e.sequence)
+                    .ok()
+                    .and_then(|i| bm.images.get(i))
+                    .is_none()
+                {
+                    return Err(failure(format!(
+                        "missing image {} of {}",
+                        e.sequence, bt.name
+                    )));
                 }
-                None => None,
+                Some(self.direct_hud_bitmap(&bt, bm)?)
+            } else {
+                if h1hud::sprite(&bm, e.sequence).is_none() {
+                    return Err(failure(format!(
+                        "missing sequence {} of {}",
+                        e.sequence, bt.name
+                    )));
+                }
+                match e.kind {
+                    Kind::Meter(..) => self.meter_bitmap(id),
+                    Kind::Static(_) | Kind::Overlay(..) => {
+                        match h1hud::static_alpha(e.colour) {
+                            Some(alpha) => self.hud_bitmap(id, alpha),
+                            None => self.bitmap(id),
+                        }
+                    }
+                    _ => self.bitmap(id),
+                }
             };
-            match h1hud::weapon_widget(e, drawn, meter, plain) {
-                Ok(w) => widgets.push(w),
-                // The zoom-level readout: a widget per level, each on a copy
-                // of the bitmap that starts at the level's sprite.
-                Err(h1hud::Skip::ZoomLevels) => {
-                    for level in 0..h1hud::ZOOM_LEVELS {
-                        let level_drawn = match drawn.and(e.bitmap) {
-                            Some(b) => self.sprite_bitmap(b, e.sequence, level)?,
-                            None => None,
-                        };
-                        if level > 0 && level_drawn.is_none() {
-                            // No sprite for the level: the weapon has none.
-                            break;
-                        }
-                        match h1hud::zoom_widget(e, level, level_drawn, plain) {
-                            Ok(w) => widgets.push(w),
-                            Err(why) => {
-                                skipped.push(format!("{:?}: {why:?}", e.kind));
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
-            }
+            let image = image.ok_or_else(|| failure(format!("could not rebuild {}", bt.name)))?;
+            let widget = h1hud::weapon_widget(e, Some(image), meter, plain)
+                .map_err(|err| failure(format!("{err:?}")))?;
+            hud.bitmap(e, widget)?;
         }
-        let mut root = h1hud::nhdt(&widgets, &texts);
-        let scope = self.weapon_scope(wphi, &tag.name, &mut root)?;
-        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() && !scope {
-            return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
-        }
+        let mut root = hud.build()?;
+        self.weapon_scope(tag.id, &tag.name, &mut root)?;
         let id = self.tree.push(
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
@@ -3627,8 +3651,37 @@ impl Converter<'_> {
             },
         );
         self.done.insert(tag.id.0, id);
-        self.weapon_hud_skips.insert(tag.id.0, skipped.clone());
-        Ok((id, skipped))
+        Ok(id)
+    }
+
+    /// H1 0xdaeb2 and 0xdb12b index the image directly when bit 1 is set.
+    fn direct_hud_bitmap(
+        &mut self,
+        tag: &h1map::Tag,
+        mut bm: h1map::bitmap::Bitmap,
+    ) -> Result<TagId> {
+        if let Some(&id) = self.direct_hud_bitmaps.get(&tag.id.0) {
+            return Ok(id);
+        }
+        let mut sequences = Vec::with_capacity(bm.images.len());
+        for i in 0..bm.images.len() {
+            sequences.push(h1map::bitmap::Sequence {
+                name: format!("image_{i}"),
+                first_image: i16::try_from(i)
+                    .map_err(|_| Error::Invalid("HUD image index".into()))?,
+                image_count: 1,
+                sprites: Vec::new(),
+            });
+        }
+        bm.sequences = sequences;
+        let pixels = (0..bm.images.len())
+            .map(|i| bm.pixels(self.h1, i))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (converted, _) = h1bitmaps::convert::convert_with(&bm, |i| Ok(pixels[i].to_vec()))
+            .map_err(|e| Error::Invalid(format!("{}: {e}", tag.name)))?;
+        let id = self.tree.push(&format!("{}_direct", tag.name), converted);
+        self.direct_hud_bitmaps.insert(tag.id.0, id);
+        Ok(id)
     }
 
     /// The health-meter copies ([`Self::health_nhdt`]) of the HUD

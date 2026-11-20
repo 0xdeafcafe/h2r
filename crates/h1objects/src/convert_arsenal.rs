@@ -320,24 +320,14 @@ impl Converter<'_> {
         // counterpart's becomes the Halo 2 side of the weapon's HUD pair.
         let mut swap = None;
         if let Some(wphi) = w.hud {
-            match self.weapon_hud(wphi) {
-                Ok((nhdt, skipped)) => {
-                    parts.halo1.push(arsenal::halo1_ref("hud", b"nhdt", Some(nhdt)));
-                    swap = cp.as_ref().and_then(|(_, root)| self.base.reference(root, 0x2b0))
-                        .map(|h2| (nhdt, h2));
-                    for s in skipped {
-                        rep.no_home.push(format!("HUD: {s}"));
-                    }
-                }
-                Err(e) => {
-                    return Err(h1convert::Error::no_rebuild(
-                        &self.h1.header().name,
-                        &self.h1_tag(wphi)?.name,
-                        e,
-                    )
-                    .into());
-                }
-            }
+            let nhdt = self.weapon_hud(wphi)?;
+            parts
+                .halo1
+                .push(arsenal::halo1_ref("hud", b"nhdt", Some(nhdt)));
+            swap = cp
+                .as_ref()
+                .and_then(|(_, root)| self.base.reference(root, 0x2b0))
+                .map(|h2| (nhdt, h2));
         }
         // Halo 1's in the slots named by pairs (arsenal::WEAPON_MELEE_DAMAGE),
         // after the weapon's own effects and sounds above (the overheated

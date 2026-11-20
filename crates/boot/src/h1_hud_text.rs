@@ -23,6 +23,7 @@ mod prompts;
 mod silhouettes;
 mod timer;
 mod tint;
+mod weapon;
 
 const HUD: u32 = 0x0050_23f4;
 const HUD_FLAGS: u32 = 0x0051_0c98;
@@ -363,7 +364,8 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
             prompts::register(b);
             silhouettes::register(b);
             timer::register(b);
-            tint::register(b);
+            let rows = weapon::register(b)?;
+            tint::register(b, rows);
             Ok(())
         },
     };

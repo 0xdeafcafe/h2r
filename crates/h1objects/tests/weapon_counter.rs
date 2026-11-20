@@ -66,6 +66,7 @@ fn model_shader_map(shader_group: &'static [u8; 4]) -> H1Map {
         put(b, weapon + 0x34, id(1));
         put(b, weapon + 0x45c, group(b"mode"));
         put(b, weapon + 0x468, id(2));
+        put(b, weapon + 0x48c, h1map::TagId::NONE.0);
         put(b, weapon + 0x330, u32::from(WEAPON_PRIMARY_AMMUNITION));
         put(b, weapon + 0x158, 1);
         put(b, weapon + 0x15c, address(function));

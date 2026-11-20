@@ -77,6 +77,7 @@ fn weapon_zoom_rebuilds_from_the_halo1_tag() {
             BASE + (root - index) as u32,
         );
         fixture.file.resize(root + h1::WEAP_SIZE, 0);
+        put(&mut fixture.file, root + 0x48c, h1map::TagId::NONE.0);
         let length = fixture.file.len();
         put(&mut fixture.file, 8, length as u32);
         put(&mut fixture.file, 0x14, (length - index) as u32);
@@ -105,6 +106,94 @@ fn weapon_zoom_rebuilds_from_the_halo1_tag() {
             expected_range,
         );
         assert_eq!(word(0x12c) & (1 << 16) != 0, levels == 0);
+    }
+}
+
+#[test]
+fn weapon_hud_references_distinguish_absent_stale_and_wrong_group() {
+    use crate::h1::{WEAP_SIZE, Weapon};
+    use h1map::testing::{SCNR_ID, Spec, build_with_extra_tags, group, put};
+
+    let fixture = build_with_extra_tags(
+        &Default::default(),
+        vec![
+            Spec {
+                group: b"weap",
+                parent: None,
+                name: "fixture rifle",
+                data: Some(vec![0; WEAP_SIZE]),
+            },
+            Spec {
+                group: b"wphi",
+                parent: None,
+                name: "fixture hud",
+                data: Some(vec![0; crate::h1hud::wphi::SIZE]),
+            },
+        ],
+    );
+    let hud_index = fixture.data_at.len() - 1;
+    let root = fixture.data_at[hud_index - 1].unwrap();
+    let hud = h1map::TagId(SCNR_ID + hud_index as u32);
+    let read = |id: h1map::TagId| {
+        let mut file = fixture.file.clone();
+        put(&mut file, root + 0x480, group(b"wphi"));
+        put(&mut file, root + 0x48c, id.0);
+        let map = h1map::H1Map::from_decompressed(file).unwrap();
+        Weapon::read(&map, &map.tags()[hud_index - 1]).map(|w| w.hud)
+    };
+    assert_eq!(read(h1map::TagId::NONE).unwrap(), None);
+    assert_eq!(read(hud).unwrap(), Some(hud));
+    for id in [h1map::TagId(hud.0 ^ (1 << 16)), h1map::TagId(SCNR_ID)] {
+        let msg = read(id).unwrap_err().to_string();
+        assert!(
+            msg.contains("fixture rifle") && msg.to_ascii_lowercase().contains("hud"),
+            "{msg}"
+        );
+    }
+}
+
+#[test]
+fn scaled_weapon_bitmap_keeps_its_anchor_and_each_authored_axis() {
+    use crate::h1hud::{self, Anchor, WeaponEntry, WeaponEntryKind, WeaponState};
+    use tags::defs::{self, Defs, Val};
+    use tags::effects::function::{Function, FunctionType};
+
+    let e = WeaponEntry {
+        wphi: h1map::TagId(1),
+        kind: WeaponEntryKind::Static(WeaponState::TotalAmmo),
+        thresholds: [0; 4],
+        flash: [0; 24],
+        split_flags: 0,
+        frame_period: 0,
+        screen: 0,
+        hidden: false,
+        anchor: Anchor::TopRight,
+        offset: (30, 12),
+        scale: [2.0, 0.25],
+        bitmap: Some(h1map::TagId(9)),
+        sequence: 0,
+        colour: 0xffff_ffff,
+    };
+    let mut hud = h1hud::weapon::Interface::new();
+    let widget = h1hud::weapon_widget(&e, Some(TagId(9)), TagId(10), TagId(11)).unwrap();
+    hud.bitmap(&e, widget).unwrap();
+    let def = Defs::builtin().group(FourCC(*b"nhdt")).unwrap();
+    let r = defs::from_built(def, &hud.build().unwrap()).unwrap();
+    for mode in ["full", "half", "quarter"] {
+        assert_eq!(
+            r.at(&format!("bitmap_widgets[0].offset_{mode}")),
+            Some(&Val::List(vec![Val::Int(-30), Val::Int(12)]))
+        );
+    }
+    let effect = "bitmap_widgets[0].effects[0]";
+    assert_eq!(r.at(&format!("{effect}.scale_flags")), Some(&Val::Flags(1)));
+    for (field, scale) in [("block_10", 2.0), ("block_24", 0.25)] {
+        let Some(Val::Data(bytes)) = r.at(&format!("{effect}.{field}")) else {
+            panic!("missing scale function {field}");
+        };
+        let function = Function::parse(bytes).unwrap();
+        assert_eq!(function.kind, FunctionType::Constant);
+        assert_eq!(function.range, [scale, scale]);
     }
 }
 
