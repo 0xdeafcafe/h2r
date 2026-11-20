@@ -133,6 +133,8 @@ pub(crate) struct Sessions {
     tasks: BTreeMap<u32, Task>,
     /// The elected host gets an empty search, then publishes using this lease.
     matchmaking: Option<(live_proto::matchmaking::Assignment, std::time::Instant)>,
+    /// The queue's map-pack decision, tied to the published host session.
+    matchmaking_hosted: Option<([u8; 8], u32, bool)>,
     /// The selected queue result. Keep the lease route for FindFromID and
     /// the frame policy for this published session alone.
     match_join: Option<MatchJoin>,
@@ -576,10 +578,24 @@ impl Sessions {
         self.looked_up.clear();
         self.tasks.clear();
         self.matchmaking = None;
+        self.matchmaking_hosted = None;
         self.match_join = None;
         self.results.clear();
     }
-    pub fn matchmaking_status(&self) -> Option<&str> {
+    fn pending_assignment(&self) -> Option<&live_proto::matchmaking::Assignment> {
+        use std::time::Duration;
+        let ttl = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64);
+        self.matchmaking.as_ref().filter(|(_, since)| since.elapsed() < ttl).map(|(a, _)| a)
+    }
+    fn hosted_rotation(&self) -> Option<(u32, bool)> {
+        let (session, hopper, pack) = self.matchmaking_hosted?;
+        (self.current == Some(session) && self.records.contains_key(&session)).then_some((hopper, pack))
+    }
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.pending_assignment().is_some_and(|a| a.hopper == hopper && a.has_map_pack)
+            || self.hosted_rotation() == Some((hopper, true))
+    }
+    pub fn matchmaking_status(&self, service: Option<&Service>) -> Option<&str> {
         self.tasks
             .values()
             .rev()
@@ -588,6 +604,16 @@ impl Sessions {
                 _ => None,
             })
             .flatten()
+            .or_else(|| {
+                let (hopper, pack) = self.pending_assignment().map(|a| (a.hopper, a.has_map_pack))
+                    .or_else(|| self.hosted_rotation())?;
+                let service = service?;
+                (!pack && service.addon_hopper(hopper)).then_some(if service.has_map_pack {
+                    crate::matchmaking::BASE_MAPS_PARTY
+                } else {
+                    crate::matchmaking::BASE_MAPS_LOCAL
+                })
+            })
     }
     pub fn frames_from_host(&self, session_id: &str) -> bool {
         self.match_join.as_ref().is_some_and(|joined| {
@@ -651,7 +677,7 @@ impl Sessions {
             use crate::matchmaking::Outcome;
             match search.poll() {
                 Ok(None) => {
-                    if search.status().is_some() {
+                    if search.host_status().is_some() {
                         self.matchmaking = None;
                     }
                     Task::Queue { search, intent }
@@ -840,19 +866,14 @@ impl Sessions {
                 if let (Some(service), Some(connection)) = (service, connection) {
                     let data = advertisement(&session);
                     let request = if op == Op::Create {
-                        let publish_window = std::time::Duration::from_secs(
-                            live_proto::matchmaking::ASSIGNMENT_SECONDS as u64,
-                        );
                         let assignment = self
-                            .matchmaking
-                            .as_ref()
-                            .filter(|(lease, elected)| {
-                                elected.elapsed() < publish_window
-                                    && !data.is_coop()
+                            .pending_assignment()
+                            .filter(|lease| {
+                                !data.is_coop()
                                     && live_proto::optimatch::playlist(&data.attributes)
                                         == Some(lease.hopper)
                             })
-                            .map(|(lease, _)| lease.id.clone());
+                            .map(|lease| lease.id.clone());
                         MatchRequest::Create {
                             session: data,
                             assignment,
@@ -985,16 +1006,23 @@ impl Sessions {
                         a[0], a[1]
                     );
                 }
-                // A clanker hopper (docs/game/bots.md §8.4): nobody to
-                // find. The run's searches answer with no sessions once its
-                // delay is over, and the game hosts.
-                let clanker = (a[0] == live_proto::optimatch::PROCEDURE)
+                // Procedure 1 is the retail stored procedure. Its positional
+                // arguments decode either to OptiMatch or to the custom browser.
+                let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
                     .then(|| {
                         let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
                         live_proto::optimatch::Query::from_params(&values)
                     })
-                    .flatten()
-                    .and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
+                    .flatten();
+                if a[1] > 0 && optimatch.is_some_and(|query| {
+                    (0..live_proto::hopper::HOPPERS as i64).contains(&query.hopper)
+                }) {
+                    self.matchmaking = None;
+                    self.matchmaking_hosted = None;
+                }
+                // A clanker hopper (docs/game/bots.md §8.4) returns no sessions
+                // after its delay, and the game hosts.
+                let clanker = optimatch.and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
                 if let Some(hopper) = clanker {
                     let now = std::time::Instant::now();
                     let until = self.clanker_hold.answer_at(hopper, now, || {
@@ -1015,18 +1043,10 @@ impl Sessions {
                     return Ok(0);
                 }
                 if let (Some(service), Some(connection)) = (service, connection) {
-                    // Procedure 1 is the retail stored procedure: anonymous
-                    // parameters are positional, not attribute IDs. Its return
-                    // projection is the seven public title attributes. The
-                    // twelve-parameter shape is OptiMatch or the custom games
-                    // browser (live_proto::optimatch); the server filters it.
-                    // Other procedures' named filters round-trip.
-                    let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
-                        .then(|| {
-                            let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
-                            live_proto::optimatch::Query::from_params(&values)
-                        })
-                        .flatten();
+                    let optimatch = optimatch.map(|mut query| {
+                        query.has_map_pack = service.has_map_pack;
+                        query
+                    });
                     if let Some(q) = &optimatch {
                         let line = optimatch_line(q);
                         if say_once_per(&mut self.said_search, &line, FIND_REPEAT) {
@@ -1037,11 +1057,13 @@ impl Sessions {
                         && let Some(query) = optimatch
                         && let Some(hopper) = crate::matchmaking::solo_hopper(query, users)
                         && let Some(connectivity) = crate::matchmaking::config()
+                            .or_else(|| service.addon_hopper(hopper).then(Default::default))
                     {
                         let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
                         let ticket = live_proto::matchmaking::Ticket {
                             hopper,
                             port: u16::from_be_bytes([host[8], host[9]]),
+                            has_map_pack: service.has_map_pack,
                             dedicated: false,
                             connectivity,
                             samples: Vec::new(),
@@ -1184,6 +1206,7 @@ impl Sessions {
                 if let Some(lease) = &row.matchmaking
                     && self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == lease.id)
                 {
+                    self.matchmaking_hosted = Some((id, lease.hopper, lease.has_map_pack));
                     self.matchmaking = None;
                 }
                 session.id = id;
@@ -1210,6 +1233,9 @@ impl Sessions {
             }
             Intent::Delete(id) => {
                 self.records.remove(&id);
+                if self.matchmaking_hosted.is_some_and(|(session, _, _)| session == id) {
+                    self.matchmaking_hosted = None;
+                }
                 eprintln!("live: session {} deleted", live_proto::sign::hex(&id));
                 Ok(Task::Done)
             }
@@ -1654,6 +1680,27 @@ fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_picker_requires_a_live_pack_assignment_for_its_hopper() {
+        use std::time::{Duration, Instant};
+
+        let mut sessions = Sessions::default();
+        assert!(!sessions.allow_hopper_addons(4));
+        let mut lease: live_proto::matchmaking::Assignment = serde_json::from_value(serde_json::json!({
+            "id": "8000000000000001", "hopper": 4, "host": "0009000000000001",
+            "dedicated": false, "members": ["0009000000000001"], "rtt_ms": {},
+        })).unwrap();
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(!sessions.allow_hopper_addons(4), "a mixed assignment stays on the base maps");
+        lease.has_map_pack = true;
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(sessions.allow_hopper_addons(4));
+        assert!(!sessions.allow_hopper_addons(3));
+        let expired = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64 + 1);
+        sessions.matchmaking = Some((lease, Instant::now() - expired));
+        assert!(!sessions.allow_hopper_addons(4));
+    }
 
     #[test]
     fn a_ping_update_waits_for_a_real_change() {

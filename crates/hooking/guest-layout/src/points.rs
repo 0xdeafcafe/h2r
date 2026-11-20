@@ -851,6 +851,9 @@ points! { ALL;
     /// `0x002b1ff4` (return address `0x002b2069`), which stores the index
     /// in each row's datum at `+4`, so a skipped hopper leaves no hole.
     HOPPER_LISTED @ 0x0019_2db0: [fn(index: ecx) -> al ret 0]; "docs/game/bots.md";
+    /// Reads one hopper rotation into the caller's block. The weighted map
+    /// picker calls it separately from the validator and playlist UI.
+    HOPPER_BLOCK_READ @ 0x0019_43d0: [fn(index: eax, block: stack 0) -> al ret 4]; "docs/live/live-matchmaking.md";
     /// The hopper Quickmatch searches: local player `player`'s saved
     /// playlist (`[0x54e9dc + player*0xc70]`), or -1 when the player has
     /// none (flag bit 4 of `[0x54e8e0 + player*0xc70]` clear). Its one

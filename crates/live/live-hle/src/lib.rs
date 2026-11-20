@@ -523,12 +523,21 @@ impl Hle {
         }
         self.lock().frames_from_host(session_id)
     }
-    /// Dedicated host progress for the retail matchmaking lobby line.
+    /// Map Pack availability and dedicated host progress for matchmaking.
     pub fn matchmaking_status(&self) -> Option<String> {
         if let Some(value) = self.film_view(|v| v.status.clone()) {
             return value;
         }
         self.lock().matchmaking_status().map(str::to_owned)
+    }
+    /// The mounted console has the original Multiplayer Map Pack installed.
+    pub fn has_map_pack(&self) -> bool {
+        self.lock().has_map_pack()
+    }
+    /// Only a queue assignment for this console's hosted lobby may use an
+    /// add-on entry in the guest's weighted map picker.
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.lock().allow_hopper_addons(hopper)
     }
     /// The clanker hoppers the server served last (docs/game/bots.md §8):
     /// the playlists the Clankermatch row lists and OptiMatch does not.

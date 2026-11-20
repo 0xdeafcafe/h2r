@@ -94,10 +94,6 @@ impl DedicatedConfig {
         })
     }
 
-    pub(super) fn enabled(&self, hopper: u32) -> bool {
-        self.playlist(hopper).is_some()
-    }
-
     pub(super) fn playlist(&self, hopper: u32) -> Option<&DedicatedPlaylist> {
         self.hoppers.get(&hopper)
     }
@@ -230,15 +226,15 @@ mod tests {
 
     #[test]
     fn both_switches_must_enable_the_hopper() {
-        assert!(!config(&[]).unwrap().enabled(1));
-        assert!(!config(&[(ENABLED, "1")]).unwrap().enabled(1));
+        assert!(config(&[]).unwrap().playlist(1).is_none());
+        assert!(config(&[(ENABLED, "1")]).unwrap().playlist(1).is_none());
         let playlists = r#"{"1":{"map":"lockout"},"3":{"map":"zanzibar","variant":"Team Slayer"}}"#;
-        assert!(!config(&[(HOPPERS_ENABLED, playlists)]).unwrap().enabled(1));
-        assert!(!config(&[(ENABLED, "true"), (HOPPERS_ENABLED, playlists)]).unwrap().enabled(1));
+        assert!(config(&[(HOPPERS_ENABLED, playlists)]).unwrap().playlist(1).is_none());
+        assert!(config(&[(ENABLED, "true"), (HOPPERS_ENABLED, playlists)]).unwrap().playlist(1).is_none());
         let enabled = config(&[(ENABLED, "1"), (HOPPERS_ENABLED, playlists)]).unwrap();
-        assert!(enabled.enabled(1));
-        assert!(enabled.enabled(3));
-        assert!(!enabled.enabled(2));
+        assert!(enabled.playlist(1).is_some());
+        assert!(enabled.playlist(3).is_some());
+        assert!(enabled.playlist(2).is_none());
         let playlist = enabled.playlist(3).unwrap();
         assert_eq!(playlist.map, "zanzibar");
         assert_eq!(playlist.variant.as_deref(), Some("Team Slayer"));

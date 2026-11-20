@@ -263,3 +263,14 @@ describe("playlist rotation", () => {
     expect(review[2]!.lines).toContainEqual({ field: "Descriptor template", before: null, after: "2" });
   });
 });
+
+
+test("a Map Pack rotation keeps a disc-map entry", () => {
+  const original = toEditable(file());
+  const first = original[0]!;
+  const addon = { ...first.records[0]!, id: 0x12345 };
+  const disc = [{ id: first.records[0]!.id, name: "A disc map" }];
+  const edit = (records: EditRecord[]) => [ { ...first, records }, ...original.slice(1) ];
+  expect(editErrors(original, edit([addon, first.records[0]!]), disc).size).toBe(0);
+  expect(editErrors(original, edit([addon]), disc).get(0)).toContain("Keep a Halo 2 disc map for players without the Map Pack.");
+});

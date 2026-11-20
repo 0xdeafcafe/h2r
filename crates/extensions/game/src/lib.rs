@@ -74,6 +74,7 @@ pub mod list_class;
 mod lobby_quality;
 mod lobby_status;
 pub mod live_glue;
+pub mod live_hopper;
 pub mod live_notice;
 pub mod lobby_options;
 mod menu_music;

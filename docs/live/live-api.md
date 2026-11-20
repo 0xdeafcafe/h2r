@@ -1148,7 +1148,7 @@ Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 `coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. `optimatch`
-(URL-encoded JSON `{hopper, average, lowest?, highest?, party?}`) is the
+(URL-encoded JSON `{hopper, average, lowest?, highest?, party?, has_map_pack?}`) is the
 game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
 §7): it keeps sessions on that playlist whose level window and party room
 fit, orders them by closeness to `average`, and returns one page with a
@@ -1253,6 +1253,36 @@ map's (from the operator's retail list) nor pinned on the session's
 `hopper_id` (`custom` and `coop` sessions take any map). A `map_id` the
 server never saw is fine in a custom game: retail maps and local edits have
 ids too.
+
+### Map Pack matchmaking
+
+`PUT /v1/matchmaking/queue` (a `sessions.write` token) accepts an optional
+boolean `has_map_pack`. It reports whether the requesting console has
+all nine maps installed. Omission counts as false for matchmaking.
+The assignment's `has_map_pack` is true when every assigned console and
+the host can use the Map Pack. Older assignments omit it. A Map Pack map
+on an assigned session requires this capability.
+
+`GET /v1/sessions?optimatch=<json>` accepts the same optional member in
+the decoded search. Live includes legacy Map Pack advertisements only
+for an authenticated solo search (`party: 1`) with the capability. This
+includes published maps that require a Map Pack base. Custom-game
+browsing keeps its own map availability rules.
+
+`GET /v1/matchmaking/availability` (an account's `read` token) returns
+`{"has_map_pack": true}`, `{"has_map_pack": false}` or
+`{"has_map_pack": null}`. It describes the reader's last console search.
+Only an explicit report from an authenticated search or queue refresh
+counts. The report expires after 30 minutes and the response is private
+and uncached.
+
+`GET /v1/titles/4D530064/files/multiplayer_hopper.dat` serves a disc-only
+rotation to legacy clients. A client with runtime rotation filtering
+requests `?map_pack=1` for the full file. `GET /v1/titles/4D530064/hopper`
+always describes the published file. A hopper with Map Pack entries
+includes `has_map_pack_maps: true` in this JSON. A rotation with add-on
+entries needs at least one Halo 2 disc map when published or imported.
+[Map Pack rotations](live-matchmaking.md#map-pack-rotations)
 
 ## Dedicated hosts
 

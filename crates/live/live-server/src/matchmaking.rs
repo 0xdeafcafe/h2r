@@ -15,7 +15,7 @@ use crate::{
 use axum::{
     body::to_bytes,
     extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::Response,
 };
 use live_proto::{
@@ -39,6 +39,8 @@ use std::{
 };
 
 const TICKET_SECONDS: i64 = 10;
+const CAPABILITY_SECONDS: i64 = 30 * 60;
+const CAPABILITY_SWEEP_SECONDS: i64 = 60;
 const REGISTRATION_SECONDS: i64 = 3600;
 const BOOT_SECONDS: i64 = 60;
 // The playerless host still occupies one of the sixteen machine slots.
@@ -53,6 +55,7 @@ struct Rules {
 
 struct Waiting {
     candidate: Candidate,
+    has_map_pack: bool,
     dedicated: bool,
     connectivity: Connectivity,
     samples: Samples,
@@ -207,13 +210,67 @@ impl Lease {
 pub(crate) struct Matchmaker {
     config: DedicatedConfig,
     // The title-file hash keys the cache and separates a changed lineup.
-    rules: Option<(String, [Option<Rules>; HOPPERS])>,
+    lineup: Option<Lineup>,
     buckets: BTreeMap<u32, Bucket>,
     dedicated: BTreeMap<Xuid, i64>,
     leases: BTreeMap<String, Lease>,
+    map_pack_reports: BTreeMap<Xuid, (bool, i64)>,
+    next_capability_sweep: i64,
+}
+
+struct Lineup {
+    fingerprint: String,
+    rules: [Option<Rules>; HOPPERS],
+    map_pack_only: [bool; HOPPERS],
+}
+
+/// Session map names can be scenario paths, file stems, or display names.
+pub(crate) fn map_pack_map(map: &str) -> bool {
+    let name = map.trim().rsplit(['/', '\\']).next().unwrap_or_default();
+    let stem = name
+        .rsplit_once('.')
+        .filter(|(_, ext)| ext.eq_ignore_ascii_case("map"))
+        .map_or(name, |(stem, _)| stem);
+    content::map_pack::is_map(stem)
+        || content::map_pack::MAPS.iter().any(|(_, title)| title.eq_ignore_ascii_case(stem))
+}
+
+fn pack_only(file: &HopperFile, index: usize) -> bool {
+    file.entries(index).is_ok_and(|entries| {
+        !entries.is_empty()
+            && entries.iter().all(|entry| !live_proto::hopper::is_base_map(entry.map_id))
+    })
+}
+
+/// The typed search and ticket treat omission as false. Keep its distinction
+/// from an explicit report for the signed-in player's availability view.
+pub(crate) fn reported_map_pack(json: &[u8]) -> Option<bool> {
+    #[derive(serde::Deserialize)]
+    struct Report {
+        has_map_pack: Option<bool>,
+    }
+    serde_json::from_slice::<Report>(json).ok()?.has_map_pack
 }
 
 impl Matchmaker {
+    pub(crate) fn report_map_pack(&mut self, xuid: Xuid, owns_pack: Option<bool>, clock: i64) {
+        if clock >= self.next_capability_sweep {
+            self.map_pack_reports.retain(|_, (_, until)| clock < *until);
+            self.next_capability_sweep = clock + CAPABILITY_SWEEP_SECONDS;
+        }
+        if let Some(owns_pack) = owns_pack {
+            self.map_pack_reports.insert(xuid, (owns_pack, clock + CAPABILITY_SECONDS));
+        } else {
+            self.map_pack_reports.remove(&xuid);
+        }
+    }
+
+    fn map_pack_for(&self, xuid: Xuid, clock: i64) -> Option<bool> {
+        self.map_pack_reports
+            .get(&xuid)
+            .and_then(|&(value, until)| (clock < until).then_some(value))
+    }
+
     fn expire(&mut self, clock: i64) {
         self.dedicated.retain(|_, until| *until > clock);
         self.leases.retain(|_, lease| lease.retain(clock));
@@ -251,6 +308,7 @@ impl Matchmaker {
             || clock >= lease.until
             || host.hopper != Some(lease.assignment.hopper)
             || host.roster != lease.assignment.members
+            || (map_pack_map(&host.map) && !lease.assignment.has_map_pack)
             || lease.assignment.host_lease.as_ref().is_some_and(|id| id != &host.id)
         {
             return false;
@@ -292,18 +350,32 @@ impl Matchmaker {
             return Err(forbidden("a dedicated host must be registered by an operator"));
         }
 
-        if let Some(lease) = self.leases.values().find(|l| {
+        if let Some((id, lease)) = self.leases.iter().find(|(_, l)| {
             l.assignment.host == xuid || l.assignment.members.contains(&xuid)
         }) {
             if lease.assignment.hopper != ticket.hopper {
                 return Err(conflict("account has an assignment on another hopper"));
             }
+            if lease.assignment.has_map_pack && !ticket.has_map_pack {
+                let id = id.clone();
+                self.leases.remove(&id);
+                return Err(forbidden("the assignment requires the Multiplayer Map Pack"));
+            }
             return Ok((lease.queue(xuid, &live.model), None));
         }
 
-        let rules = self.rules.as_ref()
-            .and_then(|(_, all)| all.get(ticket.hopper as usize).copied().flatten())
+        let index = ticket.hopper as usize;
+        let lineup = self.lineup.as_ref()
             .ok_or_else(|| not_found("hopper does not support the QoS queue"))?;
+        let rules = lineup.rules.get(index).copied().flatten()
+            .ok_or_else(|| not_found("hopper does not support the QoS queue"))?;
+        let pack_only = lineup.map_pack_only[index];
+        if pack_only && !ticket.has_map_pack {
+            if let Some(bucket) = self.buckets.get_mut(&ticket.hopper) {
+                bucket.remove(xuid);
+            }
+            return Err(forbidden("this hopper requires the Multiplayer Map Pack"));
+        }
         if ticket.dedicated && live.model.read().sessions.values().any(|s| {
             s.host_xuid == xuid && s.state == "open" && s.matchmaking.is_some()
         }) {
@@ -316,7 +388,10 @@ impl Matchmaker {
             }
         }
         let provider = provider.filter(|_| {
-            rules.size <= MAX_DEDICATED_SOLO_PLAYERS && self.config.enabled(ticket.hopper)
+            rules.size <= MAX_DEDICATED_SOLO_PLAYERS
+                && self.config.playlist(ticket.hopper).is_some_and(|playlist| {
+                    !pack_only || map_pack_map(&playlist.map)
+                })
         });
         let regions = (provider.is_some() && !ticket.dedicated).then_some(&self.config.regions);
         let level = live.model.read().ranks.standing(xuid, &ticket.hopper.to_string()).level;
@@ -390,6 +465,7 @@ impl Bucket {
             self.waiting.insert(xuid, Waiting {
                 candidate: Candidate { xuid, endpoint, generation: random_id()? },
                 dedicated: ticket.dedicated,
+                has_map_pack: ticket.has_map_pack,
                 connectivity: ticket.connectivity,
                 samples: BTreeMap::new(),
                 level,
@@ -409,10 +485,15 @@ impl Bucket {
             .collect();
         let entry = self.waiting.get_mut(&xuid).expect("ticket inserted");
         entry.connectivity = ticket.connectivity;
+        entry.has_map_pack = ticket.has_map_pack;
         entry.level = level;
         entry.samples = samples;
         entry.seen = clock;
         Ok(())
+    }
+
+    fn group_owns_map_pack(&self, group: &[Entrant<'_>]) -> bool {
+        group.iter().all(|player| self.waiting[&player.xuid].has_map_pack)
     }
 
     fn assign(
@@ -431,7 +512,10 @@ impl Bucket {
         let peers: Vec<_> = hosts.iter().copied().filter(|h| !h.dedicated).collect();
         let eligible = provider.zip(config.playlist(hopper));
         let peer_group = eligible.as_ref()
-            .and_then(|_| selection::group(&players, &peers, rules.size, clock));
+            .and_then(|(_, playlist)| {
+                let group = selection::group(&players, &peers, rules.size, clock)?;
+                (!map_pack_map(&playlist.map) || self.group_owns_map_pack(&group)).then_some(group)
+            });
         let (group, candidates, ad_hoc) = match peer_group {
             Some(group) => (Some(group), peers.as_slice(), eligible),
             None => (selection::group(&players, &hosts, rules.size, clock), hosts.as_slice(), None),
@@ -455,6 +539,7 @@ impl Bucket {
             teams,
             rtt_ms: selected.rtt_ms,
             host_lease: None,
+            has_map_pack: self.waiting[&host].has_map_pack && self.group_owns_map_pack(&group),
         };
         let mut placement = Placement::PeerOrRegistered;
         let mut until = clock + ASSIGNMENT_SECONDS;
@@ -532,7 +617,9 @@ async fn load_rules(live: &Live) -> Result<(), ApiError> {
     let hash = live.model.read().files.get(&file_key)
         .map(|f| f.meta.sha256.clone());
     let fingerprint = hash.as_deref().unwrap_or("default");
-    if live.matchmaking.lock().unwrap().rules.as_ref().is_some_and(|(key, _)| key == fingerprint) {
+    if live.matchmaking.lock().unwrap().lineup.as_ref()
+        .is_some_and(|lineup| lineup.fingerprint == fingerprint)
+    {
         return Ok(());
     }
     let (key, rules) = if hash.is_some() {
@@ -565,12 +652,24 @@ async fn load_rules(live: &Live) -> Result<(), ApiError> {
             ranked: kind.ranked(),
         })
     });
+    let map_pack_only = std::array::from_fn(|index| pack_only(&rules, index));
     let mut matcher = live.matchmaking.lock().unwrap();
-    if matcher.rules.as_ref().is_none_or(|(previous, _)| previous != &key) {
+    if matcher.lineup.as_ref().is_none_or(|previous| previous.fingerprint != key) {
         matcher.buckets.clear();
-        matcher.rules = Some((key, all));
+        matcher.lineup = Some(Lineup {
+            fingerprint: key,
+            rules: all,
+            map_pack_only,
+        });
     }
     Ok(())
+}
+
+pub(crate) async fn hopper_requires_map_pack(live: &Live, hopper: u32) -> Result<bool, ApiError> {
+    load_rules(live).await?;
+    Ok(live.matchmaking.lock().unwrap().lineup.as_ref().is_some_and(|lineup| {
+        lineup.map_pack_only.get(hopper as usize).copied().unwrap_or(false)
+    }))
 }
 
 pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result<Response, ApiError> {
@@ -589,6 +688,7 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
         .await
         .map_err(|_| invalid("QoS ticket too large"))?;
     let ticket: Ticket = serde_json::from_slice(&body).map_err(|_| invalid("invalid QoS ticket"))?;
+    let map_pack_report = (!ticket.dedicated).then(|| reported_map_pack(&body));
     let mut seen = BTreeSet::new();
     if ticket.hopper >= HOPPERS as u32
         || !(1..=65529).contains(&ticket.port)
@@ -606,6 +706,9 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
     let provider = live.host_provider_kind();
     let (mut result, request) = {
         let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some(report) = map_pack_report {
+            matcher.report_map_pack(xuid, report, clock);
+        }
         if let Some((assignment, lease_id)) = matcher.booting_host(xuid, ticket.hopper) {
             // Provider callbacks also take the matcher lock.
             drop(matcher);
@@ -643,6 +746,22 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
         }
     }
     Ok(json(StatusCode::OK, &result))
+}
+
+pub(crate) async fn availability(
+    State(live): State<Arc<Live>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Author::Account { xuid, .. } = live.authenticate(bearer(&headers), lxm::READ)? else {
+        return Err(forbidden("matchmaking availability needs an account"));
+    };
+    let has_map_pack = live.matchmaking.lock().unwrap().map_pack_for(xuid, now());
+    let mut response = json(StatusCode::OK, &serde_json::json!({ "has_map_pack": has_map_pack }));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    Ok(response)
 }
 
 pub(crate) async fn register(

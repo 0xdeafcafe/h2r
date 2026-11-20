@@ -1090,6 +1090,22 @@ impl Live {
                 "title files are at most 2 MiB",
             ));
         }
+        if title == live_proto::HALO_2_TITLE_ID
+            && name == live_proto::hopper::HALO_2_HOPPER_FILE
+            && let Ok(file) = live_proto::hopper::HopperFile::parse_legacy(bytes)
+        {
+            for index in 0..live_proto::hopper::HOPPERS {
+                if file.contains_addon_maps(index).map_err(|err| invalid(err.to_string()))?
+                    && !file.records(index).map_err(|err| invalid(err.to_string()))?
+                        .iter().any(|entry| live_proto::hopper::is_base_map(entry.id))
+                {
+                    return Err(invalid(format!(
+                        "Playlist {} needs a Halo 2 disc map for players without the Map Pack.",
+                        index + 1
+                    )));
+                }
+            }
+        }
         let meta = PublishedFile {
             title_id: title,
             name: name.into(),

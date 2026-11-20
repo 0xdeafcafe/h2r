@@ -342,7 +342,7 @@ export function isUnused(h: Pick<EditHopper, "type" | "template" | "clear">): bo
 /** What stops the edits from publishing, playlist by playlist: only
  *  playlists that changed are checked (an untouched slot is written back
  *  as it was, so the default set's unused 12..16 never block a publish). */
-export function editErrors(original: EditHopper[], edited: EditHopper[]): Map<number, string[]> {
+export function editErrors(original: EditHopper[], edited: EditHopper[], discMaps: readonly RetailMap[] = []): Map<number, string[]> {
   const out = new Map<number, string[]>();
   for (const h of edited) {
     const was = original.find((o) => o.index === h.index);
@@ -351,6 +351,9 @@ export function editErrors(original: EditHopper[], edited: EditHopper[]): Map<nu
     const errs = isUnused(h)
       ? ["this slot is unused: make a playlist here (choose its kind) or undo the change"]
       : hopperErrors({ ...h, record_count: h.records.length });
+    if (discMaps.length && h.records.length && !h.records.some(entry => discMaps.some(map => map.id === entry.id))) {
+      errs.push("Keep a Halo 2 disc map for players without the Map Pack.");
+    }
     if (errs.length > 0) out.set(h.index, errs);
   }
   return out;

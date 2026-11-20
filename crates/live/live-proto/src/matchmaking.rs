@@ -29,6 +29,9 @@ pub struct Ticket {
     /// OptiMatch hopper index.
     pub hopper: u32,
     pub port: u16,
+    /// The requesting console can load the full Multiplayer Map Pack.
+    #[serde(default)]
+    pub has_map_pack: bool,
     #[serde(default)]
     pub dedicated: bool,
     #[serde(default)]
@@ -63,6 +66,9 @@ pub struct Assignment {
     pub host: Xuid,
     pub dedicated: bool,
     pub members: Vec<Xuid>,
+    /// All seats, and the selected host, can play the Map Pack rotation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_map_pack: bool,
     /// Omitted for free-for-all. Team IDs are zero-based.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub teams: BTreeMap<Xuid, u8>,
@@ -93,6 +99,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn ticket_map_pack_capability_is_optional_and_boolean() {
+        let base = json!({"hopper": 1, "port": 3074});
+        assert!(!serde_json::from_value::<Ticket>(base.clone()).unwrap().has_map_pack);
+        for (value, expected) in [(json!(true), true), (json!(false), false)] {
+            let mut wire = base.clone();
+            wire["has_map_pack"] = value;
+            let parsed: Ticket = serde_json::from_value(wire).unwrap();
+            assert_eq!(parsed.has_map_pack, expected);
+            assert_eq!(serde_json::to_value(parsed).unwrap()["has_map_pack"], expected);
+        }
+        let mut invalid = base;
+        invalid["has_map_pack"] = json!("true");
+        assert!(serde_json::from_value::<Ticket>(invalid).is_err());
+    }
+
+    #[test]
     fn assignment_host_lease_round_trips_and_is_optional() {
         let mut wire = json!({
             "id": "0123456789abcdef",
@@ -104,10 +126,13 @@ mod tests {
         });
         let assignment: Assignment = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(assignment.host_lease, None);
+        assert!(!assignment.has_map_pack);
         assert_eq!(serde_json::to_value(&assignment).unwrap(), wire);
 
         wire["host_lease"] = json!("hl-AAAAAAAAAAAAAAAAAAAAAA");
+        wire["has_map_pack"] = json!(true);
         let with_lease = Assignment {
+            has_map_pack: true,
             host_lease: Some("hl-AAAAAAAAAAAAAAAAAAAAAA".into()),
             ..assignment
         };

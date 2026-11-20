@@ -10,7 +10,7 @@ use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 #[cfg(feature = "native")]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query as Params, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -398,6 +398,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(crate::sessions::list).post(crate::sessions::create),
         )
         .route("/v1/matchmaking/queue", put(crate::matchmaking::queue))
+        .route("/v1/matchmaking/availability", get(crate::matchmaking::availability))
         .route("/v1/matchmaking/dedicated/{xuid}", put(crate::matchmaking::register))
         .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
@@ -826,18 +827,31 @@ async fn get_file(
     State(live): Shared,
     headers: HeaderMap,
     Path((title, name)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     let (title, name) = title_path(&title, &name)?;
     let (meta, bytes) = live.file(title, &name).await?;
-    let etag = format!("\"{}\"", meta.sha256);
+    let full_rotation = query.as_deref().is_some_and(|query| {
+        query.split('&').any(|field| field == live_proto::hopper::FULL_HOPPER_QUERY)
+    });
+    let (hash, bytes) = if title == live_proto::HALO_2_TITLE_ID
+        && name == live_proto::hopper::HALO_2_HOPPER_FILE
+        && !full_rotation
+    {
+        crate::default_hopper::compatibility_download(meta.sha256, bytes)
+            .map_err(|e| invalid(format!("hopper file: {e}")))?
+    } else {
+        (meta.sha256, bytes)
+    };
+    let etag = format!("\"{hash}\"");
     let etag_value = HeaderValue::from_str(&etag).expect("hex is a valid header");
     let matches = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| {
             v.split(',')
-                .any(|t| t.trim() == etag || t.trim() == meta.sha256 || t.trim() == "*")
+                .any(|t| t.trim() == etag || t.trim() == hash || t.trim() == "*")
         });
     if matches {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag_value)]).into_response());

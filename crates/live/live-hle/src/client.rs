@@ -300,6 +300,8 @@ struct Command {
 #[derive(Clone)]
 pub(crate) struct Service {
     pub machine: bool,
+    pub has_map_pack: bool,
+    addon_hoppers: Arc<AtomicU32>,
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
     /// The sessions the worker read most recently: what their hosts advertised
@@ -345,6 +347,9 @@ impl Service {
         let seen = Seen::default();
         let seen_by_worker = seen.clone();
         let machine = options.publisher.is_some();
+        let has_map_pack = options.maps.as_ref().is_some_and(|maps| maps.has_map_pack());
+        let addon_hoppers = Arc::new(AtomicU32::new(0));
+        let hoppers_by_worker = addon_hoppers.clone();
         std::thread::Builder::new()
             .name("h2-live-http".into())
             .spawn(move || {
@@ -355,6 +360,7 @@ impl Service {
                 let mut worker = Worker {
                     base,
                     maps: options.maps.clone(),
+                    addon_hoppers: hoppers_by_worker,
                     software: Software::from_options(&options),
                     agent,
                     publisher: options.publisher,
@@ -407,10 +413,16 @@ impl Service {
             })?;
         Ok(Self {
             machine,
+            has_map_pack,
+            addon_hoppers,
             sender,
             metrics,
             seen,
         })
+    }
+    pub fn addon_hopper(&self, hopper: u32) -> bool {
+        hopper < live_proto::hopper::HOPPERS as u32
+            && self.addon_hoppers.load(Ordering::Acquire) & (1 << hopper) != 0
     }
     fn submit(&self, session: &Session, work: Work) -> Result<Pending, u32> {
         self.submit_then(session, work, None)
@@ -604,6 +616,7 @@ struct Worker {
     publisher: Option<HostPublisher>,
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
+    addon_hoppers: Arc<AtomicU32>,
     software: Software,
     agent: ureq::Agent,
     connection: Option<Connection>,
@@ -648,6 +661,39 @@ impl Error {
             Self::Transport | Self::Status(429 | 500 | 502 | 503 | 504)
         )
     }
+}
+
+fn console_hopper_file(
+    bytes: Vec<u8>,
+    has_map_pack: bool,
+) -> Result<(Vec<u8>, u32), live_proto::hopper::HopperError> {
+    use live_proto::hopper::{HOPPERS, HopperFile};
+
+    // The title handles a malformed or older envelope with its own
+    // defaults. Keep its download intact when it is not a usable image.
+    let Ok(mut file) = HopperFile::parse(&bytes) else {
+        return Ok((bytes, 0));
+    };
+    let mut addon_hoppers = 0;
+    for hopper in 0..HOPPERS {
+        if file.contains_addon_maps(hopper)? {
+            addon_hoppers |= 1 << hopper;
+        }
+    }
+    let bytes = if !has_map_pack && file.retain_base_maps()? {
+        file.build_checked()?
+    } else {
+        bytes
+    };
+    Ok((bytes, addon_hoppers))
+}
+
+/// Old servers reject unknown fields on these request types. A single
+/// compatibility retry forfeits add-on selection on that server.
+fn without_map_pack(request: &impl serde::Serialize) -> Result<String, Error> {
+    let mut value = serde_json::to_value(request).map_err(|_| Error::Protocol)?;
+    value.as_object_mut().ok_or(Error::Protocol)?.remove("has_map_pack");
+    serde_json::to_string(&value).map_err(|_| Error::Protocol)
 }
 /// Results that mean the server refused the account itself rather than
 /// could not be reached: they end the connection at once, with no grace.
@@ -861,12 +907,25 @@ impl Worker {
         Ok(())
     }
     fn fetch(&self, user: &Identity, name: &'static str, id: u32) -> Result<File, Error> {
+        use live_proto::hopper::{FULL_HOPPER_QUERY, HALO_2_HOPPER_FILE};
+
         let path = format!("/titles/4D530064/files/{name}");
-        let bytes = self.retried(
-            || self.request("GET", &path, user, lxm::READ),
-            None,
-            MAX_FILE,
-        )?;
+        let download = |path: &str| {
+            self.retried(|| self.request("GET", path, user, lxm::READ), None, MAX_FILE)
+        };
+        let bytes = if name == HALO_2_HOPPER_FILE {
+            let full = format!("{path}?{FULL_HOPPER_QUERY}");
+            let bytes = match download(&full) {
+                Err(Error::Status(400 | 404)) => download(&path)?,
+                result => result?,
+            };
+            let has_map_pack = self.maps.as_ref().is_some_and(|maps| maps.has_map_pack());
+            let (file, hoppers) = console_hopper_file(bytes, has_map_pack).map_err(|_| Error::Protocol)?;
+            self.addon_hoppers.store(hoppers, Ordering::Release);
+            file
+        } else {
+            download(&path)?
+        };
         Ok(File {
             id,
             bytes: bytes.into(),
@@ -1000,13 +1059,20 @@ impl Worker {
     ) -> Result<Reply, Error> {
         use crate::matchmaking::{Outcome, QueueAction, Step, queue_action};
 
+        let put = |body: &str| {
+            self.response(
+                self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
+                    .set("content-type", "application/json"),
+                Some(body),
+                64 * 1024,
+            )
+        };
         let body = serde_json::to_string(ticket).map_err(|_| Error::Protocol)?;
-        let bytes = match self.response(
-            self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
-                .set("content-type", "application/json"),
-            Some(&body),
-            64 * 1024,
-        ) {
+        let answer = match put(&body) {
+            Err(Error::Status(400)) => put(&without_map_pack(ticket)?),
+            result => result,
+        };
+        let bytes = match answer {
             Err(Error::Status(404)) => return Ok(Reply::MatchmakingUnsupported),
             Err(error) if error.retryable() => {
                 // Allocation may outlast the HTTP timeout. Let the search
@@ -1209,22 +1275,27 @@ impl Worker {
                 attributes,
                 optimatch,
             } => {
-                let mut query = url::form_urlencoded::Serializer::new(String::new());
-                query.append_pair(
-                    "attributes",
-                    &serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?,
-                );
-                if let Some(q) = optimatch {
-                    query.append_pair(
-                        "optimatch",
-                        &serde_json::to_string(&q).map_err(|_| Error::Protocol)?,
-                    );
-                }
-                let filter = query.finish();
-                let page: live_proto::Page<session::Session> = self.team_json(
-                    user,
-                    &format!("/sessions?state=open&limit={}&{filter}", limit.max(1)),
-                )?;
+                let attributes = serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?;
+                let search = |optimatch: Option<&str>| {
+                    let mut filter = url::form_urlencoded::Serializer::new(String::new());
+                    filter.append_pair("attributes", &attributes);
+                    if let Some(optimatch) = optimatch {
+                        filter.append_pair("optimatch", optimatch);
+                    }
+                    self.team_json::<live_proto::Page<session::Session>>(
+                        user,
+                        &format!("/sessions?state=open&limit={}&{}", limit.max(1), filter.finish()),
+                    )
+                };
+                let page = if let Some(q) = optimatch {
+                    let query = serde_json::to_string(&q).map_err(|_| Error::Protocol)?;
+                    match search(Some(&query)) {
+                        Err(Error::Status(400)) => search(Some(&without_map_pack(&q)?)),
+                        result => result,
+                    }?
+                } else {
+                    search(None)?
+                };
                 if page.items.len() > limit as usize && limit != 0 {
                     return Err(Error::Protocol);
                 }
@@ -1262,6 +1333,12 @@ impl Worker {
     /// search result, made ready (downloaded) for a join. A refusal is
     /// printed with its reason and the session is dropped.
     fn map_ready(&self, s: &live_proto::session::Session, join: bool) -> bool {
+        if s.advertisement.hopper_id.is_some()
+            && s.advertisement.map.as_deref().is_some_and(content::map_pack::is_map)
+            && self.maps.as_ref().is_some_and(|gate| !gate.has_map_pack())
+        {
+            return false;
+        }
         let (Some(gate), Some(c)) = (&self.maps, &self.connection) else {
             return true;
         };
@@ -2132,6 +2209,34 @@ pub(crate) fn presence_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hopper_download_keeps_the_full_rotation_only_when_installed() {
+        use live_proto::hopper::HopperFile;
+
+        let mut file = HopperFile::default_set();
+        let base = file.entry(0, 0).unwrap();
+        let mut addon = base.clone();
+        addon.map_id = 0x12345;
+        file.set_entries(0, &[addon, base]).unwrap();
+        let bytes = file.build_checked().unwrap();
+
+        let (full, hoppers) = console_hopper_file(bytes.clone(), true).unwrap();
+        assert_eq!(full, bytes);
+        assert_eq!(hoppers, 1);
+        let (disc, hoppers) = console_hopper_file(bytes, false).unwrap();
+        assert_eq!(hoppers, 1, "the client still sees which slot needs the queue");
+        let disc = HopperFile::parse(&disc).unwrap();
+        assert_eq!(disc.entry_count(0).unwrap(), 1);
+        assert_eq!(disc.slot(0, 0).unwrap(), file.slot(0, 1).unwrap());
+    }
+
+    #[test]
+    fn the_legacy_retry_removes_only_the_map_pack_field() {
+        let query = json!({"hopper": 2, "party": 1, "has_map_pack": true});
+        let retry = without_map_pack(&query).ok().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), json!({"hopper": 2, "party": 1}));
+    }
 
     #[test]
     fn recent_session_cache_bounds_churn_and_keeps_refreshed_rows() {

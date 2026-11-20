@@ -188,6 +188,11 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    if let Some(hle) = i.live.clone() {
+        features
+            .add(&crate::live_hopper::MapPackRotation(hle))
+            .map_err(|e| anyhow::anyhow!("matchmaking map pack rotation: {e}"))?;
+    }
     // Its damage, shield and health scales on each damage instance.
     features
         .add(&variant_ext::Vitality)

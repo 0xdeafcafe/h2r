@@ -967,7 +967,13 @@ impl State {
         Some((p, id))
     }
     pub fn matchmaking_status(&self) -> Option<&str> {
-        self.sessions.matchmaking_status()
+        self.sessions.matchmaking_status(self.service.as_ref())
+    }
+    pub fn has_map_pack(&self) -> bool {
+        self.service.as_ref().is_some_and(|service| service.has_map_pack)
+    }
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.has_map_pack() && self.sessions.allow_hopper_addons(hopper)
     }
     pub fn frames_from_host(&self, session_id: &str) -> bool {
         self.sessions.frames_from_host(session_id)

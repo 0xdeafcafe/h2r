@@ -63,10 +63,13 @@ export default function HopperBuilder() {
   let modal!: HTMLDialogElement;
 
   const maps = (): readonly MapOption[] => catalog()?.maps ?? retailMaps();
+  // The extracted catalog includes disc maps and any Map Pack maps found
+  // alongside the disc. The builder API's fallback list is disc-only.
+  const isMapPack = (id: number) => retailMaps().length > 0 && !retailMaps().some(map => map.id === id);
   const mapAt = (id: number) => maps().find((map) => map.id === id);
   const mapName = (id: number) => mapAt(id)?.name ?? `Map ${id}`;
   const choices = createMemo(() => variantChoices(builtins(), original(), ENGINES));
-  const problems = createMemo(() => editErrors(original(), hoppers()));
+  const problems = createMemo(() => editErrors(original(), hoppers(), retailMaps()));
   const patch = createMemo(() => buildPatch(original(), hoppers()));
   const changed = () => patch().hoppers.length > 0;
   const playlistIds = createMemo(() => hoppers().filter((h) => !isUnused(h)).map((h) => h.index));
@@ -370,6 +373,9 @@ export default function HopperBuilder() {
                     <button class="s-btn" disabled={!canAddMap() || !choices().length || !maps().length}
                       onClick={() => showDialog({ kind: "variant" })}>Add variant</button>
                   </div>
+                  <Show when={h().records.some(entry => isMapPack(entry.id))}>
+                    <p class="adm-note">Map Pack maps are available when every console in the match has the pack.</p>
+                  </Show>
                   <Show when={groups().length === 0}>
                     <p class="adm-note">Add a game variant and choose its first map.</p>
                   </Show>
@@ -548,7 +554,13 @@ export default function HopperBuilder() {
               <Show when={d().kind === "map"}>
                 <ul class="adm-picker adm-picker-maps">
                   <For each={maps()}>{(map) => (
-                    <li><button class="s-btn" onClick={() => chooseMap(map.id)}><MapArt map={map} /><strong>{map.name}</strong></button></li>
+                    <li>
+                      <button class="s-btn" onClick={() => chooseMap(map.id)}>
+                        <MapArt map={map} />
+                        <strong>{map.name}</strong>
+                        <Show when={isMapPack(map.id)}><small>Map Pack</small></Show>
+                      </button>
+                    </li>
                   )}</For>
                 </ul>
               </Show>

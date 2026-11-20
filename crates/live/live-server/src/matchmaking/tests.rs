@@ -26,6 +26,7 @@ fn ticket(port: u16) -> Ticket {
         hopper: HOPPER,
         port,
         dedicated: false,
+        has_map_pack: false,
         connectivity: Connectivity::default(),
         samples: Vec::new(),
     }
@@ -44,10 +45,21 @@ fn make_cohort(
     provider: Option<ProviderKind>,
     with_probes: bool,
 ) -> (Lease, Option<HostLease>) {
+    make_cohort_with_maps(config, provider, with_probes, [false, false])
+}
+
+fn make_cohort_with_maps(
+    config: &DedicatedConfig,
+    provider: Option<ProviderKind>,
+    with_probes: bool,
+    owners: [bool; 2],
+) -> (Lease, Option<HostLease>) {
     let rules = Rules { size: 2, team_count: 2, ranked: true };
     let mut bucket = Bucket::default();
     let mut first = ticket(31000);
     let mut second = ticket(31010);
+    first.has_map_pack = owners[0];
+    second.has_map_pack = owners[1];
     let a = SocketAddrV4::new("192.0.2.1".parse().unwrap(), first.port);
     let b = SocketAddrV4::new("192.0.2.2".parse().unwrap(), second.port);
     let regions = with_probes.then_some(&config.regions);
@@ -355,4 +367,69 @@ async fn leased_publication_authorizes_only_the_assigned_session() {
             .unwrap(),
         pos
     );
+}
+
+#[test]
+fn map_pack_only_requires_a_nonempty_rotation_without_a_disc_entry() {
+    let mut file = HopperFile::default_set();
+    let disc = file.entry(0, 0).unwrap();
+    let pack = live_proto::hopper::Entry {
+        map_id: u32::MAX - 1,
+        map_name: String::new(),
+        ..disc.clone()
+    };
+    file.set_entries(0, &[pack.clone()]).unwrap();
+    assert!(pack_only(&file, 0), "a raw import does not need to name its maps");
+    file.set_entries(0, &[pack, disc]).unwrap();
+    assert!(!pack_only(&file, 0), "the disc entry is a fallback");
+    file.set_entries(0, &[]).unwrap();
+    assert!(!pack_only(&file, 0), "an empty rotation has no maps to gate");
+}
+
+#[test]
+fn dedicated_map_pack_selection_requires_every_player() {
+    let config = DedicatedConfig::from_lookup(|key| match key {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(r#"{"2":{"map":"turf"}}"#.into()),
+        _ => None,
+    }).unwrap();
+
+    for (owners, can_play_pack) in [
+        ([true, true], true),
+        ([true, false], false),
+        ([false, true], false),
+        ([false, false], false),
+    ] {
+        let (lease, request) = make_cohort_with_maps(&config, Some(ProviderKind::Local), false, owners);
+        assert_eq!(lease.assignment.has_map_pack, can_play_pack);
+        if can_play_pack {
+            assert_eq!(request.unwrap().map, "turf");
+            let Placement::Booting { fallback } = lease.placement else {
+                panic!("an ad hoc host needs a peer fallback");
+            };
+            assert!(fallback.has_map_pack);
+        } else {
+            assert!(request.is_none());
+            assert!(matches!(lease.placement, Placement::PeerOrRegistered));
+        }
+    }
+}
+
+#[test]
+fn availability_uses_the_latest_report_and_expires_it() {
+    let mut matcher = Matchmaker::default();
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED), None);
+
+    matcher.report_map_pack(FIRST, reported_map_pack(br#"{"has_map_pack":true}"#), FORMED);
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED), Some(true));
+    assert_eq!(matcher.map_pack_for(SECOND, FORMED), None);
+
+    let old = reported_map_pack(br#"{"hopper":2}"#);
+    matcher.report_map_pack(FIRST, old, FORMED + 1);
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED + 1), None);
+
+    let later = FORMED + 2;
+    matcher.report_map_pack(FIRST, reported_map_pack(br#"{"has_map_pack":false}"#), later);
+    assert_eq!(matcher.map_pack_for(FIRST, later + CAPABILITY_SECONDS - 1), Some(false));
+    assert_eq!(matcher.map_pack_for(FIRST, later + CAPABILITY_SECONDS), None);
 }

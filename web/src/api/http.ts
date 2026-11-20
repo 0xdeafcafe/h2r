@@ -268,6 +268,9 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** Which hoppers are clanker ones (`GET /v1/hoppers/clankers`, by
      *  descriptor index); the raw body. */
     clankerHoppers: async (s?: AbortSignal) => getJson<unknown>(u("/hoppers/clankers"), s, await who()),
+    /** Map availability from the signed-in account's recent console search. */
+    matchmakingAvailability: async (s?: AbortSignal) =>
+      getJson<{ has_map_pack: boolean | null }>(u("/matchmaking/availability"), s, await who()),
     /** The hopper file as the editors read it (`GET /v1/titles/4D530064/hopper`);
      *  the raw body. Null when none is published — the server then serves
      *  (and ranks) the built-in lineup. */
