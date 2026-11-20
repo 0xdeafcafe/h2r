@@ -3,6 +3,7 @@
 //! use (including the copy direction and how the GPU sampled it).
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use frame_scene::{Carried, GuestOp, Slot, TargetRef, TargetSample};
 
@@ -105,6 +106,14 @@ impl Census {
 
 static CENSUS: Mutex<Option<Census>> = Mutex::new(None);
 
+// An installation that omits even one frame no longer has a since-boot
+// census. Never report a partial history as complete after a device change.
+static SKIPPED: AtomicBool = AtomicBool::new(false);
+
+pub(super) fn skip() {
+    SKIPPED.store(true, Ordering::Relaxed);
+}
+
 pub(super) fn record<D>(f: &Carried<D>) {
     CENSUS
         .lock()
@@ -115,6 +124,9 @@ pub(super) fn record<D>(f: &Carried<D>) {
 
 /// Returns no census until a sink has recorded at least one frame.
 pub fn census() -> Option<Census> {
+    if SKIPPED.load(Ordering::Relaxed) {
+        return None;
+    }
     CENSUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 

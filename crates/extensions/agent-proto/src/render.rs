@@ -404,6 +404,9 @@ pub struct SceneReply {
     /// Side target uses and readbacks across all frames the device's sink recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_census: Option<SceneCarriedCensus>,
+    /// Activation of the requested level on a fresh level boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_activation: Option<SceneCensusActivation>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
@@ -415,9 +418,6 @@ pub struct SceneCarriedCensus {
     pub frames: u64,
     /// Frames containing a guest D3D op inside a game view.
     pub game_frames: u64,
-    /// Activation of the requested level on a fresh level boot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation: Option<SceneCensusActivation>,
     pub targets: Vec<SceneTargetUse>,
     pub reads: Vec<SceneReadUse>,
 }
@@ -766,13 +766,13 @@ mod tests {
     fn the_census_preserves_counts_and_frame_bounds_on_the_wire() {
         let uses = SceneUses { count: 3, first_frame: 2, last_frame: 7 };
         let reply = SceneReply {
+            carried_activation: Some(SceneCensusActivation {
+                map: "invented".into(), present: 2, frame: 2,
+                counters: BTreeMap::from([("scene_readback".into(), 1)]),
+            }),
             carried_census: Some(SceneCarriedCensus {
                 frames: 10,
                 game_frames: 8,
-                activation: Some(SceneCensusActivation {
-                    map: "invented".into(), present: 2, frame: 2,
-                    counters: BTreeMap::from([("scene_readback".into(), 1)]),
-                }),
                 targets: vec![SceneTargetUse {
                     width: 9, height: 7, format: 6, depth: false,
                     slot: "after_lights".into(), operation: "copy_from".into(), uses,

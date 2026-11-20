@@ -49,13 +49,18 @@ fn entries() -> Option<SceneEntries> {
 }
 
 fn counters(sink: bool) -> BTreeMap<String, u64> {
-    render_bridge::scene_step::counters()
+    let mut counts: BTreeMap<String, u64> = render_bridge::scene_step::counters()
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
-        .collect()
+        .collect();
+    if let Some(owner) = d3d::threaded::owner::stats() {
+        counts.insert("scene_owned_presented".into(), owner.presented);
+        counts.insert("scene_owned_declined".into(), owner.declined);
+    }
+    counts
 }
 
 static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std::sync::OnceLock::new();
@@ -68,7 +73,10 @@ pub(crate) fn level_activated(map: &str, present: u64) {
         ACTIVATION.get_or_init(|| {
             let mut c = counters(true);
             let frame = c["scene_carried_frames"];
-            c.retain(|k, _| k.starts_with("scene_dropped_") || k.starts_with("scene_readback") || k == "scene_unresident");
+            c.retain(|k, _| {
+                k.starts_with("scene_dropped_") || k.starts_with("scene_readback")
+                    || k.starts_with("scene_owned_") || k == "scene_unresident" || k == "scene_carried_game_frames"
+            });
             agent_proto::SceneCensusActivation { map: map.into(), present, frame, counters: c }
         });
     }
@@ -86,12 +94,14 @@ fn source(dump: bool) -> Result<SceneReply, String> {
             entries: entries(),
             carried: summary.as_ref().map(carried),
             carried_census: census,
+            carried_activation: ACTIVATION.get().cloned(),
             ..SceneReply::default()
         });
     };
     let mut reply = reply(&scene, counters, summary.as_ref());
     reply.entries = entries();
     reply.carried_census = census;
+    reply.carried_activation = ACTIVATION.get().cloned();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
     }
@@ -145,7 +155,6 @@ fn carried_census(census: d3d::scene_sink::Census) -> agent_proto::SceneCarriedC
     agent_proto::SceneCarriedCensus {
         frames: census.frames,
         game_frames: census.game_frames,
-        activation: ACTIVATION.get().cloned(),
         targets: census.targets.into_iter().map(|(t, u)| agent_proto::SceneTargetUse {
             width: t.width, height: t.height, format: t.format, depth: t.depth,
             slot: t.slot.name().into(), operation: t.operation.into(), uses: uses(u),
@@ -231,6 +240,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         entries: None,
         carried: summary.map(carried),
         carried_census: None,
+        carried_activation: None,
         dump: None,
     }
 }

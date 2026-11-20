@@ -787,7 +787,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?}` | `{path, tick, present, pass?, lighting?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -954,12 +954,19 @@ h2 agent render.parity '{"arm": true}'
   groups guest readbacks by `slot` and `kind`, including the overlay
   and outside slots. Each row gives its `count`, `first_frame` and
   `last_frame`. Compare counts at two boundaries to isolate a window.
-  On a direct level boot, `activation` records the loaded map, its
+  On a direct level boot, `carried_activation` records the loaded map, its
   activation present, sink frame and gate counters. Subtract these
   counts from the current counters for the post-load interval. A row
-  whose `last_frame` exceeds `activation.frame` occurred after loading.
+  whose `last_frame` exceeds `carried_activation.frame` occurred after loading.
   The per-frame `aux` number appears only under `carried.side_targets`.
-  Both carried records are absent until the sink records a frame.
+  The cumulative census is available on the census-only path. Rendering
+  workers omit this extra scan. Both paths count
+  `scene_carried_game_frames`, the guest presents with a D3D op inside
+  a game view. With an installed frame owner, `scene_owned_presented`
+  counts successful native presentations and `scene_owned_declined`
+  counts presentations that take the ordinary backend path, including
+  frames outside game views. Both carried records are absent until the
+  sink records a frame.
   Without the option the sink counters are also absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since

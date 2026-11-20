@@ -50,6 +50,7 @@ pub fn never() -> Option<SlotAt> {
 const SCENE_COLOURS: usize = 4;
 
 static FRAMES: AtomicU64 = AtomicU64::new(0);
+static GAME_FRAMES: AtomicU64 = AtomicU64::new(0);
 static DRAWS: AtomicU64 = AtomicU64::new(0);
 static OPS: AtomicU64 = AtomicU64::new(0);
 static READBACK: [AtomicU64; Readback::COUNT] = [const { AtomicU64::new(0) }; Readback::COUNT];
@@ -65,6 +66,7 @@ static LAST: Mutex<Option<CarriedSummary>> = Mutex::new(None);
 pub fn counters() -> Vec<(String, u64)> {
     let mut out = vec![
         ("scene_carried_frames".to_owned(), FRAMES.load(Ordering::Relaxed)),
+        ("scene_carried_game_frames".to_owned(), GAME_FRAMES.load(Ordering::Relaxed)),
         ("scene_carried_draws".to_owned(), DRAWS.load(Ordering::Relaxed)),
         ("scene_carried_ops".to_owned(), OPS.load(Ordering::Relaxed)),
         ("scene_side_target_frames".to_owned(), SIDE_FRAMES.load(Ordering::Relaxed)),
@@ -94,6 +96,7 @@ pub type KeptDraw = Option<Box<ResolvedDraw>>;
 pub struct SceneSink<B: Backend> {
     inner: B,
     source: SlotSource,
+    collect_census: bool,
     keep: bool,
     frame: Carried<KeptDraw>,
     last: Carried<KeptDraw>,
@@ -113,6 +116,7 @@ impl<B: Backend> SceneSink<B> {
         Self {
             inner,
             source,
+            collect_census: true,
             keep: false,
             frame: Carried::default(),
             last: Carried::default(),
@@ -122,6 +126,14 @@ impl<B: Backend> SceneSink<B> {
             surfaces: Vec::new(),
             aux: Vec::new(),
         }
+    }
+
+    /// Enable the full cross-frame census of transient targets and reads.
+    /// A rendering worker can retain its ordinary counters without making
+    /// a second pass over every draw to collect the census.
+    pub fn with_census(mut self, enabled: bool) -> Self {
+        self.collect_census = enabled;
+        self
     }
 
     /// Keeps each draw in the carried part (tests; a census keeps none).
@@ -226,7 +238,14 @@ impl<B: Backend> SceneSink<B> {
             return;
         }
         let summary = self.frame.summary();
-        census::record(&self.frame);
+        if self.collect_census {
+            census::record(&self.frame);
+        } else {
+            census::skip();
+        }
+        if !summary.views.is_empty() {
+            GAME_FRAMES.fetch_add(1, Ordering::Relaxed);
+        }
         FRAMES.fetch_add(1, Ordering::Relaxed);
         DRAWS.fetch_add(summary.draws(), Ordering::Relaxed);
         OPS.fetch_add(summary.slots.iter().map(|c| u64::from(c.total())).sum(), Ordering::Relaxed);
