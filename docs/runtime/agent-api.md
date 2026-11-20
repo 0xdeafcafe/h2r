@@ -971,10 +971,14 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
   `game` (the selected campaign key on the three game-specific pages),
   `rows`, `focused_row` (zero-based) and `focused`; unknown selection or
-  focus is null. On the picker the rows are installed campaign keys; on
-  Campaign Options the action keys are `resume`, `new_game`,
+  focus is null. On the picker the rows are installed campaign keys.
+  With a focused picker row, `card.description` is the UTF-8 text in
+  that row's guest string slot, or null before it is available.
+  `card.picture_datum` is the selected bitmap datum, or null when the
+  artwork area is empty. `card` is null on other pages or without a
+  focused row. On Campaign Options the action keys are `resume`, `new_game`,
   `select_level` and `co_op`; other pages report an empty row list. For
-  example `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game"}`.
+  example `{"installed":true,"page":"options","game":"halo1","rows":["new_game","select_level","co_op"],"focused_row":0,"focused":"new_game","card":null}`.
   From the main menu's Campaign row, `h2 agent press a` opens the picker for
   fresh and returning profiles. Main menu row zero requests the native
   campaign dialog from `0x230888`; the picker intercepts it before the

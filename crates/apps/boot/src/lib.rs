@@ -442,9 +442,7 @@ fn run_configured(
             .flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone())))
             .collect();
         let mut cards = campaign_cards::read_cards(&opts.data_root, &levels);
-        if let Err(e) = campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards) {
-            eprintln!("campaigns: game picker artwork unavailable: {e:#}");
-        }
+        campaign_cards::picker::prepare(&opts.data_root, &opts.disc, &mut cards);
         campaign_cards::CardRewrite::new(cards, s.cards.clone())
             .map(|r| r.with_cache(&opts.data_root))
     });

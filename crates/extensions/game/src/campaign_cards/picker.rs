@@ -1,25 +1,46 @@
-//! Two versions of the same diptych. Each game's art stays on its side
-//! as focus changes. The selected tile gets more space and full colour.
-use super::{Card, cover};
+//! One picture per campaign in the game's campaign picker.
+use super::{Card, cover, has_frame, tag_name};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use tags::rgba_bitmap::Template;
+use vfs::Backend;
 
 pub const CE: &str = "@picker/halo1";
 pub const TWO: &str = "@picker/halo2";
+pub const SIZE: [u16; 2] = [220, 207];
 const CAIRO: &str = r"ui\code_global_bitmaps\campaign2";
 
-fn tiles(ce: &Card, disc: &Path) -> Result<[Card; 2]> {
-    let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc)?))?;
-    let menu = iso
-        .find("/maps/mainmenu.map")
-        .context("Halo 2 disc has no /maps/mainmenu.map")?;
+fn tile(key: &str, map: &str, (sw, sh, pixels): (u32, u32, &[u8])) -> Card {
+    let [width, height] = SIZE.map(u32::from);
+    Card {
+        map: map.into(),
+        name: tag_name("game_picker", key),
+        width,
+        height,
+        rgba: cover(sw, sh, pixels, width, height),
+    }
+}
+
+fn halo1_tile(cards: &[Card]) -> Option<Card> {
+    h1_contract::campaign::CAMPAIGN_ORDER
+        .iter()
+        .find_map(|level| {
+            let name = tag_name("halo1", level);
+            cards.iter().find(|c| c.name == name)
+        })
+        .map(|c| tile("halo1", CE, (c.width, c.height, &c.rgba)))
+}
+
+fn halo2_tile(disc: &Path) -> Result<Card> {
+    let menu = vfs::open_disc(disc)?
+        .host_file(super::MAINMENU)
+        .context("Halo 2 disc has no maps/mainmenu.map")?;
     let mut map = map::Map::from_region(
-        BufReader::new(File::open(disc)?),
-        iso.partition_offset() + u64::from(menu.sector) * xiso::SECTOR,
-        menu.size.into(),
+        BufReader::new(File::open(menu.path)?),
+        menu.offset,
+        menu.len,
     )?;
     let id = map
         .tag(map::TagQuery::NameInGroup(CAIRO, map::FourCC(*b"bitm")))?
@@ -27,163 +48,183 @@ fn tiles(ce: &Card, disc: &Path) -> Result<[Card; 2]> {
     let bitmap = Template::read(&mut map, id)?;
     let (w, h) = bitmap.size();
     let pixels = bitmap.rgba(&mut map)?;
-    // Trim the baked rim and the cut corner before composing. The VFS
-    // gives the completed diptych the same outer frame as a retail card.
-    anyhow::ensure!(
-        w > 32 && h > 32,
-        "{CAIRO} is too small for its retail frame"
-    );
-    let interior: Vec<u8> = pixels
-        .chunks_exact(usize::from(w) * 4)
-        .skip(16)
-        .take(usize::from(h - 32))
-        .flat_map(|row| row[16 * 4..row.len() - 16 * 4].iter().copied())
-        .collect();
-    Ok(compose(
-        ce,
-        (u32::from(w - 32), u32::from(h - 32), &interior),
-    ))
+    anyhow::ensure!(w != 0 && h != 0, "{CAIRO} is empty");
+    Ok(cairo_tile(w, h, &pixels))
 }
 
-fn compose(ce: &Card, two: (u32, u32, &[u8])) -> [Card; 2] {
-    let (w, h) = (220u32, 207u32);
-    [true, false].map(|focus_ce| {
-        let split = if focus_ce { 145 } else { 75 };
-        let left = cover(ce.width, ce.height, &ce.rgba, split + 14, h);
-        let right = cover(two.0, two.1, two.2, w - split + 14, h);
-        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h {
-            let edge = split + 14 - 28 * y / (h - 1);
-            for x in 0..w {
-                let on_left = x < edge;
-                let (src, i) = if on_left {
-                    (&left, y * (split + 14) + x)
-                } else {
-                    (&right, y * (w - split + 14) + x - (split - 14))
-                };
-                for &v in &src[i as usize * 4..i as usize * 4 + 3] {
-                    rgba.push(if focus_ce == on_left {
-                        v
-                    } else {
-                        (u16::from(v) * 2 / 3) as u8
-                    });
-                }
-                rgba.push(255);
+fn cairo_tile(w: u16, h: u16, pixels: &[u8]) -> Card {
+    // Strip the baked rim and cut corner before the menu rewrite
+    // applies its own frame. Plain pictures already fill their bounds.
+    const INSET: u16 = 16;
+    if w > 2 * INSET && h > 2 * INSET && has_frame(pixels) {
+        let x = usize::from(INSET) * 4;
+        let interior: Vec<u8> = pixels
+            .chunks_exact(usize::from(w) * 4)
+            .skip(usize::from(INSET))
+            .take(usize::from(h - 2 * INSET))
+            .flat_map(|row| row[x..row.len() - x].iter().copied())
+            .collect();
+        tile(
+            "halo2",
+            TWO,
+            (
+                u32::from(w - 2 * INSET),
+                u32::from(h - 2 * INSET),
+                &interior,
+            ),
+        )
+    } else {
+        tile("halo2", TWO, (u32::from(w), u32::from(h), pixels))
+    }
+}
+
+fn save_png(data: &Path, key: &str, art: &Card) -> Result<()> {
+    let path = data
+        .join("campaigns/game-picker")
+        .join(format!("{key}.png"));
+    let mut png = Vec::new();
+    assets::png::write_rgba(&mut png, art.width, art.height, &art.rgba)?;
+    if std::fs::read(&path).ok().as_ref() != Some(&png) {
+        content::store::write_atomic(&path, &png)?;
+    }
+    Ok(())
+}
+
+/// Add each available game's tile independently, from the Halo 1 import's
+/// first readable level card and Cairo Station on the Halo 2 disc.
+pub fn prepare(data: &Path, disc: &Path, cards: &mut Vec<Card>) {
+    let halo1 = halo1_tile(cards);
+    if halo1.is_none() {
+        eprintln!("campaigns: no Halo 1 level pictures (run `h2 import halo1` again)");
+    }
+    let halo2 = match halo2_tile(disc) {
+        Ok(art) => Some(art),
+        Err(e) => {
+            eprintln!("campaigns: game picker Halo 2 artwork unavailable: {e:#}");
+            None
+        }
+    };
+    for (key, art) in [("halo1", halo1), ("halo2", halo2)] {
+        if let Some(art) = art {
+            if let Err(e) = save_png(data, key, &art) {
+                eprintln!("campaigns: could not save {key} picker picture: {e:#}");
             }
-        }
-        let key = if focus_ce { "halo1" } else { "halo2" };
-        Card {
-            map: if focus_ce { CE } else { TWO }.into(),
-            name: super::tag_name("game_picker", key),
-            width: w,
-            height: h,
-            rgba,
-        }
-    })
-}
-
-/// The two tiles from the Halo 1 import's first card in play order and
-/// Cairo Station on the Halo 2 disc. The Halo 1 picture comes only from
-/// the import (`h2 import halo1` writes the cards): the game reads no
-/// Halo 1 disc.
-pub fn prepare(data: &Path, disc: &Path, cards: &mut Vec<Card>) -> Result<()> {
-    // An import can contain only later missions.
-    let ce = h1_contract::campaign::CAMPAIGN_ORDER
-        .iter()
-        .find_map(|level| {
-            let name = super::tag_name("halo1", level);
-            cards.iter().find(|c| c.name == name)
-        })
-        .context("the Halo 1 import has no level cards (run `h2 import halo1` again)")?;
-    let pair = tiles(ce, disc)?;
-    for (key, tile) in ["halo1", "halo2"].into_iter().zip(&pair) {
-        let path = data
-            .join("campaigns/game-picker")
-            .join(format!("{key}.png"));
-        let mut png = Vec::new();
-        assets::png::write_rgba(&mut png, tile.width, tile.height, &tile.rgba)?;
-        if std::fs::read(&path).ok().as_ref() != Some(&png) {
-            content::store::write_atomic(&path, &png)?;
+            cards.push(art);
         }
     }
-    cards.extend(pair);
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn focus_moves_the_seam_but_keeps_both_games_on_their_side() {
-        let ce = Card {
-            map: "a10".into(),
-            name: String::new(),
-            width: 1,
-            height: 1,
-            rgba: vec![240, 0, 0, 255],
-        };
-        let [a, b] = compose(&ce, (1, 1, &[0, 0, 240, 255]));
-        let pixel = |c: &Card, x: usize| -> [u8; 4] {
-            let at = (103 * 220 + x) * 4;
-            c.rgba[at..at + 4].try_into().unwrap()
-        };
-        assert_eq!((a.map.as_str(), b.map.as_str()), (CE, TWO));
-        assert_eq!(pixel(&a, 0), [240, 0, 0, 255]);
-        assert_eq!(pixel(&a, 219), [0, 0, 160, 255]);
-        assert_eq!(pixel(&b, 0), [160, 0, 0, 255]);
-        assert_eq!(pixel(&a, 110), [240, 0, 0, 255]);
-        assert_eq!(pixel(&b, 110), [0, 0, 240, 255]);
+
+    fn level_card(level: &str, width: u32, height: u32, rgba: Vec<u8>) -> Card {
+        Card {
+            map: level.into(),
+            name: tag_name("halo1", level),
+            width,
+            height,
+            rgba,
+        }
     }
-    #[test]
-    fn without_an_import_card_the_picker_names_the_import_and_reads_no_disc() {
-        let missing = Path::new("/nonexistent/h2-picker/halo2.iso");
-        let other = Card {
-            map: "x10".into(),
-            name: super::super::tag_name("mine", "x10"),
-            width: 1,
-            height: 1,
-            rgba: vec![0; 4],
-        };
-        let mut cards = vec![other];
-        let e = prepare(Path::new("/nonexistent/h2-picker"), missing, &mut cards).unwrap_err();
-        assert!(format!("{e:#}").contains("h2 import halo1"), "{e:#}");
-        assert_eq!(cards.len(), 1);
+
+    fn pixel(card: &Card, x: u32, y: u32) -> &[u8] {
+        let at = ((y * card.width + x) * 4) as usize;
+        &card.rgba[at..at + 4]
     }
+
+    #[test]
+    fn halo1_uses_the_first_available_mission_and_crops_its_image_once() {
+        let w = 440;
+        let h = 207;
+        let wide = (0..w * h)
+            .flat_map(|i| {
+                let x = i % w;
+                let y = i / w;
+                [(x / 2) as u8, y as u8, (x % 2) as u8, 255]
+            })
+            .collect();
+        let cards = [
+            level_card("a50", 1, 1, vec![255; 4]),
+            level_card("a30", w, h, wide),
+        ];
+        let art = halo1_tile(&cards).unwrap();
+        assert_eq!(art.map, CE);
+        assert_eq!([art.width, art.height], SIZE.map(u32::from));
+        for y in 0..h {
+            for x in 0..art.width {
+                assert_eq!(pixel(&art, x, y), pixel(&cards[1], x + 110, y));
+            }
+        }
+    }
+
+    #[test]
+    fn halo2_crops_out_the_baked_frame_but_keeps_plain_art() {
+        let [w, h] = SIZE;
+        let framed: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| {
+                    if x < 16 || x >= w - 16 || y < 16 || y >= h - 16 {
+                        [255, 0, 0, 255]
+                    } else {
+                        [0, 80, 160, 191]
+                    }
+                })
+            })
+            .collect();
+        let art = cairo_tile(w, h, &framed);
+        assert_eq!(art.map, TWO);
+        assert!(art.rgba.chunks_exact(4).all(|p| p == [0, 80, 160, 191]));
+
+        let plain = [40, 80, 160, 255].repeat(usize::from(w) * usize::from(h));
+        assert_eq!(cairo_tile(w, h, &plain).rgba, plain);
+    }
+
+    #[test]
+    fn missing_halo2_art_and_an_unwritable_preview_do_not_drop_halo1_art() {
+        // A missing disc and a file in place of the data directory.
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let mut cards = vec![level_card("a30", 1, 1, vec![0, 80, 160, 255])];
+        prepare(&data, &data.join("no-disc"), &mut cards);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].map, CE);
+        assert_eq!(pixel(&cards[1], 0, 0), [0, 80, 160, 255]);
+    }
+
     #[test]
     #[ignore = "reads the owner's Halo 2 disc"]
-    fn picker_collage_from_an_import_card_and_the_disc() {
+    fn picker_tiles_match_the_pngs_and_halo2_works_without_halo1_art() {
         let disc = std::env::var_os("H2_DISC")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso")
             });
-        // An invented Halo 1 card, as the import writes one: a gradient
-        // the size of Halo 1's level picture.
-        let (w, h) = (139u32, 113u32);
-        let rgba = (0..w * h)
-            .flat_map(|i| [(i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 96, 255])
-            .collect();
-        let mut cards = vec![Card {
-            map: "a30".into(),
-            name: super::super::tag_name("halo1", "a30"),
-            width: w,
-            height: h,
-            rgba,
-        }];
         let serial = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let data = std::env::temp_dir().join(format!("h2-picker-{}-{serial}", std::process::id()));
-        prepare(&data, &disc, &mut cards).unwrap();
+
+        let mut cards = Vec::new();
+        prepare(&data, &disc, &mut cards);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].map, TWO);
+
+        let mut cards = vec![level_card(
+            "a30",
+            139,
+            113,
+            [80, 160, 0, 255].repeat(139 * 113),
+        )];
+        prepare(&data, &disc, &mut cards);
         assert_eq!(cards.len(), 3);
         let pair = &cards[1..];
-        for (i, name) in ["halo1", "halo2"].iter().enumerate() {
+        for (key, art) in ["halo1", "halo2"].into_iter().zip(pair) {
             let (w, h, rgba) =
-                super::super::read_png(&data.join(format!("campaigns/game-picker/{name}.png")))
+                super::super::read_png(&data.join(format!("campaigns/game-picker/{key}.png")))
                     .unwrap();
-            assert_eq!((w, h), (220, 207));
-            assert_eq!(rgba, pair[i].rgba);
+            assert_eq!([w, h], SIZE.map(u32::from));
+            assert_eq!(rgba, art.rgba);
         }
         assert_eq!((pair[0].map.as_str(), pair[1].map.as_str()), (CE, TWO));
         assert_ne!(pair[0].rgba, pair[1].rgba);

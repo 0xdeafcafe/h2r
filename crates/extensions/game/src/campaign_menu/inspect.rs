@@ -3,7 +3,9 @@ use engine::GuestMemory;
 use engine::view::ui;
 use serde_json::{Value, json};
 
-use super::{PREPARED, Picker, SCREEN, State, options};
+use super::{
+    INFO_IDS, INFO_ROOM, MAX_ROWS, PREPARED, Picker, SCREEN, State, card_picture, options,
+};
 use crate::layout_glue::ReadGm;
 use crate::ui_kit::lifecycle::window_object;
 
@@ -37,19 +39,21 @@ fn inspect_menu(m: &dyn GuestMemory, s: &State, channel: u32, screen: u32, picke
     };
     let key = |id| s.key_of_campaign(id).unwrap_or("halo2");
     let list = screen.wrapping_add(ui::LIST);
-    let mut rows = Vec::new();
-    match page {
-        "picker" => rows.extend(
-            Picker::new(&s.built)
-                .rows
-                .into_iter()
-                .take(super::MAX_ROWS)
-                .map(|(id, _)| key(id)),
-        ),
-        "options" => rows
-            .extend((0..4).map_while(|row| options::label(options::action(m, list, row).ok()??))),
-        _ => {}
-    }
+    let campaigns = (page == "picker").then(|| Picker::new(&s.built));
+    let rows: Vec<_> = if let Some(campaigns) = &campaigns {
+        campaigns
+            .rows
+            .iter()
+            .take(MAX_ROWS)
+            .map(|(id, _)| key(*id))
+            .collect()
+    } else if page == "options" {
+        (0..4)
+            .map_while(|row| options::label(options::action(m, list, row).ok()??))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let focus = if rows.is_empty() {
         None
     } else {
@@ -58,8 +62,21 @@ fn inspect_menu(m: &dyn GuestMemory, s: &State, channel: u32, screen: u32, picke
     .filter(|&r| r < rows.len());
     let selected =
         matches!(page, "options" | "levels" | "difficulty").then(|| key(s.selection.campaign()));
+    let card = focus.and_then(|row| {
+        let id = campaigns.as_ref()?.campaign(row as i16)?;
+        let description = crate::layout_glue::string_address(INFO_IDS.id(row as u32))
+            .and_then(|at| card_description(m, at));
+        Some(json!({"description": description, "picture_datum": card_picture(s, id)}))
+    });
     json!({"installed": true, "page": page, "game": selected, "rows": rows,
-        "focused_row": focus, "focused": focus.and_then(|i| rows.get(i))})
+        "focused_row": focus, "focused": focus.and_then(|i| rows.get(i)), "card": card})
+}
+
+fn card_description(m: &dyn GuestMemory, at: u32) -> Option<String> {
+    let bytes = m.cstr(at, INFO_ROOM - 1).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    // An unused string slot still holds its all-space placeholder.
+    (!text.trim().is_empty()).then_some(text)
 }
 
 // 0x24c447 returns the datum at focused item +0x70. 0x22ed7a
@@ -96,6 +113,17 @@ mod tests {
         let picker = inspect_menu(&m, &s, ch, screen, true);
         assert_eq!(picker["focused"], "halo2");
         assert!(picker["game"].is_null());
+        assert_eq!(
+            picker["card"],
+            json!({"description": null, "picture_datum": null})
+        );
+        let datum = 0xe7ab_0021u32;
+        s.cards
+            .lock()
+            .unwrap()
+            .insert(super::super::picker_art::TWO.into(), datum);
+        let picker = inspect_menu(&m, &s, ch, screen, true);
+        assert_eq!(picker["card"]["picture_datum"], json!(datum));
         s.selection.set(2);
         m.put_u32(screen + 0x70, 0xda);
         let array = engine::datum::DatumArray::at(0x4000);
@@ -115,5 +143,21 @@ mod tests {
         assert_eq!(menu["game"], "halo1");
         assert_eq!(menu["rows"], json!(["new_game", "select_level", "co_op"]));
         assert_eq!(menu["focused"], "select_level");
+        assert!(menu["card"].is_null());
+    }
+
+    #[test]
+    fn card_inspection_reads_only_the_served_description() {
+        let at = 0x1000;
+        let mut m = FakeGuest::new();
+        m.map(at, INFO_ROOM as u32);
+        let placeholder = " ".repeat(INFO_ROOM - 1);
+        m.write(at, &super::super::served(&placeholder)).unwrap();
+        assert_eq!(card_description(&m, at), None);
+        assert_eq!(card_description(&m, 0), None);
+
+        let text = "Une alliance brisée. Le combat continue.";
+        m.write(at, &super::super::served(text)).unwrap();
+        assert_eq!(card_description(&m, at).as_deref(), Some(text));
     }
 }
