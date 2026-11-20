@@ -506,7 +506,11 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             for &(x, y) in on {
                 grid[(y * 640 + x) as usize] = true;
             }
-            for (other, om) in masks.iter().filter(|(w, _)| w.layer != Layer::Frame) {
+            // Panel art is the backing under the picture by design.
+            for (other, om) in masks
+                .iter()
+                .filter(|(w, _)| !matches!(w.layer, Layer::Frame | Layer::Panel))
+            {
                 let Some((oon, _)) = om else { continue };
                 let n = oon
                     .iter()
@@ -566,7 +570,9 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
             rep.issues.push(Issue::Placement { id, rule });
         }
     }
-    if let Backing::Over(o) = v.backing {
+    if let Some(parent) = &v.underlay {
+        rep.notes.extend(over_opener(&texts, Some(parent), src));
+    } else if let Backing::Over(o) = v.backing {
         rep.notes
             .extend(over_opener(&texts, src.opener(&o).as_ref(), src));
     }
@@ -844,7 +850,9 @@ mod tests {
             screen: "t".into(),
             state: "s".into(),
             backing: crate::ui_kit::view::Backing::None,
+            underlay: None,
             widgets: vec![
+                square("panel", Layer::Panel, 0, 0),
                 square("frame.0", Layer::Frame, 0, 0),
                 square("row.0.art.0", Layer::Under, 10, 0),
                 square("frame.1", Layer::Frame, 310, 100),
@@ -854,6 +862,11 @@ mod tests {
         };
         let r = check(&v, &Solid, &Rules::default());
         assert!(r.skipped.is_empty());
+        assert!(
+            !r.issues
+                .iter()
+                .any(|i| matches!(i, Issue::Covered { by, .. } if by == "panel"))
+        );
         assert!(r.issues.contains(&Issue::Covered {
             art: "frame.0".into(),
             by: "row.0.art.0".into(),
@@ -886,6 +899,7 @@ mod tests {
             screen: "t".into(),
             state: "s".into(),
             backing: Backing::Over(Opener::MAIN_MENU),
+            underlay: None,
             widgets: vec![w],
             focus: None,
             list: None,

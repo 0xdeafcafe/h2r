@@ -32,7 +32,7 @@
 //! [`Pick`]: a row sets it as it opens the picker, and both pickers show
 //! it. Only one screen takes input at a time, so one is enough.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::entry::{Cx, EntryError};
@@ -62,8 +62,8 @@ const TITLE: u32 = 0;
 const FOOTER: u32 = 1;
 const DESCRIPTION: u32 = 2;
 const VALUES: u32 = 3;
-/// The most values a picker lists: its family's slots past the three
-/// fixed ones. A row with more keeps stepping on A.
+/// Value slots available after the three fixed texts. A settings row
+/// with more choices keeps its existing step-on-A behavior.
 pub const MAX_CHOICES: usize = 0x40 - VALUES as usize;
 /// The fewest: a two-value row opens it too, as retail's On and Off
 /// settings do.
@@ -83,9 +83,7 @@ pub struct Pick {
     /// The dialog's title: the setting's name in capitals.
     pub title: String,
     pub values: Vec<String>,
-    /// The value the setting holds: the one focused when the list is
-    /// drawn offline (in the game, see docs/game/ui-builder.md "The value
-    /// picker").
+    /// The held value, focused when the picker opens.
     pub current: usize,
     /// What the setting does, on the right.
     pub description: String,
@@ -168,6 +166,15 @@ pub fn offer(p: Pick) -> Option<&'static str> {
     if !(MIN_CHOICES..=MAX_CHOICES).contains(&p.values.len()) {
         return None;
     }
+    offer_list(p)
+}
+
+/// A named list (for example the Theater map filter) always opens a
+/// dialog, even when its only entry is "All". The guest row index is i16.
+pub(crate) fn offer_list(p: Pick) -> Option<&'static str> {
+    if p.values.is_empty() || p.values.len() > i16::MAX as usize {
+        return None;
+    }
     with_pick(|held| *held = Some(p));
     Some(NAME)
 }
@@ -193,6 +200,8 @@ pub struct Picker {
     feature: &'static str,
     base: DialogBase,
     texts: SlotTexts,
+    /// The held row at open, consumed once after the pane builds its list.
+    opening_focus: AtomicU32,
     /// A press chose a value: the action closes the dialog.
     chosen: AtomicBool,
     /// Its texts' feature id (`ui-kit-texts.<name>`).
@@ -223,6 +232,7 @@ impl Picker {
             feature,
             base,
             texts: SlotTexts::new(ids::family(name_family(ingame))),
+            opening_focus: AtomicU32::new(u32::MAX),
             chosen: AtomicBool::new(false),
             texts_id,
         }
@@ -254,6 +264,22 @@ impl Picker {
             let me = Arc::clone(&me);
             Box::pin(async move { me.act(&cx, screen).await })
         });
+        let me = Arc::clone(self);
+        let focus: Action = Arc::new(move |cx, screen| {
+            let row = me.opening_focus.swap(u32::MAX, Ordering::SeqCst);
+            Box::pin(async move {
+                if row != u32::MAX {
+                    let list = screen.wrapping_add(engine::view::ui::LIST);
+                    cx.call(
+                        engine::entry::GuestCall::new(crate::list_class::LIST_SET_ROW)
+                            .eax(list)
+                            .args([row]),
+                    )
+                    .await?;
+                }
+                Ok(())
+            })
+        });
         let footer = self
             .texts
             .set(FOOTER, &crate::ui_kit::input::footer_legend(&prompts()));
@@ -262,6 +288,7 @@ impl Picker {
             .layout(Self::layout())
             .description(PICKER_HELP_TEXT)
             .action(action)
+            .pane_ready(focus)
             .action_buttons(&[])
             .footer(footer)
     }
@@ -275,11 +302,12 @@ impl Picker {
     }
 
     fn value_slot(row: usize) -> u32 {
-        VALUES + row as u32
+        // TEXT_SET copies each label into its widget. More rows than
+        // slots can reuse them as they scroll into the visible list.
+        VALUES + (row % MAX_CHOICES) as u32
     }
 
-    /// Every text of the pick showing now in its slot: the title, the
-    /// description and each value. The class is built before any pick
+    /// Fill the title, description and the first window of value slots. The class is built before any pick
     /// (its title id is taken then), and `TEXT_SET` copies a string as it
     /// sets it, so the loader has them all written before the screen is
     /// built ([`Rows::count`] is asked first, then [`Rows::write_texts`]):
@@ -293,7 +321,12 @@ impl Picker {
             .unwrap_or_default();
         self.texts.set(TITLE, title);
         self.texts.set(DESCRIPTION, description);
-        for (i, v) in p.iter().flat_map(|p| p.values.iter()).enumerate() {
+        for (i, v) in p
+            .iter()
+            .flat_map(|p| p.values.iter())
+            .take(MAX_CHOICES)
+            .enumerate()
+        {
             self.texts.set(Self::value_slot(i), v);
         }
         p
@@ -321,22 +354,20 @@ impl Rows for Picker {
         self.refresh();
         self.texts.family.id(TITLE)
     }
-    /// Asked first as the screen opens: every text of the pick is set
-    /// here, for the loader's write.
+    /// Asked first as the screen opens, before the loader writes its texts.
     fn count(&self) -> usize {
         self.refresh().map_or(0, |p| p.values.len())
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let Some(p) = current() else {
-            return Vec::new();
-        };
-        let Some(v) = usize::try_from(row).ok().and_then(|i| p.values.get(i)) else {
-            return Vec::new();
-        };
-        vec![(
-            LABEL_SLOT,
-            self.texts.set(Self::value_slot(row as usize), v),
-        )]
+        with_pick(|p| {
+            let Some(i) = usize::try_from(row).ok() else {
+                return Vec::new();
+            };
+            let Some(v) = p.as_ref().and_then(|p| p.values.get(i)) else {
+                return Vec::new();
+            };
+            vec![(LABEL_SLOT, self.texts.set(Self::value_slot(i), v))]
+        })
     }
     /// A on a value: set through the row's setter (saved), then the action
     /// closes the dialog.
@@ -357,15 +388,24 @@ impl Rows for Picker {
         Chosen::Act
     }
     fn description(&self, _row: i16) -> Option<u32> {
-        let p = current()?;
-        Some(self.texts.set(DESCRIPTION, &p.description))
+        with_pick(|p| {
+            p.as_ref()
+                .map(|p| self.texts.set(DESCRIPTION, &p.description))
+        })
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.texts.write(m)
     }
-    fn describe(&self, _count: usize) -> Option<String> {
+    fn describe(&self, count: usize) -> Option<String> {
         self.chosen.store(false, Ordering::SeqCst);
-        Some(self.spec().log_line())
+        let spec = self.spec();
+        let row = if spec.focus < count {
+            spec.focus as u32
+        } else {
+            u32::MAX
+        };
+        self.opening_focus.store(row, Ordering::SeqCst);
+        Some(spec.log_line())
     }
 }
 

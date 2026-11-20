@@ -960,10 +960,11 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   tag name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
-  or `null` for an id not named yet. For the Clanker player card
-  `dialog.name` is `clanker_player_options`, resolved from the active
-  screen's kit class; its numeric id belongs to the retail base class and
-  can identify other screens too. Dialogs read as `"screen": null`, so this
+  or `null` for an id not named yet. The Clanker player card reports
+  `clanker_player_options`. The retail-style value picker used by Theater
+  reports `kit.picker` in the main menu and `kit.picker.game` in game.
+  These names identify the active kit class. Their numeric ids identify
+  the shared retail base class. Dialogs read as `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary

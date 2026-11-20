@@ -57,6 +57,9 @@ use crate::ui::{Chosen, List, Model};
 /// The Controls list's row chosen, which the press record holds until we
 /// adopt the screen.
 pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
+/// Select a list row by index. The list address goes in EAX and the index
+/// on the stack, as in the retail Live menu's cursor restore.
+pub(crate) const LIST_SET_ROW: u32 = 0x0024_c591;
 
 /// Screen vtable slot 10: the event handler (thiscall, the event, `ret 4`;
 /// the Controls one is the generic `0x2300ea`, which closes the screen on
@@ -166,7 +169,13 @@ pub trait Rows: Send + Sync {
     fn picture(&self, _row: i16) -> Option<u32> {
         None
     }
-    /// Restore the picture block's original bitmap when a row has no picture.
+    /// Prepare the picture catalogue for this pane using the current map's
+    /// tag memory. An override replaces the template's opening and fallback
+    /// datum. A null datum leaves the frame empty until a row has art.
+    fn prepare_picture(&self, _m: &dyn GuestMemory, _template: u32) -> Option<u32> {
+        None
+    }
+    /// Restore the pane's opening bitmap when a row has no picture.
     fn restore_missing_picture(&self) -> bool {
         false
     }
@@ -215,6 +224,11 @@ pub trait Rows: Send + Sync {
     /// [`Rows::texts`].
     fn line(&self, _row: i16) -> Option<String> {
         None
+    }
+    /// A pane whose optional text cells change with its data can hide empty
+    /// cells until they acquire a string (including the focused description).
+    fn hide_empty_pane_texts(&self) -> bool {
+        false
     }
     /// The string id of the class's panel text `i` ([`ListClass::panel`]):
     /// set when the screen opens and again whenever the description is;
@@ -927,7 +941,7 @@ pub struct Shown(Mutex<Vec<ShownEntry>>);
 struct ShownEntry {
     screen: u32,
     widget: u32,
-    picture: Option<(u32, u32)>, // widget and original bitmap datum
+    picture: Option<(u32, u32)>, // widget and opening bitmap datum
     row: Option<i16>,
     /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
     /// one that could not be made).
@@ -1649,7 +1663,12 @@ pub async fn row_text(
             let focused = cx.call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(list)).await?.eax;
             if focused != u32::MAX && usize::from(DatumHandle(focused).index()) >= count {
                 // Clamp before removing the datum the list cursor refers to.
-                cx.call(GuestCall::new(0x0024_c591).eax(list).args([count.saturating_sub(1) as u32])).await?;
+                cx.call(
+                    GuestCall::new(LIST_SET_ROW)
+                        .eax(list)
+                        .args([count.saturating_sub(1) as u32]),
+                )
+                .await?;
             }
             cx.write(|m| {
                 let rows = screen.list().row_array(m)?;
@@ -1697,7 +1716,13 @@ pub async fn row_text(
             // set here is written before it is named.
             let description = focused.and_then(|r| rows.description(r));
             let footer = rows.focused_footer(focused);
-            cx.write(|m| rows.write_texts(m))?;
+            cx.write(|m| {
+                rows.write_texts(m)?;
+                if rows.hide_empty_pane_texts() {
+                    set_pane_text_visible(m, widget, description.is_some())?;
+                }
+                Ok::<_, MemFault>(())
+            })?;
             if let Some(id) = footer {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
@@ -2008,8 +2033,21 @@ pub async fn setup_pane_footer(
             eprintln!("{name}: no description text (no memory for the widget)");
         } else {
             d.shown.set_widget(screen, widget);
+            if d.rows
+                .as_ref()
+                .is_some_and(|rows| rows.hide_empty_pane_texts())
+            {
+                cx.write(|m| set_pane_text_visible(m, widget, false))?;
+            }
             if let Some(spec) = d.picture {
                 add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+                if let (Some((picture, template)), Some(rows)) =
+                    (d.shown.picture_block(screen), &d.rows)
+                    && let Some(initial) = cx.read(|m| rows.prepare_picture(m, template))
+                {
+                    cx.write(|m| set_picture(m, picture, initial))?;
+                    d.shown.set_picture(screen, picture, initial);
+                }
                 let image = d.rows.as_ref().and_then(|r| r.picture_image());
                 if let (Some(picture), Some(image)) = (d.shown.picture(screen), image) {
                     if !cx.write(|m| set_image(m, picture, image))? {
@@ -2071,24 +2109,48 @@ async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<
     Ok(())
 }
 
-/// Sets each panel text widget of `screen` to its string.
+// The widget tree draw checks both enable bytes at 0x22e3b4. Set only
+// the first on our text widgets, leaving the other gate and parent alone.
+const WIDGET_DRAW_ENABLED: u32 = 0x6d;
+
+fn set_pane_text_visible(
+    m: &mut dyn GuestMemory,
+    widget: u32,
+    visible: bool,
+) -> Result<(), MemFault> {
+    m.set_u8(widget + WIDGET_DRAW_ENABLED, u8::from(visible))
+}
+
+/// Copies panel strings and updates the draw gate of optional cells so
+/// paging to a sparse roster clears cells drawn on the preceding page.
 async fn set_panel_texts(
     cx: &Cx,
     screen: u32,
     shown: &Shown,
     rows: &dyn Rows,
 ) -> Result<(), EntryError> {
-    let texts: Vec<(u32, u32)> = shown
+    let texts: Vec<_> = shown
         .panel(screen)
         .into_iter()
         .enumerate()
-        .filter_map(|(i, widget)| rows.panel_text(i).filter(|_| widget != 0).map(|id| (widget, id)))
+        .filter(|(_, widget)| *widget != 0)
+        .map(|(i, widget)| (widget, rows.panel_text(i)))
         .collect();
-    // Written before `TEXT_SET` copies them (see `row_text`).
-    if !texts.is_empty() {
-        cx.write(|m| rows.write_texts(m))?;
+    if texts.is_empty() {
+        return Ok(());
     }
+    // Written before `TEXT_SET` copies them (see `row_text`).
+    cx.write(|m| {
+        rows.write_texts(m)?;
+        if rows.hide_empty_pane_texts() {
+            for &(widget, id) in &texts {
+                set_pane_text_visible(m, widget, id.is_some())?;
+            }
+        }
+        Ok::<_, MemFault>(())
+    })?;
     for (widget, id) in texts {
+        let Some(id) = id else { continue };
         cx.call(
             GuestCall::new(points::TEXT_SET.base)
                 .edi(widget)
@@ -2837,10 +2899,18 @@ mod tests {
         assert_eq!(live.len(), 4, "a row per value");
         let mut g = run.guest;
 
-        // The pane set-up: the title on the header, as `TEXT_SET` reads it.
+        // The pane set-up writes the header and focuses the held value.
         g.put_u32(STACK + 4, 0x55);
-        let f = move |cx| -> EntryFuture {
-            Box::pin(setup_pane_footer(cx, title, None, None, picker::NAME))
+        let ready = p.class().pane_ready.unwrap();
+        let f = move |cx: Cx| -> EntryFuture {
+            let ready = ready.clone();
+            Box::pin(async move {
+                let ret = setup_pane_footer(cx.clone(), title, None, None, picker::NAME).await?;
+                ready(cx.clone(), SCREEN).await?;
+                // Rebuilding the pane must not jump back after a cursor move.
+                ready(cx, SCREEN).await?;
+                Ok(ret)
+            })
         };
         let regs = Regs {
             esp: STACK,
@@ -2858,6 +2928,14 @@ mod tests {
         assert_eq!(
             *header.lock().unwrap(),
             [(Some(Screen::at(SCREEN).header()), "SCORE TO WIN ROUND".to_string())]
+        );
+        assert_eq!(
+            run.calls
+                .iter()
+                .filter(|c| c.target == LIST_SET_ROW)
+                .collect::<Vec<_>>(),
+            [&Gc::new(LIST_SET_ROW).eax(SCREEN + ui::LIST).args([1])],
+            "focus the offered value exactly once per opening"
         );
         let mut g = run.guest;
 
@@ -3256,6 +3334,12 @@ mod tests {
         fn tint(&self, row: i16) -> Option<[f32; 3]> {
             (row == 3).then_some([0.5, 0.25, 1.0])
         }
+        fn prepare_picture(&self, _m: &dyn GuestMemory, _template: u32) -> Option<u32> {
+            Some(u32::MAX)
+        }
+        fn restore_missing_picture(&self) -> bool {
+            true
+        }
         fn picture(&self, row: i16) -> Option<u32> {
             (row == 3).then_some(0xe6dd_04bb)
         }
@@ -3429,6 +3513,98 @@ mod tests {
         // Nothing focused: nothing set; focus back on row 3 sets it again.
         assert_eq!(draw(u32::MAX).calls, item_calls);
         assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls.len(), 4);
+    }
+
+    #[test]
+    fn optional_pane_texts_hide_and_reappear_when_content_changes_on_the_same_row() {
+        struct Sparse(AtomicBool);
+        impl Rows for Sparse {
+            fn title(&self) -> u32 {
+                1
+            }
+            fn count(&self) -> usize {
+                1
+            }
+            fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+                Vec::new()
+            }
+            fn press(&self, _: i16) -> Chosen {
+                Chosen::Nothing
+            }
+            fn hide_empty_pane_texts(&self) -> bool {
+                true
+            }
+            fn description(&self, _: i16) -> Option<u32> {
+                self.0.load(Ordering::Relaxed).then_some(0x200)
+            }
+            fn panel_text(&self, i: usize) -> Option<u32> {
+                (i == 0 && self.0.load(Ordering::Relaxed)).then_some(0x300)
+            }
+            fn live_text(&self) -> LiveText {
+                LiveText {
+                    redraw: true,
+                    ..LiveText::default()
+                }
+            }
+        }
+        const ITEM: u32 = 0x0060_0000;
+        const DESCRIPTION: u32 = 0x9100;
+        const CELL: u32 = 0x9200;
+        let rows = Arc::new(Sparse(AtomicBool::new(false)));
+        let shown = Arc::new(Shown::default());
+        shown.set_widget(SCREEN, DESCRIPTION);
+        shown.set_panel(SCREEN, vec![CELL]);
+        let draw = {
+            let rows = rows.clone();
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(cx, rows.clone(), Some(shown.clone()), None))
+            }
+        };
+        let mut g = guest();
+        g.put_u32(STACK + 4, ITEM).map(ITEM, Item::SIZE);
+        Item::at(ITEM)
+            .set_row(&mut g, Some(DatumHandle::new(0x8001, 0)))
+            .unwrap();
+        for widget in [DESCRIPTION, CELL] {
+            g.put_u8(widget + WIDGET_DRAW_ENABLED, 1);
+        }
+        for visible in [false, true, false] {
+            rows.0.store(visible, Ordering::Relaxed);
+            let run = testing::run(
+                &draw,
+                g,
+                Regs {
+                    esp: STACK,
+                    ecx: SCREEN + ui::LIST,
+                    ..Regs::default()
+                },
+                |c, _| Regs {
+                    eax: if c.target == points::LIST_FOCUSED_ROW.base {
+                        DatumHandle::new(0x8001, 0).raw()
+                    } else {
+                        0
+                    },
+                    ..Regs::default()
+                },
+            );
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            for (widget, id) in [(DESCRIPTION, 0x200), (CELL, 0x300)] {
+                assert_eq!(
+                    run.guest.u8(widget + WIDGET_DRAW_ENABLED),
+                    Ok(u8::from(visible))
+                );
+                assert_eq!(
+                    run.calls.contains(
+                        &Gc::new(points::TEXT_SET.base)
+                            .edi(widget)
+                            .esi(SCREEN)
+                            .args([id])
+                    ),
+                    visible
+                );
+            }
+            g = run.guest;
+        }
     }
 
     /// Text that changes while the screen is up: written before the row
@@ -3618,6 +3794,7 @@ mod tests {
     #[test]
     fn the_pane_set_up_adds_the_picture_after_the_description() {
         let mut g = screen_tag();
+        g.put_u32(0x9800 + WIDGET_BLOCK, TABLES + PICTURE_BLOCK);
         g.put_u32(STACK + 4, 0x55);
         let shown = Arc::new(Shown::default());
         let d = Description {
@@ -3635,7 +3812,7 @@ mod tests {
             frame_at: TABLES + FRAME_BLOCK,
             panel: Panel::default(),
             panel_at: 0,
-            rows: None,
+            rows: Some(Arc::new(Described)),
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -3662,8 +3839,10 @@ mod tests {
                     .args([TABLES + PICTURE_BLOCK]),
             ]
         );
-        let want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        let mut want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        want[BITMAP_HANDLE..BITMAP_HANDLE + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
+        assert_eq!(shown.picture_block(SCREEN), Some((0x9800, u32::MAX)));
         assert_eq!(shown.picture(SCREEN), Some(0x9800));
     }
 
@@ -3739,7 +3918,7 @@ mod tests {
         let list = SCREEN + ui::LIST;
         let shown = Arc::new(Shown::default());
         shown.set_widget(SCREEN, 0x9000);
-        shown.set_picture(SCREEN, PICTURE, 0xe58c_036c);
+        shown.set_picture(SCREEN, PICTURE, u32::MAX);
         let mut g = guest();
         g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
         const BLOCK: u32 = 0x0062_0000;
@@ -3775,6 +3954,20 @@ mod tests {
         assert_eq!(tint, [0.5, 0.25, 1.0]);
         // And points it at the row's bitmap, in our copy of its block.
         assert_eq!(run.guest.u32(BLOCK + BITMAP_HANDLE as u32).unwrap(), 0xe6dd_04bb);
+        // A row without map art restores the pane's blank opening bitmap.
+        let empty = testing::run(&f, run.guest, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::ITEM_TEXT.base => 0x7000,
+                t if t == points::LIST_FOCUSED_ROW.base => DatumHandle::new(0x8001, 0).raw(),
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(empty.result, Ok(Ret::new(0, 8)));
+        assert_eq!(
+            empty.guest.u32(BLOCK + BITMAP_HANDLE as u32).unwrap(),
+            u32::MAX
+        );
         let mut m = FakeGuest::new();
         m.map(PICTURE, 0x90);
         set_tint(&mut m, PICTURE, [1.0, 0.78, 0.3]).unwrap();

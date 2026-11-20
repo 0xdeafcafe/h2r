@@ -5,15 +5,17 @@ use std::sync::{Arc, Mutex};
 use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
-use super::selector::{Filter, Sort, fitted, map_stem, map_title};
+use super::selector::{OptionRow, map_title};
 use super::{DETAIL, Entry, FILMS, Load, Tab, Theater, adapter::FilmSummary};
 use crate::list_class::{
     ListClass, ListLayout, LiveText, Panel, PanelText, PictureSpec, Rows, TextBlock,
 };
 use crate::mods_screen::page_layout as lobby;
 use crate::ui::Chosen;
-use crate::ui_kit::input::{Glyph, Input, Prompt, legend};
+use crate::ui_kit::input::{Glyph, Input, Prompt, footer_legend};
+use crate::ui_kit::level_art;
 use crate::ui_kit::spec::{ListPlace, PaneText, Press, RowSpec, ScreenSpec, ValueStyle};
+use crate::ui_kit::text_fit;
 use crate::ui_kit::view::{Art, PaneArt};
 
 pub(super) const TEXTS: crate::ui_kit::ids::Family = crate::ui_kit::ids::family("theater");
@@ -24,52 +26,53 @@ const FILMS_FOOTER: u32 = 3;
 const DETAIL_FOOTER: u32 = 4;
 const STATUS: u32 = 5;
 const ROWS: u32 = 8;
-const ROSTER: usize = 8;
+const ROSTER: usize = 7;
 pub(super) const FILM_ROWS: usize = 40;
 pub(super) const BROWSE_ROWS: usize = 4;
 const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS;
-const DETAIL_ROWS: u32 = ROWS + MAX_ROWS as u32;
-const TAB_PANEL: u32 = DETAIL_ROWS + 4;
-const PANEL: u32 = TAB_PANEL + 1;
+const VALUES: u32 = ROWS + MAX_ROWS as u32;
+const DETAIL_ROWS: u32 = VALUES + MAX_ROWS as u32;
+const TAB_PANEL: u32 = DETAIL_ROWS + 3;
+const PANEL: u32 = TAB_PANEL + 2 * Tab::ALL.len() as u32;
+const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
 
-const FILMS_LAYOUT: ListLayout = crate::skulls_menu::LIST_LAYOUT;
-// The right column has its own band for tabs above the preview.
-const TAB_STRIP: TextBlock = TextBlock {
-    rect: [176, 39, 152, 260],
-    ..lobby::BODY
+// The native settings skin supplies both text columns. Its first highlight
+// ends below the 207-unit level picture and its fifth clears the footer.
+const FILMS_LAYOUT: ListLayout = ListLayout {
+    skin: crate::ui_kit::dialog::QUICK_LIST.skin,
+    anchor: [crate::ui_kit::dialog::QUICK_LIST.anchor[0], -64],
+    visible: 5,
+    bitmaps_left_of: i16::MIN,
 };
 const LIST_PICTURE: PictureSpec = PictureSpec {
-    at: [TAB_STRIP.rect[1], TAB_STRIP.rect[2] - 4],
-    animation: crate::campaign_menu::PICTURE.animation,
+    at: [52, 177],
     ..lobby::PICTURE
 };
 const FILM_LAYOUT: ListLayout = ListLayout {
-    visible: 4,
+    anchor: [lobby::LIST.anchor[0], -77],
+    visible: 3,
     ..lobby::LIST
 };
 const FILM_PICTURE: PictureSpec = PictureSpec {
-    at: [-258, 46],
+    at: [-258, 174],
     ..lobby::PICTURE
 };
-// The 128-pixel lobby display ends at y=50, just above the film picture.
 const FILM_PANEL_ART: [PictureSpec; 2] = [
-    lobby::NAME_FIELD,
     PictureSpec {
-        at: [lobby::LOBBY_DISPLAY.at[0], 178],
+        at: [lobby::NAME_FIELD.at[0], FILM_LAYOUT.anchor[1] + 27],
+        ..lobby::NAME_FIELD
+    },
+    PictureSpec {
+        at: [lobby::LOBBY_DISPLAY.at[0], FILM_PICTURE.at[1]],
         ..lobby::LOBBY_DISPLAY
     },
 ];
 const LIST_STATUS: TextBlock = TextBlock {
-    rect: [
-        LIST_PICTURE.at[1] - lobby::PICTURE_SIZE[1] as i16 - 4,
-        TAB_STRIP.rect[1],
-        -174,
-        TAB_STRIP.rect[3],
-    ],
-    ..crate::skulls_menu::DESCRIPTION_TEXT
+    rect: [132, -248, -24, 36],
+    ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
-    rect: [66, -258, 47, 40],
+    rect: [-125, -258, -179, -36],
     ..lobby::STATUS
 };
 
@@ -81,14 +84,18 @@ pub(super) enum Action {
 }
 
 impl Action {
-    fn for_entry(entry: &Entry) -> &'static [Self] {
-        if entry.clip.is_some() {
-            &[Self::Watch, Self::Delete]
-        } else if entry.film.archive_id().is_some() {
-            &[Self::Watch, Self::Save]
-        } else {
-            &[Self::Watch, Self::Save, Self::Delete]
-        }
+    fn for_entry(entry: &Entry) -> impl Iterator<Item = Self> {
+        [Self::Watch, Self::Save, Self::Delete]
+            .into_iter()
+            .filter(move |action| match action {
+                Self::Watch => entry.film.watch_unavailable().is_none(),
+                Self::Save => entry.clip.is_none(),
+                Self::Delete => entry.clip.is_some() || entry.film.archive_id().is_none(),
+            })
+    }
+
+    pub(super) fn at(entry: &Entry, row: usize) -> Option<Self> {
+        Self::for_entry(entry).nth(row)
     }
 }
 
@@ -100,6 +107,10 @@ impl Theater {
             drop(state);
             self.open(controller, player);
             return Chosen::Stepped("Refreshing films".into());
+        }
+        if let Some(option) = OptionRow::at(row) {
+            let pick = option.pick(self, &state);
+            return crate::ui_kit::picker::offer_list(pick).map_or(Chosen::Nothing, Chosen::Open);
         }
         let Some(entry) = entry_at(&state, row) else {
             return Chosen::Nothing;
@@ -113,9 +124,9 @@ impl Theater {
         let Some(entry) = state.selected.clone().filter(|_| !state.working) else {
             return false;
         };
-        let Some(&action) = usize::try_from(row)
+        let Some(action) = usize::try_from(row)
             .ok()
-            .and_then(|i| Action::for_entry(&entry).get(i))
+            .and_then(|i| Action::at(&entry, i))
         else {
             return false;
         };
@@ -124,7 +135,7 @@ impl Theater {
         }
         state.status.clear();
         match action {
-            Action::Watch if entry.film.watch_unavailable().is_none() => {
+            Action::Watch => {
                 if entry.film.archive_id().is_some() {
                     drop(state);
                     self.archive_action(Action::Watch, entry);
@@ -140,7 +151,6 @@ impl Theater {
                 }
                 return false;
             }
-            Action::Watch => {}
             Action::Delete if !state.confirm_delete => {
                 state.confirm_delete = true;
                 state.status = "Press A again to delete".into();
@@ -177,74 +187,137 @@ fn entry_at(state: &super::State, row: i16) -> Option<Entry> {
     state.entries().into_iter().nth(index)
 }
 
-fn tabs(state: &super::State) -> Vec<String> {
-    super::Tab::ALL
-        .into_iter()
-        .map(|tab| {
-            if state.tab == tab {
-                format!("[{}]", tab.label())
-            } else {
-                tab.label().to_owned()
-            }
-        })
-        .collect()
-}
+// The lobby has two backings. The two remaining panel widgets are the
+// retail dialog corners. They stay in place even for an empty picture.
+fn panel_art(list: bool) -> [(PictureSpec, [u16; 2]); 4] {
+    use crate::ui_kit::dialog::{FRAME_CORNER_SIZE, FRAME_CORNERS, LARGE_SCREEN_ID};
 
-fn films_model(state: &super::State) -> Vec<RowSpec> {
-    let mut tabs = RowSpec::info("Film library", "").press(Press::Step);
-    if let Some(error) = state.library_error() {
-        tabs = RowSpec::action("Retry library").describe(&fitted(error, 28));
-    } else if let Some(error) = state
-        .clips_error
-        .as_ref()
-        .filter(|_| state.tab == Tab::Clips)
-    {
-        tabs = tabs.describe(&fitted(error, 28));
+    let (backings, picture) = if list {
+        (lobby::ART, LIST_PICTURE)
     } else {
-        tabs = tabs.describe("Choose Recent, Saved or Clips.");
-    }
-    let sort = [
-        Sort::Recent.label(),
-        Sort::Map.label(),
-        Sort::GameType.label(),
-    ];
-    let mut rows = vec![
-        tabs,
-        RowSpec::value("Sort", &sort, state.selector.sort as usize)
-            .describe("Choose the order of the films."),
-        filter_row("Map", state.selector.map.as_deref()).describe("Show films from one level."),
-        filter_row("Type", state.selector.game_type.as_deref())
-            .describe("Show films of one game type."),
-    ];
-    let entries = state.entries();
-    if entries.is_empty() {
-        let label = match state.load {
-            Load::Loading => "Reading films...",
-            Load::Ready(_)
-                if state.selector.map.is_some() || state.selector.game_type.is_some() =>
-            {
-                "No matching films"
-            }
-            Load::Ready(_) => match state.tab {
-                Tab::Recent => "No recent films",
-                Tab::Saved => "No saved films",
-                Tab::Clips => "No clips",
+        (FILM_PANEL_ART, FILM_PICTURE)
+    };
+    let [left, top] = picture.at;
+    let [width, height] = lobby::PICTURE_SIZE.map(|n| n as i16);
+    let side = FRAME_CORNER_SIZE as i16;
+    let corner = |index: u16, at| {
+        (
+            PictureSpec {
+                screen_id: LARGE_SCREEN_ID as u32,
+                pane: 0,
+                bitmap: u32::from(index),
+                image: 0,
+                at,
+                animation: picture.animation,
             },
-        };
-        rows.push(RowSpec::info(label, ""));
-    } else {
-        rows.extend(entries.iter().map(|entry| {
-            RowSpec::info(&entry.row_title(), "")
-                .press(Press::Open(DETAIL.into()))
-                .describe(&entry.browse_description(state.player.as_deref()))
-        }));
-    }
-    rows
+            [FRAME_CORNER_SIZE; 2],
+        )
+    };
+    [
+        (backings[0], lobby::ART_SIZES[0]),
+        (backings[1], lobby::ART_SIZES[1]),
+        corner(FRAME_CORNERS[0], [left, top]),
+        corner(FRAME_CORNERS[1], [left + width - side, top - height + side]),
+    ]
 }
 
-fn filter_row(label: &str, choice: Option<&str>) -> RowSpec {
-    let value = fitted(choice.unwrap_or("All"), 15);
-    RowSpec::info(label, &format!("< {value} >")).press(Press::Step)
+fn library_panel() -> Panel {
+    Panel {
+        art: panel_art(true).map(|(p, _)| p).to_vec(),
+        // Panel colours come from the tag at construction. Each tab has
+        // a bright and a muted widget, and only its current one is drawn.
+        texts: (0..Tab::ALL.len())
+            .flat_map(|i| {
+                let left = LIST_STATUS.rect[1] + 94 * i as i16;
+                let rect = [171, left, 149, left + 88];
+                [
+                    panel_cell(rect, false, false),
+                    panel_cell(rect, false, true),
+                ]
+            })
+            .collect(),
+    }
+}
+
+fn empty_help(state: &super::State) -> String {
+    if let Some(error) = state.library_error().or_else(|| {
+        state
+            .clips_error
+            .as_deref()
+            .filter(|_| state.tab == Tab::Clips)
+    }) {
+        return text_fit::paragraph(error, 280, 5);
+    }
+    match state.load {
+        Load::Loading => "Reading films...",
+        Load::Ready(_) if state.selector.map.is_some() || state.selector.game_type.is_some() => {
+            "No matching films\nChoose All in Map or Game type."
+        }
+        Load::Ready(_) => match state.tab {
+            Tab::Recent => "No recent films\nPlay a game to record a film.",
+            Tab::Saved => "No saved films\nOpen a film in Recent and choose Save.",
+            Tab::Clips => {
+                "No clips\nWhile watching a film, press X to mark the start and end of a clip."
+            }
+        },
+    }
+    .into()
+}
+
+fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {
+    let noun = if state.tab == Tab::Clips {
+        "clip"
+    } else {
+        "film"
+    };
+    let count = entries.len();
+    let count = format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
+    let error = state.library_error();
+    let mut library = if let Some(error) = error {
+        RowSpec::info("Retry library", &count)
+            .press(Press::Act)
+            .describe(&text_fit::paragraph(error, 280, 5))
+    } else {
+        let help = if state.tab == Tab::Clips {
+            state.clips_error.as_deref()
+        } else {
+            None
+        };
+        RowSpec::info("Film library", &count).describe(&help.map_or_else(
+            || "Use Left or Right to switch libraries.".into(),
+            |e| text_fit::paragraph(e, 280, 5),
+        ))
+    };
+    let mut tab_prompts = vec![Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Library")];
+    if error.is_some() {
+        tab_prompts.push(Prompt::new(&[Glyph::A], "Retry"));
+    }
+    tab_prompts.push(Prompt::new(&[Glyph::B], "Back"));
+    library.prompts = Some(tab_prompts);
+    let mut rows = vec![library];
+    rows.extend(OptionRow::ALL.map(|option| {
+        RowSpec::info(
+            option.label(),
+            &text_fit::line(option.current(&state.selector), 240),
+        )
+        .press(Press::Open(crate::ui_kit::picker::NAME.into()))
+        .describe(option.description())
+    }));
+    rows.extend(entries.iter().map(|entry| {
+        let when = entry.recorded_time();
+        let value = if when.is_empty() {
+            entry.film.source_badge()
+        } else {
+            &when
+        };
+        let mut row = RowSpec::info(&entry.row_title(), value)
+            .press(Press::Open(DETAIL.into()))
+            .describe(&entry.browse_description(state.player.as_deref()));
+        row.prompts = Some(prompts("Details", false));
+        row.art = level_picture(entry, LIST_PICTURE);
+        row
+    }));
+    rows
 }
 
 fn detail_model(state: &super::State) -> Vec<RowSpec> {
@@ -253,8 +326,6 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
     };
     let film = &entry.film;
     Action::for_entry(entry)
-        .iter()
-        .copied()
         .map(|action| {
             let label = match action {
                 Action::Watch => "Watch",
@@ -263,11 +334,6 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
                 Action::Delete if state.confirm_delete => "Confirm delete",
                 Action::Delete => "Delete",
             };
-            if action == Action::Watch
-                && let Some(reason) = film.watch_unavailable()
-            {
-                return RowSpec::info("Watch unavailable", "").describe(reason);
-            }
             if state.working {
                 RowSpec::info(label, "")
             } else {
@@ -277,15 +343,14 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
         .collect()
 }
 
-fn prompts(list: bool) -> Vec<Prompt> {
+fn prompts(action: &str, roster_pages: bool) -> Vec<Prompt> {
     let mut prompts = vec![
-        Prompt::new(&[Glyph::A], if list { "Details" } else { "Select" }),
+        Prompt::new(&[Glyph::A], action),
         Prompt::new(&[Glyph::B], "Back"),
     ];
-    prompts.push(Prompt::new(
-        &[Glyph::DpadLeft, Glyph::DpadRight],
-        if list { "Change" } else { "Players" },
-    ));
+    if roster_pages {
+        prompts.push(Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Players"));
+    }
     prompts
 }
 
@@ -301,79 +366,139 @@ fn panel_cell(rect: [i16; 4], right: bool, data: bool) -> PanelText {
     }
 }
 
+// The map and action list share the left column. The film summary and
+// roster share the right column, using the lobby's baselines throughout.
+const HEADER_LINES: usize = 5;
+const TABLE_LEFT: i16 = -28;
+const COLUMNS: [(i16, i16, bool); 4] = [
+    (TABLE_LEFT, 81, false),
+    (87, 143, false),
+    (149, 195, true),
+    (201, lobby::TABLE_RIGHT, true),
+];
+
+fn detail_cell(row: usize, left: i16, right: i16, numeric: bool, data: bool) -> PanelText {
+    let top = lobby::TABLE_TOP - row as i16 * lobby::ROW_STEP;
+    panel_cell([top, left, top - lobby::ROW_HEIGHT, right], numeric, data)
+}
+
 fn film_panel() -> Panel {
-    let mut texts = vec![panel_cell([180, 52, 161, 272], false, false)];
-    for i in 0..6 {
-        let y = 159 - i * 19;
-        texts.push(panel_cell([y, 52, y - 18, 272], false, true));
-    }
-    texts.push(panel_cell([44, -12, 25, 272], false, false));
-    for row in 0..ROSTER as i16 {
-        let y = 24 - row * 20;
-        for (left, right, numeric) in [
-            (-12, 110, false),
-            (113, 172, false),
-            (174, 211, true),
-            (214, 272, true),
-        ] {
-            texts.push(panel_cell([y, left, y - 19, right], numeric, true));
+    let mut texts = (0..HEADER_LINES)
+        .map(|row| detail_cell(row, TABLE_LEFT, lobby::TABLE_RIGHT, false, row != 0))
+        .collect::<Vec<_>>();
+    for row in 0..=ROSTER {
+        for (left, right, numeric) in COLUMNS {
+            texts.push(detail_cell(
+                HEADER_LINES + 1 + row,
+                left,
+                right,
+                numeric,
+                row != 0,
+            ));
         }
     }
+    // This full-width line shares the first roster row's baseline. Only
+    // one of the line and the player cells ever has text.
+    texts.push(detail_cell(
+        HEADER_LINES + 2,
+        TABLE_LEFT,
+        lobby::TABLE_RIGHT,
+        false,
+        true,
+    ));
     Panel {
-        art: FILM_PANEL_ART.to_vec(),
+        art: panel_art(false).map(|(p, _)| p).to_vec(),
         texts,
     }
+}
+
+fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
+    let film = &entry.film;
+    let mut values = Vec::new();
+    if let Some((_, title)) = &entry.archive_clip
+        && !title.trim().is_empty()
+    {
+        values.push(title.clone());
+    }
+    let variant = film.variant_name().trim();
+    let game_type = film.game_type().unwrap_or("").trim();
+    if !variant.is_empty() {
+        values.push(variant.into());
+    }
+    let mode = film.mode().unwrap_or("").trim();
+    let mut modes: Vec<&str> = vec![];
+    if !mode.is_empty() {
+        modes.push(mode);
+    }
+    if !game_type.is_empty()
+        && !game_type.eq_ignore_ascii_case(variant)
+        && !game_type.eq_ignore_ascii_case(mode)
+    {
+        modes.push(game_type);
+    }
+    if !modes.is_empty() {
+        values.push(modes.join(" / "));
+    }
+    let when = entry.recorded_time();
+    if !when.is_empty() {
+        values.push(when);
+    }
+    if let Some(result) = entry.result(player) {
+        values.push(format!("Result: {result}"));
+    }
+    values.resize(HEADER_LINES, String::new());
+
+    values
 }
 
 fn film_panel_values(state: &super::State) -> Vec<String> {
     let Some(entry) = &state.selected else {
         return Vec::new();
     };
-    let film = &entry.film;
-    let variant = film.variant_name();
-    let variant = if variant.is_empty() { "--" } else { variant };
-    let roster_pages = film.scoreboard().len().div_ceil(ROSTER).max(1);
-    let mut values = vec![
-        film.source_badge().into(),
-        format!("Mode   {}", fitted(film.mode().unwrap_or("--"), 21)),
-        format!("Type   {}", fitted(film.game_type().unwrap_or("--"), 21)),
-        format!("Variant   {}", fitted(variant, 19)),
-        format!("{}   {}", entry.date(), entry.duration()),
-        format!(
-            "Result   {}",
-            fitted(&entry.result(state.player.as_deref()), 20)
-        ),
-        entry
-            .archive_clip
-            .as_ref()
-            .map_or_else(|| entry.player_count(), |(_, title)| fitted(title, 28)),
-        if film.scoreboard().is_empty() {
-            "Scoreboard unavailable".into()
+    let mut values = header_values(entry, state.player.as_deref());
+    let players = entry.film.scoreboard();
+    let pages = players.len().div_ceil(ROSTER);
+    let page = state.roster_page.min(pages.saturating_sub(1));
+    let teams = players.iter().any(|p| p.team.is_some());
+    let scores = players.iter().any(|p| p.score.is_some());
+    let kd = players
+        .iter()
+        .any(|p| p.kills.is_some() || p.deaths.is_some());
+    values.extend([
+        if pages > 1 {
+            format!("Players {} / {pages}", page + 1)
         } else {
-            format!(
-                "Players {}/{}       Team        Score     K / D",
-                state.roster_page + 1,
-                roster_pages
-            )
+            "Players".into()
         },
-    ];
-    for i in 0..ROSTER {
-        if let Some(p) = film.scoreboard().get(state.roster_page * ROSTER + i) {
-            let dash = || "--".to_owned();
+        if teams { "Team" } else { "" }.into(),
+        if scores { "Score" } else { "" }.into(),
+        if kd { "K / D" } else { "" }.into(),
+    ]);
+    for row in 0..ROSTER {
+        if let Some(p) = players.get(page * ROSTER + row) {
+            let kd_value = |n: Option<u32>| n.map_or_else(|| "-".to_owned(), |n| n.to_string());
             values.extend([
-                fitted(&p.name, 15),
-                fitted(p.team.as_deref().unwrap_or("--"), 8),
-                p.score.map_or_else(dash, |score| score.to_string()),
-                format!(
-                    "{} / {}",
-                    p.kills.map_or_else(dash, |n| n.to_string()),
-                    p.deaths.map_or_else(dash, |n| n.to_string())
-                ),
+                p.name.clone(),
+                p.team.clone().unwrap_or_default(),
+                p.score.map_or_else(String::new, |n| n.to_string()),
+                if p.kills.is_some() || p.deaths.is_some() {
+                    format!("{} / {}", kd_value(p.kills), kd_value(p.deaths))
+                } else {
+                    String::new()
+                },
             ]);
         } else {
-            values.extend(std::iter::repeat_n(String::new(), 4));
+            values.extend(std::iter::repeat_n(String::new(), COLUMNS.len()));
         }
     }
+    values.push(
+        if players.is_empty() {
+            "No players were recorded."
+        } else {
+            ""
+        }
+        .into(),
+    );
     values
 }
 
@@ -402,25 +527,48 @@ fn art(p: PictureSpec, size: [u16; 2]) -> PaneArt {
     }
 }
 
+fn level_picture(entry: &Entry, picture: PictureSpec) -> Option<PaneArt> {
+    let stem = level_art::stem(&entry.film.map);
+    (!stem.is_empty()).then_some(PaneArt {
+        art: Art::Level { stem },
+        at: picture.at,
+        size: lobby::PICTURE_SIZE,
+        depth: 0,
+    })
+}
+
 pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     let state = theater.state();
     let title = if list {
         "THEATER".to_owned()
     } else {
-        state
-            .selected
-            .as_ref()
-            .map_or_else(|| "Film".into(), |e| fitted(&map_title(&e.film.map), 27))
+        state.selected.as_ref().map_or_else(
+            || "Film".into(),
+            |e| text_fit::line(&map_title(&e.film.map), text_fit::TITLE),
+        )
     };
     let mut s = ScreenSpec::new(if list { FILMS } else { DETAIL }, &title);
     s.rows = if list {
-        films_model(&state)
+        let entries = state.entries();
+        if entries.is_empty() {
+            s.help = Some(empty_help(&state));
+        }
+        films_model(&state, &entries)
     } else {
         detail_model(&state)
     };
     s.footer = true;
-    s.style = ValueStyle::Inline;
-    s.prompts = prompts(list);
+    s.style = if list {
+        ValueStyle::Setting
+    } else {
+        ValueStyle::Inline
+    };
+    let roster_pages = !list
+        && state
+            .selected
+            .as_ref()
+            .is_some_and(|e| e.film.scoreboard().len() > ROSTER);
+    s.prompts = prompts("Select", roster_pages);
     s.inputs = vec![
         Input::A,
         Input::B,
@@ -431,32 +579,57 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     ];
     s.list = ListPlace::from(Some(if list { FILMS_LAYOUT } else { FILM_LAYOUT }));
     s.description = Some((if list { LIST_STATUS } else { FILM_STATUS }).into());
+    s.panel = panel_art(list)
+        .into_iter()
+        .map(|(p, size)| art(p, size))
+        .collect();
     if list {
         s.scrolls = true;
-        s.texts.push(pane_text(
-            0,
-            &panel_cell(TAB_STRIP.rect, false, false),
-            tabs(&state).join("     "),
-        ));
-        s.art.extend([
-            art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
-            art(LIST_PICTURE, lobby::PICTURE_SIZE),
-        ]);
-    } else {
-        s.panel = FILM_PANEL_ART
-            .into_iter()
-            .zip(lobby::ART_SIZES)
-            .map(|(p, size)| art(p, size))
+        let panel = library_panel();
+        s.texts = panel
+            .texts
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| {
+                let tab = Tab::ALL[i / 2];
+                let label = match (i % 2, state.tab == tab) {
+                    (0, true) => tab.label().to_uppercase(),
+                    (1, false) => tab.label().into(),
+                    _ => String::new(),
+                };
+                pane_text(i, cell, label)
+            })
             .collect();
-        s.art.push(art(FILM_PICTURE, lobby::PICTURE_SIZE));
+    } else {
+        s.art.extend(
+            state
+                .selected
+                .as_ref()
+                .and_then(|entry| level_picture(entry, FILM_PICTURE)),
+        );
         s.texts = film_panel()
             .texts
             .iter()
             .zip(film_panel_values(&state))
             .enumerate()
-            .map(|(i, (t, value))| pane_text(i, t, value))
+            .map(|(i, (t, value))| {
+                let [_, left, _, right] = t.block.rect;
+                pane_text(i, t, text_fit::line(&value, i32::from(right - left)))
+            })
             .collect();
-        s.help = (!state.status.is_empty()).then(|| fitted(&state.status, 39));
+        s.help = if state.status.is_empty() {
+            state
+                .selected
+                .as_ref()
+                .and_then(|e| e.film.watch_unavailable())
+                .map(str::to_owned)
+        } else {
+            Some(text_fit::paragraph(
+                &state.status,
+                i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]),
+                2,
+            ))
+        };
     }
     s
 }
@@ -554,12 +727,21 @@ impl Rows for ScreenRows {
 
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let index = row as usize;
-        let Some((label, _)) = self.with_spec(|s| s.rows.get(index).map(|r| r.cells(s.style)))
+        let Some((label, value)) = self.with_spec(|s| s.rows.get(index).map(|r| r.cells(s.style)))
         else {
             return Vec::new();
         };
         let slot = if self.list { ROWS } else { DETAIL_ROWS } + row as u32;
-        vec![(crate::ui::LABEL_SLOT, self.texts.set(slot, &label))]
+        let mut cells = vec![(crate::ui::LABEL_SLOT, self.texts.set(slot, &label))];
+        if self.list {
+            // A recycled item widget still holds its last value.
+            cells.push((
+                crate::ui::VALUE_SLOT,
+                self.texts
+                    .set(VALUES + row as u32, value.as_deref().unwrap_or("")),
+            ));
+        }
+        cells
     }
 
     fn press(&self, row: i16) -> Chosen {
@@ -578,34 +760,16 @@ impl Rows for ScreenRows {
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
         let mut state = self.theater.state();
         if self.list {
-            let message = match row {
-                0 => {
-                    state.change_tab(right);
-                    let tab = state.tab;
-                    drop(state);
-                    if tab == Tab::Clips {
-                        self.theater.refresh_clips();
-                    }
-                    return Some(tab.label().into());
-                }
-                1 => {
-                    state.selector.step_sort(right);
-                    state.selector.sort.label().into()
-                }
-                2 | 3 => {
-                    let tab = state.tab_entries();
-                    let (filter, name) = if row == 2 {
-                        (Filter::Map, "Map")
-                    } else {
-                        (Filter::GameType, "Game type")
-                    };
-                    state.selector.step_filter(&tab, filter, right);
-                    format!("{name} filter changed")
-                }
-                _ => return None,
-            };
-            state.changed();
-            return Some(message);
+            if row != 0 {
+                return None;
+            }
+            state.change_tab(right);
+            let tab = state.tab;
+            drop(state);
+            if tab == Tab::Clips {
+                self.theater.refresh_clips();
+            }
+            return Some(tab.label().into());
         }
         let pages = state
             .selected
@@ -623,39 +787,72 @@ impl Rows for ScreenRows {
     }
 
     fn description(&self, row: i16) -> Option<u32> {
-        Some(self.with_spec(|s| {
+        self.with_spec(|s| {
             let message = s
                 .rows
                 .get(row as usize)
                 .and_then(|r| r.description.as_deref());
             let slot = if self.list { STATUS } else { STATUS + 1 };
-            self.texts
-                .set(slot, s.help.as_deref().or(message).unwrap_or(""))
+            s.help
+                .as_deref()
+                .or(message)
+                .filter(|s| !s.is_empty())
+                .map(|s| self.texts.set(slot, s))
+        })
+    }
+
+    fn hide_empty_pane_texts(&self) -> bool {
+        true
+    }
+
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        let slot = if self.list {
+            FILMS_FOOTER
+        } else {
+            DETAIL_FOOTER
+        };
+        Some(self.with_spec(|s| {
+            let prompts = row
+                .and_then(|r| s.rows.get(r as usize))
+                .and_then(|r| r.prompts.as_deref())
+                .unwrap_or(&s.prompts);
+            self.texts.set(slot, &footer_legend(prompts))
         }))
     }
 
     fn panel_text(&self, i: usize) -> Option<u32> {
-        // Clear slots from a preceding roster on the same screen.
-        let count = if self.list { 1 } else { 8 + ROSTER * 4 };
-        let slot = if self.list {
-            TAB_PANEL
-        } else {
-            PANEL + i as u32
-        };
-        (i < count).then(|| {
-            self.with_spec(|s| self.texts.set(slot, s.texts.get(i).map_or("", |t| &t.text)))
+        let slot = if self.list { TAB_PANEL } else { PANEL } + i as u32;
+        self.with_spec(|s| {
+            s.texts
+                .get(i)
+                .filter(|t| !t.text.is_empty())
+                .map(|t| self.texts.set(slot, &t.text))
         })
     }
 
     fn picture(&self, row: i16) -> Option<u32> {
-        let state = self.theater.state();
-        let entry = if self.list {
-            entry_at(&state, row)
-        } else {
-            state.selected.clone()
-        }?;
-        let pictures = self.pictures.lock().unwrap_or_else(|e| e.into_inner());
-        pictures.get(&map_stem(&entry.film.map)).copied()
+        self.with_spec(|spec| {
+            let picture = if self.list {
+                spec.rows.get(usize::try_from(row).ok()?)?.art.as_ref()?
+            } else {
+                spec.art.first()?
+            };
+            let Art::Level { stem } = &picture.art else {
+                return None;
+            };
+            self.pictures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(stem)
+                .copied()
+        })
+    }
+
+    fn prepare_picture(&self, m: &dyn GuestMemory, template: u32) -> Option<u32> {
+        *self.pictures.lock().unwrap_or_else(|e| e.into_inner()) = level_art::loaded(m, template);
+        // The lobby picture block names unknown_map. Its null reference
+        // keeps the frame clear while no focused film has its own bitmap.
+        Some(u32::MAX)
     }
 
     fn restore_missing_picture(&self) -> bool {
@@ -674,12 +871,6 @@ impl Rows for ScreenRows {
         if !self.list {
             self.with_spec(|s| self.texts.set(DETAIL_TITLE, &s.title));
         }
-        let mut pictures = self.pictures.lock().unwrap_or_else(|e| e.into_inner());
-        if pictures.is_empty() {
-            *pictures = crate::mod_slots::pictures(&crate::mod_slots::read_slots(
-                &crate::mod_slots::WriteGm(m),
-            ));
-        }
         self.texts.write(m)
     }
 }
@@ -688,18 +879,13 @@ fn classes(theater: &Theater, texts: &Arc<GuestTexts>) -> [ListClass; 2] {
     let list = Arc::new(ScreenRows::new(theater.clone(), texts.clone(), true));
     let detail = Arc::new(ScreenRows::new(theater.clone(), texts.clone(), false));
     [
-        crate::skulls_menu::level_select_list(
-            ListClass::with_rows("theater-films", FILMS, list),
-            FILMS_LAYOUT,
-        )
-        .description(LIST_STATUS)
-        .picture(LIST_PICTURE)
-        .panel(Panel {
-            art: Vec::new(),
-            texts: vec![panel_cell(TAB_STRIP.rect, false, false)],
-        })
-        .sideways()
-        .footer(TEXTS.id(FILMS_FOOTER)),
+        ListClass::with_rows("theater-films", FILMS, list)
+            .layout(FILMS_LAYOUT)
+            .description(LIST_STATUS)
+            .picture(LIST_PICTURE)
+            .panel(library_panel())
+            .sideways()
+            .footer(TEXTS.id(FILMS_FOOTER)),
         ListClass::with_rows("theater-film", DETAIL, detail)
             .layout(FILM_LAYOUT)
             .description(FILM_STATUS)
@@ -762,8 +948,8 @@ pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyho
     let texts = Arc::new(GuestTexts::default());
     texts.set(FILMS_TITLE, "THEATER");
     texts.set(DETAIL_TITLE, "Film");
-    texts.set(FILMS_FOOTER, &legend(&prompts(true)));
-    texts.set(DETAIL_FOOTER, &legend(&prompts(false)));
+    texts.set(FILMS_FOOTER, &footer_legend(&prompts("Select", false)));
+    texts.set(DETAIL_FOOTER, &footer_legend(&prompts("Select", false)));
     registry
         .add(&TextFeature(texts.clone()))
         .map_err(anyhow::Error::msg)?;
@@ -779,4 +965,56 @@ pub(super) fn preview_page(theater: &Theater, list: bool) -> crate::ui_kit::page
     crate::ui_kit::page::ListPage::new(if list { films } else { detail }, move || {
         spec(&theater, list)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theater_ui::adapter::FilmMeta;
+
+    #[test]
+    fn guest_rows_write_each_label_value_and_footer_to_its_own_slot() {
+        let theater = Theater::default();
+        theater.state().load = Load::Ready(vec![FilmMeta {
+            id: "sample".into(),
+            map: "lockout".into(),
+            ..FilmMeta::default()
+        }]);
+        let texts = Arc::new(GuestTexts::default());
+        let rows = ScreenRows::new(theater, texts.clone(), true);
+        let slots = [
+            (1, "Sort", "Newest"),
+            (2, "Map", "All"),
+            (3, "Game type", "All"),
+            (4, "Lockout", "Local film"),
+        ]
+        .map(|(row, label, value)| (rows.texts(row), label, value));
+
+        let string = |id: u32| {
+            let values = texts.values.lock().unwrap();
+            let bytes = values[(id - TEXTS.base) as usize]
+                .strip_suffix(&[0])
+                .unwrap();
+            std::str::from_utf8(bytes).unwrap().to_owned()
+        };
+        for (cells, label, value) in slots {
+            let [(first, label_id), (second, value_id)] = cells.as_slice() else {
+                panic!("a settings row needs a label and a value");
+            };
+            assert_eq!(
+                (*first, *second),
+                (crate::ui::LABEL_SLOT, crate::ui::VALUE_SLOT)
+            );
+            assert_eq!(string(*label_id), label);
+            assert_eq!(string(*value_id), value);
+        }
+        assert_eq!(
+            string(rows.focused_footer(Some(1)).unwrap()),
+            "\u{e100} SELECT  \u{e101} BACK"
+        );
+        assert_eq!(
+            string(rows.focused_footer(Some(4)).unwrap()),
+            "\u{e100} DETAILS  \u{e101} BACK"
+        );
+    }
 }
