@@ -10,7 +10,10 @@ census and the structure's layer draws from the plan are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
-replacements wait on. The rest is the plan. Lanes write code and tests; the coordinator builds, runs and
+replacements wait on. Of slice 6 the census half is built: the scene
+sink files the guest's D3D work by slot and counts side targets and
+readbacks (`frame-scene.sink`); its section says what is not. The rest
+is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -1131,6 +1134,77 @@ corpus and reports every guest readback and every side target still
 bound in a game view. The slice starts when section 8.3's table covers
 the list.
 
+**Built: the carried census** (`frame-scene.sink`, an option with the
+native renderer on; **Code**). The D3D backend still draws every frame;
+the sink records what the renderer will own.
+
+- **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
+  and the guest view index); `SlotTracker` moves the slot on the frame
+  step's events and, inside a game view, only forward. `GuestOp<D>`
+  (`Draw`, `Bind`, `Clear`, `Copy`, `Upload`, `Sample`) over
+  `TargetRef` (`SceneColour`, `SceneDepth`, `Aux(n)`), generic in the
+  draw so this crate stays free of `d3d`. `Carried<D>` holds a frame's
+  ops with their `SlotAt`, its side targets (`AuxTarget`: size, format,
+  depth) and its readbacks (`Readback`: `Surface`, `Depth`, `Mirror`,
+  `PixelCount`); `Carried::summary` counts them by slot and view and
+  lists the side targets a game view names (`CarriedSummary`).
+- **The slot** (`render_bridge::carried_slots`, placed by the frame
+  step's build with the option). `render_frame_and_present`'s entry and
+  exit are `Outside`; `render_game_view` `0x0002b790` opens `Opaque`
+  with its record's view index (`+4`); the light pass `0x00031c80` is
+  `AfterOpaque` and its exit `AfterLights`; the sorted transparents
+  `0x0001e370` open `Transparents`, which holds the first person, layer
+  17, the flares and `render_screen_effects`; that call's exit is
+  `AfterPost`; a game view's exit, the HUD's draw `0x001917eb` and
+  `render_views`' exit are `Overlay` once the frame has had a game view.
+  Before the slot moves the device decodes what game code wrote into
+  the push buffer (`carried_slots::Drain`, the host's
+  `Device::sync_push_buffer`), so a draw lands in the slot it was
+  written in.
+- **The sink** (`d3d::SceneSink`, in boot's `install_for_profile` over
+  the whole backend stack, on the sim thread). It forwards every
+  `Backend` call and, while the slot reads, files each draw (after a
+  `Bind` when the attachments, slot or view change), clear, whole-surface
+  copy, texel upload into a target and sampled target (a framebuffer
+  snapshot, a render-to-texture level in place, depth bits) at the
+  current slot, and each readback (`read_surface`, `read_depth`,
+  `mirror_read`, `report_pixel_count`). The scene's colour is the
+  surfaces the guest presents (and, with a copy swap, the one copied
+  into a presented surface); its depth is the depth bound with that
+  colour; anything else is a side target, numbered per frame. A present
+  ends the frame: its summary is published (`d3d::scene_sink::last`)
+  and its totals counted (`d3d::scene_sink::counters`). Typed stages'
+  packets and passes are not carried.
+- **Coverage.** `render.scene` reports, with the option, `carried`
+  (the last frame's ops by slot, its side targets with the ops that
+  named them by slot, and its readbacks in and outside a game view),
+  each game view's `carried` (its ops by slot) and the counters
+  `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
+  `scene_side_target_frames`, `scene_readback` and
+  `scene_readback_<kind>`. Over the census corpus these are the list
+  section 8.3's table must cover.
+- **Tests** (synthetic). `frame_scene::carried`:
+  `a_game_view_runs_its_slots_in_order_and_the_overlay_follows`,
+  `inside_a_view_the_slot_only_moves_forward_and_outside_it_does_not_move`,
+  `a_summary_counts_by_slot_and_view_and_names_the_side_targets_of_game_views`;
+  `d3d::scene_sink`: `forwards_every_backend_method`,
+  `the_sink_names_targets_slots_and_readbacks_and_passes_every_call_on`;
+  `d3d`'s `tests/scene_sink.rs` on the device's draw rig:
+  `the_sink_carries_the_devices_draws_in_order_by_slot_and_the_backend_still_draws_them`,
+  `a_sink_with_no_slot_records_nothing_and_changes_nothing`;
+  `render_bridge::scene_step`:
+  `the_carried_slots_are_placed_only_with_their_option`;
+  `boot::scene_glue`:
+  `the_sinks_frame_is_reported_by_slot_and_per_game_view`; `agent_proto`'s
+  `a_scenes_carried_part_prints_only_when_the_sink_recorded`.
+- **Not built.** Everything below that draws: the sink in place of the
+  backend stack in a game view, the carried ops held in the scene
+  (`FrameScene::carried`, which waits on `ResolvedDraw` moving to
+  `gfx`), `CameraUse` and its classification, `native-render`'s pass
+  graph and `GuestDrawPass`, the native flare query, the mailbox, Swap
+  without the GPU wait, and `render.frame` over the pass graph. The
+  census corpus run that this half exists for is the coordinator's.
+
 - **Code.** `d3d::SceneSink`, one `Backend` implementation that fills
   `Carried` (draw, clear, bind, copy, upload) and classifies
   `CameraUse`. In a game view the device runs over it in place of
@@ -1291,7 +1365,10 @@ from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dr
 `walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts,topology}`, and from slice 1 `scene_dropped_*`,
 `scene_unresident`, `scene_readback`, `scene_held_draws`; from slice 5
 `render.scene`'s per-view `fog`, `water` and `post` and the counters
-`scene_{fog,water}_{views,gate_held,drawn,parts}`.
+`scene_{fog,water}_{views,gate_held,drawn,parts}`; from slice 6, with
+`frame-scene.sink` in `H2_FEATURES`, `render.scene`'s `carried` and
+`scene_carried_{frames,draws,ops}`, `scene_side_target_frames`,
+`scene_readback_{surface,depth,mirror,pixel_count}`.
 
 **Pixels and the sim** (two launches from boot, same image):
 

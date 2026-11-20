@@ -1581,6 +1581,7 @@ dependencies = [
  "anyhow",
  "app",
  "bytemuck",
+ "frame-scene",
  "gfx",
  "hot-render",
  "iced-x86",

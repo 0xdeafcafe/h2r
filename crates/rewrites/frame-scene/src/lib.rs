@@ -9,6 +9,7 @@
 
 pub mod builder;
 pub mod camera;
+pub mod carried;
 pub mod decorator;
 pub mod late;
 pub mod layer;
@@ -21,6 +22,10 @@ pub mod summary;
 
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
+pub use carried::{
+    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot, SlotAt, SlotEvent, SlotTracker,
+    TargetRef, TargetSample,
+};
 pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
 pub use late::{
     DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
