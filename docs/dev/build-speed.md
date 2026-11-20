@@ -631,6 +631,8 @@ These are estimates from the counts above.
   (`thiserror` 1 and 2, `tungstenite` 0.26 and 0.29, `sha2` 0.10 and
   0.11) are worth aligning when those crates are next touched, not as
   a project.
-- **The Cranelift codegen backend and `-Zshare-generics`.** Both need a
-  nightly compiler. This machine builds with a stable rustc from
-  Homebrew.
+- **The Cranelift codegen backend and `-Zthreads`.** Both need a
+  nightly compiler. Measured: an edit-and-rebuild goes from 8 s to 7 s,
+  and one test fails under Cranelift
+  ([notes/2026-11-20-nightly-rust.md](notes/2026-11-20-nightly-rust.md)).
+  The build stays on stable rustc from Homebrew.
