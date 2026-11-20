@@ -424,7 +424,7 @@ fn emissions(m: &dyn GuestRead, geometry: u32, part: u32, flags: u32, bitmap: u3
     if flags & USE_SUBPARTS == 0 || bitmap == 0 || subparts == 0 {
         let first = u32::from(half(m, part, 6)?);
         let count = u32::from(half(m, part, 8)?);
-        return Ok(Vec::from([first..first + count]));
+        return Ok(std::iter::once(first..first + count).collect());
     }
     let first = half(m, part, 10)? as i16;
     let count = half(m, part, 12)? as i16;
@@ -526,7 +526,10 @@ mod tests {
         m.w(BITMAP + 4, 0);
         assert!(SortedPart::read(&m, BSP, ESP, SLOT).unwrap().indices.is_empty());
         m.w(RECORD + 0x14, 0);
-        assert_eq!(SortedPart::read(&m, BSP, ESP, SLOT).unwrap().indices, [120..150]);
+        assert_eq!(
+            SortedPart::read(&m, BSP, ESP, SLOT).unwrap().indices.as_slice(),
+            std::slice::from_ref(&(120..150)),
+        );
         m.w(RECORD, USE_SUBPARTS);
         assert!(!SortedPart::read(&m, BSP, ESP, SLOT).unwrap().strip);
     }

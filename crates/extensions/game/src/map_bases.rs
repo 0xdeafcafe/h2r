@@ -562,7 +562,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Turf.map"), TURF).unwrap();
         std::fs::write(dir.join("patch.lvl"), b"record").unwrap();
-        let other = cfg.content_dir(0x4D53_0064_000a_0001);
+        let other = cfg.content_dir(0x4D53_0064_000A_0001);
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("gemini.map"), b"not the map pack's").unwrap();
         dir.join("Turf.map")

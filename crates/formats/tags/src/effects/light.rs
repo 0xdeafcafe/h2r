@@ -371,14 +371,14 @@ mod tests {
     #[test]
     fn every_kind_value_round_trips() {
         for (v, k) in [
-            (0, LightKind::Sphere),
+            (0u16, LightKind::Sphere),
             (1, LightKind::Orthogonal),
             (2, LightKind::Frustum),
             (3, LightKind::Pyramid),
             (7, LightKind::Other(7)),
         ] {
             let mut b = root();
-            b[4..6].copy_from_slice(&(v as u16).to_le_bytes());
+            b[4..6].copy_from_slice(&v.to_le_bytes());
             assert_eq!(decode(&b).kind, k);
             assert_eq!(LightKind::from_raw(v), k);
         }

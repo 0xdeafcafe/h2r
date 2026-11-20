@@ -10,8 +10,10 @@ use runtime::guest::Permissions;
 
 #[test]
 fn sse_helpers_keep_or_clear_the_upper_lanes_as_the_instructions_do() {
-    let mut c = CpuAbi::default();
-    c.mxcsr = 0x1f80;
+    let mut c = CpuAbi {
+        mxcsr: 0x1f80,
+        ..Default::default()
+    };
     c.xmm[1] = (u128::MAX).to_le_bytes();
     // `movss xmm1, m32` clears lanes 1 to 3.
     load(&mut c, 1, 2.0f32.to_bits());

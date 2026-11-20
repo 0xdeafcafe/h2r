@@ -1107,10 +1107,8 @@ impl<B: Backend> InterpBackend<B> {
             match o {
                 Op::Clear { depth: Some(d), .. }
                 | Op::ClearRects { depth: Some(d), .. }
-                | Op::Draw { depth: Some(d), .. } => {
-                    if !targets.contains(d) {
-                        targets.push(*d);
-                    }
+                | Op::Draw { depth: Some(d), .. } if !targets.contains(d) => {
+                    targets.push(*d);
                 }
                 _ => {}
             }

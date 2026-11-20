@@ -350,7 +350,7 @@ pub(crate) fn register_late_for_profile(
     );
     let lockstep_on = i.lockstep.enabled();
     let input_replay = i.lockstep.replay.is_some();
-    let xa = i.xa.map(|x| &**x);
+    let xa = i.xa.map(AsRef::as_ref);
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let harness = if lockstep_on {
         let h = lockstep_glue::Lockstep::install(features, i.lockstep, lockstep::TickHook::HALO2, xa)?;

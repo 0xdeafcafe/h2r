@@ -133,9 +133,6 @@ impl<'a, T: Bits> Coder<'a, T> {
         }
         n - 1
     }
-    pub fn signed(&mut self, ctx: usize, want: i64) -> i64 {
-        super::super::unzigzag(self.uint(ctx, super::super::zigzag(want)))
-    }
     pub fn literal(&mut self, want: u8) -> u8 {
         (0..8).rev().fold(0, |n, i| {
             2 * n + u8::from(self.split(2048, want >> i & 1 != 0))

@@ -841,8 +841,10 @@ mod tests {
         );
         // Back to normal clears the block to retail zeros.
         let p = Page::new();
-        let mut e = Ext::default();
-        e.gravity = 125;
+        let mut e = Ext {
+            gravity: 125,
+            ..Default::default()
+        };
         p.read(e.encode());
         p.sideways(0, false);
         assert_eq!(p.pending(), Some([0; ext::LEN]));

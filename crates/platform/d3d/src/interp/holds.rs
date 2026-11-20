@@ -289,7 +289,7 @@ impl HoldLog {
             }
         }
         // Most frames first, stable.
-        self.kinds.sort_by(|a, b| b.frames.cmp(&a.frames));
+        self.kinds.sort_by_key(|kind| std::cmp::Reverse(kind.frames));
     }
 }
 

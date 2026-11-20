@@ -207,7 +207,7 @@ fn plan(m: &dyn GuestMemory, vis: u32, walk: Walk, mode: Mode, only: Option<u32>
         if cursor >= 0x352 { continue; } // 0x2cbf0 discards the increment
         let lighting = plan.lighting(m, bsp, placement)?;
         plan.touch(m, section.checked_add(0x28)?)?;
-        if ptr(m, section.checked_add(0x50)?).is_none() { return None; }
+        ptr(m, section.checked_add(0x50)?)?;
         let row = RECORDS + cursor * 0x20;
         let mut data = [0u8; 0x20];
         m.read(row, &mut data).ok()?;

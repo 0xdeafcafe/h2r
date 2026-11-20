@@ -966,7 +966,7 @@ mod tests {
                 _ => {}
             }
             assert!(check(&v).is_empty(), "{ty}: {:?}", check(&v));
-            for r in SPARE.iter().cloned().chain([2..3]) {
+            for r in SPARE.iter().cloned().chain(std::iter::once(2..3)) {
                 for i in r {
                     v.raw[i] = 0xa5;
                 }

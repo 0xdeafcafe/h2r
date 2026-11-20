@@ -541,7 +541,7 @@ pub fn timing_text(wall: Duration, workers: usize, times: &[JobTime]) -> String 
     s += "\njobs (wall; each phase's CPU time):\n";
     for t in times {
         let mut phases = t.phases.clone();
-        phases.sort_by(|a, b| b.2.cmp(&a.2));
+        phases.sort_by_key(|p| std::cmp::Reverse(p.2));
         let ph: Vec<String> = phases
             .iter()
             .filter(|p| p.2.as_millis() >= 50)

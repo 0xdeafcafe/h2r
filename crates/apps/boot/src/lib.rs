@@ -1183,7 +1183,7 @@ fn run_configured(
     // what holds state outside guest RAM, for `state.*` and the probe.
     let snap_host = snapshot_glue::Host {
         rt: &loaded.runtime,
-        d3d: d3d_calls.as_ref().map(|i| &*i.snapshot),
+        d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
         xapi: xa.as_ref(),
         bink: bink.as_deref(),
