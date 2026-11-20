@@ -47,6 +47,7 @@ fn source(dump: bool) -> Result<SceneReply, String> {
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
+        .chain(render_bridge::native_layers::counters())
         .collect();
     let Some(scene) = render_bridge::scene_step::last() else {
         return Ok(SceneReply { counters, entries: entries(), ..SceneReply::default() });

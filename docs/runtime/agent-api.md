@@ -749,7 +749,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_stages_world`, `scene_stages_objects`, the scene stages queued
   to the render thread, and `scene_dropped_world`,
   `scene_dropped_objects`, those it could not record after the guest
-  skipped their items; framescene.md, slice 2; later slices add
+  skipped their items; framescene.md, slice 2; with `frame-scene.layers`
+  in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
+  `layer_plan_items` and the plan's outcomes by layer,
+  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
+  (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
   `scene_unresident`, `scene_readback`, `scene_held_draws`). With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
