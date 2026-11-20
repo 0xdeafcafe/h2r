@@ -279,10 +279,8 @@ fn trace(
     let mut m = rt.memory();
     let vector = scratch + 12;
     for (i, (position, displacement)) in from.into_iter().zip(delta).enumerate() {
-        m.set_f32(scratch + i as u32 * 4, position)
-            .map_err(guest_fault)?;
-        m.set_f32(vector + i as u32 * 4, displacement)
-            .map_err(guest_fault)?;
+        m.set_f32(scratch + i as u32 * 4, position)?;
+        m.set_f32(vector + i as u32 * 4, displacement)?;
     }
     // Static structure only, as in the Halo 1 probe at 0x4920d.
     let stack = scratch - 24;
@@ -290,8 +288,7 @@ fn trace(
         .into_iter()
         .enumerate()
     {
-        m.set_u32(stack + i as u32 * 4, value)
-            .map_err(guest_fault)?;
+        m.set_u32(stack + i as u32 * 4, value)?;
     }
     cpu.esp = stack;
     ctx.call_guest_named(
@@ -340,10 +337,7 @@ pub(super) fn probe(
             let hit = cpu.eax as u8 != 0;
             match fall.motion {
                 Motion::Biped(speed) => {
-                    let fraction = hit
-                        .then(|| ctx.memory().f32(result + 4))
-                        .transpose()
-                        .map_err(guest_fault)?;
+                    let fraction = hit.then(|| ctx.memory().f32(result + 4)).transpose()?;
                     finish(cpu, ctx, dangerous_biped_fall(speed, fraction))
                 }
                 Motion::Vehicle(_) if hit => finish(cpu, ctx, false),
@@ -356,8 +350,7 @@ pub(super) fn probe(
                     trace(cpu, ctx, scratch, fall.position, delta, move |cpu, ctx| {
                         // H1 reports the fall when the projected path has no
                         // ground with a normal pointing upward past 0.3.
-                        let scream = cpu.eax as u8 == 0
-                            || ctx.memory().f32(result + 0x30).map_err(guest_fault)? <= 0.3;
+                        let scream = cpu.eax as u8 == 0 || ctx.memory().f32(result + 0x30)? <= 0.3;
                         finish(cpu, ctx, scream)
                     })
                 }
@@ -386,7 +379,7 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<History, BuildErr
         move |call| {
             let m = &mut *call.ctx.memory();
             // The native function preserves EDI and pops the object's argument.
-            let unit = m.u32(call.cpu.esp.wrapping_sub(12)).map_err(guest_fault)?;
+            let unit = m.u32(call.cpu.esp.wrapping_sub(12))?;
             region_damage(m, history, queue, unit, call.cpu.edi).map_err(guest_fault)
         },
     );

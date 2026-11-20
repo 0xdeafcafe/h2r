@@ -218,7 +218,7 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
         "select the Halo 1 encounter outcome remark",
         move |call| {
             let mut m = call.ctx.memory();
-            let actor = m.u32(call.cpu.esp + 4).map_err(guest_fault)?;
+            let actor = m.u32(call.cpu.esp + 4)?;
             enter(&mut *m, battles, queue, actor).map_err(guest_fault)?;
             Ok(Flow::Continue)
         },
@@ -227,7 +227,7 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
         &points::AI_DIALOGUE_STIMULUS,
         "play the Halo 1 remark when checking an allied body",
         move |call| {
-            let mut m = call.ctx.memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.memory();
             (|| {
                 if m.u32(call.cpu.esp)? == CHECK_FRIEND_NOTICE
                     && m.u16(call.cpu.esp + 4)? == CHECK_FRIEND
@@ -249,7 +249,7 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
         "select the Halo 1 remark for shooting a player's corpse",
         move |call| {
             if call.cpu.eax as u16 == SHOOT_CORPSE {
-                let mut m = call.ctx.memory();
+                let m: &mut dyn GuestMemory = &mut *call.ctx.memory();
                 (|| {
                     if m.u32(call.cpu.esp)? == SHOOT_CORPSE_NOTICE
                         && cast::is_player(&*m, m.u32(call.cpu.esp + 4)?)?

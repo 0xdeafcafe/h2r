@@ -419,8 +419,8 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
         move |call| {
             if call.cpu.eax as u16 == FIRST_SIGHT {
                 let mut m = call.ctx.memory();
-                if m.u32(call.cpu.esp).map_err(guest_fault)? == FIRST_SIGHT_FROM_PERCEPTION {
-                    let target = m.u32(call.cpu.esp + 4).map_err(guest_fault)?;
+                if m.u32(call.cpu.esp)? == FIRST_SIGHT_FROM_PERCEPTION {
+                    let target = m.u32(call.cpu.esp + 4)?;
                     sight(&mut *m, queue, records, call.cpu.ecx, target).map_err(guest_fault)?;
                 }
             }

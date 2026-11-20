@@ -91,7 +91,7 @@ pub(super) fn install(b: &mut Builder, queue: Queue) -> Result<(), BuildError> {
         move |call| {
             if call.cpu.eax as u8 != 0 {
                 let mut m = call.ctx.memory();
-                let actor = m.u32(call.cpu.esp.wrapping_sub(8)).map_err(guest_fault)?;
+                let actor = m.u32(call.cpu.esp.wrapping_sub(8))?;
                 reactions::actor_notice(&mut *m, queue, actor, 0xb70, 7).map_err(guest_fault)?;
             }
             Ok(())

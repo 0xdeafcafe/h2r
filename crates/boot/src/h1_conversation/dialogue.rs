@@ -242,9 +242,9 @@ mod tests {
             .put_u32(TAG_INDEX_GLOBAL, index)
             .put_u32(TAG_ENTRIES_GLOBAL, tags)
             .put_u32(index + index_layout::TAG_COUNT, 4);
-        let unit = |i| 0x8400_0000 | i;
-        let voice = |i| 0xe100_0000 | i;
-        let sound = |i| 0xe200_0002 | i;
+        let unit = |i: u32| 0x8400_0000 | i;
+        let voice = |i: u32| 0xe100_0000 | i;
+        let sound = |i: u32| 0xe200_0002 | i;
         for i in 0..2 {
             let body = 0x20000 + i * 0x1000;
             let root = 0x30000 + i * 0x1000;

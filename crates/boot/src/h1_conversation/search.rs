@@ -245,9 +245,9 @@ pub(super) fn install(
                 .expect("speech update is a generated hook");
             let mut m = rt.memory();
             let stack = saved.esp.wrapping_sub(12);
-            m.set_u32(stack, line.speaker).map_err(guest_fault)?;
-            m.set_u32(stack + 4, line.priority).map_err(guest_fault)?;
-            m.set_u32(stack + 8, 0).map_err(guest_fault)?;
+            m.set_u32(stack, line.speaker)?;
+            m.set_u32(stack + 4, line.priority)?;
+            m.set_u32(stack + 8, 0)?;
             call.cpu.esp = stack;
             call.cpu.eax = line.row;
             call.ctx

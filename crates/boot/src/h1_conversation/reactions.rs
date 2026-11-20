@@ -401,7 +401,7 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
         "capture the original attacker and victim injury stimuli",
         move |call| {
             let cpu = *call.cpu;
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             (|| {
                 if m.u32(cpu.esp)? != INJURY_FROM_DAMAGE || m.u8(cpu.esp + 0x10)? != 0 {
                     return Ok(());
@@ -423,7 +423,7 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
         "capture the original lethal damage reactions",
         move |call| {
             let cpu = *call.cpu;
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             (|| {
                 if m.u32(cpu.esp)? != KILL_FROM_DAMAGE || !ai_vocalizes(m)? {
                     return Ok(());
@@ -445,8 +445,8 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
             let unit = call.cpu.eax;
             if let Some(record) = queue.record(unit) {
                 let mut m = call.ctx.memory();
-                if m.u32(record).map_err(guest_fault)? == unit {
-                    m.set_u32(record + 20, 0).map_err(guest_fault)?;
+                if m.u32(record)? == unit {
+                    m.set_u32(record + 20, 0)?;
                 }
             }
             Ok(Flow::Continue)

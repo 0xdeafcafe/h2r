@@ -2957,7 +2957,7 @@ pub const DIALOGUE: &[(usize, &str)] = &[
 ];
 
 /// The first authored slot without a native, rebuilt, or dormant source rule.
-pub fn unbound_dialogue_line(source: &h1::Dialogue) -> Option<(usize, TagId)> {
+pub fn unbound_dialogue_line(source: &h1::Dialogue) -> Option<(usize, h1map::TagId)> {
     let routed = dialogue_lines(source);
     let generic_kill = routed.iter().any(|&(voc, _, _)| voc == "chr_kllfoe");
     source.lines.iter().copied().find(|(slot, _)| {

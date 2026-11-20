@@ -135,7 +135,7 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) {
         "queue Halo 1 Flood revival dialogue",
         move |call| {
             let unit = call.cpu.eax;
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             (|| {
                 if dialogue::source_offset_row(m, unit, map::H1_REVIVAL_LINE)?.is_some()
                     && let Some(body) = object_address(m, unit)?
