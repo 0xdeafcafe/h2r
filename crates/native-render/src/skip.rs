@@ -1,6 +1,6 @@
 //! Which of the game's layer entries the native world replaces, and the
 //! skip: clear their layer bit before the layer draw, restore it after
-//! (docs/graphics/native-renderer.md, "Skip only the replaced work").
+//! (docs/graphics/native-world.md, "Skip only the replaced work").
 //!
 //! Research points (Code):
 //!

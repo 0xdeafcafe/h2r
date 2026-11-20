@@ -1603,7 +1603,7 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 /// thread takes it over at each snapshot (`pipeline-render`).
 pub const WATCH_OWNER: &str = "boot:d3d";
 
-/// `pipeline-render` (docs/graphics/pipelined-render.md, "The prototype")
+/// `pipeline-render` (docs/graphics/notes/pipelined-render.md, "The prototype")
 /// with this D3D layer: the game's D3D entries (the sim's calls there join
 /// the render first), and every D3D override the render thread may run
 /// (the entries with their write barrier, CreateDevice's shadow, the port

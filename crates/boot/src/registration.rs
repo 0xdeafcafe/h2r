@@ -457,7 +457,7 @@ pub(crate) fn register_late_for_profile(
         // Planar fog, layer 16, on the native GPU renderer
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
         // turns it off for the comparison against the D3D path;
-        // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
+        // docs/graphics/native-water-fog.md, "Stage 4b"). Its layer-draw
         // observer sits inside render-timing's and the world's; the fog
         // materials load with the world (native_world_glue's worker,
         // native_fog_glue's load).
@@ -473,7 +473,7 @@ pub(crate) fn register_late_for_profile(
         // GPU (on by default since 2026-11-20;
         // H2_FEATURES=impl.render.native=off turns it off for the
         // comparison against the D3D path;
-        // docs/graphics/native-renderer.md, stage 2). Its observers on the
+        // docs/graphics/native-objects.md, stage 2). Its observers on the
         // layer draw sit inside render-timing's and the world's; the models
         // load per map through native_objects_glue.
         features
@@ -513,7 +513,7 @@ pub(crate) fn register_late_for_profile(
         // The dynamic lights on the native GPU renderer
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
         // turns them off for the comparison against the D3D path;
-        // docs/graphics/native-renderer.md, stage 4): a context-only skip on
+        // docs/graphics/native-lights.md, stage 4): a context-only skip on
         // each light's passes, in the game's light order. Its host
         // (native_lights_glue) does the device side of a skipped light's tail
         // and reports the bound target, but takes no light yet, so every light
@@ -543,7 +543,7 @@ pub(crate) fn register_late_for_profile(
         // The view's post passes on the native GPU renderer
         // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
         // turns them off for the comparison against the D3D path;
-        // docs/graphics/native-renderer.md, stage 5): a context-only hook at
+        // docs/graphics/native-post-hud.md, stage 5): a context-only hook at
         // the colour pass's entry. Its host (native_post_glue, installed with
         // the world's) plans the glow, has the device drop exactly its quads
         // and draws the glow natively in place of the last; the game's code

@@ -136,7 +136,7 @@ pub const LEVEL_SELECT_SCREEN_ID: i16 = 11;
 /// for this list at this anchor. The Controls tag's bracket (`ul_03`) was
 /// made for the Controls list, 39 units further left and on another skin:
 /// kept under this list it framed an empty box and the first row's end cap
-/// cut its arm off (docs/game/ui-builder.md, slice 3), so none of the
+/// cut its arm off (docs/game/ui-builder.md, "The checks"), so none of the
 /// Controls frame art is kept ([`LIST_LAYOUT`]`.bitmaps_left_of`).
 pub const FRAME: PictureSpec = PictureSpec {
     screen_id: LEVEL_SELECT_SCREEN_ID as u32,

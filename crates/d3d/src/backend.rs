@@ -422,7 +422,7 @@ pub struct DepthClip {
 
 /// How many vertex constants [`ExternalPass::view_constants`] gives: the
 /// per-view block the game uploads before a view's draws
-/// (docs/graphics/native-renderer.md, "What a world pass reads").
+/// (docs/graphics/native-world.md, "What a world pass reads").
 pub const VIEW_CONSTANTS: usize = 18;
 
 #[cfg(feature = "gpu")]

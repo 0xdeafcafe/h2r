@@ -32,7 +32,7 @@ choice to check before building on it.
 `h2 run` and `h2 serve` are headless: `boot::run_hosted` with
 `Host::default()` (crates/boot/src/lib.rs). Per frame of gameplay, this is
 what runs on the one host thread that drives every guest thread
-(**Code**, numbers **Doc** from [gameplay-budget.md](../perf/gameplay-budget.md),
+(**Code**, numbers **Doc** from [gameplay-budget.md](../perf/notes/gameplay-budget.md),
 Old Mombasa, "Render front-end versus simulation"):
 
 | Work | Where | Runs headless? | Old Mombasa, ms/frame |

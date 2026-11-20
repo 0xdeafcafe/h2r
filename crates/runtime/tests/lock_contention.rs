@@ -1,5 +1,5 @@
 //! `Runtime::memory_contention`: waits on the guest memory lock that found
-//! it held by another thread are counted (docs/perf/menu-budget.md); an
+//! it held by another thread are counted (docs/perf/notes/menu-budget.md); an
 //! uncontended lock counts nothing.
 use runtime::{Dispatch, Guest, Runtime};
 use std::sync::mpsc;

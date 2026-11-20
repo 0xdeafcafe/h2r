@@ -1,4 +1,4 @@
-// The native objects' pass (docs/graphics/native-renderer.md, stage 2):
+// The native objects' pass (docs/graphics/native-objects.md, stage 2):
 // GPU skinning from the game's node matrices, base map times a fixed
 // ambient plus directional term, depth written the way the game's W-buffer
 // stores it.

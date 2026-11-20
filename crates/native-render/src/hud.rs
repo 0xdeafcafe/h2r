@@ -1,5 +1,5 @@
 //! The HUD's and the UI's screen draws as the native renderer sees them
-//! (docs/graphics/native-renderer.md, "Stage 5: post and HUD", "The UI and
+//! (docs/graphics/native-post-hud.md, "Stage 5: post and HUD", "The UI and
 //! HUD"). Pure: what the hooks read out of guest memory and the plan a
 //! native draw would take. The GPU side is not here.
 //!

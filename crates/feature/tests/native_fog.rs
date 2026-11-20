@@ -1,4 +1,4 @@
-//! The `native-fog` feature (docs/graphics/native-renderer.md, "Stage
+//! The `native-fog` feature (docs/graphics/native-water-fog.md, "Stage
 //! 4b"): its plan next to the world's hook on the layer draw, and its one
 //! observer on synthetic guest memory — the BSP items the host draws lose
 //! layer 16's bit for the layer (only at the late passes' call, with the

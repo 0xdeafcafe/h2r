@@ -161,7 +161,7 @@ impl LevelHud {
 }
 
 /// A variant's `origin`: the source of a map converted from another game
-/// (docs/halo1/multiplayer.md, "Package"). Not part of the `MapId`.
+/// (docs/halo1/multiplayer.md, "Importing"). Not part of the `MapId`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Origin {

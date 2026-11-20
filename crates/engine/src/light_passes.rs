@@ -1,7 +1,7 @@
 //! Which passes a light draws: the per-light flags `render_light_passes`
 //! (`0x00031170`) computes after the light's constants, and the
 //! implementation each lit material's layer-12 and layer-13 passes take
-//! under them (docs/graphics/native-renderer.md, "Stage 4", "Which
+//! under them (docs/graphics/native-lights.md, "Stage 4", "Which
 //! implementation a light pass draws").
 //!
 //! The path in the original:

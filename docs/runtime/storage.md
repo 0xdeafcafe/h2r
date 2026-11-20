@@ -171,7 +171,7 @@ stream byte runs over the base. BPS reads use the materialised
 through `stat`, and a streamed overlay can be read through the VFS even
 though it has no contiguous host file. A damaged layer or mismatched
 base fails the mod read. [VFS content maps](../../crates/vfs/src/content_maps.rs) ·
-[Patch resolution](../game/maps.md#7-what-is-built)
+[Patch resolution](../game/maps.md#2-applying-layers-at-load)
 
 Live installs and removals publish a new registry and trigger a content
 scan on the next main-menu tick. An open file keeps its resolved bytes
