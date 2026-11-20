@@ -30,6 +30,9 @@ ir = { workspace = true, optional = true }
 lift = { workspace = true, optional = true }
 # For tests/sim_tier_differential.rs: the reference and sim tiers.
 emit = { workspace = true, optional = true }
+# The shared lifted original (image fixture, register conversion,
+# stepping) the differential tests run against.
+lifted = { path = "../lifted", optional = true }
 # For the disc sweep in tests/sim_anim_differential.rs only.
 tags = { workspace = true, optional = true }
 map = { workspace = true, optional = true }
