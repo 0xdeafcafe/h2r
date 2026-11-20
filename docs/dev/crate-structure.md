@@ -1,10 +1,11 @@
 # Crate structure: domains, and the windows that move to them
 
-Status: Design. No crate has moved. Built: the domain rules
+Status: In progress. Windows W1 to W3 and S1 to S3 have run (tags
+`move-<id>`); S4 to S7 are designed. Built: the domain rules
 (`scripts/crate-domains.toml`), their check (`scripts/crate-graph.py layers
 --check`), the crate table generator (`scripts/crate-table.py`) and the
-move scripts under `scripts/moves/`. Each script was run on a scratch copy
-of the tree; none of the results was compiled.
+move scripts under `scripts/moves/`. S1 to S3 were written and run without
+cargo; `cargo check` on them is the coordinator's (see "Not verified").
 Measured at: `crate-map` on master `100f13cef`, 2026-11-20, with
 `scripts/crate-graph.py`. Nothing here runs cargo.
 
@@ -42,14 +43,14 @@ crates/
   runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
                +hostfault +lifted +recomp
   platform/    d3d gfx assets hot-render  dsound audio wma  xapi input  bink-hle voice
-  hooking/     ~hooks (feature)  +guest-layout  +switches
+  hooking/     ~hooks (feature)  guest-layout  +switches
   rewrites/    engine native-render
-               +sim-core +sim-anim +sim-collision +sim-objects +sim-state +sim-bridge
-               +frame-scene +scene-extract +render-bridge
+               sim-core sim-anim sim-collision sim-objects sim-state sim-bridge
+               frame-scene scene-extract render-bridge
   live/        [live-proto live-hle live-telemetry live-server live-worker coop bots film
                 cloud-saves host-data ~sim-bench]
   extensions/  agent agent-proto debug-menu hot-tags lockstep
-               +game +ui-kit +h1-runtime  [+net-glue +bot-glue +theater]
+               +game +ui-kit h1-runtime  [+net-glue +bot-glue +theater]
   tools/       h1map ~h1-assets h1convert h1objects ~h1campaign
                editor-core scenario-edit hopper-edit hud-edit  perf viewer  [+live-art]
   apps/        boot cli app app-icon studio studio-proto ~h2host uwp-host
@@ -125,7 +126,6 @@ More rules in the same file:
 | Refused dependency the tree has today | Removed by |
 |---|---|
 | `hooks` → `engine` (`hooking` → `rewrites`) | `engine::entry`, `abi`, `runtime_glue` and `point_shapes` leave `engine` for `hooking` (S2 moved the points and views) |
-| `feature` → `native-render` (`hooking` → `rewrites`) | S3: the renderer's guest half leaves for `render-bridge` |
 | `native-render` → `analyze`, `ir`, `lift` (guest-free) | the `lifted` crate lands and the differential tests take it as a dev-dependency |
 
 Every other dependency in the tree already obeys the table.
@@ -177,9 +177,9 @@ cannot become a member.
 | Crate | Lane | Directory | Note |
 |---|---|---|---|
 | `guest-layout` | `guest-layout` | `crates/hooking/guest-layout` | Landed; S2 moved `engine`'s guest boundary, points and views into it |
-| `switches` | `guest-layout` | `crates/hooking/switches` | Planned by that lane; `feature/src/switches.rs` until then |
+| `switches` | `guest-layout` | `crates/hooking/switches` | Planned by that lane; `hooks/src/switches.rs` until then |
 | `lifted` | `shadow-exec` | `crates/runtime/lifted` | Uses `analyze`, `ir`, `lift`, `runtime`, `xbe`. Its landing clears three exceptions |
-| `sim-core`, `sim-anim` | `sim-anim` | `crates/rewrites/` | Guest-free. The adapter the branch puts in `engine/src/sim_anim.rs` and the install in `feature/src/sim_native.rs` go to `sim-bridge` (S3) |
+| `sim-core`, `sim-anim` | `sim-anim` | `crates/rewrites/` | Guest-free. The adapter is `engine/src/sim_anim.rs`; the install, `sim_native`, is in `sim-bridge` (S3) |
 | `sim-collision` | `sim-collision` | `crates/rewrites/sim-collision` | Guest-free; depends on `sim-core` |
 | `frame-scene`, `scene-extract` | `framescene` | `crates/rewrites/` | Guest-free: `scene-extract` reads memory through its own trait and depends only on `frame-scene` |
 | `hostfault` | `contract` | `crates/runtime/hostfault` | The process-wide fault handler; `libc` only |
@@ -204,9 +204,9 @@ the hook engine:
 |---|---:|---|---|
 | The hook engine: `lib`, `plan`, `install`, `entry`, `arena`, `bridge`, `snapshot`, `locale`, `leaves` | 3,973 | `crates/hooking/hooks` | W2 (rename) |
 | `switches` | in the above | `crates/hooking/switches` | S2, the `guest-layout` lane |
-| The native renderer's guest half: 24 modules (`native_*`, `pipeline_*`, `render_*`, `occlusion`) and 16 test files | 22,272 | `crates/rewrites/render-bridge` | S3 |
-| The sim hooks: `sim_frame`, `sim_native`, `sim_observer`, `sim_physics`, `sim_static_light`, `sim_submix` | 1,390 | `crates/rewrites/sim-bridge` | S3 |
-| Halo 1 hooks: `h1_projectiles`, `h1_scope_zoom` | 560 | `crates/extensions/h1-runtime` | S3 |
+| The native renderer's guest half: 27 modules (`native_*`, `pipeline_*`, `render_*`, `occlusion`, `scene_*`, `scope_zoom_hud`) and 16 test files | 22,619 | `crates/rewrites/render-bridge` | S3, done |
+| The sim hooks: `sim_frame`, `sim_native`, `sim_objects`, `sim_observer`, `sim_physics`, `sim_static_light`, `sim_submix`, and `shadow` | 1,858 | `crates/rewrites/sim-bridge` | S3, done |
+| Halo 1 hooks: `h1_projectiles`, `h1_scope_zoom` | 560 | `crates/extensions/h1-runtime` | S3, done |
 
 **`engine`** (36,378 lines) keeps the ports and gives away the hooking
 parts: `points`, `memory`, `handle`, `datum`, `view`, `tags`, `testing`
@@ -358,7 +358,7 @@ git -c merge.renameLimit=30000 -c merge.directoryRenames=true merge -X rename-th
 | W3 | Eleven Halo 1 crates become five | `w3-h1-merge.py` | 99 files renamed, 7 manifests removed, 121 edited | after W1; `h1-contract` first (below) |
 | S1 | Small renames and deletions | `s1-small.py` | 2 crates renamed, 1 deleted, 3 files to `wma` | ran: `move-s1` |
 | S2 | `guest-layout` takes `engine`'s guest boundary and points | `s2-guest-layout.py` | 7 files, 3,505 lines | ran: `move-s2`; `entry.rs` stays in `engine` |
-| S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 6 + 24 + 2 modules, 24,222 lines | sim and Halo 1: after W2. Render: 7 references to cut |
+| S3 | `hooks` gives away the sim, render and Halo 1 hooks | `split.py s3-sim-bridge`, `s3-render-bridge`, `s3-h1-hooks` | 8 + 27 + 2 modules, 25,037 lines | ran: `move-s3-sim-bridge`, `move-s3-render-bridge`, `move-s3-h1-hooks` |
 | S4 | `recomp` out of `boot` | the contract lane | 7 files and 630 lines of `lib.rs` | before the contract work starts |
 | S5 | `boot` keeps the root, `game` takes the rest | `s5-boot-root.py` | 151 modules, 291 files, 146,827 lines | 96 references to cut, about 30 of them S4's |
 | S6 | `game` gives away the render glue, the Halo 1 runtime, the UI toolkit and the Live glue | `split.py s6-*` (six specs) | 71 modules, 92,695 lines | 3 to 82 references each |
@@ -504,20 +504,41 @@ lets each crate keep its own (see "Local registration").
 
 ### S3. `hooks` gives away what is not the hook engine
 
-`scripts/moves/split.py <spec>`, three specs in `scripts/moves/splits/`.
-Each new crate depends on `hooks`; `boot`, `agent` and the others that
-named `hooks::<module>` name the new crate and gain the dependency.
+`scripts/moves/split.py <spec>`, three specs in `scripts/moves/splits/`,
+run in this order as `scripts/moves/window.sh run <spec>` (tags
+`move-<spec>-pre` and `move-<spec>`; replay with
+`scripts/moves/window.sh replay <spec>`). Each new crate depends on
+`hooks`; `boot`, `agent` and the others that named `hooks::<module>`
+name the new crate and gain the dependency.
 
-| Spec | To | Modules | Lines | Stops it today |
+| Spec | To | Modules | Lines | What was cut first |
 |---|---|---:|---:|---|
-| `s3-sim-bridge` | `crates/rewrites/sim-bridge` | 6 | 1,390 | nothing. `sim_frame` names `pipeline_render`, so `sim-bridge` depends on `render-bridge` until that edge is cut |
-| `s3-render-bridge` | `crates/rewrites/render-bridge` | 24, and 16 tests | 22,272 | `switches.rs` lines 120 to 126 name seven `native_*` modules |
+| `s3-sim-bridge` | `crates/rewrites/sim-bridge` | 8, and 1 test | 1,858 | a comment in `switches/table.rs`. `shadow` goes too: it registers the sim ports, and nothing else names it. `sim_objects` (the native object update's installer) goes too |
+| `s3-render-bridge` | `crates/rewrites/render-bridge` | 27, and 16 tests | 22,619 | the stage half of `switches.rs`' master-switch test, now in `tests/native_defaults.rs`; `scene_effect_instruction_entries`, which named seven render modules from `hooks`' root, into a module `scene_entries`; `native_post`'s `super::h1_scope_zoom::hud_profile` into a module `scope_zoom_hud` (`tag_def`, `profile`, `hud_profile`). All three modules go with the split, and `scene_step` too: it uses `native_map_work` and `render_timing` |
 | `s3-h1-hooks` | `crates/extensions/h1-runtime` | 2 | 560 | nothing |
 
-After `s3-render-bridge`, `hooks`' `native-render` feature and dependency
-are deleted by hand and the second exception goes with them. Do
-`s3-sim-bridge` right after the `sim-anim` lane merges: that lane and
-`sim-collision` both edit `sim_native.rs`.
+Fixed by hand after the moves, in the commits that follow each tag:
+
+- The copied manifests are trimmed. `hooks` loses its `native-render`
+  feature and the `native-render`, `frame-scene`, `scene-extract`,
+  `lifted` and `tags` dependencies, and the three exceptions for them go.
+  `render-bridge` keeps the feature; `boot` (whose `desktop-runtime`
+  turns it on) and `agent` take `render-bridge` with
+  `default-features = false`, as they took `hooks`.
+- `h1_scope_zoom` keeps private copies of the profile reads until it
+  leaves; after `s3-h1-hooks` it uses `render_bridge::scope_zoom_hud`.
+  `boot` re-exports `render_bridge::scene_entries::scene_effect_instruction_entries`
+  as `boot::scene_effect_instruction_entries`.
+- `hooks::entry::RENDER_ENTRY`, which the pipelined render names, is
+  `pub`.
+- `hooks`' own `tests/install.rs` and `tests/plan.rs` time the render
+  stages, so `hooks` has `render-bridge` as a dev-dependency.
+
+`split.py` names every item a moved file reaches with `crate::` and that
+stayed behind by its old crate (`hooks::Builder`, not only modules),
+splits a `use hooks::{...}` group that names moved and staying modules,
+and `--check` also stops on a bare `module::` path in the root and on
+`super::` across the cut.
 
 ### S4. `recomp` out of `boot`
 
@@ -910,8 +931,14 @@ becomes `sim-bench`; `viewer` stays whole in `tools`.
 
 ## Not verified
 
-- Nothing was compiled. Each script's output passed the structural
-  checks above; `cargo check` has not seen any of it.
+- S1 to S3 have not been compiled. Their output and the fixes after
+  each passed `crate-graph.py layers --check`; `cargo check` has not seen
+  them. What it is most likely to find: a `pub(crate)` item of `hooks`
+  that `render-bridge` or `sim-bridge` reaches (the visible ones were
+  widened), a method or field that is `pub(crate)` on a public `hooks`
+  type, `engine`'s re-exported macros (`engine::record!` now expands
+  `$crate` to `guest_layout`), and `GuestMemory::take_write_watch` under
+  `guest-layout`'s `runtime-glue` feature.
 - W2: a module or import named `hooks` in a crate that depends on the
   renamed crate would shadow it. Only `live-telemetry` has one at its
   root, and the script handles that; nested ones were searched for and
@@ -922,8 +949,7 @@ becomes `sim-bench`; `viewer` stays whole in `tools`.
 - The splits copy a manifest and trim it by the domain rules only, do not
   make an item `pub` when the other crate needs it (S5 widens
   `pub(crate)` in bulk; the others do not), and cannot see an `impl` the
-  orphan rule refuses, a `super::` path that crosses the cut, or a path a
-  macro builds. `--check` passing is necessary for a split, and `cargo
+  orphan rule refuses or a path a macro builds. `--check` passing is necessary for a split, and `cargo
   check` decides.
 - A `CARGO_MANIFEST_DIR` join to a file inside the crate (no `../`) is
   not rewritten when a split moves the code to another crate.

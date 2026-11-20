@@ -412,7 +412,7 @@ the camera's field of view are still raw hooks in
 
 The render front-end is replaced by the native renderer
 ([native-renderer.md](../graphics/native-renderer.md)), whose stages are
-features in `crates/hooking/hooks/src/native_*`; its one switch is
+features in `crates/rewrites/render-bridge/src/native_*`; its one switch is
 `impl.render.native`. The reads of the retail call tree are in
 [render-loop.md](../graphics/render-loop.md). `render-timing`
 (`crates/rewrites/render-bridge/src/render_timing.rs`, off by default) puts observers on both
