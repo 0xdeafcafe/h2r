@@ -1,5 +1,9 @@
 # Independent x86 instruction oracle
 
+Status: Built. Unicorn is an optional backend (`--features unicorn`); the lifter checks below need it.
+Code: `crates/oracle` (`run`, `bin/oracle-fixtures`), `crates/lift/tests/oracle.rs`. Tests: `crates/oracle/tests`.
+Switch: none; the lifter check reads `H2_ORACLE_FIXTURES`, a test-only variable (`crates/lift/tests/oracle.rs`).
+
 `crates/oracle` executes synthetic bytes in **Unicorn**, independently of the
 lifter, IR, generated C, and runtime. It is an instruction-testing reference, not
 a claim that QEMU reproduces an Xbox Pentium III exactly. Agreement between our
@@ -182,7 +186,7 @@ shifts; it is not an exhaustive validity model for every legacy x86 instruction.
   passes. This is a host startup failure, not guest #UD. Do not generate fixtures
   from that failure. [Pinned cache probe](https://github.com/unicorn-engine/unicorn/blob/2.1.4/qemu/util/cacheinfo.c).
 
-No xemu, Xbox, native PIII or Bochs execution was performed for this delivery.
+No xemu, Xbox, native PIII or Bochs execution backs this page.
 
 ## Fixtures and checks
 
@@ -229,6 +233,19 @@ CARGO_TARGET_DIR="$TMPDIR/oracle-target" cargo test -p oracle --features unicorn
 ```sh
 CARGO_TARGET_DIR="$TMPDIR/oracle-target" cargo run -p oracle --features unicorn --bin oracle-fixtures -- --out "$TMPDIR/oracle-fixtures.jsonl" --small-out crates/oracle/fixtures/smoke.json
 ```
+
+## Lifter checks
+
+The lowering is cross-checked against the oracle's Unicorn-backed fixtures (synthetic encodings, no game data): `cargo test -p lift --features oracle-fixtures --test oracle`, with `H2_ORACLE_FIXTURES` naming the `.jsonl` files that `oracle-fixtures` writes. Registers, EIP, XMM, x87, MXCSR, memory and the stop must match, and so must which status flags are defined. The harness has self-contained tests without fixture files: state import, every comparison, defined-flag handling and skip counting. The x87 masks are in `crates/lift/tests/oracle_x87/` ([FLOAT.md](FLOAT.md) section 2.9).
+
+Two accommodations apply:
+
+- After an MMX transition, Unicorn (QEMU) leaves bits 64-79 of a written MMX register unchanged and reports a content-classified tag word, where the SDM sets those bits to ones and the transition marks every tag valid.
+- `rcp*`/`rsqrt*` lanes are held to the architectural bound (relative error at most 1.5 * 2^-12; a denormal input acts as a signed zero and a tiny result flushes to zero) rather than to exact bits, because QEMU computes exact quotients where the Pentium III uses tables. Unicorn also never sets MXCSR's exception flags, so after SSE arithmetic only MXCSR's control bits are compared; `crates/simd` checks the flags against hardware with its own corpus ([sse-oracle.md](sse-oracle.md)).
+
+The test prints its skip classes with `--nocapture`. The counts of one run, and what each skip class is, are in [notes/fp-census.md](notes/fp-census.md).
+
+The emitter's differential test (`crates/emit/tests/differential.rs`) runs synthetic functions through the interpreter and through generated C from random states. The atomics in generated C go through the runtime's operation-wide accessors (`crates/emit/RUNTIME-CONTRACT.md`).
 
 ## Settling disputes later
 

@@ -1,5 +1,9 @@
 # SSE/MMX hardware oracle
 
+Status: Built. Runs only on Apple Silicon macOS with Rosetta 2.
+Code: `crates/sse-oracle` (`src/bin/sse-oracle.rs`). Tests: `crates/sse-oracle/tests/`, `crates/simd/tests/oracle_corpus.rs`.
+Switch: none.
+
 `crates/sse-oracle` is a native Rust client for a persistent x86_64 C/assembly
 runner on Apple Silicon macOS with Rosetta 2. It measures translated x86
 instructions; it is not a physical Pentium III. Results retain register bits,

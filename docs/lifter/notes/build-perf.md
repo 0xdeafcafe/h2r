@@ -1,5 +1,9 @@
 # Build iteration measurements
 
+Evidence for [BUILD-CACHE.md](../BUILD-CACHE.md) and [cranelift-tier.md](../cranelift-tier.md). Method: the commands and cases named in each section, run by hand on the owner's machine; there is no single reproduce script. Base commit `a41dae4`.
+
+## 2026-11-15
+
 Measured on 2026-11-15, Apple M1 Max (10 CPUs, 64 GiB), Apple clang 21.0.0,
 using the release `h2` binary, `-O1 -gline-tables-only`, ten clang jobs,
 and the user's read-only retail XBE. Base: `a41dae4`. Other builds and
@@ -134,7 +138,7 @@ order:
 - a pinned compiler working directory (2c44a25), so objects are reused
   across output directories and working directories.
 
-Each has regression tests; [BUILD-CACHE.md](BUILD-CACHE.md) describes the
+Each has regression tests; [BUILD-CACHE.md](../BUILD-CACHE.md) describes the
 result. Full-image timings were not repeated after these changes, so they
 do not include the added dependency and driver discovery or the tree
 inspection.
