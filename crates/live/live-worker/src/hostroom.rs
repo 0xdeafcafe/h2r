@@ -846,7 +846,7 @@ impl Room {
         let options = serde_json::json!({
             "entrypoint": ["/opt/h2/entrypoint.sh"],
             "enableInternet": true,
-            "env": pack_env(&self.class, self.max_matches),
+            "env": env,
         });
         let options = js_sys::JSON::parse(&serde_json::to_string(&options)?)?;
         let raw: &ContainerControl = container.unchecked_ref();
@@ -948,6 +948,10 @@ impl Room {
         Response::empty()
     }
 
+        let mut env = pack_env(&self.class, self.max_matches);
+        if let Ok(features) = self.env.var("H2_FEATURES") {
+            env.insert("H2_FEATURES", features.to_string());
+        }
     async fn pack_alive(&self, lease: &str) -> Result<Response> {
         let container = self.container()?;
         let pack = self.load_pack().await?;

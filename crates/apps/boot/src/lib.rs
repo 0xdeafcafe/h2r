@@ -358,7 +358,7 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let mut features = hooks::Registry::new(switches);
+    let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;

@@ -91,13 +91,12 @@ on large maps.
 
 **Native subsystems.** The projection is the rewrite plan's own model at
 *k* = 2 (10.77 of 14.12 ms after phase 3), with the local-seat share
-removed from the denominator. Phase 7 (seats) is skipped for hosts. The
-slice is the light profile's default set in
-`crates/apps/boot/src/registration.rs`, one switch at a time, each behind
-its ladder in [sim-rewrite.md](../engine/sim-rewrite.md). The sim tier
-(`emit::sim`, [sim-tier-experiment.md](../engine/sim-tier-experiment.md))
-is a second route to the same code families; its results table is empty,
-so it carries no estimate here.
+removed from the denominator. Phase 7 (seats) is skipped for hosts.
+The light profile offers animation, collision and object rewrites together through
+`host-light-native` in `crates/apps/boot/src/registration.rs`. Explicit subsystem
+and group selections take precedence. The profile switch defaults off pending
+a clean A/A, hash parity on both maps, and a Waterworks median saving of
+at least 1.5 ms per tick. The existing subsystem ladders still apply.
 
 **Sound and effects.** These are the rewrite plan's phases 4 and 6, not
 new skip switches. A host has no listener that matters, but which voices
@@ -420,7 +419,6 @@ The table lists outstanding implementation work. Measurement results go in a dat
 
 | # | Slice | Files it owns | Tests | Measurement gate |
 |---|---|---|---|---|
-| 2 | Native subsystems on for the light profile | `crates/apps/boot/src/registration.rs`, the light profile's switch set | the existing ladders; `crates/rewrites/engine/tests/` | Hashes equal; ≥ 1.5 ms off the Waterworks median |
 | 3 | One wake per tick and pack phase stagger | `crates/runtime/kernel/src/pacer.rs`, `host_cmd/pack.rs` (the offset) | pacer unit tests: deadlines coalesce, a socket wake does not wait | Hashes equal; `process_cpu_ms_per_tick` down; late-tick p99 of four matches on one vCPU under 36 ms |
 | 4 | Mapped reads | `crates/runtime/vfs/src/sim_store.rs`, `disc.rs`, `map_override.rs`, `crates/runtime/runtime/src/guest.rs`, `cli/src/sim_store_cmd.rs` (padding) | synthetic file: same bytes, a write stays private, a non-congruent read copies, both page sizes | `Private_Dirty` down ≥ 40 MiB per match on one map; hashes equal |
 | 5 | Heap census, budgets and allocator | the owners the census names; `deploy/host/entrypoint.sh` for allocator settings | a budget test per cache that gets one | `footprint_mib` ≤ 80 on a 2v2 |
