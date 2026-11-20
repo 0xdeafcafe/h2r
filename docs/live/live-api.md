@@ -400,7 +400,7 @@ Set by `crates/live/live-server/src/caching.rs` on GET and HEAD responses whose 
 
 - `/assets/*` (built, named by content hash): `public, max-age=31536000, immutable`.
 - The web app's HTML (`/`, every app route, and a missing asset answered with the app): `no-cache`.
-- Anonymous reads under `/v1/` of `snapshot`, `games`, `accounts`, `presence`, `stats`, `events`, `teams` and `maps` that succeed: `public, max-age=0, s-maxage=5, stale-while-revalidate=30`, with a weak `ETag`. A matching `If-None-Match` gets a 304.
+- Anonymous reads under `/v1/` of `snapshot`, `games`, `accounts`, `presence`, `stats`, `events`, `teams`, `ranks`, `page-meta` and retail map outlines that succeed: `public, max-age=0, s-maxage=5, stale-while-revalidate=30`, with a weak `ETag`. A matching `If-None-Match` gets a 304.
 - Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
 
@@ -1279,16 +1279,23 @@ stored: players use their own disc for the base.
 | endpoint | authentication | result |
 |---|---|---|
 | `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
-| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, `private, no-store`); 404; 410 if taken down |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
 | `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
 | `GET /v1/maps/{map_id}` | read rule; a `read` token counts a download | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
-| `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
+| `GET /v1/maps/{map_id}/image` | read rule | the preview with its image content type; 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
 | `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
-| `GET /v1/maps/{map_id}/images/{n}` | read rule | the details' `n`th image (from 0), its content type; 404 if none |
+| `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none |
+| `GET /v1/mod-packs` | read rule | `{items: [pack], position}` |
+| `GET /v1/mod-packs/{id}` | read rule | `{pack, position}` |
+| `PUT /v1/mod-packs/{id}` | uploader, `content.write` | publishes the pack's metadata and complete membership, returns `{pack, position}` |
+| `POST /v1/mod-packs/{id}/report` | account, `content.write`, body `{reason}` | records a report on the pack |
+| `POST /v1/admin/mod-packs/{id}/{action}` | admin or operator, `content.moderate` | applies hide, unhide, delete, block or unblock to the pack |
+| `PUT /v1/mod-packs/{id}/screenshots/{kind}/{slot}`, `PUT /v1/maps/{map_id}/screenshots/{kind}/{slot}` | uploader, `content.write`, raw image body | replaces one slot, returns `{ok, sha256, position}` |
+| `GET /v1/mod-packs/{id}/images/{n}` | read rule | pack gallery image at index `n` (from 0), with its content type |
 | `GET /v1/mappacks` | read rule | `{items: [{id, name, description?, authors?, released?, source_url?, images?}], position}` |
 | `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
 | `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
@@ -1381,8 +1388,37 @@ taken-down packages. Servers before the repository send no `position` or
 
 ### The mod repository
 
-The web's Mods pages (the stats site's "Mods" tab) and the game's Xbox
-Live menu browse the same list. The exact request, for clients:
+The web and game browse releases at `/v1/mod-packs`. A pack includes
+`id`, `name`, original `authors`, `uploader: {xuid, gamertag}`,
+`members` (map summaries), `map_count` and `size` in bytes, counting each
+shared layer once. It may have a description, version, release year,
+source URL, gallery and an `advisory` of `cheating_pack` or `not_for_online`.
+The advisory is displayed with the release.
+
+To publish, upload the layers and sign each `MapPublished` document with
+`staged_for` set to the destination pack ID. The catalog makes these
+members available together when the uploader puts the pack. The event
+feed shows the staging manifests only to the uploader and administrators.
+The pack body contains `name`, `authors` (one or more), `members` (one
+to 64 distinct MapIds from the same uploader), and optional
+`description`, `version`, `source_url`, numeric `year` and `advisory`.
+Each explicit pack contains at most one member for a given base level. A map already bound to an explicit pack stays in that pack. A missing member returns 404, a different uploader gets 403, and a conflicting membership returns 409.
+The pack ID for an imported release comes from
+`live_proto::maps::mod_pack_id_for`. Replaying older map events also
+produces packs. Explicit curated membership supplies the release where
+available. Otherwise a title of the form `<release>: <map>` groups with
+the same release from the same uploader. A standalone map forms a pack
+of one. Member downloads and lobby joins keep their full MapIds.
+
+Each pack and each map has three uploader image slots (`upload/0`
+through `upload/2`) and five capture slots (`capture/0` through
+`capture/4`). Slot zero of the uploader images is the cover. Send PNG,
+JPEG or WebP, up to 5 MiB, 4096 pixels per side and 8 megapixels.
+The server decodes and re-encodes the image as WebP, scaling it to fit
+1280 pixels per side and 512 KiB. Read published images by their
+dense gallery index, in uploader, capture and curated-image order.
+
+Clients that select or download individual maps use the paged map list:
 
 ```
 GET /v1/maps?sort=new&limit=20
@@ -1435,7 +1471,7 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   the server appends a server-signed `MapDownloaded` event (stream
   `package-<map_id>`, data `{map_id, by}`) and answers with the new count.
   Without a token, or with one that does not check out on a public server,
-  the read is answered and counts nothing (the web never sends one there).
+  the read is answered and counts nothing. The web opens member pages anonymously on a public server.
   A private server needs the token anyway. `MapDownloaded` events, like
   reports, show in the log to admins only. The count is kept by the log's
   projection, replayed at startup, so both homes (native and the Worker)
@@ -1465,7 +1501,7 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   sends it, one package by flags or many from a file
   (`docs/game/mod-credits.toml`).
 
-The client side (`h2 live maps publish DIR`, `h2 live maps import FILE`,
+The client side (`h2 live mods import`, `h2 live mods capture`, `h2 live maps publish DIR`, `h2 live maps import FILE`,
 `h2 live maps list`, and the join-time download) is in
 [maps.md](../game/maps.md) §5, "As built" and "Importing a mod".
 

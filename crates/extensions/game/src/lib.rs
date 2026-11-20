@@ -13,6 +13,8 @@ pub use run_opts::{BetweenSlices, Host, RunOpts, RunReport, VfsReady};
 
 pub mod account_screen;
 pub mod agent_frames;
+mod agent_spawn_view;
+mod spectator_view;
 pub mod agent_glue;
 pub mod aim_assist;
 pub mod campaign_cache;

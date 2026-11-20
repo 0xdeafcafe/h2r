@@ -776,3 +776,273 @@ async fn features_game_types_and_version_are_checked_and_listed() {
     assert_eq!(plain["name"], "Lockout Plain");
     assert!(plain.get("features").is_none() && plain.get("version").is_none());
 }
+
+#[tokio::test]
+async fn staged_manifests_are_private_in_the_log_and_snapshot() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let owner = h.create("Uploader").await;
+    let reader = h.create("Reader").await;
+    let member = Mod::new("staged", "lockout", "Sample: Lockout");
+    let patch = member.patch();
+    let upload = h.call(
+        Method::PUT,
+        &format!("/v1/content/{}", Sha256::of(&patch)),
+        &[h.bearer(&owner, lxm::CONTENT_WRITE)],
+        Body::from(patch),
+    ).await;
+    assert!(upload.status.is_success(), "{}", upload.error());
+    let mut doc = member.doc();
+    doc.staged_for = Some(live_proto::maps::mod_pack_id_for(owner.xuid, "Sample"));
+    let staged = put_map(&h, &owner, &doc).await;
+    assert_eq!(staged.status, StatusCode::CREATED, "{}", staged.error());
+    for (path, field) in [("/v1/events", "items"), ("/v1/snapshot", "tail")] {
+        for (account, visible) in [(None, false), (Some(&reader), false), (Some(&owner), true)] {
+            let headers: Vec<_> = account.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+            let response = h.call(Method::GET, path, &headers, Body::empty()).await;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.error());
+            let events = response.json();
+            let found = events[field].as_array().unwrap().iter().any(|e| e["type"] == MAP_PUBLISHED);
+            assert_eq!(found, visible, "{path}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn uploader_gallery_slots_are_bounded_replayable_and_independent() {
+    use image::{ExtendedColorType, ImageEncoder};
+    fn shot(rgb: [u8; 3]) -> Vec<u8> {
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&rgb, 1, 1, ExtendedColorType::Rgb8)
+            .unwrap();
+        png
+    }
+    async fn put(h: &Harness, u: &User, uri: &str, bytes: Vec<u8>) -> Resp {
+        h.call(
+            Method::PUT,
+            uri,
+            &[h.bearer(u, lxm::CONTENT_WRITE)],
+            Body::from(bytes),
+        )
+        .await
+    }
+
+    let store = Arc::new(MemoryStore::new());
+    let h = repo(store.clone(), policy()).await;
+    let owner = h.create("Painter").await;
+    let visitor = h.create("Viewer").await;
+    let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+    let pack_list = h.get("/v1/mod-packs").await.json();
+    let pack_id = pack_list["items"][0]["id"].as_str().unwrap();
+    let map = format!("/v1/maps/{id}");
+    let pack = format!("/v1/mod-packs/{pack_id}");
+    let cover = shot([32, 64, 128]);
+    let scene = shot([32, 128, 64]);
+    for uri in [&map, &pack] {
+        let upload = format!("{uri}/screenshots/upload/0");
+        let capture = format!("{uri}/screenshots/capture/4");
+        assert_eq!(
+            put(&h, &visitor, &upload, cover.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            put(
+                &h,
+                &owner,
+                &format!("{uri}/screenshots/capture/5"),
+                scene.clone()
+            )
+            .await
+            .status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put(&h, &owner, &capture, b"\x89PNG\r\n\x1a\n".to_vec())
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+        let captured = put(&h, &owner, &capture, scene.clone()).await;
+        assert_eq!(captured.status, StatusCode::OK);
+        let uploaded = put(&h, &owner, &upload, cover.clone()).await;
+        assert_eq!(uploaded.status, StatusCode::OK);
+        let read = h.get(&format!("{uri}/images/0")).await;
+        assert_eq!(read.status, StatusCode::OK);
+        assert_eq!(read.headers["content-type"], "image/webp");
+        assert_ne!(read.body, cover);
+        assert_eq!(
+            Sha256::of(&read.body).to_string(),
+            uploaded.json()["sha256"].as_str().unwrap()
+        );
+        let read = h.get(&format!("{uri}/images/1")).await;
+        assert_eq!(
+            Sha256::of(&read.body).to_string(),
+            captured.json()["sha256"].as_str().unwrap()
+        );
+        let repeated = put(&h, &owner, &capture, scene.clone()).await;
+        assert_eq!(repeated.json()["sha256"], captured.json()["sha256"]);
+        assert_eq!(
+            h.get(&format!("{uri}/images/2")).await.status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    let before = h.get(&map).await.json()["map"]["images"].clone();
+    let loaded = repo(store, policy()).await;
+    assert_eq!(loaded.get(&map).await.json()["map"]["images"], before);
+    assert_eq!(loaded.get(&pack).await.json()["pack"]["images"], before);
+}
+
+#[tokio::test]
+async fn pack_migration_groups_by_base_suffix_and_uploader_and_replays() {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let expected;
+    {
+        let h = repo(store.clone(), policy()).await;
+        let a = h.create("PublisherA").await;
+        let b = h.create("PublisherB").await;
+        let first = Mod::new("a", "lockout", "Night: Lockout");
+        let second = Mod::new("b", "midship", "Night: midship");
+        let third = Mod::new("c", "lockout", "Night: Lockout");
+        let solo = Mod::new("solo", "zanzibar", "Night: Low Gravity");
+        let (member, _) = publish(&h, &a, &first).await;
+        publish(&h, &a, &second).await;
+        publish(&h, &b, &third).await;
+        publish(&h, &a, &solo).await;
+        let id = live_proto::maps::mod_pack_id_for(a.xuid, "Night");
+        let page = h.get("/v1/mod-packs").await.json();
+        let packs = page["items"].as_array().unwrap();
+        assert_eq!(packs.len(), 3);
+        assert_eq!(packs[0]["name"], "Night: Low Gravity");
+        let migrated = h.get(&format!("/v1/mod-packs/{id}")).await.json();
+        assert_eq!(migrated["pack"]["map_count"], 2);
+        assert_eq!(migrated["pack"]["name"], "Night");
+        assert_eq!(migrated["pack"]["members"][0]["map_id"], member.to_string());
+        assert_eq!(migrated["pack"]["uploader"]["gamertag"], "PublisherA");
+        assert_eq!(h.get(&format!("/v1/maps/{member}")).await.json()["map"]["mod_pack"], id);
+        expected = page["items"].clone();
+    }
+    let h = repo(store, policy()).await;
+    assert_eq!(h.get("/v1/mod-packs").await.json()["items"], expected);
+}
+
+#[tokio::test]
+async fn publishing_an_owned_pack_is_atomic_and_keeps_member_credits() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let owner = h.create("Uploader").await;
+    let stranger = h.create("Stranger").await;
+    let path = "/v1/mod-packs/lan-edition";
+    let a = Mod::new("shared", "lockout", "First Map");
+    let mut b = Mod::new("shared", "midship", "Second Map");
+    b.credit = Some("Map Maker");
+    let layer = a.patch();
+    let r = h.call(Method::PUT, &format!("/v1/content/{}", Sha256::of(&layer)),
+        &[h.bearer(&owner, lxm::CONTENT_WRITE)], Body::from(layer.clone())).await;
+    assert!(r.status.is_success());
+    let mut ids = Vec::new();
+    for m in [a, b] {
+        let mut doc = m.doc();
+        doc.staged_for = Some("lan-edition".into());
+        let r = put_map(&h, &owner, &doc).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+        ids.push(MapId::of(&doc.manifest));
+    }
+    assert!(h.get("/v1/mod-packs").await.json()["items"].as_array().unwrap().is_empty());
+    assert!(list(&h, "").await["items"].as_array().unwrap().is_empty());
+    assert_eq!(h.get(&format!("/v1/maps/{}", ids[0])).await.status, StatusCode::GONE);
+    let body = serde_json::json!({"name":"LAN Edition","authors":["Editor","Builder"],
+        "description":"Two maps","version":"1.2","source_url":"https://example.test/mods/lan",
+        "year":2006,"advisory":"not_for_online","members":ids});
+    let put = |user: &User, body: Value| put_admin(&h, h.bearer(user, lxm::CONTENT_WRITE), path, body);
+    assert_eq!(put(&stranger, body.clone()).await.status, StatusCode::FORBIDDEN);
+    for patch in [
+        serde_json::json!({"members":[ids[0], ids[0]]}),
+        serde_json::json!({"authors":[]}),
+        serde_json::json!({"year":12}),
+        serde_json::json!({"advisory":"nonsense"}),
+        serde_json::json!({"images":[]}),
+    ] {
+        let mut invalid = body.clone();
+        invalid.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+        assert_eq!(put(&owner, invalid).await.status, StatusCode::BAD_REQUEST);
+        assert_eq!(h.get(path).await.status, StatusCode::NOT_FOUND);
+    }
+    let mut missing = body.clone();
+    missing["members"] = serde_json::json!([ids[0], MapId([0x11;32])]);
+    assert_eq!(put(&owner, missing).await.status, StatusCode::NOT_FOUND);
+    let response = put(&owner, body.clone()).await.json();
+    let release = &response["pack"];
+    let typed: live_proto::maps::ModPackSummary = serde_json::from_value(release.clone()).unwrap();
+    assert_eq!(typed.map_count, 2);
+    assert_eq!(typed.size, layer.len() as u64);
+    assert_eq!(release["authors"], body["authors"]);
+    assert_eq!(release["year"], 2006);
+    assert_eq!(release["advisory"], "not_for_online");
+    assert_eq!(release["members"][0]["credit"], "Editor & Builder");
+    assert_eq!(release["members"][1]["credit"], "Map Maker");
+    assert_eq!(h.get(&format!("/v1/maps/{}", ids[0])).await.json()["map"]["credit"], "Editor & Builder");
+    assert_eq!(put(&owner, body.clone()).await.json(), response, "idempotent retry");
+    assert_eq!(put(&stranger, body).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.get("/v1/mod-packs").await.json()["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn curated_pack_credit_and_release_year_survive_migration() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let a = h.create("FirstUploader").await;
+    let b = h.create("NextUploader").await;
+    let (one, _) = publish(&h, &a, &Mod::new("one", "lockout", "Custom A")).await;
+    let (two, _) = publish(&h, &b, &Mod::new("two", "lockout", "Custom B")).await;
+    let details = serde_json::json!({"pack": "classic-edition"});
+    for member in [one, two] {
+        let r = put_admin(&h, operator(&h), &format!("/v1/maps/{member}/details"), details.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let r = put_admin(&h, operator(&h), "/v1/mappacks/classic-edition", serde_json::json!({
+        "name":"Classic Edition", "authors":["The Cartographers"], "released":"2005-09",
+        "source_url":"https://example.test/editions/classic"
+    })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let page = h.get("/v1/mod-packs").await.json();
+    let packs = page["items"].as_array().unwrap();
+    assert_eq!(packs.len(), 2);
+    for p in packs {
+        assert_eq!(p["map_count"], 1);
+        assert_eq!(p["year"], 2005);
+        assert_eq!(p["authors"][0], "The Cartographers");
+        assert_eq!(p["members"][0]["credit"], "The Cartographers");
+        assert_eq!(p["members"][0]["source_url"], p["source_url"]);
+    }
+    assert_ne!(packs[0]["id"], packs[1]["id"]);
+    assert_ne!(packs[0]["uploader"], packs[1]["uploader"]);
+}
+
+#[tokio::test]
+async fn abandoned_staging_can_be_retargeted_by_the_uploader() {
+    let store = Arc::new(MemoryStore::new());
+    let h = repo(store.clone(), policy()).await;
+    let u = h.create("Uploader").await;
+    let m = Mod::new("abandoned", "lockout", "One");
+    let patch = m.patch();
+    let upload = h.call(Method::PUT, &format!("/v1/content/{}", Sha256::of(&patch)),
+        &[h.bearer(&u, lxm::CONTENT_WRITE)], Body::from(patch)).await;
+    assert!(upload.status.is_success());
+    let mut doc = m.doc();
+    let id = MapId::of(&doc.manifest);
+    for key in ["old-name", "final-name"] {
+        doc.staged_for = Some(key.into());
+        assert_eq!(put_map(&h, &u, &doc).await.status, StatusCode::CREATED);
+        assert!(list(&h, "").await["items"].as_array().unwrap().is_empty());
+    }
+    let path = "/v1/mod-packs/final-name";
+    let r = put_admin(&h, h.bearer(&u, lxm::CONTENT_WRITE), path, serde_json::json!({
+        "name":"Final Name", "authors":["A"], "members":[id]
+    })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let pack = r.json()["pack"].clone();
+    drop(h);
+    let loaded = repo(store, policy()).await;
+    assert_eq!(loaded.get(path).await.json()["pack"], pack);
+    assert_eq!(loaded.get("/v1/mod-packs/old-name").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(loaded.get(&format!("/v1/maps/{id}")).await.json()["map"]["mod_pack"], "final-name");
+}

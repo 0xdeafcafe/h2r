@@ -175,8 +175,9 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent: {e}"),
         }
         // render.capture's tick marks and sim.hashes' rows.
-        match registry.add(&crate::agent_frames::AgentFrames) {
-            Ok(true) => {}
+        let frames = crate::agent_frames::AgentFrames::default();
+        match registry.add(&frames) {
+            Ok(true) => frames.views.install_method(&agent),
             Ok(false) => eprintln!(
                 "agent: agent-frames switched off by H2_FEATURES; render.capture and sim.hashes see no ticks"
             ),

@@ -269,7 +269,7 @@ fn nothing_retail_and_nothing_empty_is_shared() {
     assert!(run(modded, base("../lockout")).contains("not a map name"));
     // Not a map or a patch.
     let junk = f.mod_dir("junk", "junk.zip", b"PK\x03\x04", None);
-    assert!(run(junk, base("lockout")).contains("not a map, PPF, IPS or BPS"));
+    assert!(run(junk, base("lockout")).contains("unrecognised map or patch format"));
     // A bad category or source in the sidecar.
     let bad = f.mod_dir(
         "bad",
@@ -609,4 +609,104 @@ fn the_mods_page_extras_reach_the_package_for_publish() {
     assert!(format!("{e:#}").contains("teleporters"), "{e:#}");
     // No sidecar features and nothing derived: none listed.
     assert_eq!(PageExtras::read(&f.root).unwrap(), PageExtras::default());
+}
+
+/// Encode invented Super PPF records. All map and patch bytes here come
+/// from the fixture; the two maps have deliberately different boundaries.
+fn synthetic_sppf(regions: &[Vec<(u32, Vec<u8>)>; 4]) -> Vec<u8> {
+    let payloads = regions.each_ref().map(|records| {
+        let mut encoded = Vec::new();
+        for (offset, bytes) in records {
+            encoded.extend(offset.to_le_bytes());
+            encoded.extend((bytes.len() as u32).to_le_bytes());
+            encoded.extend(bytes);
+        }
+        encoded
+    });
+    let mut patch = Vec::new();
+    for p in &payloads {
+        patch.extend((p.len() as u32).to_le_bytes());
+    }
+    for p in payloads {
+        patch.extend(p);
+    }
+    patch
+}
+
+fn sppf_map() -> Vec<u8> {
+    let mut bytes = vec![0; 0x1000];
+    bytes[..4].copy_from_slice(b"daeh");
+    bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+    bytes[0x7fc..0x800].copy_from_slice(b"toof");
+    for (offset, value) in [(8, 0x1000u32), (0x10, 0xe00), (0x158, 0xc00), (0x160, 0xa00)] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for (n, block) in bytes[0x800..].chunks_exact_mut(0x200).enumerate() {
+        block.fill(n as u8 + 1);
+    }
+    bytes
+}
+
+#[test]
+fn super_ppf_moves_unchanged_sections_and_publishes_a_standard_delta() {
+    let base = sppf_map();
+    let patch = synthetic_sppf(&[
+        vec![(8, 0x1200u32.to_le_bytes().to_vec()), (0x10, 0x1000u32.to_le_bytes().to_vec()),
+             (0x158, 0xe00u32.to_le_bytes().to_vec()), (0x160, 0xc00u32.to_le_bytes().to_vec()),
+             (0xa00, vec![12; 0x200])],
+        vec![(0, vec![51])],
+        vec![(0x48, vec![52, 53])],
+        vec![(0x1ff, vec![54])],
+    ]);
+    let (name, layer, actual) = layer_for(InputKind::Sppf, &patch, &base, "Synthetic").unwrap();
+    assert_eq!(name, "mod.bps");
+    assert_eq!(apply(&base, &layer).unwrap(), actual);
+    assert_eq!(actual.len(), 0x1200);
+    assert_eq!(&actual[0xa00..0xc00], &[12; 0x200]);
+    assert_eq!(actual[0xc00], 51);
+    assert_eq!(&actual[0xc01..0xe00], &base[0xa01..0xc00]);
+    assert_eq!(&actual[0xe48..0xe4a], &[52, 53]);
+    assert_eq!(actual[0xf55], base[0xd55]);
+    assert_eq!(actual[0x1190], base[0xf90]);
+    assert_eq!(actual[0x11ff], 54);
+}
+
+#[test]
+fn super_ppf_rejects_invalid_lengths_and_region_writes() {
+    let base = sppf_map();
+    let empty = vec![];
+    let mut patch = synthetic_sppf(&[empty.clone(), empty.clone(), empty.clone(), vec![(0x200, vec![1])]]);
+    assert!(sppf::apply(&base, &patch).unwrap_err().to_string().contains("crosses region"));
+    patch.pop();
+    assert!(sppf::apply(&base, &patch).is_err());
+    let large = synthetic_sppf(&[vec![(8, u32::MAX.to_le_bytes().to_vec())], empty.clone(), empty.clone(), empty]);
+    assert!(sppf::apply(&base, &large).unwrap_err().to_string().contains("size limit"));
+}
+
+#[test]
+fn serenity_has_a_named_error_before_opening_the_disc() {
+    let f = Fixture::new("serenity");
+    let input = f.mod_dir("release", "untitled.SERENITY", b"invented patch", None);
+    let err = import(&ImportOptions {
+        input,
+        disc: f.root.join("absent"),
+        ..Default::default()
+    }).unwrap_err();
+    assert!(err.to_string().contains("unsupported_serenity"));
+    assert_eq!(InputKind::sniff(&[0xd6, 0xc3, 0xc4, 0]), Some(InputKind::Xdelta));
+    assert!(layer_for(InputKind::Xdelta, b"bad", b"", "").unwrap_err().to_string().contains("VCDIFF"));
+}
+
+#[test]
+#[ignore = "needs xdelta3 on PATH"]
+fn vcdiff_add_window_is_converted_into_a_live_layer() {
+    // RFC 3284 default code table instruction 9: ADD eight literal bytes.
+    let mut patch = vec![0xd6, 0xc3, 0xc4, 0, 0, 0, 14, 8, 0, 8, 1, 0];
+    patch.extend_from_slice(b"daehMOD!");
+    patch.push(9);
+    let base = b"daehbase";
+    let (file, layer, target) = layer_for(InputKind::Xdelta, &patch, base, "Invented").unwrap();
+    assert_eq!(file, "mod.ppf");
+    assert_eq!(target, b"daehMOD!");
+    assert_eq!(apply(base, &layer).unwrap(), target);
 }

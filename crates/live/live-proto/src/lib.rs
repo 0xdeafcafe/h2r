@@ -20,6 +20,7 @@ pub mod jcs;
 pub mod mailbox;
 pub mod map_details;
 pub mod maps;
+mod mod_packs;
 pub mod motd;
 pub mod mutes;
 pub mod matchmaking;

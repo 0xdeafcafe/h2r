@@ -7,6 +7,8 @@
 //! packages' manifests by `MapId`; never retail bytes.
 use serde::{Deserialize, Serialize};
 
+pub use crate::mod_packs::*;
+
 pub use content::{Manifest, MapId, Sha256};
 
 pub use crate::map_details::{
@@ -42,9 +44,13 @@ pub const MAP_DOWNLOADED: &str = "MapDownloaded";
 /// the publisher's signature are untouched. Data: [`Credited`].
 pub const MAP_CREDITED: &str = "MapCredited";
 
+/// An uploader assigned a normalized screenshot to a gallery slot (server-signed).
+pub const SCREENSHOT_SET: &str = "ModScreenshotSet";
+
 /// Every event type of this module; only the server's own endpoints write
 /// them.
-pub const KINDS: [&str; 10] = [
+pub const KINDS: &[&str] = &[
+    SCREENSHOT_SET,
     CONTENT_STORED,
     MAP_PUBLISHED,
     CONTENT_MODERATED,
@@ -55,6 +61,7 @@ pub const KINDS: [&str; 10] = [
     MAP_CREDITED,
     MAP_DETAILED,
     MAP_PACK_SET,
+    MOD_PACK_PUBLISHED,
 ];
 
 /// A package's kind of change, for browsing the repository. Display data:
@@ -298,6 +305,8 @@ pub fn image_type(bytes: &[u8]) -> Option<&'static str> {
         Some("image/png")
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         Some("image/jpeg")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
     } else {
         None
     }
@@ -319,6 +328,9 @@ pub struct ContentStored {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapDocument {
+    /// Held until this uploader publishes the pack and includes its MapId.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_for: Option<String>,
     pub manifest: Manifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<Sha256>,
@@ -351,6 +363,7 @@ impl MapDocument {
     /// A document with no repository extras.
     pub fn new(manifest: Manifest, image: Option<Sha256>) -> Self {
         Self {
+            staged_for: None,
             manifest,
             image,
             features: Vec::new(),
@@ -379,6 +392,9 @@ impl MapDocument {
     /// The extras' checks (the manifest has its own): a known category, a
     /// short `http`/`https` source URL with no spaces or controls.
     pub fn validate_extras(&self) -> Result<(), String> {
+        if self.staged_for.as_deref().is_some_and(|id| !pack_id_ok(id)) {
+            return Err("invalid staged pack id".into());
+        }
         known_ids(&self.features, &FEATURES).map_err(|e| format!("features: {e}"))?;
         known_ids(&self.gametypes, &GAMETYPES).map_err(|e| format!("gametypes: {e}"))?;
         if let Some(v) = &self.version
@@ -433,12 +449,13 @@ impl Action {
     }
 }
 
-/// Whether a moderation target is a blob or a package.
+/// A moderation or report target in the content repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Target {
     Content,
     Map,
+    Pack,
 }
 
 /// A blob's or package's standing.
@@ -478,7 +495,7 @@ impl Standing {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moderated {
     pub target: Target,
-    /// The SHA-256 or `MapId`, hex.
+    /// A blob SHA-256, MapId, or mod pack ID.
     pub id: String,
     pub action: Action,
     /// The admin's account (None: the operator's key).
@@ -540,6 +557,9 @@ pub struct LayerInfo {
 /// An entry of `GET /v1/maps`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapSummary {
+    /// The owned or migrated release containing this member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_pack: Option<String>,
     pub map_id: MapId,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -748,7 +768,8 @@ mod tests {
             package_stream(&MapId([4; 32])),
             format!("package-{}", "04".repeat(32))
         );
-        assert_eq!(KINDS.len(), 10);
+        assert!(KINDS.contains(&MOD_PACK_PUBLISHED));
+        assert!(KINDS.contains(&SCREENSHOT_SET));
     }
 
     #[test]

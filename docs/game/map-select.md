@@ -29,6 +29,21 @@ offer, a separate list ID, and a free multiplayer slot. A mod based on
 Lockout is listed by its own name under **Mods** while **Lockout** remains
 under **Halo 2**. The same rule applies to mods based on Map Pack maps.
 
+A fully installed Live pack appears as a folder under **Mods**. The
+folder lists its base maps. Pick one to play that member and use the
+pack for later map choices. In **Halo 2** and **Map Pack**, a covered
+base shows its name followed by the pack name. Its row selects the
+member's exact offer and keeps the base's lock flag. Uncovered maps
+keep their original slots. Choose **Mods** → **Use original maps**
+to clear the pack for subsequent selections. A member can still be
+played individually when only part of its pack is installed.
+
+`crates/extensions/game/src/map_select/packs.rs` keeps the pack IDs,
+base names and member content IDs in `<data>/live-mod-packs.json` so
+folders work offline. Each content rescan matches them to the offers'
+package markers. Only packs whose members all have usable slots become
+folders. The active selection lasts for the game session.
+
 The list contains 50 slots. The Halo 2 disc uses 12, leaving 38 for added
 content. With the full nine-map Map Pack, 29 remain for Mods, converted
 Halo 1 maps and any other content. When the list fills, the category
@@ -89,8 +104,10 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   retail one) and records the handler's mode:
   - **categories**: one element per category, its first map's id, so
     the dialog shows that map's picture and description;
-  - **maps**: the category's maps in its order, each with the retail
-    array's lock byte for that id.
+  - **maps**: the category's maps in its order with the retail lock bytes.
+    The Mods list groups complete packs. When a pack is selected the
+    Halo 2 and Map Pack rows resolve matching bases to member slots.
+  - **pack**: the selected folder's installed member slots, ordered by base.
 
   Two things lose a row the array holds. The constructor skips a locked
   one (above), and a map id no slot of the loaded list holds has no name
@@ -107,8 +124,8 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its
   name (`slot + 0xc + 0x40 * language`, the current language's UTF-16
   name). For a list of ours, called from there, the answer is our UTF-16
-  category label in category mode. In maps mode the game uses the
-  slot's own name.
+  category label in category mode, the release name for a pack folder
+  or the base name for a pack member. Other maps use the slot's own name.
 - **A category's press** (`MAP_LIST_ROW_CHOSEN`, `0x2c9b17`, in place of
   the retail press). It finds the row's id (handler `+0x70`, element `+4`)
   and its category, then arms a maps list for it. It pushes a second

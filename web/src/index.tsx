@@ -52,6 +52,7 @@ const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.Playe
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
 const Mods = lazy(parts.mods);
+const ModPackPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPackPage })));
 const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
@@ -119,6 +120,7 @@ render(
         <Route path="/teams" component={() => <Navigate href={statsPath("/clans")} />} />
         <Route path="/teams/:id" component={OldTeam} />
         <Route path="/mods" component={Mods} />
+        <Route path="/mods/packs/:id" component={ModPackPage} />
         <Route path="/mods/:id" component={ModPage} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />

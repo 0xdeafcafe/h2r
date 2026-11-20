@@ -1,6 +1,6 @@
 # Maps: new, edited, patched and shared
 
-Status: Partly built. The package loader, the editor's package tools, the multiplayer slots, Live sharing and the in-game Mods screens are built; applying `map-variant` content packs and the SPPF and Serenity readers are not.
+Status: Partly built. The package loader, the editor's package tools, the multiplayer slots, Live sharing and the in-game Mods screens are built; SPPF imports convert to standard patch layers. Applying `map-variant` content packs and decoding Serenity deltas remain open.
 Code: `crates/formats/content` (manifest, `MapId`, patch readers, resolver), `crates/runtime/vfs/src/packages.rs`, `crates/extensions/game/src/new_maps.rs`, `crates/live/live-hle/src/maps.rs`, `crates/extensions/game/src/mods_screen.rs`. Tests: `crates/formats/content`, `crates/runtime/vfs/tests/packages.rs`, `crates/extensions/game/src/new_maps/tests.rs`.
 Switch: `H2_MAP_DIR` (developer override for `\maps\<name>.map`), listed in [switches.md](../runtime/switches.md).
 
@@ -32,7 +32,7 @@ Every map the game loads is resolved from:
 - a **base**: a retail map on the user's disc (or map pack), named and
   checked by SHA-256; or a whole user-made `.map` (no retail base);
 - zero or more **file patches**, applied in order to the base's bytes:
-  PPF, SPPF, Serenity, or our own;
+  PPF, IPS or BPS, including those converted from SPPF or VCDIFF at import;
 - zero or more **content packs** of kind `map-variant`
   ([feature-engine.md](../engine/feature-engine.md)): field-level edits such
   as spawn or weapon placement. Packages list and validate these layers.
@@ -53,7 +53,7 @@ map = "lockout"
 sha256 = "…"                 # of the user's disc map; never committed
 
 [[patch]]                    # file layer, in order
-file = "snipers.sppf"
+file = "snipers.ppf"
 sha256 = "…"
 
 [[pack]]                     # tag layer, in order
@@ -166,7 +166,7 @@ against the retail base or the package's whole-map layer on first open
 - Each layer is read and its SHA-256 checked. The format comes from its
   signature (`PPF`, `PATCH`, `BPS1`); a file with none ending in `.map`
   is a whole map, which replaces everything before it and becomes the
-  base. Anything else (SPPF, Serenity) is refused as unrecognised.
+  base. The CLI converts SPPF and VCDIFF before the package reaches the VFS.
 - **Overlay** (only PPF and IPS after the base): the layers compose into
   sorted, non-overlapping byte runs over the base. One pass over the base
   checks its SHA-256 (the disc's map against `[base] sha256`, or the whole
@@ -212,15 +212,27 @@ in `crates/runtime/vfs/tests/packages.rs`.
 |---|---|---|---|
 | PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read; records past the end grow the file, as ApplyPPF's seek-and-write does |
 | IPS / BPS | generic | offset runs / copy-from-source deltas with CRCs | **Built**: IPS with RLE, growth and the truncation extension; BPS with all four actions and its three CRC32s |
-| SPPF ("Super PPF") | 2006 | the map split into 4 blocks, so a size change only shifts to the end of its block; can add files to the map | Not built; no public spec |
-| Serenity | 2005-07 | 35 blocks plus one per tag; embeds author, description and image | Not built; no public spec |
+| SPPF ("Super PPF") | 2006 | four independent sections with relative byte replacements | The CLI moves the retail sections to their patched offsets and converts the result to PPF3 or BPS |
+| VCDIFF / xdelta3 | generic | source-window deltas | The importer runs `xdelta3` locally and converts the result to PPF3 or BPS |
+| Serenity | 2005–07 | tag-aware delta with compliant, non-compliant and NFG modes | The importer reports `unsupported_serenity` for Serenity files, including v3.3 |
 | ours | — | a map package (section 1) | this page |
 
-SPPF and Serenity are documented only at the level above
-([Halo 2: Patch Format Types][formats]). Their byte layouts would have to be
-worked out from patches the user supplies (kept outside the repo, like
-game data), never from the old .NET tools' code. Serenity's embedded
-author, description and image map onto the package manifest.
+An SPPF starts with four little-endian u32 section lengths. Each section
+contains records of two little-endian u32s (offset and length) followed by
+the replacement bytes. Offsets are relative to that section in the target.
+The importer applies the header edits first. It reads the starts of the fixed
+string slots, low-detail bitmap data and tag index from each header, then
+copies and edits the four regions. The updated header gives the target's
+length. Bounds are checked against each section before the result is diffed
+against the owner's base. The decoder follows public record layout and map
+header evidence. Keep fixtures synthetic and the original .NET tools' code
+out of the repository. [Iron_Forge's description of patch blocking](https://www.halomods.info/viewtopic.php?t=58447)
+
+Serenity's public descriptions explain its modes, and its public metadata
+reader extracts names, credits and a preview. The tag reconstruction records
+remain undocumented. A locally patched multiplayer map from Serenity can be
+imported against the same retail base. [Patch formats][formats] ·
+[HaloDepot metadata reader](https://github.com/iBotPeaches/HaloDepot/blob/master/app/Services/Patch/Serenity/SerenityPatch.php)
 
 ## 3. Realtime
 
@@ -598,7 +610,12 @@ Limits:
 
 ### The mod repository (Live)
 
-- **Browsing.** `GET /v1/maps` sorts newest first (`sort=new`) or most
+- **Releases.** `GET /v1/mod-packs` lists uploader-owned packs with
+  original authors, source links, release metadata, screenshots and their
+  individual maps. The pack is the unit of browsing and moderation.
+  Installs and session joins verify the selected member's manifest
+  and layers by the same hashes as an individual map download.
+- **Browsing individual maps.** `GET /v1/maps` sorts newest first (`sort=new`) or most
   downloaded first (`sort=popular`), filters by base map, category,
   publisher and text (`q`), and pages by cursor. Each item carries its
   `MapPublished` log `position` and its `downloads`. The exact API, for
@@ -652,15 +669,37 @@ Limits:
   fields. `docs/game/mod-details.toml` is every published package's
   details and packs; `h2 live maps details --file` applies it (dry run
   first), uploading the screenshots kept outside git.
-- **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
-  Most Downloaded, base map, category and text filters, and a page per mod
-  (picture or base map art, author(s), original release and date, base
-  map, size to download, layers, date, downloads, uploader, source link,
-  report button). The admin area's packages table has Made by and
-  Uploader columns. The web never sends a token on
-  `GET /v1/maps/{id}`, so viewing a mod page is no download.
+- **Web.** The Mods tab shows a release's cover, original authors, map
+  count and download size. Players can open the pack, follow its source,
+  inspect each map's screenshots or report the release. Uplink moderators
+  expand a pack to inspect its member maps. Retail map pictures carry a
+  fallback label.
 
 ### Importing a mod
+
+`h2 live mods import INPUT --pack NAME --author NAME --source-url URL`
+imports an entire release. Repeat `--author` for each original author.
+Use `--year`, `--description` and `--version` for release metadata.
+`--cheating-pack` and `--not-for-online` are alternative labels.
+`--as` selects the uploading account and `--server` selects its Live
+server. The source URL credits the original release.
+
+A complete build may be a game directory, an Xbox disc image or an
+archive such as a RAR. The importer reads the multiplayer maps, compares
+each with the corresponding map from the owner's disc (`--disc`, with
+`--mappack` for expansion bases) and skips unchanged maps. Only patch
+layers and signed manifests reach Live. Executables, campaign and shared
+maps, and other files in a distribution stay local. The importer also
+accepts folders of individual patched maps and patches. A patch filename
+or enclosing folder identifies its retail level by file stem or map name.
+For a bundle of nested archives, extract the desired release variant first.
+
+ZIP, tar, 7z and RAR input uses libarchive (system `tar` on macOS and
+Windows, `bsdtar` on Linux). For RAR the importer prefers `unrar` when
+installed, including older RAR compression filters that libarchive
+cannot decode. Xdelta patches require `xdelta3`. The CLI stages new
+members and publishes the pack's membership in one operation. Importing
+the same release again reuses members the uploader already published.
 
 Many old mods are whole modded `.map` files: they hold the retail map's
 bytes and may not be shared. `h2 live maps import FILE [--base MAP]
@@ -702,8 +741,8 @@ and unknown keys ignored: `name`, `authors` (the original author or
 authors, a list: the credit), `author` (one name, the older form, used
 when `authors` is absent), `release` (the original release's name),
 `released` (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`), `notes`, `description`,
-`source_url`, `format` (`map`, `ppf`, `ips` or `bps`; else the file's
-signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
+`source_url`, `format` (`map`, `ppf`, `ips`, `bps`, `sppf` or `xdelta`; else the signature
+or the `.sppf` extension identifies the format), `base_map`, `category`, `image` (a PNG or JPEG beside
 it, at most 512 KiB). The credit goes into the signed document's `credit`
 and, on one line, into the manifest's `[package] author`. `h2 live maps
 publish DIR` reads `category`, `source_url` and the credit from
@@ -723,8 +762,8 @@ found for import (mostly from ibotmodz.net, se7ensins and archive.org): name, au
 file checked, download and source URLs, and a `fit`. `good` ones import
 as they are (PPFs, and whole maps of a disc map); `whole-map` ones are
 total conversions whose map header names a retail map, which import over
-it as a large BPS; `unsupported-format` ones are SPPF or Serenity patches
-(no reader; section 2); `needs-shared` ones patch `mainmenu`. Import
+it as a large BPS. For entries marked `unsupported-format`, see the patch
+formats in section 2. Entries marked `needs-shared` patch `mainmenu`. Import
 each with a `mod.toml` that gives its credit:
 
 ```sh
@@ -771,7 +810,7 @@ only a whole retail map is caught.
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content
-  Download, reads **Mods**, or **Mods (3 new)** when maps were published
+  Download, reads **Mods**, or **Mods (3 new)** when releases were published
   since the player last opened the screen. Its pane's help text says what
   it is (`custom_games::MODS_HELP`). Without Live or the map gate the row is
   Content Download again, with its Map
@@ -782,19 +821,18 @@ only a whole retail map is caught.
   newest listed entry's; the entries keep their "New" tag for that visit.
   An entry without a `position` (a server from before the repository) is
   never new. A player who never opened the screen sees every entry as new.
-- **The list.** `GET /v1/maps?sort=new&limit=40` with the signed-in
-  account's `read` token, through the Live worker's retrying GET
-  (`live_hle::Hle::mod_list`, `live_hle::mods`). It reads both the
-  repository's shape (`{items: [{id, name, author, base, image, size,
-  position, downloads, published_at}], cursor, position}`) and the content
-  API's (`map_id`, `{gamertag}`, `{map}`, `next`). A thread of ours
+- **The list.** The signed-in user's Live worker reads `GET /v1/mod-packs`
+  and returns up to 40 releases with their full membership, ordered by
+  most recent member. When an older server replies 404 the worker reads
+  its per-map repository. Both paths use the account's `read` token
+  (`live_hle::Hle::mod_list`, `live_hle::mods`). A thread of ours
   (`h2-mods`) asks for it when the Live menu draws the row or the screen
   opens (at most every 30 s), every 5 minutes otherwise, and 15 s after a
   failure; the game thread never waits on it.
 - **The screens** (`boot::mods_screen`, our list class, laid out as the
   level select is: list on the left with its bracket, picture top right,
   description under it, as the campaign picker). **Mods**: one row per
-  map (at most 40, newest first), its name and its state as a mark after
+  release (at most 40, newest first), its name and its state as a mark after
   it: a star (U+2605) when new, a tick (U+2713) when installed, a down
   arrow (U+2193) and the percentage while downloading; nothing when it is
   only on the server. Halo 2's fonts have none of the three, so they are
@@ -808,19 +846,16 @@ only a whole retail map is caught.
   offers Try Again and explains why. An explicit retry shows Loading and
   can run at the reader's next turn. The populated list keeps its order
   until the player leaves it, including while a pack or page is open.
-- **Map packs.** Maps the server lists with the same pack (an entry's
-  `pack`, a name or `{name, description}`; else its credit's `release`)
-  are one row of Mods, at the place of its newest map: the pack's name,
-  and a star, a tick, the downloads' percentage together, or "N maps".
-  Its summary names the makers, describes the pack, and gives its total
-  size and installed count. A opens the pack. Download All comes first,
-  followed by every listed map. On this screen maps omit an exact repeated
-  pack-name prefix. Details and Change Map use the published name.
-  X on a map downloads that map. A or X on Download All starts maps that can still be downloaded,
-  including failed maps eligible for retry. Installed and in-flight maps
-  are excluded from the action count. A partially installed pack counts completed maps toward the pack
-  percentage. B returns to the parent row. If a restored pack is gone,
-  the page says so and shows B Back.
+- **Map packs.** The pack ID identifies a release even when two uploaders
+  use the same title. A opens the pack and its member pages. The summary
+  names the makers and shows the description, advisory when present,
+  download size and installed count. X on the pack or **Download All**
+  queues its missing members. The installer downloads one at a time,
+  counts finished members towards overall progress, and offers failed
+  downloads again. Each member can also be downloaded independently.
+  Once every member is installed and has a slot, **Use pack** selects
+  its versions for the lobby's base-map choices. **Use original maps**
+  clears the selection. B returns to the parent row.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from
@@ -836,9 +871,11 @@ only a whole retail map is caught.
   (docs/live/live-api.md "The mod repository"). A join that installs the
   session's map counts the same way; a search's check never does. A
   reinstall adds nothing; a failed count is only logged.
-- **The map select.** The package appears by its own name under Mods
-  after the next content scan. Its slot holds its own texts and preview,
-  which also appear in Game Setup and the lobby.
+- **The map select.** Change Map lists an installed release as a folder
+  under Mods. Picking its map selects the exact member offer and applies
+  that pack to later choices in Halo 2 and Map Pack. Its slot supplies
+  the lobby text and preview. Individual offers, including members of
+  an incomplete install, remain playable. [Map selection](map-select.md)
 - **Previews.** The three screens are in the UI kit's inventory (`mods`,
   `mods.pack`, `mods.detail`; `h2 ui preview mods.detail`), over invented
   entries with an invented three-map pack (`mods_screen::spec`).

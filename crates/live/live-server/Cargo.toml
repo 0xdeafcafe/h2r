@@ -38,6 +38,8 @@ futures-util = "0.3"
 mime_guess = "2"
 percent-encoding = "2"
 png = "0.18"
+# Pure Rust codecs, including WebP encoding on the Worker.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
 # Persistent multipart inspection needs RustCrypto's serialisable SHA-256 state.
 sha2-checkpoint = { package = "sha2", version = "0.11" }

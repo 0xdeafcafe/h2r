@@ -38,7 +38,7 @@ pub use render::{
     FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
     PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
     SceneSideTarget, SceneViewRecord,
-    SnapRecord,
+    SnapRecord, SpawnViewParams,
 };
 
 use serde::{Deserialize, Serialize};
@@ -162,6 +162,8 @@ pub mod method {
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Queue an installed multiplayer package by its complete MapId.
+    pub const MAPS_LOAD: &str = "maps.load";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
@@ -207,6 +209,8 @@ pub mod method {
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
     pub const RENDER_CAPTURE: &str = "render.capture";
+    /// Position the world camera at a loaded player starting location.
+    pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
     /// Arm the in-process two-path comparison for one frame

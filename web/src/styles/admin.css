@@ -430,6 +430,23 @@
 
 /* Custom content moderation (ContentAdmin.tsx). */
 .adm-content { display: grid; gap: 12px; }
+.adm-blob-details { width: 100%; min-width: 0; overflow-x: auto; }
+.adm-blob-details summary { color: var(--s-link); cursor: pointer; }
+.adm-blob-details[open] summary { margin-bottom: 8px; }
+.adm-pack-scroll { min-width: 0; width: 100%; overflow-x: auto; }
+.adm-packs > tbody > tr > th { padding: 5px 4px; border-bottom: 1px solid var(--s-row-alt); }
+.adm-pack-toggle {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  padding: 0; border: 0; background: none; color: var(--s-link);
+  font: inherit; font-weight: bold; cursor: pointer;
+}
+.adm-pack-toggle:focus-visible { outline: 2px solid var(--s-link); outline-offset: 2px; }
+.adm-pack-caret { width: 1em; }
+.adm-pack-cover { display: grid; width: 88px; height: 52px; flex: none; overflow: hidden; font-weight: normal; background: var(--s-row); }
+.adm-pack-cover img { width: 100%; height: 100%; object-fit: cover; }
+.adm-packs td.adm-pack-details { padding: 6px 10px 10px 20px; background: var(--s-row); }
+.adm-pack-details p { margin: 2px 0 5px; }
+.adm-pack-meta { color: var(--s-ink-soft); }
 .adm-mod tr.off td { color: var(--s-ink-dim); }
 .adm-mod-btns { white-space: nowrap; }
 .adm-mod-btns .s-btn { margin-left: 3px; }

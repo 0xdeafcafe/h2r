@@ -221,12 +221,20 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  credit, author and base map. Sent without a token. */
     maps: async (q: { sort?: "new" | "popular"; base?: string; author?: string; category?: string; q?: string; limit?: number; cursor?: string | null } = {}, s?: AbortSignal) =>
       page<unknown>(await getJson(u("/maps", q), s)),
+    modPacks: async (s?: AbortSignal) => page<unknown>(await getJson(u("/mod-packs"), s, await who())),
+    modPack: async (id: string, s?: AbortSignal) =>
+      getJson<{ pack: unknown }>(u("/mod-packs/" + encodeURIComponent(id)), s, await who()),
     /** Every published package, following cursors (bounded). */
     allMaps: (q: { base?: string; author?: string } = {}, s?: AbortSignal) => all<unknown>("/maps", { ...q, limit: 100 }, s, 20),
     /** One package by map_id, as status and body: 404 (not a package) and
      *  410 (taken down) are answers, not errors (lib/maps.ts reads them). */
     mapPackage: async (id: string, s?: AbortSignal): Promise<{ status: number; body?: unknown }> => {
-      const r = await fetch(u("/maps/" + encodeURIComponent(id)), { signal: s, headers: { accept: "application/json" } });
+      const url = u("/maps/" + encodeURIComponent(id));
+      const init = { signal: s, headers: { accept: "application/json" } };
+      // An authenticated manifest fetch counts a download. Use it only
+      // when a private server specifically asks us to sign in.
+      let r = await fetch(url, init);
+      if (r.status === 401 || r.status === 403) r = await reading(url, init);
       let body: unknown;
       try { body = await r.json(); } catch { /* not JSON */ }
       return { status: r.status, body };
