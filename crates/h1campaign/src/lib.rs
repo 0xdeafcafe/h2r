@@ -545,7 +545,7 @@ fn convert_with<R: Read + Seek>(
     // Halo 1's indoor fog, if the level has one, is the scenario's
     // atmosphere element 0, which every skyless cluster names
     // (`scenario::indoor_fog`).
-    let indoor = scenario::indoor_fog(h1).map(|_| 0u8);
+    let indoor = scenario::indoor_fog(h1)?.map(|_| 0u8);
 
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
     // under Halo 1's names.

@@ -317,8 +317,16 @@ converted object functions. Light fixtures use the same path on the
 machines they become. The attachment reader also carries the
 change-colour selector, translated to the same slots as the object's
 colours. Halo 2's effect updater skips colour slot 0 (`0x00179610`).
-The converter reports source functions that lack a supported curve or
-engine input.
+A source function that lacks a supported curve or engine input stays
+unconverted, with its reason in the report. Halo 1's additive flag
+(H1 `0x8c06d..0x8c088` adds the previous output and wraps the sum by
+one) is such a case, and so is a function that turns off with one that
+did not convert (H1 `0x8c050..0x8c06b`). **Built:** an attachment whose
+primary or secondary scale names an output with no converted function,
+or with no function at all, fails the conversion with the attachment,
+marker and output (`functions::primary_scale`). Before, it kept an
+empty Halo 2 scale, which runs the attachment at one where Halo 1 scaled
+it by that output.
 
 Halo 2 does not dispatch `pctl` attachments directly. Each emitting
 particle type becomes an attached `effe` with the source marker as its
@@ -1091,6 +1099,17 @@ The converter (**Design**):
   darken-by and scale-by imports or converted object outputs in the second
   block. On a10 the shield station's two colour ranges follow its two
   power-derived outputs. See [the model material audit](role-audit.md).
+- **Built.** A device colour bound to an output whose function did not
+  convert fails the conversion. One bound to an output the device has no
+  function for binds Halo 2's `zero`. E (Halo 1): the object allocator
+  zeroes the whole object (`0x8b8d8..0x8b8e6`); only the function loop
+  writes outputs (`0x8c092`), and only for the definition's functions
+  (count at `+0x158`, `0x8c0d5`); the colour update reads that zero and
+  applies it (`0x8c162` scale-by, `0x8c1be` darken-by). E (Halo 2): the
+  colour update looks the name up with `0xbab40`, which clears the value
+  before searching, and keeps zero for a name no function exports
+  (`0xbe9bc..0xbe9c8`). Before, the converter dropped the colour's
+  function and the colour stopped following it.
 
 So the cyborg's armour plates take the player's primary colour, or the
 team's in a team game. Halo 1's cyborg has one mask, so the secondary

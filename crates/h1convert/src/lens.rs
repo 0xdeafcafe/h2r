@@ -76,10 +76,12 @@ impl H1Lens {
         if b.len() < H1_ROOT {
             return Err(Error::Invalid("lens root truncated"));
         }
+        // A bitmap reference that does not resolve is an error, not a
+        // lens without one.
         let bitmap = TagRef::read(b, 0x20)
             .filter(|r| !r.id.is_none())
-            .and_then(|r| map.tag(r.id).ok())
-            .map(|t| t.id);
+            .map(|r| map.tag(r.id).map(|t| t.id))
+            .transpose()?;
         let blk = h1map::Block::read(b, H1_REFLECTIONS).ok_or(Error::Invalid("lens reflections"))?;
         let reflections = map
             .block(blk, H1_REFLECTION)?

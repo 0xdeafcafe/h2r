@@ -318,8 +318,11 @@ retail's are (`jmad::vehicle_plan`):
   the retail warthog's four are 0.308 / 0.132; Halo 1's warthog's
   -0.314 / -0.135, written negated. The marker is the powered mass
   point's (each powered point gets a marker of its name on the converted
-  model); an element whose mass point has none is reported
-  (`suspension_without_marker`, `no_home`) and dropped.
+  model); an element whose mass point has none (unpowered, or out of
+  range) is reported (`suspension_without_marker`) and the object
+  converter refuses the graph with an error naming the map and the
+  graph, not a dropped element. No retail vehicle has one (V: the
+  warthog's four and the scorpion's eight are all powered).
 - **Object overlays (`+0x44`, `0x14`: label, animation, controls,
   function name).** E: the unit's function lookup `0x000c6b90` answers
   `barrel_spin` (`0x000c6d41`) from its current weapon (`+0x212`,

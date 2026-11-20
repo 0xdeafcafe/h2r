@@ -30,7 +30,6 @@ pub(super) fn retail_tags(
     h1: &H1Map,
     ai: &H1Ai,
     set: &TagSet,
-    dropped: &mut Vec<String>,
 ) -> Result<(Vec<Option<TagId>>, Vec<(String, f32)>)> {
     let mut tags = Vec::with_capacity(ai.actor_palette.len());
     let mut loudness = Vec::new();
@@ -46,16 +45,17 @@ pub(super) fn retail_tags(
         let tag = h1.tag(id)?;
         let loud =
             h1ai::h1::weapon_loudness(h1, tag).map_err(|e| invalid(format!("ai weapon {}: {e}", tag.name)))?;
-        let retail = crate::h2assets::stand_in(set, tag).ok().flatten();
-        if retail.is_none() {
-            dropped.push(format!(
-                "ai weapon {}: no retail counterpart in map",
-                tag.name
-            ));
-        } else if let Some(name) = retail.and_then(|id| set.slots[id.index()].name.clone()) {
+        // A weapon the swap leaves out, or one with no retail counterpart
+        // in the map, has no AI weapon here: a named error, not an
+        // unarmed variant.
+        let named = |why: String| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, format!("ai weapon: {why}"));
+        let retail = crate::h2assets::stand_in(set, tag)
+            .map_err(named)?
+            .ok_or_else(|| named("no retail counterpart in the map".into()))?;
+        if let Some(name) = set.slots[retail.index()].name.clone() {
             loudness.push((name, loud));
         }
-        tags.push(retail);
+        tags.push(Some(retail));
     }
     Ok((tags, loudness))
 }

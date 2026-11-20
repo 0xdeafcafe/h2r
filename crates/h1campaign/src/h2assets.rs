@@ -199,8 +199,9 @@ pub fn swapped_sources(h1: &H1Map) -> Result<Vec<(FourCC, String)>> {
 
 /// The retail tags (group and full name) the Halo 2-assets variant of `h1`
 /// places that `set` lacks, as the first donor that has each names it, for
-/// [`crate::donor::bring`]. A role no donor has is left out here; the
-/// placement then keeps Halo 1's object (a `dropped` line says so).
+/// [`crate::donor::bring`]. A role no donor has is left out here (a
+/// `dropped` line says why); placing it is then a named error
+/// ([`stand_in`]).
 pub fn wanted(h1: &H1Map, set: &TagSet, donors: &crate::donor::Donors) -> Result<Vec<(FourCC, String)>> {
     let mut roles: Vec<(FourCC, &'static str)> = Vec::new();
     for (group, name) in swapped_sources(h1)? {
@@ -265,11 +266,16 @@ impl Aliases {
 }
 
 /// The retail tag for the Halo 1 object `tag` in `set`: `Ok(Some)` to place
-/// it, `Ok(None)` to convert Halo 1's own, `Err(why)` to leave it out.
+/// it, `Ok(None)` to convert Halo 1's own ([`Swap::Keep`]), `Err(why)` for
+/// one the swap leaves out ([`Swap::Drop`]) or whose retail counterpart is
+/// not in `set` (neither the base nor a donor had it): the caller names
+/// the tag and map, never placing Halo 1's in its stead.
 pub fn stand_in(set: &TagSet, tag: &h1map::Tag) -> std::result::Result<Option<TagId>, String> {
     let group = tag.group.0.to_be_bytes();
     match swap_for(&group, &tag.name) {
-        Swap::Retail(last) => Ok(find(set, FourCC(group), last)),
+        Swap::Retail(last) => find(set, FourCC(group), last)
+            .map(Some)
+            .ok_or_else(|| format!("its Halo 2 counterpart {last} is not in the map or a donor")),
         Swap::Keep(_) => Ok(None),
         Swap::Drop(why) => Err(why.to_owned()),
     }

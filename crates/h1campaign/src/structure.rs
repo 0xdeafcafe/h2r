@@ -184,7 +184,11 @@ fn prepare<R: Read + Seek>(
         return Err(invalid("surface outside source collision material palette"));
     }
 
-    let name_of = |r: h1map::TagRef| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default();
+    let name_of = |r: h1map::TagRef| -> h1convert::Result<String> {
+        h1.tag(r.id).map(|t| t.name.clone()).map_err(|e| {
+            h1convert::Error::no_rebuild(&h1.header().name, "structure", format!("lightmap material shader: {e}"))
+        })
+    };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     structure::fix_winding(&mut meshes);
     let mut index_of: BTreeMap<String, u16> = BTreeMap::new();

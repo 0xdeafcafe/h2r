@@ -59,8 +59,9 @@ pub struct GraphReport {
     pub dropped_default_channels: usize,
     /// Zero quaternions in the source, written as identity.
     pub zero_rotations: usize,
-    /// Suspension elements left out: their mass point has no marker on
-    /// the converted model ([`GraphOptions::mass_point_markers`]).
+    /// Suspension elements not written: their mass point has no marker on
+    /// the converted model ([`GraphOptions::mass_point_markers`]). The
+    /// object converter refuses a graph with any (a named error).
     pub suspension_without_marker: Vec<String>,
 }
 

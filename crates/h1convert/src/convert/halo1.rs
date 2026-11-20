@@ -61,17 +61,14 @@ pub trait Halo1Objects {
     /// the first permutation of its region (the one a converted
     /// placement, which names no variant, draws), placed by the render
     /// model's default pose. Each surface names a global material index.
-    /// Empty when it has no collision; the default
-    /// reads none. [`merge_scenery_collision`] puts each placed scenery
-    /// object's into the level's.
+    /// Empty when it has no collision. Every implementor reads it (no
+    /// default that reads none). [`merge_scenery_collision`] puts each
+    /// placed scenery object's into the level's.
     fn collision(
         &mut self,
         group: [u8; 4],
         name: &str,
-    ) -> std::result::Result<Vec<tags::collision::Bsp>, String> {
-        let _ = (group, name);
-        Ok(Vec::new())
-    }
+    ) -> std::result::Result<Vec<tags::collision::Bsp>, String>;
 
     /// Everything converted so far, ready to add to a map.
     fn take(&mut self) -> ObjectTags;
@@ -172,13 +169,21 @@ pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
         .iter()
         .map(|e| item_spawn(h1, e))
         .collect::<Result<Vec<_>>>()?;
-    for v in &mp.vehicles {
-        let name = mp
-            .vehicle_palette
-            .get(v.palette as usize)
-            .and_then(|r| h1.tag(r.id).ok())
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+    for (i, v) in mp.vehicles.iter().enumerate() {
+        // A placement naming no vehicle is a named error, never a spawn
+        // of nothing.
+        let r = usize::try_from(v.palette)
+            .ok()
+            .and_then(|k| mp.vehicle_palette.get(k))
+            .filter(|r| !r.id.is_none())
+            .ok_or_else(|| {
+                Error::no_rebuild(
+                    &h1.header().name,
+                    format!("vehicle placement {i}"),
+                    format!("palette entry {} names no vehicle", v.palette),
+                )
+            })?;
+        let name = h1.tag(r.id)?.name.clone();
         let [x, y, z] = v.position;
         out.push(Halo1Spawn {
             collection: name.clone(),
@@ -188,7 +193,7 @@ pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
                 weight: 1.0,
             }],
             collection_respawn: 0,
-            position: [x, y, z + vehicle_depth(h1, &name)],
+            position: [x, y, z + vehicle_depth(h1, &name)?],
             facing: v.rotation[0],
             respawn: 0,
             filter: None,
@@ -220,8 +225,9 @@ fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1
 }
 
 /// How far the Halo 1 vehicle `name`'s render model reaches below its
-/// origin (0 when it does not, or the model cannot be read): what a
-/// vehicle spawn is raised by, so the vehicle does not start in the floor.
+/// origin (0 when it does not, or it names no model; a model that does
+/// not read is an error naming the vehicle): what a vehicle spawn is
+/// raised by, so the vehicle does not start in the floor.
 ///
 /// V: Halo 1 places a vehicle's origin on the floor (every Blood Gulch
 /// vehicle placement is 0.001 above the structure's collision), and the
@@ -229,20 +235,28 @@ fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1
 /// origin (`h1objects/tests/vehicle_ground_disc.rs`). Halo 1's own mass
 /// points lifted it once spawned; in Halo 2 the converted ghost started
 /// 0.14 into the ground and stayed there.
-pub fn vehicle_depth(h1: &H1Map, name: &str) -> f32 {
-    let lowest = || -> Option<f32> {
-        let t = h1.find(h1map::Group::new(b"vehi"), name)?;
-        let r = h1map::TagRef::read(h1.tag_data(t).ok()?, VEHI_MODEL)?;
-        let mode = h1.tag(r.id).ok()?;
-        let (m, _) = h1models::model_from_map(h1, mode, &Default::default()).ok()?;
-        m.geometries
-            .iter()
-            .flat_map(|g| &g.parts)
-            .flat_map(|p| &p.vertices)
-            .map(|v| v.position[2])
-            .reduce(f32::min)
-    };
-    lowest().map_or(0.0, |z| (-z).max(0.0))
+pub fn vehicle_depth(h1: &H1Map, name: &str) -> Result<f32> {
+    let named = |why: String| Error::no_rebuild(&h1.header().name, name, format!("vehicle depth: {why}"));
+    let t = h1
+        .find(h1map::Group::new(b"vehi"), name)
+        .ok_or_else(|| named("not a vehicle".into()))?;
+    let r = h1map::TagRef::read(h1.tag_data(t)?, VEHI_MODEL)
+        .ok_or_else(|| named("model reference does not read".into()))?;
+    // A vehicle with no model has nothing to reach below its origin.
+    if r.id.is_none() {
+        return Ok(0.0);
+    }
+    let mode = h1.tag(r.id)?;
+    let (m, _) = h1models::model_from_map(h1, mode, &Default::default())
+        .map_err(|e| named(format!("model {}: {e}", mode.name)))?;
+    let lowest = m
+        .geometries
+        .iter()
+        .flat_map(|g| &g.parts)
+        .flat_map(|p| &p.vertices)
+        .map(|v| v.position[2])
+        .reduce(f32::min);
+    Ok(lowest.map_or(0.0, |z| (-z).max(0.0)))
 }
 
 /// A Halo 1 object's render model reference (`obje +0x28`).
@@ -940,9 +954,12 @@ pub fn plan_scenery(
     // Halo 1 palette index -> Halo 2's, and the tag's name.
     let mut index = Vec::new();
     for e in &palette {
+        // An empty entry has no scenery; one that does not resolve is an
+        // error, not an empty entry.
         let name = h1map::TagRef::read(e, 0)
-            .and_then(|r| h1.tag(r.id).ok())
-            .map(|t| t.name.clone());
+            .filter(|r| !r.id.is_none())
+            .map(|r| h1.tag(r.id).map(|t| t.name.clone()))
+            .transpose()?;
         let Some(name) = name else {
             index.push(None);
             continue;

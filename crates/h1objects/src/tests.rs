@@ -2108,10 +2108,12 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
         assert!((eval(&clip, x) - c).abs() < 1e-6, "clip {x}");
         assert!((eval(&norm, x) - n).abs() < 1e-6, "normalise {x}");
     }
-    // Attachments name the outputs that converted.
-    assert_eq!(primary_scale(3, &got), "c_out");
-    assert_eq!(primary_scale(4, &got), "");
-    assert_eq!(primary_scale(0, &got), "");
+    // Attachments name the outputs that converted; one naming an output
+    // whose function did not convert, or that has none, is an error.
+    assert_eq!(primary_scale(3, &got).unwrap(), "c_out");
+    assert!(primary_scale(4, &got).is_err());
+    assert_eq!(primary_scale(0, &got).unwrap(), "");
+    assert!(primary_scale(4, &got[..3]).is_err());
 }
 
 #[test]
@@ -2133,6 +2135,23 @@ fn device_power_gain_follows_threshold_and_precedes_bounds() {
             assert_eq!(actual, expected[i]);
         }
     }
+}
+
+/// Halo 1's additive accumulator has no Halo 2 blob, and a function that
+/// turns off with an unconverted one cannot carry the switch: both stay
+/// unconverted with their reason, so a consumer of either fails.
+#[test]
+fn additive_and_orphaned_switch_functions_do_not_convert() {
+    let inputs = crate::h1::FunctionInputs { unit: [1, 1, 0, 0], ..Default::default() };
+    let mut additive = h1_function(1, 0, [0.0, 1.0]);
+    additive.flags = 2;
+    let mut switched = h1_function(2, 0, [0.0, 1.0]);
+    switched.turn_off_with = 0;
+    let mut notes = Vec::new();
+    let got = crate::functions::convert(&[additive, switched], &inputs, &mut notes);
+    assert!(got.iter().all(Option::is_none), "{got:?}");
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(crate::functions::primary_scale(1, &got).is_err());
 }
 
 #[test]

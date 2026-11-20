@@ -199,8 +199,9 @@ pub struct FunctionSpec {
 }
 
 /// Halo 1's functions as Halo 2's, by output index: `None` for one this
-/// can't carry (its reason in `notes`). An attachment naming such an
-/// output keeps an empty primary scale (1, as before).
+/// can't carry (its reason in `notes`). A consumer naming such an output
+/// (an attachment's scale, [`primary_scale`]; a device change colour)
+/// fails the conversion with that reason.
 pub fn convert(
     functions: &[h1::Function],
     inputs: &h1::FunctionInputs,
@@ -211,11 +212,18 @@ pub fn convert(
         .take(4)
         .enumerate()
         .map(|(k, f)| match one(f, inputs) {
+            // H1 0x8c06d..0x8c088: the additive flag adds the output's
+            // previous value and wraps the sum by one (0x180ada), an
+            // accumulator Halo 2's function blobs cannot hold.
+            Ok(_) if f.flags & 2 != 0 => {
+                notes.push(format!(
+                    "function {}: not converted (additive accumulation, H1 0x8c06d)",
+                    OUTPUT_NAMES[k]
+                ));
+                None
+            }
             Ok(mut s) => {
                 s.export = OUTPUT_NAMES[k].into();
-                if f.flags & 2 != 0 {
-                    notes.push(format!("function {}: Halo 1's additive flag dropped", OUTPUT_NAMES[k]));
-                }
                 Some(s)
             }
             Err(why) => {
@@ -225,9 +233,25 @@ pub fn convert(
         })
         .collect();
     let exports: Vec<Option<String>> = out.iter().map(|s| s.as_ref().map(|s| s.export.clone())).collect();
-    for (s, f) in out.iter_mut().zip(functions) {
-        if let (Some(s), Ok(i)) = (s, usize::try_from(f.turn_off_with)) {
-            s.turn_off_with = exports.get(i).cloned().flatten().unwrap_or_default();
+    for (k, (slot, f)) in out.iter_mut().zip(functions).enumerate() {
+        let Ok(i) = usize::try_from(f.turn_off_with) else { continue };
+        // H1 0x8c050..0x8c06b: the function is off unless function `i`'s
+        // active bit is set. One with no converted function `i` cannot
+        // carry that switch.
+        match exports.get(i).cloned().flatten() {
+            Some(export) => {
+                if let Some(s) = slot.as_mut() {
+                    s.turn_off_with = export;
+                }
+            }
+            None if slot.is_some() => {
+                notes.push(format!(
+                    "function {}: not converted (turns off with function {i}, which has no converted output)",
+                    OUTPUT_NAMES[k]
+                ));
+                *slot = None;
+            }
+            None => {}
         }
     }
     out
@@ -356,13 +380,17 @@ fn bounded(source: &h1::Function) -> Result<Vec<u8>, String> {
     Ok(f.to_bytes())
 }
 
-/// An attachment's primary scale: the export of Halo 1's output `index`
-/// (1 to 4) where it converted, else empty.
-pub fn primary_scale(index: u16, converted: &[Option<FunctionSpec>]) -> String {
-    usize::from(index)
-        .checked_sub(1)
-        .and_then(|k| converted.get(k))
-        .and_then(|s| s.as_ref())
-        .map(|s| s.export.clone())
-        .unwrap_or_default()
+/// An attachment's scale: empty for index 0 (none), else the export of
+/// Halo 1's output `index` (1 to 4). An output with no converted function
+/// is an error: Halo 1 scales the attachment by that output, while an
+/// empty Halo 2 scale leaves it at one.
+pub fn primary_scale(index: u16, converted: &[Option<FunctionSpec>]) -> Result<String, String> {
+    let Some(k) = usize::from(index).checked_sub(1) else {
+        return Ok(String::new());
+    };
+    match converted.get(k) {
+        Some(Some(s)) => Ok(s.export.clone()),
+        Some(None) => Err(format!("output {index}'s function did not convert")),
+        None => Err(format!("output {index} has no function")),
+    }
 }

@@ -230,8 +230,13 @@ name (`h2assets::find`). No tag list is copied from either game.
 | Cutscene props (`..._cinematic`: a10's scorpion) | Halo 1's, converted | Cutscenes keep Halo 1's objects |
 | Vehicles flown by a recording (`..._playback`: d20's banshee) | Halo 1's, converted | The recording replays Halo 1's controls, which on Halo 2's vehicle would fly another path |
 
-A Halo 2 tag neither the base nor a donor has leaves the Halo 1 object
-in place (converted); a `dropped` line says so.
+A Halo 2 tag neither the base nor a donor has is a conversion error
+naming the Halo 1 tag and the map (`h2assets::stand_in`); the Halo 1
+object is never placed in its stead (**Built**: the placements, the
+starting profiles' weapons, the cyborg, the AI's weapons and the actor
+variants' weapons). So is an ammo pickup or AI weapon the swap leaves
+out, and an AI weapon with no retail counterpart (the AI weapon palette
+has no converted Halo 1 weapon path), rather than an unarmed variant.
 
 **Kept Halo 1's in both variants:**
 

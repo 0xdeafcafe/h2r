@@ -112,15 +112,10 @@ pub const SOSO_DETAIL_SCALE: usize = 0xd8;
 pub const SOSO_DETAIL_V_SCALE: usize = 0xec;
 
 /// The tiling of the Halo 1 shader `tag`'s detail and bump maps
-/// ([`scales_from`] on its bytes).
-pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
-    match h1.tag_data(tag) {
-        Ok(d) => scales_from(&tag.group.to_string(), d),
-        Err(_) => H1Scales {
-            detail: [1.0; 2],
-            bump: 1.0,
-        },
-    }
+/// ([`scales_from`] on its bytes). A shader whose bytes do not read is an
+/// error, not a scale of one.
+pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> std::result::Result<H1Scales, h1map::Error> {
+    Ok(scales_from(&tag.group.to_string(), h1.tag_data(tag)?))
 }
 
 /// The tiling of a Halo 1 shader of `group` whose bytes are `d`. `senv`:
@@ -333,7 +328,7 @@ pub fn plan_bsp<R: Read + Seek>(
 ) -> Result<Retexture> {
     let meta =
         tags::object::Metadata::read(base).map_err(|e| crate::Error::Textures(e.to_string()))?;
-    let globals = crate::materials::global_materials(base, &meta);
+    let globals = crate::materials::global_materials(base, &meta).map_err(crate::Error::Textures)?;
     let mut all = materials.to_vec();
     let mut palette = Vec::with_capacity(collision.len());
     for r in collision {

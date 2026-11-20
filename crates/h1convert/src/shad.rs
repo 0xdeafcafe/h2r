@@ -1928,7 +1928,7 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
     match group.as_str() {
         "senv" | "soso" => {
             let m = crate::textures::h1_maps_of(h1, tag)?;
-            let s = crate::textures::h1_scales_of(h1, tag);
+            let s = crate::textures::h1_scales_of(h1, tag).ok()?;
             let d = h1.tag_data(tag).ok()?;
             if group == "senv" && m.base.is_none() {
                 // Monitor glow has no diffuse texture. Its only sampled

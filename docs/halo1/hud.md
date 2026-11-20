@@ -347,7 +347,11 @@ words tell the zoom levels apart (word A `0x40` unzoomed, `0x80` level 0,
 the converter writes one widget per level, up to two and up to the
 sequence's sprites (`h1hud::zoom_widget`): level 0 on the bitmap itself,
 level 1 on a copy whose sequence starts at sprite 1
-(`<bitmap>_seq<s>_sprite<k>`). The states are Halo 2's own sniper rifle
+(`<bitmap>_seq<s>_sprite<k>`). A level past the sequence's sprites has
+no widget (the weapon has no such level); a copy whose bitmap does not
+read, decode or convert is an error naming the map and the bitmap, not a
+level left out (**Built**, `Converter::sprite_bitmap`). The states are
+Halo 2's own sniper rifle
 "5x" and "10x" (V: `ui\hud\sniper_rifle`): show word A `0x90`, hide
 `0x140`; show `0x110`, hide `0xc0`; both shown on word C `0x01` and
 hidden on `0x06` (`ZOOM_LEVEL_STATES`). The widgets use Halo 1's

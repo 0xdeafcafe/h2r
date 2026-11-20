@@ -110,16 +110,6 @@ pub(crate) fn prepare(
                 })?,
                 None => None,
             };
-            if retail.is_some()
-                && stand_in.is_none()
-                && let crate::h2assets::Swap::Retail(last) =
-                    crate::h2assets::swap_for(&source.group.0.to_be_bytes(), &source.name)
-            {
-                return Err(invalid(format!(
-                    "AI weapon {} of {}: its Halo 2 counterpart {last} is not in the map",
-                    source.name, tag.name
-                )));
-            }
             match stand_in {
                 Some(id) => Some(id),
                 None => Some(

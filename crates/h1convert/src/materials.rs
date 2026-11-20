@@ -53,17 +53,23 @@ pub const GLOBAL_MATERIALS: usize = 0x150;
 pub const GLOBAL_MATERIAL_SIZE: usize = 0xb4;
 
 /// The global material names of `map`'s globals (none without globals).
-pub fn global_materials<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata) -> Vec<String> {
+/// Globals whose material block or a name does not read are an error,
+/// not empty names.
+pub fn global_materials<R: Read + Seek>(
+    map: &mut Map<R>,
+    meta: &Metadata,
+) -> std::result::Result<Vec<String>, String> {
     let Some(t) = map.tags().iter().find(|t| t.group == FourCC(*b"matg")) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let Some(at) = t.location.map(|l| l.address) else {
-        return Vec::new();
-    };
+    let at = t
+        .location
+        .map(|l| l.address)
+        .ok_or_else(|| "base globals: no metadata".to_owned())?;
     let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4"));
-    let Ok(head) = meta.slice(at, (GLOBAL_MATERIALS + 8) as u64) else {
-        return Vec::new();
-    };
+    let head = meta
+        .slice(at, (GLOBAL_MATERIALS + 8) as u64)
+        .map_err(|e| format!("base globals: materials block: {e}"))?;
     let (n, first) = (
         word(head, GLOBAL_MATERIALS),
         word(head, GLOBAL_MATERIALS + 4),
@@ -71,15 +77,14 @@ pub fn global_materials<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata) -> Ve
     let strings = map.strings();
     (0..n)
         .map(|i| {
-            meta.slice(first + i * GLOBAL_MATERIAL_SIZE as u32, 4)
-                .ok()
-                .and_then(|b| {
-                    strings
-                        .get((word(b, 0) & 0xffff) as usize)
-                        .cloned()
-                        .flatten()
-                })
-                .unwrap_or_default()
+            let b = meta
+                .slice(first + i * GLOBAL_MATERIAL_SIZE as u32, 4)
+                .map_err(|e| format!("base globals: material {i}: {e}"))?;
+            strings
+                .get((word(b, 0) & 0xffff) as usize)
+                .cloned()
+                .flatten()
+                .ok_or_else(|| format!("base globals: material {i}: name does not resolve"))
         })
         .collect()
 }

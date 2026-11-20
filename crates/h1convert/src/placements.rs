@@ -196,13 +196,21 @@ pub(crate) fn plan_map_except(
         names.push(Some(n));
     }
     let mut out = plan_selected(&mp, |i| names[i].clone());
-    for v in &mp.vehicles {
-        let name = mp
-            .vehicle_palette
-            .get(v.palette as usize)
-            .and_then(|r| m.tag(r.id).ok())
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+    for (i, v) in mp.vehicles.iter().enumerate() {
+        // A placement naming no vehicle is a named error, never a nameless
+        // dropped line.
+        let r = usize::try_from(v.palette)
+            .ok()
+            .and_then(|k| mp.vehicle_palette.get(k))
+            .filter(|r| !r.id.is_none())
+            .ok_or_else(|| {
+                crate::Error::no_rebuild(
+                    &m.header().name,
+                    format!("vehicle placement {i}"),
+                    format!("palette entry {} names no vehicle", v.palette),
+                )
+            })?;
+        let name = m.tag(r.id)?.name.clone();
         match h2_equivalent(&name) {
             Some(item @ H2Item::Vehicle(_)) => out.items.push(ItemSpawn {
                 position: v.position,

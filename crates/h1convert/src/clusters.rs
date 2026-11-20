@@ -502,8 +502,9 @@ pub fn skyless(bsp: &StructureBsp) -> Result<Vec<bool>> {
 /// environment `+0x06` (i16 into the BSP's palettes; V: every Halo 1
 /// level, `tests/h1_clusters.rs`) are mapped by `index` to the converted
 /// palettes; a leaf (`sbsp +0xe0`, one per collision leaf) names its
-/// cluster at `+0x08`. A leaf naming no cluster, or leaves that don't run
-/// parallel to the `collision_leaves`, are in cluster 0.
+/// cluster at `+0x08`. A structure with no clusters has one, every leaf
+/// in it; a leaf naming no cluster, or leaves that don't run parallel to
+/// the `collision_leaves`, are an error, not cluster 0.
 pub fn sound_zones(
     src: &StructureBsp,
     collision_leaves: usize,
@@ -515,23 +516,26 @@ pub fn sound_zones(
         .iter()
         .map(|c| index([i16_at(c, 4), i16_at(c, 6)]))
         .collect();
-    if zones.is_empty() {
+    let no_clusters = zones.is_empty();
+    if no_clusters {
         zones.push([-1, -1]);
     }
     let leaves = src.space.block_at(src.root, H1_LEAVES, H1_LEAF)?;
-    let per_leaf = if leaves.len() == collision_leaves {
-        leaves
-            .iter()
-            .map(|l| {
-                u16::try_from(i16_at(l, 8))
-                    .ok()
-                    .filter(|&c| usize::from(c) < zones.len())
-                    .unwrap_or(0)
-            })
-            .collect()
-    } else {
-        vec![0; collision_leaves]
-    };
+    if leaves.len() != collision_leaves {
+        return Err(Error::Invalid("the structure's leaves don't run parallel to its collision leaves"));
+    }
+    let per_leaf = leaves
+        .iter()
+        .map(|l| {
+            if no_clusters {
+                return Ok(0);
+            }
+            u16::try_from(i16_at(l, 8))
+                .ok()
+                .filter(|&c| usize::from(c) < zones.len())
+                .ok_or(Error::Invalid("a leaf names a cluster there isn't"))
+        })
+        .collect::<Result<Vec<u16>>>()?;
     Ok((zones, per_leaf))
 }
 

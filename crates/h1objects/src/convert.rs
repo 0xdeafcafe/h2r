@@ -1378,10 +1378,16 @@ impl<'a> Converter<'a> {
                         };
                         let (_, report, mut conv) =
                             h1models::graph_from_map_with(self.h1, t, Some(mode_tag), &opts)?;
-                        for a in &report.suspension_without_marker {
-                            rep.no_home.push(format!(
-                                "suspension {a:?}: its mass point has no marker; left out"
-                            ));
+                        // Halo 2's suspension names a marker; one whose
+                        // Halo 1 mass point has none (not powered, or out
+                        // of range) has no rebuild yet.
+                        if let Some(a) = report.suspension_without_marker.first() {
+                            return Err(h1convert::Error::no_rebuild(
+                                &self.h1.header().name,
+                                &t.name,
+                                format!("suspension {a:?}: its mass point has no marker"),
+                            )
+                            .into());
                         }
                         self.graph_sounds(t, &mut conv)?;
                         Some(self.cached(t, conv)?)
@@ -1728,7 +1734,7 @@ impl<'a> Converter<'a> {
         };
         let base = bitmap(maps.base.ok_or_else(|| Error::Invalid("missing base map".into()))?)?;
         let detail = maps.detail.map(bitmap).transpose()?;
-        let scale = h1convert::textures::h1_scales_of(self.h1, tag).detail;
+        let scale = h1convert::textures::h1_scales_of(self.h1, tag)?.detail;
         let root = template.build_opaque(base, detail, scale)?;
         self.cached(tag, Converted { group: FourCC(*b"shad"), root, raw: Vec::new() })
     }
@@ -2141,33 +2147,44 @@ impl<'a> Converter<'a> {
     /// A copy of bitmap `id` whose sequence `seq` starts at its sprite
     /// `first`, for a Halo 2 widget, which draws its sequence's first
     /// sprite, to draw a later one (`h1hud::zoom_widget`). Sprite 0 is the
-    /// bitmap itself; `<name>_seq<seq>_sprite<first>`, built once. None past
-    /// the sequence's sprites.
-    fn sprite_bitmap(&mut self, id: h1map::TagId, seq: i16, first: usize) -> Option<TagId> {
+    /// bitmap itself; `<name>_seq<seq>_sprite<first>`, built once.
+    /// `Ok(None)` only past the sequence's sprites (the weapon has no such
+    /// zoom level); a bitmap that does not read, decode or convert is an
+    /// error naming it.
+    fn sprite_bitmap(&mut self, id: h1map::TagId, seq: i16, first: usize) -> Result<Option<TagId>> {
+        let tag = self.h1.tag(id)?.clone();
+        let source = self.h1;
+        let fail = |why: String| -> Error {
+            h1convert::Error::no_rebuild(&source.header().name, &tag.name, format!("zoom sprite {first}: {why}")).into()
+        };
         if first == 0 {
-            return self.bitmap(id);
+            return self.bitmap(id).map(Some).ok_or_else(|| fail("bitmap conversion".into()));
         }
         let key = (id.0, seq, first);
         if let Some(t) = self.sprite_bitmaps.get(&key) {
-            return Some(*t);
+            return Ok(Some(*t));
         }
-        let tag = self.h1.tag(id).ok()?.clone();
-        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let bm = h1map::bitmap::Bitmap::read(source, &tag).map_err(|e| fail(e.to_string()))?;
         let mut shifted = bm.clone();
-        let sprites = &mut shifted.sequences.get_mut(usize::try_from(seq).ok()?)?.sprites;
+        let sprites = &mut usize::try_from(seq)
+            .ok()
+            .and_then(|s| shifted.sequences.get_mut(s))
+            .ok_or_else(|| fail(format!("no sequence {seq}")))?
+            .sprites;
         if first >= sprites.len() {
-            return None;
+            return Ok(None);
         }
         sprites.drain(..first);
         let mut pixels = (0..bm.images.len())
-            .map(|i| bm.pixels(self.h1, i).map(|p| p.to_vec()))
+            .map(|i| bm.pixels(source, i).map(|p| p.to_vec()))
             .collect::<std::result::Result<Vec<_>, _>>()
-            .ok()?;
+            .map_err(|e| fail(e.to_string()))?;
         let (conv, _) =
-            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i])))
+                .map_err(|e| fail(e.to_string()))?;
         let out = self.tree.push(&format!("{}_seq{seq}_sprite{first}", tag.name), conv);
         self.sprite_bitmaps.insert(key, out);
-        Some(out)
+        Ok(Some(out))
     }
 
     fn program_tag(&mut self, name: &str, group: &[u8; 4], root: Block) -> TagId {
@@ -2227,15 +2244,35 @@ impl<'a> Converter<'a> {
         // The shader may consume a device function even when it has no attachments.
         let (attachments, creation, functions) =
             self.object_attachments(self.h1.tag_data(tag)?, &dev.object, &mut rep)?;
+        // A colour bound to an object output whose Halo 1 function exists
+        // but did not convert is an error. One bound to an output the
+        // device has no function for reads zero in Halo 1: the object is
+        // allocated zeroed (0x8b8d8..0x8b8e6), and only the function loop
+        // writes outputs (0x8c092), for its functions alone (count at def
+        // +0x158, 0x8c0d5). The colour update applies that zero (0x8c162
+        // scale-by, 0x8c1be darken-by). Halo 2 reads an unresolved name as
+        // zero (0xbe9bc; 0xbab40 clears the value first), so it binds
+        // `zero`, which no object exports.
+        let source_functions = h1::functions(self.h1, self.h1.tag_data(tag)?)?.len();
         for (slot, colour) in dev.object.change_colours.iter_mut().enumerate() {
-            let Some(binding) = &colour.function else { continue };
-            let missing = [binding.darken, binding.scale].into_iter().flatten().find(|name| {
-                crate::functions::OUTPUT_NAMES.contains(name)
-                    && !functions.iter().any(|f| f.export == *name)
-            });
-            if let Some(name) = missing {
-                rep.no_home.push(format!("change colour {slot}: output {name} has no converted function"));
-                colour.function = None;
+            let Some(binding) = colour.function.as_mut() else { continue };
+            for name in [&mut binding.darken, &mut binding.scale].into_iter().flatten() {
+                let Some(k) = crate::functions::OUTPUT_NAMES.iter().position(|o| o == name) else {
+                    continue;
+                };
+                if functions.iter().any(|f| f.export == *name) {
+                    continue;
+                }
+                if k >= source_functions {
+                    *name = "zero";
+                    continue;
+                }
+                return Err(h1convert::Error::no_rebuild(
+                    &self.h1.header().name,
+                    &tag.name,
+                    format!("change colour {slot}: output {name}'s function did not convert"),
+                )
+                .into());
             }
         }
         let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
@@ -2849,23 +2886,28 @@ impl<'a> Converter<'a> {
         let mut swap = None;
         let mut hud = None;
         if health_hud::is_player_biped(&tag.name) {
-            let native = counterpart.as_deref().and_then(|r| self.health_interfaces(r).ok());
-            match self.unit_hud(u) {
-                Ok((id, _)) => {
-                    if let Ok(centre) = self.sensor_centre(u) {
-                        self.tree.hud_sensor = Some(centre);
-                    }
-                    if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
-                        swap = Some((id, *other));
-                    }
-                    hud = Some(vec![id; native.as_ref().map_or(1, |ids| ids.len().max(1))]);
-                }
-                Err(e) => {
-                    return Err(
-                        h1convert::Error::no_rebuild(&self.h1.header().name, &tag.name, e).into(),
-                    );
-                }
+            let source = self.h1;
+            let named = |what: &str, e: Error| {
+                h1convert::Error::no_rebuild(&source.header().name, &tag.name, format!("{what}: {e}"))
+            };
+            // The switchable Halo 2 view needs every interface of the
+            // counterpart; one that doesn't read is an error, not a HUD
+            // without the view.
+            let native = counterpart
+                .as_deref()
+                .map(|r| self.health_interfaces(r))
+                .transpose()
+                .map_err(|e| named("Halo 2 HUD view", e))?;
+            let (id, _) = self.unit_hud(u).map_err(|e| named("unit HUD", e))?;
+            // Halo 1's motion sensor centre (unhi +MOTION_SENSOR): the
+            // converted HUD draws the sensor there, so a scaled or short
+            // record stops the conversion.
+            let centre = self.sensor_centre(u).map_err(|e| named("motion sensor", e))?;
+            self.tree.hud_sensor = Some(centre);
+            if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
+                swap = Some((id, *other));
             }
+            hud = Some(vec![id; native.as_ref().map_or(1, |ids| ids.len().max(1))]);
         }
         let mut tracks = Vec::new();
         for id in &u.camera_tracks {
@@ -3493,9 +3535,10 @@ impl Converter<'_> {
                 // of the bitmap that starts at the level's sprite.
                 Err(h1hud::Skip::ZoomLevels) => {
                     for level in 0..h1hud::ZOOM_LEVELS {
-                        let level_drawn = drawn
-                            .and(e.bitmap)
-                            .and_then(|b| self.sprite_bitmap(b, e.sequence, level));
+                        let level_drawn = match drawn.and(e.bitmap) {
+                            Some(b) => self.sprite_bitmap(b, e.sequence, level)?,
+                            None => None,
+                        };
                         if level > 0 && level_drawn.is_none() {
                             // No sprite for the level: the weapon has none.
                             break;

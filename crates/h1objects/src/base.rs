@@ -25,7 +25,7 @@ pub use h1convert::materials::{GLOBAL_MATERIAL_SIZE, GLOBAL_MATERIALS, global_ma
 impl Base {
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
         let meta = Metadata::read(map)?;
-        let materials = global_materials(map, &meta);
+        let materials = global_materials(map, &meta).map_err(Error::Invalid)?;
         Ok(Self {
             meta,
             materials,

@@ -414,7 +414,11 @@ fn prepare_plan<R: Read + Seek>(
         ));
     }
 
-    let name_of = |r: h1map::TagRef| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default();
+    let name_of = |r: h1map::TagRef| -> Result<String> {
+        h1.tag(r.id).map(|t| t.name.clone()).map_err(|e| {
+            Error::no_rebuild(&h1.header().name, "structure", format!("lightmap material shader: {e}"))
+        })
+    };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     let flipped = structure::fix_winding(&mut meshes);
     let mut index: BTreeMap<String, u16> = BTreeMap::new();

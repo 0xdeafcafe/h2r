@@ -49,19 +49,26 @@ pub const PART_KIND_TRANSPARENT: u16 = 4;
 /// [`part_kind`] of the base shader `id`, whose template `template`
 /// names when it read ([`scenario_edit::scene::shader_bitmaps`]), else
 /// as the shader library reads it (a shader that reader doesn't follow).
+/// A shader or template that does not read is an error, not an opaque part.
 pub fn base_part_kind<R: std::io::Read + std::io::Seek>(
     base: &mut map::Map<R>,
     id: TagId,
     template: &str,
-) -> u16 {
+) -> Result<u16> {
     if !template.is_empty() {
-        return part_kind(template);
+        return Ok(part_kind(template));
     }
-    let read = tags::material::ShaderLibrary::read(base)
-        .ok()
-        .and_then(|lib| lib.shader(id).ok())
-        .and_then(|s| base.tag(s.template.id).ok()?.name.clone());
-    part_kind(read.as_deref().unwrap_or_default())
+    let lib = tags::material::ShaderLibrary::read(base)
+        .map_err(|e| Error::Textures(format!("base shader library: {e}")))?;
+    let shader = lib
+        .shader(id)
+        .map_err(|e| Error::Textures(format!("base shader {id:?}: {e}")))?;
+    let name = base
+        .tag(shader.template.id)?
+        .name
+        .clone()
+        .ok_or_else(|| Error::Textures(format!("base shader {id:?}: unnamed template")))?;
+    Ok(part_kind(&name))
 }
 
 /// The part kind retail gives a structure part drawn with a shader of the
@@ -161,10 +168,10 @@ pub struct Mesh {
 /// ([`crate::clusters::surface_clusters`]; a surface listed by several
 /// clusters is in each one's mesh, and one no cluster lists is dropped, as
 /// Halo 1 never draws it). `shader_name` names a Halo 1 shader
-/// reference's tag.
+/// reference's tag; one it cannot name is an error, not a nameless mesh.
 pub fn meshes(
     bsp: &StructureBsp,
-    shader_name: impl Fn(h1map::TagRef) -> String,
+    shader_name: impl Fn(h1map::TagRef) -> Result<String>,
 ) -> Result<Vec<Mesh>> {
     let surfaces = bsp.render_surfaces()?;
     let owner = crate::clusters::surface_clusters(bsp, surfaces.len())?;
@@ -197,7 +204,7 @@ pub fn meshes(
                 .collect();
             let triangles: Vec<[u32; 3]> = tris.iter().map(|t| t.map(u32::from)).collect();
             out.extend(crate::clusters::split_by_cluster(
-                &shader_name(m.shader),
+                &shader_name(m.shader)?,
                 u16::try_from(l.bitmap).ok(),
                 vertices,
                 &triangles,

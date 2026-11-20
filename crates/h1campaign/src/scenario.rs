@@ -601,12 +601,17 @@ pub const INDOOR_ATMOSPHERE: &str = "h1_indoor";
 
 /// Halo 1's indoor fog: the fog B of the scenario's first sky, which Halo
 /// 1 draws in every cluster naming no sky (E `0x000581a0`;
-/// `h1sky::h1::Sky::indoor_fog`). `None` when the level has no sky, the
-/// sky doesn't read, or its fog B has no density.
-pub fn indoor_fog(h1: &H1Map) -> Option<h1sky::h1::Fog> {
-    let first = h1.multiplayer().ok()?.skies.into_iter().next()?;
-    let tag = h1.tag(first.id).ok()?;
-    h1sky::h1::Sky::from_map(h1, tag).ok()?.indoor_fog()
+/// `h1sky::h1::Sky::indoor_fog`). `None` when the level has no sky or its
+/// fog B has no density; a sky that does not read is an error naming it.
+pub fn indoor_fog(h1: &H1Map) -> Result<Option<h1sky::h1::Fog>> {
+    let Some(first) = h1.multiplayer()?.skies.into_iter().next() else {
+        return Ok(None);
+    };
+    let tag = h1.tag(first.id)?;
+    let sky = h1sky::h1::Sky::from_map(h1, tag).map_err(|e| {
+        h1convert::Error::no_rebuild(&h1.header().name, &tag.name, format!("indoor fog: {e}"))
+    })?;
+    Ok(sky.indoor_fog())
 }
 
 /// Halo 2's device placement fields after the object fields (`+0x34`):
@@ -903,7 +908,7 @@ pub fn write(
 
     // Halo 1's indoor fog as atmosphere element 0, which the skyless
     // clusters name (`structure::Prepared::atmosphere`).
-    let atmosphere = indoor_fog(h1)
+    let atmosphere = indoor_fog(h1)?
         .map(|f| {
             let mut e = Block::new(h1sky::atmosphere::element(&f));
             e.string_id(h1sky::atmosphere::layout::NAME as u32, INDOOR_ATMOSPHERE);
@@ -940,7 +945,7 @@ pub fn write(
     let mut aliases = crate::h2assets::Aliases::default();
     let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
     let (ai_weapon_tags, ai_weapon_loudness) = if opts.ai && opts.assets == crate::h2assets::Assets::Halo2 {
-        ai_weapons::retail_tags(h1, &ai_src, set, &mut report.dropped)?
+        ai_weapons::retail_tags(h1, &ai_src, set)?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -1499,14 +1504,20 @@ fn place_objects(
     };
     let mut player = None;
     let mut retail_player = None;
-    rep.player_biped = match h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED) {
-        Some(t) if matches!(swap(&*set, t), Ok(Some(_))) => {
-            let id = swap(&*set, t).ok().flatten().expect("checked");
+    let cyborg = h1.find(h1map::Group::new(b"bipd"), PLAYER_BIPED);
+    // A swap that leaves the cyborg out is a named error, not Halo 1's.
+    let cyborg_swap = match cyborg {
+        Some(t) => swap(&*set, t)
+            .map_err(|why| h1convert::Error::no_rebuild(&h1.header().name, &t.name, why))?,
+        None => None,
+    };
+    rep.player_biped = match (cyborg, cyborg_swap) {
+        (Some(t), Some(id)) => {
             aliases.insert(FourCC(*b"bipd"), &t.name, id);
             retail_player = Some(id);
             set.slots[id.index()].name.clone()
         }
-        Some(t) => match conv.object(t) {
+        (Some(t), None) => match conv.object(t) {
             Ok(id) => {
                 player = Some(id);
                 Some(t.name.clone())
@@ -1515,7 +1526,7 @@ fn place_objects(
                 return Err(h1convert::Error::no_rebuild(&h1.header().name, &t.name, e).into());
             }
         },
-        None => None,
+        (None, _) => None,
     };
     // Halo 1's grenade types (the globals), through the same converter.
     let mut grenades = Vec::new();
@@ -1948,8 +1959,13 @@ fn install_scripts(
     let refs: Vec<String> = t
         .references
         .iter()
-        .map(|r| h1.tag(r.id).map(|t| t.name.clone()).unwrap_or_default())
-        .collect();
+        .enumerate()
+        .map(|(i, r)| {
+            h1.tag(r.id).map(|t| t.name.clone()).map_err(|e| {
+                h1convert::Error::no_rebuild(&h1.header().name, format!("script reference {i}"), e).into()
+            })
+        })
+        .collect::<Result<_>>()?;
     // Level data the scripts name (cutscene flags, camera points, titles,
     // device groups), in h1scripts. Without it (`Lean::LevelData`), or for a name
     // it lacks, a call naming one is stubbed: the engine indexes these

@@ -89,24 +89,17 @@ impl Converter<'_> {
             // A pctl with no active emitters genuinely emits nothing.
             let tags = result
                 .map_err(|e| h1convert::Error::no_rebuild(&self.h1.header().name, &t.name, e))?;
-            let mut scale = |index, kind| {
-                let scale = functions::primary_scale(index, &functions);
-                if index != 0 && scale.is_empty() {
-                    notes.push(format!(
-                        "attachment {} at {:?}: {kind} output {index} has no converted function",
-                        t.name, a.marker,
-                    ));
-                }
-                scale
+            let scale = |index, kind| {
+                functions::primary_scale(index, &functions).map_err(|why| {
+                    h1convert::Error::no_rebuild(
+                        &self.h1.header().name,
+                        &t.name,
+                        format!("{kind} scale at {:?}: {why}", a.marker),
+                    )
+                })
             };
-            let primary_scale = scale(a.primary_scale, "primary");
-            let secondary_scale = scale(a.secondary_scale, "secondary");
-            if matches!(&group, b"MGS2" | b"tdtl") && a.primary_scale != 0 && primary_scale.is_empty() {
-                return Err(h1convert::Error::no_rebuild(
-                    &self.h1.header().name, &t.name,
-                    format!("widget needs object output {}", a.primary_scale),
-                ).into());
-            }
+            let primary_scale = scale(a.primary_scale, "primary")?;
+            let secondary_scale = scale(a.secondary_scale, "secondary")?;
             let colour_slot = h1convert::shad::halo2_change_colour_slot(a.change_colour);
             // Lights forward the signed index to 0x000bad50. An effect's
             // update (0x00179610) skips slot 0, which retail uses for none.
