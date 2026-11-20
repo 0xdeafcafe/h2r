@@ -191,9 +191,20 @@ row in the perception table and uncovered without its authored
 requirements. `h1campaign::ai_control_characters::inherit_majors` copies
 each registered character's thresholds onto its major tag (built fixup,
 pinned bytes and alias payloads alike), keeping a major's own rule when
-a source variant supplies one; two different authored sets on one major
-tag is a conversion error naming the characters. The disc check reads
+a source variant supplies one. The disc check reads
 each converted character's major and requires its rule.
+Built: one major cannot carry two authored sets, since the runtime finds
+a promoted actor's row by its character. b30 and c40 place elite
+variants with different thresholds that both promote to `elite_major`.
+A palette character whose thresholds differ from those its major
+already carries is now rebuilt from the `char` definition as
+`h1_ai\promoted_N`, a child of it, and promotes to
+`h1_ai\promoted_N_major`, a child of the major. Both carry the
+variant's thresholds, and the variant's palette entries name the child.
+A child inherits its parent's property blocks and carries its flags,
+unit, creature and style (squad setup reads the unit at `0x00200d11`).
+A conflicting character no palette entry names stays a conversion error.
+Test: `a_conflicting_promotion_gets_its_own_rebuilt_major`.
 
 Conversations and command lists have separate converter lanes.
 
