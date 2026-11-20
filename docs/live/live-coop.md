@@ -1802,9 +1802,11 @@ without a press. The three parts of 12.5:
 - The read now follows the dispatcher more closely: a window whose list
   has no screen for player one passes the input on to player one's own
   slot, not to the next window.
-- Campaign has focus when the main menu opens. Its rows (`0x230827`,
+- Campaign has focus when the main menu opens. The retail rows (`0x230827`,
   chosen row at `0x510a14`) are 0 Campaign, 1 Xbox Live, 2 Split Screen,
-  3 System Link and 4 Settings.
+  3 System Link and 4 Settings. With Theater installed, it occupies row 2.
+  The driver uses the players' screen mode and Theater marker to correct
+  the path back to Xbox Live.
 - A on Campaign gives `0xee` (window 1), then `0xd1` (window 5), then the
   level. The driver backs out of `0xee`.
 - Xbox Live (when signed in, `0x2308e0`) gives `0x1e` on window 5. That

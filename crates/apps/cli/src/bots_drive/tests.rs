@@ -188,18 +188,28 @@ fn main_menu_to_the_lobby_to_start() {
 
 #[test]
 fn split_screen_is_backed_out_of_and_said() {
-    let mut d = at_main();
-    presses(&mut d, 2500, 5000);
-    d.line(5100, "ui: screen 0x1e (window 5, slot 4), mode 1");
-    let p = presses(&mut d, 5200, 9000);
-    assert_eq!(p.len(), 3, "{p:?}");
-    assert!(p[0].starts_with("b that was Split Screen"));
-    assert!(p[2].starts_with("a Xbox Live"));
-    assert!(
-        d.take_said()
-            .iter()
-            .any(|s| s.contains("opened in Split Screen (mode 1), not Xbox Live"))
-    );
+    for (marker, ups) in [("", 1), (MAIN_MENU_THEATER_MARKER, 2)] {
+        let mut d = at_main();
+        presses(&mut d, 2500, 5000);
+        d.line(
+            5100,
+            &format!("ui: screen 0x1e (window 5, slot 4){marker}, mode 1"),
+        );
+        let p = presses(&mut d, 5200, 9000);
+        assert_eq!(p.len(), ups + 2, "{p:?}");
+        assert!(p[0].starts_with("b that was Split Screen"));
+        assert!(
+            p[1..=ups]
+                .iter()
+                .all(|press| press.starts_with("up to Xbox Live"))
+        );
+        assert!(p[ups + 1].starts_with("a Xbox Live"));
+        assert!(
+            d.take_said()
+                .iter()
+                .any(|s| s.contains("opened in Split Screen (mode 1), not Xbox Live"))
+        );
+    }
 }
 
 #[test]

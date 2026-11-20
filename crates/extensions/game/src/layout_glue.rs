@@ -41,6 +41,7 @@ use crate::fov_row;
 use crate::setting_defs::{FOV, PAD_SPEAKER};
 use crate::skulls_menu;
 use crate::speaker_row;
+use crate::theater_ui::menu as theater_menu;
 use crate::ui::{List, Model, RowKind};
 use crate::video_screen;
 
@@ -447,6 +448,7 @@ static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
 /// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
 const LIVE_MAX_EXTRA: u32 = custom_games::MAX_EXTRA_ITEMS;
+const THEATER_ITEM_SPACE: u32 = 8 * speaker_row::ITEM_SIZE;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
@@ -577,10 +579,8 @@ pub fn install(
     // only then, so the original never sees a row it does not know.
     let pause_on = Arc::new((AtomicBool::new(false), AtomicBool::new(false)));
     let with_theater = theater.is_some();
-    let live_menu = move || custom_games::Menu {
-        custom_games: true,
+    let live_menu = || custom_games::Menu {
         coop: custom_games::coop_row_enabled(),
-        theater: with_theater,
     };
     let with_skulls = model
         .as_ref()
@@ -601,6 +601,8 @@ pub fn install(
         model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     // The Live menu's (tag copies, item widgets, pane word) in our data.
     let live: (u32, u32, u32);
+    let theater_items;
+    let theater_press;
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
@@ -611,6 +613,9 @@ pub fn install(
         let mut served = served_strings(with_speaker);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
         served.extend(custom_games::strings());
+        if with_theater {
+            served.push((theater_menu::LABEL_ID, theater_menu::LABEL));
+        }
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
@@ -631,6 +636,11 @@ pub fn install(
             alloc + custom_games::TAG_SPACE + LIVE_ITEM_SLOTS * LIVE_MAX_EXTRA * speaker_row::ITEM_SIZE,
         );
         alloc = live.2 + 0x100;
+        theater_items = alloc;
+        theater_press = theater_items + THEATER_ITEM_SPACE;
+        if with_theater {
+            alloc = theater_press + 0x100;
+        }
         ALLOC.store(alloc, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
     }
@@ -684,12 +694,27 @@ pub fn install(
         .chain(controls_hooks)
         .chain(live_menu_hooks)
         .chain(custom_games_hooks)
+        .chain(
+            [theater_menu::ROW_TEXT, theater_menu::ROW_CHOSEN]
+                .into_iter()
+                .filter(|_| with_theater),
+        )
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = wanted
         .into_iter()
         .filter_map(|a| original(rt, a).map(|o| (a, o)))
         .collect();
+    // Only grow the list when its label, action and extra widget can all be installed.
+    let with_theater = with_theater
+        && [
+            LIST_DATA_NEW,
+            speaker_row::ADD_ITEMS,
+            theater_menu::ROW_TEXT,
+            theater_menu::ROW_CHOSEN,
+        ]
+        .iter()
+        .all(|a| originals.contains_key(a));
     rt.edit_dispatch(|d| {
         // Layout table: original, then ours for bytes 4 to 6.
         if let Some(o) = originals.remove(&ACTION_TABLE_BUILD) {
@@ -725,6 +750,7 @@ pub fn install(
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = live_menu().count(name, n);
+                let n = if with_theater { theater_menu::count(name, n) } else { n };
                 // Edit Profile's Voice Chat row, while its hooks are on.
                 let n = crate::profile_voice_row::list_count(&model, name, n);
                 // The pause menus get our rows when their hooks are on.
@@ -1032,8 +1058,7 @@ pub fn install(
                 })
             });
         }
-        // The Controls list's added item widgets, one per added row, and the
-        // Xbox Live menu's additional visible item widgets.
+        // Added item widgets for Controls, the main menu and the Xbox Live menu.
         // Our classes' lists laid out taller than six rows get theirs too
         // (`list_class::extra_items`).
         if let Some(o) = originals.remove(&speaker_row::ADD_ITEMS) {
@@ -1041,11 +1066,13 @@ pub fn install(
             let seen = AtomicBool::new(false);
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             let live_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+            let theater_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             d.register_override(speaker_row::ADD_ITEMS, "speaker:add-items", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: add items");
                 let handler = cpu.ecx;
                 let slots = Arc::clone(&slots);
                 let live_slots = Arc::clone(&live_slots);
+                let theater_slots = Arc::clone(&theater_slots);
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
@@ -1063,6 +1090,10 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_rows)
                         };
                         (0..extra_rows).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
+                    } else if with_theater && vtable == theater_menu::VTABLE {
+                        let mut g = theater_slots.lock().unwrap_or_else(|e| e.into_inner());
+                        let (table, next) = &mut *g;
+                        vec![speaker_row::extra_slot(table, next, handler, theater_items, THEATER_ITEM_SPACE, 1)]
                     } else if vtable == custom_games::HANDLER_VTABLE {
                         // Extra datums beyond the visible slots scroll normally.
                         let n = live_menu().visible() - custom_games::VANILLA_ITEMS;
@@ -1171,8 +1202,77 @@ pub fn install(
                 })
             });
         }
+        // The main menu draws Theater after Xbox Live. Shift the following
+        // rows back for the retail text call so they keep their localized labels.
+        if let (true, Some(o)) = (with_theater, originals.remove(&theater_menu::ROW_TEXT)) {
+            let sh = alias(d, &mut next_shadow, &o, theater_menu::ROW_TEXT);
+            d.register_override(theater_menu::ROW_TEXT, "theater:row-text", move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let row = video_screen::text_row(&*mem, cpu.esp);
+                if row == Some(theater_menu::ROW) {
+                    let item = mem.u32(cpu.esp + 4)?;
+                    return row_texts(cpu, ctx, &mut mem, item, vec![(0, theater_menu::LABEL_ID)]);
+                }
+                if let Some(retail) = row.and_then(theater_menu::shifted_retail_row) {
+                    let item = mem.u32(cpu.esp + 4)?;
+                    let list = mem.u32(item + 0x10)?; // The item widget's parent.
+                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, list, retail) else {
+                        return mem.ret(cpu, 8);
+                    };
+                    let at = item + crate::retail_rows::ITEM_ROW;
+                    let shown = mem.u32(at)?;
+                    mem.set_u32(at, handle)?;
+                    drop(mem);
+                    return call_then(cpu, ctx, sh, move |_, ctx| {
+                        ctx.runtime().memory().set_u32(at, shown)
+                    });
+                }
+                drop(mem);
+                Ok(o.invoke(cpu, ctx, theater_menu::ROW_TEXT))
+            });
+        }
+        if let (true, Some(o), Some(theater)) =
+            (with_theater, originals.remove(&theater_menu::ROW_CHOSEN), theater)
+        {
+            let sh = alias(d, &mut next_shadow, &o, theater_menu::ROW_CHOSEN);
+            d.register_override(theater_menu::ROW_CHOSEN, "theater:row-chosen", move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let row = chosen_row(&*mem, cpu.esp);
+                if row == Some(theater_menu::ROW) {
+                    let Some((mask, loader)) = video_screen::player_mask(&*mem, cpu.esp)
+                        .zip(crate::list_class::loader_of(crate::theater_ui::FILMS))
+                    else {
+                        return mem.ret(cpu, 8);
+                    };
+                    let controller = mask.trailing_zeros();
+                    let player = crate::skulls_menu::profile_of(&*mem, controller);
+                    mem.set_u32(theater_menu::LAST_ROW, theater_menu::ROW as u32)?;
+                    drop(mem);
+                    theater.open(controller, player);
+                    return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
+                }
+                if let Some((shown, retail)) = row
+                    .and_then(|row| theater_menu::shifted_retail_row(row).map(|retail| (row, retail)))
+                {
+                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, retail) else {
+                        return mem.ret(cpu, 8);
+                    };
+                    mem.set_u32(theater_press, handle)?;
+                    mem.set_u32(cpu.esp + 8, theater_press)?;
+                    drop(mem);
+                    return call_then(cpu, ctx, sh, move |_, ctx| {
+                        // Retail stores its action index. The menu restores a display index.
+                        ctx.runtime().memory().set_u32(theater_menu::LAST_ROW, shown as u32)
+                    });
+                }
+                drop(mem);
+                Ok(o.invoke(cpu, ctx, theater_menu::ROW_CHOSEN))
+            });
+        }
         // The extended Xbox Live menu retains the retail rows. Our rows
-        // have separate text and actions, including the Theater library.
+        // have separate text and actions.
         if let Some(o) = originals.remove(&custom_games::ROW_TEXT) {
             let seen = AtomicBool::new(false);
             d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
@@ -1235,21 +1335,6 @@ pub fn install(
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, |r| live_menu().row_kind(r));
-                if kind == custom_games::Row::Theater {
-                    let (Some(theater), Some(mask), Some(loader)) = (
-                        theater.as_ref(),
-                        mask,
-                        crate::list_class::loader_of(crate::theater_ui::FILMS),
-                    ) else {
-                        return ctx.runtime().memory().ret(cpu, 8);
-                    };
-                    let player = {
-                        let rt = Arc::clone(ctx.runtime());
-                        crate::skulls_menu::profile_of(&*rt.memory(), mask.trailing_zeros())
-                    };
-                    theater.open(mask.trailing_zeros(), player);
-                    return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
-                }
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
                 crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
@@ -1460,6 +1545,7 @@ pub fn install(
             Err(e) => eprintln!("pause menu: {e}"),
         }
     }
+    theater_menu::set_installed(with_theater);
     // The Voice screen: our own list class, opened from the pause menus.
     if with_voice {
         // Opened from the pause menus too: one line a row in a game.
@@ -1753,8 +1839,8 @@ fn next_text(
 }
 
 /// Link each of `items` as a child of the list `handler` (of handler vtable
-/// `vtable`: Controls, or the Xbox Live menu), in order, after the retail
-/// item widgets: build an item first (zeroed, the item
+/// `vtable`), in order, after the retail item widgets. Build an item first
+/// (zeroed, the item
 /// constructor, then the local player) when it is not a child yet, else just
 /// move it back to the end (the original re-appends the retail items).
 #[allow(clippy::too_many_arguments)]

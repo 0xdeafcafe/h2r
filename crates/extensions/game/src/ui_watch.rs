@@ -48,8 +48,9 @@
 //! On the players' screen, A or START (event buttons 0 and 0xc,
 //! `0x25286d`) goes on by mode: 3 opens the Live menu (`0x2310b7`), 2 the
 //! System Link browser, 4 joins; B or Back with one player goes back.
-//! The main menu's rows (`0x230827`, the chosen row kept at `0x510a14`):
+//! The retail main menu rows (`0x230827`, the chosen row kept at `0x510a14`):
 //! 0 Campaign, 1 Xbox Live, 2 Split Screen, 3 System Link, 4 Settings.
+//! With Theater installed, it occupies row 2 and shifts the remaining rows.
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -434,6 +435,9 @@ pub fn screen_json(
     let mut v = top.map_or_else(|| serde_json::json!({ "screen": null }), |t| t.json());
     v["dialog"] = dialog.map_or(serde_json::Value::Null, |d| d.json());
     v["age_ms"] = serde_json::json!(age.as_millis() as u64);
+    if crate::theater_ui::menu::installed() {
+        v["main_menu_theater"] = serde_json::Value::Bool(true);
+    }
     v
 }
 
@@ -442,7 +446,13 @@ static SAID: Mutex<String> = Mutex::new(String::new());
 
 fn note(r: Read) -> Option<String> {
     *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), r.top, r.dialog));
-    let line = r.line();
+    let mut line = r.line();
+    if r.top.is_some_and(|top| top.id == JOIN_SCREEN)
+        && crate::theater_ui::menu::installed()
+        && let Some(at) = line.rfind(", mode ")
+    {
+        line.insert_str(at, agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER);
+    }
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
     if *said == line {
         return None;

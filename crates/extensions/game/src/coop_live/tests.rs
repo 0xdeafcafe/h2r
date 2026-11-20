@@ -753,7 +753,7 @@ fn a_host_shows_and_advertises_its_guests_report() {
 // ---- the Live menu ----
 
 #[test]
-fn the_live_menu_puts_co_op_above_custom_game_and_theater_last() {
+fn the_live_menu_puts_co_op_above_custom_game_and_content_download_last() {
     use crate::custom_games::*;
 
     let with_coop = [
@@ -764,7 +764,6 @@ fn the_live_menu_puts_co_op_above_custom_game_and_theater_last() {
         (Row::CustomGame, Pane::Show(2)),
         (Row::Browser, Pane::Show(BROWSER_PANE)),
         (Row::Download, Pane::Show(3)),
-        (Row::Theater, Pane::Show(7)),
     ];
     let without_coop = [
         (Row::Retail, Pane::Retail),
@@ -773,22 +772,17 @@ fn the_live_menu_puts_co_op_above_custom_game_and_theater_last() {
         (Row::CustomGame, Pane::Show(2)),
         (Row::Browser, Pane::Show(BROWSER_PANE)),
         (Row::Download, Pane::Show(3)),
-        (Row::Theater, Pane::Show(6)),
     ];
 
     for (coop, count, expected) in [
-        (true, 8, with_coop.as_slice()),
-        (false, 7, without_coop.as_slice()),
+        (true, 7, with_coop.as_slice()),
+        (false, 6, without_coop.as_slice()),
     ] {
-        let menu = Menu {
-            custom_games: true,
-            coop,
-            theater: true,
-        };
+        let menu = Menu { coop };
         assert_eq!(menu.rows(), count);
         assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), count);
         assert_eq!(menu.count(LIST_NAME, count), count, "not twice");
-        assert_eq!(menu.visible(), 7);
+        assert_eq!(menu.visible(), count);
         for (row, &(kind, pane)) in expected.iter().enumerate() {
             assert_eq!(menu.row_kind(row as i16), kind, "co-op {coop}, row {row}");
             assert_eq!(
@@ -798,20 +792,9 @@ fn the_live_menu_puts_co_op_above_custom_game_and_theater_last() {
             );
         }
         assert_eq!(menu.row_kind(count as i16), Row::Retail, "past the last row");
-        assert_eq!(menu.pane_of(count as i16 - 1, count - 1), Pane::Keep);
-
-        let regular = Menu {
-            theater: false,
-            ..menu
-        };
-        assert_eq!(regular.count(LIST_NAME, VANILLA_ROWS), count - 1);
     }
 
-    let menu = Menu {
-        custom_games: true,
-        coop: true,
-        theater: true,
-    };
+    let menu = Menu { coop: true };
     assert_eq!(COOP_ROW + 1, CUSTOM_GAME_ROW, "co-op directly above Custom Game");
     assert_eq!(menu.pane_of(COOP_ROW, 6), Pane::Keep, "no co-op pane");
     assert_eq!(menu.pane_of(COOP_ROW, 4), Pane::Keep);
