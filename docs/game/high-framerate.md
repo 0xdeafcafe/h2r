@@ -556,7 +556,7 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 
 ### Rules and limits
 
-- **What the replay may touch.** It draws only into surfaces of its own (a private copy of the presented surface and of each depth surface its draws use), never reads anything back, writes no guest memory, and never runs while a pixel count is open (cleared, not yet reported), so no replay draw lands in a visibility count. A replay error turns the replay off for the rest of the run instead of stopping the game.
+- **What the replay may touch.** It draws only into surfaces of its own (a private copy of the presented surface and of each depth surface its draws use), never reads anything back, writes no guest memory, and never runs while a pixel count is open (cleared, not yet reported), so no replay draw lands in a visibility count. The renderer waits for the command reporting the count before scheduling another replay. A replay error turns the replay off for the rest of the run instead of stopping the game.
 - **Shared GPU.** A pixel count submitted after a replay lands later, so a polled visibility test can answer `D3DERR_TESTINCOMPLETE` where it would not have. That is the timing class [render-thread.md](../graphics/render-thread.md) accepts; `Device::set_visibility_poll(false)` makes it exact.
 - **Pinned inputs.** Textures are pinned by `Arc`, targets are private, uniforms go through the backend's normal per-draw path.
 - **Resets.** Gaps over 45 ms, no camera and view-set changes reset the history; cuts snap. A checkpoint revert is caught only as a camera cut.
