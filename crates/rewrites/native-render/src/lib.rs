@@ -61,6 +61,8 @@ pub mod light_list;
 pub mod light_scene;
 #[cfg(feature = "gpu")]
 pub mod light_look;
+#[cfg(feature = "gpu")]
+pub mod light_models;
 pub mod lights;
 #[cfg(feature = "gpu")]
 pub mod load;
