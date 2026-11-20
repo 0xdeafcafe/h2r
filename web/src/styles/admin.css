@@ -60,6 +60,7 @@
 }
 .adm .s-box-body > * { max-width: 100%; }
 .adm .s-box-body > .adm-hopper-cols,
+.adm .s-box-body > .adm-sim-empty,
 .adm .s-box-body > .adm-messages,
 .adm .s-box-body > .adm-field,
 .adm .s-box-body > table,
@@ -156,11 +157,17 @@
 }
 
 /* The playlist builder. */
+.adm-hopper .s-box-right { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 5px; }
+.adm-hopper .s-box-right > span { white-space: normal; }
 .adm-hopper-cols {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: minmax(150px, 188px) minmax(0, 1fr);
   gap: 14px;
   align-items: start;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 @media (max-width: 760px) {
@@ -197,15 +204,8 @@
   color: var(--s-white);
 }
 
-/* An unused slot, and a playlist that will not publish as edited. */
-.adm-list button.off { color: var(--s-ink-dim); }
 .adm-list button.bad { border-color: var(--s-bad); }
 .adm-list button.bad .adm-list-meta { color: var(--s-bad); }
-
-.adm-list-idx {
-  color: var(--s-ink-dim);
-  min-width: 18px;
-}
 
 .adm-list-name {
   flex: 1;
@@ -225,11 +225,147 @@
   justify-items: stretch;
 }
 
-.adm-editor > .s-btn { justify-self: start; }
-
-.adm-editor > .adm-row:first-child {
-  align-items: end;
+.adm-playlist-rail { display: grid; gap: 7px; }
+.adm-playlist-capacity,
+.adm-playlist-head,
+.adm-lineup-head,
+.adm-variant-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
+
+.adm-playlist-capacity { color: var(--s-ink-soft); }
+.adm-playlist-head,
+.adm-lineup-head { flex-wrap: wrap; }
+
+.adm-playlist-head {
+  padding: 8px 10px;
+  background: var(--s-row-sel);
+  border: 1px solid var(--s-box-edge-2);
+  border-top-color: var(--s-link);
+}
+
+.adm-playlist-head h3,
+.adm-lineup-head h4,
+.adm-variant-group h4 { margin: 0; }
+.adm-playlist-head h3 { color: var(--s-white); font-size: 17px; }
+.adm-playlist-head p { margin: 3px 0 0; color: var(--s-ink-soft); font-size: 11px; }
+.adm-playlist-head strong { color: var(--s-gold); }
+.adm-toolbar { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.adm-lineup-head h4 span { margin-left: 6px; color: var(--s-ink-dim); font-weight: normal; }
+.adm-removed-playlist { display: flex; gap: 6px; align-items: baseline; color: var(--s-warn); font-size: 11px; }
+
+.adm-variant-group { min-width: 0; border: 1px solid var(--s-box-edge); }
+.adm-variant-group > header {
+  padding: 4px 8px;
+  background: linear-gradient(var(--s-row-sel), var(--s-row-alt));
+  border-bottom: 1px solid var(--s-box-edge);
+  color: var(--s-link);
+}
+
+.adm-map-cards { display: grid; gap: 3px; margin: 0; padding: 4px; list-style: none; }
+.adm-map-card {
+  display: grid;
+  grid-template-columns: auto minmax(116px, 1fr) 98px auto;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  background: var(--s-row);
+  border: 1px solid transparent;
+}
+
+.adm-map-card.adm-map-drop { border-color: var(--s-gold); }
+.adm-drag-handle,
+.adm-map-pick {
+  border: 0;
+  background: transparent;
+  color: var(--s-ink);
+  font: inherit;
+  padding: 0;
+}
+
+.adm-drag-handle:disabled { cursor: default; opacity: 0.4; }
+.adm-drag-handle { padding: 5px 2px; color: var(--s-ink-soft); font-size: 16px; cursor: grab; }
+.adm-map-pick { display: flex; align-items: center; gap: 7px; text-align: left; cursor: pointer; }
+.adm-map-pick:hover:not(:disabled) { color: var(--s-link); }
+.adm-map-art {
+  flex: 0 0 52px;
+  width: 52px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: repeating-linear-gradient(135deg, var(--s-row-alt) 0 3px, var(--s-row) 3px 6px);
+  border: 1px solid var(--s-box-edge);
+}
+
+.adm-map-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.adm-map-weight { display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
+.adm-weight-value { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+.adm-weight-value input { width: 53px; }
+.adm-weight-value span { color: var(--s-gold); font-size: 11px; }
+.adm-map-weight progress { width: 100%; height: 5px; accent-color: var(--s-gold); }
+.adm-map-actions { display: flex; flex-wrap: wrap; gap: 0 7px; font-size: 11px; }
+.adm-map-actions button:disabled { opacity: 0.45; text-decoration: none; cursor: default; }
+
+@media (max-width: 560px) {
+  .adm-map-card { grid-template-columns: auto minmax(0, 1fr) 90px; }
+  .adm-map-actions { grid-column: 2 / -1; }
+}
+
+.adm-raw-scroll { min-width: 0; overflow: auto; }
+.adm-dialog {
+  width: min(680px, calc(100% - 32px));
+  max-height: min(720px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 0;
+  background: #181e26;
+  border: 1px solid var(--s-box-edge-2);
+  color: var(--s-ink);
+  box-shadow: 0 8px 30px #000b;
+}
+
+.adm-dialog::backdrop { background: #080b11b8; }
+.adm-dialog[open] { display: flex; flex-direction: column; }
+.adm-dialog > h3 {
+  padding: 8px 12px;
+  margin: 0;
+  background: linear-gradient(var(--s-row-sel), var(--s-row-alt));
+  color: var(--s-link);
+  border-bottom: 1px solid var(--s-box-edge);
+}
+
+.adm-dialog-body { overflow: auto; padding: 10px 12px; }
+.adm-dialog-body > :first-child { margin-top: 0; }
+.adm-dialog-body > .adm-preset-preview,
+.adm-dialog-body > .adm-preset-note { margin-top: 8px; }
+.adm-dialog > footer { padding: 8px 12px; border-top: 1px solid var(--s-box-edge); justify-content: flex-end; }
+.adm-picker {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 5px;
+}
+
+.adm-picker button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  height: auto;
+  min-height: 100%;
+  padding: 4px 7px;
+  white-space: normal;
+  text-align: left;
+}
+
+.adm-picker button small { color: var(--s-ink-soft); }
+.adm-picker-maps button { display: flex; align-items: center; gap: 7px; }
+.adm-playlist-diff + .adm-playlist-diff { margin-top: 12px; }
+.adm-playlist-diff h4 { margin: 0 0 4px; color: var(--s-gold); }
+.adm-playlist-diff h4 small { margin-left: 6px; color: var(--s-ink-soft); font-weight: normal; }
+.adm-playlist-diff td { overflow-wrap: anywhere; white-space: pre-wrap; vertical-align: top; }
 
 .adm-records {
   border-collapse: collapse;
@@ -288,16 +424,6 @@
   cursor: default;
 }
 
-/* "Start from preset": the picker and what the preset resolved to. */
-.adm-preset {
-  background: var(--s-row);
-  border: 1px solid var(--s-box-edge);
-  border-radius: 2px;
-  padding: 8px 10px;
-  display: grid;
-  gap: 8px;
-}
-
 .adm-preset-preview {
   display: grid;
   gap: 6px;
@@ -336,20 +462,6 @@
 
 .adm-preset-games li.off span {
   color: var(--s-warn);
-}
-
-.adm-preset-preview .s-btn {
-  justify-self: start;
-}
-
-.adm-records select {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.adm-variant {
-  color: var(--s-ink-soft);
-  white-space: nowrap;
 }
 
 .adm-mono {
@@ -439,6 +551,16 @@
 .adm-reports li { padding: 3px 0; border-bottom: 1px solid #0003; }
 .adm-reports li span { color: var(--s-ink-dim); }
 .adm-reports li p { margin: 2px 0 0; }
+
+.adm-sim-empty {
+  padding: 10px 12px;
+  border: 1px solid var(--s-box-edge);
+  background: var(--s-row);
+}
+
+.adm-sim-empty h3 { margin: 0 0 6px; color: var(--s-link); }
+.adm-sim-empty p { margin: 6px 0; }
+.adm-sim-empty pre { overflow: auto; padding: 7px 8px; background: #141414; color: var(--s-gold); }
 
 .adm-sim-tables {
   width: 100%;

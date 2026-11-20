@@ -407,17 +407,34 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             assert_eq!(live_frames.try_recv().unwrap().frame.tick, 4);
         }
         assert_eq!(live.kinds(&id), [game::GAME_STARTED, game::GAME_ENDED]);
-        let token = sign::issue_token(
-            &live.operator,
-            &format!("server:{}", live.discovery.id),
-            &live.discovery.id,
-            lxm::READ,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        );
+        let read_token = || {
+            sign::issue_token(
+                &live.operator,
+                &format!("server:{}", live.discovery.id),
+                &live.discovery.id,
+                lxm::READ,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+        };
+        let list: serde_json::Value = live
+            .agent
+            .get(&format!(
+                "{}/v1/admin/sim-runs?include_options=1&tuning_choice=custom",
+                live.embedded.url,
+            ))
+            .set("authorization", &format!("Bearer {}", read_token()))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(list["items"][0]["game_id"].as_str(), Some(id.as_str()));
+        assert_eq!(list["items"][0]["sim"]["seed"], "42");
+        assert_eq!(list["items"][0]["has_report"], true);
+        assert_eq!(list["options"]["custom_tuning"], true);
         let detail: serde_json::Value = live
             .agent
             .get(&format!("{}/v1/admin/sim-runs/{id}", live.embedded.url))
-            .set("authorization", &format!("Bearer {token}"))
+            .set("authorization", &format!("Bearer {}", read_token()))
             .call()
             .unwrap()
             .into_json()

@@ -56,7 +56,24 @@ export interface SimReport {
 }
 
 export interface SimDetail { run: SimRun; game: GameDetail; report: SimReport | null }
-export interface SimFilter { map?: string; tuning?: string; batch?: string; before?: string }
+export interface SimFilter {
+  map?: string;
+  tuning?: string;
+  tuning_choice?: string;
+  batch?: string;
+  before?: string;
+  include_options?: 1;
+}
+
+export interface SimFilterOptions {
+  maps: string[];
+  arms: string[];
+  batches: string[];
+  custom_tuning: boolean;
+  default_tuning: boolean;
+}
+
+export const TRAINING_BATCH_COMMAND = "h2 sim batch docs/runtime/sim-examples/batch.toml --parallel 4 --upload";
 
 export function trainingHref(run?: string, batch?: string): string {
   const q = new URLSearchParams({ tab: "training" });

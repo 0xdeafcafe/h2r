@@ -123,6 +123,33 @@ async fn sim_reports_are_admin_only_and_survive_in_the_local_blob_store() {
         );
     }
 
+    let listed = read(
+        &h,
+        &boss,
+        &format!("{RUNS}?include_options=1&tuning_choice=arm:aggressive"),
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.json()["items"][0]["game_id"], ID);
+    let filtered = read(
+        &h,
+        &boss,
+        &format!("{RUNS}?include_options=1&tuning_choice=arm:aggress"),
+    )
+    .await;
+    assert_eq!(filtered.status, StatusCode::OK);
+    assert_eq!(filtered.json()["items"], json!([]));
+    assert_eq!(
+        filtered.json()["options"],
+        json!({
+            "maps": ["lockout"],
+            "batches": ["a-batch"],
+            "arms": ["aggressive"],
+            "custom_tuning": false,
+            "default_tuning": false,
+        })
+    );
+
     let report = json!({
         "format": "h2-sim-report/1",
         "match": { "map": "lockout", "seed": u64::MAX, "game_type": "slayer", "bot": bots() },

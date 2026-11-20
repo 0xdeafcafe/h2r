@@ -1,141 +1,127 @@
-// The playlist builder: the 16 hoppers of multiplayer_hopper.dat. Edits the
-// fields the format documents (title, description, the range fields, each
-// entry's map and weight; the raw words behind an "Advanced" disclosure)
-// and reorders, copies, adds and removes entries — each kept entry
-// remembering which published slot its unknown bytes (its game variant)
-// come from, so nothing the builder cannot edit is ever lost. A preset
-// fills a playlist from a historical lineup, resolved against the server's
-// catalog of the owner's maps and variants (./catalog.ts, ./presets.ts).
-// 404 until a base image is imported.
-//
-// The file always has 16 slots; the default set fills 11 and leaves the rest
-// unused (type 0, no entries), which the game reads as no playlist. An
-// unused slot is made a playlist from a template (the server's default
-// playlist of that kind: the descriptor the game's validator wants), and a
-// playlist can be cleared back to unused. Only playlists that changed are
-// checked, so untouched unused slots never block a publish. Each entry's
-// game variant is a choice: a built-in one (written whole by the server) or
-// one already in the file (its slot copied).
-
+// The playlist editor's working copy of multiplayer_hopper.dat. Record
+// sources refer to the file as it was loaded, including across playlists.
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 import { Panel } from "../stats/Layout";
+import { identity } from "../state/identity";
 import { live } from "../state/live";
+import { parseClankerMarks } from "../lib/ranks";
+import MapPicture from "../components/MapPicture";
 import { getHopper, putHopper } from "./api";
 import { ENGINES, loadCatalog, type Catalog } from "./catalog";
 import { PRESETS, applyPreset, resolvePreset } from "./presets";
+import HopperFields, { TYPE_NAMES } from "./HopperFields";
 import HopperPins from "./HopperPins";
 import {
-  MAX_DESCRIPTION,
-  MAX_NAME,
-  MAX_RECORDS,
-  MAX_STRING,
-  MAX_TITLE,
-  MAX_WEIGHT,
-  buildPatch,
-  builtinEntry,
-  choiceKey,
-  clearPlaylist,
-  createPlaylist,
-  editErrors,
-  isUnused,
-  toEditable,
-  variantChoices,
-  variantLabel as describeVariant,
-  withVariant,
-  type BuiltinVariant,
-  type EditHopper,
-  type EditRecord,
-  type PlaylistTemplate,
-  type RetailMap,
+  duplicatePlaylist, effectiveWeight, entryShares, groupEntries, moveGroupEntry,
+  playlistDiff, playlistKind, playlistSize, playlistTitle, shareLabel,
+} from "./playlistDraft";
+import {
+  HOPPER_COUNT, MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE, MAX_WEIGHT,
+  buildPatch, builtinEntry, clearPlaylist, createPlaylist, editErrors,
+  isUnused, sameHopper, toEditable, variantChoices, withVariant,
+  type BuiltinVariant, type EditHopper, type EditRecord, type PlaylistTemplate, type RetailMap,
 } from "./validate";
 
-/** Hopper types as the game sorts them (live-proto `HopperType`). */
-const TYPE_NAMES: Record<number, string> = {
-  1: "unranked free for all",
-  2: "ranked free for all",
-  3: "unranked teams",
-  4: "ranked teams",
-  5: "clan match",
-};
+type MapOption = RetailMap & { key?: string };
+type Dialog =
+  | { kind: "add" | "rules" | "preset" | "publish" }
+  | { kind: "map"; slot?: number; groupSlot?: number; variantKey?: string }
+  | { kind: "variant"; slot?: number };
 
-const TYPES: Array<[number, string]> = [1, 2, 3, 4, 5].map((t) => [t, `${t} · ${TYPE_NAMES[t]}`]);
-
-/** What the three range fields (the first type parameters) mean. */
-function rangeLabels(type: number): [string, string, string] {
-  return type >= 3 ? ["Teams", "Smallest team", "Largest team"] : ["Fewest players", "Most players", "(unused)"];
+function MapArt(props: { map?: MapOption }) {
+  return (
+    <div class="adm-map-art" aria-hidden="true">
+      <Show when={props.map}>
+        {(map) => <MapPicture map={map().key ?? map().name} />}
+      </Show>
+    </div>
+  );
 }
 
 function templateLabel(t: PlaylistTemplate): string {
-  const players =
-    t.min_players != null && t.max_players != null ? ` · ${t.min_players}–${t.max_players} players` : "";
-  return `${t.title} · ${TYPE_NAMES[t.type] ?? `type ${t.type}`}${players}`;
+  const players = t.min_players != null && t.max_players != null ? ` · ${t.min_players}–${t.max_players} players` : "";
+  return `${TYPE_NAMES[t.type] ?? `Type ${t.type}`}${players}`;
 }
-
-const STATUSES: Array<[number, string]> = [
-  [0, "0 · not loaded"],
-  [1, "1 · ok"],
-  [2, "2 · error"],
-];
 
 export default function HopperBuilder() {
   const [original, setOriginal] = createSignal<EditHopper[]>([]);
   const [hoppers, setHoppers] = createSignal<EditHopper[]>([]);
-  const [sel, setSel] = createSignal(0);
+  const [selected, setSelected] = createSignal<number>();
   const [error, setError] = createSignal("");
   const [status, setStatus] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
+  const [busy, setBusy] = createSignal(true);
+  const [stale, setStale] = createSignal(false);
   const [catalog, setCatalog] = createSignal<Catalog | null>(null);
-  const [presetKey, setPresetKey] = createSignal("");
+  const [marks, setMarks] = createSignal<ReadonlySet<number>>(new Set());
   const [builtins, setBuiltins] = createSignal<BuiltinVariant[]>([]);
   const [templates, setTemplates] = createSignal<PlaylistTemplate[]>([]);
   const [retailMaps, setRetailMaps] = createSignal<RetailMap[]>([]);
-  const [templateKey, setTemplateKey] = createSignal("");
+  const [presetKey, setPresetKey] = createSignal("");
+  const [dialog, setDialog] = createSignal<Dialog>();
+  const [drag, setDrag] = createSignal<{ group: string; position: number }>();
+  const [drop, setDrop] = createSignal<number>();
+  let modal!: HTMLDialogElement;
 
-  /** The maps an entry can name: the owner's catalog, else the server's
-   *  retail list. */
-  const maps = (): ReadonlyArray<{ id: number; name: string; key?: string }> =>
-    catalog()?.maps ?? retailMaps();
-  const mapName = (id: number): string | null => maps().find((m) => m.id === id)?.name ?? null;
+  const maps = (): readonly MapOption[] => catalog()?.maps ?? retailMaps();
+  const mapAt = (id: number) => maps().find((map) => map.id === id);
+  const mapName = (id: number) => mapAt(id)?.name ?? `Map ${id}`;
   const choices = createMemo(() => variantChoices(builtins(), original(), ENGINES));
   const problems = createMemo(() => editErrors(original(), hoppers()));
-  const wasUnused = (i: number): boolean => {
-    const o = original()[i];
-    return !o || isUnused(o);
-  };
-
-  onMount(() => {
-    void load();
-    void loadCatalog(live.server().base).then(setCatalog);
-  });
-
-  const preset = () => PRESETS.find((p) => p.key === presetKey()) ?? null;
+  const patch = createMemo(() => buildPatch(original(), hoppers()));
+  const changed = () => patch().hoppers.length > 0;
+  const playlistIds = createMemo(() => hoppers().filter((h) => !isUnused(h)).map((h) => h.index));
+  const current = () => hoppers().find((h) => h.index === selected() && !isUnused(h)) ??
+    hoppers().find((h) => !isUnused(h));
+  const available = () => hoppers().find((h) => isUnused(h) && !h.clear) ??
+    hoppers().find((h) => h.clear);
+  const groups = createMemo(() => groupEntries(current()?.records ?? []));
+  const shares = createMemo(() => entryShares(current()?.records ?? []));
+  const preset = () => PRESETS.find((p) => p.key === presetKey());
   const resolution = createMemo(() => {
     const p = preset();
     return p ? resolvePreset(p, catalog(), original()) : null;
   });
 
-  function usePreset(): void {
-    const h = current();
-    const r = resolution();
-    if (!h || !r || r.records.length === 0) return;
-    const next = [...hoppers()];
-    next[sel()] = applyPreset(h, r);
-    setHoppers(next);
-    setPresetKey("");
+  const kind = (h: EditHopper) => playlistKind(h.type, marks().has(h.index) && h.template == null);
+  const wasUnused = (h: EditHopper) => !original()[h.index] || isUnused(original()[h.index]!);
+  const copyTemplate = (h: EditHopper) =>
+    templates().find((t) => t.id === h.template) ??
+    templates().find((t) => t.type === h.type && t.ranges.every((n, i) => n === h.ranges[i])) ??
+    templates().find((t) => t.type === h.type);
+  const canAddMap = () => (current()?.records.length ?? MAX_RECORDS) < MAX_RECORDS;
+
+  function loadMarks(): void {
+    void live.api().clankerHoppers().then((body) => setMarks(parseClankerMarks(body))).catch(() => setMarks(new Set()));
   }
 
-  const variantLabel = (r: EditRecord): string => describeVariant(r.variant, ENGINES);
+  onMount(() => {
+    void load();
+    void loadCatalog(live.server().base).then(setCatalog);
+    loadMarks();
+  });
+
+  function showDialog(next: Dialog): void {
+    setError("");
+    setPresetKey("");
+    setDialog(next);
+    modal.showModal();
+  }
+
+  function closeDialog(): void {
+    modal.close();
+    setDialog(undefined);
+  }
 
   async function load(): Promise<void> {
     setBusy(true);
     setError("");
+    setStatus("");
     try {
       const reply = await getHopper();
       if (!reply) {
-        setError("no multiplayer_hopper.dat published for this server yet");
-        setStatus("the server takes the game's own playlist file once, on its own machine; then it can be edited here");
-        setHoppers([]);
+        setError("No multiplayer_hopper.dat is published. Import a hopper file on the server to edit it here.");
         setOriginal([]);
+        setHoppers([]);
         return;
       }
       setOriginal(toEditable(reply.hoppers));
@@ -143,7 +129,7 @@ export default function HopperBuilder() {
       setBuiltins(reply.variants ?? []);
       setTemplates(reply.templates ?? []);
       setRetailMaps(reply.maps ?? []);
-      setStatus("");
+      setStale(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -151,146 +137,160 @@ export default function HopperBuilder() {
     }
   }
 
-  const current = (): EditHopper | null => hoppers()[sel()] ?? null;
-  const errors = (): Array<{ index: number; text: string }> =>
-    [...problems()].flatMap(([index, errs]) => errs.map((e) => ({ index, text: `Playlist ${index + 1}: ${e}` })));
-  const changed = (): boolean =>
-    hoppers().length > 0 && buildPatch(original(), hoppers()).hoppers.length > 0;
-
-  function edit(patch: Partial<EditHopper>): void {
-    const h = current();
-    if (!h) return;
-    replace({ ...h, ...patch });
-  }
-
   function replace(h: EditHopper): void {
-    const next = [...hoppers()];
-    next[h.index] = h;
-    setHoppers(next);
+    setHoppers((list) => list.map((item) => item.index === h.index ? h : item));
   }
 
-  /** Back to the playlist as published. */
-  function revert(i: number): void {
-    const o = original()[i];
-    if (o) replace({ ...o, records: o.records.map((r) => ({ ...r })) });
-  }
-
-  function chosenTemplate(): PlaylistTemplate | null {
-    return templates().find((t) => String(t.id) === templateKey()) ?? templates()[0] ?? null;
-  }
-
-  /** Makes the selected unused slot a playlist of the chosen kind. */
-  function makePlaylist(): void {
+  function edit(fields: Partial<EditHopper>): void {
     const h = current();
-    const t = chosenTemplate();
-    if (!h || !t) return;
-    replace(createPlaylist(h, t, builtins()));
-    setTemplateKey("");
+    if (h) replace({ ...h, ...fields });
   }
 
-  /** Gives the selected playlist another kind, keeping its text and entries. */
-  function changeKind(id: string): void {
-    const h = current();
-    const t = templates().find((x) => String(x.id) === id);
-    if (!h || !t) return;
-    replace({ ...createPlaylist(h, t, builtins()), title: h.title, description: h.description });
+  function revert(index: number): void {
+    const h = original()[index];
+    if (h) replace(h);
   }
 
-  /** Removes the selected playlist: a draft goes back to unused at once;
-   *  a published one is cleared on publish. */
-  function removePlaylist(): void {
-    const h = current();
+  function applyTemplate(template: PlaylistTemplate, add: boolean): void {
+    const h = add ? available() : current();
     if (!h) return;
-    if (wasUnused(h.index)) revert(h.index);
+    const next = createPlaylist(h, template, builtins());
+    replace(add ? next : { ...next, title: h.title, description: h.description });
+    setSelected(h.index);
+    closeDialog();
+  }
+
+  function duplicate(): void {
+    const h = current();
+    const slot = available();
+    const template = h && copyTemplate(h);
+    if (!h || !slot || !template) return;
+    replace(duplicatePlaylist(h, slot, template));
+    setSelected(slot.index);
+  }
+
+  function remove(h: EditHopper): void {
+    if (wasUnused(h)) revert(h.index);
     else replace(clearPlaylist(h));
+    setSelected(undefined);
   }
 
-  /** A first entry for a playlist with none: the built-in Slayer that suits
-   *  its type, on the first map. */
-  function defaultEntry(h: EditHopper, mapId?: number): EditRecord | null {
-    const teams = h.type >= 3;
-    const v =
-      builtins().find((b) => b.key === (teams ? "team_slayer" : "rumble_slayer")) ??
-      builtins().find((b) => b.team === teams) ??
-      builtins()[0];
-    const id = mapId ?? maps()[0]?.id;
-    return v && id !== undefined ? builtinEntry(id, v) : null;
-  }
-
-  function editRecord(i: number, patch: Partial<EditRecord>): void {
+  function editRecord(slot: number, fields: Partial<EditRecord>): void {
     const h = current();
-    if (!h) return;
+    if (h) edit({ records: h.records.map((r, i) => i === slot ? { ...r, ...fields } : r) });
+  }
+
+  function moveRecord(slot: number, by: -1 | 1): void {
+    const h = current();
+    if (!h || slot + by < 0 || slot + by >= h.records.length) return;
     const records = [...h.records];
-    const rec = records[i];
-    if (!rec) return;
-    records[i] = { ...rec, ...patch };
+    [records[slot], records[slot + by]] = [records[slot + by]!, records[slot]!];
     edit({ records });
   }
 
-  function moveRecord(i: number, by: -1 | 1): void {
+  function copyRecord(slot: number): void {
     const h = current();
-    if (!h) return;
-    const j = i + by;
-    if (j < 0 || j >= h.records.length) return;
+    const r = h?.records[slot];
+    if (!h || !r || !canAddMap()) return;
     const records = [...h.records];
-    const a = records[i];
-    const b = records[j];
-    if (!a || !b) return;
-    records[i] = b;
-    records[j] = a;
+    records.splice(slot + 1, 0, { ...r });
     edit({ records });
   }
 
-  function copyRecord(i: number): void {
+  function removeRecord(slot: number): void {
     const h = current();
-    if (!h || h.records.length >= MAX_RECORDS) return;
-    const from = h.records[i];
-    if (!from) return;
-    const records = [...h.records];
-    // A built-in pick is rebuilt by the server; anything else keeps its slot.
-    records.splice(i + 1, 0, { ...from, src: from.pick ? null : (from.src ?? i) });
-    edit({ records });
+    if (h && h.records.length > 1) edit({ records: h.records.filter((_, i) => i !== slot) });
   }
 
-  function removeRecord(i: number): void {
+  function addRecord(id: number, groupSlot?: number): void {
     const h = current();
-    if (!h || h.records.length <= 1) return;
-    edit({ records: h.records.filter((_, j) => j !== i) });
+    if (!h || !canAddMap()) return;
+    const source = h.records[groupSlot ?? h.records.length - 1];
+    const defaultKey = h.type >= 3 ? "team_slayer" : "rumble_slayer";
+    const variant = builtins().find((b) => b.key === defaultKey) ?? builtins().find((b) => b.team === (h.type >= 3)) ?? builtins()[0];
+    const r = source ? { ...source, id } : variant ? builtinEntry(id, variant) : null;
+    if (!r) return;
+    edit({ records: [...h.records, r] });
   }
 
-  function addRecord(mapId?: number): void {
+  function chooseVariant(key: string): void {
+    const picker = dialog();
     const h = current();
-    if (!h || h.records.length >= MAX_RECORDS) return;
-    // A new entry copies the last one (its game variant included), on
-    // `mapId` when given; then its map and variant are picked in its row.
-    const last = h.records[h.records.length - 1];
-    const next = last
-      ? { ...last, id: mapId ?? last.id, src: last.pick ? null : (last.src ?? h.records.length - 1) }
-      : defaultEntry(h, mapId);
-    if (!next) return;
-    edit({ records: [...h.records, next] });
+    const choice = choices().find((item) => item.key === key);
+    if (!h || picker?.kind !== "variant" || !choice) return;
+    if (picker.slot !== undefined) {
+      const r = h.records[picker.slot];
+      if (r) editRecord(picker.slot, withVariant(r, choice, h.index));
+      closeDialog();
+    } else {
+      setDialog({ kind: "map", variantKey: key });
+      modal.querySelector<HTMLButtonElement>(".adm-picker-maps button")?.focus();
+    }
   }
 
-  function setVariant(i: number, key: string): void {
+  function chooseMap(id: number): void {
+    const picker = dialog();
     const h = current();
-    const r = h?.records[i];
-    const c = choices().find((x) => x.key === key);
-    if (!h || !r || !c) return;
-    const records = [...h.records];
-    records[i] = withVariant(r, c, h.index);
-    edit({ records });
+    if (picker?.kind !== "map" || !h) return;
+    if (picker.slot !== undefined) {
+      editRecord(picker.slot, { id });
+    } else if (picker.variantKey) {
+      const choice = choices().find((item) => item.key === picker.variantKey);
+      if (!choice || !canAddMap()) return;
+      const record: EditRecord = { id, string: "", flags: 0, dwords: [1, 0], src: null };
+      edit({ records: [...h.records, withVariant(record, choice, h.index)] });
+    } else {
+      addRecord(id, picker.groupSlot);
+    }
+    closeDialog();
+  }
+
+  function applySelectedPreset(): void {
+    const h = current();
+    const resolved = resolution();
+    if (h && resolved?.records.length) {
+      replace(applyPreset(h, resolved));
+      closeDialog();
+    }
+  }
+
+  function moveMap(slots: number[], from: number, to: number): void {
+    const h = current();
+    if (!h || to < 0 || to >= slots.length || from === to) return;
+    edit({ records: moveGroupEntry(h.records, slots, from, to) });
+  }
+
+  function endDrag(): void {
+    setDrag(undefined);
+    setDrop(undefined);
   }
 
   async function save(): Promise<void> {
-    if (!changed() || errors().length > 0) return;
+    if (busy() || stale() || !changed() || problems().size) return;
+    const body = patch();
+    const server = live.server().base;
+    const account = identity.me()?.xuid;
     setBusy(true);
     setError("");
     setStatus("");
     try {
-      const reply = await putHopper(buildPatch(original(), hoppers()));
+      const latest = await getHopper();
+      if (live.server().base !== server || identity.me()?.xuid !== account) {
+        throw new Error("The selected server or account changed. Reopen the editor to continue.");
+      }
+      const loaded = original();
+      if (!latest || latest.hoppers.length !== loaded.length ||
+          toEditable(latest.hoppers).some((h) => !loaded[h.index] || !sameHopper(h, loaded[h.index]!))) {
+        setStale(true);
+        setError("The published hopper changed while you were editing. Close this review and reload the published file to start a fresh draft.");
+        return;
+      }
+      const reply = await putHopper(body);
       setOriginal(toEditable(reply.hoppers));
       setHoppers(toEditable(reply.hoppers));
-      setStatus(`published ${reply.published.size} bytes (sha256 ${reply.published.sha256.slice(0, 12)}…)`);
+      setStatus(`Published ${reply.published.size.toLocaleString()} bytes · SHA-256 ${reply.published.sha256.slice(0, 12)}…`);
+      loadMarks();
+      closeDialog();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -298,523 +298,301 @@ export default function HopperBuilder() {
     }
   }
 
-  const num = (v: string): number | null => {
-    const n = Number(v);
-    return Number.isInteger(n) && n >= 0 ? n : null;
-  };
-
   return (
     <div class="adm-hopper">
-      <Panel
-        title="Playlists"
-        sub="multiplayer_hopper.dat · the game downloads this after sign-in"
-        right={
-          <>
-            <Show when={changed()}>
-              <span class="adm-dirty">unsaved changes</span>
-            </Show>
-            <Show when={errors().length > 0}>
-              <span class="adm-error">fix {problems().size === 1 ? "1 playlist" : `${problems().size} playlists`} to publish</span>
-            </Show>
-            <button class="s-btn" disabled={busy() || !changed() || errors().length > 0} onClick={() => void save()}>
-              {busy() ? "…" : "Publish"}
-            </button>
-          </>
-        }
-      >
-        <Show when={hoppers().length > 0} fallback={
-          <Show when={error()}>
-            <p class="adm-error">{error()}</p>
-            <p class="adm-ok">{status()}</p>
-          </Show>
-        }>
-          <div class="adm-hopper-cols">
-            <ol class="adm-list">
-              <For each={hoppers()}>
-                {(h) => (
-                  <li>
-                    <button
-                      classList={{ on: h.index === sel(), off: isUnused(h), bad: problems().has(h.index) }}
-                      onClick={() => setSel(h.index)}
-                    >
-                      <span class="adm-list-idx">{h.index + 1}</span>
-                      <span class="adm-list-name">
-                        {isUnused(h) ? (h.clear ? "(removed on publish)" : "(unused)") : h.title || h.name || "(untitled)"}
-                      </span>
-                      <span class="adm-list-meta">
-                        {problems().has(h.index) ? "fix · " : ""}
-                        {isUnused(h) ? "empty" : `t${h.type} · ${h.records.length}`}
-                      </span>
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ol>
-            <Show when={current()}>
+      <Panel title="Playlists" sub="multiplayer_hopper.dat · Downloaded at sign-in" right={
+        <>
+          <Show when={changed()}><span class="adm-dirty">Unpublished changes</span></Show>
+          <Show when={problems().size}><span class="adm-error">Fix {problems().size === 1 ? "1 playlist" : `${problems().size} playlists`} to publish</span></Show>
+          <button class="s-btn" disabled={busy() || stale() || !changed() || problems().size > 0}
+            onClick={() => showDialog({ kind: "publish" })}>Review &amp; publish</button>
+        </>
+      }>
+        <Show when={hoppers().length} fallback={<Show when={busy()}><p>Loading playlists…</p></Show>}>
+          <fieldset class="adm-hopper-cols" disabled={busy()}>
+            <aside class="adm-playlist-rail" aria-label="Playlists">
+              <div class="adm-playlist-capacity">
+                <span>{playlistIds().length} of {HOPPER_COUNT}</span>
+                <button class="s-btn" disabled={!available() || !templates().length} onClick={() => showDialog({ kind: "add" })}>Add playlist</button>
+              </div>
+              <Show when={!templates().length}><p class="adm-preset-note">This server provides no playlist templates.</p></Show>
+              <ul class="adm-list">
+                <For each={playlistIds()}>{(id) => {
+                  const h = () => hoppers()[id]!;
+                  return (
+                    <li>
+                      <button classList={{ on: current()?.index === id, bad: problems().has(id) }}
+                        aria-current={current()?.index === id ? "true" : undefined} onClick={() => setSelected(id)}>
+                        <span class="adm-list-name">{playlistTitle(h())}</span>
+                        <span class="adm-list-meta">{kind(h())}</span>
+                      </button>
+                    </li>
+                  );
+                }}</For>
+              </ul>
+            </aside>
+            <Show when={current()} fallback={<p class="adm-note">Add a playlist to start building a lineup.</p>}>
               {(h) => (
-                <Show
-                  when={!isUnused(h())}
-                  fallback={
-                    <div class="adm-editor">
-                      <Show
-                        when={h().clear}
-                        fallback={
-                          <>
-                            <p class="adm-preset-note">
-                              Slot {h().index + 1} is unused: the game shows no playlist here. Choose what kind of playlist to make; it starts with that kind's matchmaking rules and one entry, which you can then change.
-                            </p>
-                            <Show
-                              when={templates().length > 0}
-                              fallback={<p class="adm-error">This server does not offer playlist templates yet; update it to add playlists.</p>}
-                            >
-                              <div class="adm-row">
-                                <label class="adm-field adm-grow">
-                                  <span>Kind of playlist</span>
-                                  <select value={templateKey()} onChange={(e) => setTemplateKey(e.currentTarget.value)}>
-                                    <For each={templates()}>
-                                      {(t) => (
-                                        <option value={t.id} selected={String(t.id) === templateKey()}>
-                                          {templateLabel(t)}
-                                        </option>
-                                      )}
-                                    </For>
-                                  </select>
-                                </label>
-                                <button class="s-btn" onClick={makePlaylist}>
-                                  Make playlist {h().index + 1}
-                                </button>
-                              </div>
-                            </Show>
-                          </>
-                        }
-                      >
-                        <p class="adm-preset-note">Playlist {h().index + 1} will be removed when you publish: its slot becomes unused.</p>
-                        <button class="s-btn" onClick={() => revert(h().index)}>
-                          Keep it
-                        </button>
-                      </Show>
-                      <Show when={problems().get(h().index)}>
-                        {(errs) => (
-                          <div class="adm-inline-errors">
-                            <ul class="adm-errors">
-                              <For each={errs()}>{(e) => <li>{e}</li>}</For>
-                            </ul>
-                            <button class="s-btn" onClick={() => revert(h().index)}>
-                              Undo the changes to this slot
-                            </button>
-                          </div>
-                        )}
-                      </Show>
-                    </div>
-                  }
-                >
                 <div class="adm-editor">
-                  <Show when={problems().get(h().index)}>
-                    {(errs) => (
-                      <div class="adm-inline-errors">
-                        <ul class="adm-errors">
-                          <For each={errs()}>{(e) => <li>{e}</li>}</For>
-                        </ul>
-                        <button class="s-btn" onClick={() => revert(h().index)}>
-                          {wasUnused(h().index) ? "Discard this new playlist" : "Revert to the published playlist"}
-                        </button>
-                      </div>
-                    )}
-                  </Show>
-                  <div class="adm-row">
-                    <span class="adm-field-label">
-                      {wasUnused(h().index) ? "New playlist" : "Playlist"} {h().index + 1} · {TYPE_NAMES[h().type] ?? `type ${h().type}`}
-                    </span>
-                    <Show when={templates().length > 0}>
-                      <label class="adm-field">
-                        <span>Change kind</span>
-                        <select
-                          value=""
-                          onChange={(e) => {
-                            changeKind(e.currentTarget.value);
-                            e.currentTarget.value = "";
-                          }}
-                        >
-                          <option value="" selected>
-                            Keep its rules…
-                          </option>
-                          <For each={templates()}>{(t) => <option value={t.id}>{templateLabel(t)}</option>}</For>
-                        </select>
-                      </label>
-                    </Show>
-                    <button class="s-btn" onClick={removePlaylist}>
-                      {wasUnused(h().index) ? "Discard" : "Remove playlist"}
-                    </button>
-                  </div>
-                  <div class="adm-preset">
-                    <label class="adm-field adm-grow">
-                      <span>Start from preset</span>
-                      <select value={presetKey()} onChange={(e) => setPresetKey(e.currentTarget.value)}>
-                        <option value="">Choose a historical playlist…</option>
-                        <For each={PRESETS}>
-                          {(p) => (
-                            <option value={p.key} selected={p.key === presetKey()}>
-                              {p.label} · {p.era}
-                            </option>
-                          )}
-                        </For>
-                      </select>
-                    </label>
-                    <Show when={resolution()}>
-                      {(r) => (
-                        <div class="adm-preset-preview">
-                          <p class="adm-preset-title">
-                            {r().title} <span>{r().description}</span>
-                          </p>
-                          <Show when={preset()?.uncertain}>
-                            <p class="adm-preset-note">From memory: {preset()?.uncertain}.</p>
-                          </Show>
-                          <ul class="adm-preset-games">
-                            <For each={r().games}>
-                              {(g) => (
-                                <li classList={{ off: !g.record }}>
-                                  {g.label}
-                                  <Show when={g.missing}>
-                                    <span> · unavailable: {g.missing}</span>
-                                  </Show>
-                                </li>
-                              )}
-                            </For>
-                          </ul>
-                          <button class="s-btn" disabled={r().records.length === 0} onClick={usePreset}>
-                            Fill playlist {h().index + 1} with {r().records.length} entries
-                          </button>
-                        </div>
-                      )}
-                    </Show>
-                    <Show when={!catalog()}>
-                      <p class="adm-preset-note">
-                        No map catalog from this server yet (its game art has not been extracted): maps show as numbers and presets cannot resolve.
-                      </p>
-                    </Show>
-                  </div>
+                  <header class="adm-playlist-head">
+                    <div>
+                      <h3>{playlistTitle(h())}</h3>
+                      <p><strong>{kind(h())}</strong> · {playlistSize(h())}</p>
+                    </div>
+                    <div class="adm-toolbar">
+                      <button class="s-btn" disabled={!available() || !copyTemplate(h())} onClick={duplicate}
+                        title={kind(h()) === "Clanker" ? "New copies use human matchmaking rules" : undefined}>Duplicate</button>
+                      <button class="s-btn" onClick={() => remove(h())}>{wasUnused(h()) ? "Discard" : "Remove"}</button>
+                      <button class="s-btn" onClick={() => showDialog({ kind: "preset" })}>Reset to preset</button>
+                    </div>
+                  </header>
+                  <Show when={problems().get(h().index)}>{(errs) => (
+                    <div class="adm-inline-errors" role="alert">
+                      <ul class="adm-errors"><For each={errs()}>{(e) => <li>{e}</li>}</For></ul>
+                    </div>
+                  )}</Show>
                   <div class="adm-row">
                     <label class="adm-field">
                       <span>Title</span>
-                      <input
-                        value={h().title}
-                        maxLength={MAX_TITLE}
-                        onInput={(e) => edit({ title: e.currentTarget.value })}
-                      />
+                      <input value={h().title} maxLength={MAX_TITLE} onInput={(e) => edit({ title: e.currentTarget.value })} />
                     </label>
                     <label class="adm-field adm-grow">
                       <span>Description</span>
-                      <input
-                        value={h().description}
-                        maxLength={MAX_DESCRIPTION}
-                        onInput={(e) => edit({ description: e.currentTarget.value })}
-                      />
+                      <input value={h().description} maxLength={MAX_DESCRIPTION} onInput={(e) => edit({ description: e.currentTarget.value })} />
                     </label>
+                    <button class="s-btn" disabled={!templates().length} onClick={() => showDialog({ kind: "rules" })}>Change rules</button>
+                    <Show when={!wasUnused(h()) && patch().hoppers.some((item) => item.index === h().index)}>
+                      <button class="s-btn" onClick={() => revert(h().index)}>Revert edits</button>
+                    </Show>
                   </div>
-                  <table class="adm-records">
-                    <thead>
-                      <tr>
-                        <th />
-                        <th class="adm-grow">Map</th>
-                        <th>Game variant</th>
-                        <th>Weight</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <Index each={h().records}>
-                        {(r, i) => (
-                          <tr>
-                            <td class="adm-rec-idx">{i + 1}</td>
-                            <td>
-                              <Show
-                                when={maps().length > 0}
-                                fallback={<span class="adm-mono">map id {r().id}</span>}
-                              >
-                                <select
-                                  value={String(r().id)}
-                                  onChange={(e) => editRecord(i, { id: Number(e.currentTarget.value) })}
-                                >
-                                  <Show when={!mapName(r().id)}>
-                                    <option value={r().id} selected>
-                                      id {r().id} (not a map in this game)
-                                    </option>
-                                  </Show>
-                                  <For each={maps()}>
-                                    {(m) => (
-                                      <option value={m.id} selected={m.id === r().id}>
-                                        {m.name}
-                                      </option>
-                                    )}
-                                  </For>
-                                </select>
-                              </Show>
-                            </td>
-                            <td class="adm-variant">
-                              <select value={choiceKey(r(), h().index)} onChange={(e) => setVariant(i, e.currentTarget.value)}>
-                                <Show when={!choices().some((c) => c.key === choiceKey(r(), h().index))}>
-                                  <option value={choiceKey(r(), h().index)} selected>
-                                    {variantLabel(r())}
-                                  </option>
-                                </Show>
-                                <For each={["built-in", "in this file"] as const}>
-                                  {(group) => (
-                                    <Show when={choices().some((c) => c.group === group)}>
-                                      <optgroup label={group === "built-in" ? "Built-in variants" : "Variants in this file"}>
-                                        <For each={choices().filter((c) => c.group === group)}>
-                                          {(c) => (
-                                            <option value={c.key} selected={c.key === choiceKey(r(), h().index)}>
-                                              {c.label}
-                                            </option>
-                                          )}
-                                        </For>
-                                      </optgroup>
-                                    </Show>
-                                  )}
-                                </For>
-                              </select>
-                            </td>
-                            <td>
-                              <input
-                                class="adm-num"
-                                type="number"
-                                min={1}
-                                max={MAX_WEIGHT}
-                                value={r().dwords[0]}
-                                onInput={(e) => {
-                                  const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i, { dwords: [n, r().dwords[1]] });
-                                }}
-                              />
-                            </td>
-                            <td class="adm-rec-btns">
-                              <button aria-label="Move up" disabled={i === 0} onClick={() => moveRecord(i, -1)}>
-                                ↑
-                              </button>
-                              <button
-                                aria-label="Move down"
-                                disabled={i === h().records.length - 1}
-                                onClick={() => moveRecord(i, 1)}
-                              >
-                                ↓
-                              </button>
-                              <button aria-label="Duplicate" onClick={() => copyRecord(i)}>
-                                ⧉
-                              </button>
-                              <button
-                                aria-label="Remove"
-                                disabled={h().records.length <= 1}
-                                onClick={() => removeRecord(i)}
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        )}
-                      </Index>
-                    </tbody>
-                  </table>
-                  <button class="s-btn" disabled={h().records.length >= MAX_RECORDS} onClick={() => addRecord()}>
-                    Add an entry
-                  </button>
-                  <details class="adm-hint adm-advanced">
-                    <summary>Advanced: raw fields</summary>
-                    <p class="adm-preset-note">
-                      The entry string, flags and second dword lie inside the entry's game variant, and the name field overlaps a table the game validates: change them only if you know the bytes. Type and the range fields are the matchmaking rules; the server refuses a combination the game would not load (use Change kind instead).
-                    </p>
-                  <div class="adm-row">
-                    <label class="adm-field adm-grow">
-                      <span>Name (raw, ASCII)</span>
-                      <input
-                        value={h().name}
-                        maxLength={MAX_NAME}
-                        onInput={(e) => edit({ name: e.currentTarget.value })}
-                      />
-                    </label>
-                    <label class="adm-field">
-                      <span>Type</span>
-                      <select
-                        value={String(h().type)}
-                        onChange={(e) => edit({ type: Number(e.currentTarget.value) })}
-                      >
-                        {TYPES.map(([v, label]) => (
-                          <option value={v} selected={v === h().type}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label class="adm-field">
-                      <span>Status</span>
-                      <select
-                        value={String(h().status)}
-                        onChange={(e) => edit({ status: Number(e.currentTarget.value) })}
-                      >
-                        {STATUSES.map(([v, label]) => (
-                          <option value={v} selected={v === h().status}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                  <div class="adm-lineup-head">
+                    <h4>Map rotation <span>{h().records.length} {h().records.length === 1 ? "entry" : "entries"}</span></h4>
+                    <button class="s-btn" disabled={!canAddMap() || !choices().length || !maps().length}
+                      onClick={() => showDialog({ kind: "variant" })}>Add variant</button>
                   </div>
-                  <div class="adm-row">
-                    <span class="adm-field-label">Range fields</span>
-                    <Index each={h().ranges}>
-                      {(r, i) => (
-                        <input
-                          class="adm-num"
-                          type="number"
-                          min={0}
-                          title={rangeLabels(h().type)[i]}
-                          aria-label={rangeLabels(h().type)[i]}
-                          value={r()}
-                          onInput={(e) => {
-                            const n = num(e.currentTarget.value);
-                            if (n !== null) {
-                              const ranges = [...h().ranges] as [number, number, number];
-                              ranges[i] = n;
-                              edit({ ranges });
+                  <Show when={groups().length === 0}>
+                    <p class="adm-note">Add a game variant and choose its first map.</p>
+                  </Show>
+                  <For each={groups().map((group) => group.key)}>{(key) => {
+                    const group = () => groups().find((item) => item.key === key)!;
+                    return (
+                      <section class="adm-variant-group">
+                        <header>
+                          <h4>{group().label}</h4>
+                          <button class="s-btn" disabled={!canAddMap() || !maps().length} aria-label={`Add map to ${group().label}`}
+                            onClick={() => showDialog({ kind: "map", groupSlot: group().slots.at(-1) })}>Add map</button>
+                        </header>
+                        <ul class="adm-map-cards">
+                          <Index each={group().slots}>{(slot, position) => {
+                            const record = () => h().records[slot()]!;
+                            const label = () => mapName(record().id);
+                            const odds = () => shares()[slot()] ?? 0;
+                            const activeDrag = () => drag()?.group === key;
+                            function keyboardMove(event: KeyboardEvent): void {
+                              const by = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+                              if (!by) return;
+                              event.preventDefault();
+                              const handle = event.currentTarget as HTMLButtonElement;
+                              const card = handle.closest("li");
+                              const target = by < 0 ? card?.previousElementSibling : card?.nextElementSibling;
+                              moveMap(group().slots, position, position + by);
+                              target?.querySelector<HTMLButtonElement>(".adm-drag-handle")?.focus();
                             }
-                          }}
-                        />
-                      )}
-                    </Index>
-                  </div>
-                  <table class="adm-records">
-                    <thead>
-                      <tr>
-                        <th />
-                        <th>map id</th>
-                        <th class="adm-grow">string</th>
-                        <th>flags</th>
-                        <th>weight</th>
-                        <th>dword 2</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <Index each={h().records}>
-                        {(r, i) => (
-                          <tr>
-                            <td class="adm-rec-idx">{i + 1}</td>
-                            <td>
-                              <input
-                                class="adm-num"
-                                type="number"
-                                min={0}
-                                value={r().id}
-                                onInput={(e) => {
-                                  const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i, { id: n });
+                            return (
+                              <li classList={{ "adm-map-card": true, "adm-map-drop": activeDrag() && drop() === position }}
+                                onDragOver={(e) => {
+                                  if (!activeDrag()) return;
+                                  e.preventDefault();
+                                  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                                  setDrop(position);
                                 }}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                value={r().string}
-                                maxLength={MAX_STRING}
-                                onInput={(e) => editRecord(i, { string: e.currentTarget.value })}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                class="adm-num"
-                                type="number"
-                                min={0}
-                                value={r().flags}
-                                onInput={(e) => {
-                                  const n = num(e.currentTarget.value);
-                                  if (n !== null) editRecord(i, { flags: n });
-                                }}
-                              />
-                            </td>
-                            <Index each={r().dwords}>
-                              {(d, j) => (
-                                <td>
-                                  <input
-                                    class="adm-num"
-                                    type="number"
-                                    min={0}
-                                    value={d()}
-                                    onInput={(e) => {
-                                      const n = num(e.currentTarget.value);
-                                      if (n !== null) {
-                                        const dwords = [...r().dwords] as [number, number];
-                                        dwords[j] = n;
-                                        editRecord(i, { dwords });
-                                      }
-                                    }}
-                                  />
-                                </td>
-                              )}
-                            </Index>
-                            <td class="adm-rec-btns">
-                              <button aria-label="Move up" disabled={i === 0} onClick={() => moveRecord(i, -1)}>
-                                ↑
-                              </button>
-                              <button
-                                aria-label="Move down"
-                                disabled={i === h().records.length - 1}
-                                onClick={() => moveRecord(i, 1)}
-                              >
-                                ↓
-                              </button>
-                              <button aria-label="Duplicate" onClick={() => copyRecord(i)}>
-                                ⧉
-                              </button>
-                              <button
-                                aria-label="Remove"
-                                disabled={h().records.length <= 1}
-                                onClick={() => removeRecord(i)}
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        )}
-                      </Index>
-                    </tbody>
-                  </table>
-                  </details>
-                  <Show
-                    when={!wasUnused(h().index)}
-                    fallback={<p class="adm-preset-note">Custom maps can be allowed once this playlist is published.</p>}
-                  >
-                    <HopperPins
-                      hopper={h().index}
-                      catalog={catalog()}
-                      maps={maps()}
-                      entryMaps={h().records.map((r) => r.id)}
-                      onAddEntry={(id) => addRecord(id)}
-                    />
+                                onDrop={(e) => {
+                                  const source = drag();
+                                  if (source?.group !== key) return;
+                                  e.preventDefault();
+                                  moveMap(group().slots, source.position, position);
+                                  endDrag();
+                                }}>
+                                <button class="adm-drag-handle" draggable={group().slots.length > 1}
+                                  disabled={group().slots.length < 2}
+                                  aria-label={`Reorder ${label()} in ${group().label} with the Up or Down arrow`}
+                                  title="Drag or press ↑ or ↓ to reorder"
+                                  onKeyDown={keyboardMove}
+                                  onDragStart={(e) => {
+                                    if (e.dataTransfer) {
+                                      e.dataTransfer.effectAllowed = "move";
+                                      e.dataTransfer.setData("text/plain", label());
+                                    }
+                                    setDrag({ group: key, position });
+                                  }}
+                                  onDragEnd={endDrag}>⠿</button>
+                                <button class="adm-map-pick" disabled={!maps().length}
+                                  aria-label={`Change map for ${label()}`}
+                                  onClick={() => showDialog({ kind: "map", slot: slot() })}>
+                                  <MapArt map={mapAt(record().id)} />
+                                  <span>{label()}</span>
+                                </button>
+                                <div class="adm-map-weight">
+                                  <div class="adm-weight-value">
+                                    <input type="number" min={1} max={MAX_WEIGHT} step={1}
+                                      aria-label={`Weight for ${label()}`} title="Selection weight"
+                                      value={effectiveWeight(record().dwords[0])} onChange={(e) => {
+                                        const input = e.currentTarget;
+                                        const weight = input.valueAsNumber;
+                                        if (Number.isInteger(weight) && weight >= 1 && weight <= MAX_WEIGHT) {
+                                          editRecord(slot(), { dwords: [weight, record().dwords[1]] });
+                                        } else {
+                                          input.value = String(effectiveWeight(record().dwords[0]));
+                                        }
+                                      }} />
+                                    <span> · {shareLabel(odds())}</span>
+                                  </div>
+                                  <progress max={100} value={odds()} aria-label={`Selection chance for ${label()}`} />
+                                </div>
+                                <div class="adm-map-actions">
+                                  <button class="adm-link" disabled={!choices().length} aria-label={`Change variant for ${label()}`}
+                                    onClick={() => showDialog({ kind: "variant", slot: slot() })}>Change variant</button>
+                                  <button class="adm-link" disabled={!canAddMap()} aria-label={`Copy ${label()}`} onClick={() => copyRecord(slot())}>Copy map</button>
+                                  <button class="adm-link" disabled={h().records.length <= 1} aria-label={`Remove ${label()}`} onClick={() => removeRecord(slot())}>Remove map</button>
+                                </div>
+                              </li>
+                            );
+                          }}</Index>
+                        </ul>
+                      </section>
+                    );
+                  }}</For>
+                  <HopperFields hopper={h()} edit={edit} editRecord={editRecord}
+                    moveRecord={moveRecord} copyRecord={copyRecord} removeRecord={removeRecord} />
+                  <Show when={!wasUnused(h())} fallback={<p class="adm-preset-note">Publish this playlist to allow custom maps.</p>}>
+                    <HopperPins hopper={h().index} catalog={catalog()} maps={maps()}
+                      entryMaps={h().records.map((r) => r.id)} onAddEntry={addRecord} />
                   </Show>
                 </div>
-                </Show>
               )}
             </Show>
-          </div>
-          <Show when={errors().length > 0}>
-            <ul class="adm-errors">
-              <For each={errors()}>
-                {(e) => (
-                  <li>
-                    <button class="adm-link" onClick={() => setSel(e.index)}>
-                      {e.text}
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
-          <Show when={error()}>
-            <p class="adm-error">{error()}</p>
-          </Show>
-          <Show when={status()}>
-            <p class="adm-ok">{status()}</p>
-          </Show>
+          </fieldset>
         </Show>
+        <For each={hoppers().filter((h) => h.clear)}>{(h) => (
+          <div class="adm-removed-playlist">
+            <span>{playlistTitle(original()[h.index] ?? h)} will be removed</span>
+            <button class="adm-link" disabled={busy()} onClick={() => { revert(h.index); setSelected(h.index); }}>Undo</button>
+          </div>
+        )}</For>
+        <Show when={problems().size > 1}>
+          <ul class="adm-errors">
+            <For each={[...problems().keys()]}>{(index) => (
+              <li><button class="adm-link" onClick={() => setSelected(index)}>{playlistTitle(hoppers()[index]!)}</button></li>
+            )}</For>
+          </ul>
+        </Show>
+        <Show when={error() && !dialog()}><p class="adm-error" role="alert">{error()}</p></Show>
+        <Show when={stale() && !dialog()}>
+          <button class="s-btn" disabled={busy()} onClick={() => void load()}>Discard draft and reload</button>
+        </Show>
+        <Show when={status()}><p class="adm-ok" role="status">{status()}</p></Show>
       </Panel>
+
+      <dialog ref={modal} class="adm-dialog" aria-labelledby="adm-hopper-dialog-title"
+        onCancel={(e) => { if (busy()) e.preventDefault(); }}
+        onClose={() => { if (!modal.open) setDialog(undefined); }}>
+        <Show when={dialog()}>{(d) => (
+          <>
+            <h3 id="adm-hopper-dialog-title">{dialogTitle(d())}</h3>
+            <div class="adm-dialog-body">
+              <Show when={d().kind === "add" || d().kind === "rules"}>
+                <ul class="adm-picker">
+                  <For each={templates()}>{(t) => (
+                    <li><button class="s-btn" onClick={() => applyTemplate(t, d().kind === "add")}>
+                      <strong>{t.title}</strong><small>{templateLabel(t)}</small>
+                    </button></li>
+                  )}</For>
+                </ul>
+              </Show>
+              <Show when={d().kind === "preset"}>
+                <label class="adm-field">
+                  <span>Historical lineup</span>
+                  <select value={presetKey()} onChange={(e) => setPresetKey(e.currentTarget.value)}>
+                    <option value="">Choose a preset…</option>
+                    <For each={PRESETS}>{(p) => <option value={p.key}>{p.label} · {p.era}</option>}</For>
+                  </select>
+                </label>
+                <Show when={resolution()}>{(r) => (
+                  <div class="adm-preset-preview">
+                    <p class="adm-preset-title">{r().title}{" "}<span>{r().description}</span></p>
+                    <Show when={preset()?.uncertain}>{(note) => <p class="adm-preset-note">From memory · {note()}</p>}</Show>
+                    <ul class="adm-preset-games">
+                      <For each={r().games}>{(g) => (
+                        <li classList={{ off: !g.record }}>{g.label}<Show when={g.missing}><span> · Unavailable: {g.missing}</span></Show></li>
+                      )}</For>
+                    </ul>
+                  </div>
+                )}</Show>
+                <Show when={!catalog()}><p class="adm-preset-note">Extract the server’s map catalog to resolve historical lineups.</p></Show>
+              </Show>
+              <Show when={d().kind === "variant"}>
+                <For each={["built-in", "in this file"] as const}>{(group) => {
+                  const options = () => choices().filter((choice) => choice.group === group);
+                  return (
+                    <Show when={options().length}>
+                      <h4>{group === "built-in" ? "Built-in variants" : "Variants in the published file"}</h4>
+                      <ul class="adm-picker">
+                        <For each={options()}>{(choice) => (
+                          <li><button class="s-btn" onClick={() => chooseVariant(choice.key)}>{choice.label}</button></li>
+                        )}</For>
+                      </ul>
+                    </Show>
+                  );
+                }}</For>
+              </Show>
+              <Show when={d().kind === "map"}>
+                <ul class="adm-picker adm-picker-maps">
+                  <For each={maps()}>{(map) => (
+                    <li><button class="s-btn" onClick={() => chooseMap(map.id)}><MapArt map={map} /><strong>{map.name}</strong></button></li>
+                  )}</For>
+                </ul>
+              </Show>
+              <Show when={d().kind === "publish"}>
+                <p>Review the draft against the published hopper. The game downloads the updated file at sign-in.</p>
+                <For each={playlistDiff(original(), hoppers(), mapName)}>{(item) => (
+                  <section class="adm-playlist-diff">
+                    <h4>{item.action} · {item.title} <small>Slot {item.index + 1}</small></h4>
+                    <Show when={item.lines.length}>
+                      <table class="s-stats">
+                        <thead><tr><th scope="col">Field</th><th scope="col">Published</th><th scope="col">Draft</th></tr></thead>
+                        <tbody><For each={item.lines}>{(line) => (
+                          <tr><th scope="row">{line.field}</th><td>{line.before || "—"}</td><td>{line.after || "—"}</td></tr>
+                        )}</For></tbody>
+                      </table>
+                    </Show>
+                  </section>
+                )}</For>
+                <Show when={error()}><p class="adm-error" role="alert">{error()}</p></Show>
+              </Show>
+            </div>
+            <footer class="adm-toolbar">
+              <button class="s-btn" disabled={busy()} onClick={closeDialog}>Cancel</button>
+              <Show when={d().kind === "preset"}>
+                <button class="s-btn" disabled={!resolution()?.records.length} onClick={applySelectedPreset}>Apply preset</button>
+              </Show>
+              <Show when={d().kind === "publish"}>
+                <button class="s-btn" disabled={busy() || stale()} onClick={() => void save()}>{busy() ? "Publishing…" : "Publish changes"}</button>
+              </Show>
+            </footer>
+          </>
+        )}</Show>
+      </dialog>
     </div>
   );
+}
+
+function dialogTitle(dialog: Dialog): string {
+  switch (dialog.kind) {
+    case "add": return "Add playlist";
+    case "rules": return "Change matchmaking rules";
+    case "preset": return "Reset to preset";
+    case "publish": return "Review playlist changes";
+    case "variant": return dialog.slot === undefined ? "Add game variant" : "Change game variant";
+    case "map": return dialog.slot !== undefined ? "Change map" : dialog.variantKey ? "Choose the first map" : "Add map";
+  }
 }

@@ -1,7 +1,7 @@
 // REST helpers. Every URL derives from the chosen server target.
 
 import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
-import type { SimDetail, SimFilter, SimRun } from "../admin/simRuns";
+import type { SimDetail, SimFilter, SimFilterOptions, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
 import { openHostFilm } from "./host-film";
@@ -183,8 +183,12 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
-    simRuns: async (filters: SimFilter, s?: AbortSignal) =>
-      page<SimRun>(await getJson(u("/admin/sim-runs", { ...filters }), s, await who())),
+    simRuns: async (filters: SimFilter, s?: AbortSignal) => {
+      const body = await getJson<Page<SimRun> & { options?: SimFilterOptions }>(
+        u("/admin/sim-runs", { ...filters }), s, await who(),
+      );
+      return { ...page<SimRun>(body), options: body.options };
+    },
     simRun: async (id: string, s?: AbortSignal) =>
       getJson<SimDetail>(u("/admin/sim-runs/" + encodeURIComponent(id)), s, await who()),
     /** All recorded frames in a tick range: from the game's frame chunks
