@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
-use map::build::Block;
+use map::build::{Block, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::defs::{self, Defs, Record, Str, Target, Val};
 use tags::shader::SHAD;
@@ -1140,6 +1140,14 @@ impl Library {
     /// The stem `layout` draws with on the base.
     pub fn stem(&self, layout: &Layout) -> Option<TagId> {
         self.stems.get(layout.stem).copied()
+    }
+
+    pub(crate) fn install_sky_clouds(&mut self, set: &mut TagSet) -> Result<()> {
+        if self.stem(&SKY_CLOUDS).is_none() {
+            let id = program::clouds::install(set)?;
+            self.stems.insert(SKY_CLOUDS.stem, id);
+        }
+        Ok(())
     }
 
     /// Whether the base has `layout`'s stem and every default bitmap it
